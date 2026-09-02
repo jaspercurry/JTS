@@ -19,7 +19,7 @@ snapclient ``--soundcard``) **and its arm is**
 ``jasper.multiroom.reconcile.outputd_grouping_env`` (the bare
 :data:`DAC_CONTENT_LANE_ENV` marker). Why the marker is served, why the legacy
 FIFO spelling still parks, and what the two env layers have to agree on:
-:doc:`ADR-0220 <../docs/adr/0219-the-dac-content-marker-is-served-and-its-contradiction-parks>`.
+:doc:`ADR-0220 <../docs/adr/0220-the-dac-content-marker-is-served-and-its-contradiction-parks>`.
 
 **A sibling of** :mod:`jasper.multiroom.grouping_ring`, **not a reuse of it.**
 The two carry the same wire at the same geometry, but they are opposite

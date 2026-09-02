@@ -16,9 +16,10 @@ from jasper.backoff import reconnect_backoff_delay
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
-    DeferredReconnect,
+    Deferred,
     OutageTracker,
     http_status,
+    survive_terminal_initial_connect,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -601,7 +602,7 @@ class GeminiLiveConnection:
         # in-flight turn isn't torn down mid-reply. Same shared mechanism
         # OpenAI uses for its proactive-watchdog deferral — here the
         # trigger is the GoAway branch in _receive_loop (see _supervisor).
-        self._deferred_reconnect = DeferredReconnect()
+        self._deferred_reconnect = Deferred()
         # Pause turn acquisition while a reconnect is in progress so
         # the daemon doesn't try to send audio into a half-open WS.
         self._connected_event: asyncio.Event = asyncio.Event()
@@ -648,7 +649,10 @@ class GeminiLiveConnection:
         what voice_daemon.py uses so the time-injection stays accurate
         across the connection's hours-long lifetime — the callable is
         invoked on initial connect, every reconnect, and every
-        context-reset reopen."""
+        context-reset reopen.
+
+        A terminal first connect leaves the connection FAILED and returns
+        rather than raising — see ``survive_terminal_initial_connect``."""
         self._registry = registry
         if callable(system_instruction):
             self._system_instruction_provider = system_instruction
@@ -656,8 +660,6 @@ class GeminiLiveConnection:
             instruction = system_instruction or ""
             self._system_instruction_provider = lambda: instruction
         await self._do_initial_connect()
-        # Once initial connect succeeds, supervisor + keepalive run for
-        # the daemon's lifetime.
         self._supervisor_task = asyncio.create_task(self._supervisor_loop())
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
@@ -999,10 +1001,10 @@ class GeminiLiveConnection:
                 INITIAL_CONNECT_BACKOFF_SCHEDULE,
                 phase="initial-connect",
             )
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            raise
+            survive_terminal_initial_connect(e, self._reconnect_event.set)
 
     async def _open_session_with_409_retry(
         self,

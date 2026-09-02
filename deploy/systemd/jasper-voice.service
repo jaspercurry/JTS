@@ -306,19 +306,19 @@ SystemCallArchitectures=native
 # leak memory ourselves, the kernel should still pick us over
 # system-critical infrastructure.
 OOMScoreAdjust=-500
-# Stage 2 memory bound (the deferred follow-up promised above).
-# MemoryHigh (throttle + aggressive reclaim), NOT MemoryMax (kill):
-# voice is the most-protected daemon on the box and an outright cgroup
-# kill of the recovery-critical wake path is worse than throttling a
-# leak while the OOMScoreAdjust ladder + Stage 1 kernel policy decide.
-# 384M is ~2.5x the ~140-150 MB Pss steady state in README's "What's
-# installed and at what cost" resource table (cgroup memory.current
-# counts full RSS + page cache, so headroom over Pss must be generous),
-# and matches the per-process MemoryMax budget pi-run-diagnostic.sh
-# already treats as safe on a 1 GB Pi. Silent no-op until the memory
-# cgroup controller is enabled — same documented-intent posture as
-# jasper-mux / -input / -usbsink.
-MemoryHigh=384M
+# Stage 2 memory bound. MemoryHigh (throttle + aggressive reclaim), NOT
+# MemoryMax (kill): voice is the most-protected daemon on the box and an
+# outright cgroup kill of the recovery-critical wake path is worse than
+# throttling a leak while the OOMScoreAdjust ladder + Stage 1 kernel
+# policy decide.
+# Sizing rule: ~2.5x the daemon's steady-state footprint (~100 MB with the
+# TTS path numpy-only, issue #3697) — cgroup memory.current counts full RSS
+# + page cache, so headroom must be generous. Caveat: a non-default
+# JASPER_MIC_CAPTURE_RATE makes MicCapture decimate, which still imports
+# scipy (+~58 MB) and leaves ~1.6x headroom rather than 2.5x. Silent no-op
+# until the memory cgroup controller is enabled — same documented-intent
+# posture as jasper-mux / -input / -usbsink.
+MemoryHigh=256M
 
 [Install]
 WantedBy=multi-user.target

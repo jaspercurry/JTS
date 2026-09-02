@@ -390,8 +390,11 @@ class LiveConnection(Protocol):
     ) -> None:
         """Open the connection and start the background tasks
         (receive loop, keepalive, reconnect supervisor). Returns once
-        the initial handshake is complete or raises if the initial
-        connect fails after retries.
+        the initial handshake completes, or — when the provider rejects
+        it terminally — returns with the connection paused
+        (``is_paused()`` True, ``last_failure_detail()`` set) and the
+        supervisor still retrying. Raises only when a transient
+        initial-connect retry budget is exhausted.
 
         `system_instruction` may be a fixed string or a callable
         producing one — implementations should call the callable on

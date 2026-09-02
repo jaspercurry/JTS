@@ -1506,9 +1506,9 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-dac-init" \
         /usr/local/bin/jasper-dac-init
-    # DONGLE_CARD was set above by install_alsa. Apple-only mixer helpers
-    # receive APPLE_DONGLE_SERVICE_CARD, which is either the detected Apple
-    # card or "auto" so they can no-op/wait safely when absent.
+    # Apple-only mixer helpers receive APPLE_DONGLE_SERVICE_CARD, always
+    # "auto": they resolve the card on every start, so a card id sampled
+    # during a re-enumeration cannot be frozen into these units.
     sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
         > "${install_transaction_dir}/jasper-dac-init.service"

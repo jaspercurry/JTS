@@ -628,6 +628,16 @@ class VoiceEvalHarness:
                     provider=self.cfg.voice_provider,
                 ),
             )
+            if connection.is_paused():
+                # start() now survives a terminal connect so the daemon
+                # stays up; an eval must fail fast on it instead, with
+                # the provider's own reason.
+                detail = connection.last_failure_detail()
+                await connection.stop()
+                raise RuntimeError(
+                    f"voice-eval: provider={self.cfg.voice_provider} rejected "
+                    f"the connection: {detail}"
+                )
             self._connection = connection
             logger.info(
                 "voice-eval: connection opened for provider=%s session=%s",

@@ -264,18 +264,30 @@ def _constrained_runtime_requirements() -> list[str]:
 
 
 def test_resolver_inputs_preserve_pyproject_specifiers_and_markers() -> None:
-    """Regression for the bare-name resolver false-positive bug."""
+    """Regression for the bare-name resolver false-positive bug.
+
+    The expected specifiers and markers are read from pyproject.toml rather
+    than restated here, so a dependency bump moves one file, not two.
+    """
     from packaging.requirements import Requirement
 
-    requirements = {}
-    for spec in _constrained_runtime_requirements():
-        requirement = Requirement(spec)
-        requirements[_canon(requirement.name)] = requirement
-    assert str(requirements["protobuf"].specifier) == "==7.35.1"
-    assert str(requirements["google-genai"].specifier) == "==2.9.0"
-    assert str(requirements["sdnotify"].specifier) == ">=0.3.2"
-    assert requirements["audioop-lts"].marker is not None
-    assert requirements["pyalsaaudio"].marker is not None
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    declared = [
+        Requirement(spec)
+        for spec in (
+            *data["project"]["dependencies"],
+            *data["project"]["optional-dependencies"]["full"],
+        )
+    ]
+    produced = _constrained_runtime_requirements()
+    produced_names = {_canon(Requirement(spec).name) for spec in produced}
+
+    assert any(req.url is not None for req in declared)
+    for req in declared:
+        if req.url is not None:
+            assert _canon(req.name) not in produced_names
+        else:
+            assert str(req) in produced
 
 
 def test_pip_dry_run_resolves_constraints() -> None:

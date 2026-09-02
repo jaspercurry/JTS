@@ -8,40 +8,27 @@
 //!
 //! The fan-in work loop is paced by the blocking OUTPUT write — the local DAC
 //! clock. Every renderer lane whose producer is clocked off the *same* DAC
-//! (AirPlay / Spotify / Bluetooth / TTS — all networked, DAC-disciplined)
-//! keeps its capture ring at ~one period forever and needs no rate work. The
-//! **USB lane is the exception**: its producer is the host (Mac) clock, free-
-//! running relative to our DAC-paced drain, so a small residual rate gap
-//! accumulates in its snd-aloop ring. Today that gap is absorbed by
-//! [`crate::mixer`]'s bounded **catch-up drain** — a drop-CONTROLLED resync
-//! that discards a chunk of audio whenever the lane backs up past a high-water
-//! (`CATCHUP_HIGH_WATER_PERIODS`). That high-water is sized to never false-fire
-//! on a healthy AirPlay burst, so it inherently lets the USB ring sit anywhere
-//! from 1 to ~14 periods — a **5–75 ms latency sawtooth**.
+//! (AirPlay / Spotify / Bluetooth / TTS) keeps its capture ring at ~one period
+//! forever and needs no rate work. The **USB lane is the exception**: its
+//! producer is the host (Mac) clock, free-running relative to our DAC-paced
+//! drain, so a small residual rate gap accumulates in its snd-aloop ring.
+//! [`crate::mixer`]'s bounded catch-up drain absorbs that gap by discarding
+//! audio whenever the lane backs up past a high-water
+//! (`CATCHUP_HIGH_WATER_PERIODS`) sized never to false-fire on a healthy
+//! AirPlay burst — which lets the USB ring sit anywhere from 1 to ~14 periods,
+//! a **5–75 ms latency sawtooth**.
 //!
 //! This module is the drop-FREE alternative: a per-lane windowed-sinc
-//! resampler, DLL-steered to the DAC clock, that *reconciles* the host rate to
-//! the DAC rate at the lane's input edge. The lane then sits at a small fixed
-//! fill (no sawtooth) and the catch-up never fires. Moving reconciliation here,
-//! at the fan-in input edge, is also what lets CamillaDSP stay DAC-paced
-//! without `rate_adjust` on the clockless USB input — dissolving the underrun
-//! class that `rate_adjust` produced on-device.
+//! resampler, DLL-steered to the DAC clock, that reconciles the host rate to
+//! the DAC rate at the lane's input edge, so the lane sits at a small fixed
+//! fill and the catch-up never fires. Reconciling here is also what lets
+//! CamillaDSP stay DAC-paced without `rate_adjust` on the clockless USB input.
 //!
-//! ## How it composes the shared crate
+//! The buffer it disciplines is per-INPUT, upstream of the sum — one resampler
+//! per host-clocked lane, not one for the whole mix. The DLL control law lives
+//! entirely inside [`RateController`]; this module never touches loop math.
 //!
-//! It composes [`AudioRing`] + [`SincTable`] + [`RateController`] from the
-//! shared [`jasper_resampler`] crate into a lock → render-period → underfill
-//! state machine. The buffer it disciplines is per-INPUT, upstream of the sum
-//! — one resampler per host-clocked lane, not one for the whole mix.
-//! (jasper-outputd once ran the same primitives in the other direction, as a
-//! single post-Camilla `rate_match` content bridge; that bridge was deleted,
-//! so this is now the only in-tree composition of them.)
-//! The DLL control law (the `b = sqrt(2)·ω/2` spa_dll
-//! second-order loop, the variance-adaptive bandwidth, the `max_resync` hard
-//! jump) lives entirely inside [`RateController`]; this module never touches
-//! loop math.
-//!
-//! ## Capture-follower sign (inherited, unchanged)
+//! ## Capture-follower sign
 //!
 //! The error fed to the controller is `fill - target`. A too-full ring
 //! (`error > 0`) settles to `ratio > 1`, which advances the fractional read
@@ -52,24 +39,20 @@
 //!
 //! ## Real-time safety
 //!
-//! - No allocation on the hot path. The ring is sized at construction; the
-//!   per-period output is written into a caller-owned slice; no `Vec` is
-//!   produced inside `render_period`.
-//! - No blocking. The mixer feeds already-read frames via [`push_input`]; this
-//!   module never does ALSA I/O.
+//! - No allocation on the hot path: the ring is sized at construction and the
+//!   per-period output is written into a caller-owned slice.
+//! - No blocking and no ALSA I/O — the mixer feeds already-read frames via
+//!   [`push_input`].
 //! - No clock reads. Logging is count-gated like the rest of the daemon.
-//! - Bounded work: `render_period` emits exactly one period, interpolating a
-//!   fixed `period_frames × channels` samples.
+//! - Bounded work: `render_period` interpolates exactly
+//!   `period_frames × channels` samples.
 //!
-//! ## Default OFF — inert when disabled
+//! ## Default OFF
 //!
-//! The mixer only constructs a [`LaneResampler`] for the configured
-//! clock-crossing lane AND only when the feature is explicitly enabled
-//! (`JASPER_FANIN_INPUT_RESAMPLER=enabled`). When disabled, no
-//! [`LaneResampler`] exists, the per-lane read path is byte-for-byte today's
-//! strict one-period read + catch-up drain, and this module is dead weight the
-//! optimizer can see is never reached. The catch-up drain is intentionally
-//! KEPT as the fallback; deleting it is a later, validation-gated step.
+//! The mixer constructs a [`LaneResampler`] only for the configured
+//! clock-crossing lane, and only when `JASPER_FANIN_INPUT_RESAMPLER=enabled`.
+//! When disabled the per-lane read path is the strict one-period read plus
+//! catch-up drain, which is deliberately kept as the fallback.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -84,9 +67,7 @@ pub use decay::{CushionDecay, DecayFrozenReason, DecayParams, DecaySignals};
 /// snapshot. Absence of this object means the resampler is disabled.
 #[derive(Clone)]
 pub struct LaneResamplerObservability {
-    /// Live lock state. True only after the lane has acquired enough input to
-    /// render real DAC-paced audio; false while priming, after reset, or after
-    /// an underfill unlock.
+    /// True only while the lane is rendering real DAC-paced audio.
     pub locked: Arc<AtomicBool>,
     /// Cumulative input frames pushed into the resampler.
     pub input_frames: Arc<AtomicU64>,
@@ -94,47 +75,38 @@ pub struct LaneResamplerObservability {
     pub output_frames: Arc<AtomicU64>,
     /// Cumulative silence frames emitted while unlocked/underfilled.
     pub silence_frames: Arc<AtomicU64>,
-    /// Cumulative frames dropped by ring overrun (producer outran the ring —
-    /// should stay 0 in steady state; growth means the ring is undersized or
-    /// the host is wildly off-rate).
+    /// Cumulative frames dropped by ring overrun. Stays 0 in steady state;
+    /// growth means the ring is undersized or the host is wildly off-rate.
     pub overrun_frames: Arc<AtomicU64>,
-    /// Last bounded resampler ratio, in ppm × 1000 (so it fits an integer
-    /// atomic with milli-ppm resolution). Signed value stored as i64 bits in a
-    /// u64; the STATUS layer reinterprets. Kept coarse on purpose.
+    /// Last bounded resampler ratio, in ppm × 1000 (milli-ppm). Signed value
+    /// stored as i64 bits in a u64; the STATUS layer reinterprets.
     pub ratio_milli_ppm: Arc<AtomicU64>,
     /// Times the controller's output ppm clamp engaged (the loop demanded more
-    /// than `max_adjust_ppm`) — the "ratio railed" event counter the #3466
-    /// wander defect had no window onto. Lifetime count, survives `reset()`.
+    /// than `max_adjust_ppm`). Lifetime count, survives `reset()`.
     pub clamp_count: Arc<AtomicU64>,
     /// Times the controller reset a clamped loop wound against the fill error
     /// (see `jasper_resampler::RateController::anti_windup_count`). Non-zero
     /// means the lane hit the safety clamp hard. Lifetime count.
     pub anti_windup_count: Arc<AtomicU64>,
-    /// Lock transitions (acquire) — a growing value past 1 means the lane keeps
-    /// re-locking (host discontinuities / under-provisioned ring).
+    /// Lock acquisitions — a value past 1 means the lane keeps re-locking
+    /// (host discontinuities / under-provisioned ring).
     pub lock_count: Arc<AtomicU64>,
-    /// Underfill unlocks — the drop-free analogue of a catch-up event; a
-    /// growing value means the resampler is starving (target too low or a host
-    /// stall) and falling back to silence rather than reading past the buffer.
+    /// Underfill unlocks — the resampler starved (target too low or a host
+    /// stall) and fell back to silence rather than reading past the buffer.
     pub unlock_count: Arc<AtomicU64>,
-    /// Current ring fill, in frames, as of the last render period — the live
-    /// "how full is the input buffer" gauge. Held near `target_fill_frames` by
-    /// the DLL when locked; this is the operator's "the resampler is tracking"
-    /// proof (a steady value near target = engaged & holding, a value drifting
-    /// away from target = losing lock). Published every `render_period`.
+    /// Current ring fill in frames, republished every `render_period`. Held
+    /// near `held_target_frames` by the DLL while locked.
     pub fill_frames: Arc<AtomicU64>,
-    /// The acquisition CEILING the controller holds the ring at after lock
-    /// (base target plus the full warm-up cushion). Static for the lane's life —
-    /// the value the held target snaps back to on any discontinuity. Paired with
-    /// `fill_frames` so STATUS shows current vs. ceiling without the reader
-    /// having to know the config.
+    /// The acquisition CEILING (base target plus the full warm-up cushion),
+    /// static for the lane's life — the value the held target snaps back to on
+    /// any discontinuity.
     pub target_fill_frames: u64,
-    /// The LIVE held target the controller is disciplining the ring toward right
-    /// now — equal to `target_fill_frames` (the ceiling) unless the DEFAULT-OFF
-    /// post-lock cushion decay has lowered it. Republished every render period.
-    /// This is the ONE authoritative held-target value: the host-clock DLL reads
-    /// the same atomic as its setpoint (single source of truth), so the two
-    /// controllers can never disagree about where the fill should sit.
+    /// The LIVE held target the controller is disciplining the ring toward —
+    /// equal to `target_fill_frames` unless the DEFAULT-OFF post-lock cushion
+    /// decay has lowered it. Republished every render period. This is the ONE
+    /// authoritative held-target value: the host-clock DLL reads the same
+    /// atomic as its setpoint, so the two controllers can never disagree about
+    /// where the fill should sit.
     pub held_target_frames: Arc<AtomicU64>,
     /// Live cushion-decay state (all `0`/inert while the decay feature is off).
     /// `enabled` = startup configuration; `active` = actively decaying;
@@ -146,11 +118,11 @@ pub struct LaneResamplerObservability {
     pub decay_floor_frames: u64,
     pub decay_frozen_reason: Arc<AtomicU64>,
     /// The decay's LIVE rate demand on the inner resampler, in milli-ppm.
-    /// Plain signed value (the `commanded_milli_ppm` idiom — no bit-cast);
-    /// authority-clamped, ≥ 0 in practice. Nonzero only while a descent is
-    /// actively stepping. Published by the decay itself — the single source
-    /// of truth the host-clock observable subtracts (see
-    /// `host_clock::build_obs`, #3466); nobody re-derives it from the knobs.
+    /// Plain signed value (no bit-cast); authority-clamped, ≥ 0 in practice.
+    /// Nonzero only while a descent is actively stepping. Published by the
+    /// decay itself — the single source of truth the host-clock observable
+    /// subtracts (see `host_clock::build_obs`, #3466); nobody re-derives it
+    /// from the knobs.
     pub decay_demand_milli_ppm: Arc<AtomicI64>,
     /// The decay's DECLARED refill window — see `CushionDecay::refilling` and
     /// ADR-0214. Always false while decay is off.
@@ -161,10 +133,6 @@ pub struct LaneResamplerObservability {
 
 /// What [`LaneResampler::plan_period`] decided this render period should do —
 /// the width-independent verdict the narrow and wide emit tails both act on.
-///
-/// A two-variant enum rather than an `Option<f64>` because "no ratio" and
-/// "silence" are the same fact here and naming it keeps the two tails from
-/// inventing their own reading of a `None`.
 enum RenderPlan {
     /// Unlocked, underfilled, or one period short of the buffered edge: fill the
     /// caller's period with digital zero and count it as silence.
@@ -192,15 +160,12 @@ pub struct LaneResampler {
     /// (`hold_fill_frames()`) is that ceiling unless [`CushionDecay`] has lowered
     /// it post-lock.
     target_fill_frames: usize,
-    /// Extra frames added to the DLL hold target for the armed lane. This is
-    /// the WARM-UP cushion: the headroom that keeps the first jittery seconds
-    /// of host arrival from dipping the cursor-relative fill below
-    /// `minimum_safe_fill` and thrashing lock→silence→relock.
-    ///
-    /// Hardware validation of the earlier "seat deep, then drain back to
-    /// target" version showed a cold-start limit cycle on the real USB burst
-    /// feed: the intentional over-consumption fought the startup burst shape.
-    /// The cushion is now held, not drained.
+    /// Extra frames added to the DLL hold target for the armed lane: the
+    /// WARM-UP cushion that keeps the first jittery seconds of host arrival
+    /// from dipping the cursor-relative fill below `minimum_safe_fill` and
+    /// thrashing lock→silence→relock. It is HELD, never drained back to the
+    /// base target — draining it over-consumes the bursty USB cold feed and
+    /// produces a cold-start limit cycle on hardware.
     warmup_cushion_frames: usize,
     /// Output ppm safety bound (also drives the minimum-safe-fill margin).
     max_adjust_ppm: f64,
@@ -282,11 +247,8 @@ impl LaneResampler {
     /// `±max_adjust_ppm`.
     ///
     /// `warmup_cushion_frames` is added to `target_fill_frames` and held as the
-    /// DLL setpoint. The earlier c57 warm-up path seated this deep but then let
-    /// the DLL drain the cushion away; on hardware, that over-consumed the
-    /// bursty USB feed during acquisition and caused lock/unlock cycling. The
-    /// `config.rs` `WARMUP_CUSHION_FRAMES` compiled default is a conservative
-    /// eight-period held cushion (`512 + 2048 = 2560` frames total); the
+    /// DLL setpoint. The `config.rs` `WARMUP_CUSHION_FRAMES` compiled default
+    /// is an eight-period held cushion (`512 + 2048 = 2560` frames total); the
     /// shipped `usb_low_latency_48k` route runs a shallower six-period cushion
     /// (`512 + 1536 = 2048` frames total —
     /// `DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES` in
@@ -296,15 +258,9 @@ impl LaneResampler {
     /// `ring_frames` is the input buffer depth: it MUST exceed
     /// `target_fill_frames` plus the warm-up cushion plus one render period plus
     /// the kernel radius, or the deep prefill could not seat. Returns an error
-    /// string (rather than a typed error) so the caller can log-and-fall-back
-    /// without a new error enum — a construction failure here must degrade to
-    /// "no resampler", never crash the daemon.
-    ///
-    /// The argument list is one over clippy's default seven: all but
-    /// `decay_params` are flat primitive lane geometry that reads clearly at the
-    /// single call site (`build_lane_resampler`), and bundling them into a struct
-    /// would be churn without added clarity — so the lint is allowed here rather
-    /// than obscuring a well-understood constructor.
+    /// string rather than a typed error so the caller can log-and-fall-back — a
+    /// construction failure here must degrade to "no resampler", never crash
+    /// the daemon.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         channels: usize,
@@ -326,9 +282,8 @@ impl LaneResampler {
         let radius = RADIUS_FRAMES as usize;
         // The ring must hold the deepest seating the lock ever uses (target +
         // warm-up cushion) plus one period of fresh arrival plus the kernel
-        // radius, or the deep prefill could never accumulate. The decay only ever
-        // LOWERS the held target below this ceiling, so the ring stays sized for
-        // the acquisition depth (the ceiling) regardless of decay.
+        // radius, or the deep prefill could never accumulate. The decay only
+        // LOWERS the held target, so the ring stays sized for the ceiling.
         let min_ring = target_fill_frames + warmup_cushion_frames + period_frames + radius + 1;
         if ring_frames < min_ring {
             return Err(format!(
@@ -339,9 +294,9 @@ impl LaneResampler {
         }
         let ring = AudioRing::new(ring_frames, channels)
             .map_err(|e| format!("lane resampler ring: {e}"))?;
-        // Bound the deep prime so a slow-but-real producer can never wedge in
-        // silence: after ~1 s of priming with some input buffered, fall through
-        // and seat at whatever safe depth exists. 1 s of periods at this rate.
+        // 1 s of periods at this rate: after that much priming with some input
+        // buffered, `try_lock` falls through and seats at whatever safe depth
+        // exists, so a slow-but-real producer can never wedge in silence.
         let max_prime_periods = (sample_rate / period_frames.max(1) as u32).max(1);
         // The acquisition CEILING the decay lowers FROM and snaps back TO.
         let ceiling = (target_fill_frames + warmup_cushion_frames) as u64;
@@ -351,13 +306,12 @@ impl LaneResampler {
             period_frames,
             ring,
             sinc_table: SincTable::new(),
-            // The input lane's fill can legitimately move by more than one
-            // render period during USB burst acquisition. Treat that as a
-            // buffer-fill excursion to slew through, not a discontinuity: hard
-            // discontinuities already arrive here as PCM xruns / explicit
-            // resets. Leaving the shared default max_resync enabled made a
-            // deeper held cushion repeatedly reset the DLL at unity and let
-            // the ring drift away from target.
+            // max_resync disabled (`Some(0.0)`): the fill legitimately moves by
+            // more than one render period during USB burst acquisition, and
+            // that is an excursion to slew through, not a discontinuity — hard
+            // discontinuities arrive here as PCM xruns / explicit resets. With
+            // the shared default enabled, a deeper held cushion repeatedly
+            // resets the DLL at unity and the ring drifts away from target.
             controller: RateController::with_max_resync(
                 max_adjust_ppm,
                 period_frames as u32,
@@ -387,8 +341,6 @@ impl LaneResampler {
             fill_frames: Arc::new(AtomicU64::new(0)),
             locked_state: Arc::new(AtomicBool::new(false)),
             decay,
-            // Seed the live held-target gauge at the ceiling (== hold_fill_frames
-            // before any decay). Republished on every decay tick.
             held_target_frames: Arc::new(AtomicU64::new(ceiling)),
             decay_active: Arc::new(AtomicBool::new(false)),
             decay_frozen_reason: Arc::new(AtomicU64::new(DecayFrozenReason::NONE_CODE)),
@@ -399,10 +351,9 @@ impl LaneResampler {
         })
     }
 
-    /// The current published ring fill in frames — the same value STATUS shows,
-    /// read via a single relaxed atomic load (no Arc clones). Hot-path safe: the
-    /// USB DIRECT read calls this every period for the tap's diagnostic
-    /// `ring_fill_frames` field, so it must not allocate like `observability()`.
+    /// The current published ring fill in frames — the same value STATUS shows.
+    /// The USB DIRECT read calls this every period, so it must stay a single
+    /// relaxed load and never allocate the way `observability()` does.
     pub fn fill_frames_gauge(&self) -> u64 {
         self.fill_frames.load(Ordering::Relaxed)
     }
@@ -421,10 +372,8 @@ impl LaneResampler {
             lock_count: Arc::clone(&self.lock_count),
             unlock_count: Arc::clone(&self.unlock_count),
             fill_frames: Arc::clone(&self.fill_frames),
-            // The static acquisition ceiling (target + full cushion) — the value
-            // the held target snaps back to. STATUS shows this as
-            // `target_fill_frames` (unchanged shape); the LIVE held target is the
-            // separate `held_target_frames` gauge below.
+            // STATUS's `target_fill_frames` is the static ceiling; the LIVE held
+            // target is the separate `held_target_frames` gauge below.
             target_fill_frames: self.ceiling_fill_frames() as u64,
             held_target_frames: Arc::clone(&self.held_target_frames),
             decay_enabled: self.decay.enabled(),
@@ -461,12 +410,9 @@ impl LaneResampler {
 
     /// Push `samples` (interleaved **spine-scale `i32`**) into the input ring —
     /// the wide sibling of [`Self::push_input`], for a lane whose capture is
-    /// already S32 and must not be narrowed at ingest.
-    ///
-    /// Identical bookkeeping; the only difference is that nothing is discarded
-    /// on the way in. Pair it with [`Self::render_period_wide`] — a lane mixes
-    /// widths at its own peril, and the mixer picks ONE pairing per lane from
-    /// the resolved wire.
+    /// already S32 and must not be narrowed at ingest. Nothing is discarded on
+    /// the way in. MUST be paired with [`Self::render_period_wide`]; the mixer
+    /// picks ONE width pairing per lane from the resolved wire.
     pub fn push_input_wide(&mut self, samples: &[i32]) {
         let frames = samples.len() / self.channels;
         if frames == 0 {
@@ -489,9 +435,8 @@ impl LaneResampler {
     ///
     /// The state machine lives in [`Self::plan_period`]; this is its narrow
     /// emit tail. Each interpolated sample is narrowed ONCE, by
-    /// [`spine_acc_to_i16`] — the ring is spine-scale, so dividing the exact
-    /// power-of-two widening back out before the round reproduces the samples
-    /// this path produced when the ring itself stored `i16`.
+    /// [`spine_acc_to_i16`]: the ring is spine-scale, so dividing the exact
+    /// power-of-two widening back out before the round is bit-transparent.
     pub fn render_period(&mut self, out: &mut [i16]) -> usize {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);
         let ratio = match self.plan_period() {
@@ -522,10 +467,8 @@ impl LaneResampler {
 
     /// Render exactly one period into `out` (interleaved **spine-scale `i32`**)
     /// — the wide sibling of [`Self::render_period`], for a lane on a wide wire.
-    ///
-    /// Same state machine, same cursor, same startup ramp; the only difference
-    /// is that the interpolator's accumulator is rounded at the i32 rails
-    /// ([`clamp_i32`]) instead of being divided down to i16 first. There is no
+    /// The interpolator's accumulator is rounded at the i32 rails
+    /// ([`clamp_i32`]) instead of being divided down to i16 first: there is no
     /// `>> 16` anywhere on this route, so a hi-res source's low bits reach the
     /// mixer's sum intact.
     pub fn render_period_wide(&mut self, out: &mut [i32]) -> usize {
@@ -556,9 +499,8 @@ impl LaneResampler {
         self.finish_period()
     }
 
-    /// The startup de-click ramp gain for the frame about to be emitted. Read
-    /// BEFORE [`Self::advance_cursor`] decrements the counter, exactly as the
-    /// single-width render loop did.
+    /// The startup de-click ramp gain for the frame about to be emitted. MUST
+    /// be read BEFORE [`Self::advance_cursor`] decrements the counter.
     fn frame_ramp_gain(&self) -> f64 {
         if self.startup_ramp_frames_remaining > 0 {
             let frames_done = self.period_frames - self.startup_ramp_frames_remaining;
@@ -568,23 +510,19 @@ impl LaneResampler {
         }
     }
 
-    /// Advance the fractional read cursor one output frame and count down the
-    /// startup ramp.
     fn advance_cursor(&mut self, ratio: f64) {
         self.next_input_frame += ratio;
         self.startup_ramp_frames_remaining = self.startup_ramp_frames_remaining.saturating_sub(1);
     }
 
-    /// The shutdown de-click gain for frame `frame` of the tail period. Mirrors
-    /// [`Self::frame_ramp_gain`]: that one climbs to unity over a period, this
-    /// one falls from unity to exactly zero, so the period after the tail is
-    /// true silence with no residual step.
+    /// The shutdown de-click gain for frame `frame` of the tail period. Falls
+    /// from unity to exactly zero over the period, so the period after the tail
+    /// is true silence with no residual step.
     fn shutdown_gain(&self, frame: usize) -> f64 {
         1.0 - (frame + 1) as f64 / self.period_frames as f64
     }
 
     /// Arm the shutdown de-click tail, unless the lane was already silent.
-    ///
     /// Called from every session-ending path. The tail can only scale the last
     /// emitted frame DOWN toward zero, so it can never raise output above what
     /// the lane was already producing.
@@ -595,8 +533,8 @@ impl LaneResampler {
     }
 
     /// Record the period's LAST emitted frame so a later shutdown can decay
-    /// from it. Once per period, not once per frame — this is the render
-    /// thread and only the final frame is ever read back.
+    /// from it. Once per period, not once per frame — only the final frame is
+    /// ever read back.
     fn remember_last_frame_narrow(&mut self, out: &[i16]) {
         let base = (self.period_frames - 1) * self.channels;
         for channel in 0..self.channels {
@@ -617,8 +555,8 @@ impl LaneResampler {
         self.last_frame.fill(0);
     }
 
-    /// Post-emit bookkeeping shared by both widths: free the ring history behind
-    /// the cursor (keeping the kernel's left taps) and count the period.
+    /// Post-emit bookkeeping shared by both widths. Frees ring history behind
+    /// the cursor while keeping the kernel's left taps.
     fn finish_period(&mut self) -> usize {
         let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
         self.ring.drop_before(keep_from);
@@ -630,23 +568,12 @@ impl LaneResampler {
 
     /// The width-independent half of a render period: lock acquisition, fill
     /// publication, the underfill / read-past-the-edge fail-closed gates, and
-    /// the DLL ratio.
-    ///
-    /// Factored out so the narrow and wide emit tails share ONE state machine
-    /// rather than two copies that could drift on a lock or unlock rule. It
-    /// mutates exactly the state the single-width version did at the same
-    /// points; only the per-sample rounding differs between the two callers.
-    ///
-    /// The state machine: wait for a startup prefill before locking; once
-    /// locked, drive the ratio from the fill error and advance the fractional
-    /// cursor; on underfill, unlock and emit silence rather than reading past
-    /// the buffered input.
+    /// the DLL ratio. The narrow and wide emit tails MUST share this one state
+    /// machine; two copies would drift on a lock or unlock rule.
     fn plan_period(&mut self) -> RenderPlan {
         if !self.locked {
-            // While priming, the buffered-input depth IS the fill the operator
-            // watches climb toward the startup prefill — publish it so STATUS
-            // shows the lane filling before it locks. Count priming periods so
-            // the deep prefill falls through for a slow producer (see try_lock).
+            // While priming, the published fill is the buffered-input depth, so
+            // STATUS shows the lane filling toward the prefill before it locks.
             self.publish_fill(self.ring.fill_frames() as u64);
             if self.ring.fill_frames() > 0 {
                 self.prime_periods = self.prime_periods.saturating_add(1);
@@ -666,8 +593,8 @@ impl LaneResampler {
         }
 
         let fill = self.ring.write_frame() as f64 - self.next_input_frame;
-        // Locked: the cursor-relative fill is what the DLL disciplines toward
-        // target — the value that proves engagement. Publish it for STATUS.
+        // Locked: the CURSOR-RELATIVE fill is what the DLL disciplines toward
+        // target, and what STATUS publishes.
         self.publish_fill(fill.max(0.0) as u64);
         let minimum_safe_fill = self.minimum_safe_fill_frames() as f64;
         if fill < minimum_safe_fill {
@@ -696,35 +623,22 @@ impl LaneResampler {
     /// controller. Returns the number of input frames dropped (0 when the lane
     /// is unlocked or already at/below its held target).
     ///
-    /// ## Why this exists (the standing-fill trim, v2)
-    ///
     /// The lane's live latency is the CURSOR-RELATIVE fill —
     /// `write_frame - next_input_frame`, the same value [`render_period`]
     /// disciplines toward [`hold_fill_frames`]. On hardware the USB lane was
-    /// observed sitting at ~1919 frames against a 512-held target with lock
-    /// churn: each idle/xrun/underfill `reset()` re-primed the DLL and the fill
-    /// crept back up, deepening with every relock. A `reset()`-based trim is
-    /// therefore the WRONG tool — it is the very lock-loss that produced the
-    /// churn. This trim drops the excess in place: it advances the fractional
-    /// read cursor forward over the oldest buffered frames (skipping past the
-    /// stale head-start), then frees the ring history the cursor no longer
-    /// needs. The only discontinuity is the one skip at the drop boundary — a
-    /// single glitch, not a lock loss. `locked`, the `RateController` loop
-    /// state, and the retained recent history all survive.
+    /// observed sitting at ~1919 frames against a 512-frame held target with
+    /// lock churn: each idle/xrun/underfill `reset()` re-primed the DLL and the
+    /// fill crept back up, deepening with every relock. A `reset()`-based trim
+    /// is therefore the WRONG tool — it is the very lock-loss that produced the
+    /// churn.
     ///
-    /// ## Keep-newest, lock-preserving mechanics
-    ///
-    /// - No-op unless locked and `fill > hold_fill_frames()` (nothing to trim).
-    /// - Advance `next_input_frame` forward by the excess so the post-trim
-    ///   cursor-relative fill equals `hold_fill_frames()` — the newest frames
-    ///   (those ahead of the new cursor) are preserved; the oldest are skipped.
-    /// - Re-seat the cursor no earlier than the ring's live read boundary (guard
-    ///   against a cursor that had lagged `read_frame`), then `drop_before` frees
-    ///   the history behind it, keeping the kernel's left taps.
-    /// - `locked`, `controller`, `real_periods_since_lock`, and the startup ramp
-    ///   are untouched — the next `render_period` continues from the new cursor
-    ///   with the same loop state, so the DLL simply sees the fill snap to target
-    ///   (an error step it already handles) rather than a re-acquisition.
+    /// This trim keeps the newest `hold_fill_frames()` frames instead: it
+    /// advances the fractional read cursor over the oldest buffered frames and
+    /// frees the ring history behind it. The only discontinuity is the one skip
+    /// at the drop boundary — a single glitch, not a lock loss. `locked`, the
+    /// `RateController` loop state, `real_periods_since_lock` and the startup
+    /// ramp all survive, so the DLL sees the fill snap to target (an error step
+    /// it already handles) rather than a re-acquisition.
     pub fn trim_ring(&mut self) -> u64 {
         if !self.locked {
             return 0;
@@ -743,16 +657,13 @@ impl LaneResampler {
             return 0;
         }
         let drop = fill - target;
-        // Skip the cursor forward over the oldest `drop` frames — keeping the
-        // newest `target` frames ahead of it. One discontinuity at this skip;
-        // lock and loop state are preserved.
         self.next_input_frame += drop;
         // Free ring history behind the new cursor, keeping the kernel's left
         // taps (identical bookkeeping to the end of render_period).
         let keep_from = self.next_input_frame.floor() as i64 - RADIUS_FRAMES - 1;
         self.ring.drop_before(keep_from);
-        // Republish the (now-at-target) fill so STATUS reflects the drop
-        // immediately, before the next render period runs.
+        // Republish before the next render period runs, so STATUS never shows
+        // the pre-trim fill.
         self.publish_fill(target.max(0.0) as u64);
         drop.round() as u64
     }
@@ -770,24 +681,15 @@ impl LaneResampler {
         self.startup_ramp_frames_remaining = 0;
         self.arm_shutdown_ramp();
         self.real_periods_since_lock = 0;
-        // Session-boundary snap: re-seat the next `try_lock` at the full
-        // acquisition ceiling — a fresh cold start must acquire deep. Instant +
-        // no glitch: moving a setpoint just lets the fill refill from input.
+        // Session boundary: re-seat the next `try_lock` at the full acquisition
+        // ceiling, so a fresh cold start acquires deep.
         self.snap_decay_back(DecayFrozenReason::Unlocked);
         self.publish_ratio();
     }
 
     /// Lock once enough input has buffered to seat the cursor at the held
     /// target (`target_fill + warm-up cushion`) behind the write head with
-    /// kernel headroom. Until then `render_period` emits silence (the lane
-    /// simply hasn't started, exactly like an idle renderer's snd-aloop
-    /// substream).
-    ///
-    /// The c57 cushion-drain path intentionally consumed faster after lock to
-    /// return to the base target. That passed a steady-input unit test but
-    /// backfired on hardware's bursty cold feed. The DLL now acquires and holds
-    /// the deeper setpoint from the first real period, avoiding startup
-    /// over-consumption.
+    /// kernel headroom. Until then `render_period` emits silence.
     ///
     /// Bounded prime: if the full cushion never accumulates (a slow-but-real
     /// producer delivering just under one period per render) the loop would sit
@@ -797,23 +699,17 @@ impl LaneResampler {
     fn try_lock(&mut self) {
         let fill = self.ring.fill_frames();
         let deep_prefill = self.startup_prefill_frames();
-        // Fall-through seat depth once the bounded prime expires: the most we
-        // can safely seat given what's buffered, never below the safe minimum
-        // (so we don't lock straight into an underfill→silence) and never above
-        // the full cushion depth.
         let prime_expired = self.prime_periods >= self.max_prime_periods;
         let seat = if fill >= deep_prefill {
-            // Enough for the full held target (the warm-up cushion).
             self.hold_fill_frames()
         } else if prime_expired && fill >= self.fallthrough_prefill_frames() {
-            // Slow producer: seat at whatever we have, but only after there is one
-            // render period of runway beyond the hard interpolation floor.
-            // Hardware USB acquisition can arrive in short bursts; seating at the
-            // bare minimum caused lock→underfill→relock chatter before the ring
-            // built enough depth to run continuously.
+            // Slow producer: seat at whatever is buffered, but only once there
+            // is one render period of runway beyond the hard interpolation
+            // floor. Hardware USB acquisition arrives in short bursts, and
+            // seating at the bare minimum gives lock→underfill→relock chatter
+            // before the ring builds enough depth to run continuously.
             fill - (RADIUS_FRAMES as usize + 1)
         } else {
-            // Keep priming.
             return;
         };
         self.next_input_frame = (self.ring.write_frame() - seat as u64) as f64;
@@ -826,13 +722,11 @@ impl LaneResampler {
         // A fresh lock supersedes any pending tail: the startup ramp owns the
         // transition back to audio, so a stale tail must not play under it.
         self.shutdown_ramp_frames_remaining = 0;
-        // Clearing the remembered frame is NOT redundant with the line above.
-        // `plan_period` can lock here and then `unlock_for_underfill` in the
-        // SAME call — both the minimum-safe-fill and read-past-the-edge gates
-        // sit after `try_lock` — without emitting a frame in between. That
-        // unlock arms the tail; if the frame from the PREVIOUS session were
-        // still remembered, the lane would decay stale audio into a session it
-        // never played. Clearing here makes that arm a no-op.
+        // Not redundant with the line above. `plan_period` can lock here and
+        // then `unlock_for_underfill` in the SAME call (both post-lock gates sit
+        // after `try_lock`) without emitting a frame in between; that unlock
+        // arms the tail, and a still-remembered frame from the PREVIOUS session
+        // would decay stale audio into a session that never played.
         self.last_frame.fill(0);
         self.real_periods_since_lock = 0;
         self.controller.reset();
@@ -853,10 +747,9 @@ impl LaneResampler {
         self.startup_ramp_frames_remaining = 0;
         self.arm_shutdown_ramp();
         self.real_periods_since_lock = 0;
-        // Session-boundary snap: the underfill unlock is where a stopped host
-        // (Mac sleeps / stops streaming) ends the session, so the NEXT lock
-        // re-seats at the acquisition ceiling. Without a snap here, a re-lock
-        // after decay would seat at the shallow decayed depth and re-thrash lock.
+        // The underfill unlock is where a stopped host ends the session, so the
+        // NEXT lock re-seats at the acquisition ceiling. Without a snap here, a
+        // re-lock after decay seats at the shallow decayed depth and thrashes.
         self.snap_decay_back(DecayFrozenReason::Unlocked);
         self.publish_fill(if acquisition_underfill {
             self.ring.fill_frames() as u64
@@ -867,9 +760,7 @@ impl LaneResampler {
     }
 
     /// Snap the decay's held target back to the acquisition ceiling and publish
-    /// the raised gauge + decay observability immediately — the session-boundary
-    /// re-seat taken by `reset` and `unlock_for_underfill`. Inert (no-op-cheap)
-    /// when the decay feature is off.
+    /// the raised gauge immediately. Inert when the decay feature is off.
     fn snap_decay_back(&mut self, reason: DecayFrozenReason) {
         self.decay.snap_back(reason);
         self.publish_decay_gauges();
@@ -888,10 +779,10 @@ impl LaneResampler {
         self.decay.refilling()
     }
 
-    /// Republish the held-target gauge + decay observability atomics from the
-    /// current decay state. Shared by every path that mutates the decay's held
-    /// target (`snap_decay_back`, `tick_decay`) so STATUS and the outer DLL
-    /// setpoint always read a consistent snapshot. Relaxed stores; no allocation.
+    /// Republish the held-target gauge + decay observability atomics. MUST be
+    /// called by every path that mutates the decay's held target, so STATUS and
+    /// the outer DLL setpoint always read a consistent snapshot. Relaxed
+    /// stores; no allocation.
     fn publish_decay_gauges(&self) {
         // Refill flag BEFORE the raised held target: these are unordered relaxed
         // stores, and a servo tick landing between them must never see the raised
@@ -904,13 +795,11 @@ impl LaneResampler {
         self.decay_active
             .store(self.decay.active(), Ordering::Relaxed);
         // The decontamination term (#3466 — rationale at
-        // `host_clock::build_obs` and `CushionDecay::demand_ppm`).
-        // Belt-and-braces clamp (the same idiom as `DecayParams::build`'s
-        // floor clamp): never publish more demand than this lane's own
-        // ±max_adjust_ppm authority can deliver, so the subtraction can never
-        // fabricate offset the ratio cannot express. Config validation
-        // fail-louds an armed demand without real margin; this bounds anything
-        // that slips past (a direct construction, a drifted geometry).
+        // `host_clock::build_obs` and `CushionDecay::demand_ppm`). Never
+        // publish more demand than this lane's own ±max_adjust_ppm authority
+        // can deliver, or the subtraction downstream fabricates offset the
+        // ratio cannot express. Config validation fail-louds an armed demand
+        // without real margin; this bounds anything that slips past.
         let demand_ppm = self.decay.demand_ppm().min(self.max_adjust_ppm);
         self.decay_demand_milli_ppm
             .store((demand_ppm * 1000.0).round() as i64, Ordering::Relaxed);
@@ -922,9 +811,8 @@ impl LaneResampler {
             .store(self.decay.refill_force_clears(), Ordering::Relaxed);
     }
 
-    /// Whether the lane is currently locked (rendering real DAC-paced audio).
-    /// STATUS reads the `locked` atomic instead, so this exists for the tests
-    /// that drive lock/unlock sequences; `#[cfg(test)]` keeps it out of the
+    /// Whether the lane is currently locked. STATUS reads the `locked` atomic
+    /// instead, so this is test-only; `#[cfg(test)]` keeps it out of the
     /// `-D warnings` binary build.
     #[cfg(test)]
     pub fn is_locked(&self) -> bool {
@@ -955,10 +843,7 @@ impl LaneResampler {
         0
     }
 
-    /// The wide sibling of [`Self::render_silence`]. Digital zero is the same
-    /// value at either width, so this differs only in the slice type — and it
-    /// shares the counter bump so a silent period is accounted identically no
-    /// matter which width the lane renders.
+    /// The wide sibling of [`Self::render_silence`].
     fn render_silence_wide(&mut self, out: &mut [i32]) -> usize {
         if self.shutdown_ramp_frames_remaining > 0 {
             for frame in 0..self.period_frames {
@@ -984,9 +869,9 @@ impl LaneResampler {
     }
 
     /// Minimum buffered frames to safely render one period at the worst-case
-    /// (max-ppm) ratio with kernel headroom.
-    /// Delegates to the shared `jasper_resampler` helper — the single source of
-    /// truth the config-time decay-floor validation also uses.
+    /// (max-ppm) ratio with kernel headroom. MUST delegate to the shared
+    /// `jasper_resampler` helper — the single source of truth the config-time
+    /// decay-floor validation also uses.
     fn minimum_safe_fill_frames(&self) -> usize {
         jasper_resampler::minimum_safe_fill_frames(self.period_frames as u32, self.max_adjust_ppm)
     }
@@ -1010,10 +895,9 @@ impl LaneResampler {
         interpolation_runway.max(usb_burst_runway)
     }
 
-    /// The LIVE held target the controller disciplines the ring toward — the
-    /// decayed setpoint when the DEFAULT-OFF cushion decay is engaged, otherwise
-    /// the static ceiling. Read from the held-target gauge (the single source of
-    /// truth), so `render_period`'s DLL error, `trim_ring`'s drop target, and the
+    /// The LIVE held target the controller disciplines the ring toward. Read
+    /// from the held-target gauge (the single source of truth) so
+    /// `render_period`'s DLL error, `trim_ring`'s drop target and the
     /// STATUS/outer-DLL setpoint can never disagree.
     fn hold_fill_frames(&self) -> usize {
         self.held_target_frames.load(Ordering::Relaxed) as usize
@@ -1027,13 +911,11 @@ impl LaneResampler {
     }
 
     /// Advance the DEFAULT-OFF post-lock cushion decay one render period and
-    /// publish the (possibly-lowered) held target + decay observability. The
-    /// caller (the mixer work loop) supplies the outer-DLL signals the decay
-    /// needs (`dll_l0_locked`, `commanded_ppm_abs`); the resampler's own
-    /// `locked` state is filled in here. No-op-cheap when the feature is off
-    /// (one `CushionDecay::tick` early-return + four relaxed stores).
+    /// publish the (possibly-lowered) held target. The caller (the mixer work
+    /// loop) supplies the outer-DLL signals `dll_l0_locked` and
+    /// `commanded_ppm_abs`.
     ///
-    /// The decay clock is render PERIODS — this is called exactly once per
+    /// The decay clock is render PERIODS: this MUST be called exactly once per
     /// `render_period`, never on a wall clock.
     pub fn tick_decay(&mut self, dll_l0_locked: bool, commanded_ppm_abs: f64) {
         let was_refilling = self.decay.refilling();
@@ -1050,11 +932,11 @@ impl LaneResampler {
     }
 
     /// Log the refill window's enter/leave edges and keep its period counter —
-    /// the window's only narrative surface, since the ladder gauges it freezes
-    /// go quiet. Called by EVERY path that can move `CushionDecay::refilling`
-    /// (the periodic tick and the `DECAY_SNAP` lever), so a forced snap reports
-    /// the same edges as a real demotion. Edges are rare by construction (a
-    /// window spans thousands of periods).
+    /// the window's only observable surface, since the ladder gauges it freezes
+    /// go quiet. MUST be called by every path that can move
+    /// `CushionDecay::refilling`, so a forced snap reports the same edges as a
+    /// real demotion. Edges are rare by construction (a window spans thousands
+    /// of periods), so this logs unconditionally.
     fn note_refill_edge(&mut self, was_refilling: bool, was_force_clears: u64) {
         match (was_refilling, self.decay.refilling()) {
             (false, true) => {
@@ -1083,8 +965,8 @@ impl LaneResampler {
         self.ratio_milli_ppm
             .store(milli_ppm as u64, Ordering::Relaxed);
         // Mirror the controller's lifetime rail counters alongside the ratio
-        // they qualify, so STATUS can show WHEN the bounded ratio was actually
-        // pinned at ±max_adjust_ppm (issue #3464: these existed unsurfaced).
+        // they qualify, so STATUS can show when the bounded ratio was pinned at
+        // ±max_adjust_ppm (#3464).
         self.clamp_count
             .store(self.controller.clamp_count(), Ordering::Relaxed);
         self.anti_windup_count
@@ -1100,15 +982,14 @@ impl LaneResampler {
 /// state machine that lowers the resampler's held target from its acquisition
 /// ceiling toward a floor while the lane is locked, the outer host-clock DLL is
 /// `l0_locked`, and the DLL is not commanding hard. No atomics, no ALSA, no
-/// clock: the mixer ticks it once per render period. Scratch-crate-testable on
-/// any host (fan-in cannot compile on macOS).
+/// clock: the mixer ticks it once per render period.
 ///
 /// ## Why decay, not a static lower cushion
 ///
 /// The full acquisition cushion is load-bearing during the bursty USB cold start
-/// (a static 128-frame cushion was refuted twice on hardware — free-run never
-/// locks; under the live DLL it locks but latency REGRESSES from lock churn
-/// re-priming the fill above the setpoint). Steady state, once the DLL has pinned
+/// — a static 128-frame cushion was refuted twice on hardware: free-run never
+/// locks, and under the live DLL it locks but latency REGRESSES from lock churn
+/// re-priming the fill above the setpoint. Steady state, once the DLL has pinned
 /// the fill at the setpoint, does NOT need the full cushion. So: acquire deep,
 /// then decay the held target only while the system proves it is in the stable
 /// `l0_locked` regime, and snap all the way back the instant it leaves.
@@ -1185,11 +1066,10 @@ mod decay {
     }
 
     impl DecayParams {
-        /// A hard-disabled params (current behaviour: held pinned at ceiling).
-        /// Test-only: the daemon always builds `DecayParams` from the parsed env
-        /// config (see `mixer::build_lane_resampler`), so this convenience is only
-        /// used by the resampler unit tests. Gated `#[cfg(test)]` so it is not
-        /// dead code in the `jasper-fanin` binary build (`-D warnings`).
+        /// A hard-disabled params (held pinned at the ceiling). Test-only: the
+        /// daemon always builds `DecayParams` from the parsed env config (see
+        /// `mixer::build_lane_resampler`). Gated `#[cfg(test)]` so it is not
+        /// dead code in the `-D warnings` binary build.
         #[cfg(test)]
         pub fn disabled() -> Self {
             Self {
@@ -1235,16 +1115,13 @@ mod decay {
         /// Build the runtime state machine, deriving the render-period intervals
         /// from the lane geometry and clamping the floor defensively.
         ///
-        /// Two clamps, both fail-safe (a bad knob degrades to a safe run, never
-        /// misbehaviour): the floor is raised to the physical
-        /// `minimum_safe_fill_frames` (the underfill-unlock threshold) so decay
-        /// can never descend onto churn-by-construction — a held target at/below
-        /// that value sits on the unlock threshold and per-period fill jitter
-        /// would trip lock churn. It is then capped at `ceiling` (nothing to
-        /// decay above the acquisition depth). Config validation rejects an
-        /// out-of-range floor fail-loud when the feature is armed; this is the
-        /// belt-and-braces for anything that slips past (a custom geometry where
-        /// `minimum_safe` exceeds the validated `target + margin` bound).
+        /// Two fail-safe clamps, so a bad knob degrades to a safe run rather
+        /// than misbehaviour: the floor is raised to the physical
+        /// `minimum_safe_fill_frames` (the underfill-unlock threshold), because
+        /// a held target at/below it sits on the unlock threshold where
+        /// per-period fill jitter trips lock churn; it is then capped at
+        /// `ceiling`. Config validation rejects an out-of-range floor fail-loud
+        /// when the feature is armed; this bounds anything that slips past.
         pub fn build(
             self,
             ceiling: u64,
@@ -1258,12 +1135,12 @@ mod decay {
                 Self::ms_to_periods(self.stability_ms, period_frames, sample_rate);
             let min_safe =
                 jasper_resampler::minimum_safe_fill_frames(period_frames, max_adjust_ppm) as u64;
-            // Never decay onto (or below) the underfill-unlock threshold. Keep the
-            // same working margin above it that the config validation enforces, so
-            // ordinary DLL steering jitter around the pinned setpoint cannot cross
-            // the threshold from the floor. The `.min(ceiling)` keeps a
-            // pathological `min_safe > ceiling` geometry (nothing safe to decay
-            // to) degrading to "no decay" rather than a floor above the ceiling.
+            // Never decay onto (or below) the underfill-unlock threshold: keep
+            // the same working margin above it that config validation enforces,
+            // so ordinary DLL steering jitter around the pinned setpoint cannot
+            // cross the threshold from the floor. `.min(ceiling)` degrades a
+            // pathological `min_safe > ceiling` geometry to "no decay" rather
+            // than a floor above the ceiling.
             let safe_floor =
                 min_safe.saturating_add(crate::config::CUSHION_DECAY_FLOOR_MARGIN_FRAMES as u64);
             let floor = self.floor_frames.max(safe_floor).min(ceiling);
@@ -1282,10 +1159,9 @@ mod decay {
     }
 
     /// The periods-space demand core: `step` frames drained per
-    /// `interval_periods × period_frames` rendered frames, as ppm. Clamps
-    /// mirror [`CushionDecay::new`]'s (idempotent with them), so the ms-space
-    /// composer [`DecayParams::step_demand_ppm`] and the constructor share one
-    /// formula.
+    /// `interval_periods × period_frames` rendered frames, as ppm. Its clamps
+    /// are idempotent with [`CushionDecay::new`]'s, so the ms-space composer
+    /// [`DecayParams::step_demand_ppm`] and the constructor share one formula.
     fn demand_ppm_for(step: u64, interval_periods: u64, period_frames: u32) -> f64 {
         step.max(1) as f64 * 1_000_000.0
             / (interval_periods
@@ -1314,8 +1190,7 @@ mod decay {
         pub ratio_saturated: bool,
     }
 
-    /// The decay state machine. See the module docstring for the "acquire deep,
-    /// decay in steady state, snap back on any discontinuity" rationale.
+    /// The decay state machine. Rationale in the module docstring.
     #[derive(Debug, Clone)]
     pub struct CushionDecay {
         enabled: bool,
@@ -1333,10 +1208,9 @@ mod decay {
         /// |commanded_ppm| above which decay pauses.
         cascade_guard_ppm: f64,
         /// The constant rate demand an active descent exerts on the inner
-        /// resampler, in ppm: `step × 1e6 / (interval_periods × period_frames)`
-        /// — derived once from the CLAMPED runtime values, so it is exactly the
-        /// drain rate this machine actually commands (not the config's ms-space
-        /// intent). Exposed live via [`Self::demand_ppm`].
+        /// resampler, in ppm: `step × 1e6 / (interval_periods × period_frames)`,
+        /// derived from the CLAMPED runtime values so it is exactly the drain
+        /// rate this machine commands, not the config's ms-space intent.
         step_demand_ppm: f64,
 
         /// Current held target (the live setpoint). Starts at `ceiling`.
@@ -1454,8 +1328,8 @@ mod decay {
         /// at floor, or in the flat window between (re)activation and the
         /// first step — which drains nothing, see `has_stepped`). This is the
         /// single source of truth the host-clock observable subtracts to see
-        /// only genuine clock offset (issue #3466). The true per-period demand
-        /// is a stepped sawtooth; from the first step on, its mean over each
+        /// only genuine clock offset (#3466). The true per-period demand is a
+        /// stepped sawtooth; from the first step on, its mean over each
         /// interval is exactly this constant — the right model at the outer
         /// DLL's EW-smoothed, ~1 Hz-sampled altitude.
         ///
@@ -1608,8 +1482,8 @@ mod decay {
         const MAX_PPM: f64 = 500.0;
 
         fn locked_l0(commanded_ppm_abs: f64) -> DecaySignals {
-            // An unsaturated inner command is the default backdrop: the refill
-            // window is about a RAISED target, not about the descent.
+            // Unsaturated is the default backdrop: the refill window is about a
+            // RAISED target, not about the descent.
             locked_l0_railed(commanded_ppm_abs, false)
         }
 
@@ -2023,12 +1897,10 @@ mod decay {
 
         #[test]
         fn last_step_clamps_to_floor_on_non_divisible_geometry() {
-            // Nit 3: every other test geometry has (ceiling - floor) an exact
-            // multiple of STEP, so `held.saturating_sub(step).max(floor)` never
-            // exercises a non-divisible remainder. Here ceiling - floor = 2560 -
-            // 545 = 2015 = 125*16 + 15, so the final step is a 15-frame remainder
-            // that must clamp EXACTLY to the floor (never overshoot below it), and
-            // decay must then stop with AtFloor.
+            // Every other test geometry has (ceiling - floor) an exact multiple
+            // of STEP, so the remainder path is never exercised. Here
+            // ceiling - floor = 2560 - 545 = 2015 = 125*16 + 15: the final step
+            // is a 15-frame remainder that must clamp EXACTLY to the floor.
             const ODD_FLOOR: u64 = 545;
             let mut d = CushionDecay::new(
                 true,
@@ -2066,10 +1938,10 @@ mod decay {
 
         #[test]
         fn build_lifts_a_churny_floor_above_minimum_safe_fill() {
-            // Finding 2: DecayParams::build must defensively lift a floor that
-            // sits on/below the physical underfill-unlock threshold
-            // (minimum_safe_fill_frames) so decay is never churn-by-construction,
-            // even if a churny value slips past config validation.
+            // DecayParams::build must lift a floor sitting on/below the physical
+            // underfill-unlock threshold (minimum_safe_fill_frames), so decay is
+            // never churn-by-construction even if a churny value slips past
+            // config validation.
             const PERIOD: u32 = 256;
             const RATE: u32 = 48_000;
             const MAX_PPM: f64 = 500.0;
@@ -2233,13 +2105,10 @@ mod tests {
     fn silent_until_prefilled_then_locks_and_renders() {
         let mut r = build();
         let mut out = vec![0i16; PERIOD as usize * 2];
-        // No input yet: render is silence, lane reports 0 real frames.
         assert_eq!(r.render_period(&mut out), 0);
         assert!(out.iter().all(|&s| s == 0));
         assert_eq!(r.lock_count.load(Ordering::Relaxed), 0);
 
-        // Push enough to prefill (TARGET + cushion + headroom), then render:
-        // should lock and emit a full period of real audio.
         r.push_input(&tone(deep_prefill() + 64));
         let n = r.render_period(&mut out);
         assert_eq!(n, PERIOD as usize, "locked render emits a full period");
@@ -2255,24 +2124,18 @@ mod tests {
         let mut r = build();
         let mut out = vec![0i16; PERIOD as usize * 2];
         let block = tone(PERIOD as usize);
-        // Prefill to the held-cushion threshold so the lane locks.
         r.push_input(&tone(deep_prefill()));
         for _ in 0..2000 {
             r.push_input(&block);
             r.render_period(&mut out);
         }
         assert!(r.locked, "on-rate lane must stay locked");
-        // Ratio stays within the clamp and near unity (no standing offset).
         let ppm = r.controller.ratio_ppm();
         assert!(ppm.abs() <= MAX_PPM + 1e-6, "ratio within clamp: {ppm}");
     }
 
     #[test]
     fn observability_publishes_fill_near_target_when_locked() {
-        // The STATUS "ring fill" gauge: once locked on an on-rate producer, the
-        // published fill_frames must sit near the held target (proving the
-        // resampler is engaged and holding the buffer), and target_fill_frames
-        // must echo that actual controller setpoint.
         let mut r = build();
         let obs = r.observability();
         assert_eq!(
@@ -2280,7 +2143,6 @@ mod tests {
             (TARGET + CUSHION) as u64,
             "target echoes the held controller setpoint"
         );
-        // Before any render: fill is 0 (nothing published yet).
         assert_eq!(obs.fill_frames.load(Ordering::Relaxed), 0);
 
         let mut out = vec![0i16; PERIOD as usize * 2];
@@ -2303,14 +2165,12 @@ mod tests {
 
     #[test]
     fn observability_publishes_fill_during_prefill() {
-        // Before locking, the published fill must track the buffered-input depth
-        // so the operator sees the lane filling toward the prefill threshold —
-        // a "starting up" signal distinct from a stuck-at-zero dead lane.
+        // Before locking, the published fill tracks the buffered-input depth, so
+        // "filling toward the prefill threshold" is distinguishable from a
+        // stuck-at-zero dead lane.
         let mut r = build();
         let obs = r.observability();
         let mut out = vec![0i16; PERIOD as usize * 2];
-        // Push less than the prefill threshold: stays unlocked, but fill is
-        // published as the partial buffered depth (non-zero, below target).
         let partial = TARGET / 2;
         r.push_input(&tone(partial));
         assert_eq!(r.render_period(&mut out), 0, "still priming → silence");
@@ -2352,8 +2212,6 @@ mod tests {
 
     #[test]
     fn overrun_is_counted_not_panicked() {
-        // Push far more than the ring holds in one shot: oldest-first drop,
-        // counted, no panic.
         let mut r = build();
         r.push_input(&tone(RING * 2));
         assert!(
@@ -2364,10 +2222,9 @@ mod tests {
 
     // ---- trim_ring: keep-newest, lock-preserving standing-fill trim -------
 
-    /// Drive the lane to a DEEP cursor-relative fill (a standing head-start well
-    /// above the held target), then `trim_ring` and assert: lock survives, no
-    /// unlock/relock happened, the published fill snapped to the held target,
-    /// and the newest audio is what remains (the cursor kept the recent frames).
+    /// From a DEEP cursor-relative fill, `trim_ring` must preserve lock, take
+    /// no unlock/relock, snap the published fill to the held target, and keep
+    /// the newest audio.
     #[test]
     fn trim_ring_drops_to_target_without_losing_lock() {
         let mut r = build();
@@ -2380,8 +2237,8 @@ mod tests {
         assert_eq!(locks_before, 1);
         assert_eq!(unlocks_before, 0);
 
-        // Slam a big burst in so the cursor-relative fill sits far above the
-        // held target (simulates the on-device 1919-vs-512 standing head-start).
+        // A big burst puts the cursor-relative fill far above the held target
+        // (the on-device 1919-vs-512 standing head-start).
         r.push_input(&tone(4000));
         let fill_before = r.ring.write_frame() as f64 - r.next_input_frame;
         let held = r.hold_fill_frames() as f64;
@@ -2393,8 +2250,6 @@ mod tests {
 
         let dropped = r.trim_ring();
 
-        // Frames were dropped, and the post-trim cursor-relative fill is exactly
-        // the held target — the newest `target` frames are kept.
         assert!(dropped > 0, "a fill above target must drop frames");
         let fill_after = r.ring.write_frame() as f64 - r.next_input_frame;
         assert!(
@@ -2406,10 +2261,9 @@ mod tests {
             (fill_before - held).round(),
             "dropped count must be the excess above target"
         );
-        // write_frame is untouched: the newest audio is preserved, only the
+        // write_frame untouched: the newest audio is preserved and only the
         // oldest head-start was skipped.
         assert_eq!(r.ring.write_frame(), write_before);
-        // Lock state and loop are intact — no reset, no unlock, no relock.
         assert!(r.locked, "trim must NOT drop lock");
         assert_eq!(
             r.lock_count.load(Ordering::Relaxed),
@@ -2421,7 +2275,6 @@ mod tests {
             unlocks_before,
             "trim must not unlock (unlock_count unchanged)"
         );
-        // Published fill reflects the drop immediately.
         assert_eq!(
             r.fill_frames.load(Ordering::Relaxed),
             held as u64,
@@ -2440,9 +2293,8 @@ mod tests {
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
         r.push_input(&tone(4000));
         assert!(r.trim_ring() > 0);
-        // Feed on-rate and keep rendering: every period must be a full real
-        // period (never silence), proving the lane stayed locked through the
-        // trim and reads the retained window.
+        // On-rate from here: every period must be a full real period, proving
+        // the lane stayed locked through the trim and reads the retained window.
         let block = tone(PERIOD as usize);
         for i in 0..200 {
             r.push_input(&block);
@@ -2480,9 +2332,8 @@ mod tests {
         assert!(r.locked);
         let fill_before = r.ring.write_frame() as f64 - r.next_input_frame;
         let held = r.hold_fill_frames() as f64;
-        // On-rate lane holds at/near target; only trim if there is genuine
-        // excess. If the DLL happens to sit a hair above target, a trim of that
-        // tiny excess is still a no-op-ish; assert the strict boundary instead.
+        // An on-rate lane holds at/near target, and the DLL may sit a hair
+        // above it, so assert the strict boundary rather than "no drop".
         if fill_before <= held {
             let cursor_before = r.next_input_frame;
             assert_eq!(r.trim_ring(), 0, "at/below target must not drop");
@@ -2526,9 +2377,6 @@ mod tests {
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
         r.reset();
-        // Ending a session emits one de-click tail period (pinned by
-        // session_end_glides_the_last_frame_to_zero), THEN silence until
-        // re-prefilled.
         assert_eq!(r.render_period(&mut out), PERIOD as usize, "de-click tail");
         assert_eq!(
             r.render_period(&mut out),
@@ -2552,10 +2400,9 @@ mod tests {
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
 
-        // Starve immediately after the first real period. This is still the
-        // acquisition window, so an underfill must NOT clear the buffered input:
-        // keeping it lets real hardware burst fill continue priming instead of
-        // throwing away progress and lock/unlock cycling forever.
+        // Starving inside the acquisition window must NOT clear the buffered
+        // input: keeping it lets a real hardware burst continue priming instead
+        // of throwing away progress and lock/unlock cycling forever.
         for _ in 0..20 {
             if !r.locked {
                 break;
@@ -2583,10 +2430,9 @@ mod tests {
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
 
-        // First prove the lane was truly stable for the same duration used as
-        // the acquisition grace window. After that, underfill is a hard
-        // discontinuity boundary, so stale pre-pause samples must not survive
-        // into the next acquisition.
+        // Past the acquisition grace window, underfill is a hard discontinuity
+        // boundary: stale pre-pause samples must not survive into the next
+        // acquisition.
         let block = tone(PERIOD as usize);
         for _ in 0..r.max_prime_periods {
             r.push_input(&block);
@@ -2607,8 +2453,7 @@ mod tests {
             "published fill resets with the cleared ring"
         );
 
-        // A partial refill after the pause is not enough to lock using stale
-        // tail; the lane must prime from fresh input only.
+        // A partial refill must not lock: the lane primes from fresh input only.
         r.push_input(&tone(deep_prefill() - 1));
         assert_eq!(r.render_period(&mut out), 0);
         assert_eq!(r.lock_count.load(Ordering::Relaxed), 1);
@@ -2626,17 +2471,16 @@ mod tests {
         );
     }
 
-    /// WARM-UP FIX, part 1: the resampler primes the ring to `TARGET + cushion`
-    /// (the deep prefill) BEFORE it produces any real output. A ring that has
-    /// only reached the OLD threshold (`TARGET + radius`, no cushion) must still
-    /// be priming — silent — proving the first output waits for the deeper fill.
+    /// The resampler primes the ring to `TARGET + cushion` (the deep prefill)
+    /// BEFORE it produces any real output: a ring that has only reached
+    /// `TARGET + radius` must still be priming, silent.
     #[test]
     fn primes_to_target_plus_cushion_before_first_output() {
         let mut r = build();
         let mut out = vec![0i16; PERIOD as usize * 2];
 
-        // Fill to just past the OLD (no-cushion) prefill but below the new deep
-        // prefill: must still be priming (no lock, silence, 0 real frames).
+        // Past the no-cushion prefill but below the deep prefill: must still be
+        // priming (no lock, silence, 0 real frames).
         let old_threshold = TARGET + RADIUS_FRAMES as usize + 1; // pre-cushion lock point
         assert!(old_threshold < deep_prefill());
         r.push_input(&tone(old_threshold));
@@ -2648,8 +2492,6 @@ mod tests {
         assert!(!r.locked, "no lock until the deep prefill seats");
         assert_eq!(r.lock_count.load(Ordering::Relaxed), 0);
 
-        // Top up past the deep prefill: now it locks and emits real audio, and
-        // the cursor is seated at the deep (target+cushion) fill.
         r.push_input(&tone(CUSHION + PERIOD as usize));
         assert_eq!(r.render_period(&mut out), PERIOD as usize, "locks now");
         assert_eq!(r.lock_count.load(Ordering::Relaxed), 1);
@@ -2824,20 +2666,17 @@ mod tests {
         assert_eq!(r.shutdown_ramp_frames_remaining, 0);
     }
 
-    /// WARM-UP FIX, part 2 (the headline): a cold start (EMPTY ring) fed STEADY
-    /// on-rate input emits ZERO silence after the initial prime, with NO
-    /// lock→silence→relock thrash. This is the regression that pins the
-    /// ~27k-silence / ~62-relock cold-start glitch the on-device counters
-    /// surfaced. With the held cushion the lane locks once and holds.
+    /// A cold start (EMPTY ring) fed STEADY on-rate input emits ZERO silence
+    /// after the initial prime, with no lock→silence→relock thrash: with the
+    /// held cushion the lane locks once and holds.
     #[test]
     fn coldstart_steady_input_emits_zero_silence_after_prime() {
         let mut r = build();
         let mut out = vec![0i16; PERIOD as usize * 2];
         let period = PERIOD as usize;
 
-        // Drive the DAC-paced loop from an empty ring: each render pushes one
-        // on-rate period THEN renders. Count silence emitted AFTER the lane has
-        // locked (the prime's leading silence is expected and fine).
+        // Each iteration pushes one on-rate period THEN renders. Only silence
+        // AFTER lock counts; the prime's leading silence is expected.
         let mut phase = 0usize;
         let mut locked_at: Option<usize> = None;
         for i in 0..3000usize {
@@ -2848,8 +2687,6 @@ mod tests {
                 locked_at = Some(i);
             }
             if let Some(lock_i) = locked_at {
-                // Once locked on a steady on-rate producer, every subsequent
-                // render must be a full real period — never a silence frame.
                 if i > lock_i {
                     assert_eq!(
                         n, period,
@@ -2859,7 +2696,6 @@ mod tests {
             }
         }
         assert!(locked_at.is_some(), "must lock on a steady producer");
-        // It locked exactly once and never unlocked — no thrash.
         assert_eq!(
             r.lock_count.load(Ordering::Relaxed),
             1,
@@ -2932,15 +2768,14 @@ mod tests {
         );
     }
 
-    /// WARM-UP FIX, part 3: a slow-but-real producer (delivers JUST under one
-    /// period per render for a while) must NOT wedge forever in prime-silence —
-    /// the bounded prime falls through and locks at whatever safe depth exists.
+    /// A slow-but-real producer (delivering JUST under one period per render)
+    /// must NOT wedge forever in prime-silence — the bounded prime falls
+    /// through and locks at whatever safe depth exists.
     #[test]
     fn slow_producer_falls_through_and_locks_within_the_prime_bound() {
-        // Use a runtime-like cushion so the fallback threshold sits below the
-        // deep prefill. The compact test cushion locks via the deep path first,
-        // which is fine for ordinary tests but would not exercise fallback.
-        // A tiny rate keeps max_prime_periods small and the test fast: at
+        // A runtime-like cushion, so the fallback threshold sits below the deep
+        // prefill; the compact test cushion locks via the deep path instead. A
+        // tiny rate keeps max_prime_periods small and the test fast: at
         // 4800 Hz / 256 period, max_prime_periods = 18.
         let mut r = LaneResampler::new(
             2,
@@ -2957,8 +2792,8 @@ mod tests {
         assert!(max_prime >= 1);
         let mut out = vec![0i16; PERIOD as usize * 2];
 
-        // Feed enough for the bounded-prime fallback, but never enough for the
-        // full cushion: below the deep prefill, above the USB-burst runway.
+        // Enough for the bounded-prime fallback, never enough for the full
+        // cushion: below the deep prefill, above the USB-burst runway.
         let buffered = r.fallthrough_prefill_frames();
         assert!(
             buffered < r.startup_prefill_frames(),
@@ -2966,8 +2801,6 @@ mod tests {
         );
         r.push_input(&tone(buffered));
 
-        // Render up to the prime bound + 1: the lane must lock by then via the
-        // fall-through path (not stay silent forever waiting for the cushion).
         let mut locked = false;
         for _ in 0..(max_prime + 2) {
             r.render_period(&mut out);
@@ -2982,20 +2815,17 @@ mod tests {
         );
     }
 
-    /// OVERRUN FIX: a burst larger than the ring's headroom (capacity − target)
-    /// overruns a tight ring but is fully ABSORBED by a larger one. This pins
-    /// the residual `overrun_frames` / usbsink `dropped_full` the on-device
-    /// counters showed (input bursts spiking the ring above capacity). The
-    /// LATENCY setpoint (`target_fill_frames`) is identical in both — only the
-    /// burst headroom (`ring_frames`) differs.
+    /// A burst larger than the ring's headroom (capacity − target) overruns a
+    /// tight ring but is fully ABSORBED by a larger one. The LATENCY setpoint
+    /// (`target_fill_frames`) is identical in both — only the burst headroom
+    /// (`ring_frames`) differs.
     #[test]
     fn larger_ring_absorbs_a_burst_a_tight_ring_overruns() {
-        // Tight ring: just past the construction minimum (no real burst room).
+        // Just past the construction minimum: no real burst room.
         let tight = TARGET + CUSHION + PERIOD as usize + RADIUS_FRAMES as usize + 1;
-        // Roomy ring: lots of headroom above the target setpoint.
         let roomy = 16_384usize;
-        // A burst that exceeds the tight ring's headroom in one push (a big
-        // catch-up read after a host stall).
+        // Exceeds the tight ring's headroom in one push, as a big catch-up read
+        // after a host stall does.
         let burst = tight + 1024;
 
         let mut tight_r = LaneResampler::new(
@@ -3020,7 +2850,6 @@ mod tests {
             DecayParams::disabled(),
         )
         .unwrap();
-        // Both lock at the same target.
         let mut out = vec![0i16; PERIOD as usize * 2];
         tight_r.push_input(&tone(deep_prefill() + 64));
         roomy_r.push_input(&tone(deep_prefill() + 64));
@@ -3028,7 +2857,6 @@ mod tests {
         roomy_r.render_period(&mut out);
         assert_eq!(tight_r.target_fill_frames, roomy_r.target_fill_frames);
 
-        // Slam the burst into both.
         tight_r.push_input(&tone(burst));
         roomy_r.push_input(&tone(burst));
         assert!(
@@ -3045,8 +2873,8 @@ mod tests {
     // ---- post-lock cushion decay (the held-target single source of truth) --
 
     /// Build a resampler with the DEFAULT-OFF decay ARMED. Floor is `TARGET + 32`
-    /// (base target plus a small margin); interval/stability are tiny so tests
-    /// run fast (interval 1 period, stability 3 periods).
+    /// (base target plus a small margin); the ms knobs both clamp to one render
+    /// period so the descent runs fast.
     fn build_with_decay() -> LaneResampler {
         let params = DecayParams {
             enabled: true,
@@ -3061,9 +2889,10 @@ mod tests {
     }
 
     /// The `DECAY_SNAP` lever takes the SAME enter edge a real demotion does:
-    /// it opens the window, logs it, and re-seats the period counter. The forced
-    /// path runs before `tick_decay`, so without its own edge call the enter arm
-    /// never fires and the next `state=leave` reports an accumulated `periods=`.
+    /// it opens the window, logs it, and re-seats the period counter. The
+    /// forced path runs before `tick_decay`, so without its own edge call the
+    /// enter arm never fires and the next `state=leave` reports an accumulated
+    /// period count.
     #[test]
     fn a_forced_decay_snap_takes_the_enter_edge_and_reseats_the_counter() {
         let mut r = build_with_decay();
@@ -3090,8 +2919,6 @@ mod tests {
 
     #[test]
     fn decay_disabled_holds_target_at_ceiling_forever() {
-        // With decay off (the default), hold_fill_frames and the published held
-        // target both equal the static ceiling, byte-for-byte today's behaviour.
         let mut r = build();
         let ceiling = (TARGET + CUSHION) as u64;
         assert_eq!(r.hold_fill_frames() as u64, ceiling);
@@ -3100,7 +2927,6 @@ mod tests {
         for _ in 0..500 {
             r.push_input(&tone(PERIOD as usize));
             r.render_period(&mut vec![0i16; PERIOD as usize * 2]);
-            // Ticking decay while disabled never moves the held target.
             r.tick_decay(true, 0.0);
             assert_eq!(r.hold_fill_frames() as u64, ceiling);
             assert!(!r.decay_active.load(Ordering::Relaxed));
@@ -3118,14 +2944,12 @@ mod tests {
         }
         assert_eq!(r.hold_fill_frames() as u64, ceiling, "unlocked → ceiling");
 
-        // Lock the lane.
         let mut out = vec![0i16; PERIOD as usize * 2];
         r.push_input(&tone(deep_prefill() + 64));
         assert_eq!(r.render_period(&mut out), PERIOD as usize);
         assert!(r.locked);
 
-        // Feed on-rate and tick decay each period with the DLL at l0 and calm:
-        // the held target must descend toward the floor.
+        // On-rate with the DLL at l0 and calm: the held target must descend.
         let block = tone(PERIOD as usize);
         for _ in 0..5000 {
             r.push_input(&block);
@@ -3243,8 +3067,7 @@ mod tests {
     }
 
     /// A ratio pinned at its ±max_adjust_ppm authority surfaces on the
-    /// published `clamp_count` gauge — the rail observability #3464 called out
-    /// as existing in `RateController` but reaching neither /state nor logs.
+    /// published `clamp_count` gauge (#3464).
     #[test]
     fn a_railed_ratio_increments_the_published_clamp_counter() {
         let mut r = build();
@@ -3277,42 +3100,36 @@ mod tests {
         );
     }
 
-    /// PR #1141's inertness claim, pinned: an ARMED cushion decay that is FROZEN
-    /// by `dll_l0=false` (the evidence-(a) condition — `frozen_reason=not_l0`,
-    /// held pinned at the ceiling) must behave BIT-IDENTICALLY to decay disabled
-    /// over the SAME delivery trace. This is the mechanical proof that the
-    /// armed-but-frozen decay path in the observed 16/115-vs-0-5 hardware run did
-    /// not amplify (or cause) the unlock churn — the churn is a property of the
-    /// static held target and the delivery pattern, not the decay code.
+    /// An ARMED cushion decay FROZEN by `dll_l0=false` (`frozen_reason=not_l0`,
+    /// held pinned at the ceiling) must behave BIT-IDENTICALLY to decay
+    /// disabled over the SAME delivery trace — the armed-but-frozen path must
+    /// not amplify or cause unlock churn, which is a property of the static
+    /// held target and the delivery pattern.
     ///
     /// The trace has TWO regimes, both load-bearing for the pin:
     ///
-    /// 1. An initial COALESCING-CHURN window (every 8th period stalls) that DOES
-    ///    produce unlocks — this pins that a NotL0-branch mutant which touched
-    ///    lock / silence / output accounting would diverge, and keeps the
-    ///    identity non-vacuous (`disabled` really churns).
-    /// 2. A long CLEAN LOCKED TAIL, delivered on time with `dll_l0=false`
+    /// 1. A COALESCING-CHURN window (every 8th period stalls) that DOES produce
+    ///    unlocks, so a NotL0-branch mutant touching lock / silence / output
+    ///    accounting diverges and the identity stays non-vacuous.
+    /// 2. A long CLEAN LOCKED TAIL delivered on time with `dll_l0=false`
     ///    throughout — the lane stays locked, so `stable_periods` accrues past
-    ///    the ~1875-period warm-up window and the decay's step interval elapses.
-    ///    This is the ONLY regime where the NotL0 freeze does mechanical work: in
-    ///    the shipped code the freeze holds `held` at the ceiling; delete the
-    ///    freeze and the armed run decays `held` down over the tail, diverging
-    ///    the `held` field. The churn window alone can NOT catch that — every
-    ///    unlock resets `stable_periods`, so decay could never step there
-    ///    regardless of the NotL0 branch (the mutant-passes hole the tail closes).
+    ///    the ~1875-period warm-up window and the step interval elapses. This is
+    ///    the ONLY regime where the NotL0 freeze does mechanical work: delete
+    ///    the freeze and the armed run decays `held` down over the tail. The
+    ///    churn window alone cannot catch that, since every unlock resets
+    ///    `stable_periods`.
     ///
     /// The comparison folds a running FNV checksum of every rendered `out`
     /// period, so "bit-identical" is a claim about output PCM, not just the five
     /// aggregate counters (both runs are deterministic — no RNG, no clock).
     #[test]
     fn armed_frozen_decay_is_bit_identical_to_disabled_over_the_same_trace() {
-        // The exact churny LAB geometry (base target 256 + one-period cushion =
-        // 512 held), NOT the module TARGET (512). Period 256, min_safe 274: the
-        // DLL holds the pre-render fill at 512, so a single fully-withheld
-        // delivery period drops it to 512 - 256 = 256 (below min_safe 274) →
-        // underfill-unlock → immediate re-lock next period. This is the observed
-        // churn cycle. (The production default held=2560 could never dip that far
-        // on one stall — that is why it is immune.)
+        // The churny geometry (base target 256 + one-period cushion = 512 held),
+        // NOT the module TARGET (512). Period 256, min_safe 274: the DLL holds
+        // the pre-render fill at 512, so a single fully-withheld delivery period
+        // drops it to 512 - 256 = 256, below min_safe 274 → underfill-unlock →
+        // immediate re-lock next period. The production default held=2560 cannot
+        // dip that far on one stall, which is why it is immune.
         const CHURNY_TARGET: usize = 256;
         // Churn only in the first window; the rest of the trace is a clean locked
         // tail long enough (≥ the ~1875-period stability window + a few step
@@ -3350,31 +3167,31 @@ mod tests {
                     checksum = checksum.wrapping_mul(0x0000_0100_0000_01b3);
                 }
             };
-            // Faithful delivery model (the mixer's per-period order + the gadget's
+            // Delivery model (the mixer's per-period order + the gadget's
             // coalescing shape): the host produces one period of frames every
             // render period, but delivery to the ring is GATED during a stall
             // window — frames accumulate and flush in one burst when the stall
-            // ends (the max_avail≈2×period signature). The render still consumes a
-            // period each step, so during a stall the cursor-relative fill drops.
-            // A stall long enough to drop the post-render fill below min_safe (274)
-            // unlocks; the immediate re-lock the next period is the churn cycle.
-            // Deterministic (no RNG / clock) so both runs replay byte-identically.
+            // ends (the max_avail≈2×period signature). The render still consumes
+            // a period each step, so during a stall the cursor-relative fill
+            // drops; a stall long enough to drop the post-render fill below
+            // min_safe (274) unlocks, and the immediate re-lock the next period
+            // is the churn cycle. Deterministic (no RNG / clock) so both runs
+            // replay byte-identically.
             let mut phase = 0usize;
             let mut pending = 0usize; // host-produced but not yet delivered
-                                      // First fully prefill + lock on a clean burst, then run the churn
-                                      // regime. Deliver the deep prefill up front so both runs lock once.
+                                      // Deliver the deep prefill up front so both runs lock exactly once
+                                      // before the churn regime starts.
             r.push_input(&tone_at(phase, CHURNY_TARGET + PERIOD as usize + 64));
             phase += CHURNY_TARGET + PERIOD as usize + 64;
             r.render_period(&mut out);
             absorb(&out);
             r.tick_decay(false, 0.0);
-            // Regime 1 (i < CHURN_PERIODS): the host produces exactly one period
-            // per interval and it is delivered ON TIME (fill held tight at the
-            // setpoint) EXCEPT on an isolated stall period, where delivery is
-            // withheld (fill dips one period below the setpoint → below min_safe →
-            // unlock) and flushed the next period (immediate re-lock). Every 8th
-            // period stalls; the 7 between keep the fill tight so each stall
-            // reliably dips it. This is the isolated-coalescing shape.
+            // Regime 1 (i < CHURN_PERIODS): one period per interval delivered ON
+            // TIME (fill held tight at the setpoint) except on every 8th period,
+            // where delivery is withheld (fill dips one period below the
+            // setpoint → below min_safe → unlock) and flushed the next period
+            // (immediate re-lock). The 7 on-time periods between keep the fill
+            // tight so each stall reliably dips it.
             //
             // Regime 2 (i ≥ CHURN_PERIODS): clean on-time delivery every period.
             // The lane stays LOCKED, so `stable_periods` accrues past the warm-up
@@ -3390,11 +3207,8 @@ mod tests {
                 }
                 r.render_period(&mut out);
                 absorb(&out);
-                // The frozen condition from evidence (a): dll_l0 = false on every
-                // tick, so an armed decay must SNAP BACK to the ceiling (never
-                // lower). The freeze fires in both regimes, but only regime 2's
-                // long locked run lets `stable_periods` reach warm-up, so that is
-                // where deleting it would let `held` decay — the load-bearing case.
+                // dll_l0 = false on every tick, so an armed decay must SNAP BACK
+                // to the ceiling and never lower.
                 r.tick_decay(false, 0.0);
             }
             let o = r.observability();
@@ -3417,10 +3231,8 @@ mod tests {
              #1141 regression). The clean locked tail is what makes deleting the \
              NotL0 snap-back diverge `held`; the churn window keeps it non-vacuous."
         );
-        // Sanity: the trace really did churn (else the identity is vacuous), AND
-        // the armed run stayed frozen at the ceiling through the whole tail (if it
-        // had decayed, `held` would be below the ceiling and the assert above
-        // would already have fired — this re-states the ceiling explicitly).
+        // The trace really did churn (else the identity is vacuous), and the
+        // armed run stayed frozen at the ceiling through the whole tail.
         assert!(
             disabled.0 > 0,
             "the coalescing window must produce unlocks, or the identity proves nothing"
@@ -3466,10 +3278,9 @@ mod tests {
 
     #[test]
     fn decay_relock_after_underfill_seats_at_ceiling() {
-        // The regression that matters: after decay lowers the held target, an
-        // underfill unlock must snap it back so the re-lock's startup prefill
-        // targets the FULL cushion (not the shallow decayed depth), avoiding
-        // relock chatter.
+        // After decay lowers the held target, an underfill unlock must snap it
+        // back so the re-lock's startup prefill targets the FULL cushion, not
+        // the shallow decayed depth (which gives relock chatter).
         let mut r = build_with_decay();
         let ceiling = (TARGET + CUSHION) as u64;
         let floor = (TARGET + 32) as u64;
@@ -3512,13 +3323,12 @@ mod tests {
         );
     }
 
-    // ---- U2 / #2223: the widened DIRECT-lane route ------------------------
+    // ---- the widened DIRECT-lane route (#2223) ----------------------------
     //
-    // The narrow route is unchanged and its whole suite above still covers it.
     // These cover the route that skips the capture narrowing, and the contrast
-    // between the two — which is the only honest way to state "the low bits
-    // survive": the same hi-res input must come out DIFFERENT on the two routes,
-    // and the wide one must be the faithful one.
+    // between the two — the only honest way to state "the low bits survive":
+    // the same hi-res input must come out DIFFERENT on the two routes, and the
+    // wide one must be the faithful one.
 
     /// A known 24-bit sample in S24-in-S32 placement — the value the exit-gate
     /// fixture follows from the capture boundary to the summed write. The low
@@ -3577,14 +3387,11 @@ mod tests {
         out
     }
 
-    /// THE EXIT-GATE FIXTURE, lane half: a known 24-bit pattern injected at the
-    /// capture boundary reaches the lane's rendered period with its low bits
-    /// intact, and the narrow route provably destroys them.
-    ///
-    /// Stated as a contrast rather than as an absolute, because "the bits
-    /// survived" is only meaningful against what used to happen to them: the
-    /// wide render must equal the injected sample, and the narrow render
-    /// re-widened must NOT — it is short by exactly the low byte.
+    /// A known 24-bit pattern injected at the capture boundary reaches the
+    /// lane's rendered period with its low bits intact, and the narrow route
+    /// provably destroys them: the wide render must equal the injected sample,
+    /// and the narrow render re-widened must NOT — it is short by exactly the
+    /// low word.
     #[test]
     fn a_hi_res_sample_keeps_its_low_bits_through_the_wide_render() {
         for pattern in [HIRES_PATTERN, HIRES_POSITIVE_RAIL, HIRES_NEGATIVE_RAIL] {

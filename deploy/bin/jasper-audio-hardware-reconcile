@@ -684,7 +684,10 @@ detect_roles() {
     if [[ -n "$APPLE_DONGLE_CARD" ]]; then
         DONGLE_CARD="$APPLE_DONGLE_CARD"
         APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="$APPLE_DONGLE_CARD"
+        # SERVICE_CARD stays "auto": ALSA card ids are not stable across a
+        # re-enumeration (a second card with the same id becomes `A_1`), and
+        # the mixer units bake this value in at install. Pinning the sampled
+        # id freezes a transient name the helpers can never re-resolve.
     fi
 
 }
