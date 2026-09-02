@@ -1,4 +1,4 @@
-# 0215 — Curve slots are fixed, so a quiet save takes the live-edit path
+# 0216 — Curve slots are fixed, so a quiet save takes the live-edit path
 
 Date: 2026-09-02. Status: accepted. Supersedes one bullet of
 [ADR-0211](0211-a-live-eq-edit-ducks-only-when-camilladsp-rebuilds.md)'s
