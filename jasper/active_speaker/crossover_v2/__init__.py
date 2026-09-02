@@ -102,6 +102,10 @@ order — so this list is what exists, not a plan:
   numbers reduce to, and the emitters that write one line per consumed
   capture. Read-only, after the verdict, on the accepted path and every
   rejection.
+* :mod:`.delta_probe_run` — running the delta probe on one round: the CHANGE
+  and STATE axes, the four optional accounting terms, and the journal line the
+  verdict is read off. :mod:`jasper.active_speaker.delta_probe` classifies;
+  this is what hands it a round.
 
 The engine skeleton (``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1) — one
 session over three lifetimes and ruling S1's four verbs, which both front ends

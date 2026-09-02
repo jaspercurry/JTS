@@ -2076,7 +2076,7 @@ def classify_delta_probe(
     #
     # A CONTRACT guard with zero live blast radius, stated so nobody reads it as
     # a hole that was closed: the one production caller
-    # (``crossover_v2_flow._run_delta_probe``) passes no anchor on that branch
+    # (``crossover_v2.delta_probe_run.run_delta_probe``) passes no anchor there
     # and never has. This makes the invariant unbreakable by the next caller
     # rather than fixing a reachable defect.
     safety_anchor = None if state_axis_only else entry
