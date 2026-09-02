@@ -369,6 +369,53 @@ def test_a_product_rejection_retains_its_pair_and_reports_the_threshold(
     assert json.loads((tmp_path / "commission-state.json").read_text())["state"] == "failed"
 
 
+class _NeverConvergingIO(_FakeIO):
+    """`_FakeIO` that captures timing, plays the train, and never converges."""
+
+    def timing(self, dev, hardware, mic, stimulus, reference, directory, label):
+        (directory / f"{label}-m{mic}-0.wav").write_bytes(b"RIFF")
+        return super().timing(
+            dev, hardware, mic, stimulus, reference, directory, label
+        )
+
+    def convergence(self, _dev) -> int:
+        return 0
+
+
+def test_a_run_that_never_converges_retains_its_captures_and_its_counts(
+    tmp_path: Path, caplog
+) -> None:
+    # The convergence refusal raised straight out of `_commission`, so a run
+    # that adapted and never converged unwound the timing captures that would
+    # explain it -- the same loss the gate verdicts already fixed (#3271).
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    rejections = tmp_path / "rejections"
+
+    with pytest.raises(aec_commission.CommissioningError) as rejected:
+        aec_commission.run_commissioning(
+            _NeverConvergingIO(),
+            marker_path=tmp_path / "active",
+            artifact_path=tmp_path / "alignment.json",
+            state_path=tmp_path / "commission-state.json",
+            rejection_dir=rejections,
+            effective_uid=0,
+        )
+
+    retained = sorted(rejections.iterdir())
+    assert sorted(path.name for path in retained[0].iterdir()) == [
+        f"{phase}-m{mic}-0.wav" for phase in ("final", "initial") for mic in range(4)
+    ]
+    for field in (
+        f"chunks_played={aec_commission.ADAPTATION_REPEATS}",
+        "converged=0",
+        "phase=adaptation",
+        f"retained_captures={retained[0]}",
+    ):
+        assert field in str(rejected.value), field
+    for field in ("event=chip_aec_commission.adaptation_rejected", "adaptation_seconds="):
+        assert field in caplog.text, field
+
+
 def test_only_the_newest_rejections_are_retained(tmp_path: Path) -> None:
     root = tmp_path / "rejections"
     # Stamped ahead of this run: the box has no RTC, so the newest captures are
