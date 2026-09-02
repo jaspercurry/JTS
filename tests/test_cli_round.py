@@ -10,7 +10,9 @@ EXITS with, without a wizard, a network or a speaker.
 """
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 
 import pytest
 
@@ -43,13 +45,22 @@ class _FakeOpener:
     can age a session across polls before the steady page takes over.
     """
 
-    def __init__(self, pages: dict[str, str], envelopes: list[str] | None = None):
+    def __init__(
+        self,
+        pages: dict[str, str],
+        envelopes: list[str] | None = None,
+        raises: dict[str, Exception] | None = None,
+    ):
         self.pages = pages
         self.envelopes = list(envelopes or [])
+        self.raises = dict(raises or {})
         self.requests: list = []
 
     def open(self, request, timeout=None):
         self.requests.append(request)
+        for path, error in self.raises.items():
+            if request.full_url.endswith(path):
+                raise error
         if request.full_url.endswith(wc.STATUS_PATH) and self.envelopes:
             return _FakeResponse(self.envelopes.pop(0))
         for path, page in self.pages.items():
@@ -72,7 +83,7 @@ def _envelope(**block) -> str:
     return json.dumps({"crossover_v2": block})
 
 
-def _opener(*, v2=None, envelopes=None, **pages) -> _FakeOpener:
+def _opener(*, v2=None, envelopes=None, raises=None, **pages) -> _FakeOpener:
     return _FakeOpener(
         {
             wc.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok-abcd1234">',
@@ -82,6 +93,16 @@ def _opener(*, v2=None, envelopes=None, **pages) -> _FakeOpener:
             wc.APPLY_PATH: pages.get("apply", '{"status": "applied"}'),
         },
         envelopes=envelopes,
+        raises=raises,
+    )
+
+
+def _lost(code: int) -> Exception:
+    """What a dead daemon (0) and a refusing one (403) raise at the opener."""
+    if not code:
+        return urllib.error.URLError("[Errno 111] Connection refused")
+    return urllib.error.HTTPError(
+        "http://127.0.0.1", code, "Forbidden", {}, io.BytesIO(b"nope")
     )
 
 
@@ -279,3 +300,42 @@ def test_wait_reports_the_state_it_stopped_on(
     assert {key: receipt[key] for key in expected} == expected
     # A wait writes nothing at all.
     assert opener.posts() == []
+
+
+@pytest.mark.parametrize("code", [403, 0])
+def test_wait_stops_on_the_first_unanswered_status_read(
+    code, monkeypatch, capsys
+):
+    """A dead wizard is not a slow round -- and must not be waited out (#3498).
+
+    The timeout here is far longer than the test could run: reaching the exit
+    at all proves the poll stopped on the code rather than on the clock.
+    """
+    opener = _opener(raises={wc.STATUS_PATH: _lost(code)})
+    exit_code, receipt = _run(
+        ["wait", "--timeout-s", "600", "--poll-s", "0.01"],
+        opener, monkeypatch, capsys,
+    )
+
+    assert exit_code == cli.EXIT_TRANSPORT
+    assert receipt["reason"] == wc.REASON_ANSWER_LOST
+    assert len(opener.requests) == 1
+
+
+def test_an_apply_whose_answer_is_lost_is_not_a_wizard_refusal(
+    monkeypatch, capsys
+):
+    """Nothing refused: the POST left and no answer came back (#3498)."""
+    opener = _opener(
+        v2={"candidate": {"fingerprint": _FINGERPRINT}},
+        raises={wc.APPLY_PATH: _lost(0)},
+    )
+    code, receipt = _run(
+        ["apply", "--expected-fingerprint", _FINGERPRINT],
+        opener, monkeypatch, capsys,
+    )
+
+    assert code == cli.EXIT_TRANSPORT
+    assert receipt["reason"] == wc.REASON_ANSWER_LOST
+    assert receipt["refused_by"] == ""
+    assert receipt["http"] == 0

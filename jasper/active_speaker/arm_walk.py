@@ -86,11 +86,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from jasper.log_event import log_event
 
 from .angle_capture import ARM_ENVELOPE_DEG
-from .wizard_client import (  # re-exported: this module's long-standing names
-    CSRF_PAGE_PATH,
-    STATUS_PATH,
-    WizardClient,
-)
+from .wizard_client import STATUS_PATH, WizardClient
 
 logger = logging.getLogger(__name__)
 
@@ -422,10 +418,8 @@ class TurntableMover:
 # the correction wizard, as a Session
 # --------------------------------------------------------------------------- #
 
-#: The position gate's own two POSTs. The transport under them, and the
-#: status read they are polled against, is
-#: :mod:`jasper.active_speaker.wizard_client` -- re-exported here so this
-#: module's long-standing spelling of the three names keeps working.
+#: The position gate's own two POSTs. The transport under them, and the status
+#: read they are polled against, is :mod:`jasper.active_speaker.wizard_client`.
 POSITION_READY_PATH = "/correction/crossover/v2/position-ready"
 COMPLETE_PATH = "/correction/crossover/v2/complete"
 
@@ -996,9 +990,7 @@ def staged_walk_pending() -> bool:
 __all__: Sequence[str] = (
     "ARM_ENVELOPE_DEG",
     "COMPLETE_PATH",
-    "CSRF_PAGE_PATH",
     "POSITION_READY_PATH",
-    "STATUS_PATH",
     "ArmWalk",
     "ArmWalkRefused",
     "LoopbackSession",
@@ -1036,7 +1028,6 @@ __all__: Sequence[str] = (
     "Session",
     "Trail",
     "TurntableMover",
-    "WizardClient",
     "WalkConfig",
     "parse_power",
     "pending_from_relay",

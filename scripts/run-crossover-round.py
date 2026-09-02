@@ -165,6 +165,7 @@ except ModuleNotFoundError as exc:
 from jasper.active_speaker.arm_walk import EXIT_NAMES as ARM_WALK_EXIT_NAMES
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH,
+    REASON_ANSWER_LOST,
     SESSION_PATH,
     VERIFY_PATH,
     WizardClient,
@@ -234,7 +235,8 @@ EXIT_OPEN = 4
 EXIT_WALK = 5
 #: ``POST …/v2/verify`` did not open.
 EXIT_VERIFY = 6
-#: The stage never left its running phases inside ``--stage-timeout-s``.
+#: The stage did not stop: it never left its running phases inside
+#: ``--stage-timeout-s``, or the status read it is polled with went unanswered.
 EXIT_INCOMPLETE = 7
 #: The session itself reported a failure. Its own error is on the line.
 EXIT_SESSION_FAILED = 8
@@ -625,6 +627,10 @@ def await_stage(
         trail.emit("await", ok=False, phase=phase,
                    failure=_render(result["failure"]))
         return EXIT_SESSION_FAILED
+    if result["status"] == "lost":
+        trail.emit("await", ok=False, reason=REASON_ANSWER_LOST,
+                   detail="the status read was not answered")
+        return EXIT_INCOMPLETE
     if result["status"] == "timed_out":
         trail.emit("await", ok=False, phase=phase or "(unreadable)",
                    waited_s=round(timeout_s, 1))
@@ -885,6 +891,13 @@ def apply_candidate(wizard: WizardClient, fingerprint: str, trail: Trail) -> int
             ),
         )
         return EXIT_OK
+    if result["reason"] == REASON_ANSWER_LOST:
+        # NOT a refusal: the apply POST left the laptop and nothing came back,
+        # so whether the graph changed is unknown here and the crossover status
+        # is what settles it.
+        trail.emit("apply", ok=False, fingerprint=named, reason=REASON_ANSWER_LOST,
+                   detail=error_of(result["payload"]))
+        return EXIT_APPLY
     if result["refused_by"] == "wizard":
         trail.emit("apply", ok=False, fingerprint=named, http=result["http"],
                    outcome=result["outcome"] or "(none)",

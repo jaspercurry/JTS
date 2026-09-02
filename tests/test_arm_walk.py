@@ -38,6 +38,7 @@ import pytest
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import arm_walk as aw
+from jasper.active_speaker import wizard_client as wc
 from jasper.cli import arm_walk as cli
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1182,8 +1183,8 @@ def _loopback(pages, *, status: int = 200):
 
 def test_every_request_carries_the_speakers_own_host():
     session, opener = _loopback({
-        aw.STATUS_PATH: json.dumps({"relay": {"status": "running"}}),
-        aw.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok123">',
+        wc.STATUS_PATH: json.dumps({"relay": {"status": "running"}}),
+        wc.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok123">',
         aw.POSITION_READY_PATH: '{"ok": true}',
     })
     session.poll()
@@ -1195,7 +1196,7 @@ def test_every_request_carries_the_speakers_own_host():
 
 def test_a_release_carries_the_double_submit_token_and_the_index():
     session, opener = _loopback({
-        aw.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok123">',
+        wc.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok123">',
         aw.POSITION_READY_PATH: '{"ok": true}',
     })
     assert session.release(4) == (200, '{"ok": true}')
@@ -1206,26 +1207,26 @@ def test_a_release_carries_the_double_submit_token_and_the_index():
     # The token is minted once and reused, not re-fetched per POST.
     session.complete()
     assert sum(1 for r in opener.requests
-               if r.full_url.endswith(aw.CSRF_PAGE_PATH)) == 1
+               if r.full_url.endswith(wc.CSRF_PAGE_PATH)) == 1
 
 
 def test_a_failed_first_mint_is_retried_rather_than_cached_forever():
     """Caching ``""`` would 403 every POST for the rest of the run, silently."""
-    pages = {aw.CSRF_PAGE_PATH: "<html>the wizard is still starting</html>",
+    pages = {wc.CSRF_PAGE_PATH: "<html>the wizard is still starting</html>",
              aw.POSITION_READY_PATH: '{"ok": true}'}
     session, opener = _loopback(pages)
     session.release(1)
     assert opener.requests[-1].get_header("X-csrf-token") == ""
 
-    pages[aw.CSRF_PAGE_PATH] = '<meta name="jts-csrf" content="tok456">'
+    pages[wc.CSRF_PAGE_PATH] = '<meta name="jts-csrf" content="tok456">'
     session.release(1)
     assert opener.requests[-1].get_header("X-csrf-token") == "tok456"
     # …and once a REAL token is in hand it is cached, not re-fetched.
     minted_before = sum(1 for r in opener.requests
-                        if r.full_url.endswith(aw.CSRF_PAGE_PATH))
+                        if r.full_url.endswith(wc.CSRF_PAGE_PATH))
     session.complete()
     assert sum(1 for r in opener.requests
-               if r.full_url.endswith(aw.CSRF_PAGE_PATH)) == minted_before
+               if r.full_url.endswith(wc.CSRF_PAGE_PATH)) == minted_before
 
 
 def test_a_status_endpoint_that_refuses_reads_as_unreadable():
@@ -1240,12 +1241,12 @@ def test_the_endpoints_are_the_products_own():
     from jasper.web.correction_crossover_v2 import POSITION_READY_ENDPOINT
 
     assert aw.POSITION_READY_PATH == POSITION_READY_ENDPOINT
-    assert aw.STATUS_PATH == "/correction/crossover/status"
+    assert wc.STATUS_PATH == "/correction/crossover/status"
     assert aw.COMPLETE_PATH == "/correction/crossover/v2/complete"
 
 
 def test_a_status_read_that_is_not_json_is_unreadable_not_finished():
-    session, _ = _loopback({aw.STATUS_PATH: "<html>nope"})
+    session, _ = _loopback({wc.STATUS_PATH: "<html>nope"})
     assert session.poll().in_flight is True
 
 

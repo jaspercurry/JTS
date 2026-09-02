@@ -40,8 +40,8 @@ STATUS_PATH = "/correction/crossover/status"
 
 #: The two stage-opening POSTs and the apply. Members of ``correction_setup``'s
 #: ``_POST_ROUTES`` under the wizard's ``/correction`` prefix -- pinned against
-#: that frozenset by ``tests/test_run_crossover_round.py`` so a renamed route
-#: fails here instead of 404ing mid-round.
+#: that frozenset by ``tests/test_cli_round.py`` so a renamed route fails here
+#: instead of 404ing mid-round.
 SESSION_PATH = "/correction/crossover/v2/session"
 VERIFY_PATH = "/correction/crossover/v2/verify"
 APPLY_PATH = "/correction/crossover/v2/apply"
@@ -62,18 +62,20 @@ STAGE_POST_APPLY = "post_apply"
 #: machine-paced window between MEASURE-accepted and apply-observed) are
 #: exactly the moments a poller must keep waiting through, and treating either
 #: as terminal banks a round mid-flight. The complement is pinned to
-#: ``{review, done}`` by ``tests/test_run_crossover_round.py``.
+#: ``{review, done}`` by ``tests/test_cli_round.py``.
 RUNNING_PHASES = frozenset(CAPTURE_PHASES) | {PHASE_CLOSING, PHASE_APPLYING}
 
-#: Why a round verb refused, as a slug a script can branch on. The first four
-#: are this client's own pre-flight refusals -- nothing was sent; the last two
-#: are the wizard's answer and the clock's.
+#: Why a round verb refused, or could not say, as a slug a script can branch
+#: on. The first four are this client's own pre-flight refusals -- nothing was
+#: sent; the last three are the wizard's answer, the answer that never arrived,
+#: and the clock's.
 REASON_NO_FINGERPRINT = "no_fingerprint_named"
 REASON_NO_V2_STATE = "no_v2_state"
 REASON_NO_CANDIDATE = "no_candidate_published"
 REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 REASON_NOT_APPLIED = "apply_not_applied"
 REASON_SESSION_FAILED = "session_failed"
+REASON_ANSWER_LOST = "answer_lost"
 REASON_WAIT_TIMEOUT = "wait_timeout"
 
 _CSRF_META_RE = re.compile(r'<meta name="jts-csrf" content="([^"]+)"')
@@ -185,17 +187,25 @@ class WizardClient:
         status, body = self.post(path, payload)
         return status, _as_json(body)
 
+    def status_envelope(self) -> tuple[int, dict[str, Any]]:
+        """The status GET's code, and the v2 block under it.
+
+        The CODE is what separates "nothing known yet" from "nothing is
+        answering": a poller that cannot see it waits its whole timeout out
+        against a wizard that is down or on another host.
+        """
+        status, payload = self.get_json(STATUS_PATH)
+        block = payload.get("crossover_v2") if isinstance(payload, Mapping) else None
+        return status, dict(block) if isinstance(block, Mapping) else {}
+
     def v2_block(self) -> dict[str, Any]:
         """``status["crossover_v2"]`` -- phase, candidate, failure, session id.
 
         ``{}`` when the envelope is unreadable or carries no v2 block, which
         every caller treats as "nothing known yet" rather than as a verdict.
         """
-        status, payload = self.get_json(STATUS_PATH)
-        if status != 200 or not isinstance(payload, Mapping):
-            return {}
-        block = payload.get("crossover_v2")
-        return dict(block) if isinstance(block, Mapping) else {}
+        status, block = self.status_envelope()
+        return block if status == 200 else {}
 
     def open_session(
         self, tier: str, *, stage: str = STAGE_MEASURE
@@ -212,24 +222,16 @@ class WizardClient:
             return self.post_json(VERIFY_PATH, {STAGE_KEY: STAGE_POST_APPLY})
         return self.post_json(SESSION_PATH, {"tier": tier})
 
-    def apply(
-        self,
-        expected_fingerprint: str,
-        *,
-        candidate: Mapping[str, Any] | None = None,
-    ) -> tuple[int, Any]:
+    def apply(self, expected_fingerprint: str) -> tuple[int, Any]:
         """The bare POST. The gate is :func:`apply_by_fingerprint`, not this.
 
-        ``candidate`` is the endpoint's optional override; absent, the host
-        reopens the artifact from the evidence bundle recorded at publish,
-        which is the shape every caller here uses.
+        The endpoint also takes an inline ``candidate`` override, which nothing
+        here sends: the host reopens the artifact from the evidence bundle
+        recorded at publish, so the fingerprint is the whole request.
         """
-        body: dict[str, Any] = {
-            "expected_candidate_fingerprint": expected_fingerprint
-        }
-        if candidate is not None:
-            body["candidate"] = dict(candidate)
-        return self.post_json(APPLY_PATH, body)
+        return self.post_json(
+            APPLY_PATH, {"expected_candidate_fingerprint": expected_fingerprint}
+        )
 
 
 def _as_json(body: str) -> Any:
@@ -256,10 +258,7 @@ def _live_fingerprint(block: Mapping[str, Any]) -> str:
 
 
 def apply_by_fingerprint(
-    client: WizardClient,
-    expected_fingerprint: str,
-    *,
-    candidate: Mapping[str, Any] | None = None,
+    client: WizardClient, expected_fingerprint: str
 ) -> dict[str, Any]:
     """The gate, then the apply. A mismatch POSTs nothing at all.
 
@@ -276,6 +275,12 @@ def apply_by_fingerprint(
     decides alone (the route's own dispatch): ``apply_failed`` is always 200
     with a graph that did not change, ``blocked`` is the one status that moves
     the code off 200, and a refusal is a 400 carrying no ``status`` at all.
+
+    A LOST answer (http 0) is neither: the route has no try/except around its
+    own answer, so a connection dropped after the graph loaded looks exactly
+    like one dropped before it. It carries no ``refused_by`` because nothing
+    refused -- reporting the wizard as the refuser there would be a claim about
+    a speaker nobody heard from.
     """
     named = (expected_fingerprint or "").strip()
     if not named:
@@ -294,13 +299,16 @@ def apply_by_fingerprint(
             named,
             live,
         )
-    http, payload = client.apply(named, candidate=candidate)
+    http, payload = client.apply(named)
     outcome = str(payload.get("status") or "") if isinstance(payload, Mapping) else ""
     applied = http == 200 and outcome == "applied"
+    lost = http == 0
     return {
         "status": "applied" if applied else "blocked",
-        "refused_by": "" if applied else "wizard",
-        "reason": "" if applied else REASON_NOT_APPLIED,
+        "refused_by": "" if applied or lost else "wizard",
+        "reason": (
+            "" if applied else REASON_ANSWER_LOST if lost else REASON_NOT_APPLIED
+        ),
         "expected_candidate_fingerprint": named,
         "candidate_fingerprint": live,
         "http": http,
@@ -342,11 +350,20 @@ def wait_for_round(
     A caller that never saw the prior id (a separate invocation, which is what
     ``jasper-round wait`` is) passes ``""`` and waits on whatever session the
     wizard is currently publishing.
+
+    A status read that is not answered ends the wait at once. Polling a dead
+    daemon, or a wrong ``--hostname``, is indistinguishable from a slow round
+    if the code is thrown away -- and waiting the full timeout out to then
+    report "still going" sends an operator back to the speaker to watch a round
+    that was never running.
     """
     deadline = now() + timeout_s
-    phase = session_id = ""
     while True:
-        block = client.v2_block()
+        http, block = client.status_envelope()
+        if http != 200:
+            return {"status": "lost", "reason": REASON_ANSWER_LOST,
+                    "phase": "", "session_id": "",
+                    "candidate_fingerprint": "", "failure": None}
         phase = str(block.get("phase") or "")
         session_id = str(block.get("session_id") or "")
         failure = block.get("failure")

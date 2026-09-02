@@ -40,6 +40,7 @@ from typing import Any, Mapping, Sequence
 from jasper.active_speaker.crossover_v2_flow import TIERS
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH,
+    REASON_ANSWER_LOST,
     SESSION_PATH,
     STAGE_MEASURE,
     STAGE_POST_APPLY,
@@ -71,7 +72,6 @@ DEFAULT_POLL_S = 5.0
 #: This tool's own refusals, in the slug vocabulary the library's carry.
 REASON_TIER_REQUIRED = "tier_required"
 REASON_OPEN_REFUSED = "open_refused"
-REASON_ANSWER_LOST = "answer_lost"
 
 #: Said whenever an apply's answer is lost, because "it failed" is a claim this
 #: tool cannot make there.
@@ -87,6 +87,7 @@ AUTHORITY_TIER = "mutating-with-gates (`open`/`apply` write; `wait` does not)"
 _EXIT_BY_WAIT_STATUS = {
     "terminal": EXIT_OK,
     "failed": EXIT_REFUSED,
+    "lost": EXIT_TRANSPORT,
     "timed_out": EXIT_TIMEOUT,
 }
 
@@ -168,12 +169,12 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
     result = apply_by_fingerprint(client, args.expected_fingerprint)
-    lost = result["refused_by"] == "wizard" and result["http"] == 0
+    lost = result["reason"] == REASON_ANSWER_LOST
     _emit(
         {
             "verb": "apply",
             "status": result["status"],
-            "reason": REASON_ANSWER_LOST if lost else result["reason"],
+            "reason": result["reason"],
             "refused_by": result["refused_by"],
             "expected_candidate_fingerprint":
                 result["expected_candidate_fingerprint"],

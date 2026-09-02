@@ -1802,3 +1802,34 @@ def test_the_arm_walk_exit_vocabulary_is_the_walks_own():
     from jasper.active_speaker.arm_walk import EXIT_NAMES
 
     assert _runner().ARM_WALK_EXIT_NAMES is EXIT_NAMES
+
+
+def test_an_apply_whose_answer_is_lost_is_not_reported_as_a_wizard_refusal(
+    tmp_path,
+):
+    """Nothing refused: the POST left the laptop and no answer came back.
+
+    The row an operator reads back must not say the wizard blocked it -- the
+    graph may or may not have changed, and only the crossover status settles
+    that.
+    """
+    from jasper.active_speaker.wizard_client import REASON_ANSWER_LOST
+
+    runner = _runner()
+
+    class _LostApply:
+        def v2_block(self):
+            return {"candidate": {"fingerprint": FINGERPRINT}}
+
+        def apply(self, expected_fingerprint):
+            return 0, "URLError: [Errno 111] Connection refused"
+
+    path = tmp_path / "trail.jsonl"
+    trail = runner.Trail(path)
+    code = runner.apply_candidate(_LostApply(), FINGERPRINT, trail)
+    trail.close()
+
+    assert code == runner.EXIT_APPLY
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [row["reason"] for row in rows] == [REASON_ANSWER_LOST]
+    assert rows[0]["ok"] is False
