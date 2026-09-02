@@ -4,76 +4,48 @@
 
 """/rooms/ — the "Speakers" surface: directory + wake-response toggle.
 
-To the household, "my other speakers" is ONE concern, so the read-only
-multi-room directory and the wake-arbitration (peering) toggle live on
-the same page. This page is canonical. The page title is "Speakers".
-
-Two parts:
-
-1. DIRECTORY + bond-forming: see every
-   JTS speaker on the LAN, click through to configure each on its own web
-   UI, see this speaker's grouping status (incl. the runtime-degraded health
-   from §0), and **create a stereo pair in one flow** — pick one speaker to
-   pair with. Bond-forming POSTs /bond, which fans the config out SERVER-side
-   to each member's jasper-control /grouping/set (this speaker → leader/left,
-   the picked one → follower/right). Configuration is
-   automatic — no per-speaker tinkering. Perfect sample-lock across the pair
-   is the remaining on-hardware validation, so the UI carries an honest
-   "preview" note (§8) rather than pretending the audio half is done.
-
-2. WAKE-RESPONSE toggle (peering): when several speakers hear "Hey
-   Jarvis", only one answers. This is a real, working control. The page
-   read-modify-writes /var/lib/jasper/peering.env via POST /peering,
-   REUSING jasper.peering.config's readers/constants so it does NOT
-   duplicate the env parse contract.
-
-Room is NOT edited here. Room lives in the speaker-identity home
-(/speaker/); the self card shows it (read via identity.read_identity)
-and links there to change name + room. Adding a room editor here would
-reopen the two-homes drift just closed.
-
-Discovery uses the ALWAYS-ON `_jasper-control._tcp` mDNS service
-(advertised unconditionally by deploy/avahi/jasper-control.service,
-installed by install.sh independent of peering) — NOT the
-wake-peering-gated `_jasper-peer._udp` (which only exists when
-JASPER_PEERING=on). So the directory lists every speaker regardless of
+Discovery browses the ALWAYS-ON `_jasper-control._tcp` mDNS service
+(advertised unconditionally by deploy/avahi/jasper-control.service) — NOT
+the wake-peering-gated `_jasper-peer._udp`, which only exists when
+JASPER_PEERING=on. So the directory lists every speaker regardless of
 whether wake-peering is enabled.
 
-The page renders client-side: the body is a single `#app` mount point
-plus a `type="module"` script. The static ES module at
-/assets/rooms/js/main.js fetches /rooms.json on load + every 7 s and
-builds the self card, the wake-response card, the per-peer click-through
-cards, and the honest forward note — all via DOM/text APIs (every peer
-field is mDNS-provided → untrusted), so this server does no interpolation
-of discovered data.
+Room is NOT edited here: the speaker-identity home (/speaker/) owns name +
+room; this page only reads identity and links there.
 
-URL surface (after nginx strips the /rooms/ prefix):
+POST /peering read-modify-writes /var/lib/jasper/peering.env, REUSING
+jasper.peering.config's readers/constants so the env parse contract keeps
+one owner.
+
+The page renders client-side: the body is a single `#app` mount point plus
+the ES module at /assets/rooms/js/main.js, which fetches /rooms.json on load
+and every 7 s. Every peer field is mDNS-provided (untrusted), so this server
+interpolates none of the discovered data.
+
+URL surface (after nginx strips the /rooms/ prefix); every POST is
+CSRF-verified:
   GET  /            page render (mount point + ES module)
   GET  /rooms.json  the directory + self status incl. the wake-response
-                    `peering` block (the module fetches this on a poll)
+                    `peering` block
   POST /peering     write the wake-response state into peering.env +
-                    restart voice/control (JSON body, CSRF-verified)
+                    restart voice/control
   POST /bond        form a stereo pair from {peer_addr}; the server mints a
                     bond id, builds the member plan, then fans the grouping
                     config out SERVER-side to each member's jasper-control.
                     Before any write, every enabled member must return
                     readiness.allowed=true from lightweight GET /grouping;
                     POST /grouping/set rechecks the same target-side guard.
-                    Existing advanced callers may still post a full
-                    {members:[...]} body for same-bond edits.
-  POST /unbond      dissolve the bond this speaker is in: disable self +
-                    every sibling sharing this bond_id, SERVER-side via each
-                    member's jasper-control /grouping/set (CSRF-verified)
-  POST /swap        exchange a 2-speaker pair's left/right channels —
-                    roles/bond untouched; partial failure rolls back, and a
-                    stuck same-channel pair is REPAIRED to left/right rather
-                    than rejected (CSRF-verified)
+                    Advanced callers may still post a full {members:[...]}
+                    body for same-bond edits.
+  POST /unbond      dissolve this speaker's bond: disable self + every
+                    sibling sharing this bond_id
+  POST /swap        exchange a 2-speaker pair's left/right channels; roles
+                    and bond untouched
   POST /trim        set the pair balance absolutely (target=pair,
-                    balance_db); attenuate-only, clamped, applied via
-                    /grouping/set (CSRF-verified)
+                    balance_db)
   POST /mains-highpass
                     toggle wireless-sub bass management for every reachable
-                    member in this bond via /grouping/set (CSRF-verified)
+                    member in this bond
 """
 from __future__ import annotations
 
@@ -130,41 +102,31 @@ logger = logging.getLogger(__name__)
 
 ROOMS_PAGE_CSS_HREF = "/assets/rooms/rooms.css"
 
-# The always-on jasper-control mDNS service. Fully-qualified with the
-# trailing `.local.` per the python-zeroconf contract. Advertised by
-# every JTS regardless of wake-peering state (see module docstring).
+# Fully-qualified with the trailing `.local.` per the python-zeroconf contract.
 CONTROL_MDNS_TYPE = "_jasper-control._tcp.local."
 
-# jasper-control's HTTP port — the SRV record carries it, but we default
-# to it when an instance resolves without one. The management UI lives on
-# port 80 (nginx), so the click-through URLs use the bare address.
+# jasper-control's HTTP port, used when an instance resolves without an SRV
+# port. The management UI is on port 80 (nginx), so click-through URLs stay bare.
 CONTROL_HTTP_PORT = 8780
 CONTROL_HTTP_TIMEOUT_SEC = 5.0
 PEER_RESPONSE_MAX_BYTES = 64 * 1024
 
-# Read-only balance display must not make the 7 s /rooms.json poll feel dead
-# when a paired speaker is powered off. Mutations still use the full control
-# timeout so an apply has a fair chance to reach a slow peer; the snapshot only
-# needs fresh-enough display state and can surface "unavailable" quickly.
+# Short so a powered-off paired speaker cannot stall the 7 s /rooms.json poll.
+# Mutations keep the full control timeout; the snapshot only needs
+# fresh-enough display state and can surface "unavailable" quickly.
 BALANCE_SNAPSHOT_PEER_TIMEOUT_SEC = 0.75
 
-# How long to browse for sibling speakers. python-zeroconf re-broadcasts
-# with backoff (1s, 2s, 4s); 2s captures the common PTR→SRV→TXT roundtrip
-# on a home LAN without making the first paint feel slow.
+# python-zeroconf re-broadcasts with backoff (1s, 2s, 4s); 2s captures the
+# common PTR→SRV→TXT roundtrip on a home LAN without slowing first paint.
 DISCOVERY_TIMEOUT_SEC = 2.0
 
-# The module re-polls /rooms.json every 7 s. A *fresh* zeroconf browse per
-# poll would stand up + tear down a multicast listener ~8×/min for as long
-# as the page is open — needless socket churn that also contends with the
-# host's avahi responder. The household speaker set is near-static, so we
-# cache the browse result in-process and only re-browse when it ages out
-# (mirrors the GBFS feed cache in jasper/citibike.py). A new speaker shows
-# within one TTL; on page open the first poll still does a live browse.
+# The page re-polls /rooms.json every 7 s; a fresh zeroconf browse per poll
+# would stand up and tear down a multicast listener ~8×/min, contending with
+# the host's avahi responder. The household speaker set is near-static, so a
+# new speaker showing up within one TTL is acceptable.
 DISCOVERY_CACHE_TTL_SEC = 30.0
 
-# Slow /rooms.json snapshots are actionable: this page is rare, but when it is
-# opened the household should not wait several seconds without a breadcrumb in
-# the journal. Fast snapshots stay quiet so a left-open tab does not spam logs.
+# Only slow snapshots log, so a left-open tab does not spam the journal.
 ROOMS_SNAPSHOT_SLOW_MS = 1000
 
 
@@ -172,13 +134,10 @@ ROOMS_SNAPSHOT_SLOW_MS = 1000
 # Self identity.
 # ----------------------------------------------------------------------
 #
-# Name / room / hostname all come from the single shared identity reader
-# (jasper.identity.read_identity), read ONCE per request in
-# _build_rooms_payload — there are deliberately no per-field _self_name /
-# _self_room / _self_hostname helpers, since each would re-read identity and
-# the three fields must agree within one render. Only the LAN address is a
-# /rooms-local concern (NIC-derived, NOT part of identity), so self_addresses
-# / _self_address stay below.
+# Name / room / hostname come from jasper.identity.read_identity, read ONCE
+# per request in _build_rooms_payload so the three fields agree within one
+# render. The LAN address is NOT part of identity (it is NIC-derived), which
+# is why self_addresses / _self_address live here.
 
 
 def self_addresses() -> set[str]:
@@ -187,9 +146,9 @@ def self_addresses() -> set[str]:
     yields a smaller set (worst case: a self-row leaks in, which the page
     renders harmlessly)."""
     addrs: set[str] = set()
-    # Primary outbound interface — the UDP-connect trick. No packet is
-    # sent; connect() on a datagram socket just picks the route's source
-    # address. 192.0.2.0/24 is TEST-NET-1 (RFC 5737), never routed.
+    # The UDP-connect trick: no packet is sent; connect() on a datagram socket
+    # just picks the route's source address. 192.0.2.0/24 is TEST-NET-1
+    # (RFC 5737), never routed.
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("192.0.2.1", 9))
@@ -218,12 +177,10 @@ def _self_address(known: set[str] | None = None) -> str:
 def _leader_handle() -> str:
     """This speaker's STABLE address to hand a follower as ``leader_addr``.
 
-    Returns the mDNS .local FQDN (jasper.identity.read_identity().hostname,
-    e.g. ``jts.local``) — NOT a NIC IP. The follower's snapclient resolves it
-    via mDNS, so the bond keeps working across DHCP lease churn that would
-    invalidate a baked-in IP. (snapclient_argv in jasper/multiroom/reconcile.py
-    passes leader_addr verbatim to ``snapclient --host``, which resolves a
-    .local name fine — no reconcile change needed.) Distinct from
+    The mDNS .local FQDN, NOT a NIC IP: snapclient_argv in
+    jasper/multiroom/reconcile.py passes leader_addr verbatim to
+    ``snapclient --host``, which resolves a .local name, so the bond survives
+    DHCP lease churn that would invalidate a baked-in IP. Distinct from
     _self_address, which stays NIC-derived for SSRF self-routing in
     post_grouping_to_member / lan_target."""
     return identity.read_identity().hostname
@@ -235,10 +192,9 @@ def _leader_handle() -> str:
 
 
 def _strip_service_type(full_name: str) -> str:
-    """Turn a full mDNS instance name into a display label. Mirrors
-    jasper.speaker_name_discovery._strip_service_type: drop the trailing
-    `._jasper-control._tcp.local.` suffix and unescape avahi's `\\032`
-    space encoding."""
+    """Turn a full mDNS instance name into a display label: drop the trailing
+    service-type suffix and unescape avahi's `\\032` space encoding. Mirrors
+    jasper.speaker_name_discovery._strip_service_type."""
     name = full_name.rstrip(".")
     suffix = "." + CONTROL_MDNS_TYPE.rstrip(".")
     if name.endswith(suffix):
@@ -248,7 +204,7 @@ def _strip_service_type(full_name: str) -> str:
 
 def _hostname_label(server: str) -> str:
     """A clean speaker label from an mDNS SRV target host, e.g.
-    `"jts3.local."` -> `"jts3"`. Empty string when there's nothing usable."""
+    `"jts3.local."` -> `"jts3"`."""
     host = (server or "").rstrip(".")
     if host.endswith(".local"):
         host = host[: -len(".local")]
@@ -263,10 +219,10 @@ _LOCAL_HOST_LABEL_RE = re.compile(
 def _local_web_host(hostname: str) -> str:
     """Browser-safe management host for a discovered peer.
 
-    The peer `address` remains the IP used by server-side grouping fan-out
-    through the SSRF guard. User-facing click-through URLs should instead use
-    the stable mDNS hostname so DHCP churn does not make the UI teach people
-    raw IPs. Empty/invalid hostnames fail closed to no link.
+    Click-through URLs use the stable mDNS hostname so DHCP churn does not
+    make the UI teach people raw IPs; the peer `address` stays the IP the
+    server-side fan-out passes through the SSRF guard. An empty or invalid
+    hostname fails closed to no link.
     """
     host = (hostname or "").strip().rstrip(".")
     if host.endswith(".local"):
@@ -278,13 +234,11 @@ def _local_web_host(hostname: str) -> str:
 
 def _peer_label(props: dict, server: str, full_name: str) -> str:
     """Pick the directory label for a discovered speaker, best-first:
-      1. an explicit `name=` TXT record (advertised today on
-         `_jasper-control._tcp`, rendered by `jasper.control_advert`;
-         this is the primary path in production),
+      1. the `name=` TXT record `jasper.control_advert` publishes on
+         `_jasper-control._tcp` (the production path),
       2. the resolved SRV hostname (`jts3.local.` -> `jts3`),
-      3. the raw mDNS instance name as a last resort.
-    Without this, the default instance name (`"JTS jasper-control on jts"`)
-    leaks into the UI as the speaker's label — verbose and confusing."""
+      3. the raw mDNS instance name — a last resort, since the default
+         (`"JTS jasper-control on jts"`) is verbose in the UI."""
     txt = (props.get("name") or "").strip()
     if txt:
         return txt
@@ -295,36 +249,24 @@ def _peer_label(props: dict, server: str, full_name: str) -> str:
 
 
 def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:
-    """Best-effort mDNS-SD browse of `_jasper-control._tcp`. Returns a list
-    of {name, room, address, port} dicts — at most one per service name.
-    Returns [] on any failure so the page renders an empty state, never
-    500s.
+    """Best-effort mDNS-SD browse of `_jasper-control._tcp`, at most one
+    {name, hostname, room, address, port} dict per service name. Fail-soft:
+    [] on any failure, so the page renders an empty state and never 500s.
 
-    The browse/resolve/parse mechanics live in the shared one-shot primitive
-    `jasper.mdns.browse_once` (which is fail-soft: any failure degrades to an
-    empty list, never raises). What stays here is rooms-display *policy*:
-    picking the directory label via `_peer_label` (TXT `name=` vs SRV host vs
-    stripped instance name) and defaulting the port to jasper-control's.
-
-    Self is NOT filtered here (the caller does it against self_addresses so
-    the filter stays testable). `room` is "" until a `room=` TXT record is
-    added to the avahi advertisement — `name=` and `peer_id=` already exist
-    on `_jasper-control._tcp` today, so a discovered instance yields
-    name (from the TXT record) + address + port; the SRV-hostname fallback
-    in `_peer_label` only fires if `name=` is ever absent."""
+    Self is NOT filtered here — the caller does that against self_addresses,
+    so the filter stays testable. `room` is "" until a `room=` TXT record is
+    added to the avahi advertisement; `name=` and `peer_id=` exist on
+    `_jasper-control._tcp` today."""
     out: list[dict] = []
     for svc in browse_once(CONTROL_MDNS_TYPE, timeout=timeout):
-        # browse_once drops address-less instances, so svc.addresses is
-        # non-empty; guard anyway since this is the only field we hard-require.
         if not svc.addresses:
             continue
         out.append(
             {
                 "name": _peer_label(svc.txt, svc.server, svc.name),
-                # The SRV hostname label (e.g. "jts3"), kept so self-exclusion
-                # can match on the stable HOSTNAME (exact) rather than the
-                # free-form display name — a speaker named "jts" must not drop
-                # a peer named "jts3".
+                # Self-exclusion matches on the stable SRV hostname rather
+                # than the free-form display name: a speaker named "jts" must
+                # not drop a peer named "jts3".
                 "hostname": _hostname_label(svc.server),
                 "room": (svc.txt.get("room") or "").strip(),
                 "address": str(svc.addresses[0]),
@@ -334,9 +276,8 @@ def _discover_speakers(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict]:
     return out
 
 
-# In-process TTL cache so the 7 s /rooms.json poll reuses one browse
-# instead of churning a fresh zeroconf listener every request. The wizard
-# is a shared (socket-activated) process, so this persists across polls.
+# The wizard is a shared (socket-activated) process, so this cache persists
+# across polls.
 _disc_lock = threading.Lock()
 _disc_cache: dict = {"at": 0.0, "result": []}
 
@@ -345,17 +286,15 @@ def discover_speakers_cached() -> list[dict]:
     """`_discover_speakers()` behind a TTL cache (DISCOVERY_CACHE_TTL_SEC).
 
     The lock serializes the live browse so concurrent /rooms.json requests
-    don't each kick one off; whoever holds it refreshes, the rest get the
-    just-cached value. Total/fail-soft: inherits `_discover_speakers`'s
+    don't each kick one off. Fail-soft: inherits `_discover_speakers`'s
     return-[] behaviour."""
     with _disc_lock:
         now = time.monotonic()
         if _disc_cache["result"] and (now - _disc_cache["at"]) < DISCOVERY_CACHE_TTL_SEC:
             return _disc_cache["result"]
         result = _discover_speakers()
-        # Only refresh the timestamp/result on a non-empty browse so a
-        # transient empty scan doesn't blank the directory for a full TTL;
-        # an empty result falls through to a re-browse on the next poll.
+        # A transient empty scan must not blank the directory for a full TTL,
+        # so only a non-empty browse refreshes the cache.
         if result:
             _disc_cache["at"] = now
             _disc_cache["result"] = result
@@ -369,17 +308,15 @@ def _read_peering_block() -> dict:
     jasper.peering.config readers — the env parse is NOT re-derived here.
 
     Returns {"enabled": bool, "primary": bool}:
-      enabled  — JASPER_PEERING is on (the speaker participates in wake
-                 arbitration so only one device answers "Hey Jarvis").
+      enabled  — JASPER_PEERING is on (the speaker joins wake arbitration so
+                 only one device answers "Hey Jarvis").
       primary  — JASPER_PEER_PRIMARY is set (small bias to win ties).
 
-    Fail-soft: peering_config.read_state already returns {} on a
-    missing/unreadable file (→ enabled=False, primary=False), so this
-    never raises.
+    Fail-soft: peering_config.read_state returns {} on a missing/unreadable
+    file, so this never raises.
 
-    The path is passed explicitly (rather than relying on _load_state's
-    def-time default) so it's resolved at call time — fresh on every poll,
-    and overridable in tests by patching peering_config.PEERING_ENV_FILE."""
+    The path is passed explicitly so it resolves at call time — fresh on
+    every poll, and patchable via peering_config.PEERING_ENV_FILE."""
     state = peering_config.read_state(peering_config.PEERING_ENV_FILE)
     return {
         "enabled": peering_config.state_enabled(state),
@@ -390,18 +327,8 @@ def _read_peering_block() -> dict:
 def _build_rooms_payload() -> dict:
     """Assemble the /rooms.json body: this speaker's identity + grouping
     status + wake-response state, plus the sibling directory (self
-    excluded). Total — the discovery, grouping, and peering reads are each
+    excluded). The discovery, grouping, and peering reads are each
     fail-soft, so this never raises.
-
-    The self block's name / hostname / room all originate from ONE read of
-    the shared identity reader (jasper.identity.read_identity, called once
-    here) so /rooms agrees with control_advert and the rest of the speaker
-    on "who is this speaker" and the three fields are internally consistent
-    within a single render; `address` stays best-effort from this host's own
-    NICs (self_addresses) since that's a /rooms-local concern, not identity.
-    The `peering` block is read FRESH from peering.env each call (via
-    jasper.peering.config) so a save through POST /peering reflects on the
-    next 7 s poll.
 
     Shape (consumed by /assets/rooms/js/main.js):
       {
@@ -448,10 +375,8 @@ def _build_rooms_payload() -> dict:
         "hostname": me.hostname,
         "room": me.room,
         "address": self_addr,
-        # with_airplay_latency_fit attaches airplay_latency_fit ({applicable:
-        # false} unless this speaker is an active bonded leader) — the same
-        # composer /state uses, so /rooms shows the bonded-leader lip-sync
-        # status without re-deriving it.
+        # with_airplay_latency_fit is the same composer /state uses, so the
+        # bonded-leader lip-sync status is not re-derived here.
         "grouping": grouping,
         "peering": peering,
     }
@@ -464,14 +389,10 @@ def _build_rooms_payload() -> dict:
     self_hostname_label = me.hostname.split(".")[0].casefold()
     for s in discovered:
         addr = s.get("address") or ""
-        # Drop self two ways:
-        #   1. by address — reliable when our own NIC IP is in `own`.
-        #   2. by EXACT hostname-label match — catches the case where the
-        #      UDP-route trick missed our address (e.g. a loopback/secondary
-        #      advert). This MUST be an exact match on the SRV hostname, not
-        #      a substring of the display name: a speaker "jts" once dropped a
-        #      peer "jts3" because "jts" is a substring of "jts3" (and the
-        #      display name is free-form, unrelated to identity).
+        # Drop self by address, then by EXACT SRV-hostname match for the case
+        # where the UDP-route trick missed our address. The hostname match
+        # must stay exact and off the free-form display name: substring
+        # matching once made a speaker "jts" drop a peer "jts3".
         if addr and addr in own:
             continue
         peer_host = (s.get("hostname") or "").casefold()
@@ -487,7 +408,6 @@ def _build_rooms_payload() -> dict:
                 "system_url": f"http://{web_host}/system/" if web_host else "",
             }
         )
-    # Stable, human-friendly ordering for the directory.
     peers.sort(
         key=lambda p: (p.get("room") or "", p.get("name") or "", p.get("address") or "")
     )
@@ -509,11 +429,9 @@ def _build_rooms_payload() -> dict:
 
 
 def _rooms_view(grouping: dict, peers: list[dict], self_addr: str) -> dict:
-    """Small backend-owned view model for the rooms page.
-
-    The browser still renders, but it should not rediscover the grouping state
-    machine or decide whether advanced topology controls belong in the primary
-    flow. Keep this intentionally flat and conservative.
+    """Backend-owned view model for the rooms page, so the browser does not
+    rediscover the grouping state machine or decide which advanced topology
+    controls belong in the primary flow.
     """
     bonded = bool(grouping.get("enabled") and grouping.get("bond_id"))
     if bonded and grouping.get("error"):
@@ -538,8 +456,8 @@ def _rooms_view(grouping: dict, peers: list[dict], self_addr: str) -> dict:
             and any(p.get("address") for p in peers)
         ),
         "can_balance_pair": can_balance,
-        # Full member-list POSTs remain available for scripted/admin same-bond
-        # edits, but the primary page must not surface sub/crossover controls.
+        # The primary page must not surface sub/crossover controls; scripted
+        # same-bond edits still reach them through full member-list POSTs.
         "show_subwoofer_controls": False,
     }
 
@@ -548,21 +466,15 @@ def _rooms_view(grouping: dict, peers: list[dict], self_addr: str) -> dict:
 # HTML rendering.
 # ----------------------------------------------------------------------
 #
-# Migrated to the canonical design system (canonical_page + canonical_header
-# + /assets/app.css). The body is a single `#app` mount point plus the
-# page's ES module — the module clears the mount and builds every card
-# (self status, per-peer click-throughs, the honest forward note) from
-# /rooms.json. Page-specific visuals live in deploy/assets/rooms/rooms.css
-# (page_css_href); shared component classes (.app-header / .info-card /
-# .deflist / .badge / .btn) come from app.css. No inline <script> with
-# behaviour — only the type="module" loader tag.
+# Page-specific visuals live in deploy/assets/rooms/rooms.css
+# (page_css_href); shared component classes come from /assets/app.css. No
+# inline <script> with behaviour — only the type="module" loader tag.
 
 
 def _render_page(*, csrf_token: str = "") -> bytes:
-    # `id="app"` is the contract the ES module mounts on
-    # (document.getElementById("app")); it clears the placeholder on first
-    # render. A visible placeholder means a failed module load degrades to
-    # a message, not a silent blank.
+    # `id="app"` is the mount contract with the ES module, which clears the
+    # placeholder on first render so a failed module load degrades to a
+    # message rather than a blank page.
     #
     # canonical_page emits the CSRF <meta name="jts-csrf"> tag the ES module
     # reads (via http.js jsonHeaders()) for the wake-response POST /peering.
@@ -591,9 +503,8 @@ def _send_json(handler: BaseHTTPRequestHandler, payload: dict, *, status: int = 
     send_json_response(handler, payload, status=status)
 
 
-# Max JSON body on POST /peering. The real payload is ~30 B
-# ({"enabled": true, "primary": false}); anything bigger is malformed or
-# abusive and is rejected before we read it off the wire.
+# Max JSON body on the POST routes; the real payloads are ~30 B, so anything
+# larger is rejected before it is read off the wire.
 _PEERING_BODY_LIMIT = 4096
 
 
@@ -622,14 +533,12 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     REUSES jasper.peering.config for the PEERING_ENV_FILE and state readers
     so there is ONE owner of the peering env contract.
 
-    Read-modify-write: we load the existing file first and only touch the two
-    wake-response keys, PRESERVING everything else (especially
-    JASPER_PEER_ROOM, owned by /speaker/, plus operator-set arbitration knobs
-    like JASPER_PEER_ARB_WINDOW_MS). write_env_file does a full-file replace,
-    so without the merge a save would clobber those.
+    Read-modify-write: write_env_file does a full-file replace, so without
+    the merge a save would clobber JASPER_PEER_ROOM (owned by /speaker/) and
+    operator-set arbitration knobs like JASPER_PEER_ARB_WINDOW_MS.
 
     Fail-soft: a parse/IO error returns a 4xx/5xx JSON error and never raises
-    out of the handler. Structured event= logs on every outcome."""
+    out of the handler."""
     parsed, err = _read_json_body(handler)
     if err is not None:
         log_event(logger, "rooms.peering.save.reject", reason=err, level=logging.WARNING)
@@ -639,14 +548,10 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
     enabled = bool(parsed.get("enabled"))
     primary = bool(parsed.get("primary"))
 
-    # Read and write the SAME path expression so a merge can never read one
-    # file and write another (which would clobber the keys we mean to
-    # preserve). Resolve it once here rather than relying on _load_state's
-    # def-time default.
+    # Resolve the path ONCE so the merge cannot read one file and write
+    # another, which would clobber the keys it means to preserve.
     env_path = peering_config.PEERING_ENV_FILE
 
-    # Load-then-merge so JASPER_PEER_ROOM (owned by /speaker/) and any
-    # operator tuning knobs survive (write_env_file is a full-file replace).
     values: dict[str, str] = dict(peering_config.read_state(env_path))
     values["JASPER_PEERING"] = "on" if enabled else "off"
     if primary:
@@ -672,10 +577,9 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
         primary=int(primary),
     )
 
-    # Restart both daemons — jasper-voice reads JASPER_PEERING to know whether
-    # to call the peering UDS; jasper-control reads it to know whether to start
-    # its peering daemon thread. Both restarts are best-effort / non-blocking
-    # (restart_systemd_units uses systemctl --no-block).
+    # jasper-voice reads JASPER_PEERING to know whether to call the peering
+    # UDS; jasper-control reads it to know whether to start its peering daemon
+    # thread. Both restarts are best-effort and non-blocking.
     restart_voice_daemon()
     restart_systemd_units("jasper-control")
 
@@ -686,29 +590,25 @@ def _save_peering(handler: BaseHTTPRequestHandler) -> None:
 
 
 def _generate_bond_id() -> str:
-    """A short, unique bond identifier. The bond_id is just an opaque label
-    shared by a bond's members (the wizard auto-generates it; the user never
-    types it)."""
+    """A short, unique bond identifier — an opaque label shared by a bond's
+    members; the user never types it."""
     return "bond-" + uuid.uuid4().hex[:8]
 
 
 def lan_target(addr: str, known: set[str] | None = None) -> str | None:
     """Resolve ``addr`` to a host safe to call on the home LAN, or None to
-    refuse it. The SSRF guard for every cross-speaker control call.
+    refuse it. The SSRF guard for every cross-speaker control call — shared
+    by post_grouping_to_member (POST) and the GET /grouping readers so every
+    peer-control operation applies the EXACT same guard.
 
-    ``addr`` empty or one of this host's own addresses → ``"127.0.0.1"``
-    (configure self / talk to our own control API). A remote target must
-    parse as a PRIVATE or loopback IPv4 — the control API is a home-LAN
-    surface, never a public host, and bare hostnames are refused (no DNS
-    rebind surface). Returns the host string on accept, None on refuse.
-    Shared by post_grouping_to_member (POST) and the GET /grouping readers
-    so every peer-control operation applies the EXACT same guard.
+    ``addr`` empty or one of this host's own addresses → ``"127.0.0.1"``. A
+    remote target must parse as a PRIVATE or loopback IPv4: the control API
+    is a home-LAN surface, never a public host, and bare hostnames are
+    refused (no DNS rebind surface).
 
-    ``known`` is this host's own addresses (the self-routing set). Pass a
-    precomputed set — as the fan-out callers do — to compute it ONCE per
-    operation instead of per peer (``self_addresses`` does a socket probe +
-    ``getaddrinfo``); mirrors :func:`_self_address`'s ``known=`` param. ``None``
-    → computed fresh (the standalone-call default)."""
+    ``known`` is this host's own addresses. Pass a precomputed set — as the
+    fan-out callers do — to compute it ONCE per operation instead of per
+    peer; ``self_addresses`` does a socket probe plus ``getaddrinfo``."""
     if known is None:
         known = self_addresses()
     if not addr:
@@ -723,17 +623,13 @@ def lan_target(addr: str, known: set[str] | None = None) -> str | None:
 def request_control_token(handler: BaseHTTPRequestHandler) -> str | None:
     """The browser-supplied X-JTS-Token to forward to each member, or None.
 
-    The /rooms/ grouping mutations fan out SERVER-side to each member's
-    /grouping/set, so the browser's control token (the mandatory gate since
-    WS1 Phase 2) would be lost unless this leader forwards it. We relay only
-    what the operator's browser sent — never inject THIS token from disk — so
-    the CSRF gate stays real. A forwarded browser token authenticates only
-    browser→own-speaker; the cross-device fan-out's own auth is the household
-    credential — a DISTINCT bearer (``X-JTS-Household``) that
-    ``post_grouping_to_member`` injects from disk. That disk read is the
-    intentional, scoped break of this relay-only rule for a DIFFERENT credential
-    and trust domain; the control-token relay-only invariant here is
-    unchanged."""
+    /rooms/ grouping mutations fan out SERVER-side to each member's
+    /grouping/set, so the browser's control token would be lost unless this
+    leader forwards it. RELAY ONLY — never inject this token from disk, or
+    the gate stops being real. A forwarded browser token authenticates
+    browser→own-speaker only; cross-device fan-out auth is the DISTINCT
+    household credential (``X-JTS-Household``), which
+    ``post_grouping_to_member`` does read from disk."""
     token = handler.headers.get("X-JTS-Token")
     return token or None
 
@@ -744,29 +640,20 @@ def post_grouping_to_member(
 ) -> tuple[bool, str]:
     """Configure ONE member by POSTing to its jasper-control /grouping/set.
 
-    This is the cross-speaker call that makes bond-forming one-flow: the
-    browser sends a small intent for the primary stereo-pair flow, the backend
-    owns the member plan, and we fan the config out SERVER-side (no CORS) to
-    each member's control API on the LAN. ``addr`` empty or one of
-    this host's own addresses routes
-    to loopback (configure self). SSRF guard (via :func:`lan_target`): a
-    remote target must be a PRIVATE / loopback IPv4 — the control API is a
-    home-LAN surface, never a public host. ``known`` is forwarded to the guard
-    so a fan-out computes the self-address set once. ``token`` is the
-    browser-supplied control token relayed to each member; a member mints its
-    OWN distinct control_token, so it only authenticates the
-    browser→its-own-speaker call, never a cross-device POST.
+    ``addr`` empty or one of this host's own addresses routes to loopback.
+    SSRF guard via :func:`lan_target`; ``known`` is forwarded to it so a
+    fan-out computes the self-address set once.
 
-    Cross-device fan-out auth is the HOUSEHOLD CREDENTIAL (``X-JTS-Household``):
-    the household secret, attached here — ``household=`` when the caller pre-read
-    it (the unbond path reads it ONCE before it clears, so the concurrent peer
-    POSTs can't race the secret out from under each other), else a fresh
-    ``household_credential.current()`` read. Reading the secret from disk here is
-    the intentional, documented break of ``request_control_token``'s relay-only
-    invariant — a DIFFERENT credential, so injecting IT from disk is correct.
-    A member with no secret yet (unpaired or lost) fail-safe-accepts and
-    adopts it. Attaches nothing on a lone speaker
-    (no secret). Returns (ok, detail); never raises.
+    ``token`` is the browser-supplied control token relayed to each member.
+    A member mints its OWN control_token, so a relayed one authenticates the
+    browser→its-own-speaker call only, never a cross-device POST.
+
+    Cross-device auth is the HOUSEHOLD CREDENTIAL (``X-JTS-Household``):
+    ``household=`` when the caller pre-read it (the unbond path reads it ONCE
+    before it clears, so concurrent peer POSTs can't race the secret out from
+    under each other), else a fresh ``household_credential.current()`` read.
+    A member with no secret yet fail-safe-accepts and adopts it; a lone
+    speaker has none to attach. Returns (ok, detail); never raises.
     """
     target = lan_target(addr, known)
     if target is None:
@@ -812,8 +699,8 @@ def post_grouping_to_member(
         return False, f"HTTP {e.code}: {detail}".strip()
     except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
         # http.client.HTTPException (BadStatusLine / IncompleteRead) is NOT an
-        # OSError subclass — a malformed/truncated reply from one peer must
-        # still return (False, …), never escape and crash the fan-out batch.
+        # OSError subclass, and a malformed reply from one peer must not
+        # escape and crash the fan-out batch.
         return False, str(e)
 
 
@@ -844,8 +731,7 @@ def _read_peer_response(response) -> bytes | None:
     return raw if len(raw) <= PEER_RESPONSE_MAX_BYTES else None
 
 
-# Bounded concurrency for every cross-speaker fan-out / discovery. Caps the
-# pool so a large household (or a wide bond) can't spawn an unbounded number of
+# Caps the pool so a large household can't spawn an unbounded number of
 # blocking-HTTP threads; 8 covers any realistic bond in a single wave.
 _PEER_FANOUT_MAX_WORKERS = 8
 
@@ -855,16 +741,12 @@ def _map_peers(fn, items):
     results in INPUT order. The ONE concurrency primitive for cross-speaker
     I/O.
 
-    Both the bond/unbond POST fan-out (:func:`_fan_out_grouping`) and the
-    /unbond discovery GETs use it, so neither path serializes on a slow/offline
-    peer — at six speakers a serial dissolve would otherwise block ~5 s PER
-    unreachable peer (10–25 s of dead spinner) — and both share one bounded-pool
-    policy instead of two hand-rolled executors. ``fn`` MUST NOT raise: the
-    peer-call helpers (:func:`post_grouping_to_member`, :func:`_get_member_grouping`)
-    return a value on every failure, and ``pool.map`` would otherwise surface
-    the first exception out of the batch. ``pool.map`` preserves submission
-    order, so a slow item never reorders results (callers pair them back
-    positionally). Empty input → empty list (and no pool is created)."""
+    A serial loop would block ~5 s per unreachable peer, so at six speakers a
+    dissolve could hang 10–25 s. ``fn`` MUST NOT raise: ``pool.map`` surfaces
+    the first exception out of the batch, so the peer-call helpers
+    (:func:`post_grouping_to_member`, :func:`_get_member_grouping`) return a
+    value on every failure instead. ``pool.map`` preserves submission order,
+    so callers can pair results back positionally."""
     items = list(items)
     if not items:
         return []
@@ -880,19 +762,15 @@ def _fan_out_grouping(
     """POST a grouping config to several members concurrently, ``(ok, detail)``
     results in INPUT order (the caller pairs them back positionally).
 
-    A thin wrapper over :func:`_map_peers`. The self-address set is computed
-    ONCE here and shared across every member's SSRF guard (``known=``) rather
-    than recomputed per call inside the pool — ``self_addresses`` does a
-    socket probe + ``getaddrinfo``, so per-peer recompute was N redundant
-    lookups across N pool threads. Callers that already hold the set (e.g.
-    :func:`_unbond`, which also used it for discovery) pass it in. ``token``
-    is the browser-supplied control token forwarded to every member's
-    /grouping/set (mandatory gate since WS1 Phase 2; None when the request
-    carried no X-JTS-Token). ``household`` is the household credential
-    (X-JTS-Household) for the cross-device path; pass it explicitly (read ONCE)
-    when the fan-out also mutates the secret — the unbond clear — so a per-member
-    live read can't race the clear; leave it None for bond/swap/trim and each
-    member reads the current secret itself."""
+    The self-address set is computed ONCE here and shared across every
+    member's SSRF guard (``known=``) rather than recomputed per pool thread;
+    callers that already hold it pass it in. ``token`` is the
+    browser-supplied control token forwarded to every member's /grouping/set
+    (None when the request carried no X-JTS-Token). ``household`` is the
+    household credential (X-JTS-Household); pass it explicitly (read ONCE)
+    when the fan-out also mutates the secret — the unbond clear — so a
+    per-member live read can't race the clear, and leave it None for
+    bond/swap/trim so each member reads the current secret itself."""
     if known is None:
         known = self_addresses()
     return _map_peers(
@@ -907,13 +785,12 @@ def _get_member_grouping_response(
     addr: str, known: set[str] | None = None, *,
     timeout: float = CONTROL_HTTP_TIMEOUT_SEC,
 ) -> tuple[dict | None, str | None]:
-    """Read ONE member's lightweight GET /grouping envelope.
+    """Read ONE member's lightweight GET /grouping envelope, under the same
+    SSRF guard as the POST path.
 
-    This is the single target/path seam shared by the membership and readiness
-    parsers below. Same SSRF guard as the POST path. Returns ``(payload, None)``
-    on success or ``(None, household-facing reason)`` on failure; membership
-    discovery deliberately ignores the reason, while bond preflight surfaces
-    it so an old, unreachable, or malformed peer is actionable.
+    Returns ``(payload, None)`` or ``(None, household-facing reason)``.
+    Membership discovery ignores the reason; bond preflight surfaces it so an
+    old, unreachable, or malformed peer is actionable.
     """
     target = lan_target(addr, known)
     if target is None:
@@ -927,9 +804,7 @@ def _get_member_grouping(
 ) -> dict | None:
     """Read and unwrap one member's grouping snapshot.
 
-    Used by :func:`_unbond` to find siblings sharing this speaker's bond. The
-    paired parser owns the wire shape; None on every failure so one unreachable
-    peer cannot break a dissolve.
+    None on every failure, so one unreachable peer cannot break a dissolve.
     """
     parsed, _error = _get_member_grouping_response(addr, known, timeout=timeout)
     if parsed is None:
@@ -943,10 +818,9 @@ def _get_member_grouping_readiness(
 ) -> tuple[dict | None, str | None]:
     """Read one member's pre-mutation verdict from GET /grouping.
 
-    The target computes this through the same policy seam as POST
-    /grouping/set's final active-speaker guard. Returns the verdict plus a
-    household-facing failure reason; every failure remains fail-closed before
-    grouping.env is written.
+    The target computes it through the same policy seam as POST
+    /grouping/set's final active-speaker guard. Every failure is fail-closed:
+    no grouping.env is written.
     """
     parsed, error = _get_member_grouping_response(addr, known, timeout=timeout)
     if parsed is None:
@@ -1036,20 +910,14 @@ def _stereo_pair_members_from_intent(peer_addr: str) -> list[dict]:
 def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /bond: form a bond by configuring every member's role.
 
-    Primary flow: the browser sends ``{peer_addr}``; the backend builds the
-    stereo topology (this speaker leader/left, peer follower/right). Advanced
-    same-bond edits may still send ``{members: [...]}`` explicitly. We mint a
-    bond_id, build one target per member, then fan the config out concurrently
-    to each member's control API via :func:`_fan_out_grouping`. The leader is
-    this speaker (it hosts this page), so followers get its STABLE mDNS handle
-    (:func:`_leader_handle`, e.g. ``jts.local``) as ``leader_addr`` — a handle
-    that survives DHCP IP churn, not a NIC IP. No env editing, no per-speaker
-    tinkering.
+    The browser sends ``{peer_addr}`` and the backend builds the stereo
+    topology (this speaker leader/left, peer follower/right); advanced
+    same-bond edits may send ``{members: [...]}`` explicitly. The leader is
+    always this speaker, so followers get its STABLE mDNS handle
+    (:func:`_leader_handle`) as ``leader_addr``, never a NIC IP.
 
-    Per-member outcomes are returned so the UI can show exactly which
-    speaker failed. A partial failure (some members configured, one
-    unreachable) is surfaced, not auto-rolled-back — the household retries;
-    the `/state` runtime health shows the half-formed bond as degraded.
+    A partial failure is surfaced per member, not auto-rolled-back — the
+    household retries, and `/state` shows the half-formed bond as degraded.
     """
     parsed, err = _read_json_body(handler)
     if err is not None:
@@ -1078,7 +946,7 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
     requested_bond_id = str(parsed.get("bond_id") or "").strip()
     fresh_bond = not requested_bond_id
     bond_id = requested_bond_id or _generate_bond_id()
-    leader_addr = _leader_handle()  # stable mDNS handle of the leader (this speaker)
+    leader_addr = _leader_handle()
     if "mains_highpass_enabled" in parsed:
         mains_highpass_enabled = parsed.get("mains_highpass_enabled")
         if not isinstance(mains_highpass_enabled, bool):
@@ -1105,9 +973,8 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             sub_crossover_hz = m.get("crossover_hz")
             break
 
-    # Build a target per member, recording each one's directory slot so the
-    # positional results from _fan_out_grouping pair back to the right member.
-    # Malformed (non-object) members short-circuit to a result with no call.
+    # Record each member's slot so the positional results from
+    # _fan_out_grouping pair back to the right member.
     results: list[dict] = [None] * len(members)  # type: ignore[list-item]
     targets: list[tuple[str, dict]] = []
     target_idx: list[int] = []
@@ -1124,37 +991,33 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "channel": channel,
             "bond_id": bond_id,
             "leader_addr": "" if role == "leader" else leader_addr,
-            # Explicit empties CLEAR any stale roster (a member that was
-            # a leader in a previous bond must not keep pointing at its
-            # old sibling); the leader gets the real peer/roster below.
+            # Explicit empties CLEAR stale state: a member that led a previous
+            # bond must not keep pointing at its old sibling or roster. The
+            # leader gets the real peer/roster below.
             "peer_addr": "",
             "peer_name": "",
-            # Likewise an explicit empty roster on every non-leader member,
-            # so a member that LED a previous bond can't keep a stale roster.
             "roster": [],
             "mains_highpass_enabled": mains_highpass_enabled,
             "subwoofer_present": subwoofer_present,
         }
         if fresh_bond:
-            # A newly-created pair must not inherit stale balance trim from a
-            # previous bond/unbond cycle. Existing-bond edits, such as adding
-            # a subwoofer, omit trim_db so calibrated L/R balance is preserved.
+            # A new pair must not inherit stale balance trim from a previous
+            # bond/unbond cycle. Existing-bond edits omit trim_db so a
+            # calibrated L/R balance is preserved.
             body["trim_db"] = 0.0
-        # Wireless-sub crossover: every member stores the same corner so the
-        # sub's outputd low-pass and the mains' outputd high-pass are matched
-        # by construction. When a sub is present, the sub member's corner is
-        # authoritative for the whole bond; without a sub, preserve any
-        # per-member value the caller supplied.
+        # Every member stores the same crossover corner so the sub's outputd
+        # low-pass and the mains' outputd high-pass are matched by
+        # construction; with a sub present its corner is authoritative for the
+        # whole bond.
         if subwoofer_present:
             body["crossover_hz"] = sub_crossover_hz
         elif "crossover_hz" in m:
             body["crossover_hz"] = m.get("crossover_hz")
         if role == "leader":
-            # The LEADER records the full roster (any N): every OTHER member
-            # as {addr,name,channel}, so _unbond can disable ALL of them (a
-            # 2.1 system's sub is no longer orphaned). peer_addr/peer_name
-            # stay the PRIMARY L/R sibling so swap/trim/balance keep operating
-            # on the stereo pair, not the sub.
+            # The LEADER records every OTHER member so _unbond can disable ALL
+            # of them (a 2.1 system's sub is not orphaned). peer_addr /
+            # peer_name stay the PRIMARY L/R sibling so swap/trim/balance keep
+            # operating on the stereo pair, not the sub.
             roster: list[dict] = []
             for j, mm in enumerate(members):
                 if j == i or not isinstance(mm, dict):
@@ -1168,8 +1031,6 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
                     "channel": str(mm.get("channel") or "").strip(),
                 })
             body["roster"] = roster
-            # Primary sibling = the first L/R follower (so swap/trim stay on
-            # the stereo pair), else just the first follower.
             others = [
                 mm for j, mm in enumerate(members)
                 if j != i and isinstance(mm, dict)
@@ -1224,20 +1085,18 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         )
         return
 
-    # Mint the household credential on THIS leader before the fan-out, so each
-    # member's /grouping/set carries it (X-JTS-Household, attached live by
-    # post_grouping_to_member) and adopts it on receipt — locking down every
+    # Mint the household credential BEFORE the fan-out so each member's
+    # /grouping/set carries it and adopts it on receipt, locking down every
     # subsequent cross-device grouping change. Idempotent: re-bonding the same
-    # household reuses the existing secret (control-plane-auth §6).
+    # household reuses the existing secret.
     try:
         household_credential.ensure()
     except OSError as exc:
-        # A write failure (e.g. the 2026-05-23 read-only-rootfs class) must not
-        # fail the bond: members fail-safe-accept, so the bond still forms — the
-        # cross-device credential is just not minted, leaving /grouping/set open
-        # until a later bond succeeds. Visible, not silent: the WARN here plus
-        # the doctor's "bonded but household credential missing" check surface
-        # the degraded auth. Mirrors control_token's ensure_failed guard.
+        # A write failure must not fail the bond: members fail-safe-accept, so
+        # the bond still forms with the credential unminted, leaving
+        # /grouping/set open until a later bond succeeds. The WARN plus the
+        # doctor's "bonded but household credential missing" check surface the
+        # degraded auth.
         log_event(
             logger, "household_credential.ensure_failed",
             error=str(exc), level=logging.WARNING,
@@ -1249,10 +1108,9 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
         results[slot] = {"addr": addr, "role": body["role"], "ok": ok, "detail": detail}
 
     all_ok = all(r["ok"] for r in results)
-    # Name each failed member in the journal (not just the aggregate) — on a
-    # headless speaker the HTTP response isn't a diagnostic surface, so a
-    # half-formed bond must say WHICH member failed and WHY. Failures only
-    # (a healthy pair logs nothing here — no journal spam).
+    # On a headless speaker the HTTP response is not a diagnostic surface, so
+    # a half-formed bond must name WHICH member failed and WHY in the journal.
+    # Failures only, so a healthy pair logs nothing here.
     for r in results:
         if not r["ok"]:
             log_event(
@@ -1281,19 +1139,9 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
 def _unbond(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /unbond: dissolve the bond THIS speaker is in.
 
-    The inverse of :func:`_save_bond`. We read this speaker's own grouping
-    (read_grouping_state); if it isn't in a bond (not enabled, or no bond_id)
-    there's nothing to dissolve → 400. Otherwise we browse the sibling
-    directory, GET each peer's ``/grouping``, and collect the peers whose
-    ``bond_id`` EQUALS ours — a peer in a DIFFERENT bond is left alone, never
-    disabled. We then fan ``{enabled: false, trim_db: 0.0}`` out to self
-    (empty addr → our own loopback control API) plus every matched peer via
-    :func:`_fan_out_grouping`.
-
-    Self is ALWAYS in the disable set, so "leave the bond" works locally even
-    when no peer is reachable. HTTP 200 when self disabled OK (the local leave
-    succeeded), 502 otherwise. ``dissolved`` lists the addresses that
-    confirmed disabled; ``results`` carries the per-target outcomes."""
+    A peer in a DIFFERENT bond is left alone, never disabled. Self is ALWAYS
+    in the disable set, so "leave the bond" works locally even when no peer is
+    reachable: HTTP 200 when self disabled OK, 502 otherwise."""
     grouping = read_grouping_state()
     bond_id = str(grouping.get("bond_id") or "").strip()
     if not grouping.get("enabled") or not bond_id:
@@ -1303,24 +1151,18 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         )
         return
 
-    # Find siblings sharing our bond_id. Read every candidate's /grouping
-    # CONCURRENTLY (via _map_peers) behind ONE self-address computation: a
-    # serial loop here would block ~5 s per slow/offline peer, so at six
-    # speakers dissolving could hang 10–25 s. Self is excluded from the
-    # candidates (it's in `known`) — it's disabled explicitly below, not
-    # rediscovered. A peer we can't reach (GET → None) or one in a different
-    # bond is simply not added to the disable set.
+    # Self is excluded from the candidates (it is in `known`) and disabled
+    # explicitly below, not rediscovered. An unreachable peer, or one in a
+    # different bond, is simply not added to the disable set.
     known = self_addresses()
     roster = grouping.get("roster")
     roster_addr = str(grouping.get("peer_addr") or "").strip()
     candidate_groupings: list = []
     if isinstance(roster, list) and roster:
-        # Full-roster path (N-member bonds, e.g. a 2.1 system): the leader
-        # recorded EVERY follower at bond time, so disable self + exactly
-        # those — no orphaned sub, and no foreign-claimer ambiguity (the
-        # roster is authoritative, so the discovery / peer_addr block is
-        # skipped). Best-effort: aim the disable at each recorded address
-        # even if offline, so a powered-off follower isn't left stranded.
+        # The leader recorded EVERY follower at bond time, so the roster is
+        # authoritative: no orphaned sub and no foreign-claimer ambiguity.
+        # The disable is aimed at each recorded address even when offline, so
+        # a powered-off follower is not left stranded.
         peer_addrs = [
             a for a in (
                 str(m.get("addr") or "").strip()
@@ -1328,13 +1170,12 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
             ) if a
         ]
     elif roster_addr:
-        # Legacy pair-roster (no full roster): disable exactly the recorded
-        # sibling — never a foreign device that happens to claim our bond_id
-        # (a transient claimer here would get its grouping DISABLED, which is
-        # worse than the read-path ambiguity). Best-effort: if the resolver
-        # can't confirm the peer (offline), still aim the disable at its
-        # last known address so a powered-off-then-on follower isn't
-        # left stranded by design; the fan-out reports the failure.
+        # Legacy pair-roster: disable exactly the recorded sibling, never a
+        # foreign device that happens to claim our bond_id — a transient
+        # claimer would get its grouping DISABLED, worse than the read-path
+        # ambiguity. When the resolver cannot confirm the peer, the disable is
+        # still aimed at its last known address and the fan-out reports the
+        # failure.
         resolved_addr, _pg, _err = resolve_bond_peer(grouping, known)
         peer_addrs = [resolved_addr or roster_addr]
     else:
@@ -1353,19 +1194,17 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
             and str(pg.get("bond_id") or "").strip() == bond_id
         ]
 
-    # Self first (empty addr → loopback), then each matching peer. Reuse the
-    # same `known` set for the disable fan-out's SSRF guard.
+    # Self first (empty addr → loopback), then each matching peer.
     disabled_body = {"enabled": False, "trim_db": 0.0}
     targets: list[tuple[str, dict]] = [("", dict(disabled_body))]
     targets += [(addr, dict(disabled_body)) for addr in peer_addrs]
     addrs = [t[0] for t in targets]
 
-    # Read the household credential ONCE before the fan-out. Each member's
-    # /grouping/set (enabled=false) clears its own secret — and self (loopback)
-    # clears ours — so a per-member live read could race the clear and strip a
+    # Read the household credential ONCE before the fan-out: each member's
+    # /grouping/set (enabled=false) clears its own secret, and self (loopback)
+    # clears ours, so a per-member live read could race the clear and strip a
     # peer of the credential it needs to authenticate the very unbond that
-    # dissolves it. Passing the pre-read value makes every peer POST carry it
-    # regardless of clear ordering (control-plane-auth §6).
+    # dissolves it.
     household = household_credential.current()
     fan_results = _fan_out_grouping(
         targets, known=known, token=request_control_token(handler),
@@ -1378,10 +1217,9 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
     dissolved = [r["addr"] for r in results if r["ok"]]
     self_ok = results[0]["ok"]  # self is always targets[0]
 
-    # Name each member we couldn't disable (self shows as "(self)") so a
-    # half-dissolved bond — e.g. a follower offline at dissolve time, left
-    # stranded — is visible in the journal, not just the aggregate. Failures
-    # only; the empty-addr target is self.
+    # Name each member we could not disable so a half-dissolved bond — a
+    # follower offline at dissolve time, left stranded — is visible in the
+    # journal, not just in the aggregate.
     for r in results:
         if not r["ok"]:
             log_event(
@@ -1392,20 +1230,16 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
                 detail=r["detail"],
                 level=logging.WARNING,
             )
-    # `unreachable` = candidates whose discovery GET failed. A same-bond
-    # follower offline at dissolve time lands here (we can't read its bond_id,
-    # so it never becomes a disable target and is left stranded) — surfacing
-    # the count explains a "I dissolved but a speaker stayed grouped" report
-    # without a per-candidate line.
+    # Candidates whose discovery GET failed: a same-bond follower offline at
+    # dissolve time never becomes a disable target and stays grouped, so the
+    # count explains that report without a per-candidate line.
     unreachable = sum(1 for pg in candidate_groupings if pg is None)
     log_event(
         logger,
         "rooms.unbond",
         bond=bond_id,
-        # Which containment path disabled the members (full N-member roster vs
-        # the legacy single-sibling vs bond_id discovery) — keyed on the branch
-        # taken, not on the legacy peer_addr which a full-roster bond also sets
-        # to its primary L/R sibling.
+        # Keyed on the branch taken, not on the legacy peer_addr, which a
+        # full-roster bond also sets to its primary L/R sibling.
         path=(
             "full" if (isinstance(roster, list) and roster)
             else "legacy" if roster_addr
@@ -1432,21 +1266,19 @@ def resolve_bond_peer(
 
     Roster-first: the bond flow records the chosen peer on the leader
     (``peer_addr`` + ``peer_name`` in grouping.env), so pair operations
-    resolve THE peer the household actually picked. Probe the recorded
-    IP; if it no longer answers for OUR bond and a ``peer_name`` is
-    recorded, re-find that name in the live directory (DHCP moved the
-    IP) and accept the matching device. With a roster, a FOREIGN device
-    transiently claiming our bond_id can never create ambiguity (the
-    observed 2026-06-12 failure: an endpoint-tier test Pi cycling
-    through bond states made swap/trim/balance all fail with
-    "found 2") — and an unreachable roster peer is a hard, NAMED error,
-    never an excuse to guess. Bonds recorded before the roster existed
-    fall back to the legacy inference (every discovered device claiming
-    our bond_id), which still errors on ambiguity.
+    resolve THE peer the household picked. When the recorded IP no longer
+    answers for OUR bond, a recorded ``peer_name`` is re-found in the live
+    directory (DHCP moved the IP). With a roster, a FOREIGN device
+    transiently claiming our bond_id cannot create ambiguity — that was the
+    observed failure mode, a device cycling through bond states making
+    swap/trim/balance fail with "found 2" — and an unreachable roster peer is
+    a hard, NAMED error, never an excuse to guess. Bonds recorded before the
+    roster existed fall back to the legacy inference (every discovered device
+    claiming our bond_id), which still errors on ambiguity.
 
-    ``grouping_reader`` is the one I/O policy seam: normal mutations use the
-    default full-timeout reader, while read-only UI snapshots can provide a
-    shorter reader without duplicating peer-resolution rules.
+    ``grouping_reader`` is the one I/O policy seam: mutations use the default
+    full-timeout reader, read-only UI snapshots a shorter one, without
+    duplicating peer-resolution rules.
 
     ``err`` is "" on success; on failure addr is "" and grouping None.
     """
@@ -1514,20 +1346,14 @@ def resolve_bond_peer(
 def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /swap: exchange the two members' channels (left ↔ right).
 
-    The physical speakers stay where they are; each one simply plays the
-    other channel — the leader keeps streaming the same stereo program and
-    each member's outputd ChannelPick drops the other side after its
-    reconciler applies the change (~a one-period blip per speaker). Roles,
-    bond_id, and leader_addr are untouched: this is a channel-assignment
-    edit, never a leadership change.
+    A channel-assignment edit, never a leadership change: roles, bond_id and
+    leader_addr are untouched. Each member's outputd ChannelPick drops the
+    other side once its reconciler applies the change (about a one-period
+    blip per speaker).
 
-    Deliberately scoped to the 2-speaker left/right pair: discovery mirrors
-    :func:`_unbond` (browse siblings, GET each ``/grouping``, match our
-    bond_id), then requires exactly ONE same-bond peer and a {left, right}
-    channel set between us — a mono/multi-member bond has no well-defined
-    "swap" and 400s with the reason. Self's new channel is written via the
-    loopback target (empty addr), the peer via its address, both through
-    the same :func:`_fan_out_grouping` machinery as /bond."""
+    Deliberately scoped to the 2-speaker left/right pair: it requires exactly
+    ONE same-bond peer and a {left, right} channel set, since a mono or
+    multi-member bond has no well-defined "swap" and 400s with the reason."""
     grouping = read_grouping_state()
     bond_id = str(grouping.get("bond_id") or "").strip()
     if not grouping.get("enabled") or not bond_id:
@@ -1555,14 +1381,12 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
         self_channel == peer_channel and self_channel in ("left", "right")
     )
     if repairing:
-        # Same-channel pair ({left,left} / {right,right}) — the residue of
-        # an interrupted swap whose rollback also failed. A strict
-        # left/right precondition would make Swap the one button that
-        # CANNOT fix the state Swap created, so this completes the
-        # interrupted intent instead: self keeps its channel, the peer
-        # takes the opposite. Any {left,right} assignment beats a stuck
-        # same-channel pair; one more tap swaps again if it lands
-        # backwards.
+        # A same-channel pair is the residue of an interrupted swap whose
+        # rollback also failed. A strict left/right precondition would make
+        # Swap the one button that CANNOT fix the state Swap created, so this
+        # completes the interrupted intent instead: any {left,right}
+        # assignment beats a stuck same-channel pair, and one more tap swaps
+        # again if it lands backwards.
         swapped_self, swapped_peer = self_channel, (
             "right" if self_channel == "left" else "left"
         )
@@ -1610,11 +1434,10 @@ def _swap_channels(handler: BaseHTTPRequestHandler) -> None:
                 level=logging.WARNING,
             )
     # The two writes fan out CONCURRENTLY, so exactly-one-failed leaves the
-    # pair on a SAME-channel state ({left,left} / {right,right}) — audibly
-    # wrong, and it blocks a retry because the {left,right} precondition no
-    # longer holds. Best-effort rollback: put the member that DID flip back
-    # on its original channel so the bond returns to a consistent,
-    # retryable state. Rollback failure is surfaced, never silent.
+    # pair SAME-channel — audibly wrong, and it blocks a retry because the
+    # {left,right} precondition no longer holds. Best-effort rollback returns
+    # the member that DID flip to its original channel; a failed rollback is
+    # surfaced, never silent.
     rolled_back = None
     if not all_ok and any(r["ok"] for r in results):
         ok_idx = 0 if results[0]["ok"] else 1
@@ -1932,9 +1755,7 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /trim: set the pair balance absolutely.
 
     Body ``{target: "pair", balance_db}`` — the rooms slider's only trim
-    write. Reads the JSON body and delegates to :func:`_set_pair_balance`,
-    which validates ``balance_db`` and rewrites both member trims through
-    the ``/grouping/set`` surface the bond flow uses."""
+    write."""
     parsed, err = _read_json_body(handler)
     if err is not None:
         _send_json(handler, {"ok": False, "error": err},
@@ -1972,9 +1793,9 @@ def _grouping_set_body(
 def _set_mains_highpass(handler: BaseHTTPRequestHandler) -> None:
     """Handle POST /mains-highpass: toggle wireless-sub bass management.
 
-    This is a bond-wide preference, so the page fans it to every reachable
-    member through the normal /grouping/set surface. The reconciler remains
-    the single writer of outputd env; this endpoint only updates grouping.env.
+    A bond-wide preference, so it fans out to every reachable member. The
+    reconciler remains the single writer of outputd env; this endpoint only
+    updates grouping.env.
     """
     parsed, err = _read_json_body(handler)
     if err is not None:
@@ -2103,9 +1924,8 @@ def _set_mains_highpass(handler: BaseHTTPRequestHandler) -> None:
 
 
 def _make_handler():
-    """Build the request handler class. No state-path binding — the
-    directory pulls everything live (mDNS browse + grouping + peering SSOT),
-    and POST /peering writes through the reused peering config constant."""
+    """Build the request handler class. No state paths are captured here, so
+    every request re-reads mDNS, grouping and peering.env."""
 
     class _Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # noqa: ANN001, A003
