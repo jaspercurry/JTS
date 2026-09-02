@@ -377,6 +377,10 @@ def test_streambox_parking_disables_brain_units():
     assert "systemctl disable --now" in parking
 
 
+def _installer_function_body(name: str) -> str:
+    return installer_text().split(f"{name}() {{", 1)[1].split("\n}", 1)[0]
+
+
 def test_streambox_keeps_hid_accessory_bridge():
     """A volume remote is renderer-side, not a voice-brain feature.
 
@@ -384,13 +388,65 @@ def test_streambox_keeps_hid_accessory_bridge():
     jasper-control runs on both profiles, so parking it as a brain surface
     silently costs a streambox its paired remote's buttons.
     """
-    text = installer_text()
-    parking = text.split("park_streambox_brain_units() {", 1)[1].split("\n}", 1)[0]
+    parking = _installer_function_body("park_streambox_brain_units")
     assert "jasper-input.service" not in parking
-    streambox_runtime = text.split("start_streambox_runtime_units() {", 1)[1].split(
-        "\n}", 1
-    )[0]
-    assert "jasper-input.service" in streambox_runtime
+
+
+def test_hid_accessory_unit_files_actually_install(tmp_path):
+    """Run the shared installer for real; assert the files land.
+
+    `systemctl enable` on a unit whose file was never written exits 1, and
+    install.sh runs under `set -euo pipefail`, so a missing file aborts the
+    install partway. A box carrying the file from an earlier FULL install
+    passes regardless -- which is exactly how the gap shipped unnoticed.
+    """
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail\n'
+            'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
+            "install_hid_accessory_unit_files\n",
+        ],
+        env={
+            **os.environ,
+            "REPO_DIR": str(REPO_ROOT),
+            "SYSTEMD_DIR": str(systemd_dir),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {path.name for path in systemd_dir.iterdir()} == {
+        "jasper-input.service",
+        "jasper-accessory-reconcile.service",
+        "jasper-wiim-remote-mic.service",
+        "jasper-wiim-remote-ce.service",
+    }
+
+
+def test_streambox_install_and_runtime_cover_the_accessory_bridge():
+    """Both halves, because either alone still leaves a broken box.
+
+    Structural rather than executed: install_streambox_systemd_units writes
+    outside SYSTEMD_DIR (/usr/local/lib/jasper), so it cannot run
+    unprivileged in a test the way the helper above can.
+
+    Enabling without starting is its own failure: enable only arms the unit
+    for the NEXT boot, while deploy health checks THIS one, so every
+    streambox deploy would report a missing bridge until someone rebooted.
+    """
+    install_path = _installer_function_body("install_streambox_systemd_units")
+    assert "install_hid_accessory_unit_files" in install_path
+
+    runtime = _installer_function_body("start_streambox_runtime_units")
+    assert "jasper-input.service" in runtime
+    assert "systemctl restart jasper-input.service" in runtime
+    assert "jasper-accessory-reconcile --reason install" in runtime
 
 
 def test_streambox_keeps_coupling_auto_for_usb_direct_capture():
