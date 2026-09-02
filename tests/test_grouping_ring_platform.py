@@ -600,6 +600,12 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
         # escalation premise it rests on, are in
         # tests/test_dac_content_ring_platform.py.
         DAC_CONTENT_RING_FILE,
+        # The renderer-ingress lanes are the case on the OTHER side of the
+        # escalation line that is still unlinked: a stale lane ring detaches
+        # fan-in and fails the renderer's own open, which is silent and
+        # permanent rather than bounded and visible. Membership pin in
+        # tests/test_install_ring_platform_sequencing.py.
+        f"{renderer_lanes.RING_SHM_DIR}/{renderer_lanes.RENDERER_RING_PREFIX}*.ring",
     }, f"the deploy-time ring rm -f set changed: {sorted(removed)}"
     assert GROUPING_RING_FILE not in removed
     # The asymmetry is stated where the lines are, not only here.

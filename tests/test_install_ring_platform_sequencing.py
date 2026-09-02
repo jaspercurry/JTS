@@ -9,9 +9,16 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from fnmatch import fnmatch
 from pathlib import Path
 
 from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
+from jasper.renderer_lanes import (
+    RENDERER_LANES,
+    RENDERER_RING_PREFIX,
+    RING_SHM_DIR,
+    renderer_ring_path,
+)
 from jasper.ring_assets import (
     RING_A_PROGRAM_FILE,
     RING_ACTIVE_CONTENT_FILE,
@@ -66,11 +73,22 @@ install_jts_ring_platform
         RING_ACTIVE_CONTENT_FILE,
         DAC_CONTENT_RING_FILE,
     )
+    lane_glob = f"{RING_SHM_DIR}/{RENDERER_RING_PREFIX}*.ring"
     assert log.read_text().splitlines() == [
         "build",
         "conf",
         *(f"rm -f {ring}" for ring in rings),
+        f"rm -f {lane_glob}",
     ]
+    # The lane glob must reach every declared lane and no lock file. A lane
+    # ring left at a PRIOR geometry fails the renderer's writer open on every
+    # connect, and the arm-path deleter only fires on arm/disarm transitions,
+    # so the installer is the only thing that clears it across a format change.
+    for lane in RENDERER_LANES:
+        ring = renderer_ring_path(lane.label)
+        assert fnmatch(ring, lane_glob)
+        assert not fnmatch(f"{ring}.writer.lock", lane_glob)
+        assert not fnmatch(f"{ring}.open.lock", lane_glob)
 
 
 def test_full_install_runs_ring_platform_before_systemd_units():

@@ -384,8 +384,8 @@ install_jts_ring_conf_assets() {
 install_jts_ring_platform() {
     build_install_jts_ring_ioplug
     install_jts_ring_conf_assets
-    # Ring files are tmpfs transport state, never user data. Delete all three
-    # explicit files before install_systemd_units can restart fan-in/outputd: an
+    # Ring files are tmpfs transport state, never user data. Delete every file
+    # named below before install_systemd_units can restart fan-in/outputd: an
     # existing 8-slot mmap from an older default would be a fatal attach
     # mismatch after the new 2-slot default lands. CamillaDSP keeps reading its
     # old unlinked fd until the later DSP reconcile reloads it onto the freshly-
@@ -398,6 +398,18 @@ install_jts_ring_platform() {
     # every armed fleet box is pinned. The installer needs no roleful
     # knowledge to own it — on a box that has no ACTIVE ring the file does not
     # exist and `rm -f` is a no-op.
+    #
+    # The renderer-ingress LANE rings (`lane-<label>.ring`, RENDERER_LANES in
+    # jasper/renderer_lanes.py) join for the parallel reason: their deleter
+    # `delete_stale_ring` runs only for labels in `set(desired) ^ set(current)`
+    # (jasper/cli/audio_config.py) — arm/disarm transitions, never a deploy
+    # that moves the sample FORMAT or width under an unchanged armed set.
+    # They are NOT on the reboot side of the asymmetry below: a stale lane ring
+    # detaches fan-in (`reason=geometry`) and fails the renderer's own
+    # `snd_pcm_open`. They are unlinked anyway because that outcome is SILENT
+    # and permanent — unlike `grouping.ring`, whose stale cost is a visible
+    # `failed` unit, a stale lane just plays nothing until someone runs `rm`.
+    # Globbed, so the installer needs no copy of the lane roster.
     #
     # Safe because nothing needs the header to SURVIVE a deploy: the ring is
     # create-or-attach from BOTH ends (the ioplug's `ring_mapping_open` and
@@ -453,4 +465,5 @@ install_jts_ring_platform() {
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring
     rm -f /dev/shm/jts-ring/dac-content.ring
+    rm -f /dev/shm/jts-ring/lane-*.ring
 }
