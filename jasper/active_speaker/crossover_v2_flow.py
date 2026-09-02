@@ -4266,10 +4266,9 @@ class CrossoverV2Session:
         # recording. See ``locate_failed_message``.
         reflection_measured: bool | None = None
         if verdict.code == REASON_VERIFY_INCONCLUSIVE:
-            gate_record = _gate_record(
-                analysis.summed_response,
-                declared_first_bounce_s=_declared_first_bounce_s(MARK_DISTANCE_M),
-            )
+            # Read, never recomputed: the one verdict carrying this code
+            # stashed THIS capture's record via ``_set_verify_outcome``.
+            gate_record = self._verify_gate
             if gate_record is not None:
                 reflection_measured = bool(gate_record["reflection_measured"])
         verdict = replace(

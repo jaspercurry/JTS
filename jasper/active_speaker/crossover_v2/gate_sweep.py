@@ -68,6 +68,7 @@ from jasper.audio_measurement.gating import (
     TAPER_FRACTION,
     TRUSTED_FLOOR_MULTIPLIER,
     build_gate_window,
+    intersect_bands,
 )
 
 from .feature_optics import (
@@ -106,11 +107,12 @@ RESOLUTION_GREY_CYCLES = 5.0
 #: margin of the same order as the deltas themselves (P1). Deliberately NOT
 #: the sibling :data:`.feature_classifier.NORMALISE_BAND_HZ` (400-8000 Hz,
 #: median, per rung): 400-1200 Hz is the band that moves most with the rung,
-#: and a reference must not drift with the thing it is referencing (P1).
+#: and a reference must not drift with the thing it is referencing (P1). Not
+#: :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`: that one grades.
 REFERENCE_BAND_HZ = (2500.0, 8000.0)
 REFERENCE_RUNG_MS = 7.0
 
-#: Analysis grid. Deliberately NOT :func:`.feature_classifier.analysis_grid`,
+#: Analysis grid. Deliberately NOT :func:`.feature_classifier.classification_grid`,
 #: whose floor is 300 Hz: the lowest spec band starts at 250 Hz and the
 #: features under investigation sit at 358 and 441.6 Hz, so the grid has to
 #: reach below the band edge it grades.
@@ -141,14 +143,12 @@ NARROW_Q_BRACKET = 1.5
 # applying two thresholds would be two instruments wearing one name.
 
 #: Across-pose sigma growth, longest valid rung over shortest, at or above
-#: which the feature is the room's. It sits in a wide measured gap rather than
-#: on a convention: on the banked validation corpus
+#: which the feature is the room's (the discriminator is the module
+#: docstring's). It sits in a wide measured gap rather than on a convention:
+#: on the banked validation corpus
 #: (``captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md``
 #: and the P1 report it reproduces) the three sub-1.2 kHz features the room
-#: owns read 3.6x / 5.5x / 5.1x, and every HF feature — pure directivity,
-#: whose across-pose scatter is large and perfectly window-invariant — reads
-#: 0.94x to 1.4x. Sigma that is LARGE is not the discriminator and reading it
-#: as one mis-attributes directivity (#3495); sigma that GROWS is.
+#: owns read 3.6x / 5.5x / 5.1x, and every HF feature reads 0.94x to 1.4x.
 SIGMA_GROWTH_ROOM_RATIO = 2.0
 
 #: ...and below this much across-pose sigma at the LONGEST valid rung, the
@@ -279,13 +279,6 @@ def _band_mean_db(
     return float(np.mean(curve[mask])) if mask.any() else float("nan")
 
 
-def _intersect(
-    a: tuple[float, float], b: tuple[float, float]
-) -> tuple[float, float] | None:
-    lo, hi = max(a[0], b[0]), min(a[1], b[1])
-    return (lo, hi) if lo < hi else None
-
-
 @dataclass(frozen=True)
 class SweepCurves:
     """One capture read through the whole ladder — this sweep's own scratch.
@@ -309,7 +302,7 @@ def _read_curves(
     """Every capture's normalised and detrended curves, in capture order."""
     reads: list[SweepCurves] = []
     for capture in captures:
-        reference_band = _intersect(REFERENCE_BAND_HZ, capture.radiated_band_hz)
+        reference_band = intersect_bands(REFERENCE_BAND_HZ, capture.radiated_band_hz)
         if reference_band is None:
             raise RoundCapturesRefused(
                 REFUSE_REFERENCE_BAND_EMPTY,
@@ -567,11 +560,11 @@ def moved_routes(
     """Which routes say the window MOVED this feature. Any one alone is enough.
 
     Three independent readings of one question, because each is blind where
-    another sees: across-pose sigma that GROWS is the P1 discriminator and
-    needs a real pose cloud; a corrected depth change is what a round of
-    repeat takes at one pose still has; and a centre that WALKS between the
-    two rungs catches a feature the window re-makes without deepening, which
-    the other two miss entirely. An empty list is
+    another sees: the sigma-growth route (the module docstring's
+    discriminator) needs a real pose cloud; a corrected depth change is what
+    a round of repeat takes at one pose still has; and a centre that WALKS
+    between the two rungs catches a feature the window re-makes without
+    deepening, which the other two miss entirely. An empty list is
     :data:`WINDOW_STABLE` — a finding, not a silence.
     """
     routes: list[str] = []
@@ -765,7 +758,7 @@ def _band_result(
         max(read.capture.radiated_band_hz[0] for read in reads),
         min(read.capture.radiated_band_hz[1] for read in reads),
     )
-    graded = _intersect((lo_hz, hi_hz), radiated)
+    graded = intersect_bands((lo_hz, hi_hz), radiated)
     result: dict[str, Any] = {
         "band_hz": [lo_hz, hi_hz],
         "tolerance_db": tolerance_db,

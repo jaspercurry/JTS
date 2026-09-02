@@ -52,6 +52,7 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     compare_rounds,
 )
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
     METERS_PER_INCH,
@@ -60,6 +61,8 @@ from jasper.audio_measurement.measurement_geometry import (
 
 from ._logging import configure_verbose_logging
 from ._refusal import refused
+from ._report import render_report
+from ._unit_pair import MILLIMETRES, add_unit_pair, unit_pair_meters
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -83,19 +86,9 @@ def _refused(reason: str, detail: Mapping[str, Any]) -> int:
     )
 
 
-def _diameter_m(args: argparse.Namespace) -> float | None:
-    if args.driver_diameter_mm is not None:
-        return float(args.driver_diameter_mm) / 1000.0
-    if args.driver_diameter_in is not None:
-        return float(args.driver_diameter_in) * METERS_PER_INCH
-    return None
-
-
 def _cmd_distance(args: argparse.Namespace) -> int:
-    # The diameter's mutually-exclusive argparse group is required=True here,
-    # so an ordinary CLI call already refuses naming neither unit; this catches
-    # what argparse cannot -- a hand-built Namespace or an `-O`-stripped assert.
-    diameter = _diameter_m(args)
+    # Catches what the required argparse group cannot: a hand-built Namespace.
+    diameter = unit_pair_meters(args, "driver-diameter", metric=MILLIMETRES)
     if diameter is None:
         return _refused(
             REFUSE_NO_DRIVER_DIAMETER,
@@ -138,7 +131,9 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             far_capture_id=args.far_capture,
             close_capture_id=args.close_capture,
             fc_hz=args.fc_hz,
-            driver_diameter_m=_diameter_m(args),
+            driver_diameter_m=unit_pair_meters(
+                args, "driver-diameter", metric=MILLIMETRES
+            ),
             far_gate_ms=args.far_gate_ms,
             close_gate_ms=args.close_gate_ms,
             geometry=_geometry(args.geometry),
@@ -148,15 +143,11 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     except (ValueError, OSError) as exc:
         return _refused(REFUSE_UNREADABLE_ROUND, {"error": str(exc)})
 
-    payload = {"status": "compared", "close_reference": report}
-    # allow_nan=False: `NaN`/`-Infinity` are not JSON and a strict reader
-    # rejects them, so an ungraded number that stopped being `None` at the
-    # source fails here rather than in the reader's parser.
-    text = json.dumps(
-        payload, indent=2, sort_keys=True, default=str, allow_nan=False
-    )
+    # Echoed always, filed only on --out: the shared serialization, not
+    # `write_report`'s out-or-default.
+    text = render_report({"status": "compared", "close_reference": report})
     if args.out:
-        Path(args.out).write_text(text + "\n")
+        atomic_write_text(args.out, text + "\n")
     print(text)
 
     alignment = report["alignment"]
@@ -199,21 +190,6 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _add_driver(child: argparse.ArgumentParser, *, required: bool) -> None:
-    """The driver diameter, in one unit or the other and never both.
-
-    Mirrors ``jasper-declare-geometry``'s ``_add_unit_pair`` (that helper hard-
-    codes an in/m pair, so this pair borrows the shape rather than the code):
-    without the exclusive group, ``_diameter_m``'s check order silently decided
-    which of two supplied units won.
-    """
-    group = child.add_mutually_exclusive_group(required=required)
-    group.add_argument("--driver-diameter-in", type=float, default=None,
-                       metavar="INCHES", help="driver diameter, in inches")
-    group.add_argument("--driver-diameter-mm", type=float, default=None,
-                       metavar="MM", help="driver diameter, in millimetres")
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-close-reference",
@@ -229,7 +205,8 @@ def build_parser() -> argparse.ArgumentParser:
     distance = sub.add_parser(
         "distance", help="where to put the mic for this driver's close capture"
     )
-    _add_driver(distance, required=True)
+    add_unit_pair(distance, "driver-diameter", required=True,
+                  label="driver diameter", metric=MILLIMETRES)
     distance.add_argument(
         "--fc-hz", type=float, required=True,
         help="the crossover corner; the close capture is valid to fc/2",
@@ -256,7 +233,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--fc-hz", type=float, default=None,
         help="crossover corner; caps the comparison band at fc/2",
     )
-    _add_driver(compare, required=False)
+    add_unit_pair(compare, "driver-diameter", required=False,
+                  label="driver diameter", metric=MILLIMETRES)
     compare.add_argument(
         "--far-gate-ms", type=float, default=None,
         help="override the far window; default is the declared geometry's own "

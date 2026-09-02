@@ -30,6 +30,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     add_delayed_copy,
     biquad_peaking,
 )
+from jasper.active_speaker.crossover_v2.feature_optics import CENTRE_SEARCH_OCT
 from jasper.active_speaker.crossover_v2.gate_sweep import (
     moved_routes,
     sweep_features,
@@ -362,6 +363,23 @@ def test_a_named_frequency_is_read_the_way_a_worst_bin_is(
         unresolved["sensitivity_null_reason"]
         == gate_sweep.NULL_INSUFFICIENT_VALID_RUNGS
     )
+
+
+def test_the_null_model_shows_its_fit_at_every_pose(
+    anchored_reports: tuple[dict, dict],
+) -> None:
+    """``per_pose_*`` discloses one fit per pose, each inside the search span."""
+    _plain, anchored = anchored_reports
+    named = anchored["features"][0]
+    null_model = named["sensitivity"]["null_model"]
+    n_poses = len(named["poses"])
+    lo = named["bin_hz"] * 2.0**-CENTRE_SEARCH_OCT
+    hi = named["bin_hz"] * 2.0**CENTRE_SEARCH_OCT
+
+    assert n_poses > 1
+    for field in ("per_pose_centre_hz", "per_pose_depth_db", "per_pose_q"):
+        assert len(null_model[field]) == n_poses
+    assert all(lo <= centre <= hi for centre in null_model["per_pose_centre_hz"])
 
 
 def test_naming_a_frequency_does_not_move_the_bands(

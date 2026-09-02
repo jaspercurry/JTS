@@ -44,9 +44,8 @@ from the seam that already owns it:
 pose was the one curve a round did not carry pre-computed, so
 :func:`verify_pose_curve` deconvolved, gated, smoothed and resampled its raw
 dump-ring bytes. Ruling S3 banked the curve, so the re-derivation is gone and
-the only transform left anywhere here is the ``fraction=1`` residual
-:func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` call
-:func:`agreement_table` takes through the product's own seam.
+the only transform left anywhere here is the :func:`~.feature_optics.detrend`
+call :func:`agreement_table` takes through the shared optics seam.
 
 **Input shape**: a *banked round directory*, the tree
 ``scripts/bank-crossover-round.sh <dest-dir>`` produces —
@@ -134,6 +133,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
 )
+from jasper.active_speaker.crossover_v2.feature_optics import detrend
 from jasper.active_speaker.crossover_v2.gate_sweep import (
     DEFAULT_RUNGS_MS,
     GRID_HI_HZ,
@@ -153,7 +153,6 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundViewsError,
     round_inputs,
 )
-from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.olive_metrics import nbd_and_sm
 
 __all__ = [
@@ -1346,7 +1345,7 @@ def repeat_floor_provenance(label: str, banked: BankedRound) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Agreement — per-seat sign/magnitude testimony for every feature
+# View 5 — Agreement: per-seat sign/magnitude testimony for every feature
 # --------------------------------------------------------------------------- #
 
 
@@ -1385,32 +1384,6 @@ class AgreementFeature:
             "ratio": self.ratio,
             "common_mode": self.common_mode,
         }
-
-
-def _detrend(grid: np.ndarray, curve_db: np.ndarray) -> np.ndarray:
-    """Each seat expressed against its own local ~1-octave background.
-
-    A feature is a local excursion, not the gross tilt no narrow biquad can
-    or should chase — the campaign's own ``agreement.py`` made the same call,
-    subtracting a per-bin ``[fc*2**-0.5, fc*2**0.5)`` window average from
-    each curve before hunting for features.
-
-    **This is the same QUESTION, not the same ARITHMETIC.** The campaign's
-    detrend is a plain arithmetic mean of dB values over a half-open window;
-    ``smooth_fractional_octave(..., fraction=1)`` is the product seam's
-    POWER-mean (linear-energy average) over a very slightly different,
-    inclusive-topped window. The two track each other closely for the small
-    ripple this function is built to isolate, but they are NOT byte-
-    identical — this module's numbers will not reproduce the campaign's own
-    published detrend tables bin-for-bin, and a caller comparing the two
-    should compare verdicts (which feature, which sign, roughly what size),
-    never subtract one table's cell from the other's. Reusing the product
-    seam here — rather than porting the campaign's exact arithmetic — is the
-    deliberate choice: taking "1-octave window average" from the seam that
-    owns it beats a second, bespoke implementation of the same idea that
-    could drift from it. This is now the only call to it in the module.
-    """
-    return curve_db - smooth_fractional_octave(grid, curve_db, fraction=1)
 
 
 def _local_features(
@@ -1509,7 +1482,9 @@ def agreement_table(
     grid = np.asarray(grid, dtype=float)
     if not seats:
         raise RoundViewsError("agreement_table: no seats supplied")
-    detrended = np.vstack([_detrend(grid, seat.normalized_db) for seat in seats])
+    # Power-mean, unlike the campaign's dB mean: compare its published
+    # tables by verdict, never cell for cell.
+    detrended = np.vstack([detrend(seat.normalized_db, grid) for seat in seats])
     pooled = detrended.mean(axis=0)
     features = []
     n_seats = len(seats)
@@ -1544,7 +1519,7 @@ def agreement_table(
 
 
 # --------------------------------------------------------------------------- #
-# View 4 — audibility-weighted co-metrics: NBD + SM (Olive 2004 /
+# View 6 — audibility-weighted co-metrics: NBD + SM (Olive 2004 /
 # US 8,311,232 B2), ADR-0202, ticket 6.13
 # --------------------------------------------------------------------------- #
 

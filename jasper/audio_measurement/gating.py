@@ -431,6 +431,15 @@ def f_entanglement_floor_hz(t_first_bounce_s: float) -> float:
     return TRUSTED_FLOOR_MULTIPLIER / t_first_bounce_s
 
 
+def intersect_bands(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float] | None:
+    """The band both of ``a`` and ``b`` cover, or ``None`` when they do not.
+
+    Strict ``lo < hi``: a zero-width touch, and any non-finite edge, is ``None``.
+    """
+    lo, hi = max(a[0], b[0]), min(a[1], b[1])
+    return (lo, hi) if lo < hi else None
+
+
 @dataclass(frozen=True)
 class EntanglementFloor:
     """The room's floor and where it came from, as ONE value.

@@ -546,13 +546,11 @@ provenance stated — never vetoes:
   report's frame, not this section's `depth_db` frame). `gate_rungs` is every
   rung's pooled depth, across-pose sigma and cycles-in-window;
   `gate_sensitivity` is what the verdict turned on, `window_verdict_reasons`
-  naming which route fired. **Sigma that GROWS with the window is the room;
-  sigma that is merely LARGE is directivity** — an azimuth-only pose cloud
-  produces big, perfectly window-invariant HF scatter, and reading that as the
-  room mis-attributes it (#3495). `MOVED` fires on any one of three routes
-  alone: across-pose sigma growth, a null-model-corrected depth change, or a
-  centre that walks between the two rungs. The engine owns all three bars and
-  is the only place they are written down —
+  naming which route fired; what sigma growth MEANS is `gate_sweep.py`'s own
+  module docstring. `MOVED` fires on any one of three routes alone: across-pose
+  sigma growth, a null-model-corrected depth change, or a centre that walks
+  between the two rungs. The engine owns all three bars and is the only place
+  they are written down —
   [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)'s
   `SIGMA_GROWTH_ROOM_RATIO`, `SIGMA_GROWTH_MIN_SIGMA_DB`,
   `GATE_DELTA_SLACK_DB` and `CENTRE_SHIFT_OCT`, each with the corpus reading
@@ -611,9 +609,9 @@ floors is §6a: the instruments there are physical, not a longer window.
 
 **The spec verdict now carries that window-invariance read at its own worst
 bin.** Each band publishes `sigma_growth_ratio` (across-pose sigma at the
-longest resolution-valid rung over the shortest — growth is what says *room*,
-never size), `gate_sensitivity_db` (the null-model-corrected depth the window
-contributed), `n_valid_rungs`, and `gate_sensitivity_note` when there is no
+longest resolution-valid rung over the shortest), `gate_sensitivity_db` (the
+null-model-corrected depth the window contributed), `n_valid_rungs`, and
+`gate_sensitivity_note` when there is no
 number; the report carries `gate_sweep_frame`, without which none of them
 reproduces. They are DISCLOSURE — no grade moves — and they are stamped from
 the round's raw captures, not from the pipeline's already-gated ones, which is
@@ -690,10 +688,11 @@ Run it on a banked verify or cloud round (across-pose σ needs two poses):
 Always pass `--at-hz` the failing band's own `max_deviation_hz` — a band's
 automatic `worst_bin_hz` is its DEEPEST bin, which is not in general its most
 window-divergent one. Read `features[].sensitivity.sigma_growth_ratio`,
-`corrected_delta_db`, `n_valid_rungs` and `bands[].band_mean_sigma_db_by_rung`:
-**σ that GROWS with window length is the room; σ that is large but
-window-invariant is directivity.** It licenses no filter — it is evidence for an
-attribution argument, never a verdict, and never an EQ instruction.
+`corrected_delta_db`, `n_valid_rungs` and `bands[].band_mean_sigma_db_by_rung`
+through [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)'s
+module docstring, which states the discriminator once. It licenses no filter —
+it is evidence for an attribution argument, never a verdict or an EQ
+instruction.
 
 **Rung 3 — `jasper-close-reference`: how much of the far read was the room?**
 Only once rung 2 says room and the feature is worth one more capture. Ask

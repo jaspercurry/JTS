@@ -82,6 +82,7 @@ SPEC_BANDS: tuple[tuple[float, float, float], ...] = (
 # frame while removed from every band would re-centre the zero each surviving
 # deviation is stated against.
 # `FlatSpecReport.reference_band_hz` publishes the span actually pooled.
+# Not `gate_sweep.REFERENCE_BAND_HZ`: that one normalises, it grades nothing.
 REFERENCE_BAND_HZ: tuple[float, float] = (GATED_SPEC_LOWER_EDGE_HZ, 2000.0)
 
 
@@ -170,9 +171,8 @@ class BandResult:
         ``corrected_delta_db``). ``None`` whenever
         ``gate_sensitivity_note`` says why there is no number.
       sigma_growth_ratio: across-pose sigma at the longest resolution-valid
-        rung over the shortest one, at the same bin. The room/speaker
-        discriminator: it is sigma that GROWS with window length that says
-        room, never sigma that is merely large (#3495).
+        rung over the shortest one, at the same bin. What growth means is
+        :mod:`~jasper.active_speaker.crossover_v2.gate_sweep`'s docstring.
       n_valid_rungs: how many ladder rungs were resolution-valid at that bin
         -- the denominator behind the two numbers above. Present whenever the
         ladder ran, including when it then declined to publish a ratio.

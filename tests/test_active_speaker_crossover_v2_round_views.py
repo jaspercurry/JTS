@@ -847,7 +847,7 @@ def test_agreement_marks_a_feature_common_mode_when_every_seat_agrees():
     """A -6 dB dip at the same bin, same sign, same rough size, at every
     seat: sign agreement AND magnitude agreement -> COMMON-MODE.
 
-    The dip is deep (6 dB, not 1 dB) because :func:`_detrend`'s 1-octave
+    The dip is deep (6 dB, not 1 dB) because the optics seam's 1-octave
     window includes the dip's own bins, so a narrow, shallow dip is mostly
     cancelled by its own local average before ``agreement_table`` ever sees
     it — the same shrinkage the campaign's own detrend has. 6 dB survives

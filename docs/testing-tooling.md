@@ -2254,9 +2254,9 @@ dump-ring bytes; ruling S3 banked the curve instead, so it is now READ —
 [`durable_state.verify_measured_curve_from_state`](../jasper/active_speaker/crossover_v2/durable_state.py)
 reads `verify_priors.verify_measured` out of the round's banked `state.json`,
 and the result is `np.interp`-ed onto the round's shared grid. The only
-transform left anywhere in the module is the `fraction=1` residual
-`smooth_fractional_octave` call `agreement_table`'s `_detrend` takes through
-the same product seam.
+transform left anywhere in the module is the residual
+[`feature_optics.detrend`](../jasper/active_speaker/crossover_v2/feature_optics.py)
+call `agreement_table` takes through the shared optics seam.
 
 **A round can bank no VERIFY curve at all** — no `state.json`, one that
 doesn't read back as a JSON object, or one banked with no
