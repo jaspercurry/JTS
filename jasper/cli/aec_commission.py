@@ -33,9 +33,12 @@ from jasper.chip_aec_alignment import (
     AlignmentArtifact,
     MAX_CENTER_ERROR,
     MIN_EDGE_MARGIN,
+    MIC_COUNT,
     MicTiming,
+    PLAYBACK_RATE,
     ProductResult,
     Rejected,
+    TIMING_TRIALS,
     analyze_product,
     analyze_timing,
     choose_delay,
@@ -63,9 +66,9 @@ MARKER = Path("/run/jasper-chip-aec-commission/active")
 STATE_PATH = Path("/var/lib/jasper/chip-aec-commission.json")
 # Where a rejected run's captures land instead of unwinding with the temp
 # dir, and how many rejections are kept.  Three is the run of rejections the
-# owner already has (#3271); a run retains at most 26 files (24 timing trials
-# plus the product pair) of 2 s x 6 ch x 16 kHz S16 (~10 MB), so the ceiling
-# is ~30 MB of /var/lib.
+# owner already has (#3271); a run retains two timing phases x MIC_COUNT x
+# TIMING_TRIALS files plus the product pair, each CAPTURE_SECONDS x 6 ch x
+# 16 kHz S16 (~0.4 MB), so the ceiling is single-digit MB of /var/lib.
 REJECTED_CAPTURE_DIR = Path("/var/lib/jasper/chip-aec-rejections")
 RETAINED_REJECTIONS = 3
 # Never the stimulus, warm-up, or adaptation files the same run writes: all
@@ -79,7 +82,22 @@ ARM_RECONCILE_REASON = "chip-aec-commission-arm"
 _CLEANUP_RECONCILE_REASON = "chip-aec-commission"
 MEASUREMENT_VOLUME_DB = -28.282827
 INITIAL_SYS_DELAY = xvf3800.CHIP_AEC_SYS_DELAY_DEFAULT
-ADAPTATION_REPEATS = 90
+# The audible budget.  A capture is audible for its whole `arecord -d` window
+# whatever fraction of it the sweep occupies, plus the lead before playback
+# starts; adaptation is audible for the chunks it plays and stops early on the
+# chip's own AEC_AECCONVERGED.  `chirp_seconds` holds the plan to the cap.
+CAPTURE_SECONDS = 2
+CAPTURE_LEAD_SECONDS = 0.25
+# One chunk is one copy of the padded stimulus.  The guards are load-bearing
+# for the chip, not just for the capture analysis: back-to-back sweep copies
+# are periodic far-end and the AEC never converged on them (62 s), while the
+# gapped train converged at copy 34.
+ADAPTATION_CHUNKS = 60
+# The worst case the plan above can actually cost, not a target: the run is
+# dominated by adaptation at the present too-quiet stimulus level.  Bringing it
+# toward 30 s is the auto-level follow-up's job (a louder stimulus converges
+# sooner) and, failing that, continuous-noise adaptation.
+CHIRP_BUDGET_SECONDS = 85.0
 STOP_UNITS = (
     "jasper-voice.service",
     "jasper-aec-bridge.service",
@@ -143,13 +161,23 @@ def _create_marker(path: Path) -> None:
         os.close(fd)
 
 
+def chirp_seconds(stimulus_frames: int) -> float:
+    """Seconds a full run is audible at worst: warmup, both timing phases, the
+    AEC-on/AEC-off pair, and every adaptation chunk the cap allows."""
+
+    captures = 1 + 2 * MIC_COUNT * TIMING_TRIALS + 2
+    return captures * (CAPTURE_SECONDS + CAPTURE_LEAD_SECONDS) + (
+        ADAPTATION_CHUNKS * stimulus_frames / PLAYBACK_RATE
+    )
+
+
 def _final_timing(evidence: Sequence[MicTiming]) -> tuple[tuple[int, ...], float, int]:
     lags = tuple(item.lag for item in evidence)
     center = (min(lags) + max(lags)) / 2
     margin = min(
         min(
-            item.lag - item.uncertainty - xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MIN,
-            xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MAX - item.lag - item.uncertainty,
+            item.lag - xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MIN,
+            xvf3800.CHIP_AEC_FIRST_PEAK_HARD_MAX - item.lag,
         )
         for item in evidence
     )
@@ -225,22 +253,6 @@ def _guarded(
         ) from rejection
 
 
-def _adapt_until_converged(io, dev, stimulus: Path, directory: Path) -> None:
-    """Play the adaptation train, then refuse if the chip never converged."""
-
-    started = time.monotonic()
-    io.adapt(stimulus, directory)
-    if io.convergence(dev) != 1:
-        raise Rejected(
-            "adaptation",
-            {
-                "chunks_played": ADAPTATION_REPEATS,
-                "adaptation_seconds": round(time.monotonic() - started, 1),
-                "converged": 0,
-            },
-        )
-
-
 def _timing_trials(
     io, dev, hardware: Hardware, delay: int, stimulus: Path,
     reference: np.ndarray, directory: Path, label: str,
@@ -251,7 +263,7 @@ def _timing_trials(
             delay,
             io.timing(dev, hardware, mic, stimulus, reference, directory, label),
         )
-        for mic in range(4)
+        for mic in range(MIC_COUNT)
     )
 
 
@@ -324,9 +336,14 @@ def _commission(
             lags, center, margin = _final_timing(final)
 
             io.apply(dev, hardware, choice.sys_delay, arm=True)
-            _guarded(
-                lambda: _adapt_until_converged(io, dev, stimulus, directory),
+            chunks, seconds = _guarded(
+                lambda: io.adapt_until_converged(dev, stimulus),
                 directory, rejection_dir, gate="adaptation",
+            )
+            # What the chip actually needed is what a later run's cap is set
+            # from; it is knowable only here.
+            log_event(
+                logger, "chip_aec_commission.adapted", chunks=chunks, seconds=seconds,
             )
             product = _guarded(
                 lambda: io.product(
@@ -357,6 +374,7 @@ def _commission(
                 "queue_median_delta": queue_median - before_median,
                 "queue_spread": max(after.samples) - min(after.samples),
                 "queue_samples": len(after.samples),
+                "chirp_seconds": round(chirp_seconds(len(stereo)), 1),
                 "lags": lags,
                 "center": center,
                 "worst_edge_margin": margin,
@@ -649,11 +667,12 @@ class SystemIO:
         recorder = subprocess.Popen(
             [
                 "arecord", "-q", "-D", f"hw:CARD={hardware.card},DEV=0",
-                "-d", "2", "-f", "S16_LE", "-r", "16000", "-c", "6", str(output),
+                "-d", str(CAPTURE_SECONDS), "-f", "S16_LE", "-r", "16000",
+                "-c", "6", str(output),
             ]
         )
         try:
-            time.sleep(0.25)
+            time.sleep(CAPTURE_LEAD_SECONDS)
             _play_correction(stimulus, timeout=5)
             if recorder.wait(timeout=5):
                 raise CommissioningError("XVF capture failed")
@@ -670,7 +689,7 @@ class SystemIO:
         aec_init.write_required(dev, "AUDIO_MGR_OP_L", [3, mic])
         aec_init.write_required(dev, "AUDIO_MGR_OP_R", [12, 0])
         trials = []
-        for trial in range(3):
+        for trial in range(TIMING_TRIALS):
             capture = self._capture(
                 hardware, stimulus, directory / f"{label}-m{mic}-{trial}.wav"
             )
@@ -685,15 +704,29 @@ class SystemIO:
     def warmup(self, hardware: Hardware, stimulus: Path, directory: Path) -> None:
         self._capture(hardware, stimulus, directory / "discarded-warmup.wav")
 
-    def adapt(self, stimulus: Path, directory: Path) -> None:
-        repeated = directory / "adaptation.wav"
-        with wave.open(str(stimulus), "rb") as source:
-            params, frames = source.getparams(), source.readframes(source.getnframes())
-        with wave.open(str(repeated), "wb") as target:
-            target.setparams(params)
-            for _ in range(ADAPTATION_REPEATS):
-                target.writeframesraw(frames)
-        _play_correction(repeated, timeout=120)
+    def adapt_until_converged(self, dev, stimulus: Path) -> tuple[int, float]:
+        """Play adaptation chunks until the chip converges.
+
+        Returns the chunks played and the seconds they took — measured, because
+        that number is what a later run's cap is set from.
+        """
+
+        started = time.monotonic()
+        for chunks in range(1, ADAPTATION_CHUNKS + 1):
+            self.adapt(stimulus)
+            if self.convergence(dev) == 1:
+                return chunks, round(time.monotonic() - started, 1)
+        raise Rejected(
+            "adaptation",
+            {
+                "chunks_played": ADAPTATION_CHUNKS,
+                "adaptation_seconds": round(time.monotonic() - started, 1),
+                "converged": 0,
+            },
+        )
+
+    def adapt(self, stimulus: Path) -> None:
+        _play_correction(stimulus, timeout=5)
 
     def product(
         self, dev, hardware: Hardware, delay: int, stimulus: Path,

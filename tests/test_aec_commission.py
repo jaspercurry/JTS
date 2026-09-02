@@ -18,9 +18,11 @@ from jasper.chip_aec_alignment import (
     MicTiming,
     ProductResult,
     Rejected,
+    TIMING_TRIALS,
     TimingRejected,
     TimingResult,
     artifact_from_dict,
+    commissioning_stimulus,
 )
 from jasper.cli import aec_commission
 from jasper.mics import xvf3800
@@ -134,9 +136,13 @@ class _FakeIO:
     ) -> tuple[int, ...]:
         self.events.append(f"timing:{label}:m{mic}")
         lag = (20, 17, 19, 21)[mic] if label == "initial" else (21, 18, 20, 22)[mic]
-        return (lag, lag, lag)
+        return (lag,) * TIMING_TRIALS
 
-    def adapt(self, _stimulus, _directory) -> None:
+    # The real loop over a fake chip: it only needs `adapt` and `convergence`,
+    # so the cap and the refusal under test are the shipped ones.
+    adapt_until_converged = aec_commission.SystemIO.adapt_until_converged
+
+    def adapt(self, _stimulus) -> None:
         self.events.append("adapted")
 
     def product(self, _dev, _hardware, _delay, _stimulus, _active, directory):
@@ -278,7 +284,8 @@ class _RejectingIO(_FakeIO):
     def timing(self, _dev, _hardware, mic, _stimulus, _reference, directory, label):
         (directory / f"{label}-m{mic}-0.wav").write_bytes(b"RIFF")
         raise TimingRejected(
-            TimingResult(20, 0.31, 0.42, 121, 0.41, -30.0, -20.0, 0), at_edge=False
+            TimingResult(20, 0.31, 0.42, 121, 0.41, 8, 0.41, -30.0, -20.0, 0),
+            at_edge=False,
         )
 
 
@@ -406,7 +413,7 @@ def test_a_run_that_never_converges_retains_its_captures_and_its_counts(
         f"{phase}-m{mic}-0.wav" for phase in ("final", "initial") for mic in range(4)
     ]
     for field in (
-        f"chunks_played={aec_commission.ADAPTATION_REPEATS}",
+        f"chunks_played={aec_commission.ADAPTATION_CHUNKS}",
         "converged=0",
         "phase=adaptation",
         f"retained_captures={retained[0]}",
@@ -676,7 +683,7 @@ def test_reset_rejects_a_different_xvf_after_reenumeration(monkeypatch) -> None:
 
 def test_final_timing_must_land_on_bulls_eye() -> None:
     evidence = tuple(
-        MicTiming(mic, 0, (lag, lag, lag))
+        MicTiming(mic, 0, (lag,) * TIMING_TRIALS)
         for mic, lag in enumerate((10, 11, 12, 13))
     )
     with pytest.raises(aec_commission.CommissioningError, match="center"):
@@ -685,11 +692,22 @@ def test_final_timing_must_land_on_bulls_eye() -> None:
 
 def test_final_timing_rejects_causal_window_cusp() -> None:
     evidence = tuple(
-        MicTiming(mic, 0, (lag, lag, lag))
+        MicTiming(mic, 0, (lag,) * TIMING_TRIALS)
         for mic, lag in enumerate((1, 2, 3, 4))
     )
     with pytest.raises(aec_commission.CommissioningError, match="margin"):
         aec_commission._final_timing(evidence)
+
+
+def test_a_full_run_stays_inside_the_chirp_budget() -> None:
+    # The figure held to the budget is the worst case — every adaptation chunk
+    # spent — because that is what a run that never converges costs.
+    stereo, _reference, _active = commissioning_stimulus()
+
+    assert (
+        aec_commission.chirp_seconds(len(stereo))
+        <= aec_commission.CHIRP_BUDGET_SECONDS
+    )
 
 
 def test_sandboxed_unit_keeps_the_reconciler_leg_env_path_writable() -> None:
