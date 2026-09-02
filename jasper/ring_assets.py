@@ -481,7 +481,7 @@ def ring_ioplug_wire_supported(
 
 # The ring's slot geometry IS fixed at ``RING_SLOT_FRAMES`` (128). jasper-fanin
 # creates Ring A with that COMPILE-TIME constant
-# (rust/jasper-fanin/src/config.rs, no env override) and every conf.d PCM block
+# (rust/jasper-ring/src/layout.rs, no env override) and every conf.d PCM block
 # shares one period value, so the conf.d period is pinned to it too — this file
 # is not free to follow a DAC. Making the slot derivable is issue #2147.
 #
