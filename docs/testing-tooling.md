@@ -391,30 +391,29 @@ to the wrapper's checkout, so calls from another working directory neither
 select that directory's venv nor import an editable `jasper` package from a
 different checkout.
 
-Both score with `openwakeword.model.Model`, both use 1280-sample
-(80 ms @ 16 kHz) frames matching production's WakeLoop. They differ
-in scope:
+`_offline_wake_count.py` scores with `openwakeword.model.Model`,
+using 1280-sample (80 ms @ 16 kHz) frames matching production's
+WakeLoop:
 
 | Tool | Scope | Output |
 |---|---|---|
 | [`scripts/_offline_wake_count.py`](../scripts/_offline_wake_count.py) | **One file, per-utterance.** Template-based cross-correlation locates each utterance, then reports peak score / RMS / category (`detected` / `near_miss` / `weak_signal` / `silent_miss`) per utterance. Production-default threshold 0.5; near-miss floor 0.10 (matches wake-events DB). | text or JSON, one block per utterance |
-| [`scripts/score-baseline-wakeword.py`](../scripts/score-baseline-wakeword.py) | **Batch, per-file.** Streams each file end-to-end, reports file-level peak / fires-at-three-thresholds / mean / median. Designed to run across the entire `reference-conditions/` corpus in one invocation. | CSV (one row per file) + summary table |
 
 **Default thresholds: 0.5 / 0.3 / 0.1.** These match production
 (`jasper/wake.py` default 0.5) and the wake-events DB near-miss floor
 (0.10). Don't invent new threshold tiers without checking against these.
 
 `_offline_wake_count.py` is the underscore-prefixed Python helper
-called by `wake-rate-test.sh`. `score-baseline-wakeword.py` is a
-top-level user-callable tool because batch scoring across a corpus
-is a standalone use case.
-
-"Standalone" there means the *invocation* is standalone, not the
-dependencies: both scripts import `jasper` on the scoring path (for
-the openWakeWord import guard — see
+called by `wake-rate-test.sh`. It imports `jasper` on the scoring
+path (for the openWakeWord import guard — see
 [`jasper/openwakeword_guard.py`](../jasper/openwakeword_guard.py)),
-so run them under `/opt/jasper/.venv/bin/python` on a speaker or the
+so run it under `/opt/jasper/.venv/bin/python` on a speaker or the
 repo venv on a laptop. `--help` still works without either.
+
+For batch, per-clip scoring across a corpus (CSV one row per clip,
+plus an aggregate summary by leg/condition/split), use the shipped
+[`jasper-wake-score`](../jasper/cli/wake_score.py) console entry
+point instead of a standalone script.
 
 ---
 
@@ -3451,7 +3450,7 @@ Default to extending. Add new only when:
 
 - **Different audio source** the existing tools can't access (e.g. a phone
   relay vs. the XVF via USB-UAC2 vs. the WiiM Remote 2 Bluetooth mic).
-- **Different output target audience** (e.g. CSV for spreadsheet review vs. one-shot text report — `score-baseline-wakeword.py` vs. `_offline_wake_count.py`).
+- **Different output target audience** (e.g. CSV for spreadsheet review vs. one-shot text report — `jasper-wake-score` vs. `_offline_wake_count.py`).
 - **Fundamentally different question** (test-track generation vs. wake counting are different questions, hence different tools).
 
 A flag on an existing tool is almost always cheaper than a new file.

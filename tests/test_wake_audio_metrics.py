@@ -163,15 +163,14 @@ runpy.run_path(script, run_name="__main__")
 
 # Scripts whose `--help` must not need `jasper` importable.
 #
-# Both take a function-local `from jasper.openwakeword_guard import ...` for
+# Takes a function-local `from jasper.openwakeword_guard import ...` for
 # this reason: argparse exits before the guard call, so usage text stays
 # available on an interpreter that has numpy/openwakeword but not the project.
 #   _offline_wake_count.py    — wake-rate-test.sh scp's it to a Pi's /tmp.
-#   score-baseline-wakeword.py
 # scripts/_waveform_fusion_experiment.py is deliberately NOT here: it already
 # imported `jasper` at module top before the guard existed, so requiring it is
 # not a regression.
-_HELP_WITHOUT_JASPER_SCRIPTS = ("_offline_wake_count.py", "score-baseline-wakeword.py")
+_HELP_WITHOUT_JASPER_SCRIPTS = ("_offline_wake_count.py",)
 
 
 @pytest.mark.parametrize("script_name", _HELP_WITHOUT_JASPER_SCRIPTS)
