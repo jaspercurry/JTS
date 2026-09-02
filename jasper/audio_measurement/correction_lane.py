@@ -297,9 +297,9 @@ def popen_correction_play(
     Returns the live :class:`subprocess.Popen` handle — callers own its
     lifecycle (poll / terminate / wait), exactly as they did with their
     pre-P6c-0 inline ``subprocess.Popen`` calls. ``stdout``/``stderr`` are
-    required so each site states its routing: the wizard sites pass
-    ``subprocess.DEVNULL``; the operator CLI (``jasper.cli.aec_tune``)
-    passes ``None`` to keep aplay's stderr on the operator's terminal.
+    required so each site states its routing: every current caller (the
+    wizard sites) passes ``subprocess.DEVNULL``, and ``None`` inherits the
+    parent's stdio for a foreground operator CLI.
     """
     return subprocess.Popen(
         correction_play_argv(wav_path),

@@ -6,8 +6,7 @@ now the bridge's only reference source, and the aloop tap itself is deleted
 later in the same arc (P9). This file pins the three halves of that
 retirement so none of them can quietly come back:
 
-  1. the bridge (and the tuning tool beside it) has no ALSA reference
-     reader left,
+  1. the bridge has no ALSA reference reader left,
   2. a live box still carrying the retired value converges instead of
      going deaf, while a genuinely unknown value still fails loudly, and
   3. `jasper-aec-reconcile` — the single writer of that env var — never
@@ -28,7 +27,6 @@ from jasper.cli import aec_bridge
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
-AEC_TUNE = REPO / "jasper" / "cli" / "aec_tune.py"
 RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 
 RETIRED = "alsa"
@@ -91,47 +89,6 @@ def test_the_bridge_module_has_no_alsa_reference_reader():
     )
     assert not hasattr(aec_bridge, "_ref_thread"), (
         "_ref_thread was the retired ALSA reference capture loop"
-    )
-
-
-def test_the_tuning_tool_has_no_raw_dsnoop_reference_reader():
-    """The same retirement, one tool over (U4 / P7-2): `jasper/cli/aec_tune.py`
-    used to open the summed program's dsnoop tap RAW to record its AEC
-    reference, which made it a second declarer of the fan-in lane width — a raw
-    open cannot absorb a format move. It reads outputd's UDP speaker monitor
-    now, and the tap's PCM definition is gone from asound.conf entirely.
-
-    AST-walked over *values* only, exactly as the bridge guard above: the
-    tool's own prose names the retired tap to explain the retirement, and must
-    neither satisfy nor trip the guard against it.
-    """
-    tree = ast.parse(AEC_TUNE.read_text())
-    docstrings = _docstring_node_ids(tree)
-    # Positive control FIRST — the assertion below is an ABSENCE, so a reader
-    # that found nothing would satisfy it vacuously.
-    assert any(
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "jasper_capture" in node.value
-        and id(node) in docstrings
-        for node in ast.walk(tree)
-    ), (
-        "aec_tune's own docstrings should still explain the retirement — if "
-        "that prose is gone, this guard is no longer reading what it thinks"
-    )
-    offenders = sorted(
-        f"{AEC_TUNE.name}:{node.lineno}: {node.value!r}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and ("jasper_capture" in node.value or "jasper_ref" in node.value)
-        and id(node) not in docstrings
-    )
-    assert not offenders, (
-        "jasper/cli/aec_tune.py must not name the aloop dsnoop tap — it moved "
-        "to jasper-outputd's UDP speaker monitor in U4/P7-2, and re-opening "
-        "the raw tap would make it a width declarer again:\n"
-        + "\n".join(offenders)
     )
 
 

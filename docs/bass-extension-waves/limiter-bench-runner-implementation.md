@@ -101,7 +101,7 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
 - `hard_excitation_band_hz`, `level_duration_limits` in
   `jasper/active_speaker/driver_safety.py`.
 - Operator CLI entries register in `pyproject.toml` `[project.scripts]` as
-  `jasper-<name> = "jasper.cli.<mod>:main"` (mirror `jasper-aec-tune`).
+  `jasper-<name> = "jasper.cli.<mod>:main"` (mirror `jasper-aec-commission`).
 
 ## What to build
 

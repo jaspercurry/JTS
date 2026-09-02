@@ -97,9 +97,8 @@ full = [
     # needed because the USB-mic relay wants nonblocking period writes and
     # explicit gadget-ring occupancy control, and the probes capture the XVF
     # mic directly. NOT for an AEC reference: every reference consumer reads
-    # jasper-outputd's UDP speaker monitor now (the bridge since U4/P7-1,
-    # jasper-aec-tune since U4/P7-2), so nothing opens a custom asoundrc PCM
-    # for it any more.
+    # jasper-outputd's UDP speaker monitor now (the bridge since U4/P7-1),
+    # so nothing opens a custom asoundrc PCM for it any more.
     "pyalsaaudio>=0.11; sys_platform == 'linux'",
     # Google integration (Calendar + Gmail voice tools). google-auth and
     # google-auth-oauthlib drive the per-account OAuth + refresh flow;
@@ -187,7 +186,6 @@ jasper-control-token = "jasper.cli.control_token:main"
 jasper-mux = "jasper.mux:main"
 jasper-aec-init = "jasper.cli.aec_init:main"
 jasper-aec-commission = "jasper.cli.aec_commission:main"
-jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
 jasper-usbmic = "jasper.cli.usb_mic:main"
 jasper-aec-sweep-config = "jasper.cli.aec_sweep_config:main"
