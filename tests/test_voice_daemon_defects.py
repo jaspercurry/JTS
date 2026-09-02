@@ -313,8 +313,8 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
             def is_paused(self) -> bool:
                 return self._paused
 
-            def outage_cue(self) -> str | None:
-                return cue
+            def wake_cue(self) -> str:
+                return cue or "cant_connect"
 
         wl._wake_late_cancelled = lambda *_a, **_k: False
         wl._peer_arbitrate = _win

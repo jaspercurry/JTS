@@ -98,7 +98,6 @@ EX_CONFIG_EXIT = 78
 VOICE_PROVIDER_NOT_CONFIGURED_EXIT = EX_CONFIG_EXIT
 VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
 INTERNAL_ERROR_CUE_SLUG = "internal_error"
-CANT_CONNECT_CUE_SLUG = "cant_connect"
 # Primary microphone could not be opened at startup (os.EX_NOINPUT). A
 # DISTINCT code from EX_CONFIG (78) so the unit, doctor, and /state can
 # tell "no usable mic" from "no provider configured". Listed in
@@ -1439,8 +1438,8 @@ class WakeLoop:
             def last_failure_detail(self) -> str | None:
                 return None
 
-            def outage_cue(self) -> str | None:
-                return None
+            def wake_cue(self) -> str:
+                return "cant_connect"
 
             def supports_server_vad(self) -> bool:
                 return False
@@ -4071,9 +4070,7 @@ class WakeLoop:
                 )
                 await self._telemetry_stage("gate_blocked")
                 await self._telemetry_outcome("gate_blocked", "connection_paused")
-                await self._play_cue(
-                    self._connection.outage_cue() or CANT_CONNECT_CUE_SLUG
-                )
+                await self._play_cue(self._connection.wake_cue())
                 return
 
             # Step 3: existing chirp + acquire + drain flow.
@@ -4118,9 +4115,7 @@ class WakeLoop:
                     cleanup_error,
                 )
             if self._connection.is_paused():
-                await self._play_cue(
-                    self._connection.outage_cue() or CANT_CONNECT_CUE_SLUG
-                )
+                await self._play_cue(self._connection.wake_cue())
             else:
                 await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
             self._acquire_buffer.clear()

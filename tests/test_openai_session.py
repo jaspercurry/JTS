@@ -1626,8 +1626,8 @@ async def test_reconnect_escalation_cue_fires_once_per_outage():
     try:
         await _outage(_Terminal, opens=2)
         assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG]
-        # Recovered: nothing for the wake path to say.
-        assert conn.outage_cue() is None
+        # Recovered: no remedy outstanding.
+        assert conn._outage.cue is None
 
         await _outage(_Terminal, opens=3)
         assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG] * 2
@@ -1642,7 +1642,7 @@ async def test_reconnect_escalation_cue_fires_once_per_outage():
         await _wait_until(
             lambda: conn._state is ConnectionState.FAILED, timeout=3.0,
         )
-        assert conn.outage_cue() == NEEDS_ATTENTION_CUE_SLUG
+        assert conn.wake_cue() == NEEDS_ATTENTION_CUE_SLUG
         assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG] * 3
     finally:
         await conn.stop()

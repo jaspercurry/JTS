@@ -758,8 +758,8 @@ class GeminiLiveConnection:
     def last_failure_detail(self) -> str | None:
         return self._outage.detail
 
-    def outage_cue(self) -> str | None:
-        return self._outage.cue
+    def wake_cue(self) -> str:
+        return self._outage.wake_cue
 
     def supports_server_vad(self) -> bool:
         return False

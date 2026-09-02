@@ -39,6 +39,7 @@ class CueDef:
     description: str
     # Played instead while this cue has no baked WAV: cues are
     # synthesised through the provider whose outage they announce.
+    # Remove once cues are baked by a local TTS that needs no provider.
     fallback: str | None = None
 
 
@@ -92,12 +93,9 @@ CUES: tuple[CueDef, ...] = (
             "{hostname}."
         ),
         description=(
-            "Terminal connection failure whose rejection body names "
-            "credit, quota, billing or a spending limit. Spoken "
-            "proactively on the first such failure of an outage, and "
-            "again on any wake while that outage lasts (in place of "
-            "cant_connect, which promises a retry that cannot help). "
-            "ADR-0215."
+            "Names the remedy for a terminal connection failure the "
+            "household fixes by topping up. Chosen when the rejection "
+            "body names credit, quota or billing (ADR-0215)."
         ),
         fallback="cant_connect",
     ),
@@ -108,10 +106,10 @@ CUES: tuple[CueDef, ...] = (
             "{hostname}."
         ),
         description=(
-            "Any other terminal connection failure — rejected key, "
-            "missing model, malformed config. Same two paths as "
-            "provider_out_of_credit: proactive on the outage's first "
-            "terminal failure, and on wake while it lasts. ADR-0215."
+            "Names the remedy for a terminal connection failure needing "
+            "a look at the setup — a rejected key, a missing model, a "
+            "malformed config. Chosen for every terminal failure the "
+            "rejection body does not blame on credit (ADR-0215)."
         ),
         fallback="cant_connect",
     ),

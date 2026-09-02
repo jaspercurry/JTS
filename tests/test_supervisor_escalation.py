@@ -19,7 +19,6 @@ from jasper.voice._supervisor import (
     NEEDS_ATTENTION_CUE_SLUG,
     OUT_OF_CREDIT_CUE_SLUG,
     OutageTracker,
-    failure_detail,
     is_transient,
     outage_cue,
 )
@@ -116,7 +115,15 @@ def test_outage_cue_names_the_remedy(
 ) -> None:
     """The provider's own rejection text picks between the two terminal
     cues; a transient failure names no remedy at all."""
-    assert outage_cue(exc, failure_detail(exc)) == cue
+    assert outage_cue(exc) == cue
+
+
+def test_outage_cue_scans_past_the_display_limit() -> None:
+    """Classification reads the whole rejection body, not the clipped
+    string `/state` shows: a marker beyond FAILURE_DETAIL_LIMIT still
+    names the remedy."""
+    body = b"x" * 400 + b' "used all available credits"'
+    assert outage_cue(_Rejected(403, body)) == OUT_OF_CREDIT_CUE_SLUG
 
 
 # ---------------------------------------------------------------------------

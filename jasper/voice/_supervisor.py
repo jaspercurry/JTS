@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 OUT_OF_CREDIT_CUE_SLUG = "provider_out_of_credit"
 NEEDS_ATTENTION_CUE_SLUG = "provider_needs_attention"
+CANT_CONNECT_CUE_SLUG = "cant_connect"
 
 # Markers that a rejection body blames the account's balance rather than its
 # configuration: the xAI 403 reads "used all available credits or reached its
@@ -51,16 +52,16 @@ FAILURE_DETAIL_LIMIT = 300
 _SCAN_LIMIT = FAILURE_DETAIL_LIMIT * 4
 
 
-def failure_detail(exc: BaseException) -> str:
-    """A one-line, secret-free cause for logs and ``/state``.
+def _rejection_text(exc: BaseException) -> str:
+    """The provider's own reason, redacted and collapsed, untruncated.
 
     ``str(exc)`` discards the part that matters: websockets renders a
     refused handshake as a bare "server rejected WebSocket connection:
     HTTP 403" while ``.response.body`` holds the reason a household can
     act on. Prefer the body; fall back to ``str(exc)`` otherwise.
 
-    Redaction precedes truncation so a clipped tail cannot leave half a
-    credential behind.
+    Redaction precedes any truncation by a caller so a clipped tail
+    cannot leave half a credential behind.
     """
     response = getattr(exc, "response", None)
     body = getattr(response, "body", None)
@@ -71,7 +72,12 @@ def failure_detail(exc: BaseException) -> str:
         text = f"HTTP {status}: {body}" if status else body
     else:
         text = str(exc)
-    text = " ".join(redact_secrets(text[:_SCAN_LIMIT]).split())
+    return " ".join(redact_secrets(text[:_SCAN_LIMIT]).split())
+
+
+def failure_detail(exc: BaseException) -> str:
+    """A one-line, secret-free cause for logs and ``/state``."""
+    text = _rejection_text(exc)
     if len(text) > FAILURE_DETAIL_LIMIT:
         text = text[:FAILURE_DETAIL_LIMIT - 3] + "..."
     return text
@@ -110,15 +116,15 @@ def is_transient(exc: BaseException) -> bool:
     return True
 
 
-def outage_cue(exc: BaseException, detail: str) -> str | None:
+def outage_cue(exc: BaseException) -> str | None:
     """Which pre-baked cue names the remedy for this failure.
 
     ``None`` while retrying can still fix it. Otherwise the provider's
-    own redacted rejection text (``failure_detail``) decides between
-    "out of credit" and the catch-all "needs attention". See ADR-0215."""
+    own rejection text decides between "out of credit" and the
+    catch-all "needs attention". See ADR-0215."""
     if is_transient(exc):
         return None
-    lowered = detail.lower()
+    lowered = _rejection_text(exc).lower()
     if any(marker in lowered for marker in _OUT_OF_CREDIT_MARKERS):
         return OUT_OF_CREDIT_CUE_SLUG
     return NEEDS_ATTENTION_CUE_SLUG
@@ -140,6 +146,13 @@ class OutageTracker:
         self._announced: str | None = None
         self._cb: CuePlayer | None = None
 
+    @property
+    def wake_cue(self) -> str:
+        """The cue to play for a wake while the connection is paused: the
+        remedy if this outage is terminal, else the generic connection
+        voice."""
+        return self.cue or CANT_CONNECT_CUE_SLUG
+
     def set_callback(self, cb: CuePlayer | None) -> None:
         """None keeps the edge and its log line but plays nothing."""
         self._cb = cb
@@ -149,7 +162,7 @@ class OutageTracker:
         self.detail = failure_detail(exc)
         # Latest failure wins, so a transient failure after a terminal
         # one reads as transient again.
-        self.cue = outage_cue(exc, self.detail)
+        self.cue = outage_cue(exc)
         if self.cue is None or self.cue == self._announced:
             return
         self._announced = self.cue
