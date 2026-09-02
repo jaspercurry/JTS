@@ -468,42 +468,67 @@ def test_an_unmuted_graph_at_the_anchor_path_is_refused(tmp_path, monkeypatch):
     assert detail.rstrip().endswith("1"), detail
 
 
-def test_a_full_scale_graph_at_the_anchor_path_is_refused(tmp_path, monkeypatch):
-    """The loudest shape, refused. Every output unmuted at 0 dB."""
+@pytest.mark.parametrize(
+    ("graph_overrides", "stage_overrides", "expected"),
+    [
+        pytest.param(
+            {"mute_gains_db": {index: 0.0 for index in range(4)}},
+            {},
+            ("0, 1, 2, 3",),
+            id="a_full_scale_graph_at_the_anchor_path_is_refused",
+        ),
+        pytest.param(
+            {"bypassed": True},
+            {},
+            ("bypassed step",),
+            id="a_bypassed_mute_step_is_refused",
+        ),
+        pytest.param(
+            {"playback_device": OUTPUTD_ACTIVE_PLAYBACK_DEVICE},
+            {},
+            (RING_ACTIVE_PLAYBACK_DEVICE,),
+            id="a_half_moved_anchor_playing_the_aloop_lane_is_refused",
+        ),
+        pytest.param(
+            {"capture_device": "plug:jasper_capture"},
+            {},
+            (RING_CAPTURE_DEVICE,),
+            id="a_half_moved_anchor_capturing_the_tap_is_refused",
+        ),
+        pytest.param(
+            {"playback_channels": 2},
+            {},
+            ("2 channels, expected 4",),
+            id="an_anchor_at_the_wrong_WIDTH_is_refused",
+        ),
+        pytest.param(
+            {},
+            {"staged_status": "blocked"},
+            ("status='blocked'",),
+            id="a_blocked_staged_record_is_refused",
+        ),
+    ],
+)
+def test_anchor_shape_variants_are_refused(
+    tmp_path, monkeypatch, graph_overrides, stage_overrides, expected
+):
+    """Each case is one distinct anchor shape the acceptance must refuse."""
+    graph_kwargs = dict(
+        capture_device=RING_CAPTURE_DEVICE,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        fmt=RING_WIRE_FORMAT_WIDE,
+    )
+    graph_kwargs.update(graph_overrides)
     _stage_box(
         tmp_path,
         monkeypatch,
-        graph_yaml=_graph_yaml(
-            capture_device=RING_CAPTURE_DEVICE,
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
-            mute_gains_db={index: 0.0 for index in range(4)},
-        ),
+        graph_yaml=_graph_yaml(**graph_kwargs),
+        **stage_overrides,
     )
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
-    assert "0, 1, 2, 3" in detail, detail
-
-
-def test_a_bypassed_mute_step_is_refused(tmp_path, monkeypatch):
-    """A mute behind a ``bypassed`` step is not a mute — CamillaDSP skips the
-    step entirely while the filter definition still reads as muted. Refused
-    wholesale — fact 3 of the shared ``graph_safety.output_terminally_muted``
-    primitive this acceptance now asks in full.
-    """
-    _stage_box(
-        tmp_path,
-        monkeypatch,
-        graph_yaml=_graph_yaml(
-            capture_device=RING_CAPTURE_DEVICE,
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
-            bypassed=True,
-        ),
-    )
-    ok, detail = ring_endpoint_anchor_converged()
-    assert not ok
-    assert "bypassed step" in detail, detail
+    for substring in expected:
+        assert substring in detail, detail
 
 
 def _append_boost_filter(text: str) -> str:
@@ -678,46 +703,6 @@ def test_an_anchor_still_at_the_ALOOP_endpoint_is_refused(tmp_path, monkeypatch)
     assert step_detail.startswith(CARRIER_TRANSIENT_ACTIVE_REFUSAL)
 
 
-def test_a_half_moved_anchor_playing_the_aloop_lane_is_refused(tmp_path, monkeypatch):
-    """The OTHER half-move, isolated so the playback axis is guarded on its own.
-
-    Both device checks live in one ``or``, so a fixture that trips the capture
-    half proves nothing about the playback half. This graph captures the ring
-    and plays the snd-aloop active lane; the test above is its mirror.
-    """
-    _stage_box(
-        tmp_path,
-        monkeypatch,
-        graph_yaml=_graph_yaml(
-            capture_device=RING_CAPTURE_DEVICE,
-            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
-        ),
-    )
-    ok, detail = ring_endpoint_anchor_converged()
-    assert not ok
-    assert RING_ACTIVE_PLAYBACK_DEVICE in detail
-
-
-def test_a_half_moved_anchor_capturing_the_tap_is_refused(tmp_path, monkeypatch):
-    """The #2364 trap, refused on this path too: a graph that PLAYS the ring
-    while capturing the snd-aloop tap reads a device nobody writes once fan-in
-    stops feeding it — digital silence with every daemon healthy.
-    """
-    _stage_box(
-        tmp_path,
-        monkeypatch,
-        graph_yaml=_graph_yaml(
-            capture_device="plug:jasper_capture",
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
-        ),
-    )
-    ok, detail = ring_endpoint_anchor_converged()
-    assert not ok
-    assert RING_CAPTURE_DEVICE in detail
-
-
 def test_a_commissioning_load_is_never_accepted(tmp_path, monkeypatch):
     """A per-driver commissioning graph is a TRANSIENT with a driver armed at
     level. It classifies like the anchor and can sit at the ring endpoint, so
@@ -764,28 +749,6 @@ def test_an_anchor_at_the_wrong_wire_is_refused(tmp_path, monkeypatch):
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
     assert "S16_LE" in detail and RING_WIRE_FORMAT_WIDE in detail
-
-
-def test_an_anchor_at_the_wrong_WIDTH_is_refused(tmp_path, monkeypatch):
-    """The CHANNELS axis, which the arm's own width preflight proves but the
-    CONFIRM path does not run. Without it, an armed anchor box whose ACTIVE-ring
-    width later sheared would be reported converged on every confirm tick
-    instead of striking out and recovering to loopback — the ioplug attaches
-    with what the block says, so a sheared width is a hard attach failure.
-    """
-    _stage_box(
-        tmp_path,
-        monkeypatch,
-        graph_yaml=_graph_yaml(
-            capture_device=RING_CAPTURE_DEVICE,
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
-            playback_channels=2,
-        ),
-    )
-    ok, detail = ring_endpoint_anchor_converged()
-    assert not ok
-    assert "2 channels, expected 4" in detail, detail
 
 
 def test_a_box_publishing_no_anchor_is_refused(tmp_path, monkeypatch):
@@ -905,28 +868,6 @@ def test_a_malformed_staged_record_is_refused_not_raised(tmp_path, monkeypatch):
     # The DISTINCTION is the point: a corrupt record must not read as an absent
     # one, or a debugging operator re-stages when the record is the defect.
     assert "staged status=" not in detail, detail
-
-
-def test_a_blocked_staged_record_is_refused(tmp_path, monkeypatch):
-    """The record's LOCATOR without the record's VERDICT.
-
-    A ``status: blocked`` record still carries a ``config.path``, so reading the
-    path alone accepts a stage the stager REFUSED. Same trust shape as taking
-    mutedness on faith from the writer — and the same one-line habit fixes it.
-    """
-    _stage_box(
-        tmp_path,
-        monkeypatch,
-        staged_status="blocked",
-        graph_yaml=_graph_yaml(
-            capture_device=RING_CAPTURE_DEVICE,
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
-        ),
-    )
-    ok, detail = ring_endpoint_anchor_converged()
-    assert not ok
-    assert "status='blocked'" in detail, detail
 
 
 def test_a_different_carrier_refusal_is_never_routed_to_the_acceptance(

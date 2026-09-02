@@ -273,60 +273,39 @@ def _write_record(tmp_path, *, sha, caps):
     return path
 
 
-def test_wide_wire_without_a_record_is_refused(tmp_path):
+@pytest.mark.parametrize(
+    ("record_caps", "same_so", "wire_kwargs", "expected_ok", "expected_detail"),
+    [
+        pytest.param(None, True, {}, False, ("no provenance record", "-EINVAL"), id="wide_wire_without_a_record_is_refused"),
+        # The sha binds the claim to a binary: a record for a DIFFERENT .so
+        # must not vouch for the one on disk (the degraded-deploy shape),
+        # even though it claims the needed capability.
+        pytest.param("wire_format,wire_channels", False, {}, False, ("STALE ioplug",), id="wide_wire_with_a_record_for_a_DIFFERENT_so_is_refused_as_stale"),
+        pytest.param("wire_channels", True, {}, False, ("cannot parse [wire_format]",), id="wide_wire_with_a_matching_record_lacking_the_cap_is_refused"),
+        pytest.param("wire_format,wire_channels", True, {"ring_b": 6}, True, (), id="wide_wire_with_a_matching_capable_record_is_allowed"),
+    ],
+)
+def test_wide_wire_provenance_verdicts(
+    record_caps, same_so, wire_kwargs, expected_ok, expected_detail, tmp_path
+):
     plugin_dir = _install_plugin(tmp_path)
+    if record_caps is None:
+        provenance_path = str(tmp_path / "absent.provenance")
+    else:
+        sha = (
+            ring_assets.ring_ioplug_so_sha256(plugin_dir=str(plugin_dir))
+            if same_so
+            else "0" * 64
+        )
+        provenance_path = str(_write_record(tmp_path, sha=sha, caps=record_caps))
     support = ring_assets.ring_ioplug_wire_supported(
-        _wire(sample_format="S32_LE"),
+        _wire(sample_format="S32_LE", **wire_kwargs),
         plugin_dir=str(plugin_dir),
-        provenance_path=str(tmp_path / "absent.provenance"),
+        provenance_path=provenance_path,
     )
-    assert support.ok is False
-    assert "no provenance record" in support.detail
-    assert "-EINVAL" in support.detail
-
-
-def test_wide_wire_with_a_record_for_a_DIFFERENT_so_is_refused_as_stale(tmp_path):
-    """The sha is what binds the claim to a binary.
-
-    A record describing some other ``.so`` must not vouch for the one on disk —
-    that is the whole degraded-deploy shape, where the previous plugin survives a
-    failed rebuild. The record here even CLAIMS the needed capability, so a
-    caps-only check would pass it.
-    """
-    plugin_dir = _install_plugin(tmp_path)
-    record = _write_record(tmp_path, sha="0" * 64, caps="wire_format,wire_channels")
-    support = ring_assets.ring_ioplug_wire_supported(
-        _wire(sample_format="S32_LE"),
-        plugin_dir=str(plugin_dir),
-        provenance_path=str(record),
-    )
-    assert support.ok is False
-    assert "STALE ioplug" in support.detail
-
-
-def test_wide_wire_with_a_matching_record_lacking_the_cap_is_refused(tmp_path):
-    plugin_dir = _install_plugin(tmp_path)
-    sha = ring_assets.ring_ioplug_so_sha256(plugin_dir=str(plugin_dir))
-    record = _write_record(tmp_path, sha=sha, caps="wire_channels")
-    support = ring_assets.ring_ioplug_wire_supported(
-        _wire(sample_format="S32_LE"),
-        plugin_dir=str(plugin_dir),
-        provenance_path=str(record),
-    )
-    assert support.ok is False
-    assert "cannot parse [wire_format]" in support.detail
-
-
-def test_wide_wire_with_a_matching_capable_record_is_allowed(tmp_path):
-    plugin_dir = _install_plugin(tmp_path)
-    sha = ring_assets.ring_ioplug_so_sha256(plugin_dir=str(plugin_dir))
-    record = _write_record(tmp_path, sha=sha, caps="wire_format,wire_channels")
-    support = ring_assets.ring_ioplug_wire_supported(
-        _wire(sample_format="S32_LE", ring_b=6),
-        plugin_dir=str(plugin_dir),
-        provenance_path=str(record),
-    )
-    assert support.ok is True, support.detail
+    assert support.ok is expected_ok, support.detail
+    for substring in expected_detail:
+        assert substring in support.detail
 
 
 def test_a_record_without_a_sha_vouches_for_nothing(tmp_path):
