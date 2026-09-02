@@ -20,7 +20,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Iterable, Mapping, Sequence, TypeVar
 
 import numpy as np
 
@@ -35,12 +35,16 @@ from ..delta_probe import (
 )
 from ..flat_spec import (
     FlatSpecReport,
+    SPEC_BANDS,
     evaluate_flat_spec,
     spec_band_tilt,
     spec_convergence_residual,
     spec_flatness_gauge,
 )
 from .contracts import (
+    CLAIM_FAIL,
+    CLAIM_NOT_EVALUATED,
+    CLAIM_PASS,
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
     ADOPTION_ROW_KEEP_ITERATING,
@@ -61,13 +65,16 @@ from .contracts import (
     ResponseCurve,
     SafetyStatus,
     SpecStatus,
+    VERIFY_TOLERANCE_DB,
     VerificationResult,
     detached_json,
 )
 
-# Package-private validator vocabulary, owned once by the sibling module that
-# defines the types it validates.
+# Package-private vocabulary, owned once by the sibling module: the validators
+# beside the types they validate, and the record-field coercer both this
+# evaluator and :mod:`.diagnostics` read.
 from .contracts import _positive as _positive_db
+from .contracts import _rounded
 from .contracts import _text
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -100,6 +107,7 @@ __all__ = [
     "CAPTURE_INTEGRITY_CLEAN",
     "CAPTURE_INTEGRITY_FAILED",
     "CAPTURE_INTEGRITY_UNAVAILABLE",
+    "CLAIM_NO_PER_BRANCH_CAPTURE",
     "CLIPPED_RUN_CHECK",
     "ECHO_BAND_HF_REGIME_FLOOR_HZ",
     "HEADROOM_CAP_REACHED",
@@ -146,6 +154,7 @@ __all__ = [
     "pooled_residual",
     "spec_band_rows",
     "verification_result",
+    "verify_absolute_tolerance_db",
 ]
 
 
@@ -1741,6 +1750,259 @@ def _per_band_flatness_log_field(bands: Any) -> str:
             f"{lo:.0f}-{hi:.0f}Hz:{deviation_db:+.2f}dB:{'pass' if passed else 'fail'}"
         )
     return ";".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# the VERIFY record: thresholds, evidence, claims and frame
+# --------------------------------------------------------------------------- #
+
+def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
+    """How far the realized sum may sit from the candidate's own crossover
+    target across ``band_hz``, in dB — or ``None``, no tolerance to apply.
+
+    **Derived, never chosen.** The product already promises an absolute
+    magnitude tolerance over this frequency range — ``flat_spec.SPEC_BANDS``,
+    the adopted spec table — so this returns the LOOSEST entry the region
+    overlaps and a crossover-region result is never held to a tighter bar than
+    the speaker's own spec applies somewhere inside it. For the shipped 2 kHz
+    two-way: ``max(1.5 [250–2k], 2.0 [2k–8k]) = 2.0 dB``. It inherits that
+    table's S0-contingent status rather than restating a literal.
+
+    Deliberately NOT :data:`VERIFY_TOLERANCE_DB`, which bounds
+    measured-vs-MODEL; this bounds measured-vs-DESIGN. Same units, different
+    question.
+
+    Known contributor, not corrected for: rung P1 measured a frame tilt
+    between VERIFY's in-room curve and its on-axis model, and part of that
+    frame lands in this residual too. It is DISCLOSED beside the number
+    (``_verify_frame_lines``) rather than removed, following the flow's
+    standing rule that a measured tilt is evidence, not permission to re-grade.
+
+    ``None`` when the region overlaps no specced band (a crossover high enough
+    that the region is entirely ``flat_spec.BEST_EFFORT_ABOVE_HZ``, where the
+    table itself declines): the caller records the claim not-evaluated rather
+    than inventing a bar.
+
+    Reads the NOMINAL table, deliberately, so this gate does not move with a
+    session's microphone-trust ceiling. The consequence is stated rather than
+    left to be found: on a session trusted past 16 kHz the spec now grades a
+    region this claim still declines. Widening the claim is a separate ruling
+    about a separate mechanism, not a side effect of the spec's own span.
+    """
+    if len(band_hz) != 2:
+        return None
+    lo, hi = float(band_hz[0]), float(band_hz[1])
+    overlapping = [tol for f_lo, f_hi, tol in SPEC_BANDS if f_lo < hi and lo < f_hi]
+    return max(overlapping) if overlapping else None
+
+def _verify_evidence_from_tracking(
+    tracking: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The verify_fail expert-disclosure numbers (#1605): the notch-excluded
+    max the tolerance gates on, the RMS, and the tolerance itself. Returns
+    None when the gated max is not a real number — nothing meaningful to show
+    behind the disclosure.
+
+    **The graded band is NOT here** — it moved to
+    :func:`_verify_graded_band_from_tracking` (issue #1868). It used to ride
+    this block, which is persisted only for a NON-pass outcome, so the one
+    fact that bounds what "Verified." actually means was visible on exactly
+    the screens where the verdict had already failed. One owner, one place:
+    the band is a property of the comparison, not of its failure.
+    """
+    max_db = tracking.get("max_db_notch_excluded")
+    if not isinstance(max_db, (int, float)):
+        return None
+    rms_db = tracking.get("rms_db")
+    return {
+        "max_db": float(max_db),
+        "rms_db": float(rms_db) if isinstance(rms_db, (int, float)) else None,
+        "tolerance_db": float(VERIFY_TOLERANCE_DB),
+    }
+
+
+def _verify_graded_band_from_tracking(
+    tracking: Mapping[str, Any],
+) -> list[float] | None:
+    """The frequency span VERIFY's tracking comparison actually graded.
+
+    ``[lo, hi]``, or ``None`` when this capture never reached a tracking
+    comparison (an early locate/level/gate refusal) — absent means "nothing
+    was graded", never "graded everywhere".
+
+    **Why it is disclosed on a PASS too** (issue #1868, panel item O5): the
+    band is not the nominal Fc±1 octave. ``overlap_band_hz`` clamps its lower
+    edge UP to the tweeter's actual MEASURE sweep floor, and
+    ``_analyze_verify`` clamps it up again to the capture's own gate-derived
+    validity floor. On the 2026-07-30 corpus that landed at
+    ``[2000, 4000] Hz`` while the crossover-region defect the forensics
+    locate sits at 1919 Hz — 81 Hz below the floor, structurally ungradeable.
+    A "Verified." badge over an unstated band reads as "verified everywhere";
+    stating the band makes the claim exactly as wide as the measurement.
+    """
+    band = tracking.get("tracking_band_hz")
+    if not isinstance(band, (list, tuple)) or len(band) != 2:
+        return None
+    lo, hi = band
+    if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        return None
+    return [float(lo), float(hi)]
+
+
+#: Why the two per-branch claims are never graded today: a VERIFY program plays
+#: ONE mono summed sweep (``build_verify_program``'s ``KIND_SUMMED_SWEEP``), so
+#: the capture holds no woofer-alone or HF-alone response to compare with its
+#: candidate branch. Widening the capture plan is out of R18's ratified scope;
+#: naming the gap rather than silently claiming it is what R18 owes.
+CLAIM_NO_PER_BRANCH_CAPTURE = "no_per_branch_verify_capture"
+#: A crossover-region band exists but ``flat_spec.SPEC_BANDS`` sets no
+#: tolerance across it — see :func:`verify_absolute_tolerance_db`.
+ABSOLUTE_NO_SPEC_TOLERANCE = "no_spec_tolerance_for_region"
+
+
+def _verify_claims(
+    tracking: Mapping[str, Any], absolute: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The plan §7 claim record for one VERIFY capture — ONE producer.
+
+    Four entries for §7's three claims: its third is two questions in one
+    sentence ("the measured sum tracks the candidate **and** does not merely
+    reproduce a model-predicted crossover null"), so ``integration`` is the
+    tracking half and ``absolute`` the other. Every number is LIFTED from the
+    record its own owner already computed — nothing re-graded — so a screen and
+    a gate cannot quote different figures. The kernel supplies the absolute
+    band and scalars; the tolerance and both verdicts are this module's,
+    mirroring where ``VERIFY_TOLERANCE_DB`` already lives.
+    """
+    tracking_max = tracking.get("max_db_notch_excluded")
+    band = (absolute or {}).get("band_hz")
+    absolute_max = (absolute or {}).get("max_db")
+    tolerance_db = (
+        verify_absolute_tolerance_db(band) if isinstance(band, (list, tuple)) else None
+    )
+    absolute_claim: dict[str, Any]
+    if not isinstance(absolute_max, (int, float)):
+        # The kernel's own reason survives, never re-labelled: "no trusted
+        # crossover region" and "no candidate target" stay distinguishable.
+        absolute_claim = {
+            "status": CLAIM_NOT_EVALUATED,
+            "reason": str((absolute or {}).get("not_evaluated") or CLAIM_NOT_EVALUATED),
+        }
+    elif tolerance_db is None or not isinstance(band, (list, tuple)):
+        absolute_claim = {
+            "status": CLAIM_NOT_EVALUATED, "reason": ABSOLUTE_NO_SPEC_TOLERANCE,
+        }
+    else:
+        absolute_claim = {
+            "status": CLAIM_PASS if absolute_max <= tolerance_db else CLAIM_FAIL,
+            "tolerance_db": float(tolerance_db),
+            "band_hz": [float(band[0]), float(band[1])],
+            **{k: _rounded((absolute or {}).get(k), 4)
+               for k in ("max_db", "rms_db", "worst_db", "worst_hz")},
+        }
+    branch = {"status": CLAIM_NOT_EVALUATED, "reason": CLAIM_NO_PER_BRANCH_CAPTURE}
+    return {
+        "woofer_branch": dict(branch),
+        "hf_branch": dict(branch),
+        "integration": {
+            "status": (
+                CLAIM_NOT_EVALUATED if not isinstance(tracking_max, (int, float))
+                else CLAIM_PASS if tracking_max <= VERIFY_TOLERANCE_DB
+                else CLAIM_FAIL
+            ),
+            "max_db": _rounded(tracking_max, 4),
+            "tolerance_db": float(VERIFY_TOLERANCE_DB),
+            "band_hz": _verify_graded_band_from_tracking(tracking),
+        },
+        "absolute": absolute_claim,
+    }
+
+
+def _verify_frame_from_tracking(
+    tracking: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The FRAME VERIFY's comparison spanned, and the residual both ways.
+
+    Rung P1. VERIFY differences an ON-AXIS two-branch model against an IN-ROOM
+    gated measurement — two instruments, and on the 2026-07-29 corpus a single
+    −0.79 dB/octave tilt between them was 84 % of the flow's reported
+    prediction error. ``program_analysis._analyze_verify`` fits that frame and
+    reports the residual with it removed beside the raw one; this lifts both
+    for the durable record. **Nothing is recomputed here** — every value is one
+    of that analysis's own, exactly like :func:`_verify_evidence_from_tracking`
+    beside it.
+
+    Rendered on EVERY outcome, like :func:`_verify_graded_band_from_tracking`
+    and for the same class of reason: a PASS is exactly the case where an
+    unstated tilt lets a reader take instrument agreement for model agreement.
+
+    ``None`` when no tracking comparison ran, or when it ran and the frame
+    could not be fitted — absent means "no frame was measured", never "the
+    frames matched". The tilt-removed keys are omitted individually rather than
+    defaulted to their raw twins: a beside-number equal to its raw twin would
+    read as "removing the frame changed nothing", which is a measurement, not
+    an absence.
+
+    ``max_db_tilt_removed`` is the twin of the NOTCH-EXCLUDED max, matching
+    what :func:`_verify_evidence_from_tracking` already calls ``max_db`` on
+    this same surface — on a household-facing record "the level error" has one
+    meaning, the one the tolerance gates on, and a second spelling for it here
+    would invite a reader to compare two numbers taken over different bin sets.
+
+    **``pivot_hz``/``n_bins``/``band_hz`` travel too.** They are not decoration:
+    a two-parameter fit over few bins or a narrow span is ill-conditioned, and
+    :mod:`jasper.audio_measurement.frame_fit` deliberately reports that span
+    rather than inventing a confidence policy — so a record that dropped them
+    would state a tilt with no way to judge it. They also disclose WHICH bins
+    the frame was estimated from: the span is the notch-excluded, validity-floor
+    clamped set, narrower than the graded band whenever the prediction has a
+    deep notch in it.
+    """
+    frame = tracking.get("frame")
+    if not isinstance(frame, Mapping):
+        return None
+    offset_db = frame.get("offset_db")
+    tilt = frame.get("tilt_db_per_octave")
+    if not isinstance(offset_db, (int, float)) or not isinstance(tilt, (int, float)):
+        return None
+    out: dict[str, Any] = {
+        "offset_db": float(offset_db),
+        "tilt_db_per_octave": float(tilt),
+    }
+    pivot_hz = frame.get("pivot_hz")
+    if isinstance(pivot_hz, (int, float)):
+        out["pivot_hz"] = float(pivot_hz)
+    n_bins = frame.get("n_bins")
+    if isinstance(n_bins, int):
+        out["n_bins"] = n_bins
+    band_hz = frame.get("band_hz")
+    if (
+        isinstance(band_hz, (list, tuple))
+        and len(band_hz) == 2
+        and all(isinstance(edge, (int, float)) for edge in band_hz)
+    ):
+        out["band_hz"] = [float(band_hz[0]), float(band_hz[1])]
+    tilt_removed = frame.get("tilt_removed")
+    if isinstance(tilt_removed, Mapping):
+        for key, source in (
+            ("rms_db_tilt_removed", "rms_db"),
+            ("max_db_tilt_removed", "max_db"),
+        ):
+            value = tilt_removed.get(source)
+            if isinstance(value, (int, float)):
+                out[key] = float(value)
+    # The RAW pair the tilt-removed numbers sit beside (should-fix 1). Carried
+    # here because the durable ``verify.evidence`` block — the other place these
+    # live — is persisted only on a NON-pass outcome, so a passing screen would
+    # otherwise render the frame-removed half of a comparison with nothing to
+    # compare it to: the flattering number alone.
+    raw = frame.get("raw")
+    if isinstance(raw, Mapping):
+        for key, source in (("rms_db_raw", "rms_db"), ("max_db_raw", "max_db")):
+            value = raw.get(source)
+            if isinstance(value, (int, float)):
+                out[key] = float(value)
+    return out
 
 
 # The contract-derived echo/null analysis band's LOWER edge must not drift

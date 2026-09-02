@@ -17,8 +17,9 @@ order — so this list is what exists, not a plan:
   level-definition disclosure and the committed trim.
 * :mod:`.proposal` — the :class:`~.contracts.InterventionProposal` a round
   receipt identifies, assembled.
-* :mod:`.verification` — realization / benefit / spec grading and the adoption
-  decision over them.
+* :mod:`.verification` — realization / benefit / spec grading, the adoption
+  decision over them, and one VERIFY capture's own record: the claim
+  vocabulary and the reducers that build it from the tracking comparison.
 * :mod:`.round_evidence` — the two measurements a round compares, reduced.
 * :mod:`.tuning_scope` — the comparability fingerprint a round banks at entry:
   the graph's content hashed over the layers it measures through, preference

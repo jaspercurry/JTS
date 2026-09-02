@@ -188,6 +188,16 @@ def _positive(value: Any, *, field_name: str) -> float:
     return number
 
 
+def _rounded(value: Any, digits: int) -> float | None:
+    """``round(value, digits)`` for a real number, ``None`` for anything else.
+
+    Keeps a diagnostic line's absent values as ``None`` rather than letting a
+    missing field become ``0.0`` — the same unknown-is-not-a-value rule every
+    other field on that line follows.
+    """
+    return round(float(value), digits) if isinstance(value, (int, float)) else None
+
+
 def _text(value: Any, *, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise CrossoverV2ContractError(

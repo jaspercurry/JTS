@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 from jasper.active_speaker.crossover_v2.contracts import (
     REFERENCE_MARK_DESIGN_AXIS,
     VERIFY_TOLERANCE_DB,
+    _rounded,
 )
 from jasper.active_speaker.crossover_v2.intervention import (
     driver_response_by_role as _driver_response_by_role,
@@ -62,16 +63,6 @@ from jasper.log_event import log_event
 # --------------------------------------------------------------------------- #
 # log fields
 # --------------------------------------------------------------------------- #
-def _rounded(value: Any, digits: int) -> float | None:
-    """``round(value, digits)`` for a real number, ``None`` for anything else.
-
-    Keeps a diagnostic line's absent values as ``None`` rather than letting a
-    missing field become ``0.0`` — the same unknown-is-not-a-value rule every
-    other field on that line follows.
-    """
-    return round(float(value), digits) if isinstance(value, (int, float)) else None
-
-
 def _capture_integrity_log_field(integrity: CaptureIntegrity | None) -> str:
     """One logfmt token for a VERIFY capture's integrity verdict (#1971).
 
