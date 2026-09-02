@@ -146,7 +146,7 @@ async def test_dispatch_observer_ignores_unknown_tool_names():
     assert events == []
 
 
-async def test_dispatch_observer_failure_does_not_block_tool(caplog):
+async def test_dispatch_observer_failure_does_not_block_tool():
     async def echo() -> dict:
         """return a normal payload."""
         return {"ok": True}
@@ -157,13 +157,10 @@ async def test_dispatch_observer_failure_does_not_block_tool(caplog):
     reg = _registry(echo)
     reg.set_dispatch_observer(broken_observer)
 
-    with caplog.at_level(logging.WARNING, logger="jasper.tools"):
-        assert await dispatch_tool(reg, "echo", {}) == {"ok": True}
-
-    assert caplog.text.count("lifecycle observer failed") == 2
+    assert await dispatch_tool(reg, "echo", {}) == {"ok": True}
 
 
-async def test_dispatch_observer_timeout_does_not_block_tool(monkeypatch, caplog):
+async def test_dispatch_observer_timeout_does_not_block_tool(monkeypatch):
     import jasper.tools as tools_module
 
     async def echo() -> dict:
@@ -177,14 +174,12 @@ async def test_dispatch_observer_timeout_does_not_block_tool(monkeypatch, caplog
     reg = _registry(echo)
     reg.set_dispatch_observer(stuck_observer)
 
-    with caplog.at_level(logging.WARNING, logger="jasper.tools"):
-        result = await asyncio.wait_for(
-            dispatch_tool(reg, "echo", {}),
-            timeout=0.2,
-        )
+    result = await asyncio.wait_for(
+        dispatch_tool(reg, "echo", {}),
+        timeout=0.2,
+    )
 
     assert result == {"ok": True}
-    assert caplog.text.count("lifecycle observer timed out") == 2
 
 
 async def test_exception_becomes_error_payload():

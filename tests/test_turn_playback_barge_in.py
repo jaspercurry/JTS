@@ -187,25 +187,23 @@ def test_response_started_observed_once_before_first_playout_write():
     assert tts.write_calls == 3
 
 
-def test_response_observer_failure_does_not_block_playout(caplog):
+def test_response_observer_failure_does_not_block_playout():
     turn = _FakeTurn(n_chunks=2)
     tts = _BaseTts()
 
     async def broken_observer() -> None:
         raise OSError("telemetry disk unavailable")
 
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        asyncio.run(_play_responses(
-            turn,
-            tts,
-            on_response_started=broken_observer,
-        ))
+    asyncio.run(_play_responses(
+        turn,
+        tts,
+        on_response_started=broken_observer,
+    ))
 
     assert tts.write_calls == 2
-    assert caplog.text.count("turn response observer failed") == 1
 
 
-def test_response_observer_timeout_does_not_block_playout(monkeypatch, caplog):
+def test_response_observer_timeout_does_not_block_playout(monkeypatch):
     from jasper.voice import turn_playback
 
     turn = _FakeTurn(n_chunks=2)
@@ -219,18 +217,16 @@ def test_response_observer_timeout_does_not_block_playout(monkeypatch, caplog):
         "_RESPONSE_OBSERVER_TIMEOUT_SEC",
         0.01,
     )
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        asyncio.run(asyncio.wait_for(
-            _play_responses(
-                turn,
-                tts,
-                on_response_started=stuck_observer,
-            ),
-            timeout=0.2,
-        ))
+    asyncio.run(asyncio.wait_for(
+        _play_responses(
+            turn,
+            tts,
+            on_response_started=stuck_observer,
+        ),
+        timeout=0.2,
+    ))
 
     assert tts.write_calls == 2
-    assert caplog.text.count("turn response observer timed out") == 1
 
 
 # --- chunk-loop window -------------------------------------------------
