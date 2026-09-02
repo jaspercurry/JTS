@@ -4,10 +4,7 @@
 > fragments `00`–`11` cited throughout — lives in
 > `captures/tuning-stack-inventory-2026-08/` on the bench machine
 > (gitignored bench evidence). The numbers those citations back are stated
-> inline here. The coordination boundary with the repo-wide audit program is
-> [REFACTOR-COORDINATION-2026-08.md](REFACTOR-COORDINATION-2026-08.md),
-> now superseded in part by the reconciliation terms recorded in this
-> plan's R5 (acknowledged 2026-08-25, both directions).
+> inline here.
 
 
 **Status: final.** Every gate the inventory escalated is closed — twelve owner
@@ -1004,8 +1001,7 @@ bracket) · and **`CrossoverLevelLease.run_level_match`, which this agent
 declared dead and was wrong about** — a bare-name grep answers *where an
 identifier appears*, never *what object an attribute is called on*, and a
 duck-typed `sess: Any` parameter breaks the chain. Only argument-tracing
-recovers it. `docs/REVIEW-deep-audit-2026-07-11.md` §476 is stale for the same
-reason.
+recovers it.
 
 **Coordination R5 — the volume-surface widening EXPIRES with this wave**, on the
 checkable standard adopted 2026-08-26: the enumerated set holds only W7's named

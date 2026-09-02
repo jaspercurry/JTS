@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.fanin.coupling_reconcile import (
+from jasper.fanin.ring_health import (
     ring_edge_width_ready,
     ring_wire_caps_ready,
 )

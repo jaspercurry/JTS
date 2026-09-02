@@ -112,8 +112,11 @@ def claim_reconcile_request(path: str | None = None) -> str | None:
     BlueZ state: a request written after it survives under the original name
     and re-triggers the path unit, so no requester is ever answered by a pass
     that predates it. Reading and then unlinking would instead destroy that
-    racing request. A failed claim other than "no request" propagates — the
-    path unit would otherwise re-trigger on the same file forever.
+    racing request. A failed claim other than "no request" propagates: the
+    request survives either way, so failing loudly leaves the oneshot in
+    `failed` and stops the watcher at systemd's path trigger limit, which the
+    jasper-accessory-reconcile.path row in jasper-deploy-health reports.
+    Swallowing it would instead re-run full BlueZ passes silently forever.
     """
     target = path or DEFAULT_RECONCILE_REQUEST_FILE
     claimed = target + _CLAIMED_SUFFIX
@@ -817,7 +820,7 @@ def main(argv: list[str] | None = None) -> int:
         log_event(
             logger,
             "accessory_mic.reconcile_failed",
-            reason=args.reason,
+            reason=reason,
             err=str(exc),
             level=logging.WARNING,
         )

@@ -1940,7 +1940,7 @@ def main(argv: list[str] | None = None) -> int:
             coupling_supported_for_route,
             route_mode_from_grouping_config,
         )
-        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+        from jasper.fanin.ring_health import read_persisted_coupling
 
         coupling_support = coupling_supported_for_route(
             read_persisted_coupling(),

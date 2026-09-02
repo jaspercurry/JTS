@@ -19,13 +19,15 @@ SHIPPED_RING_CONF_D = (
 
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
-    FANIN_ENV_PATH,
-    OUTPUTD_ENV_PATH,
     _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
     _outputd_actions,
     default_ring_gates,
-    read_persisted_coupling,
     reconcile_coupling,
+)
+from jasper.fanin.ring_health import (
+    FANIN_ENV_PATH,
+    OUTPUTD_ENV_PATH,
+    read_persisted_coupling,
     ring_edge_width_ready,
 )
 from jasper.fanin_coupling import (
@@ -1371,7 +1373,7 @@ def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
     # from the 2026-06 campaign refuses through ring_topology_ready() — a stereo
     # ring genuinely cannot drive a sub — and the refusal names the actionable
     # remediation (jasper-output-topology-reset) instead of an opaque "loopback".
-    from jasper.fanin.coupling_reconcile import ring_topology_ready
+    from jasper.fanin.ring_health import ring_topology_ready
     from jasper.output_topology import (
         OUTPUT_TOPOLOGY_KIND,
         OutputTopology,

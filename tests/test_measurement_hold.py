@@ -518,23 +518,20 @@ def test_the_measurement_route_projects_the_hold(control_server):
     assert body["measurement"]["owner"] == "doctor-aec-probe"
 
 
-def test_state_carries_the_same_projection():
-    """One fact, one reader — /state must not mint a second answer.
-
-    A static wiring pin, matching the shape
-    ``test_state_resilience_wires_active_speaker_parked_snapshot`` uses in
-    tests/test_control_server.py: the point is that ``/state`` reads the
-    registrar rather than deriving a second answer, and that is a property of
-    the source line, not of one call's return value.
-    """
-    from pathlib import Path
-
+async def test_state_carries_the_same_projection(tmp_path):
+    """One fact, one reader — /state's measurement section must be the
+    registrar's own snapshot(), not a second-derived answer."""
     from jasper.control import state_aggregate
 
     mh.acquire("seat-level")
-    src = Path(state_aggregate.__file__).read_text()
-    assert '"measurement": measurement_hold.snapshot()' in src
-    assert mh.snapshot()["owner"] == "seat-level"
+    state = await state_aggregate._get_state(
+        camilla_host="127.0.0.1",
+        camilla_port=1234,
+        voice_socket_path=str(tmp_path / "voice.sock"),
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
+    )
+    assert state["measurement"] == mh.snapshot()
+    assert state["measurement"]["owner"] == "seat-level"
 
 
 # --------------------------------------------------------------------------- #
