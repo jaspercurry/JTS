@@ -38,10 +38,8 @@ of RAM; respect its budget (bounded loops, no heavy analysis on-device — use
    direction guards (deliberate overrides: `JTS_ACCEPT_NEW_IDENTITY=1`,
    `JASPER_DEPLOY_ALLOW_DOWNGRADE=1`).
 5. **Renderer ALSA devices** must resolve as the unit's real `User=`:
-   `sudo -u $USER timeout 0.8 aplay -D $DEVICE -c 2 -r 48000 -f S16_LE /dev/zero`
-   (exit 124 = success; `aplay -d` takes whole seconds, so the old `-d 0.1`
-   never ran). EBUSY from a live writer also passes — it proves the PCM
-   opened — but only once the lane's owner pid names the expected unit.
+   `sudo -n -u $USER timeout <N> aplay -q -D $DEVICE -c 2 -r 48000 -f S16_LE
+   /dev/zero`; N = `_PROBE_TIMEOUT_SEC` (cli/doctor/renderers.py), 124=opened.
 6. **No silent deafness:** a new code path that prevents wake response must
    play a cue (`jasper/cues/registry.py`).
 7. **Paid tests:** `tests/voice_eval/` opens paid realtime-LLM sessions.

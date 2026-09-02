@@ -935,19 +935,18 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
 #: How long the probe lets `aplay` run before SIGTERMing it.
 #:
-#: **This MUST exceed `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, in
-#: `c/jts-ring-ioplug/jts_ring_shm.h`), which is how long a `jts_ring` writer
-#: waits for the ring's exclusive lock before returning EBUSY.
+#: **MUST exceed TWICE `JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS`** (500 ms, in
+#: `c/jts-ring-ioplug/jts_ring_shm.h`): a fully contended open spends BOTH
+#: waits — `ring_mapping_open`'s and the writer lock's, which ADD rather than
+#: overlap — inside `snd_pcm_prepare` before EBUSY is returned, and the rest
+#: is sudo/exec, the alsa config parse and the ioplug dlopen on a 1 GB Pi. A
+#: probe killed FIRST exits 124 carrying no busy marker, which
+#: `_classify_probe` then reads as OPENED with nothing proven.
 #:
-#: Why, concretely: probing an ARMED renderer lane whose renderer is PLAYING
-#: means opening a ring someone already holds. The ioplug blocks inside
-#: `snd_pcm_prepare` for the full lock wait and only then returns EBUSY, so a
-#: probe killed FIRST exits 124 — which `_classify_probe` reads as OPENED —
-#: and the ownership proof never runs in the contended case it exists for.
-#:
-#: `tests/test_renderer_ring_lanes.py` pins this against the C header's value,
-#: so neither side can drift alone.
-_PROBE_TIMEOUT_SEC = "0.8"
+#: A HEALTHY lane runs the full duration too (124 is its success path), so the
+#: check costs `probed renderers × this`. `test_renderer_ring_lanes.py` pins
+#: it against the C header's value.
+_PROBE_TIMEOUT_SEC = "2.0"
 
 
 class ProbeOutcome(Enum):
@@ -960,40 +959,44 @@ class ProbeOutcome(Enum):
     FAILED = "failed"
 
 
-def _alsa_busy(stderr: str) -> bool:
-    """Does this WHOLE aplay stderr carry a single-writer refusal? `rc=-16`
-    is the ring ioplug's own errno, forwarded out of `jts_ring_prepare`
-    (`c/jts-ring-ioplug/pcm_jts_ring.c`); the prose forms are aplay's, which
-    refuses at open on the aloop lanes instead."""
-    return (
-        "rc=-16" in stderr
-        or "Device or resource busy" in stderr
-        or "EBUSY" in stderr
-        or "errno 16" in stderr
-    )
+#: The ring ioplug's own refusal, out of `jts_ring_prepare`
+#: (`c/jts-ring-ioplug/pcm_jts_ring.c`). BOTH halves must sit on ONE line: a
+#: bare `-16` also appears on slave-open failures further down the chain, and
+#: alone it would read a resolution failure as a busy lane.
+_RING_BUSY_MARKERS = ("jts_ring: writer_open(", "rc=-16")
+#: aplay's own refusal for an snd-aloop substream that already has a writer,
+#: captured verbatim. Anchored on aplay's prefix for the same reason.
+_ALOOP_BUSY_MARKER = "audio open error: Device or resource busy"
+
+
+def _busy_marker_line(stderr: str) -> Optional[str]:
+    """The stderr line proving the PCM opened and hit a single-writer lock.
+    Every line is scanned (#3515): the ioplug refuses from `prepare`, which
+    alsa-lib runs inside `snd_pcm_hw_params`, so aplay prints `Unable to
+    install hw params:` and ~15 dump lines AFTER this one."""
+    for line in stderr.splitlines():
+        if all(m in line for m in _RING_BUSY_MARKERS) or _ALOOP_BUSY_MARKER in line:
+            return line.strip()
+    return None
 
 
 def _classify_probe(returncode: int, stderr: str) -> tuple[ProbeOutcome, str]:
     """The ONE place a probe's (returncode, stderr) becomes a verdict.
 
-    124 = the timeout fired = aplay wrote silence for the whole
-    `_PROBE_TIMEOUT_SEC`; 0 is the same outcome reached by consuming
-    /dev/zero, which this duration never does.
-
-    Reading the WHOLE stderr is load-bearing (#3515): the ioplug refuses a
-    second writer from `prepare`, which alsa-lib runs inside
-    `snd_pcm_hw_params`, so aplay dumps ~15 hw_params lines AFTER the EBUSY
-    line. A tail of that carries `TICK_TIME: 0` and no marker at all.
+    A busy marker decides BEFORE the return code, in both directions: the
+    SNDERR fires the instant the lock wait expires, and the outer `timeout`
+    can land anywhere in the dump that follows — so a contended probe can
+    carry the marker AND exit 124. Failing that, 124 = the timeout fired =
+    aplay wrote silence for the whole `_PROBE_TIMEOUT_SEC`, and 0 is the same
+    outcome reached by consuming /dev/zero, which this duration never does.
     """
-    lines = stderr.strip().splitlines()
-    tail = " | ".join(lines[-2:])[:200]
+    marker = _busy_marker_line(stderr)
+    detail = (marker or stderr.strip())[:200]
+    if marker:
+        return ProbeOutcome.BUSY, detail
     if returncode in (0, 124):
-        return ProbeOutcome.OPENED, tail
-    if _alsa_busy(stderr):
-        marker = next((ln for ln in lines if _alsa_busy(ln)), "")
-        detail = f"busy: a live writer holds the lane | {marker.strip()}"
-        return ProbeOutcome.BUSY, detail[:200]
-    return ProbeOutcome.FAILED, tail or f"exit={returncode}"
+        return ProbeOutcome.OPENED, detail
+    return ProbeOutcome.FAILED, detail or f"exit={returncode}"
 
 
 def _probe_open_as_user(
@@ -1017,9 +1020,8 @@ def _probe_open_as_user(
     if user:
         cmd = ["sudo", "-n", "-u", user, *cmd]
     try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=3,
-        )
+        # Outer guard derived from the inner one, so the two cannot cross.
+        r = _run(cmd, timeout=float(_PROBE_TIMEOUT_SEC) + 2.0)
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return ProbeOutcome.FAILED, f"probe subprocess failed: {e}"
     return _classify_probe(r.returncode, r.stderr or "")
@@ -1181,10 +1183,7 @@ def check_renderer_device_resolvable() -> CheckResult:
         )
         if outcome is ProbeOutcome.OPENED:
             successes.append(f"{name}({who})→{display}")
-        elif outcome is ProbeOutcome.BUSY and (
-            resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
-            or resolved_device in _ring_renderer_devices()
-        ):
+        elif outcome is ProbeOutcome.BUSY:
             owned, owner_detail = _fanin_lane_busy_owner_matches(
                 resolved_device, unit,
             )
