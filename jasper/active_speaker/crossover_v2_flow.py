@@ -2203,6 +2203,7 @@ class CrossoverV2Session:
         driver_prescription: "DriverPrescription | None" = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+        lateral_candidate_ids: Sequence[str] = (),
         verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
@@ -2415,6 +2416,10 @@ class CrossoverV2Session:
             tuple(lateral_prompts) if lateral_prompts is not None
             else LATERAL_POSE_PROMPTS
         )
+        # WHICH banked candidate each pose of the walk measures (#3498), in the
+        # same order as the prompts above. Empty on every walk that measures
+        # the speaker as it stands, which is every shipped one.
+        self._lateral_candidate_ids: tuple[str, ...] = tuple(lateral_candidate_ids)
         # The POST-APPLY walk's pose set, resolved through the same one resolver
         # the plan builder uses so the session and the plan cannot read
         # different tables — the desync ``V2PlanShape`` exists to close, applied
@@ -5259,9 +5264,28 @@ class CrossoverV2Session:
                 position_deg=position_angle_deg(prompt),
                 vertical_deg=position_elevation_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
+                claim=_spatial.TakeClaim(
+                    candidate_id=self._lateral_candidate_id(pose.index),
+                ),
                 **self._capture_stamp(result),
             ),
         )
+
+    def _lateral_candidate_id(self, index: int) -> str:
+        """WHICH candidate the pose at this capture index measures.
+
+        Resolved through the walk's own group offsets, the same derivation
+        ``_prompt_at`` uses, so the label and the prompt can never come from
+        two different positions of one walk. ``""`` for every pose no walk
+        named a candidate for.
+        """
+        offsets = self._journey.plan.group_offsets(PHASE_LATERAL)
+        try:
+            position = offsets.index(index)
+        except ValueError:
+            return ""
+        ids = self._lateral_candidate_ids
+        return ids[position] if position < len(ids) else ""
 
     def _close_lateral_walk(self) -> dict[str, Any]:
         """Record that the walk finished. Publishes nothing.

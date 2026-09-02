@@ -83,6 +83,11 @@ def slot(tmp_path, monkeypatch):
         spool.set_angle_request_spool_path_for_tests(None)
 
 
+#: Where the design-axis MEASURE capture sits in a stage-1 plan, which is the
+#: index a walk's own walk-level spec is keyed to.
+_MEASURE_INDEX = 2
+
+
 def _hand_shape():
     return flow.resolve_plan_shape(flow.TIER_FULL)
 
@@ -171,7 +176,7 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
         taken = _take()
 
     assert taken is not None
-    prompts, consumer, _spec, _trims, _geometry = taken
+    prompts, consumer, _specs, _trims, _geometry, _candidates = taken
     assert consumer == LATERAL_CONSUMER_FORWARD_MODEL
     assert [flow.position_angle_deg(p) for p in prompts] == CAMPAIGN_ANGLES
 
@@ -239,7 +244,7 @@ def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
     express = mp.program("baseline", "express")
     request = ac.request_for_program(express)
     spool.stage_angle_request(request)
-    prompts, _consumer, _spec, _trims, _geometry = _take()
+    prompts = _take()[0]
 
     plan = flow.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=_hand_shape(),
@@ -360,7 +365,7 @@ def test_a_raised_walk_survives_the_spool_and_reaches_the_session(slot):
             mover=ac.MOVER_HUMAN,
         )
     )
-    prompts, _consumer, _spec, _trims, _geometry = _take()
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
 
     assert [flow.position_elevation_deg(p) for p in prompts] == [0, 20, -20]
     assert [flow.position_angle_deg(p) for p in prompts] == [0, 22, -22]
@@ -426,7 +431,7 @@ def test_the_taken_walk_becomes_the_sessions_map_and_its_prompted_entries(slot):
     six spots while the conductor measured five.
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
-    prompts, _consumer, _spec, _trims, _geometry = _take()
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
     shape = _hand_shape()
 
     mapping = flow.build_v2_cloud_index_phase_map(
@@ -465,7 +470,7 @@ def test_an_arm_driven_walk_declares_the_angle_its_gate_waits_for(slot):
     spool.stage_angle_request(
         ac.per_driver_at(CAMPAIGN_ANGLES, mover=ac.MOVER_ARM)
     )
-    prompts, _consumer, _spec, _trims, _geometry = _take(_arm_shape())
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take(_arm_shape())
     plan = flow.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=_arm_shape(),
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
@@ -488,7 +493,7 @@ def test_the_consent_copy_quotes_the_walk_the_household_will_actually_take(slot)
     reach at a household about to be walked past it is the dishonesty the
     orientation sentence exists to prevent."""
     spool.stage_angle_request(ac.per_driver_at([0, 45, -45]))
-    prompts, _consumer, _spec, _trims, _geometry = _take()
+    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
     wide = flow.walk_shape_for(
         cloud_positions=0, lateral=True, lateral_prompts=prompts,
     )
@@ -531,11 +536,49 @@ def _played_measure_spec(measure_spec, monkeypatch):
         stimulus_capture=SimpleNamespace(take_answer=lambda: "the-engine-take"),
         index_phase_map={1: PHASE_MEASURE},
         run_async=asyncio.run,
-        measure_spec=measure_spec,
+        specs_by_index={} if measure_spec is None else {1: measure_spec},
     )
     assert leg(1, 1, entry=None) == "the-engine-take"
     one, = played
     return one
+
+
+def test_the_engine_leg_plays_the_spec_its_own_index_names(monkeypatch):
+    """One leg, one spec per claimed capture (#3498).
+
+    A stop that names a candidate rides the alignment that candidate was minted
+    with, so the leg cannot hand every index one spec. An index no spec names
+    and no MEASURE phase claims stays on the flow leg, which is what keeps a
+    candidate-free walk on the path it already ran on.
+    """
+    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
+    monkeypatch.setattr(v2host, "_session_abort_target", None)
+    played: list = []
+
+    class _Tuning:
+        async def measure(self, spec):
+            played.append(spec)
+            return SimpleNamespace(stimuli=(SimpleNamespace(
+                record_id="rec-1", banked=True, incident="", level_db=-22.0,
+            ),))
+
+    at_pose = MeasureSpec(
+        kind=MEASURE_KIND_CANDIDATE, positions=(20,), candidate_id="fp-a",
+    )
+    leg = v2host._bind_engine_measure_leg(
+        tuning=_Tuning(),
+        stimulus_capture=SimpleNamespace(take_answer=lambda: "the-engine-take"),
+        index_phase_map={1: PHASE_MEASURE, 3: PHASE_LATERAL, 4: PHASE_LATERAL},
+        run_async=asyncio.run,
+        specs_by_index={3: at_pose},
+    )
+
+    assert leg(4, 1, entry=None) is None
+    assert leg(3, 1, entry=None) == "the-engine-take"
+    assert leg(1, 1, entry=None) == "the-engine-take"
+    assert [(s.candidate_id, s.positions) for s in played] == [
+        ("fp-a", (20,)), ("", ()),
+    ]
 
 
 def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatch):
@@ -548,7 +591,8 @@ def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatc
     the validated pair and the played pair get to differ.
     """
     spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
-    _prompts, _consumer, spec, _trims, _geometry = _take()
+    _prompts, _consumer, specs, _trims, _geometry, _candidates = _take()
+    spec = specs[_MEASURE_INDEX]
 
     played = _played_measure_spec(spec, monkeypatch)
     assert (played.kind, played.polarity, played.inverted_role) == (
@@ -572,7 +616,8 @@ def test_a_staged_confirmation_coordinate_reaches_the_engine_legs_measure_spec(
         delayed_role=DRIVER_ROLE_TWEETER,
         delay_us=250.0,
     ))
-    _prompts, _consumer, spec, _trims, _geometry = _take()
+    _prompts, _consumer, specs, _trims, _geometry, _candidates = _take()
+    spec = specs[_MEASURE_INDEX]
 
     played = _played_measure_spec(spec, monkeypatch)
     assert (played.delayed_role, played.delay_us) == (DRIVER_ROLE_TWEETER, 250.0)
@@ -609,7 +654,8 @@ def test_a_level_matched_walk_carries_the_boxs_own_trims_to_the_session(
         inverted_role=DRIVER_ROLE_TWEETER, level_matched=True,
     ))
     with caplog.at_level(logging.INFO):
-        _prompts, _consumer, spec, trims, _geometry = _take()
+        _prompts, _consumer, specs, trims, _geometry, _candidates = _take()
+        spec = specs[_MEASURE_INDEX]
 
     assert spec.level_matched is True
     assert trims == {DRIVER_ROLE_TWEETER: -9.5}
@@ -631,7 +677,8 @@ def test_an_ordinary_walk_resolves_no_trims_and_reads_no_evidence(
 
     monkeypatch.setattr(v2host, "_resolve_measurement_level_trims", _spy)
     spool.stage_angle_request(ac.per_driver_at([0]))
-    _prompts, _consumer, spec, trims, _geometry = _take()
+    _prompts, _consumer, specs, trims, _geometry, _candidates = _take()
+    spec = specs[_MEASURE_INDEX]
 
     assert spec.level_matched is False and trims == {}
     # Called once and answered empty — the real resolver short-circuits on the
