@@ -2444,11 +2444,14 @@ household's own tape measure in **metres** (`--ceiling-height-m` optional), and
 are stated together or not at all. The driving LLM asks once, in-session; the
 walk carries them to the session, which banks them as
 `crossover_v2/<relay_session_id>/declared_geometry.json` and reports them at
-`session.declared_geometry` in the evidence packet (`None` when nobody was
-asked). Nothing in the session computes from them — the room's entanglement
-floor (`2.5 / t_first_bounce`) is an offline toolbox step, and this human
-answer is its only viable source because the reflection finder is structurally
-blind on this rig class.
+`session.declared_geometry` in the evidence packet — an absence block naming
+its reason when there is no room to report, so "nobody was asked" and "the
+banked file could not be read" never read alike. The declaration rides the
+durable state into the grading stage, which re-banks it in its own bundle.
+Nothing in the session computes from them — the room's entanglement floor
+(`2.5 / t_first_bounce`) is an offline toolbox step, and this human answer is
+its only viable source because the reflection finder is structurally blind on
+this rig class.
 
 **`--polarity` / `--inverted-role` are WALK-level, not per angle**, because the
 reverse-null is one act at one place: the pair names what this session's

@@ -271,11 +271,7 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         # The household's tape measure, or null when nobody was asked. Written
         # unconditionally and read back defaulted, on the same additive terms
         # as the keys above, so the schema version does not move.
-        "declared_geometry": (
-            request.declared_geometry.to_dict()
-            if request.declared_geometry
-            else None
-        ),
+        "declared_geometry": request.declared_geometry_record(),
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
         # angle so the microphone moves once per angle), so a set or a

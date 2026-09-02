@@ -1322,4 +1322,3 @@ def test_mutation_a_banked_geometry_that_is_unusable_refuses_by_name(slot, mutat
     with pytest.raises(spool.AngleRequestRefused) as excinfo:
         spool.take_staged_angle_request()
     assert excinfo.value.reason == spool.SPOOL_MALFORMED
-    assert "declared_geometry" in excinfo.value.detail

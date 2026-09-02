@@ -351,11 +351,7 @@ def _walk_payload(
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
-        "declared_geometry": (
-            request.declared_geometry.to_dict()
-            if request.declared_geometry
-            else None
-        ),
+        "declared_geometry": request.declared_geometry_record(),
         "stops": [
             {
                 "index": stop.index,

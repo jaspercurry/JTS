@@ -552,9 +552,39 @@ def test_the_session_block_reads_the_households_declared_geometry(tmp_path):
     ] == room
 
 
-def test_a_session_nobody_was_asked_about_declares_no_geometry(tmp_path):
-    """Absent is ``None``, never an empty room: most sessions carry none."""
+@pytest.mark.parametrize(
+    "banked, reason",
+    [
+        (None, "source_absent"),
+        (
+            json.dumps({"schema_version": 1, "kind": DECLARED_GEOMETRY_KIND}),
+            "field_null",
+        ),
+        ("{ not a document", ""),
+    ],
+)
+def test_a_session_without_a_readable_room_names_which_absence_it_is(
+    tmp_path, banked, reason,
+):
+    """Never asked, asked-and-empty and unreadable are three different facts.
+
+    Most sessions carry no declaration at all, and that is the ordinary row.
+    A file that DID arrive and could not be read is somebody's defect, and
+    collapsing it into "nobody was asked" is how an offline reader ends up
+    deriving an entanglement floor from a room that was never banked.
+
+    ``reason=""`` is the row where the packet must name the read failure
+    itself, in whatever words the artifact reader gives it.
+    """
     session, _ = _bundle(tmp_path)
-    assert build_crossover_evidence_packet(session)["session"][
-        "declared_geometry"
-    ] is None
+    if banked is not None:
+        round_dir, _ = round_artifact_dir(session)
+        (round_dir / DECLARED_GEOMETRY_ARTIFACT).write_text(banked)
+
+    block = build_crossover_evidence_packet(session)["session"]["declared_geometry"]
+    assert block["status"] == "not_evaluated"
+    assert block["field"] == DECLARED_GEOMETRY_ARTIFACT
+    if reason:
+        assert block["reason"] == reason
+    else:
+        assert block["reason"] not in {"source_absent", "field_null"}

@@ -175,6 +175,8 @@ from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 __all__ = [
     "CANDIDATE_GRADINGS_UNAVAILABLE",
     "CLASSIFICATION_ARTIFACT",
+    "DECLARED_GEOMETRY_ARTIFACT",
+    "DECLARED_GEOMETRY_KIND",
     "HARMONICS_ARTIFACT",
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
@@ -589,13 +591,20 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _declared_geometry_block(raw: Any) -> dict[str, Any] | None:
-    """The banked room, in metres, or ``None`` when nobody was asked."""
+def _declared_geometry_block(raw: Any, reason: str) -> dict[str, Any]:
+    """The banked room, in metres, or WHICH absence this is.
+
+    An artifact that never arrived (nobody was asked, which is most sessions),
+    one this install could not read, and one carrying nothing but its own
+    envelope are three different facts about the round. Collapsing them to a
+    single ``None`` is the reading defect :func:`_absence` exists to fix, so
+    the reason travels here on exactly the terms the sibling blocks state it.
+    """
     room = {
         key: value for key, value in _mapping(raw).items()
         if key not in DECLARED_GEOMETRY_ENVELOPE_FIELDS
     }
-    return room or None
+    return room or _absence(reason, False, DECLARED_GEOMETRY_ARTIFACT)
 
 
 def _ordinal(value: Any) -> int:
@@ -3299,7 +3308,9 @@ def build_crossover_evidence_packet(
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
-    geometry_raw, _ = _read_json(round_dir / DECLARED_GEOMETRY_ARTIFACT)
+    geometry_raw, geometry_reason = _read_json(
+        round_dir / DECLARED_GEOMETRY_ARTIFACT
+    )
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
     findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
     classification_raw, classification_reason = _read_json(
@@ -3382,10 +3393,12 @@ def build_crossover_evidence_packet(
             "state": info_raw.get("state"),
             "started_at": info_raw.get("started_at"),
             "round_id": receipt.get("round_id"),
-            # The household's own tape measure, in metres, or ``None`` when
-            # nobody was asked. The envelope keys are dropped: what a reader
-            # wants is the room, not the artifact wrapper it arrived in.
-            "declared_geometry": _declared_geometry_block(geometry_raw),
+            # The household's own tape measure, in metres, or an ``_absence``
+            # naming why there is none. The envelope keys are dropped: what a
+            # reader wants is the room, not the wrapper it arrived in.
+            "declared_geometry": _declared_geometry_block(
+                geometry_raw, geometry_reason
+            ),
             "note": (
                 "bundle_session_id and relay_session_id are different id "
                 "namespaces; the round artifacts are filed under the relay id"

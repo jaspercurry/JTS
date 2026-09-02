@@ -657,7 +657,7 @@ def test_a_staged_walks_declared_geometry_is_banked_with_the_session(
                 declared_geometry=geometry,
             )
         )
-        _stage_1(monkeypatch)
+        _, state = _stage_1(monkeypatch)
     finally:
         angle_spool.set_angle_request_spool_path_for_tests(None)
 
@@ -666,13 +666,51 @@ def test_a_staged_walks_declared_geometry_is_banked_with_the_session(
         f"crossover_v2/{_MINTED_RELAY_SESSION_ID}/"
         f"{evidence_packet.DECLARED_GEOMETRY_ARTIFACT}"
     )
+    durable = (state.get("evidence") or {}).get(v2host.DECLARED_GEOMETRY_STATE_KEY)
     if not declared:
         assert relpath not in published
+        assert durable is None
         return
     assert published[relpath] == {
         "schema_version": 1,
         "kind": evidence_packet.DECLARED_GEOMETRY_KIND,
         **geometry.to_dict(),
+    }
+    # …and into durable state, which is the only channel the grading stage has.
+    assert durable == geometry.to_dict()
+
+
+def test_the_grading_stage_rebanks_the_room_stage_1_was_told(monkeypatch):
+    """Stage 2 opens its OWN bundle, so the declaration has to ride (#3498).
+
+    The post-apply bundle is what an offline reader opens to derive the room's
+    entanglement floor. A stage 2 that dropped the tape measure would bank a
+    packet saying this household was never asked, which is the one thing the
+    packet's absence block exists to keep apart from a room.
+    """
+    from jasper.active_speaker import angle_capture as ac
+    from jasper.active_speaker.crossover_v2 import evidence_packet
+
+    room = ac.DeclaredGeometry(0.9, 1.0, 1.05, 2.4).to_dict()
+    state = _seed_applied_stage_1_state()
+    state["evidence"] = {v2host.DECLARED_GEOMETRY_STATE_KEY: room}
+    v2host.save_v2_state(state)
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store", lambda topology: (store, store.session_id),
+    )
+
+    _stage_2(monkeypatch)
+
+    published = {relpath: payload for relpath, payload in store.published}
+    relpath = (
+        f"crossover_v2/{_MINTED_RELAY_SESSION_ID}/"
+        f"{evidence_packet.DECLARED_GEOMETRY_ARTIFACT}"
+    )
+    assert published[relpath] == {
+        "schema_version": 1,
+        "kind": evidence_packet.DECLARED_GEOMETRY_KIND,
+        **room,
     }
 
 

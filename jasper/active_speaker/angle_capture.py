@@ -515,6 +515,16 @@ class AngleCaptureRequest:
         """
         return self.mover == MOVER_ARM
 
+    def declared_geometry_record(self) -> dict[str, float] | None:
+        """The tape measure as every writer banks it, or ``None`` for none.
+
+        One owner for the "or nothing": the spool document and the CLI's plan
+        JSON both carry this field, and two spellings of one conditional are
+        two places for the null to drift.
+        """
+        geometry = self.declared_geometry
+        return geometry.to_dict() if geometry is not None else None
+
 
 # --------------------------------------------------------------------------- #
 # angle -> pose: the one new primitive

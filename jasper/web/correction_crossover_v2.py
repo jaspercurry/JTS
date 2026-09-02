@@ -2925,6 +2925,44 @@ def publish_declared_geometry(
     )
 
 
+#: Where the declaration rides from the stage that took the walk to the stage
+#: that grades it, inside the durable ``evidence`` block the findings
+#: projection and the cloud fingerprints already cross on.
+DECLARED_GEOMETRY_STATE_KEY = "declared_geometry"
+
+
+def declared_geometry_prior_from_state(state: Mapping[str, Any] | None) -> Any:
+    """Stage 1's tape measure, as :func:`publish_declared_geometry` takes it.
+
+    The read side of :data:`DECLARED_GEOMETRY_STATE_KEY`. Stage 2 stages no
+    walk and opens its OWN bundle, so without this the post-apply packet would
+    report a room nobody ever declared — the reading defect that block's
+    absence reason exists to prevent, arriving by a different door.
+
+    ``None`` is every session nobody was asked about, and also a record too
+    damaged to read back: an unreadable declaration is not a room, and a
+    grading stage must not be refused its open over one.
+    """
+    from jasper.active_speaker.angle_capture import DeclaredGeometry
+    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+
+    evidence = (state or {}).get("evidence")
+    record = (
+        evidence.get(DECLARED_GEOMETRY_STATE_KEY)
+        if isinstance(evidence, Mapping) else None
+    )
+    if not isinstance(record, Mapping):
+        return None
+    try:
+        return DeclaredGeometry.from_dict(record)
+    except CrossoverV2FlowError:
+        log_event(
+            logger, "correction.crossover_v2_declared_geometry_unreadable",
+            declared=",".join(sorted(str(key) for key in record)),
+        )
+        return None
+
+
 def bind_round_receipt(
     store: Any, relay_session_id: str, refs: dict[str, Any]
 ) -> Callable[[Mapping[str, Any]], str]:
@@ -6416,7 +6454,8 @@ def prepare_v2_session(
     engine_level_trims: dict[str, float] = {}
     # The household's tape measure, if the operator was asked for it. Bound
     # beside the two above for the same reason: ``_open`` reads it on both
-    # stages, and stage 2 stages no walk at all.
+    # stages. Stage 2 stages no walk, so it rehydrates the room from durable
+    # state below rather than taking one.
     declared_geometry: Any = None
     if not verify_only:
         include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
@@ -6560,6 +6599,10 @@ def prepare_v2_session(
         # ``CrossoverV2Session.__init__`` so the "values plus a date, or
         # nothing" rule has one owner.
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
+        # #3498's tape measure, rehydrated so the bundle this stage banks
+        # carries the same room stage 1 was told. Without it the post-apply
+        # packet reports a household that was never asked.
+        declared_geometry = declared_geometry_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
         attempt_store = _attempt_loop_store_snapshot()
@@ -6705,6 +6748,12 @@ def prepare_v2_session(
         publish_declared_geometry(
             evidence_store, relay_session_id, declared_geometry
         )
+        if declared_geometry is not None:
+            # …and into durable ``evidence``, which is how the room reaches the
+            # stage that GRADES it: stage 2 stages no walk and banks its own
+            # bundle, so this is the only channel it has. Written on both
+            # stages so a re-armed verify keeps re-banking the same room.
+            refs[DECLARED_GEOMETRY_STATE_KEY] = declared_geometry.to_dict()
         # One signal per RELAY session, shared by the play seam (which fires
         # it) and the relay runner (which installs the armed capture's phone
         # progress ladder on it). A wired session has no page to pace, so it
