@@ -14,7 +14,7 @@ The tree is exactly the one
 reads::
 
     <campaign-root>/<round-id>/
-      bundle/<session-id>/...    the live session bundle, copied
+      bundle/<session-id>/...    the live session bundle, hard-linked
       state.json                 crossover-v2 flow state (optional)
       design-draft.json          active-speaker design draft (optional)
       applied-profile.json       applied baseline profile SSOT (optional)
@@ -39,8 +39,9 @@ pay the wizard stack's (or numpy's) import cost.
 
 from __future__ import annotations
 
+import errno
 import json
-import re
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,10 @@ from typing import Any, Mapping, NamedTuple
 
 from .baseline_profile import DEFAULT_STATE_PATH as _APPLIED_PROFILE_PATH
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
+# Reused rather than a third package-local identifier regex (commissioning_run
+# and commissioning_evidence each have one already); its first-char class
+# excludes ".", so it already rejects ".", ".." and any "/"-carrying token.
+from .commissioning_run import _IDENTIFIER_RE as _ROUND_ID_RE
 from .design_draft import DEFAULT_DESIGN_DRAFT_PATH
 
 __all__ = [
@@ -68,12 +73,6 @@ DEFAULT_CAMPAIGN_ROOT = Path("/var/lib/jasper/active_speaker/campaigns")
 REASON_NOT_A_BUNDLE = "not_a_bundle"
 REASON_ALREADY_BANKED = "already_banked"
 REASON_SESSION_UNFINISHED = "session_unfinished"
-
-#: A round id names a directory under the campaign root, so it must be one
-#: plain token: a superset of the ``uuid4().hex`` charset
-#: ``bundles.open_bundle`` mints session ids from. Rejects ``.``, ``..`` and
-#: anything carrying a separator.
-_ROUND_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class BankedRound(NamedTuple):
@@ -114,6 +113,21 @@ def _ssot_documents(
     )
 
 
+def _link_or_copy(source: str, destination: str) -> None:
+    """Hard-link the banked bundle instead of copying its bytes.
+
+    The source session bundle is immutable once banked, so a hard link is
+    safe and shares bytes with the (later-unlinked) sessions-ring copy;
+    only a campaign root on another filesystem falls back to a real copy.
+    """
+    try:
+        os.link(source, destination)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.copy2(source, destination)
+
+
 def _round_id(session_dir: Path, session_id: str) -> str:
     """The bundle's own ``round_id`` when it banked a receipt, else its session id.
 
@@ -148,7 +162,10 @@ def bank_round(
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
 ) -> BankedRound:
-    """Copy one live session bundle and its SSOT documents into the campaign home.
+    """Bank one live session bundle and its SSOT documents into the campaign home.
+
+    The bundle is hard-linked in, not copied byte-for-byte (falling back to a
+    copy only across a filesystem boundary) — see :func:`_link_or_copy`.
 
     Returns the banked round directory and the ``provenance.json`` payload
     written beside the bundle: when it was banked, which session it came from,
@@ -197,7 +214,11 @@ def bank_round(
     documents = _ssot_documents(state_path, design_draft_path, applied_profile_path)
     target.mkdir(parents=True)
     try:
-        shutil.copytree(session_dir, target / "bundle" / session_dir.name)
+        shutil.copytree(
+            session_dir,
+            target / "bundle" / session_dir.name,
+            copy_function=_link_or_copy,
+        )
         missing: list[str] = []
         for name, source in documents:
             if source.is_file():

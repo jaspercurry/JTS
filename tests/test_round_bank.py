@@ -116,6 +116,27 @@ def test_provenance_records_the_installed_build_or_says_it_cannot(
     assert banked.provenance["banked_at_utc"].endswith("Z")
 
 
+def test_banked_bundle_files_are_hard_linked_not_copied(tmp_path):
+    """A hard link shares bytes at zero copy cost and survives the sessions
+    ring's later unlink of the source -- ``bank_round`` must not byte-copy a
+    finished bundle that can run hundreds of MB on a 1 GB Pi."""
+    session_dir, state_path = _live_session(tmp_path)
+
+    banked = bank_round(
+        session_dir,
+        campaign_root=tmp_path / "campaigns",
+        state_path=state_path,
+        **_ssot(tmp_path, present=False),
+    )
+
+    banked_session_dir = _bundle_session_dir(banked.path)
+    for source_file in session_dir.rglob("*"):
+        if source_file.is_file():
+            banked_file = banked_session_dir / source_file.relative_to(session_dir)
+            assert banked_file.stat().st_ino == source_file.stat().st_ino
+    assert load_banked_round(banked.path).session_dir == banked_session_dir
+
+
 def test_a_banked_round_is_never_overwritten(tmp_path):
     session_dir, state_path = _live_session(tmp_path)
     kwargs = {
