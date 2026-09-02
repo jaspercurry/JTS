@@ -82,7 +82,7 @@ class GateRecord:
     """One log line this gate would have emitted, as data.
 
     The payload is held EXACTLY as built, which is why this is not
-    :class:`~jasper.active_speaker.crossover_v2.intervention.JournalRecord`:
+    :class:`~jasper.active_speaker.crossover_v2.plan_assembly.JournalRecord`:
     that type's ``detached_json`` normalizes containers, so ``core_level_db``'s
     per-role ``band_hz`` TUPLES would render as lists in a field-diagnosis
     surface.  Holding it raw is safe here because every value is a scalar

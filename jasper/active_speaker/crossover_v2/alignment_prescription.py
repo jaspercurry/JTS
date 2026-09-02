@@ -127,6 +127,7 @@ from jasper.audio_measurement.program_analysis import half_period_us
 from jasper.log_event import log_event
 
 __all__ = [
+    "ALIGNMENT_NO_CROSSOVER_REGION",
     "ALIGNMENT_PRESCRIPTION_KEY",
     "ALIGNMENT_PRESCRIPTION_KIND",
     "ALIGNMENT_PRESCRIPTION_MALFORMED",
@@ -181,6 +182,10 @@ PRESCRIPTION_DELAY_INVALID = "prescription_delay_invalid"
 PRESCRIPTION_BASIS_INVALID = "prescription_basis_invalid"
 ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
 PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
+#: The speaker has ONE way, so there is no corner and no second driver to align
+#: against. Its own reason rather than :data:`PRESCRIPTION_FC_UNKNOWN`: an
+#: unknown corner is a number to go and derive, this one never exists (#3480).
+ALIGNMENT_NO_CROSSOVER_REGION = "alignment_no_crossover_region"
 PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
 #: The preset's own declared delay window — the ONE bound in this gate that
 #: does not depend on a number the operator supplied. It has always existed
@@ -205,6 +210,7 @@ ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PRESCRIPTION_BASIS_INVALID,
     ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
     PRESCRIPTION_FC_UNKNOWN,
+    ALIGNMENT_NO_CROSSOVER_REGION,
     PRESCRIPTION_OUT_OF_LOBE,
     PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
     PRESCRIPTION_POLARITY_INVALID,
@@ -502,8 +508,9 @@ def _optional_number(value: Any) -> float | None:
 def read_alignment_prescription(
     raw: Mapping[str, Any] | None,
     *,
-    fc_hz: float,
+    fc_hz: float | None,
     declared_bounds_us: tuple[float, float] | None,
+    way_count: int | None = None,
 ) -> AlignmentPrescription | None:
     """THE request gate.  One point, and the one derivation of the lobe bound.
 
@@ -545,9 +552,21 @@ def read_alignment_prescription(
     repository's gates, and a strict comparison here would make the legality of
     a round depend on floating-point noise in the sixth decimal of a corner
     frequency.
+
+    ``way_count`` ``1`` is a ``full_range_passive`` speaker: nothing to align,
+    so the door refuses by name.  ``None`` is "the caller did not state it" and
+    leaves the gate as it was — defaulted, unlike every other keyword here.
     """
     if raw is None:
         return None
+    # Before the parse and the corner: on a way-1 speaker any other answer
+    # sends a prescriber to re-derive a number that cannot exist.
+    if way_count == 1:
+        raise AlignmentPrescriptionRefused(
+            ALIGNMENT_NO_CROSSOVER_REGION,
+            "this speaker is full_range_passive (way-1): it has no crossover "
+            "region, so there is no handoff for a delay to align",
+        )
     prescription = _parse_prescription(raw)
     # Checked after the shape and before the bound: an unusable corner is a
     # different problem from an out-of-lobe prescription, and reporting the

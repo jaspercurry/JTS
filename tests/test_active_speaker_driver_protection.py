@@ -12,6 +12,7 @@ from jasper.active_speaker.driver_protection import (
     LOW_LIMIT_DECLARED,
     LOW_LIMIT_STYLE_DEFAULT,
     derive_hf_measurement_ceiling_dbfs,
+    driver_excitation_floor_hz,
     driver_protection_payload,
     driver_protection_profile,
     format_low_limit,
@@ -432,3 +433,46 @@ def test_a_declared_low_limit_above_the_class_default_still_tightens() -> None:
     assert payload["band_limit_highpass_ok"] is False
     assert payload["low_limit_hz"] == 10000.0
     assert payload["low_limit_provenance"] == LOW_LIMIT_DECLARED
+
+
+
+# --- the full_range (way-1) protection class --------------------------------
+
+
+_BAND = {"measurement_band_hz": [40.0, 15000.0]}
+
+
+@pytest.mark.parametrize(
+    "driver, expected",
+    [
+        pytest.param(
+            {"recommended_highpass_hz": 80.0, **_BAND}, 80.0, id="declared_owner",
+        ),
+        pytest.param(
+            {"required_protection_filters": [
+                {"kind": "highpass", "cutoff_hz": 90.0},
+            ], **_BAND},
+            90.0, id="a_stored_protective_highpass",
+        ),
+        pytest.param(
+            {"measurement_band_hz": [60.0, 15000.0]}, 60.0, id="the_band_low_edge",
+        ),
+        pytest.param({"model": "Example"}, None, id="nothing_declared_is_no_floor"),
+    ],
+)
+def test_the_excitation_floor_reads_the_declaration_and_never_invents_one(
+    driver, expected
+) -> None:
+    """The class table is deliberately not consulted: the frequency a driver may
+    be DRIVEN to is a question only a declaration answers."""
+    assert driver_excitation_floor_hz(driver) == expected
+
+
+def test_full_range_shares_its_ceiling_and_floor_test_duration_with_tweeter() -> None:
+    """A single amp channel is at least as fragile as the tweeter it may drive
+    -- the two classes share one figure on each axis, not independent ones."""
+    full_range = driver_protection_profile("full_range", declared_floor_hz=60.0)
+    tweeter = driver_protection_profile("tweeter", driver_style="dome_tweeter")
+
+    assert full_range.max_auto_level_dbfs == tweeter.max_auto_level_dbfs
+    assert full_range.floor_test_duration_ms == tweeter.floor_test_duration_ms

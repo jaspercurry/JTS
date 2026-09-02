@@ -5,8 +5,7 @@
 > temporarily-deployed build. Preserved for primary-source
 > archaeology — specific facts (installed build IDs, temporary
 > binary paths, timing numbers) will drift over time. Read this for
-> the narrative, not for current state. Current operational truth
-> lives in [HANDOFF-aec.md](HANDOFF-aec.md).
+> the narrative, not for current state.
 
 Date: 2026-06-18
 Scope: timing-only experiment for the outputd/chip-ref/XVF3800 chip-AEC path.

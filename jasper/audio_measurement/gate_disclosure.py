@@ -107,7 +107,7 @@ def evaluation_band_hz(
     intersected with the band the DUT actually radiates. Which floor is the
     caller's: :func:`pre_post_gate_delta` prices the gate over the trusted
     floor (``2.5/T``), while
-    :func:`jasper.audio_measurement.program_analysis.crossover_region_band_hz`
+    :func:`jasper.audio_measurement.comparison_bands.crossover_region_band_hz`
     grades over the validity floor (``1/T``), the trusted floor bounding only
     the flat spec's own bands
     (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).

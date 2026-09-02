@@ -704,8 +704,7 @@ hardware-proven; do not rediscover it:
   `SetConfigFilePath` + reload) repoints the durable boot anchor — it is
   the *permanent-apply* transport. `CamillaController.set_active_config_raw()`
   (CamillaDSP `SetConfig`) loads a graph into the live pipeline and leaves
-  the anchor untouched — proven on hardware (jts3) and documented in
-  [`HANDOFF-active-speaker-dsp.md`](../HANDOFF-active-speaker-dsp.md).
+  the anchor untouched — proven on hardware (jts3).
   Experiment `apply` and `bypass` use the raw transport, always.
 - **The named seam triple** is `commission_seams()` in
   `jasper/active_speaker/commission_wiring.py` —

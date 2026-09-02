@@ -44,6 +44,7 @@ from jasper.active_speaker.commission_wiring import (
     write_commission_path_safety,
 )
 from jasper.active_speaker.camilla_yaml import APPLIED_RESPONSE_FILTER_MODE
+from jasper.active_speaker.driver_protection import driver_excitation_floor_hz
 from jasper.active_speaker.measurement import (
     current_driver_floor_evidence,
     load_measurement_state,
@@ -881,10 +882,19 @@ def _commission_tone_signal_plan(
         if topology is not None
         else None
     )
+    # The preset carries only the stored protective high-pass; a ``full_range``
+    # driver's floor lives in the declaration the preview was compiled from.
+    preview_drivers = (
+        crossover_preview.get("drivers") if isinstance(crossover_preview, dict) else None
+    )
+    declared_driver = (
+        preview_drivers.get(role_id) if isinstance(preview_drivers, dict) else None
+    )
     plan = driver_test_signal_plan(
         bound_preset,
         role_id,
         driver_style=driver_style,
+        declared_floor_hz=driver_excitation_floor_hz(declared_driver),
     )
     plan["preset_source"] = source
     plan["preset_id"] = getattr(bound_preset, "preset_id", None)

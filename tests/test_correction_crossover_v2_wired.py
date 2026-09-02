@@ -286,7 +286,7 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
         )
         monkeypatch.setattr(
             prescription_mod, "read_alignment_prescription",
-            lambda raw, *, fc_hz, declared_bounds_us: None,
+            lambda raw, *, fc_hz, declared_bounds_us, way_count=None: None,
         )
         if preparer == "verify":
             # Stage 2's own preceding gate: an applied durable state.

@@ -35,11 +35,16 @@ def _frames_bytes(values):
 
 
 class FakePcm:
-    """A scripted capture PCM: ``(frames, values)`` steps, then silence."""
+    """A scripted capture PCM: ``(frames, values)`` steps, then silence.
 
-    def __init__(self, script, *, idle_frames=0):
+    Idling as silence rather than as ``(0, b"")`` is load-bearing: dead reads
+    trip the reader's 8-consecutive-failure guard about 8 ms after the script
+    runs out, which under suite load beats the test's own ``drain()`` to the
+    sample the script already delivered.
+    """
+
+    def __init__(self, script):
         self._script = list(script)
-        self._idle_frames = idle_frames
         self.closed = False
 
     def read(self):
@@ -47,9 +52,7 @@ class FakePcm:
             frames, values = self._script.pop(0)
             return frames, _frames_bytes(values)
         time.sleep(0.001)
-        if not self._idle_frames:
-            return 0, b""
-        return self._idle_frames, _frames_bytes([(0, 0)] * self._idle_frames)
+        return 16, _frames_bytes([(0, 0)] * 16)
 
     def close(self):
         self.closed = True
@@ -59,7 +62,7 @@ def _meter(script, *, channels=CHANNELS):
         "fake:pcm",
         sample_rate_hz=RATE,
         channels=channels,
-        pcm_factory=lambda: FakePcm(script, idle_frames=0),
+        pcm_factory=lambda: FakePcm(script),
     )
 
 
@@ -123,7 +126,10 @@ def test_level_meter_start_fails_loudly_on_a_dead_device():
     meter = WiredLevelMeter(
         "fake:pcm", sample_rate_hz=RATE, channels=CHANNELS, pcm_factory=DeadPcm
     )
-    with pytest.raises(WiredCaptureError, match="not delivering samples"):
+    # Which loud failure wins is scheduler luck, not behavior: the ready
+    # timeout (50 ms) and the 8-consecutive-read guard (8 x 10 ms) land within
+    # tens of ms of each other. Pin that start() fails, not which message.
+    with pytest.raises(WiredCaptureError):
         meter.start(ready_timeout_s=0.05)
 
 

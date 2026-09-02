@@ -12,6 +12,7 @@ wizard code should consume these dataclasses instead of accepting freeform YAML.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,11 +29,10 @@ ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
 ACTIVE_BASELINE_KIND = "jts_speaker_baseline_profile"
 
 DRIVER_ROLES_BY_WAY: dict[int, tuple[str, ...]] = {
-    # 1-way is the DEGENERATE passive main: a single full-range driver per side.
-    # It only ever rides the multi-output emitter when a local subwoofer is
-    # present (bass management splits the full-range program into a sub low-pass
-    # and a complementary mains high-pass). A subless passive speaker takes the
-    # flat program lane, NOT this path.
+    # 1-way is the passive main: a single full-range driver per side, with no
+    # inter-driver crossover region. A local subwoofer is optional — when one is
+    # present bass management splits the full-range program into a sub low-pass
+    # and a complementary mains high-pass.
     1: ("full_range",),
     2: ("woofer", "tweeter"),
     3: ("woofer", "mid", "tweeter"),
@@ -89,6 +89,19 @@ def required_driver_roles(way_count: int) -> tuple[str, ...]:
         return DRIVER_ROLES_BY_WAY[int(way_count)]
     except (KeyError, TypeError, ValueError) as e:
         raise ActiveSpeakerConfigError("way_count must be 1, 2, or 3") from e
+
+
+def snapshot_declares_single_branch(snapshot: Any) -> bool:
+    """Does this profile snapshot's own preset declare exactly one branch?
+
+    ``False`` for anything unreadable: an unparseable preset is not evidence.
+    """
+    raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
+    try:
+        preset = ActiveSpeakerPreset.from_mapping(dict(raw or {}))
+        return len(required_driver_roles(preset.way_count)) < 2
+    except (ActiveSpeakerConfigError, TypeError, ValueError):
+        return False
 
 
 def lowest_driver_role(way_count: int) -> str:
@@ -687,15 +700,6 @@ class ActiveSpeakerPreset:
                     raise ActiveSpeakerConfigError(
                         f"driver {role} has inconsistent polarity across crossover regions"
                     )
-        # A 1-way (degenerate passive full-range) main only rides this multi-output
-        # emitter when a local subwoofer is present — that is the ONLY reason to
-        # split a passive speaker's program. A subless 1-way takes the flat program
-        # lane, never this path.
-        if self.way_count == 1 and self.local_subwoofer is None:
-            raise ActiveSpeakerConfigError(
-                "a 1-way (passive full-range) preset is only valid with a local "
-                "subwoofer; a subless passive speaker uses the flat program lane"
-            )
         if self.local_subwoofer is not None:
             self.local_subwoofer.validate()
             # The sub output is the next contiguous CamillaDSP channel after the

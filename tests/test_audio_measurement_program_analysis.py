@@ -70,6 +70,11 @@ from jasper.audio_measurement.program import (
     mesm_gap_samples,
     render_program_pcm,
 )
+from jasper.audio_measurement.comparison_bands import (
+    branch_snr_band_hz,
+    crossover_region_band_hz,
+    overlap_band_hz,
+)
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -135,14 +140,11 @@ from jasper.audio_measurement.program_analysis import (
     ABSOLUTE_NO_TRUSTED_BAND,
     analysis_diagnostic_summary,
     analyze_program_capture,
-    crossover_region_band_hz,
     DRIVER_SNR_ALIGNMENT_KEY,
     driver_alignment_snr_verdict,
     driver_snr_verdict,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     branch_level_bands_hz,
-    branch_snr_band_hz,
-    overlap_band_hz,
     predicted_branch_sum,
     realized_branch_level_match,
     solve_branch_trims,
@@ -7500,7 +7502,11 @@ def test_measure_analysis_is_invariant_to_the_programmed_drive_gain():
 # --------------------------------------------------------------------------- #
 
 
-def test_measure_requires_fc_prior():
+def test_a_two_branch_measure_still_requires_the_fc_prior():
+    # ``crossover_fc_hz=None`` is legal for a ONE-branch program (a speaker
+    # with no crossover). A two-branch one still raises: every pair
+    # quantity is derived from the corner, so a caller that forgot it must not
+    # get a candidate-free analysis that reads like an honest absence.
     prog = build_measure_program({"woofer": -11.0, "tweeter": -13.0}, _roles())
     cap = _synthesize(
         prog,
@@ -7866,8 +7872,7 @@ def _r18_verify(*, dip_center_hz=None, dip_depth_db=0.0, with_target=True):
         priors=MeasurementPriors(
             crossover_fc_hz=R18_FC_HZ,
             predicted_sum=(freqs, system_db),
-            measure_tweeter_sweep_lo_hz=R18_FC_HZ,
-            measure_woofer_sweep_hi_hz=6000.0,
+            measure_excited_band_hz=(R18_FC_HZ, 6000.0),
             configured_crossover_response_by_role=(
                 _r18_transfers() if with_target else None
             ),

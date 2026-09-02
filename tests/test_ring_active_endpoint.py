@@ -2866,9 +2866,9 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     checked.
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
-    from jasper.fanin.coupling_reconcile import (
+    from jasper.fanin.coupling_reconcile import _outputd_actions
+    from jasper.fanin.ring_health import (
         LoadedCamillaGraph,
-        _outputd_actions,
         ring_edge_width_ready,
     )
 
@@ -3396,8 +3396,9 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
         transport_coherence_report,
         transport_topology_for_coupling,
     )
-    from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
+    from jasper.fanin.coupling_reconcile import _outputd_actions
     from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
         DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_RING_PATH_ENV_VAR,
     )

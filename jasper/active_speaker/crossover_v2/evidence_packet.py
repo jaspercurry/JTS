@@ -138,6 +138,7 @@ from jasper.audio_measurement.evidence_identity import (
 # constant ``program_analysis.MeasurementGeometry`` and ``branch_chain`` import.
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+from jasper.audio_measurement.program_analysis import ABSOLUTE_NO_CROSSOVER_TOPOLOGY
 from jasper.json_fields import finite_float
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
@@ -152,9 +153,8 @@ from .record_index import Measurement, bundle_measurements
 # that patched this module's own binding, because the binding was all the test
 # could see.
 from . import position_cycle
-from .alignment_prescription import alignment_prescription_response_format
 from .blend_prescription import prescription_response_format
-from .topology_prescription import topology_prescription_response_format
+from . import handoff_doors as doors
 from .driver_prescription import (
     driver_passbands_from_safety_profile,
     driver_prescription_response_format,
@@ -2619,21 +2619,23 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
     }
 
 
-def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
-    """The crossover region a proposal must sit inside.
+def _region_block(receipt: dict[str, Any], reason: str) -> tuple[dict[str, Any], bool]:
+    """The crossover region a proposal must sit inside, and whether it exists.
 
-    ``round_measurements.blend.band_hz`` and nothing else. That field is the
-    VERIFY absolute claim's own band, which decision 10 also makes the region
-    the blend correction is solved and graded over — so a prescription checked
-    against it is checked against byte-identically the band the deterministic
-    solver was bounded by, rather than against a second derivation of "the
-    crossover region" that could drift from it.
+    ``round_measurements.blend.band_hz`` is the VERIFY absolute claim's own
+    band, which decision 10 also makes the region the blend correction is
+    solved and graded over, so a prescription is checked against the band the
+    deterministic solver was bounded by rather than a second derivation.
     """
     blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
     band = blend.get("band_hz")
-    absent = _absence(reason, band is not None, "round_measurements.blend.band_hz")
+    shape = band is None and blend.get("reason") == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+    band_field = "round_measurements.blend.band_hz"
+    absent = _absence(
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY if shape else reason, band is not None, band_field
+    )
     if absent:
-        return {"available": False, **absent}
+        return {"available": False, **absent}, shape
     return {
         "available": True,
         "band_hz": band,
@@ -2642,7 +2644,7 @@ def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
             "the VERIFY absolute claim's band, which is also the region the "
             "deterministic blend correction is solved and graded over"
         ),
-    }
+    }, shape
 
 
 def _incumbent_block(
@@ -3059,6 +3061,7 @@ def _not_evaluated(
     gate_numbers_reason: str,
     reflector_path_reason: str,
     findings: dict[str, Any],
+    no_crossover: bool,
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
 
@@ -3226,6 +3229,10 @@ def _not_evaluated(
                 "finding was promoted for this round"
             ),
         })
+    if no_crossover:
+        entries.append({"field": "crossover_region.band_hz", "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY})
+        entries.append({"field": "request_time_prescriptions.alignment", "reason": doors.ALIGNMENT_NO_CROSSOVER_REGION})
+        entries.append({"field": "request_time_prescriptions.topology", "reason": doors.TOPOLOGY_NO_CROSSOVER_REGION})
     return entries
 
 
@@ -3350,6 +3357,7 @@ def build_crossover_evidence_packet(
     cross_seat_sigma = _mapping(positions.get("cross_seat_sigma"))
     verify = _verify_block(state, state_reason)
     reflections = _reflections_block(cloud, cloud_reason)
+    crossover_region, no_crossover = _region_block(receipt, receipt_reason)
 
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
@@ -3409,7 +3417,7 @@ def build_crossover_evidence_packet(
             "applied_graph_fingerprint": receipt.get("applied_graph_fingerprint"),
             **_absence(receipt_reason, bool(receipt), "round_receipt.json"),
         },
-        "crossover_region": _region_block(receipt, receipt_reason),
+        "crossover_region": crossover_region,
         "incumbent": _incumbent_block(
             receipt, receipt_reason, applied_profile, applied_profile_reason, state
         ),
@@ -3513,25 +3521,17 @@ def build_crossover_evidence_packet(
             gate_numbers_reason=_gate_numbers_reason(positions, verify),
             reflector_path_reason=str(reflections.get("reason") or ""),
             findings=findings,
+            no_crossover=no_crossover,
         ),
         # TWO contracts, one per prescription class, each written by the gate
-        # that enforces it. Beside each other rather than merged: they describe
-        # different shapes with different bounds, and a merged block would need
-        # an owner that is neither gate.
+        # that enforces it. Beside each other rather than merged: a merged
+        # block would need an owner that is neither gate.
         "response_format": prescription_response_format(),
         "driver_response_format": driver_prescription_response_format(),
-        # …and the doors this one does NOT open (#2773). A reader who found
-        # only the two contracts above would conclude that two things can be
-        # prescribed for a round, when four can — the other two arrive as
-        # request-body keys at session open and refuse the whole session rather
-        # than just the staging. Named apart from the two above rather than
-        # listed beside them precisely because they are not stageable: a
-        # document of this class handed to ``stage`` is refused by the class
-        # gate, and the block says where it belongs instead.
-        "request_time_prescriptions": {
-            "alignment": alignment_prescription_response_format(),
-            "topology": topology_prescription_response_format(),
-        },
+        # …and the doors this one does NOT open (#2773): the other two arrive
+        # as session-open request-body keys, not something ``stage`` can act
+        # on, so they are named apart from the two contracts above.
+        "request_time_prescriptions": doors.request_time_prescriptions(no_crossover, _absence),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet

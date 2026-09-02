@@ -1092,9 +1092,9 @@ def topology_is_passive_mains(topology: OutputTopology) -> bool:
     """True iff mains exist and EVERY main is a full-range passive speaker.
 
     The one owner of "this speaker's mains carry no inter-driver crossover".
-    Both passive shape predicates below/elsewhere compose it rather than
-    restating the kind/mode vocabulary: ``topology_is_subless_passive_mains``
-    here, and ``active_speaker.staging.topology_is_passive_mains_with_sub``.
+    ``topology_is_subless_passive_mains`` below and
+    ``active_speaker.passive_profile`` compose it rather than restating the
+    kind/mode vocabulary.
     """
 
     mains = main_speaker_groups(topology)
@@ -1110,8 +1110,7 @@ def topology_is_subless_passive_mains(topology: OutputTopology) -> bool:
     mains are passive) and no bass-management split (no sub). Nothing about it
     needs active-crossover commissioning, so the setup flow terminates after
     output identity instead of offering a combined-driver test it can never
-    run. The with-sub sibling — passive mains PLUS a sub — is a DIFFERENT shape
-    (``staging.topology_is_passive_mains_with_sub``): it still rides the
+    run. Passive mains PLUS a sub are a DIFFERENT shape: they still ride the
     roleful multi-output emitter for bass management.
     """
 

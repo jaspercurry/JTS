@@ -70,6 +70,7 @@ from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
+    REGION_UNAVAILABLE,
     BlendPrescription,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
@@ -83,6 +84,12 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     check_driver_document_size,
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
+)
+from jasper.active_speaker.crossover_v2.alignment_prescription import (
+    ALIGNMENT_NO_CROSSOVER_REGION,
+)
+from jasper.active_speaker.crossover_v2.topology_prescription import (
+    TOPOLOGY_NO_CROSSOVER_REGION,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
@@ -116,6 +123,9 @@ from jasper.active_speaker.seat_level_reference import (
 from jasper.active_speaker.session_volume_plan import (
     MEASUREMENT_REFERENCE_VOLUME_DB,
 )
+from jasper.audio_measurement.program_analysis import (
+    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+)
 from jasper.identity import (
     CROSSOVER_PAGE_PATH,
     SOUND_SETUP_PAGE_PATH,
@@ -138,9 +148,7 @@ AUTHORITY_TIER = "advisory (`stage` mutates)"
 #: at the moment of banking and ``status`` says it to an operator who arrived
 #: later and found one waiting — the same fact at two moments, so a second
 #: wording here would be a second answer to "what becomes of this file".
-STAGED_LIFECYCLE_NOTE = (
-    "the next round takes it once and consumes it; an Undo withdraws it unrun"
-)
+STAGED_LIFECYCLE_NOTE = "the next round takes it once and consumes it"
 
 #: Why the staged section has nothing to report. A slug in the packet's own
 #: style, so the section that reads a file the packet never sees still answers
@@ -1088,6 +1096,14 @@ def _next_actions(
                 "a blend prescription can be written for the crossover region "
                 f"{_band_phrase(*region['band_hz'])}"
             )
+        elif region["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
+            out.append(
+                "this speaker has no crossover region, so the blend, alignment, "
+                "topology doors do not apply and refuse by name "
+                f"({REGION_UNAVAILABLE}, {ALIGNMENT_NO_CROSSOVER_REGION}, "
+                f"{TOPOLOGY_NO_CROSSOVER_REGION}) — the per-driver door below "
+                "is the whole loop here"
+            )
         else:
             out.append(
                 f"no crossover region is banked ({region['reason']}), so a blend "
@@ -1173,7 +1189,7 @@ def _next_actions(
             "(--target-db-spl states another) and banks the reference"
         )
 
-    out.append(f"run, apply, or undo a round at {crossover_url}")
+    out.append(f"run or apply a round at {crossover_url}")
     return out
 
 

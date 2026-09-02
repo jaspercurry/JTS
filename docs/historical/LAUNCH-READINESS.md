@@ -8,9 +8,7 @@
 > primary-source archaeology — specific facts (PR numbers, "what's done" lists,
 > file paths) reflect that moment and will drift. Read it for the narrative of
 > what launch readiness required, not as current operational truth; the shipped
-> state lives in the code, `CHANGELOG.md`, and the cited PRs. This doc itself
-> **superseded** the point-in-time audit snapshots `REVIEW-2026-06-04-*.md`,
-> `REVIEW-2026-06-12-oss-due-diligence.md`, and `REVIEW-google-oss-readiness.md`.
+> state lives in the code, `CHANGELOG.md`, and the cited PRs.
 
 The list was verified against `origin/main` — every "done" line was confirmed in
 the tree (the symbol / CI step / tag cited), not trusted from an older doc (the
@@ -26,8 +24,7 @@ has shipped (see the archiving note at the bottom).
   (#763 control, #768/#773 web, + voice/mux/input), and secret
   compartmentalization (#776 `jasper-secrets` for LLM/Google keys, `jasper-intsecrets`
   for HA/Spotify). The group-perm-clobber the drop introduces is fixed (#827/#834)
-  and guard-tested (`test_systemd_hardening.py`, `test_aec_reconcile.py`). Design
-  of record: [HANDOFF-privilege-separation.md](../HANDOFF-privilege-separation.md).
+  and guard-tested (`test_systemd_hardening.py`, `test_aec_reconcile.py`).
 - **CI / type-safety hardening** — landed across the 2026-06-18→19 cleanup pass:
   a lenient mypy baseline in CI (the "Type check (mypy; lenient baseline)" step +
   `jasper/py.typed` + `[tool.mypy]` config); a Python **3.11 / 3.12 / 3.13

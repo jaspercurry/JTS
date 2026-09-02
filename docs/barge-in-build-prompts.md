@@ -9,14 +9,8 @@
 > below** — they would rebuild already-landed code. What remains is not
 > agent-buildable in a fresh window: step 6 (Grok verify — a paid eval
 > trial you run), step 7 (AEC threshold + flip defaults on — on-hardware),
-> and step 8 (bonded/multiroom — deferred). Current operational truth,
-> the live blocker list, and the remaining-step status live in
-> [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Current state" and its
-> Implementation plan. Read this file for the narrative of how the build
-> was sequenced, not for current state.
-
-The numbering here matches the "Implementation plan" table in
-[HANDOFF-barge-in.md](HANDOFF-barge-in.md).
+> and step 8 (bonded/multiroom — deferred). Read this file for the
+> narrative of how the build was sequenced, not for current state.
 
 ## Part A — How the work breaks up
 

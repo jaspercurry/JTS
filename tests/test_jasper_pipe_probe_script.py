@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -289,17 +290,9 @@ def test_capture_records_are_excised_against_the_tap_geometry(
     assert result.detail
 
 
-def _frame(
-    payload: bytes,
-    *,
-    proto: int = 17,
-    dport: int = 9891,
-    frag: int = 0,
-    udp_len: int | None = None,
-    trailer: bytes = b"",
-) -> bytes:
+def _frame(payload: bytes, *, proto: int = 17, dport: int = 9891, frag: int = 0) -> bytes:
     """A loopback Ethernet frame carrying `payload` to `dport`."""
-    udp_len = len(payload) + 8 if udp_len is None else udp_len
+    udp_len = len(payload) + 8
     ip = (
         bytes([0x45, 0x00])
         + struct.pack(">H", 20 + 8 + len(payload))
@@ -310,43 +303,86 @@ def _frame(
         + bytes([127, 0, 0, 1]) * 2
     )
     udp = struct.pack(">HHH", 40000, dport, udp_len) + b"\x00\x00"
-    return bytes(12) + b"\x08\x00" + ip + udp + payload + trailer
+    return bytes(12) + b"\x08\x00" + ip + udp + payload
 
 
-def test_the_shipped_sniffer_parses_exactly_what_the_shared_parser_does() -> None:
-    """The sniffer runs on the box with no jasper import, so its packet
-    parse is a copy. Pin the copy against the original over the cases that
-    make an ICMP error look like a tap datagram (#3509)."""
-    sniffer: dict = {}
-    exec(compile(jasper_pipe_probe.SNIFFER_SOURCE, "sniffer", "exec"), sniffer)
-    good = bytes(_PERIOD)
-    cases = {
-        "udp_to_the_port": _frame(good),
-        # An ICMP error quoting a loopback header: bytes at the UDP offsets
-        # read as port 9891, but the protocol byte says it is not a datagram.
-        "icmp_quoting_the_port": _frame(bytes(540), proto=1),
-        "fragment": _frame(good, frag=0x0100),
-        "other_port": _frame(good, dport=9888),
-        "trailer_beyond_udp_length": _frame(good, trailer=b"\xff" * 16),
-        "udp_length_past_the_frame": _frame(good, udp_len=9000),
-        "too_short": bytes(20),
-    }
-    for name, frame in cases.items():
-        mine = sniffer["udp_payload"](frame, 9891)
-        theirs = ref9891_pcap.parse_udp_payload(frame, 9891)
-        assert mine == theirs, name
-    # And the shared parser actually accepts a real one / rejects the quote.
-    assert ref9891_pcap.parse_udp_payload(cases["udp_to_the_port"], 9891) == good
-    assert ref9891_pcap.parse_udp_payload(cases["icmp_quoting_the_port"], 9891) is None
-    # A laxer read is what admits the quote -- that is the defect's shape.
-    assert sniffer["naive_port"](cases["icmp_quoting_the_port"]) == 9891
+def test_the_sniffers_jasper_imports_resolve_with_only_the_stdlib() -> None:
+    """The sniffer runs under the box's system python3 -- no venv, nothing
+    but PYTHONPATH=/opt/jasper -- so every module it imports has to be
+    stdlib-only. `-I -S` drops PYTHONPATH, the user site AND site-packages,
+    leaving only the stdlib plus the repo root inserted here, so a jasper
+    module that grows a third-party dependency fails here rather than on the
+    box, mid-capture, as a PERIOD_BYTES_ERROR nobody can read."""
+    imports = [
+        line for line in jasper_pipe_probe.SNIFFER_SOURCE.splitlines()
+        if line.startswith("from jasper")
+    ]
+    assert imports, "the sniffer no longer imports the shared modules"
+    proc = subprocess.run(
+        [
+            sys.executable, "-I", "-S", "-c",
+            f"import sys; sys.path.insert(0, {str(ROOT)!r})\n" + "\n".join(imports),
+        ],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
-def test_the_sniffer_tallies_what_reaches_the_port_without_being_a_datagram() -> None:
+def test_the_sniffer_kill_pattern_cannot_match_the_shell_that_runs_it() -> None:
+    """`pkill -f` matches whole command lines, and the shell running cleanup
+    carries the sniffer's path in its own argv -- so a bare-path pattern
+    SIGTERMs that shell and the `rm -f` after it never runs, leaking a
+    root-owned multi-MB capture on the Pi every run. Anchoring to the
+    interpreter keeps the kill by-exact-path without matching itself."""
+    session = "abc12345"
+    pattern = re.compile(jasper_pipe_probe.sniffer_kill_pattern(session))
+    sniffer = jasper_pipe_probe.remote_sniffer_path(session)
+    out = jasper_pipe_probe.remote_capture_path(session)
+
+    # The sniffer's real argv on the box: `env` execs it as `python3 <path>`.
+    assert pattern.search(f"python3 {sniffer} 10.0 {out}")
+    # The cleanup shell's own argv names the same path and must NOT match.
+    assert not pattern.search(f"bash -c sudo pkill -f {pattern.pattern}; sudo rm -f {sniffer} {out}")
+    # Nor may it reach a concurrent session's sniffer.
+    assert not pattern.search(f"python3 {jasper_pipe_probe.remote_sniffer_path('deadbeef')} 10.0")
+
+
+def test_a_box_on_another_commit_is_refused_before_the_sniffer_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sniffer imports its parse from the BOX's /opt/jasper, so an
+    install on another commit can read :9891 by another rule than this side
+    reassembles by. That is refused under its own exit code -- not
+    argparse's 2, not the blind-instrument 3 -- and nothing is written."""
+    monkeypatch.setattr(jasper_pipe_probe, "resolve_target", lambda host: ("box", "pi"))
+    monkeypatch.setattr(
+        jasper_pipe_probe, "ssh_run",
+        # CRLF: interactive-sudo deploys read this marker through `ssh -tt`,
+        # which rewrites the line endings.
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 0, "JASPER_GIT_SHA_FULL=deadbeef\r\nJASPER_INSTALL_STATUS=ok\r\n", ""
+        ),
+    )
+    out = tmp_path / "cap.raw"
+
+    with pytest.raises(SystemExit) as refusal:
+        jasper_pipe_probe.main(["capture", "1", str(out)])
+
+    assert refusal.value.code == jasper_pipe_probe.BUILD_SKEW_EXIT
+    assert refusal.value.code not in (0, 1, 2, jasper_pipe_probe.CAPTURE_INSTRUMENT_BLIND_EXIT)
+    assert not out.exists()
+    # --allow-skew is the documented override: same mismatch, no refusal.
+    jasper_pipe_probe.require_matching_build("box", "pi", allow_skew=True)
+
+
+def test_the_sniffer_streams_payloads_while_tallying_the_rest() -> None:
     """#3509 item 1's evidence claim: the manifest's rejected_by_header is
-    produced by the sniffer classifying real frames, not asserted anywhere.
-    Drives the shipped classifier over one frame of each kind and builds the
-    tally exactly as the capture loop does."""
+    produced by the sniffer running over real frames, not asserted anywhere.
+    Drives the shipped source's own loop -- so this also pins that the string
+    still compiles and its imports resolve. What each key SAYS belongs to
+    ref9891_pcap.classify_frame and is pinned there; what is pinned here is
+    that payloads stream out one by one while rejects accumulate per key,
+    and that traffic which never claimed the port does neither."""
     sniffer: dict = {}
     exec(compile(jasper_pipe_probe.SNIFFER_SOURCE, "sniffer", "exec"), sniffer)
     good = bytes(_PERIOD)
@@ -362,13 +398,9 @@ def test_the_sniffer_tallies_what_reaches_the_port_without_being_a_datagram() ->
     stored = list(sniffer["tap_payloads"](iter(frames), 9891, tally))
 
     assert stored == [good]
-    assert tally == {
-        "proto=1,frag=0,wire_len=576": 2,
-        "proto=17,frag=1,wire_len=554": 1,
-    }
-    # The mic stream on :9888 is not this port's business and must not be
-    # counted as something that reached it.
-    assert not any("9888" in key for key in tally)
+    # Two distinct reject kinds, one of them seen twice; the :9888 mic stream
+    # is not this port's business and must not be counted as reaching it.
+    assert sorted(tally.values()) == [1, 2]
 
 
 def test_capture_reports_what_it_saw_and_fails_only_when_it_saw_nothing(
@@ -391,7 +423,10 @@ def test_capture_reports_what_it_saw_and_fails_only_when_it_saw_nothing(
             jasper_pipe_probe, "fetch_and_reassemble",
             lambda h, u, p, period: jasper_pipe_probe.reassemble_records(stream, period),
         )
-        code = jasper_pipe_probe.main(["capture", "1", str(out)])
+        # --allow-skew: the stubbed ssh_run above answers every remote command
+        # with the capture's stderr, so the build marker reads as unreadable.
+        # This case is about what the manifest reports, not the skew guard.
+        code = jasper_pipe_probe.main(["capture", "1", str(out), "--allow-skew"])
         manifest_path = jasper_pipe_probe.capture_manifest_path(out)
         return code, json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
 

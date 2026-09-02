@@ -204,6 +204,13 @@ REASON_PROGRAM_PROFILE_NOT_CONFIRMED = "program_profile_not_confirmed"
 # the evidence is the gate that names the action.
 REASON_PROGRAM_PROFILE_MISSING = "program_profile_missing"
 REASON_PROGRAM_PROFILE_INCOMPLETE = "program_profile_incomplete"
+# The session-open shape gate: the v2 conductor walks a 1-way passive main or a
+# 2-way, and this speaker is neither. Terminal — no household action clears it.
+REASON_SPEAKER_SHAPE_UNSUPPORTED = "speaker_shape_unsupported"
+# Its sibling one gate later: the shape is walkable, but live status carries no
+# measurement target for every role it declares. The roles reach the journal.
+REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
+
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught
 # (W6.1 gate: the seams raise open-endedly — CamillaUnavailable is a bare
 # Exception, analyze/emit raise ValueError/RuntimeError, the held measurement
@@ -984,6 +991,28 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             # the owning step for this fragment. Both halves are pinned by
             # tests/test_sound_profile_confirm_deeplink.py.
             "href": "/sound/setup/#confirm-safety-limits",
+        },
+    ),
+    REASON_MEASUREMENT_TARGETS_MISSING: ReasonSpec(
+        REASON_MEASUREMENT_TARGETS_MISSING, TEMPLATE_HARD_STOP, 0, "",
+        "JTS does not have a measurement target for every driver this speaker "
+        "declares, so it cannot measure them. Finish speaker setup so each "
+        "driver is assigned to an output, then measure again.",
+        next_action={
+            "id": "speaker_setup",
+            "label": "Finish speaker setup",
+            "href": "/sound/setup/",
+        },
+    ),
+    REASON_SPEAKER_SHAPE_UNSUPPORTED: ReasonSpec(
+        REASON_SPEAKER_SHAPE_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
+        "JTS can measure a single full-range speaker or a two-way active "
+        "crossover, and this speaker is neither. There is nothing to retry — "
+        "check the drivers declared in speaker setup.",
+        next_action={
+            "id": "speaker_setup",
+            "label": "Open speaker setup",
+            "href": "/sound/setup/",
         },
     ),
     REASON_PROGRAM_PROFILE_MISSING: ReasonSpec(

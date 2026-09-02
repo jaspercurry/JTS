@@ -26,7 +26,9 @@ DRIVER_PROTECTION_POLICY_VERSION = "driver_protection_auto_level_v1"
 
 LOW_FREQUENCY_ROLES = frozenset({"woofer", "mid", "subwoofer"})
 HIGH_FREQUENCY_ROLES = frozenset({"tweeter"})
-SUPPORTED_AUDIBLE_ROLES = LOW_FREQUENCY_ROLES | HIGH_FREQUENCY_ROLES
+#: The one role a ``full_range_passive`` (way-1) speaker declares: a single amp
+#: channel covering the whole band.
+FULL_RANGE_ROLES = frozenset({"full_range"})
 
 _UNKNOWN_HF_STYLE = "unknown_high_frequency"
 # Per-style high-pass figures. Since the 2026-08-17 ruling (decisions 8-9,
@@ -58,6 +60,14 @@ _STYLE_HIGH_PASS_HZ = {
     _UNKNOWN_HF_STYLE: 5000.0,
 }
 
+#: Shared by the ``tweeter`` and ``full_range`` classes: -65 dBFS was sized for
+#: a naked driver tone with no proven protective high-pass, and 100 ms is the
+#: floor-test duration that figure was validated at (see the HF
+#: measurement-ceiling derivation below for why -65 is superseded, not raised,
+#: on the program-admission path).
+_HIGH_FREQUENCY_FLOOR_TEST_MS = 100
+_HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS = -65.0
+
 
 @dataclass(frozen=True)
 class DriverProtectionProfile:
@@ -65,7 +75,9 @@ class DriverProtectionProfile:
     role_class: str
     driver_style: str | None
     min_highpass_hz: float | None
-    floor_test_frequency_hz: float
+    # ``None`` only for a ``full_range`` driver that declares no low edge; the
+    # payload below refuses that by name rather than guessing a figure.
+    floor_test_frequency_hz: float | None
     floor_test_duration_ms: int
     max_auto_level_dbfs: float
 
@@ -115,28 +127,41 @@ def driver_protection_profile(
     role: Any,
     *,
     driver_style: Any = None,
+    declared_floor_hz: Any = None,
 ) -> DriverProtectionProfile:
-    """Return conservative commissioning bounds for one driver target."""
+    """Return conservative commissioning bounds for one driver target.
+
+    ``declared_floor_hz`` (:func:`driver_excitation_floor_hz`) is read only by
+    the ``full_range`` class, which has no code figure of its own.
+    """
 
     role_id = normalise_driver_role(role)
     style = normalise_driver_style(driver_style)
+    if role_id in FULL_RANGE_ROLES:
+        floor = _finite_float(declared_floor_hz)
+        return DriverProtectionProfile(
+            role=role_id,
+            role_class="full_range",
+            driver_style=style,
+            min_highpass_hz=None,
+            floor_test_frequency_hz=floor if floor is not None and floor > 0 else None,
+            floor_test_duration_ms=_HIGH_FREQUENCY_FLOOR_TEST_MS,
+            max_auto_level_dbfs=_HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS,
+        )
     if role_id in LOW_FREQUENCY_ROLES:
         if role_id == "subwoofer":
             frequency = 50.0
-            duration_ms = 300
         elif role_id == "mid":
             frequency = 800.0
-            duration_ms = 300
         else:
             frequency = 120.0
-            duration_ms = 300
         return DriverProtectionProfile(
             role=role_id,
             role_class="low_frequency",
             driver_style=style,
             min_highpass_hz=None,
             floor_test_frequency_hz=frequency,
-            floor_test_duration_ms=duration_ms,
+            floor_test_duration_ms=300,
             max_auto_level_dbfs=MAX_TEST_LEVEL_DBFS,
         )
     if role_id in HIGH_FREQUENCY_ROLES:
@@ -148,14 +173,13 @@ def driver_protection_profile(
             driver_style=hf_style,
             min_highpass_hz=min_highpass,
             floor_test_frequency_hz=max(min_highpass, 3000.0),
-            floor_test_duration_ms=100,
-            # -65 dBFS was sized for a NAKED driver tone with no proven
-            # protective HP. On the program-admission path (a graph that
-            # carries the crossover HP by construction) this is superseded by
-            # the sensitivity-derived ceiling below -- see
+            floor_test_duration_ms=_HIGH_FREQUENCY_FLOOR_TEST_MS,
+            # On the program-admission path (a graph that carries the
+            # crossover HP by construction) this is superseded by the
+            # sensitivity-derived ceiling below -- see
             # ``derive_hf_measurement_ceiling_dbfs`` and
             # ``jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings``.
-            max_auto_level_dbfs=-65.0,
+            max_auto_level_dbfs=_HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS,
         )
     return DriverProtectionProfile(
         role=role_id,
@@ -816,6 +840,26 @@ def _band_pair(value: Any) -> tuple[float, float] | None:
     return low, high
 
 
+def driver_excitation_floor_hz(driver: Any) -> float | None:
+    """The declared low edge below which this driver may not be excited.
+
+    The declared owner, then a stored protective high-pass, then the declared
+    ``measurement_band_hz`` low edge. The style-default arm is deliberately not
+    reached: this bounds a SWEEP, and the class table is a tone-gate fallback,
+    not a frequency a driver may be driven to. ``None`` means undeclared.
+    """
+
+    if not isinstance(driver, Mapping):
+        return None
+    declared = _finite_float(driver.get("recommended_highpass_hz"))
+    if declared is None or declared <= 0:
+        declared = declared_protection_highpass_floor_hz(driver)
+    if declared is not None and declared > 0:
+        return declared
+    band = _band_pair(driver.get("measurement_band_hz"))
+    return band[0] if band is not None and band[0] > 0 else None
+
+
 def apply_driver_low_limit(
     driver: Any,
     *,
@@ -906,6 +950,7 @@ def driver_protection_payload(
     protection_status: Any = None,
     band_limit: Any = None,
     declared_low_limit_hz: Any = None,
+    declared_floor_hz: Any = None,
 ) -> dict[str, Any]:
     """Return the protection envelope for one target.
 
@@ -915,9 +960,13 @@ def driver_protection_payload(
 
     ``declared_low_limit_hz`` is this driver's own declared low limit when the
     caller knows it; see :func:`tone_gate_low_limit` for what absent means.
+    ``declared_floor_hz`` is :func:`driver_excitation_floor_hz`'s wider answer,
+    which only the ``full_range`` class reads.
     """
 
-    profile = driver_protection_profile(role, driver_style=driver_style)
+    profile = driver_protection_profile(
+        role, driver_style=driver_style, declared_floor_hz=declared_floor_hz
+    )
     low_limit = tone_gate_low_limit(
         role,
         driver_style=driver_style,
@@ -932,6 +981,14 @@ def driver_protection_payload(
             "blocker",
             "driver_role_not_supported",
             "this driver role is not enabled for active-speaker audible tests",
+        ))
+    if profile.role_class == "full_range" and profile.floor_test_frequency_hz is None:
+        issues.append(_issue(
+            "blocker",
+            "full_range_low_edge_undeclared",
+            "a full-range driver has no crossover and no class figure to stand "
+            "in for one, so it may not be excited until its declaration names a "
+            "recommended crossover frequency or a measurement band",
         ))
     if profile.role_class == "high_frequency":
         if status not in {"present", "software_guard_requested"}:
@@ -998,6 +1055,7 @@ def driver_protection_payload(
         "audio_allowed": not issues and profile.role_class in {
             "low_frequency",
             "high_frequency",
+            "full_range",
         },
         "issues": issues,
     }

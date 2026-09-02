@@ -97,6 +97,17 @@ request-body keys on `POST /crossover/v2/session` and are judged at session open
 (#2773). Both surfaces are cataloged in
 [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 
+**A way-1 (`full_range_passive`) speaker runs the same nine steps with fewer
+doors live.** `status` reports one role, `full_range`, on the single-branch
+baseline candidate — no corner, delay or polarity step, and no per-role trim:
+one role has no frame to be levelled in, so the apply banks none and journals
+`event=dsp.baseline_base_trim_banked result=left_standing
+reason=base_trim_no_frame` (the receipt simply carries no trim block). Only
+the **driver** door prescribes; alignment, topology and blend refuse by name
+(`alignment_no_crossover_region`, `topology_no_crossover_region`,
+`region_unavailable`) instead of searching for a crossover region that cannot
+exist.
+
 1. **Orient.** `jasper-crossover-prescriber status` — declared / banked /
    staged / applied state and the possible next actions, read from the same
    builders the doors read. `status` orients rather than prescribes: it is the
@@ -613,8 +624,9 @@ guard — not a selector**. Measurement-time activation of any graph goes throug
 
 Apply reopens and verifies the published candidate, composes without mutating
 state, then uses the baseline apply transaction with rollback. The same durable
-write retains the prior compiled profile and declaration undo; restore proves
-the retained path and digest before loading it. Apply does not move the
+write retains the prior compiled profile and
+`previous_candidate_fingerprint`; restore proves the retained path and digest
+before loading it. Apply does not move the
 session's commanded measurement level. Its headroom attenuation is instead
 banked as `expected_post_apply_offset_db`, and VERIFY measures at the unchanged
 commanded level.
@@ -800,7 +812,7 @@ the operator's:
   it does not gate.
 
 The region is **not** re-derived: it is read off the VERIFY absolute claim's
-`band_hz`, which is `program_analysis.crossover_region_band_hz`'s output —
+`band_hz`, which is `comparison_bands.crossover_region_band_hz`'s output —
 deliberately not `overlap_band_hz`; see its docstring. Receipts bank the region's
 commanded-vs-realized pair under `round_measurements.blend`, with the reason code
 beside the numbers, so a round that prescribed nothing says which arm fired.

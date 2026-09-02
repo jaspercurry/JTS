@@ -33,7 +33,6 @@ from jasper.output_topology import (
     SpeakerGroup,
     main_speaker_groups,
     subwoofer_speaker_groups,
-    topology_is_passive_mains,
 )
 
 from ._common import gate as _gate, issue as _issue
@@ -1038,41 +1037,24 @@ def compile_preset_from_crossover_preview(
 
 # Passive mains (full_range_passive) carry NO inter-driver crossover, so they
 # produce no active crossover preview — the preview-driven compile path above has
-# nothing to feed it. A passive speaker is only ever split onto the roleful
-# multi-output emitter when a LOCAL SUBWOOFER is present (bass management: the sub
-# gets an LR4 low-pass, each main its complementary high-pass). That degenerate
-# 1-way preset is built directly from the saved topology here, NOT from a preview.
+# nothing to feed it. Their 1-way preset is built directly from the saved
+# topology below, NOT from a preview.
 _PASSIVE_MAIN_ROLE = "full_range"
 
 
-def topology_is_passive_mains_with_sub(topology: OutputTopology) -> bool:
-    """True iff the saved topology is full-range passive mains PLUS a sub group.
-
-    This is the single predicate the build path uses to route a passive+sub
-    topology through the active multi-output emitter (the degenerate 1-way bass-
-    management path) instead of the flat ``emit_sound_config`` lane. A SUBLESS
-    passive speaker returns False and stays on the flat path (byte-identical) —
-    ``output_topology.topology_is_subless_passive_mains`` is that sibling shape.
-    Both compose ``topology_is_passive_mains``, which owns the kind/mode
-    vocabulary so the two cannot drift.
-    """
-    return topology_is_passive_mains(topology) and bool(
-        subwoofer_speaker_groups(topology)
-    )
-
-
-def build_passive_mains_with_sub_preset(
+def build_passive_mains_preset(
     topology: OutputTopology,
 ) -> tuple[ActiveSpeakerPreset | None, list[dict[str, str]], list[dict[str, Any]]]:
-    """Build the degenerate 1-way (passive full-range + local sub) preset.
+    """Build the 1-way (passive full-range mains, optional local sub) preset.
 
     The passive analogue of :func:`_preset_from_crossover_preview`: a passive
-    speaker has no active crossover preview to compile, but a routed local
-    subwoofer still needs the roleful emitter (bass management). This resolves the
-    full-range mains + the sub lane directly from the saved topology, fail-closed
-    (an unresolvable sub returns ``(None, issues, gates)`` — never a mains-only
-    graph that leaves the sub un-band-limited or full-range). It does not write
-    YAML, load CamillaDSP, or authorize playback.
+    speaker has no active crossover preview to compile, so the mains — and the
+    sub lane when the topology routes one — resolve directly from the saved
+    topology. Fail-closed where a sub IS declared (an unresolvable one returns
+    ``(None, issues, gates)``, never a mains-only graph that leaves the sub
+    un-band-limited). A subless topology yields ``crossover_regions=()`` and
+    ``local_subwoofer=None``. It does not write YAML, load CamillaDSP, or
+    authorize playback.
     """
     issues: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
@@ -1088,21 +1070,21 @@ def build_passive_mains_with_sub_preset(
     else:
         issues.append(_issue(
             "blocker",
-            "passive_sub_layout_unsupported",
-            "bass management supports one mono passive speaker or a left/right pair",
+            "passive_mains_layout_unsupported",
+            "passive mains must be one mono speaker or a left/right pair",
         ))
         gates.append(_gate(
-            "passive_sub_layout",
-            label="Passive mains layout is supported for bass management",
+            "passive_mains_layout",
+            label="Passive mains layout is supported",
             passed=False,
-            message="Bass management supports one mono passive speaker or a left/right pair",
+            message="Passive mains must be one mono speaker or a left/right pair",
         ))
         return None, issues, gates
     gates.append(_gate(
-        "passive_sub_layout",
-        label="Passive mains layout is supported for bass management",
+        "passive_mains_layout",
+        label="Passive mains layout is supported",
         passed=True,
-        message=f"Passive {layout} mains can be bass-managed with a local subwoofer",
+        message=f"Passive {layout} mains can be routed through the roleful emitter",
     ))
 
     outputs: list[OutputChannel] = []
@@ -1129,32 +1111,43 @@ def build_passive_mains_with_sub_preset(
             startup_muted=True,
         ))
 
-    # The sub pins to the next contiguous channel after the mains (validated
-    # against main_output_count) and carries the user-settable bass-mgmt corner.
-    local_subwoofer, sub_issues = _local_subwoofer_from_topology(
-        topology, main_output_count=len(outputs)
-    )
-    issues.extend(sub_issues)
-    if local_subwoofer is None:
-        # A passive topology routed here ALWAYS has a sub group (the caller gates on
-        # topology_is_passive_mains_with_sub); a None sub means the fail-closed
-        # resolution rejected it. Its blocker is already in `issues`; never emit a
-        # mains-only graph that drops the sub.
-        if not any(i.get("severity") == "blocker" for i in issues):
-            issues.append(_issue(
-                "blocker",
-                "passive_sub_unresolved",
-                "routed subwoofer could not be resolved for the passive mains",
-            ))
-        return None, issues, gates
+    local_subwoofer = None
+    if subwoofer_speaker_groups(topology):
+        # The sub pins to the next contiguous channel after the mains (validated
+        # against main_output_count) and carries the user-settable bass-mgmt corner.
+        local_subwoofer, sub_issues = _local_subwoofer_from_topology(
+            topology, main_output_count=len(outputs)
+        )
+        issues.extend(sub_issues)
+        if local_subwoofer is None:
+            # The topology DECLARES a sub, so a None here is the fail-closed
+            # resolution rejecting it. Never emit a mains-only graph that drops a
+            # declared sub — that leaves it un-band-limited or full-range.
+            if not any(i.get("severity") == "blocker" for i in issues):
+                issues.append(_issue(
+                    "blocker",
+                    "passive_sub_unresolved",
+                    "routed subwoofer could not be resolved for the passive mains",
+                ))
+            return None, issues, gates
 
     if any(i.get("severity") == "blocker" for i in issues):
         return None, issues, gates
 
     try:
         preset = ActiveSpeakerPreset(
-            preset_id=f"passive-sub-{_safe_stem(topology.topology_id)}",
-            name=f"{topology.name} passive full-range + local sub",
+            # The with-sub id keeps its historical spelling: it is banked on
+            # candidates already measured, and a rename would read as a preset
+            # mismatch at apply time.
+            preset_id=(
+                f"passive-sub-{_safe_stem(topology.topology_id)}"
+                if local_subwoofer is not None
+                else f"passive-{_safe_stem(topology.topology_id)}"
+            ),
+            name=(
+                f"{topology.name} passive full-range"
+                + (" + local sub" if local_subwoofer is not None else "")
+            ),
             way_count=1,
             channel_map=ActiveChannelMap(
                 layout=layout,
@@ -1173,22 +1166,22 @@ def build_passive_mains_with_sub_preset(
                 initial_sweep_level_db_spl=55.0,
                 escalation_step_db=1.0,
             ),
-            notes="Derived from a passive-mains + local-subwoofer topology; bass management only.",
+            notes="Derived from a passive-mains topology; no inter-driver crossover.",
         )
         preset.validate()
     except ActiveSpeakerConfigError as exc:
         issues.append(_issue(
             "blocker",
-            "passive_sub_preset_invalid",
-            f"could not build a passive bass-management preset: {exc}",
+            "passive_mains_preset_invalid",
+            f"could not build a passive-mains preset: {exc}",
         ))
         return None, issues, gates
 
     gates.append(_gate(
-        "passive_sub_compiled",
-        label="Passive mains + local subwoofer compiled to bass-management intent",
+        "passive_mains_compiled",
+        label="Passive mains compiled to a routable intent",
         passed=True,
-        message="Passive bass-management preset can be staged through the active emitter",
+        message="Passive preset can be staged through the roleful emitter",
     ))
     return preset, issues, gates
 

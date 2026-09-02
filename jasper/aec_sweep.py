@@ -31,7 +31,6 @@ from jasper.log_event import log_event
 
 
 AEC3_SWEEP_ENV_FLAG = "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"
-AEC3_SWEEP_CONFIG_ENV = "JASPER_AEC3_SWEEP_CONFIG"
 AEC3_SWEEP_SOURCE_ENV = "JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE"
 AEC3_SWEEP_SOURCE_XVF = "xvf"
 AEC3_SWEEP_SOURCE_USB = "usb"
@@ -65,7 +64,6 @@ USB_AEC3_CORPUS_LABEL = "USB AEC3 edge combo 80 ms"
 class Aec3SweepVariant:
     leg: str
     label: str
-    port_env: str
     default_port: int
     env_overrides: dict[str, str]
 
@@ -131,7 +129,6 @@ DEFAULT_AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
     Aec3SweepVariant(
         leg="aec3_variant_1",
         label="AEC3 edge combo 80 ms",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_VARIANT_1",
         default_port=9884,
         env_overrides={
             **AEC3_EDGE_COMBO_OVERRIDES,
@@ -141,7 +138,6 @@ DEFAULT_AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
     Aec3SweepVariant(
         leg="aec3_variant_2",
         label="AEC3 edge combo 120 ms",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_VARIANT_2",
         default_port=9885,
         env_overrides={
             **AEC3_EDGE_COMBO_OVERRIDES,
@@ -151,7 +147,6 @@ DEFAULT_AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
     Aec3SweepVariant(
         leg="aec3_variant_3",
         label="AEC3 edge combo 160 ms",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_VARIANT_3",
         default_port=9886,
         env_overrides={
             **AEC3_EDGE_COMBO_OVERRIDES,
@@ -167,7 +162,7 @@ AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
 def _config_path(path: str | Path | None = None) -> Path:
     if path is not None:
         return Path(path)
-    return Path(os.environ.get(AEC3_SWEEP_CONFIG_ENV, DEFAULT_AEC3_SWEEP_CONFIG_PATH))
+    return DEFAULT_AEC3_SWEEP_CONFIG_PATH
 
 
 def normalize_aec3_sweep_source(
@@ -337,7 +332,6 @@ def _validate_variant_payload(
     return Aec3SweepVariant(
         leg=expected.leg,
         label=label,
-        port_env=expected.port_env,
         default_port=expected.default_port,
         env_overrides=env_overrides,
     )

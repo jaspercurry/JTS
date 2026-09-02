@@ -1,7 +1,6 @@
 # Deep Audit — live findings ledger
 
-> **This is the live tracker.** Immutable evidence + full text for each id lives in
-> [REVIEW-deep-audit-2026-07-11.md](REVIEW-deep-audit-2026-07-11.md); this file tracks current
+> **This is the live tracker.** This file tracks current
 > disposition against `main`. Update the Status/PR columns as work lands. `DA-NNNN` ids are stable.
 
 Last reconciled against `origin/main` (`af7e9bf3b`), including upstream
@@ -872,7 +871,7 @@ Last reconciled against `origin/main` (`af7e9bf3b`), including upstream
 - **sound_setup env-setup boilerplate (intra-file)** [leave-it/S] -> `optional small env-setup helper for the topology/draft/preview setenv trio in tests/test_sound_setup.py` — 1 sites — After the inline topology dict is replaced by the shared builder, the remaining recurring setenv trio is minor boilerplate that's acceptable to leave.
 - **voice_eval spotify env-gated skip predicates** [extract-shared-helper/S] -> `tests/voice_eval/regression/harness.py :: skip_if_playback_disabled() / require_google(harness)` — 1 sites — Env-var-gated skips copied per-file; hoisting the predicates into harness.py centralizes the env-var name, but the per-file design makes it optional.
 
-## Env-flag dispositions (64 adjudicated)
+## Env-flag dispositions (62 adjudicated)
 
 - `JASPER_AEC_CHIP_AEC_ENABLED / Config.aec_chip_aec_enabled` [config-field-live] -> keep — getattr(cfg, "aec_chip_aec_enabled", False) in jasper/voice/input_policy.py:96, called via build_effective_speech_input_policy(cfg) from jasper/voice/daemon_main.py:201,560 in production. Phase-0 'read=0' claim was getattr-blind and wrong.
 - `JASPER_HA_VERIFY_SSL / Config.ha_verify_ssl` [config-field-live] -> keep — getattr(cfg, "ha_verify_ssl", True) in jasper/home_assistant.py:583 (build_ha_client, called from jasper/voice/daemon_main.py:663) AND jasper/cli/doctor/integrations.py:152. Phase-0 'read=0 in production' claim was getattr-blind and wrong.
@@ -913,8 +912,6 @@ Last reconciled against `origin/main` (`af7e9bf3b`), including upstream
 - `ANTHROPIC_API_KEY` [doc-only-dead] -> keep — docs/HANDOFF-calibration-agent.md:596 explicitly frames this as a proposed 'net-new variable' with 'no Anthropic key in the project today' — accurately describes itself as not-yet-implemented. No action needed.
 - `JASPER_GROUPING_LEADER_CONTENT_LANE` [doc-only-dead] -> delete-from-doc — docs/HANDOFF-multiroom.md:1211 only, described as 'the master gate' for a feature that was never built. No code reads it.
 - `JASPER_USBSINK_LEAN_FIFO_PATH` [rename-drift] -> fix-doc-name — docs/HANDOFF-audio-graph-consolidation.md:48 only. Shipped as JASPER_USBSINK_FIFO_PATH (no LEAN_) at jasper/usbsink/daemon.py:195 and .env.example:907.
-- `JASPER_MIC_CARD` [doc-only-dead] -> delete-from-doc — docs/REVIEW-google-oss-readiness.md:297-298 only, proposed as a future replacement for ALSA card-name string matching. Never implemented; still string-matching as of HEAD.
-- `JASPER_DAC_CARD` [doc-only-dead] -> delete-from-doc — docs/REVIEW-google-oss-readiness.md:297-298 only, same never-implemented proposal as JASPER_MIC_CARD.
 - `JASPER_OPENAI_IDLE_TIMEOUT_SEC` [doc-only-dead] -> keep — docs/audit-pending-followups.md:473-474 explicitly lists this as 'Solution C' in a rejected-alternatives list; the doc recommends 'Do nothing' (option D) instead. Correctly documented as rejected, no action needed.
 - `JASPER_GEMINI_IDLE_TIMEOUT_SEC` [doc-only-dead] -> keep — Same rejected-alternative context as JASPER_OPENAI_IDLE_TIMEOUT_SEC in docs/audit-pending-followups.md:473-474. No action needed.
 - `JASPER_GROK_IDLE_TIMEOUT_SEC` [doc-only-dead] -> keep — Same rejected-alternative context as JASPER_OPENAI_IDLE_TIMEOUT_SEC in docs/audit-pending-followups.md:473-474. No action needed.

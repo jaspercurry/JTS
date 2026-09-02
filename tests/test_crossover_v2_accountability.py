@@ -21,7 +21,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 
-from jasper.active_speaker.crossover_v2 import accountability, intervention
+from jasper.active_speaker.crossover_v2 import accountability, intervention, plan_assembly
 from jasper.active_speaker.crossover_v2.candidates import LinearizationState
 from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
 from jasper.audio_measurement.program_analysis import RealizedLevelMatch
@@ -74,7 +74,7 @@ def _consistency(*, differs, worst_delta_db=5.799):
     state and is passed to :func:`_state` explicitly rather than spelled as
     ``differs=False``, which the ledger's tri-state flag distinguishes.
     """
-    return intervention.LevelConsistency(
+    return plan_assembly.LevelConsistency(
         differs=differs,
         reason=intervention.LEVEL_DEFINITIONS_DIFFER_REASON if differs else "",
         tolerance_db=TOLERANCE_DB,
@@ -522,7 +522,7 @@ def test_the_gate_payload_keeps_containers_the_planner_record_would_flatten():
     ``[150.0, 1255.8]`` in a field-diagnosis surface. The 5a-v dual run caught
     it; this keeps it caught.
     """
-    from jasper.active_speaker.crossover_v2.intervention import JournalRecord
+    from jasper.active_speaker.crossover_v2.plan_assembly import JournalRecord
 
     decision = _assess(_state(differs=True, matched=True))
     payload = decision.journal[0].fields

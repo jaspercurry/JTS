@@ -188,6 +188,9 @@ from jasper.active_speaker.crossover_v2 import spatial as _spatial
 from jasper.active_speaker.crossover_v2 import verification as _verification
 from jasper.active_speaker.crossover_v2 import contracts as _contracts
 from jasper.active_speaker.crossover_v2.contracts import (
+    CLAIM_FAIL,
+    CLAIM_NOT_EVALUATED,
+    CLAIM_PASS,
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
     REFERENCE_MARK_DESIGN_AXIS as _REFERENCE_MARK_DESIGN_AXIS,
 )
@@ -206,14 +209,13 @@ from jasper.active_speaker.crossover_v2.contracts import (
 # imported here.
 from jasper.active_speaker.crossover_v2.intervention import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    JournalRecord,
-    LinearizationPlan,
     driver_response_by_role as _driver_response_by_role,
     measure_validity_floor_hz as _measure_validity_floor_hz,
     # A live read, not a door: ``_plan_linearization`` passes it into the
     # organ as a port so THIS name stays the one production resolves.
     plan_linearization,
 )
+from jasper.active_speaker.crossover_v2.plan_assembly import JournalRecord, LinearizationPlan
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     LATERAL_CONSUMER_FC_SELECTOR,
@@ -240,6 +242,7 @@ from jasper.audio_measurement.program_analysis import (
     CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
     CHANNEL_MAP_MIN_ISOLATION_DB,
     INTEGRITY_CHECK_SWEEP_HEARD,
+    MEASURE_PAIR_SINGLE_DRIVER,
     AppliedAlignment,
     CaptureIntegrity,
     GainPlan,
@@ -1070,12 +1073,6 @@ def _verify_graded_band_from_tracking(
     return [float(lo), float(hi)]
 
 
-#: The three states a plan §7 claim can be in. ``not_evaluated`` is
-#: first-class and never collapses into the other two — R18's entire point is
-#: that a claim nobody could grade must not read as one that passed.
-CLAIM_PASS = "pass"
-CLAIM_FAIL = "fail"
-CLAIM_NOT_EVALUATED = "not_evaluated"
 #: Why the two per-branch claims are never graded today: a VERIFY program plays
 #: ONE mono summed sweep (``build_verify_program``'s ``KIND_SUMMED_SWEEP``), so
 #: the capture holds no woofer-alone or HF-alone response to compare with its
@@ -1903,7 +1900,6 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
 # stays here is the EMITTING half, the same split :func:`combine_cloud_positions`
 # above already carries: the pure module hands its journal fields back as data
 # and this module owns the event names.
-_composed_swept_band_hz = _spatial._composed_swept_band_hz
 cloud_validity_floor_hz = _spatial.cloud_validity_floor_hz
 cloud_trusted_floor_hz = _spatial.cloud_trusted_floor_hz
 
@@ -2161,7 +2157,7 @@ class CrossoverV2Session:
         session_id: str,
         source_preset: Any,
         roles_bands: Sequence[RoleBand],
-        fc_hz: float,
+        fc_hz: float | None,
         driver_caps_dbfs: Mapping[str, float],
         session_volume_db: float,
         seams: V2FlowSeams,
@@ -2207,8 +2203,8 @@ class CrossoverV2Session:
         verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
-        if len(roles) != 2:
-            raise CrossoverV2FlowError("the v2 session is a 2-way flow")
+        if not 1 <= len(roles) <= 2:
+            raise CrossoverV2FlowError("a v2 session walks one or two drivers")
         self.session_id = str(session_id)
         self.sound_design_revision = sound_design_revision
         # Which INSTRUMENT this session is running. Empty = unknown (a caller
@@ -2226,8 +2222,15 @@ class CrossoverV2Session:
         )
         self._preset = source_preset
         self._roles = roles
-        self._woofer, self._tweeter = roles[0], roles[1]
-        self._fc_hz = float(fc_hz)
+        # The declared roles, lowest first. ``_tweeter`` is ``None`` on a 1-way
+        # main, never aliased to ``_woofer``, which would double count it.
+        self._role_names = tuple(band.role for band in roles)
+        self._woofer = roles[0]
+        self._tweeter: RoleBand | None = roles[1] if len(roles) == 2 else None
+        self._tweeter_role = None if self._tweeter is None else self._tweeter.role
+        # Why this session evaluates no driver PAIR, or ``None`` when it does.
+        self._pair_reason = None if len(roles) > 1 else MEASURE_PAIR_SINGLE_DRIVER
+        self._fc_hz = None if fc_hz is None else float(fc_hz)
         # #2662. Already validated by the request boundary that accepted it —
         # this session holds it, it does not re-judge it, and a session that was
         # handed none runs the automatic alignment exactly as before. Held as
@@ -2269,12 +2272,11 @@ class CrossoverV2Session:
         # neighbours name. The document's digest is journal-visible at the take
         # instead.
         self._prescribed_driver = driver_prescription
-        # PR-4: the contract-derived analysis bands for the cloud-group
-        # honesty pipeline (combine's echo/signal bands, the null gate's
-        # search band) -- computed once here so every group-close event uses
-        # the SAME derived values. See _composed_swept_band_hz /
-        # _derive_cloud_echo_band_hz for the derivation and their citations.
-        self._cloud_signal_band_hz = _composed_swept_band_hz(roles)
+        # PR-4: the contract-derived analysis bands for the cloud-group honesty
+        # pipeline (combine's echo/signal bands, the null gate's search band) --
+        # computed once so every group-close event uses the SAME values. See
+        # ``programs.measurement_band_hz`` / _derive_cloud_echo_band_hz.
+        self._cloud_signal_band_hz = _programs.measurement_band_hz(roles)
         # The band AND its provenance travel as one value (issue #1763), so
         # the pipeline payload can never publish an applied band without the
         # disclosure of how it was derived.
@@ -3042,6 +3044,10 @@ class CrossoverV2Session:
             load_applied_baseline_profile_state,
         )
 
+        tweeter_role = self._tweeter_role
+        if tweeter_role is None:
+            # An inter-driver arrival gap needs two drivers.
+            return None
         try:
             applied = load_applied_baseline_profile_state()
         except (OSError, TypeError, ValueError):
@@ -3052,7 +3058,7 @@ class CrossoverV2Session:
             delay_us=_planning.applied_profile_delay_us(
                 applied,
                 woofer_role=self._woofer.role,
-                tweeter_role=self._tweeter.role,
+                tweeter_role=tweeter_role,
             ),
         )
 
@@ -3168,7 +3174,7 @@ class CrossoverV2Session:
             fc_hz=self._fc_hz, ambient_report=self._check_ambient_report,
         )
 
-    def _measure_sweep_bounds(self) -> tuple[float | None, float | None]:
+    def _measure_sweep_bounds(self) -> tuple[float, float] | None:
         return _priors.measure_sweep_bounds(self._measure_program)
 
     def _verify_priors(self) -> MeasurementPriors:
@@ -5057,7 +5063,20 @@ class CrossoverV2Session:
         # guessed into a reservation it never earned).
         if analysis.mic_calibrated is False:
             self._note_mic_calibration_reservation()
-        if analysis.candidate is None:
+        pair_claim: dict[str, Any] = {}
+        solo_reason = analysis.measure_pair_not_evaluated
+        if solo_reason is not None:
+            # A candidate is still built and published below: the solo's own
+            # evidence is what the linearization is fitted from.
+            log_event(
+                logger, "correction.crossover_v2_measure_solo",
+                session_id=self.session_id,
+                reason=solo_reason,
+                roles=",".join(self._role_names),
+                responses=len(analysis.driver_responses),
+            )
+            pair_claim = _contracts.measure_pair_claim(solo_reason)
+        elif analysis.candidate is None:
             # Fail FAST, at the capture that produced the unusable analysis.
             # Until the 2026-07-27 timing move this raise happened one call
             # deeper and one line later (``_build_candidate``'s own identical
@@ -5123,7 +5142,9 @@ class CrossoverV2Session:
         # on and fitting here ages nothing.
         if PHASE_CLOUD_MEASURE in self._journey.plan.phases:
             self._measure_analysis = analysis
-            return PhaseVerdict(True, payload={"measurement_phase": PHASE_MEASURE})
+            return PhaseVerdict(True, payload={
+                "measurement_phase": PHASE_MEASURE, **pair_claim,
+            })
         # The no-deferral shape, and the SHIPPED stage-1 branch: with the cloud
         # flag off ``prepare_v2_session`` builds ``CHECK, MEASURE,
         # ENTRY_BASELINE``, so the configured Fc's candidate is published right
@@ -5146,6 +5167,7 @@ class CrossoverV2Session:
             True,
             payload={
                 "measurement_phase": PHASE_MEASURE,
+                **pair_claim,
                 **self._publish_measure_candidate(analysis, None),
             },
         )
@@ -6178,7 +6200,7 @@ class CrossoverV2Session:
             linearization=linearization,
         )
 
-    def _previous_graph_predicted_sum(self, analysis: Any, capture_fc_hz: float) -> Any:
+    def _previous_graph_predicted_sum(self, analysis: Any, capture_fc_hz: float | None) -> Any:
         """The graph an apply REPLACES, modelled on this capture's branches (#2611).
 
         The PREVIOUS side of the commanded axis: the currently-applied Layer-A
@@ -6212,6 +6234,11 @@ class CrossoverV2Session:
             )
             return None
 
+        roles = self._role_names
+        if len(roles) > 1 and capture_fc_hz is None:
+            # The commanded axis over a PAIR is a statement about a crossover.
+            # A 1-way main is not that case: its lone branch IS the graph.
+            return _absent("no_crossover_to_command")
         seam = self._seams.applied_profile
         if seam is None:
             return _absent("no_applied_profile_seam")
@@ -6219,73 +6246,31 @@ class CrossoverV2Session:
             profile = seam()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return _absent("applied_profile_unreadable", error=str(exc))
-        # The corner check, BEFORE the model is built: a previous graph modelled
-        # on branches composed through a crossover it never ran is wrong by up
-        # to 5.88 dB against this probe's 1.5 dB tolerance (adversarial panel,
-        # PR #2614), and the two doors that reach it — a ``/sound`` corner edit
-        # between rounds, and an operator's TOPOLOGY PIN, which opens the
-        # session at the pinned corner while the applied profile still holds the
-        # incumbent — are both live. (A third, every alternative-Fc candidate,
-        # closed with the corner hunt.) This check never counted doors: it
-        # compares corners, so it covers whichever ones exist.
-        applied_fc_hz = _commanded.profile_crossover_fc_hz(profile)
-        if applied_fc_hz is None:
-            return _absent("applied_profile_names_no_corner")
-        # A relative tolerance, not equality: both numbers are floats that have
-        # been through a JSON round trip, and the case this refuses is 1500 vs
-        # 1800, never 1500 vs 1500.0000001.
-        if not math.isclose(applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6):
-            return _absent(
-                "crossover_corner_moved",
-                applied_fc_hz=round(applied_fc_hz, 3),
-                capture_fc_hz=round(float(capture_fc_hz), 3),
-            )
-        woofer_role, tweeter_role = self._woofer.role, self._tweeter.role
+        corner = _commanded.corner_disagreement(profile, capture_fc_hz)
+        if corner is not None:
+            return _absent(corner.reason, **corner.fields)
         # The DRAFT's declared per-role polarity, which the measured branches
         # already carry (``program_analysis._compose_configured_path_ir``). The
         # profile records absolute flags, so without this the previous side is
         # stated in a different frame from the applied side's
-        # ``alignment.polarity_sign`` on any speaker whose draft declares an
-        # inverted branch.
+        # ``alignment.polarity_sign``.
         try:
             draft_inverted = role_polarity(self._preset)
         except ActiveSpeakerConfigError as exc:
             return _absent("draft_polarity_unreadable", error=str(exc))
-        graph = _commanded.profile_graph_summation(
-            profile, woofer_role=woofer_role, tweeter_role=tweeter_role,
+        previous = _commanded.previous_graph_prediction(
+            profile,
+            roles=roles,
             draft_inverted_by_role=draft_inverted,
+            responses={
+                response.role: response
+                for response in (analysis.driver_responses or ())
+            },
+            alignment=analysis.alignment,
         )
-        if graph is None:
-            return _absent("applied_profile_names_no_graph")
-        responses = {
-            response.role: response
-            for response in (analysis.driver_responses or ())
-        }
-        if woofer_role not in responses or tweeter_role not in responses:
-            return _absent("capture_has_no_branch_pair")
-        alignment = analysis.alignment
-        predicted = _commanded.graph_predicted_sum(
-            # The WOOFER's grid, which is the grid ``plan_linearization`` builds
-            # the applied side on (``freqs = responses[woofer_role].freqs_hz``),
-            # so both sides of the subtraction land on one grid without an
-            # interpolation nobody asked for.
-            responses[woofer_role].freqs_hz,
-            {role: response.complex_tf for role, response in responses.items()},
-            graph,
-            woofer_role=woofer_role,
-            tweeter_role=tweeter_role,
-            # The SAME gate the applied side's residual is derived through
-            # (``program_analysis._build_candidate``): an anchor the aligner
-            # refused is no anchor, and both sides then model the frame the
-            # independently-aligned branch pair is already in.
-            anchor_delay_us=(
-                alignment.anchor_delay_us
-                if alignment is not None and alignment.status == ALIGNMENT_OK
-                else None
-            ),
-        )
-        if predicted is None:
-            return _absent("previous_graph_model_failed")
+        if isinstance(previous, str):
+            return _absent(previous)
+        graph, predicted = previous
         # INFO, and it carries the four numbers the model turned on: a disputed
         # rollback should never need a second session to establish which graph
         # the round was graded against.
@@ -6323,7 +6308,7 @@ class CrossoverV2Session:
         return predicted
 
     def _commanded_delta_for(
-        self, analysis: Any, predicted_sum: Any, capture_fc_hz: float,
+        self, analysis: Any, predicted_sum: Any, capture_fc_hz: float | None,
     ) -> Any:
         """This candidate's commanded axis: applied graph minus previous graph.
 
@@ -6497,7 +6482,10 @@ class CrossoverV2Session:
             level_frame_finding=built.level_frame_finding,
             # #2392's other half of the same one-line re-supply: the walk reads
             # the verdict off its own build's state.
-            realized_branch_level=built.linearization.realized_branch_level,
+            realized_branch_level=_contracts.realized_branch_level(
+                built.linearization.realized_branch_level,
+                pair_reason=self._pair_reason,
+            ),
         )
         log_event(
             logger, "correction.crossover_v2_candidate_built",
@@ -8602,7 +8590,11 @@ class CrossoverV2Session:
 
     def _log_check_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
         woofer = _pilot_diag_fields(_pilot_by_role(analysis, self._woofer.role))
-        tweeter = _pilot_diag_fields(_pilot_by_role(analysis, self._tweeter.role))
+        # A 1-way main declares no upper driver: ``tweeter_*`` publishes absent.
+        tweeter_role = self._tweeter_role
+        tweeter = _pilot_diag_fields(
+            _pilot_by_role(analysis, tweeter_role) if tweeter_role else None
+        )
         log_event(
             logger, "correction.crossover_v2_check_diag",
             session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
@@ -8685,14 +8677,15 @@ class CrossoverV2Session:
         drift = analysis.drift
         align = analysis.alignment
         cand = analysis.candidate
+        tweeter_role = self._tweeter_role
         delay_us, delay_role, polarity = alignment_to_candidate_fields(
-            analysis, woofer_role=self._woofer.role, tweeter_role=self._tweeter.role,
+            analysis, roles=self._role_names,
         )
         woofer_snr_db, woofer_snr_verdict, woofer_snr_band = _driver_snr_fields(
             _driver_response_by_role(analysis, self._woofer.role)
         )
         tweeter_snr_db, tweeter_snr_verdict, tweeter_snr_band = _driver_snr_fields(
-            _driver_response_by_role(analysis, self._tweeter.role)
+            _driver_response_by_role(analysis, tweeter_role) if tweeter_role else None
         )
         sweep_residual_ms_worst, sweep_locate_confidence_min = _sweep_schedule_diag_fields(
             analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
@@ -8706,7 +8699,7 @@ class CrossoverV2Session:
             drift.per_role_epsilon_ppm.get(self._woofer.role) if drift else None
         )
         tweeter_repeat_epsilon_ppm = (
-            drift.per_role_epsilon_ppm.get(self._tweeter.role) if drift else None
+            drift.per_role_epsilon_ppm.get(tweeter_role) if drift and tweeter_role else None
         )
         log_event(
             logger, "correction.crossover_v2_measure_diag",
@@ -8769,12 +8762,12 @@ class CrossoverV2Session:
             trim_ripple_gain_db=(
                 round(
                     float(
-                        cand.trim_db[self._tweeter.role]
-                        - cand.trim_band_average_db[self._tweeter.role]
+                        cand.trim_db[tweeter_role]
+                        - cand.trim_band_average_db[tweeter_role]
                     ),
                     4,
                 )
-                if cand and cand.trim_band_average_db is not None else None
+                if cand and tweeter_role and cand.trim_band_average_db is not None else None
             ),
             # Disambiguates the 0.0 above, which is otherwise three rounds
             # wearing one face; see the field's own docstring.
@@ -8993,6 +8986,9 @@ class CrossoverV2Session:
         :class:`CrossoverV2FlowError` is this module's phase-transition error,
         which a pure module has no business raising.
 
+        The second is scoped to a session that OWES a measured pair candidate:
+        a 1-way main's analysis carries none by design.
+
         The first is ABOVE the SF2 degrade handler on purpose: raised inside it
         this was caught and degraded to a committable trims-only candidate
         (panel B1/SF2) in the wrong polarity convention. Severity, per the
@@ -9007,10 +9003,11 @@ class CrossoverV2Session:
         sites across two suites reach the first of them — six substituting the
         class attribute, three substituting it on a session instance.
         """
+        roles = self._role_names
         if (self._measurement_protection_sections_by_role is not None
                 and not analysis.configured_path_composed):
             raise ValueError("protected-neutral capture reached the fitter uncomposed")
-        if analysis.candidate is None:
+        if analysis.candidate is None and len(roles) > 1:
             # ``_measure_verdict`` hoisted this same check to the capture that
             # produces the analysis (2026-07-27 timing move), so reaching it
             # here means a caller that did not walk that path.
@@ -9041,8 +9038,7 @@ class CrossoverV2Session:
             analysis, analysis.candidate, cloud,
             candidate_sections=candidate_sections,
             source_preset=source_preset or self._preset,
-            woofer_role=self._woofer.role,
-            tweeter_role=self._tweeter.role,
+            roles=roles,
             plan=self._plan_linearization,
             exclusion_evidence=self._exclusion_evidence_json,
             journal=self._journal_linearization,
@@ -9154,8 +9150,7 @@ class CrossoverV2Session:
             candidate_sections=candidate_sections,
             preset=self._preset,
             program_for_phase=self.program_for_phase,
-            woofer_role=self._woofer.role,
-            tweeter_role=self._tweeter.role,
+            roles=self._role_names,
             driver_class_by_role=self._driver_class_by_role,
             post_apply_verifies=self.post_apply_verifies,
             cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,

@@ -66,6 +66,7 @@ from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
     sections_by_role,
 )
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -77,7 +78,6 @@ from jasper.audio_measurement.program_analysis import (
     _build_candidate,
     _ripple_db,
     _select_alignment_pair,
-    overlap_band_hz,
     predicted_branch_sum,
     summed_model_residual_delay_us,
 )
