@@ -253,10 +253,6 @@ def target_profile_options() -> list[dict[str, Any]]:
     return [profile.to_dict() for profile in TARGET_PROFILES.values()]
 
 
-def correction_strategy_options() -> list[dict[str, Any]]:
-    return [strategy.to_dict() for strategy in CORRECTION_STRATEGIES.values()]
-
-
 def household_correction_strategy_options() -> list[dict[str, Any]]:
     """Correction strategies authorized on the ordinary household surface."""
     return [

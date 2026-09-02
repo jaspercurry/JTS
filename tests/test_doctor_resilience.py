@@ -24,6 +24,7 @@ from jasper.cli.doctor.resilience import (
     _classify_supervisor_snapshots,
     check_bootloop_guard,
     check_supervisor_runtime_snapshots,
+    check_supply_voltage,
 )
 
 from .doctor_test_support import _registered_check_names
@@ -274,9 +275,54 @@ def test_supervisor_snapshots_check_skips_when_state_unavailable(monkeypatch):
     assert check_supervisor_runtime_snapshots().status == "ok"
 
 
+# ------------------------------------------------------- check_supply_voltage
+
+
+@pytest.mark.parametrize(
+    "current, status, must_name",
+    [
+        # No jasper-control /system/snapshot reachable: n/a, not a failure.
+        (None, "ok", "n/a"),
+        # Bits absent/wrong-typed from a stale or malformed snapshot: n/a.
+        ({"throttled_now": None, "throttled_history": None}, "ok", "n/a"),
+        # Clean box: neither bit set. Both fields are already the shifted
+        # nibbles jasper.control.system_metrics._read_throttled() publishes
+        # (raw & 0xF, (raw >> 16) & 0xF) -- never a raw 0x50005-style value.
+        ({"throttled_now": 0x0, "throttled_history": 0x0}, "ok", "no under-voltage"),
+        # Bit 0 of throttled_now: under-voltage right now outranks history.
+        (
+            {"throttled_now": 0x5, "throttled_history": 0x5},
+            "fail",
+            "under-voltage now",
+        ),
+        # Bit 0 of throttled_history only (raw bit 16): happened since boot,
+        # not now.
+        (
+            {"throttled_now": 0x0, "throttled_history": 0x1},
+            "warn",
+            "under-voltage occurred since boot",
+        ),
+        # Other throttled bits set (frequency cap, temp limit) but neither
+        # under-voltage bit: not this check's concern.
+        ({"throttled_now": 0x2, "throttled_history": 0x2}, "ok", "no under-voltage"),
+    ],
+)
+def test_check_supply_voltage_verdicts(monkeypatch, current, status, must_name):
+    monkeypatch.setattr(resilience, "_read_system_metrics_current", lambda: current)
+
+    result = check_supply_voltage()
+
+    assert result.status == status
+    assert must_name in result.detail.lower()
+
+
 @pytest.mark.parametrize(
     "check_name",
-    ["check_bootloop_guard", "check_supervisor_runtime_snapshots"],
+    [
+        "check_bootloop_guard",
+        "check_supervisor_runtime_snapshots",
+        "check_supply_voltage",
+    ],
 )
 def test_resilience_checks_are_registered(check_name):
     assert check_name in _registered_check_names()

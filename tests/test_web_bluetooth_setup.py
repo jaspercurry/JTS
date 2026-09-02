@@ -36,6 +36,7 @@ import pytest
 
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
 from tests._web_test_helpers import make_real_handler
 
 
@@ -997,15 +998,13 @@ def test_pair_attempt_ttl_expiry_wakes_blocked_consumer_before_cancel(
 
     consumer_thread = threading.Thread(target=consume, daemon=True)
     consumer_thread.start()
-    deadline = time.monotonic() + 1
-    while not attempt.consumer_attached and time.monotonic() < deadline:
-        time.sleep(0.001)
+    wait_until_sync(lambda: attempt.consumer_attached, interval=0.001)
     assert attempt.consumer_attached is True
 
     bluetooth_setup._expire_pair_attempt(mac, attempt)
 
-    assert consumer_done.wait(timeout=1)
-    consumer_thread.join(timeout=1)
+    assert consumer_done.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+    consumer_thread.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     assert mac not in bluetooth_setup._PAIR_STREAMS
     assert received == [{
         "stage": "error",
@@ -1880,7 +1879,10 @@ def test_get_state_preserves_desired_intent_when_adapter_read_fails(
     assert fake.run_calls == 1
 
 
-def test_state_reports_parked_without_rewriting_desired(monkeypatch):
+@pytest.mark.parametrize(
+    "park_reason", ("bonded_follower", "role_transition_in_progress"),
+)
+def test_state_reports_parked_without_rewriting_desired(monkeypatch, park_reason):
     fake = _FakeDispatcher()
 
     async def read_adapter_state():
@@ -1896,7 +1898,9 @@ def test_state_reports_parked_without_rewriting_desired(monkeypatch):
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        bluetooth_setup, "bonded_follower_park_reason", lambda: park_reason,
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "_unit_active",
@@ -1911,6 +1915,7 @@ def test_state_reports_parked_without_rewriting_desired(monkeypatch):
     assert payload["desired"] is True
     assert payload["effective"] == "parked"
     assert payload["parked"] is True
+    assert payload["parkReason"] == park_reason
 
 
 @pytest.mark.parametrize("desired", (False, True))
@@ -1962,7 +1967,9 @@ def test_parked_state_takes_precedence_over_unavailable_hardware(monkeypatch):
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
-    monkeypatch.setattr(bluetooth_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(
+        bluetooth_setup, "bonded_follower_park_reason", lambda: "bonded_follower",
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "probe_bluetooth_availability",
@@ -1974,6 +1981,7 @@ def test_parked_state_takes_precedence_over_unavailable_hardware(monkeypatch):
     assert status == int(http.HTTPStatus.OK)
     assert state["effective"] == "parked"
     assert state["available"] is False
+    assert state["parkReason"] == "bonded_follower"
 
 
 @pytest.mark.parametrize("path", ("/power", "/scan"))

@@ -9,6 +9,8 @@ from __future__ import annotations
 from jasper.active_speaker.playback_route import (
     MISSING_SOURCE,
     OUTPUTD_ACTIVE_LANE_SOURCE,
+    ActiveLaneCapabilityGap,
+    UnrecognizedDacProfile,
     active_lane_capability_gap,
     active_playback_route_capability,
     resolve_active_playback_device,
@@ -299,8 +301,10 @@ def test_active_capable_dac_is_not_a_gap() -> None:
 
 def test_unrecognized_dac_is_not_reported_as_a_gap() -> None:
     """Strict on purpose: with no profile there is no capability to read, so
-    the predicate stays silent rather than blocking a save on hardware the
-    registry has simply not met."""
+    the predicate returns the distinct unrecognized-profile type rather than
+    either ActiveLaneCapabilityGap (which would block a save on hardware the
+    registry has simply not met) or None (which would claim the DAC is
+    known-capable)."""
     topo = _topology(
         GENERIC_SINGLE_DAC,
         8,
@@ -309,4 +313,8 @@ def test_unrecognized_dac_is_not_reported_as_a_gap() -> None:
         routing={"mono_group_id": "mono"},
     )
 
-    assert active_lane_capability_gap(topo) is None
+    gap = active_lane_capability_gap(topo)
+
+    assert isinstance(gap, UnrecognizedDacProfile)
+    assert not isinstance(gap, ActiveLaneCapabilityGap)
+    assert gap.device_id == GENERIC_SINGLE_DAC

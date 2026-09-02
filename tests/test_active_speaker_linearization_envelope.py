@@ -46,8 +46,6 @@ from jasper.active_speaker.linearization_envelope import (
     class_prior_limit,
     compose_envelope,
     compute_sigma_curve,
-    invertibility_limit,
-    linearity_limit,
     mic_trust_limit,
     position_stability_limit,
     repeatability_limit,
@@ -479,18 +477,6 @@ def test_mic_trust_limit_pins_full_to_and_taper_zero_hz_by_tier(
     assert curve[0] == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB)
     assert curve[1] == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB / 2.0)
     assert curve[2] == pytest.approx(0.0, abs=1e-9)
-
-
-# --------------------------------------------------------------------------- #
-# linearity_limit / invertibility_limit -- stub contract
-# --------------------------------------------------------------------------- #
-
-
-def test_linearity_and_invertibility_stubs_return_finite_sentinel_everywhere():
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    for curve in (linearity_limit(grid), invertibility_limit(grid)):
-        assert np.all(np.isfinite(curve))
-        assert np.all(curve == ENVELOPE_CEILING_SENTINEL_DB)
 
 
 # --------------------------------------------------------------------------- #
@@ -946,8 +932,6 @@ def test_reason_code_vocabulary_is_stable():
     assert ReasonCode.FITTED == "envelope_fitted"
     assert ReasonCode.LIMITED_BY_MIC_TIER == "envelope_limited_by_mic_tier"
     assert ReasonCode.LIMITED_BY_REPEATABILITY == "envelope_limited_by_repeatability"
-    assert ReasonCode.LIMITED_BY_NONLINEARITY == "envelope_limited_by_nonlinearity"
-    assert ReasonCode.LIMITED_BY_EXCESS_PHASE == "envelope_limited_by_excess_phase"
     assert ReasonCode.LIMITED_BY_CLASS_PRIOR == "envelope_limited_by_class_prior"
     assert (
         ReasonCode.LIMITED_BY_SPATIAL_EXCLUSION
@@ -966,7 +950,7 @@ def test_reason_code_vocabulary_is_stable():
         == "envelope_beyond_measurement_confidence"
     )
     assert ReasonCode.OUT_OF_BAND == "envelope_out_of_band"
-    assert len(list(ReasonCode)) == 11
+    assert len(list(ReasonCode)) == 9
 
 
 def test_mic_tiers_and_driver_classes_vocabulary_is_stable():
@@ -1320,7 +1304,7 @@ def _compose(primary, **kwargs) -> EnvelopeCurve:
 def test_compose_envelope_absent_cloud_evidence_is_byte_identical():
     """The additivity contract: omitted, ``None``, and empty all compose to
     the pre-PR-6a curve exactly -- same numbers, same reasons, and a
-    ``terms`` mapping still holding exactly the five original keys."""
+    ``terms`` mapping still holding exactly the three original keys."""
     primary = _zero_sigma_primary("tweeter", freqs_hz=DEFAULT_ENVELOPE_GRID_HZ)
     baseline = _compose(primary)
     variants = (
@@ -1336,8 +1320,6 @@ def test_compose_envelope_absent_cloud_evidence_is_byte_identical():
     assert set(baseline.terms) == {
         ReasonCode.LIMITED_BY_MIC_TIER,
         ReasonCode.LIMITED_BY_REPEATABILITY,
-        ReasonCode.LIMITED_BY_NONLINEARITY,
-        ReasonCode.LIMITED_BY_EXCESS_PHASE,
         ReasonCode.LIMITED_BY_CLASS_PRIOR,
     }
 

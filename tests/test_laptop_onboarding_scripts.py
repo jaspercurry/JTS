@@ -90,6 +90,11 @@ case "$cmd" in
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
     ;;
+  cat\ /run/jasper-install/reboot_required*)
+    # Empty by default (no reboot pending); tests that want the reboot
+    # branch set FAKE_REBOOT_REQUIRED.
+    [[ -n "${FAKE_REBOOT_REQUIRED:-}" ]] && printf '%s\n' "${FAKE_REBOOT_REQUIRED}"
+    ;;
   tr\ -d*\/proc\/device-tree\/model*)
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_PI_MODEL:-Raspberry Pi 5 Model B Rev 1.0}"
@@ -415,6 +420,50 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_reboot_marker_present_takes_the_reboot_branch(self):
+        """install.sh's reboot-required marker (#2110) makes onboard reboot
+        and wait before validating, instead of running doctor against
+        pre-reboot state."""
+        fake = FakeRemote(self)
+        result = self.run_onboard(
+            fake,
+            profile="full",
+            model="Raspberry Pi 5 Model B Rev 1.0",
+            output_status="ready",
+            FAKE_REBOOT_REQUIRED="zram=resize pending",
+            JTS_ONBOARD_REBOOT_DOWN_ATTEMPTS="1",
+            JTS_ONBOARD_REBOOT_DOWN_SLEEP="0",
+        )
+
+        combined = result.stdout + result.stderr
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, combined)
+        self.assertIn("cat\\ /run/jasper-install/reboot_required", calls)
+        self.assertIn("reboot required: zram=resize pending", result.stdout)
+        self.assertIn("waiting for jts4.local to go down and come back", result.stdout)
+        self.assertIn("jts4.local is back up", result.stdout)
+        self.assertIn("sudo\\ -n\\ reboot", calls)
+        self.assertIn("event=onboard.reboot status=ok", result.stdout)
+
+    def test_no_reboot_marker_goes_straight_to_doctor(self):
+        """The common case: no boot-only migration ran, so onboard never
+        reboots and validates immediately."""
+        fake = FakeRemote(self)
+        result = self.run_onboard(
+            fake,
+            profile="full",
+            model="Raspberry Pi 5 Model B Rev 1.0",
+            output_status="ready",
+        )
+
+        combined = result.stdout + result.stderr
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, combined)
+        self.assertIn("cat\\ /run/jasper-install/reboot_required", calls)
+        self.assertNotIn("reboot required:", result.stdout)
+        self.assertNotIn("waiting for jts4.local", result.stdout)
+        self.assertNotIn("sudo\\ -n\\ reboot", calls)
+
     def test_unattended_sudo_failure_exits_before_mkdir_rsync_or_install(self):
         fake = FakeRemote(self)
         result = self.run_deploy(
@@ -533,6 +582,31 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("sudo\\ -n\\ JASPER_DEPLOY_SHA=", calls)
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
         self.assertNotIn("SSH -tt", calls)
+
+    def test_deploy_prints_reboot_marker_without_rebooting(self):
+        """Ordinary deploy-to-pi.sh redeploys keep the cautious no-surprise
+        posture (#2110): read and print install.sh's reboot-required
+        marker, but never reboot on their own — only onboard.sh does."""
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_REBOOT_REQUIRED="cgroup_memory=cmdline.txt updated",
+        )
+
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("cat\\ /run/jasper-install/reboot_required", calls)
+        self.assertIn(
+            "reboot required (not applied by this deploy): "
+            "cgroup_memory=cmdline.txt updated",
+            result.stdout,
+        )
+        self.assertNotIn("sudo\\ -n\\ reboot", calls)
+        self.assertNotIn("sudo\\ reboot", calls)
 
     def test_deploy_runs_and_marks_an_overlaid_live_script_dirty(self):
         fake = FakeRemote(self)

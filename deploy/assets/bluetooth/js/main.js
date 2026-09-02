@@ -112,7 +112,9 @@ function renderToggles() {
       || state.pairingReady === false));
   let hint;
   if (parked) {
-    hint = 'Managed by this speaker’s stereo pair.';
+    hint = state.parkReason === "bonded_follower"
+      ? 'Managed by this speaker’s stereo pair.'
+      : 'Bluetooth is paused while grouping changes settle.';
   } else if (unavailable) {
     hint = state.unavailableReason || state.error || 'Bluetooth state unavailable.';
   } else if (state.effective === 'degraded') {

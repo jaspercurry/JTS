@@ -276,9 +276,9 @@ def _assess(
                     issue=ISSUE_MONO_ON_RING,
                     remedy=None,
                     detail=(
-                        "this box declares a 1-channel full-range layout and "
-                        "the ring layout's accept-set starts at 2 channels, "
-                        "so no ring geometry exists for it"
+                        "this box declares a 1-channel full-range layout, "
+                        "and its contract carries issues that keep it from "
+                        "resolving the 2-channel ring a clean mono box rides"
                     ),
                 )
             )

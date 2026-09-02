@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from jasper.chip_aec_alignment import (
     MIN_EDGE_MARGIN,
     MicTiming,
     ProductResult,
+    TimingRejected,
     analyze_product,
     analyze_timing,
     choose_delay,
@@ -57,6 +59,12 @@ MARKER = Path("/run/jasper-chip-aec-commission/active")
 # Last-run outcome for status surfaces (/aec `commission`, the wake page).
 # Same shape family as jasper.cli.xvf_firmware_update's STATE_PATH record.
 STATE_PATH = Path("/var/lib/jasper/chip-aec-commission.json")
+# Where a timing-rejected run's captures land instead of unwinding with the
+# temp dir, and how many rejections are kept.  Three is the run of rejections
+# the owner already has (#3271); a run's timing captures are at most 24 files
+# of 2 s x 6 ch x 16 kHz S16 (~9 MB), so the ceiling is ~30 MB of /var/lib.
+REJECTED_CAPTURE_DIR = Path("/var/lib/jasper/chip-aec-rejections")
+RETAINED_REJECTIONS = 3
 # Reason literal that routes deploy/bin/jasper-aec-reconcile into its
 # arm-only dispatch while this process's marker is live; every other reason
 # under a live marker is a mutate-nothing no-op there.
@@ -145,6 +153,67 @@ def _final_timing(evidence: Sequence[MicTiming]) -> tuple[tuple[int, ...], float
     return lags, center, margin
 
 
+def _retain_rejected_captures(directory: Path, root: Path) -> Path | None:
+    """Move a rejected run's timing captures out of the unwinding temp dir.
+
+    Best-effort: a retention failure must not replace the rejection the owner
+    actually needs to read.
+    """
+
+    destination = root / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    moved = 0
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        for capture in sorted(directory.glob("*-m*-*.wav")):
+            shutil.move(capture, destination / capture.name)
+            moved += 1
+        # Never a prune candidate: the box has no RTC, so a restored or stepped
+        # clock can name this run older than the ones it joins.
+        stale = sorted(
+            (path for path in root.iterdir() if path.is_dir() and path != destination),
+            reverse=True,
+        )
+        for path in stale[RETAINED_REJECTIONS - 1 :]:
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError as exc:
+        log_event(
+            logger,
+            "chip_aec_commission.retain_failed",
+            error=str(exc),
+            moved=moved,
+            level=logging.WARNING,
+        )
+    return destination if moved else None
+
+
+def _timing_evidence(
+    io, dev, hardware: Hardware, delay: int, stimulus: Path,
+    reference: np.ndarray, directory: Path, label: str, rejection_dir: Path,
+) -> tuple[MicTiming, ...]:
+    try:
+        return tuple(
+            MicTiming(
+                mic,
+                delay,
+                io.timing(dev, hardware, mic, stimulus, reference, directory, label),
+            )
+            for mic in range(4)
+        )
+    except TimingRejected as rejection:
+        retained = _retain_rejected_captures(directory, rejection_dir)
+        log_event(
+            logger,
+            "chip_aec_commission.timing_rejected",
+            phase=label,
+            retained_captures=str(retained),
+            **rejection.fields,
+            level=logging.ERROR,
+        )
+        raise CommissioningError(
+            f"{rejection} phase={label} retained_captures={retained}"
+        ) from rejection
+
+
 def _writer_counters(window: QueueWindow) -> tuple[int, ...]:
     refs = window.status["reference_outputs"]
     writer = refs["chip_ref_writer"]
@@ -154,7 +223,11 @@ def _writer_counters(window: QueueWindow) -> tuple[int, ...]:
 
 
 def _commission(
-    io, artifact_path: Path, hardware: Hardware, original_volume: float
+    io,
+    artifact_path: Path,
+    hardware: Hardware,
+    original_volume: float,
+    rejection_dir: Path,
 ) -> tuple[AlignmentArtifact, dict[str, Any]]:
     stereo, reference, active = commissioning_stimulus()
     dev = None
@@ -175,13 +248,9 @@ def _commission(
             if io.convergence(dev) != 0:
                 raise CommissioningError("volatile reset did not clear convergence")
             io.warmup(hardware, stimulus, directory)
-            initial = tuple(
-                MicTiming(
-                    mic,
-                    INITIAL_SYS_DELAY,
-                    io.timing(dev, hardware, mic, stimulus, reference, directory, "initial"),
-                )
-                for mic in range(4)
+            initial = _timing_evidence(
+                io, dev, hardware, INITIAL_SYS_DELAY, stimulus,
+                reference, directory, "initial", rejection_dir,
             )
             choice = choose_delay(initial)
             log_event(
@@ -194,13 +263,9 @@ def _commission(
 
             before = io.queue(hardware)
             io.apply(dev, hardware, choice.sys_delay, arm=False)
-            final = tuple(
-                MicTiming(
-                    mic,
-                    choice.sys_delay,
-                    io.timing(dev, hardware, mic, stimulus, reference, directory, "final"),
-                )
-                for mic in range(4)
+            final = _timing_evidence(
+                io, dev, hardware, choice.sys_delay, stimulus,
+                reference, directory, "final", rejection_dir,
             )
             after = io.queue(hardware)
             if len({_writer_counters(window) for window in (initial_queue, before, after)}) != 1:
@@ -306,6 +371,7 @@ def run_commissioning(
     marker_path: Path = MARKER,
     artifact_path: Path = ARTIFACT_PATH,
     state_path: Path = STATE_PATH,
+    rejection_dir: Path = REJECTED_CAPTURE_DIR,
     effective_uid: int | None = None,
 ) -> AlignmentArtifact:
     if (os.geteuid() if effective_uid is None else effective_uid) != 0:
@@ -334,7 +400,7 @@ def run_commissioning(
             # re-runs it marker-free to restore the resting vector.
             runtime.reconcile(reason=ARM_RECONCILE_REASON)
             artifact, evidence = _commission(
-                runtime, artifact_path, hardware, original_volume
+                runtime, artifact_path, hardware, original_volume, rejection_dir
             )
         finally:
             # _commission restores on every path it enters; this covers the
@@ -569,11 +635,7 @@ class SystemIO:
             trials.append(result.lag)
             log_event(
                 logger, "chip_aec_commission.timing_trial",
-                phase=label, mic=mic, trial=trial + 1, lag=result.lag,
-                peak=round(result.peak, 4), peak_ratio=round(result.peak_ratio, 4),
-                mic_rms_dbfs=round(result.mic_rms_dbfs, 2),
-                reference_rms_dbfs=round(result.reference_rms_dbfs, 2),
-                clipped_samples=result.clipped_samples,
+                phase=label, mic=mic, trial=trial + 1, **result.evidence(),
             )
         return tuple(trials)
 

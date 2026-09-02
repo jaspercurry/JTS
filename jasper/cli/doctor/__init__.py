@@ -227,6 +227,7 @@ from .resilience import (
     _classify_supervisor_snapshots,
     check_service_runtime_state,
     check_supervisor_runtime_snapshots,
+    check_supply_voltage,
     check_bootloop_guard,
 )
 from . import aec as aec
@@ -247,7 +248,6 @@ from .aec import (
     _AEC_RMS_RE,
     _AEC_MIC_MUSIC_THRESHOLD,
     _AEC_REF_SILENT_THRESHOLD,
-    _AEC_DRIFT_WARN_THRESHOLD,
     _assess_aec_bridge_output,
     check_aec_bridge_output_health,
     _assess_dtln_engine,
@@ -555,6 +555,7 @@ __all__ = [
     "_classify_supervisor_snapshots",
     "check_service_runtime_state",
     "check_supervisor_runtime_snapshots",
+    "check_supply_voltage",
     "check_bootloop_guard",
     "_aec_mode_setting",
     "_aec_profile_setting",
@@ -572,7 +573,6 @@ __all__ = [
     "_AEC_RMS_RE",
     "_AEC_MIC_MUSIC_THRESHOLD",
     "_AEC_REF_SILENT_THRESHOLD",
-    "_AEC_DRIFT_WARN_THRESHOLD",
     "_assess_aec_bridge_output",
     "check_aec_bridge_output_health",
     "_assess_dtln_engine",

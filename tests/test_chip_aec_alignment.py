@@ -17,6 +17,7 @@ from jasper.chip_aec_alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
     MicTiming,
+    TimingRejected,
     analyze_product,
     analyze_timing,
     artifact_from_dict,
@@ -420,6 +421,32 @@ def test_timing_analyzer_reports_unambiguous_causal_lag() -> None:
     assert result.peak > 0.99
     assert result.peak_ratio >= 1.10
     assert result.clipped_samples == 0
+
+
+def test_a_rejected_timing_capture_carries_both_arrivals_and_the_ratio() -> None:
+    # The rejection IS the evidence: jts.local refuses on ratio ~1.02 and the
+    # captures used to unwind with the run (#3271), so a competitor this close
+    # to the direct arrival has to report where it sits.  101 samples at 16 kHz
+    # is 6.31 ms — the extra path length of a ~2.2 m reflection.
+    _stereo, reference, active = commissioning_stimulus()
+    capture = np.zeros((32_000, 6), dtype="<i2")
+    marker_start = 4_000
+    capture[marker_start : marker_start + len(reference), 1] = reference
+    active_start = marker_start + 5_600
+    arrivals = np.zeros(32_000, dtype=np.float64)
+    arrivals[active_start + 20 : active_start + 20 + len(active)] += active
+    arrivals[active_start + 121 : active_start + 121 + len(active)] += 0.98 * active
+    capture[:, 0] = np.clip(arrivals, -32_768, 32_767).astype("<i2")
+
+    with pytest.raises(TimingRejected) as rejected:
+        analyze_timing(capture, reference)
+
+    result = rejected.value.result
+    assert (result.lag, result.competitor_lag) == (20, 121)
+    assert result.peak_ratio < alignment.MIN_PEAK_RATIO
+    assert result.competitor_height > 0
+    assert rejected.value.fields["competitor_offset_ms"] == 6.31
+    assert rejected.value.fields["at_edge"] is False
 
 
 def test_timing_correlation_removes_filtered_window_mean(monkeypatch) -> None:

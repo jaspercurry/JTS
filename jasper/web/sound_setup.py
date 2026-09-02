@@ -497,10 +497,15 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
     it, so the wizard must not accept it in the first place.
     """
 
-    from jasper.active_speaker.playback_route import active_lane_capability_gap
+    from jasper.active_speaker.playback_route import (
+        ActiveLaneCapabilityGap,
+        active_lane_capability_gap,
+    )
 
     gap = active_lane_capability_gap(topology)
-    if gap is None:
+    # An unrecognized DAC profile is not proof the layout is undrivable — see
+    # active_lane_capability_gap's docstring — so it must not block the save.
+    if not isinstance(gap, ActiveLaneCapabilityGap):
         return
     log_event(
         logger,

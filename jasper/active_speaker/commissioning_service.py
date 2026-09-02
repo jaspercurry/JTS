@@ -925,27 +925,6 @@ class CommissioningCaptureService:
             verify_current=verify_current,
         )
 
-    async def restore_candidate(
-        self,
-        *,
-        runtime_port: Any,
-        load_config_path: Callable[[str], Any],
-    ) -> dict[str, Any]:
-        """Restore a crash-interrupted candidate apply from its exact pointer."""
-
-        from .commissioning_apply import restore_pending_candidate_apply
-        from .commissioning_runtime import CommissioningRuntimePort
-
-        if not isinstance(runtime_port, CommissioningRuntimePort):
-            raise TypeError("runtime_port must be CommissioningRuntimePort")
-        return await restore_pending_candidate_apply(
-            run=self.run,
-            run_store=self.run_store,
-            store=self.evidence_store,
-            runtime_port=runtime_port,
-            load_config_path=load_config_path,
-        )
-
     def attest_geometry(
         self,
         *,

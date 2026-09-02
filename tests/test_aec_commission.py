@@ -17,6 +17,8 @@ from jasper.chip_aec_alignment import (
     AlignmentIdentity,
     MicTiming,
     ProductResult,
+    TimingRejected,
+    TimingResult,
     artifact_from_dict,
 )
 from jasper.cli import aec_commission
@@ -256,6 +258,72 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     outcome = json.loads((tmp_path / "commission-state.json").read_text())
     assert outcome["state"] == "failed"
     assert outcome["detail"] == "suppression failed"
+
+
+class _RejectingIO(_FakeIO):
+    """`_FakeIO` whose first timing trial writes a capture and is then refused."""
+
+    def timing(self, _dev, _hardware, mic, _stimulus, _reference, directory, label):
+        (directory / f"{label}-m{mic}-0.wav").write_bytes(b"RIFF")
+        raise TimingRejected(
+            TimingResult(20, 0.31, 0.42, 121, 0.41, -30.0, -20.0, 0), at_edge=False
+        )
+
+
+def test_a_timing_rejection_retains_its_captures_and_reports_both_arrivals(
+    tmp_path: Path, caplog
+) -> None:
+    # Every rejected run used to unwind the captures that would explain it
+    # (#3271), leaving a ratio in the journal and nothing to analyze.
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    rejections = tmp_path / "rejections"
+
+    with pytest.raises(aec_commission.CommissioningError) as rejected:
+        aec_commission.run_commissioning(
+            _RejectingIO(),
+            marker_path=tmp_path / "active",
+            artifact_path=tmp_path / "alignment.json",
+            state_path=tmp_path / "commission-state.json",
+            rejection_dir=rejections,
+            effective_uid=0,
+        )
+
+    retained = sorted(rejections.iterdir())
+    assert [path.name for path in retained[0].iterdir()] == ["initial-m0-0.wav"]
+    # Both arrivals and the ratio that separates them, in the journal and in
+    # the operator-facing failure alike; the ratio is the run's whole verdict
+    # and 121 - 20 samples is what a reflection hypothesis is tested against.
+    for field in (
+        "lag=20",
+        "competitor_lag=121",
+        "competitor_offset_ms=6.31",
+        "peak_ratio=1.0244",
+        f"retained_captures={retained[0]}",
+    ):
+        assert field in caplog.text, field
+        assert field in str(rejected.value), field
+    assert json.loads((tmp_path / "commission-state.json").read_text())["state"] == "failed"
+
+
+def test_only_the_newest_rejections_are_retained(tmp_path: Path) -> None:
+    root = tmp_path / "rejections"
+    # Stamped ahead of this run: the box has no RTC, so the newest captures are
+    # the ones a restored clock names oldest, and they are what the owner wants.
+    for stamp in ("20270101T000000Z", "20270102T000000Z", "20270103T000000Z"):
+        (root / stamp).mkdir(parents=True)
+    directory = tmp_path / "run"
+    directory.mkdir()
+    (directory / "final-m1-2.wav").write_bytes(b"RIFF")
+
+    destination = aec_commission._retain_rejected_captures(directory, root)
+
+    assert destination is not None
+    assert (destination / "final-m1-2.wav").exists()
+    assert not (directory / "final-m1-2.wav").exists()
+    kept = sorted(path.name for path in root.iterdir())
+    assert len(kept) == aec_commission.RETAINED_REJECTIONS
+    assert destination.name in kept
+    assert "20270101T000000Z" not in kept
 
 
 def _supported_xvf() -> xvf3800.RuntimeProfile:

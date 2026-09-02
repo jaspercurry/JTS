@@ -26,6 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_runtime_plan import (
+    OUTPUTD_DEFAULT_CONTENT_FORMAT as _OUTPUTD_DEFAULT_CONTENT_FORMAT,
+)
 from jasper.env_file import read_value
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -79,18 +82,11 @@ def _read_snapshot(path: str | Path) -> _EnvSnapshot:
 # refuse the arm for a wire the daemon has in fact declared, which is the wrong
 # refusal — the right one is a COMPARISON against the resolved wire.
 #
-# THE FORMAT DEFAULT IS THE DAEMON'S AND DOES NOT FOLLOW THE RESOLVER, exactly
-# like ``RING_CONF_DEFAULT_FORMAT``. Since the ring wire's resolver went wide,
-# an ARMED box whose outputd.env is missing this key genuinely IS sheared —
-# outputd would read S16 slots out of a wide ring — so this gate refusing it is
-# the correct, loud verdict, not a false alarm. The remedy is the hardware
-# reconciler, which is this key's single writer and re-derives it from the
-# coupling on every pass. Moving this constant to match the resolver would
-# silence a real shear.
+# The format default is owned by jasper.audio_runtime_plan; see its comment
+# beside OUTPUTD_DEFAULT_CONTENT_FORMAT for why it does not follow the resolver.
 _OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
 _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR = "JASPER_OUTPUTD_ACTIVE_CHANNELS"
 _OUTPUTD_DEFAULT_CONTENT_CHANNELS = 2
-_OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 
 
 # Which ring a declaration is held to, on the CHANNELS axis. Named rather than

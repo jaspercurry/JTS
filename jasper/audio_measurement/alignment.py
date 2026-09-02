@@ -104,6 +104,7 @@ class AlignmentResult:
     confidence: float  # 0..1 margin of the dominant peak over the next-strongest
     peak: float  # normalized correlation at the dominant lag (0..1 similarity)
     secondary: float  # strongest competing peak (normalized)
+    secondary_lag_samples: int = 0  # where it sits; only meaningful when secondary > 0
 
 
 def _normalize(signal: np.ndarray) -> np.ndarray:
@@ -169,7 +170,8 @@ def cross_correlation_alignment(
     lo = max(0, primary_idx - exclude_radius)
     hi = min(corr.size, primary_idx + exclude_radius + 1)
     masked[lo:hi] = 0.0
-    secondary = float(masked.max()) if masked.size else 0.0
+    secondary_idx = int(np.argmax(masked))
+    secondary = float(masked[secondary_idx])
 
     confidence = max(0.0, (primary - secondary) / primary)
     return AlignmentResult(
@@ -177,6 +179,7 @@ def cross_correlation_alignment(
         confidence=confidence,
         peak=primary,
         secondary=secondary,
+        secondary_lag_samples=secondary_idx,
     )
 
 

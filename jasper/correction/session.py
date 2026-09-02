@@ -868,9 +868,6 @@ class MeasurementSession:
         """Snapshot the chart curves + verify after design / verify."""
         self.artifacts.write_result_json()
 
-    def _write_mic_calibration_bundle(self, bundle: Path) -> None:
-        self.artifacts.write_mic_calibration_bundle(bundle)
-
     def _write_position_analysis_json(self) -> None:
         """Persist replayable per-position curves and variance bands."""
         self.artifacts.write_position_analysis_json()

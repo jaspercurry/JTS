@@ -93,17 +93,6 @@ class CommissioningEvidenceError(ValueError):
     """Commissioning evidence is malformed, stale, or self-contradictory."""
 
 
-def measurement_kind_for_evidence(evidence_kind: EvidenceKind) -> str:
-    """Return the canonical capture-identity kind for one region operation."""
-
-    try:
-        return _MEASUREMENT_KIND_BY_EVIDENCE[evidence_kind]
-    except KeyError as exc:
-        raise CommissioningEvidenceError(
-            "capture evidence_kind is unsupported"
-        ) from exc
-
-
 def _text(value: Any, *, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise CommissioningEvidenceError(

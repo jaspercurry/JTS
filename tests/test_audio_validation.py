@@ -627,7 +627,6 @@ def _active_chip_inputs() -> dict:
             },
         },
         "voice_wake_legs": {"on"},
-        "bridge_journal_text": "",
     }
 
 
@@ -1155,7 +1154,6 @@ def test_run_chip_aec_hardware_validation_refuses_inactive_without_force(monkeyp
         "_read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
-    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
 
     result = audio_validation.run_chip_aec_hardware_validation(
         report_only=True,
@@ -1190,7 +1188,6 @@ def test_run_chip_aec_hardware_validation_report_only_does_not_write(monkeypatch
         "_read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
-    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
     monkeypatch.setattr(
         audio_validation,
         "write_artifact",
@@ -1250,7 +1247,6 @@ def test_run_chip_aec_hardware_validation_uses_one_bounded_window(
         "_read_voice_wake_legs",
         lambda: inputs["voice_wake_legs"],
     )
-    monkeypatch.setattr(audio_validation, "_recent_bridge_journal", lambda: "")
     monkeypatch.setattr(audio_validation.time, "sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(
         audio_validation,
