@@ -1647,12 +1647,6 @@ stamp, and the stamp is false.
 
 ⚑ = in this plan's zone (five, matching the chunk-1 count).
 
-**(iii) exempt.** `docs/REVIEW-google-oss-readiness.md:109` cites `CLAUDE.md` for
-the same phrase, inside a doc whose own header (`:3-9`) calls it *"a
-point-in-time OSS-readiness assessment, not current operational truth."* Frozen
-primary sources are supposed to be stale — `REFACTOR-TUNING-2026-08.md:593-595`
-already rules exactly this way for the frozen capture banks. **Leave it.**
-
 ### The count moved, and the mechanism is the usual one
 
 **13 live attributions across 9 files, not 10.** The chunk-1 sweep searched the
