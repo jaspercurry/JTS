@@ -48,6 +48,7 @@ _STEP_TO_PLAN_MARKER = {
     "persist_install_profile": "Persist the install profile tier",
     "install_streambox_deps": "renderer/DSP stack",
     "install_streambox_jasper": "Python runtime dependencies from pyproject.toml [streambox]",
+    "reassert_secrets_compartment_perms": "/var/lib/jasper-secrets compartment holding",
     "reassert_intsecrets_compartment_perms": "integration-secret compartment",
     "install_streambox_systemd_units": "Enable socket-activated streambox-safe web surfaces",
     "install_streambox_nginx_site": "streambox nginx",

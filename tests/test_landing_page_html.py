@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -398,6 +399,65 @@ def test_landing_page_data_requires_match_capability_map() -> None:
     missing = used - cap_keys
     assert not missing, (
         f"data-requires values with no capability-map key: {sorted(missing)}"
+    )
+
+
+def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
+    # A capability grant is what unhides a section, so widening one (streambox
+    # gained ASSISTANT — ADR-0217) can reveal rows linking to wizards that
+    # profile's nginx conf never routes: the household taps "Voice" and gets
+    # the catch-all. Pin the seam between the two files rather than the three
+    # sections that happened to break, so the next widened grant is caught.
+    from jasper.install_profile import system_capabilities_for_profile
+
+    caps = system_capabilities_for_profile("streambox")
+    served = {
+        prefix
+        for prefix in re.findall(
+            r"location\s+=?\s*(/[^\s{]*)",
+            _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"),
+        )
+        if prefix != "/"  # the catch-all is exactly what a dead link falls to
+    }
+
+    class _Gates(HTMLParser):
+        """Collect hrefs whose whole enclosing data-requires stack is granted."""
+
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.stack: list[tuple[str, str | None]] = []
+            self.visible: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            attrib = dict(attrs)
+            gate = attrib.get("data-requires")
+            href = attrib.get("href", "")
+            if (
+                href.startswith("/")
+                and (gate is None or caps.get(gate) is True)
+                and all(caps.get(g) is True for _, g in self.stack if g)
+            ):
+                self.visible.append(href.split("#")[0].split("?")[0])
+            # Void elements never close, so they must not push a frame.
+            if tag not in ("meta", "link", "img", "br", "hr", "input", "use"):
+                self.stack.append((tag, gate))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    del self.stack[index:]
+                    return
+
+    gates = _Gates()
+    gates.feed(_index_html())
+    unserved = sorted({
+        href
+        for href in gates.visible
+        if not any(href == p or href.startswith(p) for p in served)
+    })
+    assert not unserved, (
+        "landing rows visible on streambox link to paths "
+        f"nginx-jasper-streambox.conf does not serve: {unserved}"
     )
 
 

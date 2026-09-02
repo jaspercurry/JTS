@@ -2120,6 +2120,9 @@ _PARK_DRIVER = """set -euo pipefail
 # systemd-units.sh interpolates SYSTEMD_DIR into a top-level array literal, so
 # it must be set before the source (install.sh sets it at its own top).
 SYSTEMD_DIR="/etc/systemd/system"
+# install.sh also sets STATE_DIR; park_streambox_brain_units removes a marker
+# under it, so point it at the sandbox rather than the host's /var/lib/jasper.
+STATE_DIR="${JTS_FAKE_SYSTEMCTL_STATE}"
 source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"
 build_swap_required() { return 0; }

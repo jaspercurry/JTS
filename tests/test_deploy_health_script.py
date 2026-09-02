@@ -93,6 +93,15 @@ def test_source_intent_constants_match_canonical_owner_and_fixed_contract() -> N
     assert health.SOURCE_RECONCILE_STATUS_FILE == Path(source_intent.SOURCE_STATUS_PATH)
 
 
+def test_accessory_mic_constants_match_canonical_owner() -> None:
+    from jasper.accessories import mic_env
+
+    assert health.ACCESSORY_MIC_ENV_FILE == Path(
+        mic_env.DEFAULT_ACCESSORY_MIC_ENV_FILE
+    )
+    assert health.MANUAL_MIC_SOURCES_KEY == mic_env.MANUAL_MIC_SOURCES_KEY
+
+
 @pytest.fixture
 def short_socket_dir() -> Iterator[Path]:
     directory = Path(tempfile.mkdtemp(prefix="jdh-", dir="/tmp"))
@@ -282,6 +291,7 @@ def _run_main(
     *,
     profile: str | None = "full",
     source_intent: str | None = None,
+    accessory_mics: str | None = None,
     grouping: str | None = None,
     radio_issues: list[str] | None = None,
     fanin_payloads: list[Any] | None = None,
@@ -302,6 +312,10 @@ def _run_main(
     if source_intent is not None:
         source_intent_file.write_text(source_intent, encoding="utf-8")
     monkeypatch.setattr(health, "SOURCE_INTENT_FILE", source_intent_file)
+    accessory_mic_file = short_socket_dir / "accessory-mics.env"
+    if accessory_mics is not None:
+        accessory_mic_file.write_text(accessory_mics, encoding="utf-8")
+    monkeypatch.setattr(health, "ACCESSORY_MIC_ENV_FILE", accessory_mic_file)
     grouping_file = short_socket_dir / "grouping.env"
     if grouping is not None:
         grouping_file.write_text(grouping, encoding="utf-8")
@@ -1054,6 +1068,40 @@ def test_streambox_profiles_skip_parked_brain_units(
     assert any("jasper-input.service" in line for line in queried)
     assert any("jasper-accessory-reconcile.path" in line for line in queried)
     assert "deploy health passed: 0 failure(s), 0 warning(s)" in output
+
+
+@pytest.mark.parametrize(
+    ("accessory_mics", "voice_active", "expected"),
+    [
+        ("JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:WiiM\n", True, "OK"),
+        ("JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=hw:WiiM\n", False, "WARN"),
+        ("JASPER_MANUAL_MIC_SOURCES=\n", False, None),
+    ],
+)
+def test_streambox_observes_voice_only_while_a_remote_mic_is_published(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+    accessory_mics: str,
+    voice_active: bool,
+    expected: str | None,
+) -> None:
+    if not voice_active:
+        _set_inactive_units(monkeypatch, "jasper-voice.service")
+
+    assert _run_main(
+        monkeypatch,
+        short_socket_dir,
+        profile="streambox",
+        accessory_mics=accessory_mics,
+    ) == 0
+
+    output = capsys.readouterr().out
+    queried = stub_systemctl.read_text(encoding="utf-8").splitlines()
+    assert ("jasper-voice.service" in queried) is (expected is not None)
+    warnings = 1 if expected == "WARN" else 0
+    assert f"passed: 0 failure(s), {warnings} warning(s)" in output
 
 
 def test_bonded_follower_expects_local_sources_and_mux_parked(
