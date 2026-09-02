@@ -1941,11 +1941,8 @@ class VolumeCoordinator:
         because the loud-direction correction is a safety backstop and must
         not go inert on an infrastructure problem (ADR-0177).
         """
-        probe = getattr(self._camilla, "graph_mutation_in_progress", None)
-        if probe is None:
-            return False
         try:
-            held = probe()
+            held = self._camilla.graph_mutation_in_progress()
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "graph_mutation_in_progress raised %s; treating as unknown", e,
