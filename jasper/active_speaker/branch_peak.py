@@ -96,6 +96,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from jasper.bass_extension.bench.derivation import ALLOWED_FILTER_TYPES
+from jasper.json_fields import finite_float
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 # Overlap-save geometry. The block is what the shared evaluator is sampled
@@ -173,11 +174,9 @@ class BranchPeakError(RuntimeError):
 
 
 def _finite(value: Any, what: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise BranchPeakError(f"{what} must be a number, got {value!r}")
-    number = float(value)
-    if not math.isfinite(number):
-        raise BranchPeakError(f"{what} must be finite, got {value!r}")
+    number = finite_float(value)
+    if number is None:
+        raise BranchPeakError(f"{what} must be a finite number, got {value!r}")
     return number
 
 

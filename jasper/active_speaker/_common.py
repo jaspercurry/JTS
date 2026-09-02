@@ -150,11 +150,17 @@ def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, A
 
 
 def finite_float(value: Any) -> float | None:
-    """Return ``value`` as a finite float, or ``None`` when unusable."""
+    """Return ``value`` as a finite float, or ``None`` when unusable.
+
+    The COERCING reader: unlike :func:`jasper.json_fields.finite_float` it
+    accepts a numeric string and a ``bool``, which these modules' callers
+    still rely on. ``OverflowError`` is caught because an arbitrary-precision
+    ``int`` is legal JSON and raises rather than returning ``inf``.
+    """
 
     try:
         out = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return out if math.isfinite(out) else None
 

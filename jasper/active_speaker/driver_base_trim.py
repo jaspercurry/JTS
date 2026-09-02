@@ -53,13 +53,13 @@ refuses the same way, and re-measuring is the accepted cost.
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_json, fsync_directory
+from jasper.json_fields import finite_float as _finite
 
 from ._common import require_sha256_hex
 from .level_trim import MAX_ATTENUATION_DB
@@ -141,13 +141,6 @@ def base_trim_state_path(path: str | Path | None = None) -> Path:
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _finite(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    out = float(value)
-    return out if math.isfinite(out) else None
 
 
 def _chain_fingerprint(value: Any) -> str | None:

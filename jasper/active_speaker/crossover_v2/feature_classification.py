@@ -59,6 +59,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.json_fields import finite_float
+
 __all__ = [
     "CLASSIFICATIONS",
     "DEFECT_BOOSTABLE",
@@ -82,7 +84,6 @@ __all__ = [
     "FeatureVerdict",
     "defect_boostable_at",
     "defect_cuttable_at",
-    "finite_number",
     "read_feature_verdicts",
 ]
 
@@ -348,28 +349,6 @@ LAB_ROW_NOT_AN_UNCERTAINTY: dict[str, str] = {
 }
 
 
-def finite_number(value: Any) -> float | None:
-    """One real number out of banked JSON, or ``None`` — never a coercion.
-
-    ``bool`` is rejected because it is an ``int`` in Python; strings are
-    rejected because ``float("1037")`` succeeds and would make this reader's
-    strictness depend on whoever encoded the artifact. ``OverflowError`` is
-    caught because an arbitrary-precision ``int`` is legal JSON, passes the
-    isinstance check, and then raises rather than returning infinity.
-
-    Public because the evidence packet asks the same question of a banked
-    member curve's samples, and all three traps above are ones a second copy
-    would have to keep remembering. One reader, one answer.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
-
-
 @dataclass(frozen=True)
 class FeatureVerdict:
     """One classified feature, as a gate reads it.
@@ -471,7 +450,7 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
     for entry in rows:
         if not isinstance(entry, Mapping):
             continue
-        freq = finite_number(entry.get("hz"))
+        freq = finite_float(entry.get("hz"))
         if freq is None or freq <= 0.0:
             continue
         classification = entry.get("classification")
@@ -484,8 +463,8 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
                 egd_verdict=_text(entry.get("egd_verdict")),
                 gate_verdict=_text(entry.get("gate_verdict")),
                 confidence=_confidence(entry.get("confidence")),
-                measured_q=finite_number(entry.get("measured_q")),
-                depth_db=finite_number(entry.get("depth_db")),
+                measured_q=finite_float(entry.get("measured_q")),
+                depth_db=finite_float(entry.get("depth_db")),
             )
         )
     return tuple(out)
@@ -602,7 +581,7 @@ def _vouching_at(
     about which verdict owns a frequency. ``eligible`` is the only difference
     between them, and it is also what the tie-break moves away from.
     """
-    target = finite_number(freq_hz)
+    target = finite_float(freq_hz)
     if target is None or target <= 0.0 or tolerance_octaves <= 0.0:
         return None, None
     nearest: FeatureVerdict | None = None

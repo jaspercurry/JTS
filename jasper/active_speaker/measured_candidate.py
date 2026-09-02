@@ -29,6 +29,7 @@ from jasper.audio_measurement.null_walk import (
     NullWalkError,
     select_scheduled_delay,
 )
+from jasper.json_fields import finite_float
 
 from ._common import require_sha256_hex
 from .commissioning_evidence import (
@@ -157,10 +158,8 @@ def _refuse(code: str, detail: str) -> NoReturn:
 
 
 def _finite(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _refuse("artifact_semantics_invalid", f"{name} must be finite")
-    result = float(value)
-    if not math.isfinite(result):
+    result = finite_float(value)
+    if result is None:
         _refuse("artifact_semantics_invalid", f"{name} must be finite")
     return result
 

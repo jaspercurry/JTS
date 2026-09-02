@@ -106,6 +106,7 @@ from jasper.audio_hardware.usb_port_role import (
     read_i2s_hat_intent,
     write_i2s_hat_intent,
 )
+from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputHardware,
@@ -4902,13 +4903,6 @@ def _active_speaker_transient_summed_level(
         calibration_level_payload,
         clamp_test_level_dbfs,
     )
-
-    def _finite(value: Any) -> float | None:
-        try:
-            out = float(value)
-        except (TypeError, ValueError):
-            return None
-        return out if math.isfinite(out) else None
 
     current = _finite(
         (calibration_level.get("test_signal") or {}).get("requested_level_dbfs")

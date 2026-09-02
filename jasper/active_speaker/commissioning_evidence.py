@@ -40,6 +40,7 @@ from jasper.audio_measurement.null_walk import (
     NullWalkSpec,
 )
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.json_fields import finite_float
 from jasper.output_topology import OutputTopology
 
 from ._common import require_sha256_hex
@@ -121,19 +122,15 @@ def _positive_int(value: Any, *, field_name: str) -> int:
 
 
 def _finite_positive(value: Any, *, field_name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise CommissioningEvidenceError(f"{field_name} must be a finite number")
-    result = float(value)
-    if not math.isfinite(result) or result <= 0.0:
+    result = finite_float(value)
+    if result is None or result <= 0.0:
         raise CommissioningEvidenceError(f"{field_name} must be positive and finite")
     return result
 
 
 def _finite(value: Any, *, field_name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise CommissioningEvidenceError(f"{field_name} must be a finite number")
-    result = float(value)
-    if not math.isfinite(result):
+    result = finite_float(value)
+    if result is None:
         raise CommissioningEvidenceError(f"{field_name} must be finite")
     return result
 

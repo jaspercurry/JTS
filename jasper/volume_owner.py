@@ -84,7 +84,7 @@ from .active_speaker.volume_latch import (
     read_fader_db,
     set_and_confirm_volume,
 )
-from .json_fields import JsonFields
+from .json_fields import finite_float
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -171,21 +171,14 @@ def duck_release_target_db(
     return min(float(reference_db), float(current_db) + abs(float(depth_db)))
 
 
-_JSON_FIELDS = JsonFields(VolumeClaimRefused)
-
-
 def _finite(value: Any, what: str) -> float:
-    """A finite dB number, or a refusal. A ``bool`` is not a level.
-
-    The numeric and finite rules are the repo's shared ones. The bool rule is
-    this module's own, and it is why the shared parser is not reached first:
-    ``JsonFields.finite_number`` reads ``True`` as ``1.0``, which would take a
-    caller's type mistake as a level — and a POSITIVE one, which the 0 dB
-    ceiling can never let the fader carry.
+    """A finite dB number, or a refusal. A ``bool`` is not a level: read as
+    ``1.0`` it would be a POSITIVE level the 0 dB ceiling can never carry.
     """
-    if isinstance(value, bool):
-        raise VolumeClaimRefused(f"{what} must be numeric, got {value!r}")
-    return _JSON_FIELDS.finite_number(value, what)
+    number = finite_float(value)
+    if number is None:
+        raise VolumeClaimRefused(f"{what} must be a finite number, got {value!r}")
+    return number
 
 
 def _fmt_db(value: float | None) -> str:

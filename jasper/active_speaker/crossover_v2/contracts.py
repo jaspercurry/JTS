@@ -45,12 +45,12 @@ round receipt.  Nothing here is inert.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.json_fields import finite_float
 
 from ..branch_chain import CrossoverSection
 
@@ -174,11 +174,9 @@ class CandidateFcDisagreementError(CrossoverV2ContractError):
 
 
 def _finite(value: Any, *, field_name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise CrossoverV2ContractError(f"{field_name} must be a real number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise CrossoverV2ContractError(f"{field_name} must be finite")
+    number = finite_float(value)
+    if number is None:
+        raise CrossoverV2ContractError(f"{field_name} must be a finite real number")
     return number
 
 

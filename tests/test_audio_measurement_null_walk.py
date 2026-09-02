@@ -363,7 +363,7 @@ def test_refinement_anchor_must_be_an_explicit_coarse_coordinate():
     # Shared admits its immediate fine neighbours.
     with pytest.raises(NullWalkError, match="exact coarse schedule coordinate"):
         BoundedNullWalkSchedule(spec, refinement_anchor_us=100.0)
-    with pytest.raises(NullWalkError, match="numeric"):
+    with pytest.raises(NullWalkError, match="relative_delay_us"):
         BoundedNullWalkSchedule(spec, refinement_anchor_us=None)
 
 
