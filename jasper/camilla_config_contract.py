@@ -136,6 +136,42 @@ DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
 
 
+@dataclass(frozen=True)
+class CamillaFloor:
+    """The lowest CamillaDSP ``(chunksize, target_level)`` a box runs xrun-free.
+
+    Declared per DacProfile because a box is identified by its DAC, but the
+    numbers are CamillaDSP's own buffering, not the DAC's: since ADR-0100 the
+    chunk crosses the SHM ring, whose capacity is a transport constant, so a
+    chunk the ring cannot open is refused at declaration rather than clamped at
+    emit time. ``target_level`` is the resampler's steady-state fill: it must be
+    >= 4x ``chunksize`` so the adjuster has headroom, and the ring's capacity
+    does not bound it.
+    """
+
+    chunksize: int
+    target_level: int
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("chunksize", self.chunksize),
+            ("target_level", self.target_level),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be > 0, got {value}")
+        if self.target_level < 4 * self.chunksize:
+            raise ValueError(
+                f"target_level must be >= 4 x chunksize ({4 * self.chunksize}), "
+                f"got {self.target_level}"
+            )
+        capacity = ring_capacity_frames()
+        if self.chunksize > capacity:
+            raise ValueError(
+                f"chunksize {self.chunksize} exceeds the ring's {capacity}-frame "
+                "capacity; CamillaDSP could not open the ring with it"
+            )
+
+
 # Sentinel distinguishing "caller did not pass profile_floor → auto-resolve the
 # active DAC's codified floor" from an explicit ``profile_floor=None`` ("no
 # floor, keep the global default" — the byte-identical contract path the
@@ -152,7 +188,7 @@ _UNSET = _Unset()
 
 
 def _active_camilla_floor(field: str) -> int | None:
-    """The active output DAC's codified ``LatencyFloor.<field>``, or None.
+    """The active output DAC's declared ``CamillaFloor.<field>``, or None.
 
     None when the reconciler has resolved no DAC, the profile is unknown, or
     the DAC declares no floor — the caller then keeps the global default, so
@@ -161,17 +197,17 @@ def _active_camilla_floor(field: str) -> int | None:
     import-cheap for the socket-activated web surfaces that never call it.
     """
     try:
-        from jasper.audio_hardware.dac import latency_floor_for
+        from jasper.audio_hardware.dac import camilla_floor_for
         from jasper.output_hardware import active_dac_profile_id
     except ImportError:
         return None
     profile_id = active_dac_profile_id()
     if profile_id is None:
         return None
-    floor = latency_floor_for(profile_id)
+    floor = camilla_floor_for(profile_id)
     if floor is None:
         return None
-    return getattr(floor, field, None)
+    return int(getattr(floor, field))
 
 
 def _lab_override_allows_below_floor(
@@ -261,7 +297,7 @@ def resolve_camilla_chunksize(
     and by the pre-#27 explicit-literal call. See :func:`_resolve_camilla_int`.
     """
     if isinstance(profile_floor, _Unset):
-        profile_floor = _active_camilla_floor("camilla_chunksize")
+        profile_floor = _active_camilla_floor("chunksize")
     return _resolve_camilla_int(
         "JASPER_CAMILLA_CHUNKSIZE", DEFAULT_CHUNKSIZE,
         os.environ if env is None else env,
@@ -282,7 +318,7 @@ def resolve_camilla_target_level(
     path. See :func:`resolve_camilla_chunksize` and :func:`_resolve_camilla_int`.
     """
     if isinstance(profile_floor, _Unset):
-        profile_floor = _active_camilla_floor("camilla_target_level")
+        profile_floor = _active_camilla_floor("target_level")
     return _resolve_camilla_int(
         "JASPER_CAMILLA_TARGET_LEVEL", DEFAULT_TARGET_LEVEL,
         os.environ if env is None else env,

@@ -1175,7 +1175,7 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     # bug, and a disclosure that re-derived it could name a floor no emitter used.
     unclamped = resolve_camilla_chunksize()
     clamped = (
-        f", clamped from the {unclamped} this box's DAC floor resolves to"
+        f", clamped from the {unclamped} this box resolves to"
         if unclamped > capacity
         else ""
     )

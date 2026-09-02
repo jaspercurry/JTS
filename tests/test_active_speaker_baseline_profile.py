@@ -2992,10 +2992,10 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     tmp_path: Path,
 ) -> None:
     """Question C: a ring-endpoint graph carries the RING's CamillaDSP geometry,
-    not the box's loopback ``LatencyFloor``.
+    not the box's ``CamillaFloor``.
 
-    jts3's DAC8x floor is ``LatencyFloor(256, 1536, 128, 256)``. Its
-    ``camilla_target_level`` alone (1536) is six times the whole 2-slot ring's
+    jts3's DAC8x floor is ``CamillaFloor(256, 1536)``. Its
+    ``target_level`` alone (1536) is six times the whole 2-slot ring's
     256-frame capacity, so a ring graph emitted at the floor is a second shear
     waiting at the same rung the format shear halted. Both numbers come from the
     ONE home that already encodes the certified ring pairing for the stereo ring
@@ -3004,7 +3004,7 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     from jasper.active_speaker.baseline_profile import (
         recompose_applied_baseline_yaml,
     )
-    from jasper.audio_hardware.dac import latency_floor_for
+    from jasper.audio_hardware.dac import camilla_floor_for
     from jasper.camilla_config_contract import parse_camilla_devices_config
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -3013,13 +3013,13 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     )
 
     topology, applied = _applied_mono_baseline(tmp_path)
-    floor = latency_floor_for(topology.hardware.device_id)
+    floor = camilla_floor_for(topology.hardware.device_id)
     assert floor is not None, (
-        "this test's whole point is a box whose DAC declares a loopback floor; "
+        "this test's whole point is a box whose DAC declares a CamillaDSP floor; "
         f"{topology.hardware.device_id} declares none, so it proves nothing"
     )
-    assert floor.camilla_chunksize != RING_CAMILLA_CHUNKSIZE
-    assert floor.camilla_target_level != RING_CAMILLA_TARGET_LEVEL
+    assert floor.chunksize != RING_CAMILLA_CHUNKSIZE
+    assert floor.target_level != RING_CAMILLA_TARGET_LEVEL
 
     ring_yaml, issues = recompose_applied_baseline_yaml(
         topology,
@@ -3032,15 +3032,13 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     assert devices["chunksize"] == RING_CAMILLA_CHUNKSIZE
     assert devices["target_level"] == RING_CAMILLA_TARGET_LEVEL
     assert "  enable_rate_adjust: false" in ring_yaml
-    # The ring pair is deliberately OUTSIDE LatencyFloor's own 4x rule (128/128
+    # The ring pair is deliberately OUTSIDE CamillaFloor's own 4x rule (128/128
     # would not construct as a floor): that rule sizes a rate-ADJUSTED
     # resampler's steady-state fill, and the ring graph runs rate_adjust off.
-    with pytest.raises(ValueError, match="camilla_target_level"):
+    with pytest.raises(ValueError, match="target_level"):
         type(floor)(
-            camilla_chunksize=RING_CAMILLA_CHUNKSIZE,
-            camilla_target_level=RING_CAMILLA_TARGET_LEVEL,
-            outputd_period_frames=floor.outputd_period_frames,
-            outputd_dac_buffer_frames=floor.outputd_dac_buffer_frames,
+            chunksize=RING_CAMILLA_CHUNKSIZE,
+            target_level=RING_CAMILLA_TARGET_LEVEL,
         )
 
     # CONTROL: the ALSA active lane still takes the box's floor, resolved by the

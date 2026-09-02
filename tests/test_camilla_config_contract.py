@@ -8,6 +8,7 @@ import pytest
 
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X_STUDIO_ID
 from jasper.camilla_config_contract import (
+    CamillaFloor,
     DEFAULT_CHUNKSIZE,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_PLAYBACK_FORMAT,
@@ -331,14 +332,14 @@ def test_generated_sound_config_floorless_dac_uses_global_default(
     """A profile with no declared floor => the generated config keeps 1024/2048."""
     from jasper.audio_hardware.dac import (
         HIFIBERRY_DAC8X_STUDIO_ID,
-        latency_floor_for,
+        camilla_floor_for,
     )
 
     # Asserted, not assumed: a later floor declaration for this profile must
     # fail HERE rather than silently turning the two assertions below into a
     # test of the floor path (what an R7a DAC8x floor did to this test, and
     # what jts4's measured floor then did to its InnoMaker replacement).
-    assert latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
+    assert camilla_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
     parsed = _generated_sound_devices(
@@ -367,8 +368,6 @@ def test_generated_sound_config_operator_env_can_raise_above_profile_floor(
 @pytest.mark.parametrize(
     "profile_id,env_chunk",
     [
-        # jts4's own shape: the InnoMaker floor declares chunk 1024.
-        ("innomaker_hifi_amp_pro", None),
         # A DAC that declares no floor at all falls to the 1024 global default.
         (HIFIBERRY_DAC8X_STUDIO_ID, None),
         # An operator raise lands above the ring's capacity too.
@@ -386,8 +385,10 @@ def test_a_ring_end_never_emits_a_chunk_larger_than_the_ring(
     set avail_min to 1024, must be smaller than or equal to device buffer size
     of 256", ten restarts, no audio on the box at all).
 
-    The three sources a chunk can arrive from are covered together because the
-    clamp is about the TRANSPORT, not about where the number came from.
+    The sources a chunk can arrive from are covered together because the
+    clamp is about the TRANSPORT, not about where the number came from. The
+    InnoMaker is not one of them any more: its declared 256/1024 already fits
+    the ring (see test_a_floor_that_already_fits_the_ring_is_not_clamped).
     """
     if env_chunk is None:
         monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
@@ -408,27 +409,40 @@ def test_a_clamped_chunk_scales_its_target_with_it(monkeypatch, tmp_path):
     (measured against 4.1.3 on jts4; exact across chunk 128/256/512 and
     queuelimit 1/2/4), so shrinking the chunk shrinks the ceiling. Clamping
     the chunk alone put jts4's floor-declared 4096 over the new 2048 ceiling
-    and swapped one crash loop for another.
+    and swapped one crash loop for another (the InnoMaker now declares the
+    already-scaled 256/1024 instead, so a floorless profile exercises the
+    live scaling path here).
 
-    Scaling preserves the RATIO the DacProfile declared (InnoMaker's 4x)
-    rather than substituting a number of our own.
+    Scaling preserves the RATIO already in play (the floorless global
+    default's 2x) rather than substituting a number of our own.
     """
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
 
     parsed = _generated_sound_devices(
-        monkeypatch, tmp_path, "innomaker_hifi_amp_pro"
+        monkeypatch, tmp_path, HIFIBERRY_DAC8X_STUDIO_ID
     )
 
     chunk, target = parsed["chunksize"], parsed["target_level"]
     assert chunk == ring_capacity_frames()
-    # The declared 1024/4096 scaled by the same factor the chunk was.
-    assert target == 1024
+    # The default 1024/2048 scaled by the same factor the chunk was.
+    assert target == 512
     # And inside CamillaDSP's ceiling for the emitted queuelimit.
     assert target <= chunk * (parsed["queuelimit"] + 4)
 
 
-def test_a_floor_that_already_fits_the_ring_is_not_clamped(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "profile_id,chunksize,target_level",
+    [
+        ("apple_usb_c_dongle", 256, 1536),
+        # jts4's declared pair is the ring clamp's OWN output (#3542): 256 is
+        # already the ring's capacity, so nothing here clamps or scales it.
+        ("innomaker_hifi_amp_pro", 256, 1024),
+    ],
+)
+def test_a_floor_that_already_fits_the_ring_is_not_clamped(
+    monkeypatch, tmp_path, profile_id, chunksize, target_level
+):
     """The clamp is a ceiling, not a retune.
 
     jts.local runs the Apple floor's 256 across this ring healthily, so a floor
@@ -439,11 +453,11 @@ def test_a_floor_that_already_fits_the_ring_is_not_clamped(monkeypatch, tmp_path
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
 
-    parsed = _generated_sound_devices(monkeypatch, tmp_path, "apple_usb_c_dongle")
+    parsed = _generated_sound_devices(monkeypatch, tmp_path, profile_id)
 
     assert parsed["playback_device"] == RING_PLAYBACK_DEVICE
-    assert parsed["chunksize"] == 256 <= ring_capacity_frames()
-    assert parsed["target_level"] == 1536
+    assert parsed["chunksize"] == chunksize <= ring_capacity_frames()
+    assert parsed["target_level"] == target_level
 
 
 def test_a_clockless_sink_clamps_on_its_ring_capture(monkeypatch, tmp_path):
@@ -455,7 +469,7 @@ def test_a_clockless_sink_clamps_on_its_ring_capture(monkeypatch, tmp_path):
     """
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
-    _stage_output_profile(monkeypatch, tmp_path, "innomaker_hifi_amp_pro")
+    _stage_output_profile(monkeypatch, tmp_path, HIFIBERRY_DAC8X_STUDIO_ID)
 
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
@@ -660,3 +674,27 @@ def test_parse_camilla_devices_config_ignores_nested_volume_limit() -> None:
         assert "volume_limit" not in parsed
 
 
+
+
+@pytest.mark.parametrize(
+    "chunksize,target_level,reason",
+    [
+        (0, 1024, "chunksize must be > 0"),
+        (256, 1023, "target_level must be >= 4 x chunksize"),
+        # The declaration that took jts4 silent: a chunk the ring cannot open.
+        (1024, 4096, "exceeds the ring"),
+    ],
+)
+def test_camilla_floor_refuses_what_camilladsp_could_not_run(
+    chunksize, target_level, reason,
+):
+    with pytest.raises(ValueError, match=reason):
+        CamillaFloor(chunksize=chunksize, target_level=target_level)
+
+
+def test_camilla_floor_accepts_the_ring_capacity_at_exactly_4x():
+    capacity = ring_capacity_frames()
+
+    floor = CamillaFloor(chunksize=capacity, target_level=4 * capacity)
+
+    assert (floor.chunksize, floor.target_level) == (capacity, 4 * capacity)

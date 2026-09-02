@@ -3121,8 +3121,6 @@ def _synthetic_floor(period_frames: int):
     from jasper.audio_hardware.dac import LatencyFloor
 
     return LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=period_frames,
         outputd_dac_buffer_frames=8 * period_frames,
     )
