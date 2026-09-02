@@ -254,7 +254,7 @@ def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
     assert round_inputs_mod.round_inputs(other).state_path == state
     stale = round_inputs_mod.round_inputs(mine)
     assert stale.state_path is None
-    assert stale.state_reason == round_inputs_mod.STATE_NOT_THIS_SESSION
+    assert stale.state_reason == round_inputs_mod.STATE_SESSION_UNKNOWN
 
 
 def test_a_directory_of_neither_shape_refuses(tmp_path):
