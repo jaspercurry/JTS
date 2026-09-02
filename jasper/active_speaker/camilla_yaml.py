@@ -158,7 +158,7 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
 # ``jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`` — the certified queue/rate-adjust
 # pairing an ACTIVE RING sink needs — whole. Rate adjust itself needs no
 # default here: every emitter resolves it from its sink when not told
-# (:func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust`, ADR-0216).
+# (:func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust`, ADR-0218).
 DEFAULT_ACTIVE_QUEUELIMIT = 4
 
 # The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
@@ -429,7 +429,7 @@ def active_emit_devices(
       ``resolve_camilla_latency_for_devices``, and read their
       ``enable_rate_adjust`` from
       :func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust` — the
-      sink decides it on either branch (ADR-0216).
+      sink decides it on either branch (ADR-0218).
 
     A helper rather than emitter-internal derivation: the emitters keep taking
     the values as PARAMETERS (Q6), because a lab emit deliberately setting them

@@ -1,4 +1,4 @@
-# ADR-0216: `enable_rate_adjust` follows the sink, not grouping membership
+# ADR-0218: `enable_rate_adjust` follows the sink, not grouping membership
 
 - **Date:** 2026-09-02
 - **Status:** Accepted
