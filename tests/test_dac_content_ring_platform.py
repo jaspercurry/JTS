@@ -60,6 +60,14 @@ from jasper.multiroom.dac_content_ring import (
 # a second copy here would drift the first time either moved.
 from tests.test_grouping_ring_platform import _c_define, _strip_conf_comments
 
+# Same rule for "how a Rust declaration is read": the slot's own pin owns both
+# helpers, so the anchoring that keeps a doc comment from satisfying them is
+# written once.
+from tests.test_ring_emitter_ioplug_negotiation import (
+    _rust_declares_line,
+    _rust_ring_slot_frames,
+)
+
 _REPO = Path(__file__).resolve().parents[1]
 _DAC_CONTENT_CONF = _REPO / "deploy" / "alsa" / "conf.d" / "63-jts-ring-dac-content.conf"
 _IOPLUG_C = _REPO / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
@@ -70,7 +78,6 @@ _OUTPUTD_DAC_CONTENT_RS = _REPO / "rust" / "jasper-outputd" / "src" / "dac_conte
 _OUTPUTD_RING_SOURCE_RS = (
     _REPO / "rust" / "jasper-outputd" / "src" / "shm_ring_source.rs"
 )
-_RING_LAYOUT_RS = _REPO / "rust" / "jasper-ring" / "src" / "layout.rs"
 
 #: The one rate this box runs. Neither the conf.d block nor the Python
 #: identity declares it — the ioplug inherits it and the Rust reader hardcodes
@@ -341,12 +348,12 @@ def test_the_reader_side_rust_constants_agree_with_the_python_ones(
     is a geometry mismatch the crate refuses at attach, parking the box. Neither
     is visible in either language alone.
     """
-    rust = _read(_OUTPUTD_CONFIG_RS)
     literal = f'"{constant}"' if rust_type == "&str" else str(constant)
     needle = f"pub const {rust_const}: {rust_type} = {literal};"
-    assert needle in rust, (
-        f"{_OUTPUTD_CONFIG_RS.name} must spell `{needle}` — outputd's reader and "
-        f"jasper.multiroom.dac_content_ring disagree about {rust_const}"
+    assert _rust_declares_line(_OUTPUTD_CONFIG_RS, needle), (
+        f"{_OUTPUTD_CONFIG_RS.name} must spell `{needle}` as a declaration — "
+        f"outputd's reader and jasper.multiroom.dac_content_ring disagree about "
+        f"{rust_const}"
     )
 
 
@@ -362,16 +369,13 @@ def test_the_reader_side_period_is_read_from_the_shared_crate_not_respelled():
     ``tests/test_ring_emitter_ioplug_negotiation.py``.
     """
     needle = "pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = jasper_ring::RING_SLOT_FRAMES;"
-    assert needle in _read(_OUTPUTD_CONFIG_RS), (
-        f"{_OUTPUTD_CONFIG_RS.name} must spell `{needle}` — the return ring's "
-        "slot is READ from jasper-ring, never re-declared as a literal"
+    assert _rust_declares_line(_OUTPUTD_CONFIG_RS, needle), (
+        f"{_OUTPUTD_CONFIG_RS.name} must spell `{needle}` as a declaration — the "
+        "return ring's slot is READ from jasper-ring, never re-declared as a literal"
     )
-    rust_slot = re.search(
-        r"pub const RING_SLOT_FRAMES:\s*u32\s*=\s*(\d+);", _read(_RING_LAYOUT_RS)
-    )
-    assert rust_slot is not None and int(rust_slot.group(1)) == RING_SLOT_FRAMES, (
-        f"{_RING_LAYOUT_RS.name} must declare the slot as a plain literal equal "
-        f"to {RING_SLOT_FRAMES}; without it the needle above resolves to nothing"
+    assert _rust_ring_slot_frames() == RING_SLOT_FRAMES, (
+        "rust/jasper-ring/src/layout.rs must declare the slot equal to "
+        f"{RING_SLOT_FRAMES}; without it the needle above resolves to nothing"
     )
 
 

@@ -123,7 +123,8 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # unavailable. Matches the shipped 60-jts-ring.conf: period_frames 128,
 # n_slots 2. Ring A counts the full 2-slot capacity — it runs pinned full
 # in steady state (STATUS full_waits/published ratio ~1.0,
-# rust/jasper-fanin/src/config.rs's RING_SLOT_FRAMES/ring_slots) — while
+# rust/jasper-ring/src/layout.rs's RING_SLOT_FRAMES, and fan-in's
+# ring_slots) — while
 # Ring B counts only the one-slot floor: there is no equivalent pinned-full
 # evidence for it, so only the proven minimum is charged.
 # test_ring_a_and_ring_b_defaults_match_shipped_conf_via_ring_assets pins

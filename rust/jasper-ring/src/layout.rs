@@ -57,8 +57,8 @@ pub const S16LE_BYTES_PER_SAMPLE: usize = 2;
 /// `JTS_RING_DEFAULT_PERIOD` (`c/jts-ring-ioplug/pcm_jts_ring.c`) is the same
 /// number, and the shipped `deploy/alsa/conf.d` blocks declare it. The Python
 /// declaration `jasper.fanin_coupling.RING_SLOT_FRAMES` is what every remaining
-/// spelling is pinned against, by `tests/test_ring_emitter_ioplug_negotiation.py`.
-/// Making the slot derivable from a DAC's declared floor is issue #2147.
+/// spelling is pinned against, by the Python contract tests. Making the slot
+/// derivable from a DAC's declared floor is issue #2147.
 pub const RING_SLOT_FRAMES: u32 = 128;
 
 /// Prototype floor / ceiling on `n_slots`: 2 (ping-pong) through 16. 3 is the

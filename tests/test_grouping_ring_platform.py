@@ -45,7 +45,7 @@ from pathlib import Path
 import pytest
 
 from jasper import renderer_lanes, ring_assets
-from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE, RING_SLOT_FRAMES
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
     GROUPING_RING_CONF_D,
@@ -390,24 +390,22 @@ def test_the_governor_is_armed_from_prepare_and_not_from_start():
     )
 
 
-def test_the_grouping_ring_slot_is_one_camilladsp_chunk_and_one_ring_slot():
-    """One slot per chunk, and that chunk is the box's ring slot.
+def test_the_grouping_ring_slot_is_one_ring_slot():
+    """The chunk this ring's period reads is itself the box's ring slot.
 
-    The first half is a derivation now — ``GROUPING_RING_PERIOD_FRAMES`` reads
-    :data:`jasper.fanin_coupling.RING_CAMILLA_CHUNKSIZE` — so what is left to
-    pin is the link the chunk axis and the PERIOD axis have only by value:
-    ``RING_CAMILLA_CHUNKSIZE`` is a separate declaration whose whole
-    justification is that one chunk is one
-    :data:`jasper.fanin_coupling.RING_SLOT_FRAMES` slot. Moving the slot without
-    moving the chunk would leave this ring's geometry derived for a chunk that
-    spans a different number of slots, which the emitter cannot see.
+    ``GROUPING_RING_PERIOD_FRAMES`` reads
+    :data:`jasper.fanin_coupling.RING_CAMILLA_CHUNKSIZE`, and that chunk is a
+    separate declaration whose whole justification is that one chunk is one
+    :data:`jasper.fanin_coupling.RING_SLOT_FRAMES` slot — a link the two have
+    only by value. Moving the slot without moving the chunk would leave this
+    ring's geometry derived for a chunk that spans a different number of slots,
+    which the emitter cannot see.
     """
-    assert GROUPING_RING_PERIOD_FRAMES == RING_CAMILLA_CHUNKSIZE == RING_SLOT_FRAMES, (
-        f"the grouping ring's slot ({GROUPING_RING_PERIOD_FRAMES}), the ring "
-        f"path's CamillaDSP chunk ({RING_CAMILLA_CHUNKSIZE}) and the ring slot "
-        f"({RING_SLOT_FRAMES}) have to be one number; changing any alone "
-        "re-introduces a chunk that spans a different number of slots than the "
-        "geometry was derived for"
+    assert GROUPING_RING_PERIOD_FRAMES == RING_SLOT_FRAMES, (
+        f"the grouping ring's slot ({GROUPING_RING_PERIOD_FRAMES}, the ring "
+        f"path's CamillaDSP chunk) and the ring slot ({RING_SLOT_FRAMES}) have "
+        "to be one number; changing either alone re-introduces a chunk that "
+        "spans a different number of slots than the geometry was derived for"
     )
 
 
