@@ -88,10 +88,6 @@ TRANSPORT_SINK_COMPOSITE = "composite"
 _STABLE_CARD_PCM_RE = re.compile(r"\Ahw:CARD=[^,\s]+,DEV=\d+\Z")
 
 DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-DUAL_APPLE_CLOCK_EVIDENCE_KIND = "dual_apple_usb_c_dac_drift_measurement"
-MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS = 900.0
-MAX_DUAL_APPLE_CLOCK_DRIFT_PPM = 1.0
-MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES = 1.0
 
 # Bass-management corner bounds for a user-settable subwoofer crossover. BOUND
 # TO the one shared bass-management corner definition (jasper.camilla_emit) — a
@@ -134,7 +130,6 @@ PROTECTION_STATUSES = {
     "software_guard_requested",
     "unknown",
 }
-DUAL_APPLE_CLOCK_EVIDENCE_STATUSES = {"passed", "failed", "unknown"}
 OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
 # Pure-data pairing intent recorded at commission time (gap 1). It answers
 # "is this box meant to run
@@ -291,113 +286,6 @@ class OutputChildDevice:
 
 
 @dataclass(frozen=True)
-class ClockDomainEvidence:
-    """Measured drift/skew evidence for a composite output clock domain."""
-
-    evidence_kind: str
-    measurement_id: str
-    status: str
-    duration_seconds: float
-    sample_rate_hz: int | None = None
-    offset_frames: float | None = None
-    max_offset_delta_frames: float | None = None
-    drift_ppm: float | None = None
-    xrun_count: int | None = None
-    dac_serials: tuple[str, ...] = field(default_factory=tuple)
-    artifact_path: str | None = None
-
-    @classmethod
-    def from_mapping(cls, raw: Any) -> "ClockDomainEvidence":
-        raw = _require_mapping(raw, "hardware.clock_domain_evidence")
-        duration = _float(
-            raw.get("duration_seconds"),
-            "hardware.clock_domain_evidence.duration_seconds",
-        )
-        if duration < 0:
-            raise OutputTopologyError("clock-domain evidence duration must be >= 0")
-        sample_rate_hz = _optional_int(
-            raw.get("sample_rate_hz"),
-            "hardware.clock_domain_evidence.sample_rate_hz",
-        )
-        if sample_rate_hz is not None and sample_rate_hz <= 0:
-            raise OutputTopologyError("clock-domain evidence sample rate must be > 0")
-        xrun_count = _optional_int(
-            raw.get("xrun_count"),
-            "hardware.clock_domain_evidence.xrun_count",
-        )
-        if xrun_count is not None and xrun_count < 0:
-            raise OutputTopologyError("clock-domain evidence xrun count must be >= 0")
-        return cls(
-            evidence_kind=_require_id(
-                raw.get("evidence_kind", DUAL_APPLE_CLOCK_EVIDENCE_KIND),
-                "hardware.clock_domain_evidence.evidence_kind",
-            ),
-            measurement_id=_require_id(
-                raw.get("measurement_id"),
-                "hardware.clock_domain_evidence.measurement_id",
-            ),
-            status=_enum(
-                raw.get("status", "unknown"),
-                "hardware.clock_domain_evidence.status",
-                DUAL_APPLE_CLOCK_EVIDENCE_STATUSES,
-            ),
-            duration_seconds=duration,
-            sample_rate_hz=sample_rate_hz,
-            offset_frames=_optional_float(
-                raw.get("offset_frames"),
-                "hardware.clock_domain_evidence.offset_frames",
-            ),
-            max_offset_delta_frames=_optional_float(
-                raw.get("max_offset_delta_frames"),
-                "hardware.clock_domain_evidence.max_offset_delta_frames",
-            ),
-            drift_ppm=_optional_float(
-                raw.get("drift_ppm"),
-                "hardware.clock_domain_evidence.drift_ppm",
-            ),
-            xrun_count=xrun_count,
-            dac_serials=tuple(
-                _text(
-                    item,
-                    "hardware.clock_domain_evidence.dac_serials[]",
-                    max_length=120,
-                )
-                for item in _sequence(
-                    raw.get("dac_serials", []),
-                    "hardware.clock_domain_evidence.dac_serials",
-                )
-            ),
-            artifact_path=_optional_text(
-                raw.get("artifact_path"),
-                "hardware.clock_domain_evidence.artifact_path",
-                max_length=320,
-            ),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
-            "evidence_kind": self.evidence_kind,
-            "measurement_id": self.measurement_id,
-            "status": self.status,
-            "duration_seconds": self.duration_seconds,
-            "dac_serials": list(self.dac_serials),
-        }
-        if self.sample_rate_hz is not None:
-            out["sample_rate_hz"] = self.sample_rate_hz
-        if self.offset_frames is not None:
-            out["offset_frames"] = self.offset_frames
-        if self.max_offset_delta_frames is not None:
-            out["max_offset_delta_frames"] = self.max_offset_delta_frames
-        if self.drift_ppm is not None:
-            out["drift_ppm"] = self.drift_ppm
-        if self.xrun_count is not None:
-            out["xrun_count"] = self.xrun_count
-        if self.artifact_path:
-            out["artifact_path"] = self.artifact_path
-        return out
-
-
-@dataclass(frozen=True)
 class PhysicalOutput:
     """One physical DAC lane visible to the user."""
 
@@ -452,7 +340,6 @@ class OutputHardware:
     clock_domain_label: str = "Single output device clock"
     outputs: tuple[PhysicalOutput, ...] = field(default_factory=tuple)
     child_devices: tuple[OutputChildDevice, ...] = field(default_factory=tuple)
-    clock_domain_evidence: ClockDomainEvidence | None = None
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "OutputHardware":
@@ -489,11 +376,6 @@ class OutputHardware:
                 "hardware.child_devices",
             )
         )
-        clock_domain_evidence = (
-            ClockDomainEvidence.from_mapping(raw.get("clock_domain_evidence"))
-            if raw.get("clock_domain_evidence") is not None
-            else None
-        )
         hardware = cls(
             device_id=device_id,
             device_label=_text(
@@ -511,7 +393,6 @@ class OutputHardware:
             ),
             outputs=outputs,
             child_devices=child_devices,
-            clock_domain_evidence=clock_domain_evidence,
         )
         hardware.validate()
         return hardware
@@ -568,8 +449,6 @@ class OutputHardware:
             out["card_id"] = self.card_id
         if self.child_devices:
             out["child_devices"] = [child.to_dict() for child in self.child_devices]
-        if self.clock_domain_evidence:
-            out["clock_domain_evidence"] = self.clock_domain_evidence.to_dict()
         return out
 
 
@@ -943,8 +822,7 @@ def cross_child_group_verdicts(topology: OutputTopology) -> list[dict[str, Any]]
     woofer sits on one child and whose tweeter sits on another puts that
     uncorrected seam INSIDE a crossover, where inter-driver drift walks the
     crossover null. The supported shape is one child DAC per speaker, with each
-    speaker's crossover kept inside a single child
-    (``docs/dual-apple-dac-lab.md``).
+    speaker's crossover kept inside a single child.
 
     This is a FIDELITY verdict, not a hearing-safety one: every lane still
     drives, nothing is at risk of damage, and the household may have a reason.
@@ -1381,93 +1259,6 @@ def _dual_apple_clock_issues(
             "dual-Apple topology requires exactly four physical outputs",
         ))
 
-    evidence = hardware.clock_domain_evidence
-    if evidence is None:
-        issues.append(_issue(
-            "warning",
-            "clock_evidence_missing",
-            "dual-Apple topology has no stored long-run drift evidence yet",
-        ))
-        return issues
-    if evidence.evidence_kind != DUAL_APPLE_CLOCK_EVIDENCE_KIND:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_kind_mismatch",
-            "clock evidence is not a dual Apple USB-C DAC drift measurement",
-        ))
-    if evidence.status != "passed":
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_not_passed",
-            "dual-Apple drift measurement did not pass",
-        ))
-    if evidence.duration_seconds < MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_duration_short",
-            f"dual-Apple drift measurement must run at least "
-            f"{int(MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS)} seconds",
-        ))
-    if evidence.sample_rate_hz != 48_000:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_sample_rate_mismatch",
-            "dual-Apple active output requires 48 kHz measurement evidence",
-        ))
-    if evidence.max_offset_delta_frames is None:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_delta_missing",
-            "dual-Apple drift evidence must report max offset delta frames",
-        ))
-    elif evidence.max_offset_delta_frames > MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_delta_too_large",
-            "dual-Apple relative timing moved more than the allowed frame budget",
-        ))
-    if evidence.drift_ppm is None:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_drift_missing",
-            "dual-Apple drift evidence must report drift ppm",
-        ))
-    elif abs(evidence.drift_ppm) > MAX_DUAL_APPLE_CLOCK_DRIFT_PPM:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_drift_too_large",
-            "dual-Apple relative clock drift exceeds the allowed ppm budget",
-        ))
-    if evidence.xrun_count is None:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_xruns_missing",
-            "dual-Apple drift evidence must report output xrun count",
-        ))
-    elif evidence.xrun_count != 0:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_xruns",
-            "dual-Apple drift measurement reported one or more output xruns",
-        ))
-    if len(evidence.dac_serials) != 2:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_serials_required",
-            "dual-Apple drift evidence must list exactly two DAC serials",
-        ))
-    elif len(set(evidence.dac_serials)) != 2:
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_serials_not_unique",
-            "dual-Apple drift evidence must list two unique DAC serials",
-        ))
-    elif len(child_serials) == 2 and set(evidence.dac_serials) != set(child_serials):
-        issues.append(_issue(
-            "blocker",
-            "clock_evidence_serial_mismatch",
-            "clock evidence serials do not match the pinned child DAC serials",
-        ))
     return issues
 
 
@@ -1563,11 +1354,6 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
             if passed
             else "dual_apple_composite_clock_blocked"
         )
-        evidence_passed = (
-            hardware.clock_domain_evidence is not None
-            and hardware.clock_domain_evidence.status == "passed"
-            and passed
-        )
         notes = [
             "This is a constrained dual-DAC output profile, not generic ALSA aggregation.",
             "Each Apple DAC remains one speaker-local stereo device; JTS must own both sinks in one process.",
@@ -1584,7 +1370,6 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
             ),
             "multi_device_aggregate_supported": False,
             "composite_clock_supported": passed,
-            "measured_composite_supported": evidence_passed,
             "future_multi_device_lab_path": not passed,
             "sound_tests_allowed": False,
             "issues": issues,
@@ -1596,18 +1381,6 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
                 observed.to_dict()
                 if observed is not None else None
             ),
-            "evidence": (
-                hardware.clock_domain_evidence.to_dict()
-                if hardware.clock_domain_evidence
-                else None
-            ),
-            "acceptance_thresholds": {
-                "minimum_duration_seconds": MIN_DUAL_APPLE_CLOCK_EVIDENCE_SECONDS,
-                "maximum_abs_drift_ppm": MAX_DUAL_APPLE_CLOCK_DRIFT_PPM,
-                "maximum_offset_delta_frames": MAX_DUAL_APPLE_CLOCK_DELTA_FRAMES,
-                "required_sample_rate_hz": 48_000,
-                "maximum_xrun_count": 0,
-            },
             "recommendation": (
                 "Proceed only through the measured dual-Apple active-output "
                 "owner: one process opens both serial-pinned DACs, writes "
@@ -2316,7 +2089,7 @@ def repin_composite_child_serials(
     physical unit: each child's observed identity (serial, ALSA card, sysfs
     path, controller).
 
-    Two things it must NOT carry over:
+    One thing it must NOT carry over:
 
     * ``identity_verified`` is cleared for every channel on a REPLACED child's
       lanes. A household cannot be spared knowing which physical speaker the
@@ -2347,17 +2120,6 @@ def repin_composite_child_serials(
       re-arms — the arm ladder is one route to that, not the only one. This
       function is pure: it clears the evidence, and both halves above belong to
       its callers.
-    * ``clock_domain_evidence`` is dropped. The measurement is a property of
-      one PAIR of crystals; two units that never ran together have unmeasured
-      relative drift, and the composite contract is ``measured_sync_required``
-      (:func:`_dual_apple_clock_issues`). Dropping it is an HONESTY repair,
-      not a new gate: it stops the artifact claiming a passed measurement of
-      units that are no longer here, and returns
-      :func:`clock_domain_report` to its "no measurement yet" state. Verified
-      2026-08-21: no arm/load path reads that report — the stored-evidence
-      blockers are inert everywhere, so leaving the stale record instead would
-      refuse nothing either. The runtime backstop for an unmeasured pair
-      remains ``PairedCompositeSink``'s fail-closed delay-delta guard.
 
     Raises ``OutputTopologyError`` when the attached hardware is not a
     same-shape re-pin — callers offer this only after
@@ -2384,7 +2146,6 @@ def repin_composite_child_serials(
             )
             for _port, child, card in pairs
         ),
-        clock_domain_evidence=None,
     )
     # Round-trip through the artifact contract before it can be persisted: the
     # rewritten fields are observed strings from the reconciler, and `replace`

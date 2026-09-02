@@ -361,21 +361,6 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
                         "physical_output_indexes": [2, 3],
                     },
                 ],
-                "clock_domain_evidence": {
-                    "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-                    "measurement_id": "doctor-serial-contract",
-                    "status": "passed",
-                    "duration_seconds": 900,
-                    "sample_rate_hz": 48000,
-                    "offset_frames": -7,
-                    "max_offset_delta_frames": 0,
-                    "drift_ppm": 0,
-                    "xrun_count": 0,
-                    "dac_serials": [
-                        "DWH53530FHL2FN3AC",
-                        "DWH53530FLL2FN3A3",
-                    ],
-                },
             },
             "speaker_groups": [
                 {

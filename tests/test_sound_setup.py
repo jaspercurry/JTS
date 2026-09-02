@@ -4025,21 +4025,6 @@ def _dual_apple_hardware() -> dict:
                 "physical_output_indexes": [2, 3],
             },
         ],
-        "clock_domain_evidence": {
-            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-            "measurement_id": "scarlett-ticks-900s-repeat-buffered",
-            "status": "passed",
-            "duration_seconds": 900,
-            "sample_rate_hz": 48000,
-            "offset_frames": -7,
-            "max_offset_delta_frames": 0,
-            "drift_ppm": 0,
-            "xrun_count": 0,
-            "dac_serials": [
-                "DWH53530FHL2FN3AC",
-                "DWH53530FLL2FN3A3",
-            ],
-        },
     }
 
 
@@ -4088,10 +4073,6 @@ def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
     assert payload["hardware"]["child_devices"][0]["serial"] == "DWH53530FHL2FN3AC"
     assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock"
     assert envelope["clock_domain"]["composite_clock_supported"] is True
-    assert envelope["clock_domain"]["measured_composite_supported"] is False
-    assert "clock_evidence_missing" in {
-        issue["code"] for issue in envelope["clock_domain"]["issues"]
-    }
     assert payload["safety"]["sound_tests_allowed"] is False
 
 
@@ -4365,7 +4346,7 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     assert topology["status"] == "verified"
     assert topology["hardware"]["physical_output_count"] == 4
     assert payload["clock_domain"]["status"] == "dual_apple_composite_clock"
-    assert payload["clock_domain"]["measured_composite_supported"] is True
+    assert payload["clock_domain"]["composite_clock_supported"] is True
     assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
     assert payload["channel_identity"]["verified_channel_count"] == 4
     assert topology["safety"]["sound_tests_allowed"] is False
@@ -8379,7 +8360,6 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
         "DWH53530FHL2FN3AC",
         "NEW-DONGLE",
     ]
-    assert saved.hardware.clock_domain_evidence is None
     assert {
         (group.id, channel.role): channel.identity_verified
         for group in saved.speaker_groups

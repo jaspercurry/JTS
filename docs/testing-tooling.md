@@ -55,7 +55,6 @@
 | Find the main volume that makes this speaker measure a stated dB SPL at the listening seat, and bank it as the next session's measurement reference | [Seat-SPL leveling](#seat-spl-leveling) — `jasper-seat-level` |
 | Find out whether this speaker ships a MEASURED per-driver level or the one its datasheet claimed on somebody else's cabinet | [Measured driver base trim](#measured-driver-base-trim) — banked by the apply, no verb to run |
 | Grade the boost-permission gate's decision against a defect you injected on purpose (rather than one a room happened to produce) | [`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py) — synthetic spatial scenarios, the validation ladder's third rung |
-| Validate two Apple USB-C DACs as a lab-only output topology | [Dual Apple DAC lab runner](#dual-apple-dac-lab-runner) |
 | Manually detect, probe, or move the experimental USB turntable on JTS3 | [USB turntable experiment](#usb-turntable-experiment) |
 | Drive a crossover-measurement v2 lab round from a Mac with no browser and no phone | [E0 headless capture client](#e0-headless-capture-client) |
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
@@ -1030,7 +1029,6 @@ Live Pi state without modifying anything:
 | `jasper-active-speaker commission-ramp status [--topology <file.json>] [--json]` | Read-only: print the commission-load, ramp, and per-driver floor state. `--topology` merges durable confirmed-role evidence for the armed group; the handler reads it on every box that has ever armed a driver, because the armed target outlives a rollback (#2667). |
 | `jasper-active-speaker commission-ramp abort [--json]` | Re-mute mid-ramp: roll back to the all-muted staged config and reset the ramp state. Stops the tone and ends the safe-playback session. |
 | `/sound/active-speaker/{environment,safe-playback,commissioning-view,design-draft,channel-identity,calibration-level,stop,commission-state,commission-load,commission-rollback,commission-ramp-step,commission-ramp-ack,commission-ramp-abort,summed-test,summed-validation,baseline-profile,baseline-profile/apply}` | Web active-speaker status/session/design/identity/level/test/commissioning surface. `environment`, `safe-playback`, `commissioning-view`, `design-draft`, `channel-identity`, `calibration-level`, `commission-state`, `baseline-profile`, and related status routes are read-only GETs where exposed; `design-draft`, `stop`, `channel-identity`, `calibration-level`, the `commission-*`, summed validation, and baseline apply routes are CSRF-protected POSTs from `/sound/`. Active 2/3-way groups use `commission-load` + `commission-ramp-step`/`ack`/`abort`; each ramp step loads the protected one-driver graph, injects a bounded tone through the commissioning lane, and rolls back on tone failure. Passive/full-range groups have no separate active driver test in the product UI. `design-draft` persists operator driver names, notes, bounded research JSON, and a saved topology snapshot as non-authoritative evidence; it does not load CamillaDSP, apply filters, authorize playback, or emit sound. Generic `aplay` tone playback has no production route at all: `enabled_audio_backend`, the one function that turned `JASPER_AUDIO_LAB_TONE_BACKEND=aplay` + `JASPER_AUDIO_LAB_TEST_PCM` into a live backend, never had a caller and was deleted, so those env vars now report a `tone_backend_not_wired` blocker rather than enabling audio. Product outputd/CamillaDSP lanes are forbidden as direct test writers, and `AplayTonePlaybackBackend` — which only tests construct now — still enforces that in its constructor. The list is owned by `FORBIDDEN_TEST_PCM_TOKENS` in `jasper/active_speaker/playback.py` — a case-insensitive substring test covering every outputd program/content lane, `jasper_out`, `outputd_dac`, and all three central ring PCMs, the ACTIVE ring included (it needs its own entry because `jts_ring_playback` is not a substring of `jts_ring_active_playback`). The renderer-lane rings and the grouping-ingress ring are deliberately absent on the consequence asymmetry the tuple's own comment states — they are ingress into fan-in / CamillaDSP, not a sink past the crossover. Read the tuple rather than a restatement here. `outputd_active_content_playback`/`outputd_active_content_capture` no longer resolve to a real PCM since P9-C deleted their `asoundrc.jasper` definitions, but the ban holds for a re-introduction or a rolled-back box that still names them. No endpoint changes normal listening volume. |
-| `rust/jasper-dual-dac-lab/target/release/jasper-dual-dac-lab probe` / `run` | Lab-only dual Apple USB-C DAC validator. `probe` is passive. `run` opens two serial-pinned direct `hw:` PCMs, writes silence first, caps level, and aborts both outputs on xrun/suspend/disconnect/delay divergence. Not installed as a product daemon. |
 
 ## Correction capture diagnostic
 
@@ -1626,34 +1624,6 @@ stand-in binary [`tests/_fake_camilladsp.py`](../tests/_fake_camilladsp.py).
 Those prove the plumbing and that the comparison catches a mis-realized filter;
 they cannot prove what the real binary does with an emitted biquad, which is the
 whole question and needs the on-device run.
-
----
-
-## Dual Apple DAC lab runner
-
-[`rust/jasper-dual-dac-lab`](../rust/jasper-dual-dac-lab) is a
-lab-only Rust binary for the experimental "one Apple USB-C DAC per
-speaker" topology. It is intentionally outside the product output path:
-no systemd unit, no install hook, and no CamillaDSP/ALSA aggregate
-device.
-
-Use it only from the Pi checkout after an explicit build:
-
-```sh
-cd /home/pi/jts/rust/jasper-dual-dac-lab
-cargo build --release --locked
-./target/release/jasper-dual-dac-lab probe
-```
-
-The `run` command is sound-capable and must follow
-[`dual-apple-dac-lab.md`](dual-apple-dac-lab.md): product audio owners
-stopped, serial-pinned Apple PCMs, dummy loads or capture inputs, no
-tweeters, explicit stop path, low level, and an evidence directory for
-stdout JSONL, ALSA/USB descriptors, kernel logs, and capture WAVs. The
-2026-06-03 evidence bundle shows a clean 15-minute low-level non-silence
-software stability pass and a Scarlett common-clock drift pass for one
-analog channel from each DAC. Right-channel identity, replug/reboot
-repeatability, and product-stack startup/reload safety remain unproven.
 
 ---
 

@@ -1216,18 +1216,6 @@ def _dual_apple_active_topology(tmp_path: Path) -> Path:
                 "physical_output_indexes": [2, 3],
             },
         ],
-        "clock_domain_evidence": {
-            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-            "measurement_id": "unit-test-dual-apple-sync",
-            "status": "passed",
-            "duration_seconds": 900,
-            "sample_rate_hz": 48000,
-            "offset_frames": 0,
-            "max_offset_delta_frames": 0,
-            "drift_ppm": 0,
-            "xrun_count": 0,
-            "dac_serials": ["left", "right"],
-        },
     }
     topology_path.write_text(
         json.dumps(topology),
@@ -3750,18 +3738,6 @@ def test_reconcile_leaves_the_composite_edge_format_alone_when_the_registry_prob
                 "physical_output_indexes": [2, 3],
             },
         ],
-        "clock_domain_evidence": {
-            "evidence_kind": "dual_apple_usb_c_dac_drift_measurement",
-            "measurement_id": "unit-test-dual-apple-composite-skip",
-            "status": "passed",
-            "duration_seconds": 900,
-            "sample_rate_hz": 48000,
-            "offset_frames": 0,
-            "max_offset_delta_frames": 0,
-            "drift_ppm": 0,
-            "xrun_count": 0,
-            "dac_serials": ["left", "right"],
-        },
     }
     topology_path.write_text(
         json.dumps(topology),
