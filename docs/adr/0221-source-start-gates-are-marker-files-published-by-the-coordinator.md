@@ -1,4 +1,4 @@
-# ADR-0220: Source start gates are marker files published by the coordinator
+# ADR-0221: Source start gates are marker files published by the coordinator
 
 - **Date:** 2026-09-02
 - **Status:** Accepted
