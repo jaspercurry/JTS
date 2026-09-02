@@ -18,6 +18,7 @@ phase capture's ``%Y-%m-%dT%H:%M:%SZ`` and a cloud position's float epoch.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import wave
 from pathlib import Path
@@ -94,8 +95,14 @@ def _bundle(
     (bundle / "info.json").write_text(json.dumps({"session_id": session_id}))
 
     programs = bundle / "crossover_v2" / relay_id
-    for phase in {phase for _, phase, _ in takes}:
-        _write_wav(programs / f"{phase}_program.wav", seed=1)
+    # One distinct program per phase, and its digest banked on the take the way
+    # ``CaptureProvenance`` banks it: the feature reader binds a capture to the
+    # program whose BYTES it heard, never to its phase label (#3504).
+    program_sha: dict[str, str] = {}
+    for index, phase in enumerate(sorted({phase for _, phase, _ in takes}, key=str)):
+        path = programs / f"{phase}_program.wav"
+        _write_wav(path, seed=index + 1)
+        program_sha[phase] = hashlib.sha256(path.read_bytes()).hexdigest()
 
     for index, (take_id, phase, captured_at) in enumerate(takes):
         wav_rel = f"summed/summed_{take_id}_{index:032x}.wav"
@@ -115,6 +122,9 @@ def _bundle(
                 "diagnostic": {"epsilon_ppm": 1.0 + index, "linearity_ok": True},
                 "capture_integrity": {"capture_chain": "alsa_s32le"},
                 "frame_ledger": {"received_frames": 4800},
+                "provenance": {
+                    "stimulus": {"wav_sha256": program_sha[phase]},
+                },
             })
         )
     return bundle
