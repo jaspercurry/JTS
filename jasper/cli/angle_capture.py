@@ -103,12 +103,12 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_NORMAL,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
-from jasper.active_speaker.measurement_level import (
+from jasper.active_speaker.measurement_programs import MeasurementProgram
+from jasper.active_speaker.seat_level_reference import (
     LevelUnresolved,
     ResolvedLevel,
-    resolve_program_level,
+    resolve_anchor_level,
 )
-from jasper.active_speaker.measurement_programs import MeasurementProgram
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH as DECLARED_GEOMETRY_PATH,
     DeclaredGeometry,
@@ -328,7 +328,7 @@ def _resolved_level() -> ResolvedLevel | LevelUnresolved:
     verb rebuilds one from the receipt it just flattened.
     """
     try:
-        return resolve_program_level()
+        return resolve_anchor_level()
     except LevelUnresolved as exc:
         return exc
 

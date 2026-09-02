@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The measured seat-SPL reference volume — one writer, one reader.
+"""The measured seat-SPL reference volume, and whether it is still usable.
 
 :mod:`jasper.active_speaker.session_volume_plan` derives the crossover
 session's fixed measurement volume as ``min(reference, max(driver caps))``.
@@ -38,7 +38,9 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 
+from ._common import finite_float
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 
 SCHEMA_VERSION = 1
@@ -251,3 +253,137 @@ def write_seat_level_reference(
     }
     atomic_write_json(path, payload, mode=0o640, group_from_parent=True)
     return payload
+
+
+#: A measurement walk drives at the banked anchor's own SPL. These are the
+#: reasons that level is not knowable, or not allowed — a closed vocabulary a
+#: refusal's ``reason`` comes from. There is no relative fallback: a number
+#: that looks absolute and was guessed is worse than no number.
+ANCHOR_UNUSABLE = "seat_anchor_unusable"
+LEVEL_OVER_CEILING = "level_over_ceiling"
+PRESET_UNAVAILABLE = "preset_unavailable"
+
+LEVEL_REFUSAL_REASONS = (ANCHOR_UNUSABLE, LEVEL_OVER_CEILING, PRESET_UNAVAILABLE)
+
+#: Two sens factors this close are one number in two float reprs, not two
+#: calibrations. A real recalibration moves the figure by whole tenths.
+SENS_FACTOR_TOLERANCE_DB = 0.05
+
+
+class LevelUnresolved(Exception):
+    """The anchor's level is not usable, named by ``reason``."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"{reason}: {detail}")
+
+
+@dataclass(frozen=True)
+class ResolvedLevel:
+    """The banked anchor's drive level, absolute, with the terms behind it."""
+
+    target_db_spl: float
+    anchor_db_spl: float
+    reference_volume_db: float
+    mic_serial: str | None
+
+
+def _ceiling_db_spl() -> float:
+    """The commissioning SPL ceiling, resolved as ``jasper-seat-level`` does."""
+
+    from jasper.output_topology import load_output_topology_strict
+
+    from .commission_wiring import commissioning_spl_ceiling_db
+
+    try:
+        return commissioning_spl_ceiling_db(load_output_topology_strict())
+    except (OSError, ValueError, KeyError, AttributeError) as exc:
+        raise LevelUnresolved(PRESET_UNAVAILABLE, str(exc)) from exc
+
+
+def resolve_anchor_level(
+    *,
+    state_path: str | Path | None = None,
+    ceiling_db_spl: float | None = None,
+    calibration_file: str | Path | None = None,
+    mic_serial: str | None = None,
+) -> ResolvedLevel:
+    """The banked anchor as an absolute level, or :class:`LevelUnresolved`.
+
+    The anchor's ``measured_db_spl`` is already calibrated SPL — the mic's
+    sensitivity entered it at the ramp, which is why nothing here re-derives
+    ``dB SPL = dBFS - sens_factor + 94``
+    (:meth:`~jasper.audio_measurement.calibration.MicSensitivity.db_spl_from_dbfs`
+    owns that relation). What is asked here is whether that number still means
+    something for a session about to run: the mic it was measured with must
+    still resolve, at the same sensitivity, and the level must sit under the
+    preset's ``max_commissioning_level_db_spl``.
+
+    ``calibration_file``/``mic_serial`` mirror ``jasper-seat-level``'s own mic
+    inputs; with neither, the mic banked with the anchor is looked up.
+    """
+
+    record = load_seat_level_reference(state_path=state_path) or {}
+    anchor = finite_float(record.get("measured_db_spl"))
+    reference_volume_db = finite_float(record.get("reference_volume_db"))
+    if anchor is None or reference_volume_db is None:
+        raise LevelUnresolved(
+            ANCHOR_UNUSABLE,
+            "no seat-level reference is banked, so there is no anchor to "
+            "drive at — run jasper-seat-level first",
+        )
+
+    banked_raw = record.get("mic_sensitivity")
+    banked = banked_raw if isinstance(banked_raw, dict) else {}
+    banked_serial = banked.get("serial")
+    serial = mic_serial or (str(banked_serial) if banked_serial else None)
+    # The banked block is ``MicSensitivity.to_dict()`` — sens factor, gain and
+    # serial, no model — while a stored record is keyed provider/model/serial,
+    # so the lookup runs under ``resolve_mic_sensitivity``'s default model.
+    sensitivity = resolve_mic_sensitivity(
+        calibration_file=calibration_file, mic_serial=serial
+    )
+    if sensitivity is None:
+        raise LevelUnresolved(
+            ANCHOR_UNUSABLE,
+            (
+                "the seat-level reference banks no mic serial, so no stored "
+                "calibration can be looked up for it"
+                if not serial
+                else f"the anchor was measured with mic serial {serial} and no "
+                "stored calibration resolves for it — store its vendor file "
+                "through the calibration wizard (/correction/calibration/fetch)"
+            )
+            + " — or re-run jasper-seat-level with the mic you will measure "
+            "with",
+        )
+    banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
+    if (
+        banked_sens_factor_db is not None
+        and abs(sensitivity.sens_factor_db - banked_sens_factor_db)
+        > SENS_FACTOR_TOLERANCE_DB
+    ):
+        raise LevelUnresolved(
+            ANCHOR_UNUSABLE,
+            f"the anchor was measured with mic {serial or sensitivity.serial} "
+            f"at a sens factor of {banked_sens_factor_db:g} dB, but that mic "
+            f"resolves now at {sensitivity.sens_factor_db:g} dB — an anchor "
+            "measured with one calibration cannot make a session measured "
+            "with another absolute; re-run jasper-seat-level with the "
+            "calibration you will measure with",
+        )
+
+    ceiling = _ceiling_db_spl() if ceiling_db_spl is None else float(ceiling_db_spl)
+    if anchor > ceiling:
+        raise LevelUnresolved(
+            LEVEL_OVER_CEILING,
+            f"the banked anchor is {anchor:g} dB SPL, above the preset's "
+            f"commissioning ceiling of {ceiling:g} dB SPL",
+        )
+    return ResolvedLevel(
+        target_db_spl=anchor,
+        anchor_db_spl=anchor,
+        reference_volume_db=reference_volume_db,
+        mic_serial=sensitivity.serial,
+    )
