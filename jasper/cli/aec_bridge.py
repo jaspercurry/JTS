@@ -4,30 +4,26 @@
 
 """AEC bridge — `jasper-aec-bridge` (Python).
 
-REPLACES the CamillaDSP-based aec-bridge. In software fallback mode this
-process runs WebRTC AEC3. In chip-AEC production mode
-(`JASPER_AEC_CHIP_AEC_ENABLED=1`) it does not instantiate the WebRTC AEC3
-engine; it routes outputd's final speaker buffer into the XVF3800 USB-IN
-reference, captures the chip's 150°/210° ASR beams, forwards the selected
-primary beam on :9876, and emits optional extra beams on :9887/:9888 only
-when the reconciler publishes those runtime device env vars. The wake-corpus
-recorder uses the same chip profile under its corpus-only flag so the labeled
-comparison data and production mode stay aligned.
+Feeds jasper-voice's UDP mic legs from the XVF3800 capture stream, with
+outputd's final speaker monitor as the far-end reference. Two modes:
 
-In default mode this bridge does the AEC in software, with the
-recommended XVF capture channel as near-end and the host-side music
-chain as far-end. With `SHF_BYPASS=1` in jasper-aec-init, channels
-0/1 are raw-ish chip feeds rather than beamformed/NS/AGC outputs.
-The engine is WebRTC AEC3 via the `jasper_aec3` pybind11 binding around
-Trixie's `libwebrtc-audio-processing-dev` (v1.3-3 — which IS
-AEC3; the 1.x is package-API stability versioning, not algorithm
-version). AEC3 includes a frequency-domain residual echo
-suppressor + drift-tolerant delay estimator and runs at ~3-8% of
-one Pi 5 core.
+- Default (software AEC): WebRTC AEC3 via the `jasper_aec3` pybind11
+  binding, near-end = the XVF capture channel `MIC_CHANNEL_INDEX` names,
+  far-end = the downsampled speaker reference. Costs ~3-8% of one Pi 5
+  core.
+- Chip AEC (`JASPER_AEC_CHIP_AEC_ENABLED=1`): no WebRTC engine is
+  instantiated. outputd routes the final speaker buffer into the XVF3800
+  USB-IN reference; the bridge captures the chip's fixed 150°/210° ASR
+  beams and forwards the selected primary beam on the `on` leg, emitting
+  the extra beams only when the reconciler publishes their runtime device
+  env vars. The wake-corpus recorder uses the same chip profile under its
+  corpus-only flag.
 
-JTS reads channel 1: per XMOS primary docs, channels 2-5 bypass
-every chip DSP stage (no BF, NS, AGC, HPF, not even MIC_GAIN), and
-the canonical XVF3800 voice-assistant capture is channel 0/1.
+XVF3800 channel map (6-ch firmware): channels 0/1 are the chip's processed
+lanes with `SHF_BYPASS=0` — in chip-AEC mode the fixed 150°/210° ASR beams —
+and raw-ish lanes with `SHF_BYPASS=1`, the default production state set by
+jasper-aec-init. Channels 2-5 bypass every chip DSP stage: no BF, NS, AGC,
+HPF, not even MIC_GAIN. The canonical voice-assistant capture is channel 0/1.
 
 Topology:
 
@@ -45,38 +41,21 @@ Topology:
        ▼                                                          ▼
     UDP 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876)      UDP 127.0.0.1:JASPER_AEC_UDP_PORT_RAW
        │  one packet per 1280 samples (80 ms, matches             │  (default 9877)
-       │  MicCapture frame size; optional USB host mic             │  same packet shape
-       │  consumer uses one 320-sample / 20 ms frame)             │
+       │  MicCapture frame size; the USB host-mic leg              │  same packet shape
+       │  emits one 320-sample / 20 ms frame)                     │
        ▼                                                          ▼
     jasper-voice's UdpMicCapture (binds 9876)             jasper-voice's second
                                                           UdpMicCapture (binds 9877)
                                                           for dual-stream wake-word
-                                                          detection (PR 2 of the
-                                                          wake-telemetry series).
+                                                          detection.
 
-Why UDP instead of the previous snd-aloop `LoopbackAEC` card: see
-the `UdpMicCapture` docstring in jasper/audio_io.py. Short version:
-snd-aloop's `loopback_cable` kernel struct wedges when a consumer
-is SIGKILL'd, requiring a reboot to clear. UDP has no kernel-side
-state and `sendto()` is non-blocking, which orthogonally fixes the
-PortAudio-write SIGTERM-observability bug from the 2026-05-11
-incident. Validated end-to-end in PR 2 of the resilience-ladder
-series.
+Every leg's token and UDP port is owned by `jasper.wake_legs`. Why UDP
+rather than an snd-aloop card: see `UdpMicCapture` in jasper/audio_io.py.
 
-Caveats this implementation does NOT yet address:
-  - Reference and mic are on independent clock domains (kernel
-    timer vs XVF chip's USB UAC2 SYNC). They WILL drift over
-    time — AEC3's delay estimator tolerates some drift but not
-    unbounded. Future fix: drift-compensate via resampling, or
-    expose a USB-side reference channel from the chip (would
-    require custom firmware).
-  - Frame alignment between two PortAudio streams isn't perfectly
-    synchronized — the ref-mic offset can vary by a few ms each
-    restart. AEC3 auto-adapts (the `stream_delay_ms` hint is just
-    a starting point for its delay estimator) but convergence
-    takes longer when the offset drifts.
-  - The engine is the linear AEC3 + residual suppressor only; no
-    neural residual stage.
+Reference and mic run on independent clock domains — outputd's DAC-paced
+sender against the XVF chip's USB UAC2 clock — and will drift. AEC3's delay
+estimator tolerates bounded drift; nothing here resamples to compensate, and
+`JASPER_AEC_STREAM_DELAY_MS` is only a starting hint for that estimator.
 """
 from __future__ import annotations
 
@@ -141,45 +120,31 @@ logger = logging.getLogger("jasper.aec_bridge")
 AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
 AEC3_SWEEP_INPUT_SOURCE = AEC3_SWEEP_SOURCE_XVF
 
-# Frame size: 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC
-# AEC3's 10 ms frame requirement (160 samples). The binding splits
-# 320 → 2×160 internally per the AEC3 API contract. AEC3 manages
-# its own filter length internally.
+# 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
+# requirement (160 samples); the binding splits 320 → 2×160 internally per
+# the AEC3 API contract.
 FRAME_SAMPLES = 320
 SAMPLE_RATE = 16000
 
-# Wire geometry of the far-end reference. outputd sends its final
-# speaker monitor at this rate/channel count; `_ReferenceFrameConverter`
-# folds it to the 16 kHz mono frames AEC3 consumes. The bridge has no
-# other reference transport — see REF_SOURCE below.
+# Wire geometry of the far-end reference. outputd sends its final speaker
+# monitor at this rate/channel count; `_ReferenceFrameConverter` folds it to
+# the 16 kHz mono frames AEC3 consumes. The bridge has no other reference
+# transport — see REF_SOURCE below.
 REF_RATE = 48000
 REF_CHANNELS = 2
 
-# Capture device for the mic. Chip's 6-ch firmware exposes
-# channels 0/1 are the chip's processed-output lanes when SHF_BYPASS=0
-# and raw-ish lanes when SHF_BYPASS=1 (the default production state);
-# channels 2-5 are raw mics 0-3 (no chip processing of any kind). The
-# mic profile pins MIC_CHANNEL_INDEX=1 for the default WebRTC AEC3 path.
-# Device names are PortAudio substring matches (sounddevice's
-# backend) — NOT ALSA pcm strings. PortAudio enumerates ALSA
-# cards by their card description, not by hw:CARD= syntax.
-# Default matches "Array: USB Audio (hw:N,0)" on the legacy square
+# Capture geometry for the mic; the profile pins the near-end lane for the
+# default WebRTC AEC3 path (channels 2-5 are raw mics 0-3, no chip DSP).
+# The device name is a PortAudio substring match — NOT an ALSA pcm string:
+# PortAudio enumerates ALSA cards by card description, not `hw:CARD=` syntax.
+# The default matches "Array: USB Audio (hw:N,0)" on the legacy square
 # firmware and "L16K6Ch: USB Audio (hw:N,0)" on the Flex linear firmware.
 MIC_CHANNELS = _mic_profile.RECOMMENDED_FIRMWARE.capture_channels
 MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 
-# Output transport: UDP localhost. Bridge sends AEC'd mono int16
-# frames to `127.0.0.1:JASPER_AEC_UDP_PORT`; jasper-voice's
-# `UdpMicCapture` binds the same port and receives.
-#
-# Why UDP instead of the old snd-aloop `LoopbackAEC` card: see the
-# `UdpMicCapture` docstring in jasper/audio_io.py. Short version:
-# snd-aloop's `loopback_cable` kernel struct wedges if a consumer
-# is SIGKILL'd, requiring `rmmod && modprobe` (with every consumer
-# stopped first) or a reboot to recover. UDP has no kernel-side
-# state to corrupt and `sendto()` is non-blocking, which
-# orthogonally fixes the daemon's SIGTERM-observability bug from
-# the 2026-05-11 incident.
+# Output transport: UDP localhost. The bridge sends AEC'd mono int16 frames
+# to `127.0.0.1:JASPER_AEC_UDP_PORT`; jasper-voice's `UdpMicCapture` binds
+# the same port and receives.
 OUT_HOST = "127.0.0.1"
 
 
@@ -190,57 +155,34 @@ def _leg_default_port(token: str) -> int:
 OUT_PORT = _leg_default_port("on")
 OUT_RATE = 16000
 
-# Secondary UDP output: chip-direct mic stream, pre-AEC3 — exactly
-# the same near-end input AEC3 consumes in default production
-# (chip ch 1, raw-ish when SHF_BYPASS=1). Emitted on a separate port
-# so jasper-voice's wake
-# loop (PR 2 of the wake-telemetry series) can score wake-word
-# detection on BOTH the post-AEC stream (OUT_PORT) and the chip-
-# direct stream (OUT_PORT_RAW). Same 1280-sample / 16 kHz mono
-# int16 packet shape as the primary stream so the consumer sees
-# identical chunk sizes.
-#
-# Why expose this: the 2026-05-20 wake-rate sweep showed the AEC ON
-# and AEC OFF legs catch mostly-disjoint sets of utterances —
-# test-1 yielded a 40 % union vs 25 % best single leg. Emitting both
-# lets the wake loop OR the detections without changing the AEC
-# pipeline.
-#
-# Jasper-voice consumes this leg when the reconciler configures
-# `JASPER_MIC_DEVICE_RAW`; otherwise the extra UDP packets are ignored.
+# Chip-direct mic stream, pre-AEC3 — exactly the near-end input AEC3
+# consumes in default production (chip ch 1, raw-ish when SHF_BYPASS=1), on
+# its own port and in the same 1280-sample / 16 kHz mono int16 packet shape
+# as the primary leg. jasper-voice's wake loop ORs detections across the
+# post-AEC (OUT_PORT) and chip-direct legs, which catch mostly-disjoint sets
+# of utterances. It consumes this leg only when the reconciler configures
+# `JASPER_MIC_DEVICE_RAW`; otherwise the extra packets are ignored.
 OUT_PORT_RAW = _leg_default_port("off")
-# Optional 3rd UDP stream: DTLN-aec output. The bridge constructs a
-# DTLNEngine when JASPER_AEC_DTLN_ENABLED=1 and shares the same mic +
-# ref capture with the AEC3 engine. Each input chunk is fed to BOTH
-# engines; AEC3 output goes to OUT_PORT, DTLN output to OUT_PORT_DTLN.
-# Adds ~95 MB RAM + ~12% of one Pi 5 core. Disabled by default during
-# the triple-stream rollout; flip via env var.
+# Optional 3rd UDP stream: DTLN-aec output, off unless
+# JASPER_AEC_DTLN_ENABLED=1. Shares the mic + ref capture with the AEC3
+# engine — each input chunk is fed to BOTH engines. Adds ~95 MB RAM and
+# ~12% of one Pi 5 core.
 OUT_PORT_DTLN = _leg_default_port("dtln")
-# 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the
-# chip-direct stream on OUT_PORT_RAW (which is chip channel 1 = ASR
-# beam, with chip BF+NS+AGC+HPF applied), channel 2 is the raw mic 0
-# ADC output with NO chip DSP whatsoever — not even MIC_GAIN. It's
-# what a cheap USB mic without an XMOS chip would deliver.
-#
-# Used by the wake-corpus recorder so we can build training data that's
-# mic-agnostic — useful if we ever swap in cheaper mic hardware, and a
-# useful baseline for understanding how much of wake performance comes
-# from the chip's DSP vs the wake model itself. Same 1280-sample /
-# 16 kHz mono int16 packet shape as the other legs.
-#
-# Always emitted. Cost is ~0.25% of one core for the extra slice +
-# sendto — same noise-floor cost as the existing :9877 raw leg.
+# 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the chip-direct
+# stream on OUT_PORT_RAW (chip channel 1 = ASR beam, with chip BF+NS+AGC+HPF
+# applied), channel 2 is the raw mic 0 ADC output with NO chip DSP whatsoever
+# — not even MIC_GAIN, i.e. what a mic without an XMOS chip would deliver.
+# Read by the wake-corpus recorder as the mic-agnostic baseline. Same packet
+# shape as the other legs; always emitted, at ~0.25% of one core.
 OUT_PORT_RAW0 = _leg_default_port("raw0")
-# Corpus-only experiment streams. These are disabled by default so
-# normal production bridge cost stays exactly where it is. When enabled
-# for wake-corpus recording, the bridge emits:
+# Corpus-only experiment streams, off by default so production bridge cost
+# does not move. When enabled for wake-corpus recording, the bridge emits:
 #   - ref: the 16 kHz mono reference frame AEC3 actually consumed
 #   - usb_raw: a cheap USB mic's raw mono capture
 #   - usb_webrtc: that same USB mic through a second WebRTC AEC3 chain
 #   - usb_dtln: the cheap USB mic through a second DTLN-aec chain
 #
-# They are intentionally not consumed by jasper-voice. They exist to
-# make the gold corpus useful for cheap-mic portability experiments.
+# jasper-voice never consumes these.
 OUT_PORT_REF = _leg_default_port("ref")
 OUT_PORT_USB_RAW = _leg_default_port("usb_raw")
 OUT_PORT_USB_WEBRTC = _leg_default_port("usb_webrtc")
@@ -255,12 +197,11 @@ OUTPUTD_REF_UDP_PORT = 9891
 # and diagnostics all consume outputd's final speaker monitor, so they
 # all see the same reference contract.
 REF_SOURCE = "outputd_udp"
-# Retired reference source: the summed snd-aloop tap (`pcm.jasper_ref`), whose
-# path and tap are both deleted. A box whose /etc/jasper/jasper.env still
-# carries this value converges on the next `jasper-aec-reconcile` run, so the
-# bridge warns and uses REF_SOURCE rather than refusing to start: a hard
-# failure here would leave jasper-voice with an unfed UDP mic and no wake
-# detection.
+# Retired reference source: the summed snd-aloop tap, whose path and tap are
+# both deleted. A box whose /etc/jasper/jasper.env still carries this value
+# converges on the next `jasper-aec-reconcile` run, so the bridge warns and
+# uses REF_SOURCE rather than refusing to start: a hard failure here would
+# leave jasper-voice with an unfed UDP mic and no wake detection.
 RETIRED_REF_SOURCE_ALSA = "alsa"
 OUT_PORT_AEC3_SWEEP = {
     variant.leg: variant.default_port
@@ -268,20 +209,18 @@ OUT_PORT_AEC3_SWEEP = {
 }
 USB_MIC_DEVICE = "USB PnP Sound Device"
 USB_MIC_RATE = 0
-# Voice consumes 1280-sample (80 ms) chunks. Aggregating four
-# 320-sample AEC frames into one UDP packet keeps the
-# bridge↔voice contract symmetric with the existing MicCapture
-# frame size and halves packet rate to ~12.5 pps. The AEC engine
-# still works on 320-sample windows internally.
+# Voice consumes 1280-sample (80 ms) chunks. Aggregating four 320-sample AEC
+# frames into one UDP packet keeps the bridge↔voice contract symmetric with
+# MicCapture's frame size and holds the packet rate at ~12.5 pps. The AEC
+# engine still works on 320-sample windows internally.
 OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 BRIDGE_STATS_SCHEMA_VERSION = 4
 CAPTURE_LATENCY_MAX_SECONDS = 0.25
 
-# Drop-frame threshold. If queues fill faster than they drain,
-# something's wrong (CPU starvation, clock drift exceeded our
-# margin). We log and drop rather than block.
+# Drop-frame threshold: if queues fill faster than they drain (CPU
+# starvation, clock drift past the margin), log and drop rather than block.
 QUEUE_MAXSIZE = 32
 
 _shutdown = threading.Event()
@@ -524,9 +463,9 @@ def _zero_leg_counters(
 ) -> dict[str, int]:
     """A fresh per-leg counter dict zeroed for every emit leg: each
     jasper.wake_legs token plus the dynamic AEC3-sweep variant legs.
-    Keyed off the registry so the bridge's UDP emit tokens and the
-    wake-event corpus columns stay in lockstep — adding a leg to
-    jasper.wake_legs surfaces it here automatically.
+
+    Keyed off the registry so the bridge's UDP emit tokens and the wake-event
+    corpus columns stay in lockstep.
     """
     counters = {spec.token: 0 for spec in wake_legs.REGISTRY}
     counters.update({variant.leg: 0 for variant in aec3_sweep_variants})
@@ -536,10 +475,10 @@ def _zero_leg_counters(
 class _BridgeStats:
     """Low-cost monotonic counters for capture provenance.
 
-    The wake-corpus recorder snapshots this JSON file at clip
-    start/stop and stores counter deltas in clip metadata. Counters are
-    intentionally monotonic for the lifetime of one bridge process;
-    the PID + start epoch let consumers reject deltas across restarts.
+    The wake-corpus recorder snapshots this JSON file at clip start/stop and
+    stores counter deltas in clip metadata. Counters are monotonic for the
+    lifetime of one bridge process; the PID + start epoch let consumers
+    reject deltas that span a restart.
     """
 
     def __init__(self) -> None:
@@ -585,11 +524,11 @@ class _BridgeStats:
     def record_reference_frames(self, count: int) -> None:
         """Record complete 20 ms reference frames accepted by ``ref_q``.
 
-        Conversion alone is not receiver progress: if the bounded queue is
-        full, the AEC loop cannot consume the new frame.  Callers therefore
-        report only successful ``put_nowait`` operations here.  The AEC
-        loop's reuse of ``last_ref_bytes`` deliberately never reaches this
-        method, so a carried-forward frame cannot refresh receiver health.
+        Conversion alone is not receiver progress: a full bounded queue means
+        the AEC loop cannot consume the new frame, so callers report only
+        successful ``put_nowait`` operations here. The AEC loop's reuse of
+        ``last_ref_bytes`` deliberately never reaches this method — a
+        carried-forward frame must not refresh receiver health.
         """
 
         if count <= 0:
@@ -628,11 +567,10 @@ class _BridgeStats:
     ) -> None:
         """Record an optional engine leg's current runtime availability.
 
-        Gives /run/jasper/aec_bridge_stats.json an authoritative,
-        journal-independent answer to "is the DTLN leg actually running?"
-        across both initialization and later inference failures.
-        jasper-doctor's check_aec_bridge_dtln_engine reads this first and
-        only falls back to journal parsing on older bridges."""
+        Gives the bridge-stats file a journal-independent answer to "is this
+        leg actually running?" across both initialization and later inference
+        failures; jasper-doctor's `check_aec_bridge_dtln_engine` reads it.
+        """
         with self._lock:
             self._leg_engines[leg] = {
                 "enabled": enabled,
@@ -854,9 +792,9 @@ class LegEmitter:
 class TimestampedLegEmitter(LegEmitter):
     """Packetize the isolated USB-host mic leg with emit-time metadata.
 
-    ``t_capture_mono_ns`` in the wire header is deliberately a bridge-emit
-    timestamp: it measures bridge emit -> relay sink, while PortAudio's input
-    latency is observed separately when the capture stream opens.
+    The wire header's ``t_capture_mono_ns`` is deliberately a bridge-emit
+    timestamp: it measures bridge emit -> relay sink. PortAudio's input
+    latency is observed separately, when the capture stream opens.
     """
 
     _seq: int = field(default=0, init=False, repr=False)
@@ -891,16 +829,12 @@ class BridgeStalled(RuntimeError):
     sustained sub-usable frame *rate* (the slow-drip case caught by
     `_MicStarvationWatchdog`; JASPER_AEC_STALL_DRIP_MAX_WINDOWS).
 
-    Raised by `_aec_loop` to bail with a non-zero exit code so
-    systemd's `Restart=on-failure` revives us with a fresh
-    `sd.InputStream`. PortAudio's InputStream is one-shot — once
-    its ALSA capture PCM enters an unrecoverable state (typically
-    after a USB underrun on the XVF chip's UAC2 endpoint), the
-    callback simply stops being invoked. There's no in-process
-    recovery path; only a new process gets a working stream.
-    Hit in production 2026-05-11: bridge silently stopped feeding
-    the voice mic path for ~10 minutes, wake-word detection got no audio,
-    Hey Jarvis was unresponsive with no audible cue.
+    Raised by `_aec_loop` to bail with a non-zero exit code so systemd's
+    `Restart=on-failure` revives the bridge with a fresh `sd.InputStream`.
+    PortAudio's InputStream is one-shot: once its ALSA capture PCM enters an
+    unrecoverable state (typically a USB underrun on the XVF chip's UAC2
+    endpoint) the callback simply stops being invoked, and no in-process
+    recovery path exists — only a new process gets a working stream.
     """
 
 
@@ -916,23 +850,20 @@ class UnsupportedReferenceSource(RuntimeError):
     """JASPER_AEC_REF_SOURCE names a source this bridge cannot read."""
 
 
-# Clipping counters (module-level for cheap cross-thread access; small
-# race conditions in increment+reset are benign — worst case a single
-# log window's percentage is off by a frame). Tracked separately for
-# the ref pre-clip stage (after JASPER_AEC_REF_GAIN_DB applied) and
-# the post-AEC mic stage (after JASPER_AEC_MIC_GAIN_DB applied).
+# Clipping counters, module-level for cheap cross-thread access: a race
+# between increment and reset costs at most one frame in one log window's
+# percentage. Tracked separately for the ref pre-clip stage (after
+# JASPER_AEC_REF_GAIN_DB) and the post-AEC mic stage (after
+# JASPER_AEC_MIC_GAIN_DB).
 _ref_clipped_samples = 0
 _ref_total_samples = 0
 _out_clipped_samples = 0
 _out_total_samples = 0
 
-# Counter for `ref_q empty when main loop polled` events. See
-# `_aec_loop` for why this happens (ALSA delivers ref in 2-period
-# bursts every 40 ms, mic at smooth 20 ms cadence — half of main-loop
-# polls land between bursts). Logged in the periodic RMS line so the
-# rate is observable; an unusually high rate (say > 10 per 5 s window
-# = > 2 Hz) indicates the timing balance has drifted and Fix A's
-# stale-ref-reuse is doing heavier lifting than expected.
+# Counter for `ref_q empty when the main loop polled` events: the reference
+# arrives in bursts while the mic delivers at a smooth 20 ms cadence, so some
+# polls land between bursts (see `_aec_loop`). Logged in the periodic RMS
+# line; above roughly 2 Hz, carry-forward is doing more work than expected.
 _ref_starved_frames = 0
 
 
@@ -1062,11 +993,11 @@ def _cfg_bool(
 class _Aec3Engine:
     """WebRTC AEC3 via the jasper_aec3 v1.3-3 (legacy) pybind11 binding.
 
-    Splits each FRAME_SAMPLES (20 ms) buffer into 2× 10 ms windows
-    internally, calls ProcessReverseStream + ProcessStream per
-    window, returns the joined AEC'd capture. Top-level
-    AudioProcessing::Config knobs only (no deep EchoCanceller3Config
-    access). Fallback engine when the v2 binding isn't built.
+    Splits each FRAME_SAMPLES (20 ms) buffer into 2× 10 ms windows, calls
+    ProcessReverseStream + ProcessStream per window, and returns the joined
+    AEC'd capture. Top-level AudioProcessing::Config knobs only — no deep
+    EchoCanceller3Config access. The mandatory fallback engine when the v2
+    binding is unavailable or unverified.
     """
 
     def __init__(
@@ -1113,67 +1044,19 @@ class _Aec3Engine:
         return self._aec.process(mic, ref)
 
     def close(self) -> None:
-        # The pybind11 wrapper's std::unique_ptr<AudioProcessing>
-        # is freed when the Python Aec3 instance is GC'd. No
-        # explicit teardown needed.
+        # The pybind11 wrapper's std::unique_ptr<AudioProcessing> is freed
+        # when the Python Aec3 instance is GC'd — no explicit teardown.
         pass
 
 
 class _Aec3V2Engine:
     """WebRTC AEC3 via the jasper_aec3 v2.1 vendored-static binding.
 
-    Exposes the deep EchoCanceller3Config knobs the v1 binding can't
-    reach — required for the BEST_A canonical config from the
-    2026-05-22 tuning campaign. Defaults to BEST_A; env vars override
-    each knob individually.
-
-    BEST_A config (the Aec3V2 constructor's pybind11 defaults already
-    match these — no override needed for default behavior):
-        filter_refined_length_blocks=30
-        ep_strength_bounded_erl=False
-        ep_strength_default_gain=0.3
-        erle_max_l=1.5, erle_max_h=1.0
-        erle_onset_detection=False
-        use_stationarity_properties=True
-        conservative_hf_suppression=True
-        normal_mask_hf_enr_transparent=0.3
-        normal_mask_hf_enr_suppress=0.4
-        normal_mask_hf_emr_transparent=0.3
-        normal_max_dec_factor_lf=0.05
-        nearend_average_blocks=4
-        nearend_mask_hf_enr_transparent=0.1
-        nearend_mask_hf_enr_suppress=0.3
-        nearend_mask_hf_emr_transparent=0.3
-        nearend_max_dec_factor_lf=0.25
-        nearend_max_inc_factor=2.0
-        dominant_nearend_snr_threshold=30
-        dominant_nearend_hold_duration=50
-        dominant_nearend_enr_threshold=0.25
-        dominant_nearend_trigger_threshold=12
-
-    Env-var overrides (all optional; default to BEST_A):
-        JASPER_AEC_FILTER_LENGTH        (int, default 30)
-        JASPER_AEC_BOUNDED_ERL          (bool, default false)
-        JASPER_AEC_DEFAULT_GAIN         (float, default 0.3)
-        JASPER_AEC_ERLE_MAX_L           (float, default 1.5)
-        JASPER_AEC_ERLE_MAX_H           (float, default 1.0)
-        JASPER_AEC_ERLE_ONSET           (bool, default false)
-        JASPER_AEC_USE_STATIONARITY     (bool, default true)
-        JASPER_AEC_CONSERVATIVE_HF      (bool, default true)
-        JASPER_AEC_MASK_HF_ENR_T        (float, default 0.3)
-        JASPER_AEC_MASK_HF_ENR_S        (float, default 0.4)
-        JASPER_AEC_MASK_HF_EMR_T        (float, default 0.3)
-        JASPER_AEC_MAX_DEC_LF           (float, default 0.05)
-        JASPER_AEC_NEAREND_AVERAGE_BLOCKS      (int, default 4)
-        JASPER_AEC_NEAREND_MASK_HF_ENR_T       (float, default 0.1)
-        JASPER_AEC_NEAREND_MASK_HF_ENR_S       (float, default 0.3)
-        JASPER_AEC_NEAREND_MASK_HF_EMR_T       (float, default 0.3)
-        JASPER_AEC_NEAREND_MAX_DEC_LF          (float, default 0.25)
-        JASPER_AEC_NEAREND_MAX_INC             (float, default 2.0)
-        JASPER_AEC_DND_SNR_THRESHOLD           (float, default 30)
-        JASPER_AEC_DND_HOLD_DURATION           (int, default 50)
-        JASPER_AEC_DND_ENR_THRESHOLD           (float, default 0.25)
-        JASPER_AEC_DND_TRIGGER_THRESHOLD       (int, default 12)
+    Exposes the deep EchoCanceller3Config knobs the v1 binding cannot reach.
+    Every default below is the BEST_A canonical config, which is also what
+    the Aec3V2 constructor's own defaults carry (see jasper_aec3 for
+    per-knob rationale); each is individually overridable by the
+    `JASPER_AEC_*` env var named at its call site.
     """
 
     def __init__(
@@ -1183,7 +1066,7 @@ class _Aec3V2Engine:
     ) -> None:
         from jasper_aec3 import Aec3V2
 
-        # Top-level (shared with v1)
+        # Top-level, shared with v1
         ns_enabled = _cfg_bool("JASPER_AEC_NS_ENABLED", "1", overrides)
         ns_level = _cfg_value("JASPER_AEC_NS_LEVEL", "low", overrides).strip().lower()
         agc1_enabled = _cfg_bool("JASPER_AEC_AGC1_ENABLED", "1", overrides)
@@ -1319,14 +1202,13 @@ def _select_engine(
     overrides: dict[str, str] | None = None,
     label: str | None = None,
 ):
-    """Pick the AEC engine to use.
+    """Pick the AEC engine and return it ready to `.process()`.
 
-    JASPER_AEC_BINDING=v2 prefers v2; =v1 forces v1; default (=auto)
-    tries v2 first. Both v2 modes require the activation marker, source
-    fingerprint, and extension digest to agree; an orphan/stale native module
-    is never imported. Any unavailable or unverified v2 path falls back to the
+    JASPER_AEC_BINDING=v2 prefers v2; =v1 forces v1; default (=auto) tries v2
+    first. Both v2 modes require the activation marker, source fingerprint,
+    and extension digest to agree — an orphan or stale native module is never
+    imported. Any unavailable or unverified v2 path falls back to the
     mandatory v1 binding.
-    Returns an engine instance ready to call .process().
     """
     pref = os.environ.get("JASPER_AEC_BINDING", "auto").strip().lower()
     if pref == "v1":
@@ -1366,31 +1248,18 @@ class _SimpleAGC:
     """Frame-rate peak-tracking AGC for the raw mic UDP leg.
     EXPERIMENTAL — gated off by default.
 
-    Tracks per-frame peak with asymmetric attack/release smoothing,
-    computes the gain to bring the envelope toward `target_dbfs`,
-    capped at `max_gain_db`. Mirrors WebRTC AGC1 (kAdaptiveDigital)
-    behaviour without a second AudioProcessing instance — vectorised
-    numpy, ~tens of microseconds per 80 ms frame on a Pi 5.
+    Tracks per-frame peak with asymmetric attack/release smoothing and
+    computes the gain that brings the envelope toward `target_dbfs`, capped
+    at `max_gain_db`. Mirrors WebRTC AGC1 (kAdaptiveDigital) without a second
+    AudioProcessing instance — vectorised numpy, ~tens of microseconds per
+    80 ms frame on a Pi 5. Defaults match the AGC1 settings the AEC pipeline
+    already uses so both legs land at a similar output level.
 
-    Defaults match the AGC1 settings the AEC pipeline already uses
-    (JASPER_AEC_AGC1_TARGET_DBFS=9, _MAX_GAIN_DB=18) so the raw leg's
-    output level lands in the same ballpark as the AEC leg's.
-
-    KNOWN BUG (2026-05-24): hard-clips at full scale on transients
-    after the gain has ramped up across attempts. The release
-    coefficient slowly raises gain during quiet periods, and a sudden
-    loud syllable pushes the output past int16 max, where np.clip
-    hard-clips it. Cell 3 of the test matrix saw peaks at exactly
-    0.0 dB on attempts 3-7 of a 7-attempt run, and OpenAI's STT
-    returned empty transcripts on the distorted audio. Two fixes
-    before this is production-ready: (1) replace np.clip with tanh
-    soft-limit or a one-frame look-ahead peak limiter that reduces
-    gain pre-multiply; (2) optionally pair with a noise-suppression
-    stage so the AGC isn't amplifying background noise during pauses.
-    The cleaner long-term answer may be a second WebRTC AudioProcessing
-    instance with AEC disabled and AGC1+NS+HPF enabled — Option B in
-    the handoff doc. Until then, keep `JASPER_AEC_RAW_AGC_ENABLED`
-    OFF in production.
+    Keep `JASPER_AEC_RAW_AGC_ENABLED` OFF in production: the release
+    coefficient raises gain during quiet periods, so a sudden loud syllable
+    pushes the output past int16 max where `np.clip` hard-clips it — audible
+    distortion that has cost whole transcripts. Making it production-ready
+    needs a soft limit or one-frame look-ahead in place of that clip.
     """
 
     def __init__(
@@ -1408,8 +1277,8 @@ class _SimpleAGC:
         self._release_c = math.exp(-frame_sec / max(release_sec, 1e-4))
         self._envelope = 1e-6
         self._gain = 1.0
-        # Gain glide: smooth gain transitions over ~3 frames (~240 ms)
-        # so adapt steps don't introduce audible pumping.
+        # Gain glide: smooths gain transitions over ~3 frames (~240 ms) so
+        # adapt steps don't introduce audible pumping.
         self._gain_smooth_c = 0.5
 
     def process(self, pcm_int16: bytes) -> bytes:
@@ -1442,7 +1311,7 @@ def _resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
     `RETIRED_REF_SOURCE_ALSA` is converged, not rejected: a parked box can
     still carry it on disk, and refusing to start would leave jasper-voice
     with an unfed UDP mic. Anything else is a typo or a source this bridge
-    genuinely cannot read, which stays a hard failure as it always was.
+    genuinely cannot read, and stays a hard failure.
 
     Call this before anything reads `config.ref_source` — the bridge-stats
     snapshot publishes it as runtime provenance that `jasper-doctor` trusts,
@@ -1473,8 +1342,8 @@ def _resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
 def _validate_mic_device(config: BridgeConfig | None = None) -> None:
     """Fail before opening the far-end reference if the mic is absent.
 
-    Validate the mic first so missing hardware fails before we start the
-    reference thread and its UDP socket work.
+    Ordering matters: missing hardware must fail before the reference thread
+    and its UDP socket start.
     """
     config = config or BridgeConfig.from_env()
     try:
@@ -1520,27 +1389,21 @@ class _ReferenceFrameConverter:
     shared DSP contract: stereo folding, exact-size accumulation, resampling,
     stateful HPF, gain, clipping telemetry, and int16 framing.
 
-    Why L+R sum (not left-only): the speakers radiate the sum of L and R
-    into a single mic. AEC3 is mono-reference, so we get one shot at
-    modeling the echo path. Feeding it L-only would blind it to whatever is
-    panned to R — bass, vocals, lead instruments — which for typical stereo
-    music is a substantial portion of the energy. Summing matches what the
-    room actually contains. (The XMOS chip's USB-IN AEC requires left-only
+    L+R are summed, not left-only: the speakers radiate the sum into a single
+    mic and AEC3 is mono-reference, so an L-only reference would be blind to
+    whatever is panned right. (The XMOS chip's USB-IN AEC requires left-only
     per datasheet §3.3, but that is the chip's own reference, not this one.)
 
-    Why accumulate rather than convert per delivery: a transport can hand
-    over partial or oversized buffers, so we accumulate at 48 kHz and only
-    emit complete `capture_block`-sized chunks. That guarantees every queued
-    frame matches the mic frame size — the WebRTC AEC3 engine enforces equal
-    lengths strictly.
+    Accumulate rather than convert per delivery: a transport can hand over
+    partial or oversized buffers, so frames accumulate at 48 kHz and only
+    complete `capture_block`-sized chunks are emitted. WebRTC AEC3 strictly
+    enforces equal mic and reference lengths.
 
-    Optional pre-AEC reference gain (`JASPER_AEC_REF_GAIN_DB`) boosts the
-    digital ref before it enters the AEC engine. AEC3 was tuned for
-    conferencing setups where ref RMS ≈ mic RMS or ref is louder; in our
-    smart-speaker setup the digital ref is typically 25-30 dB *quieter* than
-    what the mic captures (amp + speakers + room amplify the chain).
-    Boosting ref closes that gap so the adaptive filter operates near its
-    design point.
+    `JASPER_AEC_REF_GAIN_DB` boosts the digital reference before the engine
+    sees it. AEC3 is tuned for conferencing, where ref RMS ≈ mic RMS or
+    louder; here the digital reference is typically 25-30 dB *quieter* than
+    what the mic captures, because amp + speakers + room amplify the acoustic
+    path. The boost puts the adaptive filter back near its design point.
     """
 
     def __init__(self, *, ref_gain_db: float, ref_hpf_hz: float) -> None:
@@ -1644,10 +1507,10 @@ def _outputd_ref_udp_thread(
     """Receive outputd's final speaker-reference UDP tap and convert it
     to the 16 kHz mono frames AEC3 consumes.
 
-    This is the bridge's only reference transport. It is not a clocked
-    ALSA capture loop: outputd sends the exact post-mix buffer it writes
-    to the DAC. Production software AEC, chip-AEC, corpus, and diagnostics
-    all use it, so they all see the same final speaker reference.
+    The bridge's only reference transport, and not a clocked ALSA capture
+    loop: outputd sends the exact post-mix buffer it writes to the DAC.
+    Software AEC, chip-AEC, corpus, and diagnostics all read it, so they all
+    see the same final speaker reference.
     """
     config = config or BridgeConfig.from_env()
     converter = _ReferenceFrameConverter.from_env()
@@ -1693,17 +1556,16 @@ def _mic_thread(
     chip_beam_plan: _mic_profile.ChipBeamPlan | None = None,
     config: BridgeConfig | None = None,
 ) -> None:
-    """Capture 16k 6ch from XVF chip (6-ch firmware), pluck
-    channel MIC_CHANNEL_INDEX (default 1 = the normal WebRTC-AEC3
-    near-end feed) and push mono int16 frames into mic_q. In default
-    production SHF_BYPASS=1 makes channels 0/1 raw-ish. In chip-AEC
-    mode SHF_BYPASS=0 and OP_L/R=[7,0]/[7,1] make channels 0/1 the
-    fixed 150°/210° ASR beams.
+    """Capture 16 kHz 6-ch from the XVF chip, pluck channel
+    MIC_CHANNEL_INDEX and push mono int16 frames into `mic_q`.
 
-    If `raw0_q` is provided, ALSO extract channel 2 (raw mic 0, no
-    chip DSP) and push it onto that queue. Used by the truly-raw
-    UDP leg on OUT_PORT_RAW0. Independent queue + extraction so a
-    backlog on one doesn't stall the other.
+    In chip-AEC mode `SHF_BYPASS=0` with `OP_L/R=[7,0]/[7,1]` makes channels
+    0/1 the fixed 150°/210° ASR beams; in default production `SHF_BYPASS=1`
+    makes them raw-ish.
+
+    When `raw0_q` is provided, channel 2 (raw mic 0, no chip DSP) is ALSO
+    extracted onto that queue for the OUT_PORT_RAW0 leg. Independent queue
+    and extraction so a backlog on one cannot stall the other.
     """
     config = config or BridgeConfig.from_env()
     mic_drop_log = _DropLogDebouncer()
@@ -1725,17 +1587,16 @@ def _mic_thread(
                     drops, window_sec,
                 )
         if raw0_q is not None:
-            # Channel 2 = raw mic 0 ADC output, bypasses chip's
-            # BF/NS/AGC/HPF. ".copy=True" so the slice doesn't share
-            # backing storage with `indata` (which sounddevice reuses).
+            # Channel 2 = raw mic 0 ADC output, bypassing the chip's
+            # BF/NS/AGC/HPF. `copy=True` so the slice does not share backing
+            # storage with `indata`, which sounddevice reuses.
             raw0 = indata[:, 2].astype(np.int16, copy=True)
             try:
                 raw0_q.put_nowait(raw0.tobytes())
             except Full:
+                # Observational leg: drop quietly rather than flood the
+                # journal during a stall the mic_q path already reports.
                 _bridge_stats.inc_nested("queue_drops", "raw0")
-                # The raw0 leg is observational; if it can't keep up,
-                # drop quietly so we don't spam the journal during a
-                # bridge stall that's already noisy via the mic_q path.
                 pass
         if chip_aec_qs and chip_beam_plan:
             for beam in chip_beam_plan.legs:
@@ -1782,9 +1643,8 @@ def _usb_mic_thread(
 ) -> None:
     """Capture optional cheap-USB-mic audio for corpus-only legs.
 
-    This stream is deliberately independent of the XVF mic stream so
-    unplugging or starving the cheap mic can't stall production AEC.
-    The bridge only starts this thread when
+    Deliberately independent of the XVF mic stream so unplugging or starving
+    the cheap mic cannot stall production AEC. Started only when
     JASPER_AEC_CORPUS_USB_ENABLED=1.
     """
 
@@ -1840,20 +1700,17 @@ class _MicStarvationWatchdog:
 
     That detector resets to zero on a single mic frame, so an intermittent
     trickle — a frame every few seconds — keeps it oscillating below the
-    threshold forever, even though the mic is effectively dead (well under
-    1 usable frame/s vs ~12.5/s healthy). Observed 2026-05-31: the bridge ran
-    ~13 h in that state with NRestarts=0 until a manual restart.
+    threshold indefinitely even though the mic is effectively dead (well
+    under 1 usable frame/s against ~12.5/s healthy).
 
     This watchdog measures the mic frame *rate* over rolling windows and
     flags a restart only after `max_starved_windows` *consecutive* low-rate
-    windows. Conservative by design: a brief blip (one low window) clears
-    when the next window recovers, a healthy or merely-degraded mic never
-    trips, and `max_starved_windows <= 0` disables it entirely.
+    windows. Conservative by design: one low window clears when the next
+    recovers, a healthy or merely degraded mic never trips, and
+    `max_starved_windows <= 0` disables it entirely.
 
-    No threads and no blocking I/O — it emits one diagnostic warning per
-    starved window (the buildup log) — so it still unit-tests directly: feed
-    it `record_frame()` on each consumed frame and `stalled(now)` once per
-    loop iteration with a monotonic clock.
+    No threads and no blocking I/O: feed it `record_frame()` per consumed
+    frame and `stalled(now)` once per loop iteration with a monotonic clock.
     """
 
     def __init__(
@@ -1875,10 +1732,10 @@ class _MicStarvationWatchdog:
         self._frames += 1
 
     def stalled(self, now: float) -> bool:
-        """Call every loop iteration with a monotonic timestamp. Returns
-        True once the mic frame rate has stayed below the floor for
-        `max_starved_windows` consecutive windows — i.e. time to exit
-        non-zero for a systemd restart."""
+        """Call every loop iteration with a monotonic timestamp. True once
+        the mic frame rate has stayed below the floor for
+        `max_starved_windows` consecutive windows — time to exit non-zero
+        for a systemd restart."""
         if self._max_starved <= 0:
             return False
         if self._window_start is None:
@@ -1886,12 +1743,10 @@ class _MicStarvationWatchdog:
             return False
         if now - self._window_start < self._window_sec:
             return False
-        # A full window elapsed — score it, then roll over.
         if self._frames < self._min_frames:
             self._starved_windows += 1
-            # Buildup logging — mirrors the continuous detector's "stall
-            # growing" warnings so a slow-drip restart is never a surprise in
-            # the journal: the operator watches the rate collapse first.
+            # Mirrors the continuous detector's "stall growing" warnings so a
+            # slow-drip restart is never a surprise in the journal.
             logger.warning(
                 "mic starvation: %d frames in last ~%.0fs window (floor %d) "
                 "— %d/%d low-rate windows before bridge restart",
@@ -2042,11 +1897,10 @@ def _build_usb_optional_paths(
             _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
             and config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
         ):
-            # In USB AEC3 sweep mode, the normal usb_webrtc leg becomes
-            # the 40 ms member of the delay sweep. The three stable
-            # variant slots carry the same edge-combo tuning at longer
-            # stream-delay hints, giving four same-utterance USB AEC3
-            # candidates without adding more sockets.
+            # In USB AEC3 sweep mode the normal usb_webrtc leg becomes the
+            # 40 ms member of the delay sweep; the three variant slots carry
+            # the same edge-combo tuning at longer stream-delay hints. Four
+            # same-utterance USB AEC3 candidates, no extra sockets.
             usb_webrtc_overrides = USB_AEC3_SWEEP_BASELINE_OVERRIDES
             usb_webrtc_label = "usb_webrtc/aec3_sweep_delay_40"
             usb_webrtc_display_label = USB_AEC3_SWEEP_BASELINE_LABEL
@@ -2213,9 +2067,9 @@ def _build_dtln_optional_path(
                 dtln_size, config.out_host, config.out_port_dtln,
             )
         except Exception as e:  # noqa: BLE001
-            # DTLN is an optional tertiary leg. Bad config, malformed ONNX,
-            # or another ordinary initialization failure must not crash-loop
-            # the healthy primary AEC3 bridge into systemd's reboot ladder.
+            # DTLN is an optional tertiary leg: bad config, malformed ONNX or
+            # any other initialization failure must not crash-loop the
+            # healthy primary AEC3 bridge into systemd's reboot ladder.
             if dtln_emitter is not None:
                 with suppress(Exception):
                     dtln_emitter.close()
@@ -2225,10 +2079,10 @@ def _build_dtln_optional_path(
                 with suppress(Exception):
                     dtln_engine.close()
                 dtln_engine = None
-            # Degraded state lands in the stats snapshot so the doctor
-            # can flag it long after this line ages out of the journal
-            # window — voice keeps listening on the permanently-unfed
-            # :9878 leg otherwise with zero surface.
+            # Degraded state lands in the stats snapshot so the doctor can
+            # flag it after this line ages out of the journal window: voice
+            # otherwise keeps listening on a permanently unfed leg with no
+            # surface anywhere.
             _bridge_stats.set_leg_engine(
                 "dtln", enabled=True, loaded=False, error=str(e),
             )
@@ -2267,37 +2121,33 @@ def _aec_loop(  # noqa: PLR0915
 ) -> None:
     """Drain mic/ref queues, run the selected AEC path, and emit UDP legs.
 
-    Each iteration consumes one mic frame and one reference frame in
-    arrival order. If the reference queue is empty, the loop carries
-    forward the last real reference frame instead of injecting silence;
-    that keeps AEC3's adaptive filter fed while tolerating bursty
-    reference delivery. Primary, raw, corpus, chip-AEC, and optional
-    engine outputs are packetized into per-leg UDP streams.
+    Each iteration consumes one mic frame and one reference frame in arrival
+    order. An empty reference queue carries the last real reference frame
+    forward rather than injecting silence, which keeps AEC3's adaptive filter
+    fed through bursty reference delivery. Primary, raw, corpus, chip-AEC and
+    optional-engine outputs are packetized into per-leg UDP streams.
 
-    Debug-record mode: if `JASPER_AEC_DEBUG_RECORD_DIR` is set, the
-    bridge writes the AEC engine's input mic stream and pre-gain output
-    to WAV files in that directory for offline ERLE analysis.
+    With `JASPER_AEC_DEBUG_RECORD_DIR` set, the engine's input mic stream,
+    its pre-gain output and the reference are also written to WAV files there
+    for offline ERLE analysis.
     """
     config = config or BridgeConfig.from_env()
-    # Post-AEC static gain applied to the engine output before it
-    # reaches jasper-voice over UDP. Restores level into openWakeWord's training
-    # distribution — the HA Voice PE pattern (`gain_factor: 4`) — when
-    # the chip's mic preamp delivers a quiet AEC output. Default 0 dB
-    # (off). Soft-clipped via tanh on the way out so high gain doesn't
-    # injecting hard-clip distortion into the wake-word input.
+    # Post-AEC static gain, applied to the engine output before it reaches
+    # jasper-voice over UDP. Restores level into openWakeWord's training
+    # distribution when the chip's mic preamp delivers a quiet AEC output;
+    # 0 dB (off) by default, and soft-clipped via tanh on the way out so a
+    # high gain cannot push hard-clip distortion into the wake-word input.
     global _ref_clipped_samples, _ref_total_samples
     global _out_clipped_samples, _out_total_samples
     global _ref_starved_frames
     mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
-    # Raw-leg AGC: optional adaptive level normalization for the
-    # chip-direct UDP stream (udp:9877). Off by default (legacy
-    # behaviour). When on, mirrors the AEC pipeline's AGC1 settings
-    # so the raw stream's output level lands in the same ballpark.
-    # Use this when sending the raw leg to the LLM — without it the
-    # chip's mic output is below OpenAI's server-VAD threshold for
-    # most of a typical utterance, so the model only sees ~400 ms of
-    # a 1.2 s phrase.
+    # Raw-leg AGC: optional adaptive level normalization for the chip-direct
+    # UDP stream, off by default, mirroring the AEC pipeline's AGC1 settings
+    # so both legs land at a similar level. Needed when the raw leg goes to
+    # the LLM: without it the chip's mic output sits below the server-VAD
+    # threshold for most of a typical utterance, so the model sees only a
+    # fraction of the phrase.
     raw_agc_enabled = (
         _env_bool("JASPER_AEC_RAW_AGC_ENABLED", "0")
         and not production_chip_aec_enabled
@@ -2319,17 +2169,15 @@ def _aec_loop(  # noqa: PLR0915
         "on" if raw_agc_enabled else "off",
         raw_agc_target_dbfs, raw_agc_max_gain_db,
     )
-    # Stall-recovery threshold: consecutive seconds of empty mic_q
-    # before we bail for a systemd-driven restart. 0 = disabled
-    # (legacy "log forever" behaviour). See BridgeStalled docstring.
+    # Stall-recovery threshold: consecutive seconds of empty mic_q before
+    # bailing for a systemd-driven restart; 0 disables it. See BridgeStalled.
     stall_restart_sec = int(
         float(os.environ.get("JASPER_AEC_STALL_RESTART_SEC", "5"))
     )
     consecutive_empty_sec = 0
-    # Additive slow-drip stall watchdog (see _MicStarvationWatchdog). The
-    # consecutive-empty check above resets on a single frame, so an
-    # intermittent trickle never trips it; this escalates a sustained low
-    # frame rate. JASPER_AEC_STALL_DRIP_MAX_WINDOWS=0 disables it.
+    # Additive slow-drip stall watchdog: the consecutive-empty check above
+    # resets on a single frame, so an intermittent trickle never trips it.
+    # JASPER_AEC_STALL_DRIP_MAX_WINDOWS=0 disables it.
     drip_watchdog = _MicStarvationWatchdog(
         max_starved_windows=int(
             os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
@@ -2349,12 +2197,9 @@ def _aec_loop(  # noqa: PLR0915
         production_chip_aec_enabled=production_chip_aec_enabled,
         chip_aec_primary_leg=chip_aec_primary_leg,
     )
-    # UDP output: localhost, non-blocking sendto. Replaces the old
-    # PortAudio RawOutputStream writing to hw:LoopbackAEC,0. `sendto`
-    # never blocks on `lo` at our rate (~256 kbps), so the main
-    # thread can always observe SIGTERM and exit cleanly inside
-    # `TimeoutStopSec=5s` — no more SIGKILL, no more snd-aloop
-    # kernel-state corruption.
+    # UDP output: localhost, non-blocking sendto. `sendto` never blocks on
+    # `lo` at this rate (~256 kbps), so the main thread can always observe
+    # SIGTERM and exit inside the unit's `TimeoutStopSec=5s`.
     emitters: dict[str, LegEmitter] = {}
 
     def add_emitter(
@@ -2374,10 +2219,10 @@ def _aec_loop(  # noqa: PLR0915
         )
 
     on_emitter = add_emitter("on", config.out_port)
-    # Dedicated non-wake consumer for the optional USB host microphone.  This
-    # duplicate keeps jasper-voice's frozen :9876 ownership intact; the
-    # jasper-usbmic service may bind/unbind independently with no effect on the
-    # primary wake/session carrier.
+    # Dedicated non-wake consumer for the optional USB host microphone. This
+    # duplicate keeps jasper-voice's frozen :9876 ownership intact: the
+    # jasper-usbmic service may bind and unbind independently with no effect
+    # on the primary wake/session carrier.
     usb_host_mic_emitter = (
         add_emitter(
             "usb_host_mic",
@@ -2388,16 +2233,11 @@ def _aec_loop(  # noqa: PLR0915
         if config.emit_usb_host_mic
         else None
     )
-    # Secondary socket carries the chip-direct mic (pre-AEC3),
-    # batched and packetized identically to the primary AEC ON
-    # stream. See OUT_PORT_RAW comment above for the rationale.
-    # Independent socket so a sendto failure on one stream doesn't
-    # affect the other.
+    # Chip-direct mic (pre-AEC3) and truly-raw mic 0, batched and packetized
+    # identically to the primary AEC ON stream (see OUT_PORT_RAW /
+    # OUT_PORT_RAW0). Each leg gets its own socket so a sendto failure on one
+    # cannot affect the others.
     raw_emitter = add_emitter("off", config.out_port_raw)
-    # 4th-leg socket for truly-raw mic 0 (chip channel 2). Same
-    # 1280-sample / 16 kHz mono int16 packet shape as the other
-    # legs. Independent socket so a sendto failure here doesn't
-    # affect the AEC ON or chip-direct paths.
     raw0_emitter = add_emitter("raw0", config.out_port_raw0)
     chip_aec_emitters: dict[str, LegEmitter] = {}
     if chip_aec_qs and chip_beam_plan:
@@ -2443,9 +2283,8 @@ def _aec_loop(  # noqa: PLR0915
         production_chip_aec_enabled=production_chip_aec_enabled,
         usb_raw_q=usb_raw_q,
     )
-    # Optional DTLN-aec parallel engine. Constructed once, mutated
-    # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
-    # for the streaming algorithm.
+    # Optional DTLN-aec parallel engine: constructed once, carrying LSTM
+    # state across calls. See jasper/aec_engines/dtln.py.
     dtln_engine, dtln_emitter = _build_dtln_optional_path(
         emitters,
         config,
@@ -2540,14 +2379,13 @@ def _aec_loop(  # noqa: PLR0915
         " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
     # Voice/wake LegEmitters aggregate four 320-sample frames into one
-    # 1280-sample UDP packet so UdpMicCapture keeps its established wire
-    # contract. The dedicated USB host-mic consumer emits each 320-sample
-    # frame immediately; it is latency-sensitive and has no voice consumer.
+    # 1280-sample UDP packet, holding UdpMicCapture's wire contract. The
+    # dedicated USB host-mic consumer emits each 320-sample frame
+    # immediately: it is latency-sensitive and has no voice consumer.
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
-    # Cold-start value for ref carry-forward. Used only until the first
-    # real ref frame arrives — after that, last_ref_bytes always holds
-    # a previously-real ref. See the drain block in the main loop for
-    # why we carry forward instead of falling back to silence.
+    # Cold-start value for ref carry-forward, used only until the first real
+    # ref frame arrives; after that `last_ref_bytes` always holds a
+    # previously-real reference.
     last_ref_bytes = silence
     frames_processed = 0
     chip_primary_missing_log = _DropLogDebouncer()
@@ -2588,7 +2426,6 @@ def _aec_loop(  # noqa: PLR0915
             )
             mic_wav = aec_wav = ref_wav = None
     last_log = 0.0
-    # Running sums for RMS computation across the log window.
     rms_window_frames = 0
     sum_mic_sq = 0.0
     sum_ref_sq = 0.0
@@ -2596,10 +2433,6 @@ def _aec_loop(  # noqa: PLR0915
 
     try:
         while not _shutdown.is_set():
-            # Slow-drip stall watchdog (additive to the consecutive-empty
-            # check below): catches a mic delivering frames too slowly to be
-            # usable but often enough to keep consecutive_empty_sec below
-            # threshold. See _MicStarvationWatchdog.
             if drip_watchdog.stalled(time.monotonic()):
                 raise BridgeStalled(
                     "mic frame rate collapsed to a slow drip (sustained "
@@ -2634,36 +2467,17 @@ def _aec_loop(  # noqa: PLR0915
                     )
                 continue
 
-            # Consume ONE ref frame per main-loop iteration, in order.
-            # If the queue is empty, carry forward the previous ref.
+            # Consume exactly ONE ref frame per iteration, in arrival order,
+            # carrying the previous frame forward when the queue is empty.
+            # The reference arrives in bursts while the mic delivers smoothly
+            # at the 20 ms cadence, so a burst is consumed one frame per
+            # iteration and at worst 1 frame in 3 is a 20 ms-stale
+            # carry-forward — within AEC3's delay-estimator tolerance.
             #
-            # Background (diagnosed on the retired ALSA ref path, whose
-            # dsnoop read delivered two periods back-to-back every ~40 ms;
-            # the invariant is transport-independent and still holds for
-            # outputd's UDP tap, which bursts for its own reasons): the
-            # reference arrives in bursts while the mic delivers smoothly
-            # at the bridge's 20 ms cadence.
-            #
-            # The original code's "drain to newest" pattern reacted to
-            # the burst by discarding the older of the two frames and
-            # using only the newest, then on the next iteration finding
-            # an empty queue. Two failure modes followed:
-            #   1. Fall back to `silence` → every other AEC frame got
-            #      zeroed ref → 25 Hz envelope artefact, AEC's
-            #      adaptive filter could not converge.
-            #   2. Carry forward newest → every other AEC frame was a
-            #      LITERAL byte-duplicate of its predecessor → 50 Hz
-            #      envelope artefact (audible as buzzing) AND half the
-            #      real ref data was being thrown away by the drain.
-            #
-            # Both prior approaches lost half the real reference. The
-            # correct shape is to take one frame per iteration, in
-            # arrival order. Burst → consume A this iteration, B next
-            # iteration, then 1 replay-from-carry while waiting for
-            # the next burst, repeat. Worst case: 1 in 3 frames is a
-            # 20 ms-stale carry-forward; that staleness is well within
-            # AEC3's delay-estimator tolerance and immediate replays
-            # of the same bytes are eliminated entirely.
+            # Do NOT drain to the newest frame: that discards half the real
+            # reference and leaves every other frame either zeroed (25 Hz
+            # envelope artefact, no filter convergence) or a byte-duplicate
+            # of its predecessor (50 Hz artefact, audible as buzzing).
             try:
                 last_ref_bytes = ref_q.get_nowait()
             except Empty:
@@ -2673,18 +2487,11 @@ def _aec_loop(  # noqa: PLR0915
             if emit_ref:
                 ref_emitter.emit(ref_bytes)
 
-            # Emit chip-direct mic on OUT_PORT_RAW BEFORE running
-            # the AEC engine. This is the "AEC OFF" leg the
-            # wake-telemetry dual-stream consumer wants — same
-            # bytes AEC3 is about to receive as near-end input.
-            # Batched and packetized identically to the primary
-            # stream. sendto failures here never block the AEC
-            # pipeline (independent socket, non-blocking, swallowed
-            # on EWOULDBLOCK).
-            # Optional AGC on the raw leg (does not touch the AEC3
-            # input below — engine.process still receives ungained
-            # mic_bytes so AEC3's adaptive filter doesn't see a
-            # moving level target).
+            # Emit the chip-direct mic BEFORE running the AEC engine, so the
+            # "AEC OFF" leg carries the same bytes AEC3 is about to receive
+            # as near-end input. Its optional AGC must not touch that input:
+            # engine.process below still gets ungained `mic_bytes`, so AEC3's
+            # adaptive filter never sees a moving level target.
             if not production_chip_aec_enabled:
                 raw_emit_bytes = (
                     raw_agc.process(mic_bytes) if raw_agc is not None
@@ -2692,14 +2499,12 @@ def _aec_loop(  # noqa: PLR0915
                 )
                 raw_emitter.emit(raw_emit_bytes)
 
-            # Truly-raw mic 0 (chip channel 2 — no chip DSP) UDP
-            # leg. Drained independently of mic_q so a backlog on
-            # one doesn't stall the other. The raw0_q is fed from
-            # the same PortAudio callback that feeds mic_q, so
-            # there's nominally one new raw0 frame per loop
-            # iteration; we drain at most one and carry on
-            # (silence-fill is fine — nobody time-aligns this
-            # stream to the AEC engine).
+            # Truly-raw mic 0 (chip channel 2, no chip DSP), drained
+            # independently of mic_q so a backlog on one cannot stall the
+            # other. The same PortAudio callback feeds both queues, so there
+            # is nominally one new raw0 frame per iteration; at most one is
+            # drained and a gap is simply skipped — nothing time-aligns this
+            # stream to the AEC engine.
             raw0_bytes = b""
             if raw0_q is not None:
                 try:
@@ -2771,9 +2576,9 @@ def _aec_loop(  # noqa: PLR0915
                 if engine is None:
                     raise RuntimeError("AEC3 engine missing outside chip-AEC mode")
                 clean = engine.process(mic_bytes, ref_bytes)
-            # Save pre-gain output for the RMS metric — we want
-            # "attenuation" to reflect what AEC actually accomplished,
-            # not how much the post-gain stage amplified the residual.
+            # Pre-gain output for the RMS metric: "attenuation" must reflect
+            # what the AEC accomplished, not how much the post-gain stage
+            # amplified the residual.
             clean_aec_only = clean
             usb_mic_aec_only = clean_aec_only
             usb_mic_uses_clean = True
@@ -2781,9 +2586,9 @@ def _aec_loop(  # noqa: PLR0915
             effective_usb_leg = selected_usb_leg
             fallback_active = bool(usb_mic_source["fallback_active"])
             if selected_usb_leg == USB_MIC_RAW_XVF_LEG:
-                # raw0_bytes is the physical XVF channel-2 frame already
-                # captured by this bridge. Reuse it directly: no parallel
-                # capture stack, no voice gain, and no clean/chip fallback.
+                # raw0_bytes is the physical XVF channel-2 frame this bridge
+                # already captured: reuse it directly — no parallel capture
+                # stack, no voice gain, and no clean/chip fallback.
                 usb_mic_aec_only = raw0_bytes
                 usb_mic_uses_clean = False
                 if not raw0_bytes:
@@ -2836,12 +2641,10 @@ def _aec_loop(  # noqa: PLR0915
                 usb_mic_effective_leg = effective_usb_leg
                 usb_mic_fallback_active = fallback_active
 
-            # DTLN-aec parallel processing path (optional 3rd UDP leg).
-            # Runs AFTER the AEC3 engine.process so the wake loop's
-            # primary mic stream is on its normal critical path; the
-            # extra ~1.5 ms of DTLN inference per frame is on the slack
-            # side of the 20 ms frame budget. State is carried by the
-            # DTLNEngine instance across calls.
+            # Optional DTLN-aec leg, run AFTER engine.process so the wake
+            # loop's primary mic stream keeps its normal critical path: the
+            # extra ~1.5 ms of DTLN inference per frame spends the slack in
+            # the 20 ms frame budget.
             if dtln_engine is not None:
                 failed_dtln_engine = dtln_engine
                 dtln_engine, dtln_clean, dtln_error = _process_optional_engine(
@@ -2851,10 +2654,10 @@ def _aec_loop(  # noqa: PLR0915
                     failure_message=None,
                 )
                 if dtln_error is not None:
-                    # DTLN is observational; preserve the primary AEC3 path
-                    # and make this runtime transition authoritative for the
-                    # stats writer and doctor. Nulling the engine guarantees
-                    # one event rather than one warning per audio frame.
+                    # DTLN is observational: preserve the primary AEC3 path
+                    # and make this transition authoritative for the stats
+                    # writer and doctor. Nulling the engine keeps it to one
+                    # event rather than one warning per audio frame.
                     with suppress(Exception):
                         failed_dtln_engine.close()
                     failed_dtln_emitter = emitters.pop("dtln", None)
@@ -2926,10 +2729,9 @@ def _aec_loop(  # noqa: PLR0915
                     if config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB:
                         emit_aec3_sweep(usb_bytes, ref_bytes)
 
-            # Debug WAV record: writes happen here so the captured
-            # frames are exactly what the bridge measured for its
-            # internal "attenuation" log + what the AEC emitted before
-            # the post-gain stage. Time-aligned to the sample.
+            # Written here, sample-aligned, so the WAVs hold exactly what the
+            # bridge measured for its "attenuation" log and what the AEC
+            # emitted before the post-gain stage.
             if mic_wav is not None:
                 try:
                     mic_wav.writeframes(mic_bytes)
@@ -2948,14 +2750,14 @@ def _aec_loop(  # noqa: PLR0915
             if usb_host_mic_emitter is not None:
                 usb_mic_clean = clean
                 if selected_usb_leg == USB_MIC_RAW_XVF_LEG:
-                    # Missing raw frames remain missing. An explicit lab
+                    # Missing raw frames remain missing: an explicit lab
                     # source must never silently become production-clean
-                    # audio for even one USB-export frame.
+                    # audio, not even for one USB-export frame.
                     usb_mic_clean = usb_mic_aec_only
                 elif not usb_mic_uses_clean:
-                    # USB beam selection is downstream-only, but it must keep
-                    # the same output-level contract as the primary clean leg.
-                    # Its clipping does not belong in voice's out_clip metric.
+                    # USB beam selection is downstream-only but keeps the same
+                    # output-level contract as the primary clean leg. Its
+                    # clipping does not belong in voice's out_clip metric.
                     usb_mic_clean, _clipped, _total = _apply_mic_output_gain(
                         usb_mic_aec_only,
                         mic_gain_lin,
@@ -3050,8 +2852,8 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s aec-bridge %(levelname)s %(message)s",
     )
-    # Log flight recorder + runtime debug toggle (/system Debug card).
-    # See jasper/flight_recorder.py.
+    # Log flight recorder + runtime debug toggle. See
+    # jasper/flight_recorder.py.
     from .. import flight_recorder
     flight_recorder.install("aec")
     config = BridgeConfig.from_env(log_sweep=True, logger_=logger)
@@ -3164,7 +2966,6 @@ def main() -> int:
 
     engine = None if production_chip_aec_enabled else _select_engine()
 
-    # Signal handlers for clean shutdown
     def on_signal(signum, _frame):
         logger.info("received signal %d, shutting down", signum)
         _shutdown.set()
@@ -3173,10 +2974,8 @@ def main() -> int:
 
     ref_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
     mic_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
-    # 4th-leg queue for truly-raw mic 0 (chip channel 2 — no chip
-    # DSP). The mic thread fills it from the same callback that
-    # fills mic_q; the AEC loop drains it independently to emit on
-    # OUT_PORT_RAW0. See OUT_PORT_RAW0 comment for rationale.
+    # Filled by the same mic callback that fills mic_q, drained
+    # independently by the AEC loop for the OUT_PORT_RAW0 leg.
     raw0_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
     chip_aec_qs: dict[str, Queue[bytes]] | None = (
         {beam.token: Queue(maxsize=QUEUE_MAXSIZE) for beam in chip_beam_plan.legs}
@@ -3216,15 +3015,11 @@ def main() -> int:
     )
     stats_t.start()
 
-    # Tier 1 of the resilience ladder. Bumped after each successful
-    # frame in `_aec_loop`; if the loop wedges (e.g. mic InputStream
-    # stops invoking its callback after a USB underrun on the XVF
-    # UAC2 capture), systemd's `WatchdogSec=` expires and revives
-    # us via `Restart=on-watchdog`. The original PortAudio
-    # output-stream wedge that motivated this rung is now gone
-    # under PR 2's UDP transport — `socket.sendto` is non-blocking
-    # on `lo` at our rate — but the heartbeat still protects against
-    # any future in-process hang. See jasper/watchdog.py header.
+    # Tier 1 of the resilience ladder, bumped after each successful frame in
+    # `_aec_loop`: if the loop wedges (e.g. the mic InputStream stops
+    # invoking its callback after a USB underrun on the XVF UAC2 capture),
+    # the daemon stops patting, the unit's `WatchdogSec=` expires, and
+    # systemd revives it. See jasper/watchdog.py.
     heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
     heartbeat.start()
 
