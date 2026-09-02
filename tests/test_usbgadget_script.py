@@ -28,6 +28,9 @@ from pathlib import Path
 
 import pytest
 
+from jasper.local_sources.markers import marker_path
+from jasper.music_sources import Source
+
 ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
 DOWN = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-down"
@@ -860,11 +863,7 @@ def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
     names are asserted absent, so re-adding either gate fails here.
     """
 
-    # The default probe is a marker-file existence test: present = allowed,
-    # absent = blocked. The path is the shared contract with the source
-    # coordinator (jasper/local_sources/markers.py MARKER_DIR) and the units'
-    # own ConditionPathExists=.
-    audio_marker_path = "/run/jasper-source-intent/allowed/usbsink"
+    audio_marker_path = marker_path(Source.USBSINK.value)
     direct_armed_probe = (
         "/opt/jasper/.venv/bin/python -m jasper.fanin.status "
         "--usbsink-direct-armed"

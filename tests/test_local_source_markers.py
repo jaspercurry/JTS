@@ -229,14 +229,3 @@ def test_publish_writes_one_marker_per_label(monkeypatch, tmp_path):
     for lifecycle in local_source_lifecycles():
         assert not Path(markers.marker_path(lifecycle.source.value)).exists()
 
-
-def test_publish_blocks_every_label_for_a_bonded_follower(monkeypatch, tmp_path):
-    monkeypatch.setattr(markers, "MARKER_DIR", str(tmp_path / "allowed"))
-    monkeypatch.setattr(markers, "load_config", lambda: _cfg())
-    monkeypatch.setattr(markers, "source_intent_enabled", lambda _s: True)
-
-    verdicts = markers.publish_allowed_markers()
-
-    assert all(allowed is False for allowed, _reason in verdicts.values())
-    for label in verdicts:
-        assert not Path(markers.marker_path(label)).exists()

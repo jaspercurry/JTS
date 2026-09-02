@@ -89,8 +89,7 @@ class _FakeHost:
     calls: list[tuple] = field(default_factory=list)
     fail: set[tuple[str, str]] = field(default_factory=set)
     available: set[str] = field(default_factory=set)
-    # Length of `calls` at each publish: 0 proves markers land before any
-    # systemd action in the pass.
+    # Length of `calls` at each publish; 0 means "before any systemd action".
     published_markers: list[int] = field(default_factory=list)
 
     def set_enabled(self, unit: str, enabled: bool) -> tuple[int, str]:
@@ -1937,7 +1936,7 @@ def test_mux_is_started_only_when_the_shared_verdict_allows(
     monkeypatch.setattr(
         source_intent,
         "_run_unit_action",
-        lambda unit, verb: (actions.append((verb, unit)), (0, ""))[1],
+        lambda unit, verb: actions.append((verb, unit)) or (0, ""),
     )
 
     source_intent._publish_markers()

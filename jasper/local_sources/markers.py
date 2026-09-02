@@ -4,18 +4,17 @@
 
 """Start verdicts for local music sources, published as marker files.
 
-The verdict for one source is household intent plus current grouping role
-(plus, for USB, the physical data-role capability); the shared verdict is role
-only, for infrastructure with no single source intent.  The source coordinator
-(:mod:`jasper.source_intent`) is the single writer: it publishes one marker per
-label under ``MARKER_DIR`` and every gated unit consumes it as
-``ConditionPathExists=``.  Absent marker blocks the start, so an unwritten
-directory fails closed.  See ADR-0220 (supersedes ADR-0148).
+One source's verdict is household intent plus current grouping role (plus, for
+USB, the physical data-role capability); the shared verdict is role only, for
+infrastructure with no single source intent.  The source coordinator
+(:mod:`jasper.source_intent`) is the single writer; every gated unit consumes
+one marker as ``ConditionPathExists=``, so an absent marker — or an absent
+directory before the first pass — blocks the start.  See ADR-0220.
 """
 from __future__ import annotations
 
 import logging
-import os
+from pathlib import Path
 
 from ..log_event import log_event
 from ..music_sources import Source
@@ -34,7 +33,6 @@ MARKER_DIR = "/run/jasper-source-intent/allowed"
 # Not a source id: the role-only verdict carried by shared infrastructure that
 # has no single source intent (jasper-mux). Cannot collide with a Source value.
 SHARED_LABEL = "shared"
-_MARKER_MODE = 0o644
 
 
 def marker_path(label: str) -> str:
@@ -42,20 +40,11 @@ def marker_path(label: str) -> str:
 
 
 def _set_marker(label: str, allowed: bool) -> None:
-    path = marker_path(label)
-    if not allowed:
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        return
-    os.close(
-        os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-            _MARKER_MODE,
-        )
-    )
+    path = Path(marker_path(label))
+    if allowed:
+        path.touch(mode=0o644)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def local_sources_allowed() -> tuple[bool, str | None]:
@@ -131,14 +120,11 @@ def local_source_allowed(source: Source) -> tuple[bool, str | None]:
 def publish_allowed_markers() -> dict[str, tuple[bool, str | None]]:
     """Mirror every start verdict into ``MARKER_DIR`` and return the verdicts.
 
-    The source coordinator is the single writer.  Units consume the result as
-    ``ConditionPathExists=``, so an absent marker — including the whole
-    directory being absent before this process first runs — blocks the start.
-    Publish before the coordinator's apply loop: the markers must state intent
-    and role, never whether an apply later succeeded (ADR-0191).
+    Call before the coordinator's apply loop: a marker states intent and role,
+    never whether an apply later succeeded (ADR-0191).
     """
 
-    os.makedirs(MARKER_DIR, mode=0o755, exist_ok=True)
+    Path(MARKER_DIR).mkdir(mode=0o755, parents=True, exist_ok=True)
     verdicts: dict[str, tuple[bool, str | None]] = {
         SHARED_LABEL: local_sources_allowed(),
     }

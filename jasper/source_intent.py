@@ -1099,11 +1099,9 @@ def _publish_markers() -> None:
     )
 
     verdicts = publish_allowed_markers()
-    # jasper-mux is the only gated unit no source lifecycle owns, so nothing
-    # else re-starts it once its marker reappears. Never stopped here: the gate
-    # has always been start-boundary only. One extra
-    # _DEFAULT_UNIT_ACTION_TIMEOUT_SEC of blocking, outside the enumerated
-    # worst-case start path below; mux is Type=simple and its rc is ignored.
+    # mux is the only gated unit no source lifecycle owns, so nothing else
+    # re-starts it once its marker reappears. Never stopped here: the gate is
+    # start-boundary only. Costs one _DEFAULT_UNIT_ACTION_TIMEOUT_SEC.
     if verdicts[SHARED_LABEL][0]:
         _run_unit_action(_MUX_UNIT, "start")
 

@@ -49,9 +49,9 @@ TUNNEL_SOCK="/tmp/jts-claim-librespot-$$.sock"
 CLAIM_LOG="/tmp/jts-claim-librespot-$$.log"
 CLAIM_PID_FILE="/tmp/jts-claim-librespot-$$.pid"
 # This maintenance flow temporarily stops the renderer, but the entry snapshot
-# is never restore authority. librespot.service's source-aware marker gate
-# re-reads canonical Spotify intent + role on every final start/restart, so an
-# Off or follower park landing during the long OAuth wait remains parked.
+# is never restore authority. librespot.service gates on the coordinator's
+# Spotify marker, so an Off or follower park landing during the long OAuth wait
+# leaves the restart below a clean skip.
 RESTORE_COMPLETED=0
 
 ssh_pi() { ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"; }
@@ -158,9 +158,8 @@ echo "==> Stopping OAuth-mode librespot"
 ssh_pi "sudo pkill -F ${CLAIM_PID_FILE} 2>/dev/null; sudo rm -f ${CLAIM_PID_FILE} ${CLAIM_LOG}"
 echo "==> Re-applying current Spotify source intent and speaker role"
 # Restart (rather than start) so a source that was concurrently enabled during
-# OAuth reloads the new credential cache. The unit's ConditionPathExists gate on
-# the coordinator's Spotify marker is evaluated immediately before ExecStart;
-# Off/parked is a successful skipped restart, never a resurrection.
+# OAuth reloads the new credential cache. Off/parked is a successful skipped
+# restart, never a resurrection.
 ssh_pi 'sudo systemctl restart librespot'
 RESTORE_COMPLETED=1
 sleep 1
