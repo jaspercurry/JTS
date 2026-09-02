@@ -798,3 +798,31 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     # nginx exposes GET /grouping on the landing origin.
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
     assert "location = /grouping" in nginx
+
+
+def _nginx_locations(nginx: str) -> set[str]:
+    return set(re.findall(r"^    location (?:= )?(/[^\s{]*)", nginx, re.M))
+
+
+def test_mic_pause_card_follows_wake_detection() -> None:
+    """The /mic card is the always-on listen state, not the assistant.
+
+    A push-to-talk tier holds no mic open and the streambox site proxies no
+    /mic route, so this card must ride WAKE_DETECTION rather than voice_brain.
+    """
+    html = _index_html()
+    card = re.search(
+        r'<section class="control-section" data-requires="(?P<cap>\w+)" hidden>\s*'
+        r'<div class="control-head">\s*<h2 class="eyebrow">Voice assistant</h2>'
+        r'(?P<body>.*?)</section>',
+        html,
+        re.S,
+    )
+    assert card is not None, "mic pause card markup drifted"
+    assert card.group("cap") == "wake_detection"
+    # The /mic poll and mute POST short-circuit on this card being hidden, so
+    # the control living inside it is what ties them to the gate above.
+    assert 'id="mic-toggle"' in card.group("body")
+    assert "/mic" not in _nginx_locations(
+        _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
+    )

@@ -628,6 +628,48 @@ def test_streambox_spotify_uses_intsecrets_compartment():
     )
 
 
+# The one env file the streambox web unit may omit: /wake/ is a WAKE_DETECTION
+# wizard and this board class never gets that capability.
+STREAMBOX_EXEMPT_ENVFILES = {"/var/lib/jasper/wake_model.env"}
+
+
+def test_streambox_web_unit_sources_every_env_its_wizards_write():
+    """Same process, same wizards, same files — derived from the full unit.
+
+    jasper-web hosts a wizard when the tier's Capability grant allows it, so a
+    streambox holding ASSISTANT runs /voice, /google, /transit and /weather.
+    A wizard whose env file the unit does not source renders operator defaults
+    for its env-backed fields after a save that appeared to work. Only the
+    wake-side file is exempt.
+    """
+    def envfiles(path):
+        return {
+            v.lstrip("-")
+            for k, v in _directives(path)
+            if k == "EnvironmentFile"
+        }
+
+    full = envfiles(TIER_A["jasper-web"])
+    streambox = envfiles(ROOT / "deploy/jasper-web-streambox.service")
+
+    assert full - STREAMBOX_EXEMPT_ENVFILES <= streambox, (
+        "streambox jasper-web is missing env files the full unit sources: "
+        f"{sorted(full - STREAMBOX_EXEMPT_ENVFILES - streambox)}"
+    )
+    assert not (streambox & STREAMBOX_EXEMPT_ENVFILES), (
+        "streambox jasper-web sources a wake-side env file"
+    )
+
+    # It writes the compartment through the /voice + /google wizards, so it
+    # needs the same write grant the full unit carries.
+    rw = " ".join(
+        v
+        for k, v in _directives(ROOT / "deploy/jasper-web-streambox.service")
+        if k == "ReadWritePaths"
+    )
+    assert "/var/lib/jasper-secrets" in rw
+
+
 def test_streambox_web_unit_stays_root_until_validated():
     """The streambox web unit intentionally stays root in 3b-3 — it's a Pi class
     (Pi Zero 2 W) the drop could not be hardware-validated on. install.sh installs

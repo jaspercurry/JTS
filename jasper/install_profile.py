@@ -300,9 +300,9 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "voice_brain": voice_brain,
         # Separate key on purpose: a tier can hold a conversation without
         # having the headroom to listen for a wake word all day. The
-        # landing page's Voice-assistant, Assistant and Integrations blocks
-        # gate on THIS key, not voice_brain — the wizards behind them are
-        # served on the full profile only. See
+        # landing page's mic card and /wake/ row gate on THIS key; the
+        # Assistant and Integrations blocks stay on voice_brain, whose
+        # wizards are served on both tiers (deploy/index.html). See
         # install_profile_supports_wake_detection's docstring for its
         # consumers.
         "wake_detection": wake_detection,

@@ -296,12 +296,29 @@ install_streambox_web_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-system-web.socket" \
         "${SYSTEMD_DIR}/jasper-system-web.socket"
+    # /chat/ is an ASSISTANT surface, so it ships wherever the assistant
+    # wizards do. Same unit as the full tier: socket-activated, stdlib +
+    # SQLite in the shared venv, idle-exits after 30 min.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.service" \
+        "${SYSTEMD_DIR}/jasper-chat-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-chat-web.socket" \
+        "${SYSTEMD_DIR}/jasper-chat-web.socket"
 }
 
+# Renderer/DSP + assistant wizard ports; the assistant ones are bound
+# whether or not the tier currently holds Capability.ASSISTANT, because a
+# static socket cannot follow the grant table. Forbidden = the WAKE_DETECTION
+# wizards, which a Zero-2-W-class board never runs. Kept in step with
+# deploy/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
+# tests/test_web_main_imports.py.
 validate_streambox_web_socket() {
     local socket="${SYSTEMD_DIR}/jasper-web.socket"
-    local -a expected_ports=(8765 8771 8773 8775 8783 8784 8785)
-    local -a forbidden_ports=(8767 8768 8774 8776 8777 8778 8779 8782)
+    local -a expected_ports=(
+        8765 8767 8768 8771 8773 8775 8777 8778 8779 8783 8784 8785 8786
+    )
+    local -a forbidden_ports=(8774 8782)
     local port
     for port in "${expected_ports[@]}"; do
         if ! grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
@@ -311,7 +328,7 @@ validate_streambox_web_socket() {
     done
     for port in "${forbidden_ports[@]}"; do
         if grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
-            echo "  ERROR: streambox jasper-web.socket still binds full-brain port ${port}" >&2
+            echo "  ERROR: streambox jasper-web.socket still binds wake-side port ${port}" >&2
             return 1
         fi
     done
@@ -341,6 +358,8 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-correction-web.socket"
             "${SYSTEMD_DIR}/jasper-system-web.service"
             "${SYSTEMD_DIR}/jasper-system-web.socket"
+            "${SYSTEMD_DIR}/jasper-chat-web.service"
+            "${SYSTEMD_DIR}/jasper-chat-web.socket"
             "${SYSTEMD_DIR}/librespot.service"
             "${SYSTEMD_DIR}/shairport-sync.service"
             "${SYSTEMD_DIR}/nqptp.service"
@@ -980,7 +999,7 @@ _unpark_one_low_memory_unit() {
     #
     # `is-enabled` reports static/indirect/generated for units that legitimately
     # carry no [Install] directives; none of those are off states and all are
-    # restored. That is what the four socket-activated wizard .service units
+    # restored. That is what the socket-activated wizard .service units
     # report — their [Install] sections are comment-only, so the `disable` in
     # enable_streambox_web_sockets cannot move them to `disabled` and this
     # branch never sees them.
@@ -1103,7 +1122,8 @@ park_streambox_brain_units() {
 
 enable_streambox_web_sockets() {
     local unit
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
+                jasper-system-web jasper-chat-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
         if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
             systemctl disable "${unit}.service" 2>/dev/null || true
@@ -1200,7 +1220,8 @@ start_streambox_runtime_units() {
         shairport-sync.service librespot.service bt-agent.service \
         2>/dev/null || true
     reapply_source_intent
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-system-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
+                jasper-system-web jasper-chat-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     reconcile_grouping_state

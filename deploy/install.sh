@@ -479,8 +479,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
      Kill switch: JASPER_USB_NETWORK=disabled.
    - Enable socket-activated streambox-safe web surfaces:
-     /spotify/, /sources/, /sound/, /speaker/, /wifi/, /rooms/,
-     /bluetooth/, /system/, and HTTPS /correction/.
+     /spotify/, /sources/, /airplay/, /sound/, /speaker/, /wifi/, /rooms/,
+     /bluetooth/, /system/, and HTTPS /correction/. The assistant surfaces
+     -- /voice/, /google/, /transit/, /weather/, /ha/, /tools/, /chat/ --
+     are routed and socket-bound here too; jasper-web serves them only
+     once the tier holds Capability.ASSISTANT.
    - Install the streambox nginx route set with the shared JTS landing
      page and capability-gated cards.
    - Preserve household /sources/ intent across pairing: grouping lands the
@@ -1762,7 +1765,7 @@ install_streambox_nginx_site() {
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system} + https://<host>/{correction,balance,sync} are live"
+        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,balance,sync} are live"
     else
         echo "  ERROR: streambox nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
         return 1
