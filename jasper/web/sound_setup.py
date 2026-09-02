@@ -4,60 +4,8 @@
 
 """Shared backend for preference EQ at /eq/ and hardware setup at /sound/setup/.
 
-URL surface (after nginx strips either public prefix):
-  GET  /         page render
-  GET  /state    persisted profile + preview + stock curve metadata
-  GET  /output-topology              speaker/DAC topology draft + safety evidence
-  GET  /active-speaker/channel-identity physical-output identity evidence
-  GET  /active-speaker/environment     read-only active-speaker readiness
-  GET  /active-speaker/safe-playback   no-audio safety session state
-  GET  /active-speaker/staged-config   latest protected startup config evidence
-  GET  /active-speaker/calibration-level backend-owned level guard
-  GET  /active-speaker/bringup-preflight guided/manual bring-up readiness
-  GET  /active-speaker/startup-load guarded startup-load/rollback state
-  GET  /active-speaker/commission-state per-driver commission + Stage-5 ramp state
-  GET  /active-speaker/commissioning-view backend-owned setup view/actions/copy
-  GET  /active-speaker/design-draft saved speaker design/research evidence
-  GET  /active-speaker/crossover-preview saved no-audio crossover preview
-  GET  /active-speaker/measurements saved driver and summed validation evidence
-  GET  /active-speaker/baseline-profile active baseline compile/apply state
-  GET  /active-speaker/tuning-handoff copyable AI-operator handoff prompt
-  POST /preview  preview a draft profile's response without touching live audio
-  POST /live-draft apply a draft to live audio without persisting
-  POST /audition validate and load a draft/bypass config without persisting
-  POST /active-speaker/stop      stop the no-audio active-speaker session
-  POST /active-speaker/calibration-level update backend-owned level guard
-  POST /active-speaker/stage-config stage protected startup config
-  POST /active-speaker/check-path-safety inspect and persist no-audio path evidence
-  POST /active-speaker/load-startup-config load protected startup config, no sound
-  POST /active-speaker/rollback-startup-config restore pre-load config, no sound
-  POST /active-speaker/commission-load arm a driver at the protected floor (silent)
-  POST /active-speaker/commission-rollback re-mute: reload the all-muted staged config
-  POST /active-speaker/commission-ramp-step one gated audible Stage-5 gain step
-  POST /active-speaker/commission-ramp-ack record the operator's verdict for the step
-  POST /active-speaker/commission-ramp-abort hard Stop: re-mute + reset the ramp
-  POST /active-speaker/design-draft persist speaker design/research evidence
-  POST /active-speaker/crossover-preview persist no-audio crossover preview
-  POST /active-speaker/driver-measurement record one measured driver result
-  POST /active-speaker/summed-test run combined-driver test artifact/playback
-  POST /active-speaker/summed-test/level update active combined-test level
-  POST /active-speaker/summed-test/stop stop active combined-driver playback
-  POST /active-speaker/summed-validation record summed crossover validation
-  POST /active-speaker/baseline-profile compile active baseline YAML
-  POST /active-speaker/baseline-profile/apply explicitly apply active baseline
-  POST /active-speaker/baseline-profile/save-and-apply finish commissioning
-  POST /active-speaker/channel-identity mark/clear physical identity evidence
-  POST /active-speaker/channel-protection mark/clear tweeter protection evidence
-  POST /output-topology save a complete speaker/DAC topology draft
-  POST /output-topology/reset reset output topology + active setup evidence
-  POST /output-topology/repin re-pin a same-shape composite to swapped DACs
-  POST /settings persist global sound settings
-  POST /volume-floor/audition start/update a non-persistent 1% floor tone
-  POST /volume-floor/stop stop the non-persistent 1% floor tone
-  POST /profiles/save save or update a named custom profile
-  POST /profiles/rename rename a named custom profile
-  POST /profiles/delete delete a named custom profile
-  POST /apply    validate, persist, emit CamillaDSP config, load it
+Both public prefixes are stripped by nginx, so the routes this server answers
+are the bare paths listed in ``do_GET``/``do_POST`` below.
 
 The page is built on the canonical design system (jasper.web._common.
 canonical_page + /assets/app.css). The view's Off / Saved / Draft tabs
@@ -88,13 +36,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
-if TYPE_CHECKING:  # import-time cost paid by nobody; the value crosses at runtime
+if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
-# correction_play_device: the lane's one transport reader (P6c-ii) — the
-# static COMMISSION_TONE_ALSA_DEVICE alias dissolved with the ring-lane flip;
-# payloads resolve the device fresh so they report the transport the spawn
-# actually used.
+# correction_play_device is the lane's one transport reader: payloads resolve
+# the device fresh so they report the transport the spawn actually used.
 from jasper.audio_measurement.correction_lane import (
     correction_play_device,
     popen_correction_play,
@@ -137,25 +83,16 @@ from jasper.active_speaker.commission_wiring import (
     write_commission_path_safety,
 )
 
-# Commission-tone orchestration helpers AND the tone's timing/device constants
-# are owned by the active-speaker domain (jasper.active_speaker.web_commissioning)
-# so the /sound/ and /correction/ operator surfaces share one implementation of
-# the mux/fan-in/WAV/signal-plan plumbing on this hardware-safe path. /sound/
-# imports them here rather than keeping a hand-copied fork; the only
-# commission-tone piece that stays local is _stop_commission_tone_locked, which
-# is bound to this module's own _COMMISSION_TONE_SESSION/_COMMISSION_TONE_LOCK
-# that the /sound/ play orchestration owns. See L4-1 in the Codex-week review.
+# The commission-tone helpers, timing constants and blocker vocabulary below
+# are the active-speaker domain's objects, shared with /correction/; the only
+# local piece is _stop_commission_tone_locked, bound to this module's
+# _COMMISSION_TONE_SESSION/_COMMISSION_TONE_LOCK.
 #
-# COMMISSION_TONE_DURATION_S in particular must stay the owner's object: mux
+# COMMISSION_TONE_DURATION_S in particular MUST stay the owner's object: mux
 # leases the test fan-in gate for FANIN_TEST_LEASE_SEC, and a /sound/ copy that
 # drifted above that lease would let the gate expire mid-tone and readmit
 # household music into a live sweep. tests/test_commission_tone_single_owner.py
 # pins both the import and the lease headroom.
-#
-# The commissioning BLOCKER VOCABULARY the two surfaces share is owned there for
-# the same reason: five codes were hand-copied into this file, byte-identical in
-# message, and the logic around them had already drifted apart underneath. One
-# owner, one sentence, imported — see the factories' own comment over there.
 from jasper.active_speaker._common import blocker_issue as _issue
 from jasper.active_speaker.web_commissioning import (
     COMMISSION_TONE_DURATION_S,
@@ -345,12 +282,9 @@ def _state_payload(
         "curves": curve_payload(),
         "preview": response_preview(profile),
         "headroom_db": estimate_headroom_db(profile),
-        # Authoritative "is an EQ effectively applied?" signal: 0 when the
-        # profile is disabled (bypass) OR flat (no active filters). The page
-        # opens on Off vs Saved based on this.
+        # 0 when the profile is disabled (bypass) OR flat (no active filters).
+        # The page opens on Off vs Saved based on this.
         "filter_count": len(build_sound_filters(profile)),
-        # Global output settings + the trim they imply for THIS profile, so
-        # the page can render the controls and show the effective trim.
         "sound_settings": settings.to_dict(),
         "output_trim_db": _output_trim(profile, settings),
         "limits": {
@@ -366,10 +300,8 @@ def _state_payload(
             "headroom_trim_max_db": HEADROOM_TRIM_MAX_DB,
             "volume_floor_min_db": VOLUME_FLOOR_MIN_DB,
             "volume_floor_max_db": VOLUME_FLOOR_MAX_DB,
-            # The reset/default volume floor. One owner (volume_curve.
-            # DEFAULT_VOLUME_FLOOR_DB, re-exported via sound.settings) → this
-            # payload → the page, so the editor stops hardcoding -50 in five
-            # places that silently drift if the Python default ever changes.
+            # One owner (volume_curve.DEFAULT_VOLUME_FLOOR_DB, re-exported via
+            # sound.settings) → this payload → the page's reset control.
             "volume_floor_default_db": DEFAULT_VOLUME_FLOOR_DB,
         },
         "last_dsp_apply": last_dsp_apply,
@@ -383,18 +315,14 @@ def _state_payload(
 
 
 def _output_hardware_dict() -> dict[str, Any] | None:
-    """Serializable form of the live output-hardware state.
+    """Serializable form of the live output-hardware state, or ``None``.
 
-    ``load_state`` returns a frozen ``OutputHardwareState`` — or ``None`` when
-    no state file exists yet. These payloads are emitted with plain
-    ``json.dumps`` (``_send_json``), which can't encode the dataclass, so
-    embedding it raw 502s ``/sound/output-topology`` on any Pi that has a
-    populated state file. ``to_dict`` is the single conversion boundary.
-
-    The page keeps this envelope key separate from the topology's own
-    ``hardware`` block: topology hardware is the saved speaker contract,
-    while this object is the currently observed attachment state. It is also
-    mirrored by ``/state`` as ``audio.output_hardware``.
+    These payloads are emitted with plain ``json.dumps``, which cannot encode
+    the frozen ``OutputHardwareState``; ``to_dict`` is the single conversion
+    boundary. The page keeps this envelope key separate from the topology's own
+    ``hardware`` block: topology hardware is the saved speaker contract, this is
+    the currently observed attachment state (also mirrored by ``/state`` as
+    ``audio.output_hardware``).
     """
     hardware = load_output_hardware_state()
     return hardware.to_dict() if hardware is not None else None
@@ -492,9 +420,8 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
 
     A roleful (crossover / protected / subwoofer) layout on a DAC that declares
     no active outputd lane leaves CamillaDSP playing into the active loopback
-    lane while outputd captures the passive one: the speaker goes structurally
-    silent with every daemon reporting healthy. Nothing downstream can repair
-    it, so the wizard must not accept it in the first place.
+    lane while outputd captures the passive one: structurally silent with every
+    daemon reporting healthy, and unrepairable downstream.
     """
 
     from jasper.active_speaker.playback_route import (
@@ -631,10 +558,10 @@ def _verified_detected_hardware(
 ) -> OutputHardwareState | None:
     """Validate the browser's topology and detected-hardware snapshot.
 
-    The topology transaction supplies ``revision``. The reconciler owns the
-    observed hardware file, so callers re-run this check after parking before
-    they commit the action. Returns the reconciler's observation whatever its
-    adoption verdict; each action decides what it can do with it.
+    The reconciler owns the observed hardware file, so callers re-run this
+    check after parking, before they commit. Returns the reconciler's
+    observation whatever its adoption verdict; each action decides what it can
+    do with it.
     """
 
     expected_revision = raw.get("topology_revision")
@@ -668,10 +595,10 @@ def _reset_request_hardware(
 def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Clear speaker setup to a silent unconfigured topology.
 
-    A reset is deliberately one operation for the contextual detected-hardware
-    action and the lower recovery control.  The former is merely hidden until
-    the reconciler can name usable hardware; the latter may still clear stale
-    setup when nothing usable is attached.  Neither path loads a flat graph.
+    One operation serves both the contextual detected-hardware action (hidden
+    until the reconciler can name usable hardware) and the lower recovery
+    control (may still clear stale setup with nothing usable attached).
+    Neither path loads a flat graph.
     """
 
     from jasper.active_speaker.reset import clear_active_speaker_setup_state
@@ -780,12 +707,11 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     The narrow counterpart to the reset above. A speaker group, its roles, its
     physical-output assignment, and the crossover/commissioning design are all
     keyed to physical output INDEX, never to a DAC serial, so a replacement
-    unit of the same kind in the same USB port does not invalidate any of them
-    — and the reset's wipe would throw all of it away. The two things a swap
-    genuinely does invalidate (per-lane identity for the replaced unit, and a
-    drift measurement of two crystals that never ran together) are cleared by
-    the topology owner; see ``repin_composite_child_serials`` for which of those
-    two clears re-arms an enforced gate and which is an honesty repair.
+    unit of the same kind in the same USB port invalidates none of them — while
+    the reset's wipe would throw all of it away. The two things a swap does
+    invalidate (per-lane identity for the replaced unit, and a drift
+    measurement of two crystals that never ran together) are cleared by
+    ``repin_composite_child_serials``.
     """
 
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
@@ -934,24 +860,22 @@ def _active_speaker_channel_identity_save_payload(
             identity_verified=verified,
         )
 
-        # Un-confirming an ASSIGNED lane of a ROLEFUL topology is a household
-        # member declaring doubt about which driver hangs where — the same
-        # hazard a DAC swap creates, self-declared. Gated on the confirmed ->
-        # unconfirmed EDGE: a box that is already unconfirmed is already parked,
-        # and confirming never parks at all.
+        # Un-confirming an ASSIGNED lane of a ROLEFUL topology declares doubt
+        # about which driver hangs where — the hazard a DAC swap creates, self
+        # declared. Gated on the confirmed -> unconfirmed EDGE: an already
+        # unconfirmed box is already parked, and confirming never parks.
         park_needed = (
             roleful_identity_confirmed(topology)
             and not roleful_identity_confirmed(updated)
         )
         # ORDER IS THE SAFETY PROPERTY HERE. The DURABLE half — the cleared flag
         # that makes `roleful_identity_confirmed` refuse an approved graph on
-        # every later pass — lands FIRST and unconditionally. Handing this save
-        # to `park_and_commit_topology` instead would invert that: it parks
-        # BEFORE it commits, so a park failure would discard the household's
-        # declared doubt entirely, leaving the lane verified and the box on its
-        # approved graph across every reboot. A park most plausibly fails when
-        # the graph is already unhealthy, which is exactly when the doubt matters
-        # most. So: record the doubt, then silence best-effort.
+        # every later pass — lands FIRST and unconditionally; the silence is
+        # best-effort after it. `park_and_commit_topology` would invert that: it
+        # parks BEFORE it commits, so a park failure would discard the declared
+        # doubt and leave the lane verified on its approved graph across every
+        # reboot — and a park most plausibly fails when the graph is already
+        # unhealthy, exactly when the doubt matters most.
         #
         # (The re-pin endpoint does NOT share this shape and keeps its
         # commit-inside-park: a failed park there leaves the old serials pinned,
@@ -992,10 +916,9 @@ def _active_speaker_channel_identity_save_payload(
     )
     payload = _output_topology_payload()
     if park_needed:
-        # Say which half actually landed. The doubt is recorded either way; only
-        # the immediate silence can fail, and a household that just declared a
-        # driver might be miswired should not be left believing the speaker went
-        # quiet when it did not.
+        # Say which half actually landed: the doubt is recorded either way, but
+        # only the immediate silence can fail, and the household must not be
+        # left believing the speaker went quiet when it did not.
         payload["identity_park"] = {
             "parked": parked,
             "message": (
@@ -1118,9 +1041,9 @@ async def _apply_profile(
         config=out_path,
         op_id=apply_state.op_id,
     )
-    # Assemble previews and the optional profile library outside the ordering
-    # boundary. The captured settings make this response coherent with the DSP
-    # transaction without extending the lock across unrelated file I/O/work.
+    # Previews and the optional library are assembled outside the ordering
+    # boundary; the captured settings keep the response coherent with the DSP
+    # transaction without holding the lock across unrelated file I/O.
     payload = _state_payload(
         stamped,
         library_path=library_path,
@@ -1140,10 +1063,9 @@ def _carrier_refusal(exc: BaseException):
     CamillaDSP graph refused to host preference EQ, else ``None``.
 
     A refusal arrives RAW from the live-draft path and the durable path's
-    pre-lock fast-check; it arrives wrapped as ``DspApplyError`` (its
-    ``__cause__``) only from the durable path's in-lock re-check in the rare
-    concurrent-swap race. Handling both maps either to a typed 200 body instead
-    of a 502 — ``jasper/dsp_apply.py`` stays untouched.
+    pre-lock fast-check, and wrapped as ``DspApplyError`` (its ``__cause__``)
+    from the durable path's in-lock re-check in a concurrent-swap race. Both
+    map to a typed 200 body instead of a 502.
     """
     from jasper.sound.graph_carrier import CarrierCannotHostEq
 
@@ -1165,16 +1087,13 @@ async def _apply_settings(
 ) -> dict[str, Any]:
     """Merge global sound settings, then make the merged state live.
 
-    EQ and Setup intentionally share the one aggregate ``SoundSettings`` file.
-    Each page posts only the fields it owns, so this function fresh-reads and
-    merges recognized fields while holding one process-local lock through the
-    durable save, DSP re-emit, volume reconciliation, and coherent response
-    snapshots. The profile content is unchanged and is not re-stamped or
-    re-persisted.
-
-    A full ``SoundSettings`` remains accepted for internal callers and tests.
-    A failed live re-apply returns the saved state with a ``warning`` rather
-    than reverting a setting the backend already kept.
+    EQ and Setup share the one aggregate ``SoundSettings`` file and each page
+    posts only the fields it owns, so this fresh-reads and merges recognized
+    fields while holding one process-local lock through the durable save, DSP
+    re-emit, volume reconciliation, and response snapshots. The profile content
+    is not re-stamped or re-persisted. A full ``SoundSettings`` is also accepted
+    for internal callers and tests. A failed live re-apply returns the saved
+    state with a ``warning`` rather than reverting a setting already kept.
     """
     raw_changes = changes.to_dict() if isinstance(changes, SoundSettings) else changes
     recognized = {
@@ -1224,9 +1143,8 @@ async def _apply_settings(
                 f"volume change: {e}"
             )
 
-        # Capture the response's live-state anchor after every side effect while
-        # still serialized. Preview/curve/library rendering happens outside the
-        # boundary and consumes these coherent snapshots.
+        # Capture the response's live-state anchor after every side effect,
+        # still serialized; rendering happens outside the boundary.
         if apply_result is not None:
             apply_state, out_path, _ = apply_result
             last_dsp_apply_snapshot = apply_state.to_dict()
@@ -1262,9 +1180,8 @@ async def _reconcile_volume_curve_after_settings(
 ) -> bool:
     """Apply the newly saved floor to the current listening level when safe.
 
-    The source-aware coordinator owns the same guardrails as the normal volume
-    path. ``maybe_reconcile_camilla`` only writes for camilla-master sources
-    (idle/AirPlay/USB), so changing the floor cannot accidentally unguard a
+    ``maybe_reconcile_camilla`` only writes for camilla-master sources
+    (idle/AirPlay/USB), so changing the floor cannot unguard a
     Spotify/Bluetooth push-mode handoff.
     """
     from jasper.renderer import RendererClient
@@ -1297,9 +1214,8 @@ async def _reconcile_volume_curve_after_settings(
 def _volume_floor_tone_wav_path() -> Path:
     """Generate and cache the volume-floor reference WAV.
 
-    This is a short repeating low/mid/high sequence, not a single steady sine.
-    The goal is to let a household judge whether 1% is useful across the speaker
-    instead of accidentally tuning the floor around one narrow frequency.
+    A short repeating low/mid/high sequence, not a steady sine, so the floor is
+    judged across the speaker rather than around one narrow frequency.
     """
 
     cache_dir = Path(
@@ -1511,15 +1427,13 @@ async def _claim_floor_level(
 ) -> VolumeClaimHandle | None:
     """Take the audition's COMMISSIONING claim over the household level.
 
-    The household level is declared from the snapshot this audition just read,
-    because in the web process nothing else has told the owner what the
-    speaker plays at — and without it the release below has no reference and
-    would leave the fader parked at the floor.
+    The household level is declared from the snapshot this audition just read:
+    in the web process nothing else has told the owner what the speaker plays
+    at, and without it the release below has no reference and would leave the
+    fader parked at the floor.
 
-    ``None`` when no owner is registered: the audition still runs, one level
-    quieter than it asked for at worst, rather than refusing to play. That is
-    the disclose-and-degrade posture, not a silent fallback — the owner logs
-    the refusal itself.
+    ``None`` when no owner is registered — the audition still runs, one level
+    quieter than it asked for at worst. The owner logs that refusal itself.
     """
     owner = volume_owner()
     if owner is None:
@@ -1533,11 +1447,8 @@ async def _release_floor_level(
 ) -> None:
     """Give the audition's claim back, landing on the household level.
 
-    Two calls rather than one, and that costs nothing here: the audition
-    snapshots the household level once at start and restores that exact value,
-    so the reference cannot move while the claim is held. The declaration is
-    outranked by the claim and therefore writes nothing; the release is the
-    single fader move.
+    The declaration is outranked by the held claim and therefore writes
+    nothing; the release is the single fader move.
     """
     owner = volume_owner()
     if owner is None or claim is None:
@@ -1682,7 +1593,7 @@ class _VolumeFloorToneSession:
                 camilla = camilla_factory()
                 # The claim is held; only the level it sits at moves. One
                 # settle, so the tone steps between floors instead of jumping
-                # up to the household level and back down.
+                # to the household level and back down.
                 if self._claim is not None:
                     self._claim = await volume_owner().relevel(
                         self._claim, percent_to_db(1, floor_db=floor_db),
@@ -1863,12 +1774,11 @@ class _VolumeFloorToneSession:
         original_mute: bool,
     ) -> None:
         camilla = camilla_factory()
-        # The ONE restore funnel — every path out of an audition reaches here,
-        # so releasing the claim here covers the cancelled start, the failed
-        # runner, the outer error path and an ordinary stop alike. The release
-        # lands on the household level the start declared, which is
-        # ``original_db``; the mute ordering around it is unchanged and stays
-        # this session's, not the owner's.
+        # The ONE restore funnel: every path out of an audition reaches here,
+        # so releasing the claim here also covers the cancelled start, the
+        # failed runner and the outer error path. The release lands on the
+        # household level the start declared (``original_db``); the mute
+        # ordering around it stays this session's, not the owner's.
         claim, self._claim = self._claim, None
         if original_mute:
             await camilla.set_main_mute(True, best_effort=True)
@@ -1897,9 +1807,7 @@ async def _audition_volume_floor(
 ) -> dict[str, Any]:
     """Start or update a held tone at the proposed 1% volume floor.
 
-    This is intentionally non-persistent. The user can drag the floor slider,
-    hear the 1% reference continuously, and only the existing /settings save
-    path commits the chosen floor.
+    Non-persistent: only the /settings save path commits the chosen floor.
     """
     return await (session or _VOLUME_FLOOR_TONE_SESSION).start_or_update(
         raw,
@@ -1984,10 +1892,9 @@ async def audition_profile(
 ) -> dict[str, Any]:
     """Public backend seam for reversible preference-EQ auditions.
 
-    The web route and the calibration-advisor action runner both use the
-    same implementation so model-suggested auditions inherit the existing
-    CamillaDSP config validation, room-PEQ preservation, and no-persist
-    semantics from ``/sound/audition``.
+    The web route and the calibration-advisor action runner share this
+    implementation, so model-suggested auditions inherit ``/sound/audition``'s
+    config validation, room-PEQ preservation and no-persist semantics.
     """
 
     return await _audition_profile(
@@ -2010,10 +1917,10 @@ async def _live_draft_profile(
 ) -> dict[str, Any]:
     """Load a bounded preference-EQ draft into the active Camilla config.
 
-    This is the low-latency editing path: no profile persistence, no
-    config-file pointer change, and no shared apply-state mutation. The
-    durable Save/Apply path remains `_apply_profile`, which writes a
-    validated YAML file and records rollback state.
+    The low-latency editing path: no profile persistence, no config-file
+    pointer change, no shared apply-state mutation. The durable Save/Apply path
+    is `_apply_profile`, which writes a validated YAML file and records
+    rollback state.
 
     Returns only `live_status` and `dsp_write_epoch` — the browser reads
     nothing else from this response (`runLiveDraft` in
@@ -2029,17 +1936,13 @@ async def _live_draft_profile(
     # The trim is derived from the SAVED profile, never from the draft, so an
     # edit cannot move it. Match-loudness makes the trim a function of the
     # profile's own EQ, so a draft-derived trim would fold into
-    # `active_baseline_headroom`'s VALUE and be written in place — an
-    # instant, un-ducked, full-spectrum level step mid-drag. The durable save
-    # realises any change across a swap that ducks anyway.
-    #
-    # NOT frozen for the session, which would be the stronger claim: `settings`
-    # is re-read above, so changing headroom_trim_db or match_loudness from the
-    # settings page still moves the trim and costs one swap. The property this
-    # buys is "not draft-derived", and that is the one the edit path needs.
-    #
-    # Safe because the trim is comfort accounting, not a clip guard —
-    # `devices.volume_limit` stays the hard ceiling regardless
+    # `active_baseline_headroom`'s VALUE and be written in place — an instant,
+    # un-ducked, full-spectrum level step mid-drag. The durable save realises
+    # any change across a swap that ducks anyway. `settings` is still re-read
+    # above, so a settings-page change to headroom_trim_db or match_loudness
+    # does move the trim, at one swap; the property this buys is only "not
+    # draft-derived". Safe because the trim is comfort accounting, not a clip
+    # guard — `devices.volume_limit` stays the hard ceiling regardless
     # (`jasper.camilla_stereo_prefix`). The cost is that match-loudness stops
     # tracking the draft until save.
     output_trim_db = _output_trim(load_profile(profile_path), settings)
@@ -2112,9 +2015,9 @@ async def _live_draft_profile(
             "sound.live_draft",
             result="live",
             method=method,
-            # Empty unless the edit had to fall back to a ducked pipeline
-            # replace, and then it says which section moved -- the one field
-            # that explains an audible fade to whoever reads this line.
+            # Empty unless the edit fell back to a ducked pipeline replace, and
+            # then it names the section that moved — the field that explains an
+            # audible fade to whoever reads this line.
             swap_reason=plan.reason,
             output_trim=f"{output_trim_db:.1f}",
             room_peqs=result.room_peq_count,
@@ -2153,14 +2056,11 @@ async def _load_profile_config(
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
     """The one ``sound-page-data`` island both /sound/ shells render.
 
-    Carries the crossover vocabulary the page may OFFER, read from the compiler
-    rather than restated in the module: the editor's filter and slope pickers
-    are built from these lists, so a value the compiler cannot build is never
-    presented, and widening
-    :data:`~jasper.active_speaker.profile.SUPPORTED_CROSSOVER_TYPES` /
-    :data:`~jasper.active_speaker.profile.SUPPORTED_LR_ORDERS` widens the page
-    with no edit here. The defaults ride along because the picker must
-    pre-select the same member ``crossover_preview`` would fill in.
+    The editor's filter and slope pickers are built from the crossover
+    vocabulary carried here, read from the compiler rather than restated, so a
+    value the compiler cannot build is never presented. The defaults ride along
+    because the picker must pre-select the same member ``crossover_preview``
+    would fill in.
     """
 
     from jasper.active_speaker.crossover_preview import (
@@ -2192,18 +2092,17 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
 def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     """Render one split Sound page for a bonded active follower.
 
-    Distributed-active Slice 4: a bonded follower delegates the PROGRAM domain
-    (content EQ, room correction, volume shaping) to the pair leader, but it
-    still owns its LOCAL driver domain (Layer A — the per-driver crossover /
-    limiter / tweeter high-pass that protects the DAC it drives). Setup keeps
-    the delegation card and mounts the same active-speaker UI as a solo box;
-    EQ is a delegation-only page with a direct path back to local Setup.
+    A bonded follower delegates the PROGRAM domain (content EQ, room
+    correction, volume shaping) to the pair leader but still owns its LOCAL
+    driver domain (the per-driver crossover / limiter / tweeter high-pass that
+    protects the DAC it drives). Setup keeps the delegation card and mounts the
+    same active-speaker UI as a solo box; EQ is a delegation-only page with a
+    path back to local Setup.
 
-    The page island tells main.js to boot in follower Setup mode: it renders only
-    the active-speaker section (expanded as the primary content) and omits the
-    Off/Saved/Draft content-EQ editor and now-playing plot, which live only on
-    the leader. Content-DSP POSTs still 409 (``_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS``);
-    the active-speaker commissioning/crossover endpoints are allowed (invariant 6).
+    The page island tells main.js to boot in follower Setup mode: only the
+    active-speaker section, no Off/Saved/Draft editor or now-playing plot.
+    Content-DSP POSTs still 409 (``_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS``); the
+    active-speaker commissioning/crossover endpoints are allowed.
     """
     page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
     leader_path = "/eq/" if page_mode == "eq" else "/sound/setup/"
@@ -2454,8 +2353,7 @@ def _active_speaker_calibration_level_payload(
     action = str(raw.get("action") or "set")
     level = raw.get("level_dbfs", raw.get("requested_level_dbfs"))
     # Bind the persisted level to the current commissioning run (the active
-    # safe_playback session) so a previous session's test level can never
-    # seed this one.
+    # safe_playback session) so a previous session's test level cannot seed it.
     run_id = load_safe_playback_state().get("session_id")
     payload = update_calibration_level_state(
         action=action,
@@ -2576,9 +2474,9 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
 def _active_speaker_tuning_handoff_payload() -> dict[str, Any]:
     """Mint the AI-operator handoff prompt and the binding it was minted for.
 
-    Read-only and audio-free. Readiness comes from the baseline-profile
-    payload the page renders its active-profile card from, so the route can
-    never offer a handoff the card beside it hides.
+    Read-only and audio-free. Readiness comes from the same baseline-profile
+    payload the page renders its active-profile card from, so the route cannot
+    offer a handoff the card beside it hides.
     """
 
     from jasper.active_speaker.design_draft import load_design_draft
@@ -2737,11 +2635,9 @@ def _active_speaker_design_draft_save_payload(
         safety_profile_status=str(
             (payload.get("driver_safety_profile") or {}).get("status")
         ),
-        # #2603: the EVALUATION, not just the stored status. A re-confirm wave
-        # left no journal trace at all — a fleet owner had no way to find the
-        # boxes whose profile went un-confirmed under the one-owner collapse.
-        # Carried on the existing save event rather than a new one, so there is
-        # no second grep contract to keep in sync.
+        # #2603: the EVALUATION, not just the stored status, so a box whose
+        # profile went un-confirmed is findable in the journal. Carried on this
+        # save event rather than a new one — no second grep contract.
         safety_profile_evaluation=str(
             (payload.get("driver_safety_profile_evaluation") or {}).get("status")
         ),
@@ -2764,23 +2660,14 @@ def apply_measured_crossover_geometry(
     """Write a measured crossover onto the Sound declaration. Durable: every
     write through this function is fsynced before it is visible.
 
-    One production caller, an accept/apply-seam action on the Sound
-    declaration: ``handle_v2_apply``'s measured-crossover accept. It correctly
-    gets the durable write -- there is no separate, cheaper path into this
-    function.
-
-    **Frequency AND slope, through one writer.** The declaration states a
-    crossover as three fields, and a candidate measured at a different slope is
-    as unreconcilable with the saved declaration as one measured at a different
-    corner (``baseline_profile``'s ``measured_candidate_preset_mismatch`` guard
-    is a whole-preset equality, and slope compiles into ``CrossoverRegion.
-    order``). Widening this writer keeps that one write, one fsync and one Undo
-    leg; a second writer for slope would be a second way to change the
-    crossover, which is exactly what the declaration route exists to avoid.
-
-    The compare-and-swap covers all three fields for the same reason: what it
-    defends is "Sound still says what this review measured", and a slope edited
-    between review and apply falsifies that as completely as a retuned corner.
+    The declaration states a crossover as three fields (corner, filter type,
+    slope) and all three go through this one writer, in one write, one fsync
+    and one Undo leg: ``baseline_profile``'s
+    ``measured_candidate_preset_mismatch`` guard is a whole-preset equality and
+    slope compiles into ``CrossoverRegion.order``, so a candidate measured at a
+    different slope is as unreconcilable with the saved declaration as one
+    measured at a different corner. The compare-and-swap covers all three for
+    the same reason: it defends "Sound still says what this review measured".
     """
     from jasper.active_speaker.crossover_declaration import (
         declared_crossover_geometry,
@@ -3000,24 +2887,16 @@ async def _active_speaker_rollback_startup_config_payload(
 
 # --- single-audio-path per-driver commissioning + Stage-5 ramp ----------------
 #
-# The browser surface over the same guarded machinery the `jasper-active-speaker`
-# CLI drives. Every loader uses the INLINE CamillaController seams
-# (set_active_config_raw) so the persisted boot statefile is never repointed
-# (crash-recovery-MUTED stays structural). A commission load arms a driver at the
-# protected floor (silent); the Stage-5 ramp raises it one gated, operator-ACK'd
-# step at a time. The GET state endpoint is read-only on purpose — the preflight
-# emits the candidate YAML, so the load/step that run it are POST-only.
+# The browser surface over the guarded machinery the `jasper-active-speaker` CLI
+# drives, shared with it through `jasper.active_speaker.commission_wiring`.
+# Every loader uses the INLINE CamillaController seams (set_active_config_raw)
+# so the persisted boot statefile is never repointed (crash-recovery-MUTED stays
+# structural). A commission load arms a driver at the protected floor (silent);
+# the Stage-5 ramp raises it one gated, operator-ACK'd step at a time. The GET
+# state endpoint is read-only on purpose — the preflight emits the candidate
+# YAML, so the load/step that run it are POST-only.
 
 
-# The inline seams, saved-preview resolution, current-config read, and fresh
-# path-safety evidence are shared with the `jasper-active-speaker` CLI via
-# `jasper.active_speaker.commission_wiring` (commission_seams /
-# read_current_config_path / resolve_commission_inputs /
-# write_commission_path_safety) — imported eagerly at the top of this module.
-
-# COMMISSION_TONE_* and SUMMED_COMMISSION_SPEECH_BACKEND are imported from
-# jasper.active_speaker.web_commissioning at the top of this module — they are
-# the owner's objects, not /sound/ copies. Do not re-declare them here.
 #: Operator stop reasons that mean "I heard it" — the only client-supplied
 #: strings that complete a combined test. The loop's own budget end is NOT in
 #: here: it passes ``completed=True`` directly, so a client cannot borrow the
@@ -3118,26 +2997,21 @@ def _summed_test_session_stop_reason(session: dict[str, Any]) -> str | None:
     return None
 
 
-# A summed-test session sits at ``process=None`` normally *between* the looped
-# ``aplay`` spawns, but the same shape also describes a session that leaked
-# before its owning request reached the try/finally teardown — e.g. the request
-# was cancelled (or the summed-config load raised) in the window between claiming
-# the session and entering the loop. A leaked session stays ``process=None``
-# forever with no owner to clear it, and the start guard would then wedge every
-# retry with ``summed_test_already_active`` until jasper-web was restarted (the
-# jts3 2026-07-06 incident). A *running* loop refreshes ``progress_monotonic``
-# each iteration, so a stale heartbeat distinguishes "leaked" from "still working".
+# A session sits at ``process=None`` both between the looped ``aplay`` spawns
+# and when it leaked before its owning request reached the try/finally teardown.
+# A leaked session stays ``process=None`` forever with no owner to clear it, and
+# would wedge every retry with ``summed_test_already_active`` until jasper-web
+# restarted; a running loop refreshes ``progress_monotonic`` each iteration, so
+# a stale heartbeat distinguishes the two.
 #
 # The window MUST exceed the longest a genuinely-live session can sit at
-# process=None, which is the prepare phase before the first spawn: a ~15 s
+# process=None — the prepare phase before the first spawn: a ~15 s
 # jasper-audio-hardware-reconcile wait (startup_load, manage_units timeout=15.0)
-# plus the summed-config camilla WS ops. If the window were shorter than a
-# slow-but-live prepare, a concurrent start would misjudge it leaked and preempt
-# it — racing on the fan-in lane, a second aplay, and the config rollback. 90 s
-# clears that bounded budget with margin; a truly leaked session still
-# auto-recovers within it (and #1181's reload-safe Stop recovers it
-# immediately). A *hung* (not merely slow) camilla is out of scope — the test
-# cannot run then, and both starts block on the same dead WS.
+# plus the summed-config camilla WS ops. Shorter than a slow-but-live prepare, a
+# concurrent start would misjudge it leaked and preempt it, racing on the fan-in
+# lane, a second aplay and the config rollback. A hung (not merely slow) camilla
+# is out of scope: the test cannot run then, and both starts block on the same
+# dead WS.
 SUMMED_TEST_SESSION_STALE_SECONDS = 90.0
 
 
@@ -3150,11 +3024,10 @@ def _summed_test_session_active(
 
     Live means: a session exists, no stop has been requested, and either the
     ``aplay`` child is alive *or* the loop refreshed its heartbeat within
-    ``SUMMED_TEST_SESSION_STALE_SECONDS``. The heartbeat window reclaims a leaked
-    ``process=None`` session so a reload's Stop never stays visible forever.
-    Start serialization uses ``_summed_test_session_occupies_resources`` because
-    a stopped-but-tearing-down session is no longer UI-active but still owns the
-    fan-in lane and transient Camilla graph.
+    ``SUMMED_TEST_SESSION_STALE_SECONDS``. Start serialization uses
+    ``_summed_test_session_occupies_resources`` instead, because a
+    stopped-but-tearing-down session is no longer UI-active while it still owns
+    the fan-in lane and transient Camilla graph.
     """
 
     if not session or session.get("stop_reason"):
@@ -3180,9 +3053,9 @@ def _summed_test_session_occupies_resources(
     """Whether a session must still serialize starts around owned resources.
 
     The UI-visible active state goes false as soon as Stop is requested, but the
-    owning request still has to terminate ``aplay``, release the fan-in lane, and
-    roll back the transient Camilla graph. A new start must not reclaim the global
-    until that teardown finishes, or it can race with those still-owned resources.
+    owning request still has to terminate ``aplay``, release the fan-in lane and
+    roll back the transient Camilla graph. A new start must not reclaim the
+    global until that teardown finishes.
     """
 
     if not session:
@@ -3204,13 +3077,10 @@ def _active_summed_test_snapshot() -> dict[str, Any]:
     """Live snapshot of the in-progress combined (summed) test, if any.
 
     The commissioning view is otherwise composed from *persisted* state and
-    cannot see this in-memory playback session, so a freshly loaded (or
-    reloaded) ``/sound/`` page would render "Play combined test" with no Stop
-    control while the test audio is still looping — the un-stoppable-after-reload
-    bug (jts3, 2026-07-06). Surfacing the live session on the commissioning view
-    lets any page load render a reload-safe Stop. "Active" means a session
-    exists, no stop has been requested yet, and the ``aplay`` child is either
-    preparing (``None``) or still alive.
+    cannot see this in-memory playback session, so a reloaded ``/sound/`` page
+    would offer "Play combined test" with no Stop while the test audio is still
+    looping. Surfacing the live session lets any page load render a
+    reload-safe Stop.
     """
 
     with _SUMMED_TEST_TONE_LOCK:
@@ -3228,9 +3098,9 @@ def _active_summed_test_snapshot() -> dict[str, Any]:
 def _attach_active_summed_test(view: dict[str, Any], snapshot: dict[str, Any]) -> None:
     """Fold the live summed-test snapshot into the commissioning view.
 
-    Attaches a top-level ``active_summed_test`` block and, when active, marks the
-    matching ``combined_groups`` entry with ``summed_test_active`` so the client
-    can render a reload-safe Stop per group. See ``_active_summed_test_snapshot``.
+    Attaches a top-level ``active_summed_test`` block and, when active, marks
+    the matching ``combined_groups`` entry with ``summed_test_active`` so the
+    client can render a reload-safe Stop per group.
     """
 
     if not isinstance(view, dict):
@@ -3356,14 +3226,12 @@ def _stop_summed_test_tone_locked(*, reason: str) -> dict[str, Any]:
 def _active_speaker_stop_summed_test_tone(*, reason: str) -> dict[str, Any]:
     """End the combined test now; ``reason`` is a semantic flag, not a label.
 
-    ``reason: "operator_confirmed"`` means "the operator heard it" and is the
-    only client-supplied value that completes the test — it is what makes the
-    recorded result ``captured`` and unlocks
-    ``/active-speaker/summed-validation``. The default ``"operator_stop"``, any
-    other string, and a stop that arrives before audio started all leave the
-    test incomplete. A client that does not want this rendezvous at all should
-    pass ``duration_ms`` to ``/active-speaker/summed-test`` instead and let the
-    play end itself.
+    ``reason: "operator_confirmed"`` is the only client-supplied value that
+    completes the test — it is what makes the recorded result ``captured`` and
+    unlocks ``/active-speaker/summed-validation``. The default
+    ``"operator_stop"``, any other string, and a stop that arrives before audio
+    started all leave the test incomplete. A client that wants no rendezvous at
+    all passes ``duration_ms`` to ``/active-speaker/summed-test`` instead.
     """
 
     with _SUMMED_TEST_TONE_LOCK:
@@ -3775,13 +3643,11 @@ async def _active_speaker_play_summed_commission_tone(
 
     ``play_budget_s`` is the caller's requested audible-play budget (the
     request's ``duration_ms``). With one, the looped speech stimulus stops
-    itself once the budget has elapsed and this returns a *completed* play, so
-    a client that cannot stop the test while its own start request is in
-    flight still gets a ``captured`` record. Without one, the loop keeps
-    playing until the operator stops it or the watchdog expires it. Whole
-    repeats either way: the budget is checked between repeats, never mid-word,
-    so a completed play is always at least one clean stimulus repeat and can
-    overrun the budget by up to one.
+    itself once the budget has elapsed and this returns a *completed* play;
+    without one, the loop plays until the operator stops it or the watchdog
+    expires it. Whole repeats either way: the budget is checked between
+    repeats, never mid-word, so a completed play is always at least one clean
+    stimulus repeat and can overrun the budget by up to one.
     """
 
     global _SUMMED_TEST_TONE_SESSION
@@ -3810,11 +3676,9 @@ async def _active_speaker_play_summed_commission_tone(
                 ),
             )
         if prior is not None:
-            # Overwriting a non-active prior session: either a leaked prepare
-            # (its owner died before the try/finally teardown) or a stopped owner
-            # whose teardown heartbeat aged past the stale budget. A leaked prior
-            # is the only way this path is hit without an explicit stop, so
-            # surface it — it flags a prior bug.
+            # Overwriting a non-active prior session: either a leaked prepare or
+            # a stopped owner whose teardown heartbeat aged past the stale
+            # budget. Surfaced because a leaked prior flags a bug.
             reclaimed = (
                 "stopped" if prior.get("stop_reason") else "stale",
                 prior.get("playback_id"),
@@ -3965,10 +3829,9 @@ async def _active_speaker_play_summed_commission_tone(
                     and loop_count >= 1
                     and time.monotonic() >= play_deadline
                 ):
-                    # `loop_count >= 1` is the honesty condition: it counts
-                    # stimulus repeats that reached aplay exit 0, so a budget
-                    # shorter than one repeat still buys real audio before this
-                    # claims the play completed.
+                    # `loop_count` counts stimulus repeats that reached aplay
+                    # exit 0, so requiring >= 1 means a budget shorter than one
+                    # repeat still buys real audio before this claims completion.
                     playback_result = _ended(
                         SUMMED_TEST_DURATION_ELAPSED_REASON,
                         completed=True,
@@ -4206,13 +4069,12 @@ def _active_speaker_identity_audition_granted(
 ) -> bool:
     """Decide server-side whether the weaker identity-audition mode applies.
 
-    A client may only REQUEST it; the saved topology decides. The audition is
-    how the household plays one assigned lane while it is still working out
-    which physical driver is which, so it is granted while that confirmation is
-    genuinely outstanding anywhere in the topology — a replay of an
-    already-confirmed lane mid-sequence included. Once every assigned lane is
-    confirmed the strict gate stands on its own and no client can lower it.
-    See #2821.
+    A client may only REQUEST it; the saved topology decides. The audition
+    plays one assigned lane while the household is still working out which
+    physical driver is which, so it is granted while that confirmation is
+    outstanding anywhere in the topology (a replay of an already-confirmed lane
+    mid-sequence included). Once every assigned lane is confirmed the strict
+    gate stands on its own and no client can lower it. See #2821.
     """
 
     if not requested:
@@ -4333,10 +4195,9 @@ async def _active_speaker_commission_load_payload(
 
     # Re-sync the live topology's protection state before staging the per-driver
     # candidate. An active commission requires every protection-required channel
-    # (e.g. a compression-driver tweeter) to carry its software-guard request; a
-    # stale topology can drift to required_missing and then block forever. Arming
-    # repairs that drift. The actual high-pass is still enforced by the
-    # protection-while-audible gate.
+    # (e.g. a compression-driver tweeter) to carry its software-guard request,
+    # and a stale topology can drift to required_missing and block forever. The
+    # high-pass itself is still enforced by the protection-while-audible gate.
     topology, guards_changed = ensure_missing_software_guards()
     if guards_changed:
         log_event(
@@ -4760,12 +4621,10 @@ async def _active_speaker_commissioning_view_payload(
 ) -> dict[str, Any]:
     """Return the backend-owned active-speaker setup view model.
 
-    The state-loading + composition lives in the shared
-    ``commissioning_coordinator.load_commissioning_view`` (the single source of
-    truth for "the commissioning view of this speaker" — the crossover envelope
-    consumes the same loader). Only the ``commission`` runtime relay is built
-    here, because its full payload needs the async CamillaDSP runtime probe
-    this caller owns.
+    State-loading and composition live in the shared
+    ``commissioning_coordinator.load_commissioning_view``, which the crossover
+    envelope consumes too. Only the ``commission`` runtime relay is built here,
+    because it needs the async CamillaDSP runtime probe this caller owns.
     """
 
     from jasper.active_speaker.commissioning_coordinator import (
@@ -4943,17 +4802,15 @@ async def _active_speaker_summed_test_payload(
 ) -> dict[str, Any]:
     """Run and record one bounded combined-driver test for validation.
 
-    This request blocks for as long as the test plays, and returns once it has
-    ended. ``duration_ms`` is how long to play: with it the audible loop stops
-    itself, the response is a ``completed`` play, and the recorded test is
-    ``captured`` — so one client can run the test and then POST
-    ``/active-speaker/summed-validation`` in sequence, with no second
-    connection and no race against ``active_summed_test_running``. Without
-    ``duration_ms`` the loop runs until ``/active-speaker/summed-test/stop``
-    arrives on another connection (``reason: "operator_confirmed"`` to complete
-    it) or the watchdog expires it; a stop that is not a confirmation leaves
-    the test incomplete, which is what "the operator did not say they heard
-    it" means.
+    This request blocks for as long as the test plays. ``duration_ms`` is how
+    long to play: with it the audible loop stops itself, the response is a
+    ``completed`` play and the recorded test is ``captured``, so one client can
+    run the test and then POST ``/active-speaker/summed-validation`` in
+    sequence with no second connection and no race against
+    ``active_summed_test_running``. Without ``duration_ms`` the loop runs until
+    ``/active-speaker/summed-test/stop`` arrives on another connection
+    (``reason: "operator_confirmed"`` to complete it) or the watchdog expires
+    it; a stop that is not a confirmation leaves the test incomplete.
     """
 
     from jasper.active_speaker.calibration_level import (
@@ -5308,9 +5165,10 @@ async def _active_speaker_finish_commissioning_payload(
 ) -> dict[str, Any]:
     """Backend-owned final handoff from commissioning to the active profile.
 
-    The browser expresses one user intent: make the checked crossover the normal
-    active speaker profile. The backend owns the compile/validate/load/confirm
-    sequence, so the UI cannot wedge itself between "saved" and "applied".
+    The browser expresses one intent — make the checked crossover the normal
+    active speaker profile — and the backend owns the whole
+    compile/validate/load/confirm sequence, so the UI cannot wedge itself
+    between "saved" and "applied".
     """
 
     reviewed = _active_speaker_baseline_profile_payload(write=False)
@@ -5401,14 +5259,12 @@ async def _active_speaker_finish_commissioning_payload(
 
 
 #: Read-only GET routes whose entire handler is "send this payload, or
-#: answer 502 under this event name". One dispatch in :func:`_make_handler`
-#: rather than one copy of the same try/except per route; a route that needs
-#: the handler's own state (the two commissioning views close over
-#: ``camilla_factory``) stays spelled out there. The event strings live HERE
-#: now, and the log-event drift pin reads them here. The builder is named,
-#: not captured: this module owns its payload builders, and a table holding
-#: the objects it had at import time would answer with a builder the module
-#: no longer has.
+#: answer 502 under this event name", dispatched once in :func:`_make_handler`;
+#: a route that needs the handler's own state (the two commissioning views
+#: close over ``camilla_factory``) stays spelled out there. The log-event drift
+#: pin reads the event strings here. The builder is NAMED, not captured: a
+#: table holding the objects it had at import time would answer with a builder
+#: the module no longer has.
 _GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
     "/output-topology": ("_output_topology_payload", "sound.output_topology"),
     "/active-speaker/design-draft": (
@@ -6188,14 +6044,12 @@ def _make_handler(
             except Exception as e:  # noqa: BLE001
                 refusal = _carrier_refusal(e)
                 if refusal is not None:
-                    # The loaded graph cannot host EQ — this is a known,
-                    # handled state, not a server error. Return a typed 200
-                    # body so the UI renders an honest hint instead of a 502
-                    # toast or a silent no-op (no silent failure). 200, not the
-                    # 409 used for the follower-block: the page reads
+                    # The loaded graph cannot host EQ: a known, handled state,
+                    # not a server error. 200 with a typed body, NOT the 409
+                    # used for the follower-block — the page reads
                     # reason_code/message from the body, and a 4xx would be
                     # swallowed by its `if (!resp.ok) throw` into a generic
-                    # error — losing the honest reason.
+                    # error, losing the honest reason.
                     log_event(
                         logger,
                         "sound.eq_blocked",
