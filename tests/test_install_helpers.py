@@ -2363,7 +2363,7 @@ def test_unpark_skips_a_unit_this_install_turned_off(tmp_path, verb, state):
     `park_streambox_brain_units` only ever produces `disabled`, so `masked`
     (an operator's own decision) needs its own case. `static` is what a
     socket-activated unit with no [Install] directives reports, and must still
-    be restored — that is what all four wizard `.service` units report, so
+    be restored — that is what every wizard `.service` unit reports, so
     `enable_streambox_web_sockets`' `disable` cannot reach this branch at all.
 
     `masked-runtime` is systemd's /run-scoped mask. No in-repo path produces

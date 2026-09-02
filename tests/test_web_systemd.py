@@ -733,8 +733,6 @@ def test_drain_is_a_noop_without_unserved_listeners() -> None:
     assert _systemd.drain_unclaimed_listeners([]) is None
 
 
-
-
 def test_main_drains_exactly_the_ports_no_granted_wizard_claimed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

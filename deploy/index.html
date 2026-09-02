@@ -1393,6 +1393,11 @@
     // voice capture. The independent USB microphone export is unaffected.
     (function() {
       var button = document.getElementById('mic-toggle');
+      // applyCapabilities() ran above, so a tier without wake_detection has
+      // already hidden this card: don't wire the 3 s /mic poll a hidden card
+      // has no route for.
+      var card = button && button.closest('.control-section');
+      if (!button || (card && card.hidden)) return;
       var stateEl = document.getElementById('mic-state');
       var dot = document.getElementById('mic-dot');
       var title = document.getElementById('mic-title');

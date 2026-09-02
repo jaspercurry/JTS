@@ -205,14 +205,18 @@ def _drain_forever(sockets: list[socket.socket]) -> None:
                 conn, _ = sock.accept()
             except OSError:
                 continue
-            with contextlib.suppress(OSError):
-                port = sock.getsockname()[1]
+            try:
+                # The close IS the refusal: nothing may run before it, or a
+                # raise there leaves the client hanging on a leaked fd.
                 conn.close()
-                log.info(
-                    "jasper-web refused a connection on unserved port %d "
-                    "(no capability grants this wizard on this tier)",
-                    port,
-                )
+                port = sock.getsockname()[1]
+            except OSError:
+                continue
+            log.info(
+                "jasper-web refused a connection on unserved port %d "
+                "(no capability grants this wizard on this tier)",
+                port,
+            )
 
 
 def _notify(message: str) -> None:

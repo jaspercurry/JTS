@@ -807,8 +807,8 @@ def test_mic_pause_card_follows_wake_detection() -> None:
     )
     assert card is not None, "mic pause card markup drifted"
     assert card.group("cap") == "wake_detection"
-    # The control the /mic poll and mute POST drive lives inside this card, so
-    # the gate above is what decides whether they ever run.
+    # The /mic poll and mute POST short-circuit on this card being hidden, so
+    # the control living inside it is what ties them to the gate above.
     assert 'id="mic-toggle"' in card.group("body")
     assert "/mic" not in _nginx_locations(
         _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")

@@ -33,11 +33,15 @@ RestartSec=2
 # No User= here (this unit still runs root — see
 # tests/test_systemd_hardening.py), so no SupplementaryGroups= is needed to
 # read voice_keys.env at 0640 root:jasper-secrets.
+# `-` on the secrets compartment: a non-prefixed missing path fails mount
+# namespacing (226/NAMESPACE) and would take every wizard on this tier down,
+# not just the assistant ones, on a box installed before that compartment
+# was created here.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth
+ReadWritePaths=/var/lib/jasper -/var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth
 
 [Install]
 # WantedBy left out intentionally — enabling the .socket pulls in the service

@@ -256,16 +256,10 @@ def install_profile_supports_wake_detection(profile: str | None) -> bool:
     mic/AEC stack rides along, because always-on wake is its only
     always-on consumer.
 
-    Staged, not wired: this predicate has no production reader yet, and
-    neither does the ``wake_detection`` key it feeds in
-    ``system_capabilities_for_profile``. The scheduled first consumer is
-    the streambox smart-remote sequence (#2205 and the work around it),
-    which needs ASSISTANT granted without WAKE_DETECTION.
     ``test_both_tiers_keep_wake_and_assistant_welded_for_now`` is the
-    tripwire: it is SUPPOSED to fail the day that flip lands, which is
-    how you'll know to update it rather than leave it red. If the
-    smart-remote sequence is abandoned instead, remove this predicate
-    and the key rather than leave them declared-but-unread.
+    tripwire for the day a tier is granted ASSISTANT without
+    WAKE_DETECTION: it is SUPPOSED to fail then, so update it rather
+    than leave it red.
     """
     return install_profile_has_capability(profile, Capability.WAKE_DETECTION)
 

@@ -974,7 +974,7 @@ _unpark_one_low_memory_unit() {
     #
     # `is-enabled` reports static/indirect/generated for units that legitimately
     # carry no [Install] directives; none of those are off states and all are
-    # restored. That is what the four socket-activated wizard .service units
+    # restored. That is what the socket-activated wizard .service units
     # report — their [Install] sections are comment-only, so the `disable` in
     # enable_streambox_web_sockets cannot move them to `disabled` and this
     # branch never sees them.
