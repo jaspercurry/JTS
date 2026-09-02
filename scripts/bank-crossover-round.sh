@@ -93,7 +93,8 @@ fi
 mkdir -p "$DEST"
 
 # B1: provenance manifest, written before any Pi round-trip so a banked
-# tree always names its own source even if every pull below fails.
+# tree always names its own source even if every pull below fails. The key set
+# a banked round carries is owned by jasper/active_speaker/round_bank.py.
 UTC_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SCRIPT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 if [[ "$SCRIPT_SHA" != "unknown" ]] && ! git -C "$REPO_ROOT" diff-index --quiet HEAD -- 2>/dev/null; then

@@ -59,6 +59,7 @@ TUNING_TOOL_MODULES: tuple[str, ...] = (
     "jasper.cli.measure",
     "jasper.cli.crossover_prescriber",
     "jasper.cli.round_views",
+    "jasper.cli.round_bank",
     "jasper.cli.classify_features",
     "jasper.cli.read_distortion",
     "jasper.cli.delay_sweep",

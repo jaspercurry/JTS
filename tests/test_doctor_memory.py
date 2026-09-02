@@ -430,6 +430,56 @@ def test_correction_storage_absent_dir_is_ok(monkeypatch, tmp_path):
     assert doctor.check_correction_storage().status == "ok"
 
 
+@pytest.mark.parametrize(
+    "campaigns_exist", [True, False], ids=["campaigns-present", "campaigns-absent"]
+)
+def test_active_speaker_storage_discloses_both_stores(
+    monkeypatch, tmp_path, campaigns_exist
+):
+    """Disclosure only: both stores are named and sized, and an absent campaign
+    home is 0 rather than a warning -- nothing here has a budget to breach."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "info.json").write_bytes(b"0" * 4096)
+    campaigns = tmp_path / "campaigns"
+    if campaigns_exist:
+        (campaigns / "r1").mkdir(parents=True)
+        (campaigns / "r1" / "provenance.json").write_bytes(b"0" * 2048)
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions))
+    monkeypatch.setattr(doctor_memory, "DEFAULT_CAMPAIGN_ROOT", campaigns)
+
+    r = doctor.check_active_speaker_storage()
+
+    assert r.status == "ok"
+    assert str(sessions) in r.detail
+    assert str(campaigns) in r.detail
+
+
+def test_active_speaker_storage_counts_evidence_under_the_deep_layout(
+    monkeypatch, tmp_path
+):
+    """A banked round's evidence sits nine directories down
+    (<round>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/
+    positions/), so the generic walk depth stopped above every artifact and
+    disclosed a store at a few percent of its real size."""
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    buried = (
+        tmp_path / "campaigns" / "r1" / "bundle" / "s1" / "evidence" / "v1"
+        / "artifacts" / "crossover_v2" / "relay-1" / "positions"
+    )
+    buried.mkdir(parents=True)
+    with open(buried / "curve.json", "wb") as f:
+        f.truncate(3 * 1024 * 1024)
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(sessions))
+    monkeypatch.setattr(doctor_memory, "DEFAULT_CAMPAIGN_ROOT", tmp_path / "campaigns")
+
+    r = doctor.check_active_speaker_storage()
+
+    assert "campaigns 3 MiB" in r.detail
+    assert "\u2265" not in r.detail
+
+
 def test_wake_events_warn_threshold_scales_with_the_configured_cap(
     monkeypatch, tmp_path
 ):
