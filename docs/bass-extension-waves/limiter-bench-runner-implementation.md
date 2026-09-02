@@ -68,12 +68,12 @@ Building the runner is authorized — gate 1 (the amendment is merged) is done. 
    `patch_config` (`jasper/camilla.py`, the Wave-0 micro-stepped graph mutation);
    and `driver_safety.py` (`hard_excitation_band_hz`, `level_duration_limits`).
 4. Read the closest **prior-art shape**: the operator-driven bench experiment
-   written up in [`CHIP-AEC-EXPERIMENT.md`](../CHIP-AEC-EXPERIMENT.md), itself
-   a historical document. (It described a `jasper/chip_aec_experiment.py`
-   daemon and `scripts/chip-aec-*.sh` drivers; those were deleted in U4/P7-3
-   once the production chip-AEC path shipped and the pre-DSP tap they captured
-   entered the snd-aloop deletion arc, so the write-up is all that remains.)
-   The bench runner is
+   that was written up in `docs/CHIP-AEC-EXPERIMENT.md` (deleted; see git
+   history, and jaspercurry/JTS#3667 for what of it stayed open). It described
+   a `jasper/chip_aec_experiment.py` daemon and `scripts/chip-aec-*.sh`
+   drivers; those were deleted in U4/P7-3 once the production chip-AEC path
+   shipped and the pre-DSP tap they captured entered the snd-aloop deletion
+   arc. The bench runner is
    the same *kind* of thing — an operator-run, bench-only campaign that produces
    evidence — mirror that shape, not a household-facing wizard.
 5. **Verify the preflight facts below.** If any has drifted, STOP and report —
