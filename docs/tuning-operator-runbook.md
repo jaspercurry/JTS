@@ -67,11 +67,15 @@ while the result is still getting flatter.
   `crossover_envelope.build_crossover_envelope_logged`.
 - **Nothing applies inside a capture session.** A session produces a proposal;
   the household applies it from the `review` screen.
-- **One candidate per round, today.** A round measures and grades a *single*
-  staged candidate — the runner has no `--candidates` flag. The N-candidate
-  tournament is the plan's Wave 3 (tickets 3.4, 3.5). Until it lands a bake-off
-  is N sequential rounds, and republish is how you get a past candidate back
-  without re-measuring it.
+- **The candidate cycle is a round.** `jasper-angle-capture stage --program
+  tournament --size express|full --candidates <fingerprints>` cycles N banked
+  candidates at each held pose as adjacent stops, so one mic move per pose
+  answers all of them. Only the alignment axes a candidate implies (polarity,
+  delay, level match) play through the per-driver MEASURE graph; a candidate
+  carrying linearization EQ refuses `walk_candidate_not_measurable`. The
+  evidence packet's `candidates` block reports which candidates were measured
+  at which poses, and `crossover_v2/candidate_comparator.py` ranks them once
+  per-candidate gradings exist.
 - **A crossover corner is declared and executed, never measured-searched**
   (invariant 2). `crossover_v2/{search,objective,candidate_space}.py`,
   `fc_sweep`'s sweep half and `active_speaker/fc_selector.py` were cancelled
@@ -521,9 +525,8 @@ landed. That is a design to write, not a refusal to remove, and the
 `awaiting_apply` hold is explicitly not the seam for it (its own vocabulary says
 "no new design may depend on it"). **Verify** is a stage of the round runner,
 hitting
-`POST /crossover/v2/verify`. Where it is headed: named, versioned pose lists as
-data (`baseline` / `tournament` / `verify` / `spot`), selected through a staged
-request with bounded parameters — never free-form geometry you invent. Pose
+`POST /crossover/v2/verify`, not a row in the programs registry above.
+Still ahead: versioning these pose lists. Pose
 counts, anchor-relative drive level, escalation, the distance rule, the boost
 probe and the stopping rule all live in the plan's **"Measurement program
 constants"** section, their single source of truth; ticket 3.7 turns them into
