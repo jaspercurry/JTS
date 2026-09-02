@@ -17,10 +17,16 @@ import urllib.error
 import pytest
 
 from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker.crossover_v2_flow import TIERS as _FLOW_TIERS
 from jasper.cli import round as cli
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
+
+
+def test_tiers_match_crossover_v2_flow() -> None:
+    """cli.round restates TIERS to stay numpy-free; keep it in sync."""
+    assert sorted(cli.TIERS) == sorted(_FLOW_TIERS)
 
 
 class _FakeResponse:
