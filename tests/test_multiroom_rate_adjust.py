@@ -4,17 +4,18 @@
 
 """inv-5 — no CamillaDSP runs rate_adjust.
 snapclient's sample-stuffing is the single rate-tracker for the synced chain
-(two rate-adjusters oscillate); and, since ADR-0100, every sink
-`member_camilla_kwargs` can hand out — the leader's pipe, or Ring B for
-everything else (dumb follower / solo / off / invalid) — is one CamillaDSP
+(two rate-adjusters oscillate); and, since ADR-0100, every sink a member can
+play into — the leader's pipe, or Ring B for everything else — is one CamillaDSP
 cannot actuate rate_adjust on regardless (a File sink has no output clock; a
-ring PCM is an ioplug, and alsa-lib reports card -1 for every ioplug). A DUMB
-follower's local CamillaDSP is out of the bonded path (canonical model,
-Increment 5) and keeps solo defaults — rate_adjust OFF, same as every other
-role now. Covers the shared predicate, the member-config policy, the
-generator param on the live generators, and the jasper-doctor backstops
+ring PCM is an ioplug, and alsa-lib reports card -1 for every ioplug), which is
+why the emitter resolves the field from the sink. A DUMB follower's local
+CamillaDSP is out of the bonded path (canonical model, Increment 5) and keeps
+solo defaults. Covers the shared predicate, the member-config policy, the
+emitted bonded config, and the jasper-doctor backstops
 (active-config rate_adjust + leader pipe + outputd channel-pick env drift)."""
 from __future__ import annotations
+
+import pytest
 
 from jasper.multiroom.config import (
     GroupingConfig,
@@ -67,51 +68,39 @@ def test_solo_off_invalid_are_not_active():
 # ---------- member-config policy: the ONE decision, applied path-independently --
 
 
-def test_member_camilla_kwargs_active_leader_gets_the_pipe_sink():
-    """CANONICAL (Increment 5): an active LEADER's local CamillaDSP bakes the
-    shared program and writes snapserver's pipe — rate_adjust off (a File
-    sink has no output clock; snapclient is the one rate-tracker), no
-    channel weave (the pipe carries BOTH channels; members pick channels
-    downstream in outputd's ChannelPick)."""
+@pytest.mark.parametrize(
+    ("cfg", "expects_pipe"),
+    [
+        (_cfg(enabled=True, role="leader", channel="left", bond_id="b"), True),
+        (_cfg(enabled=True, role="leader", channel="stereo", bond_id="b"), True),
+        (
+            _cfg(enabled=True, role="follower", channel="right", bond_id="b",
+                 leader_addr="jts.local"),
+            False,
+        ),
+        (_cfg(), False),
+        (
+            _cfg(enabled=True, role="", channel="left", bond_id="",
+                 error="bond_id empty"),
+            False,
+        ),
+    ],
+    ids=["leader-left", "leader-stereo", "follower", "solo", "invalid"],
+)
+def test_member_camilla_kwargs_carries_only_the_leaders_pipe(cfg, expects_pipe):
+    """CANONICAL (Increment 5): a LEADER's local CamillaDSP bakes the shared
+    program to snapserver's pipe whatever channel it is assigned — the pipe
+    carries BOTH channels and members pick theirs downstream in outputd's
+    ChannelPick. Every other shape needs no member policy at all: a follower's
+    local CamillaDSP is OUT of the bonded playback path (it keeps producing the
+    inv-B fallback feed), and solo / off / invalid are the emitter's own
+    defaults, byte-for-byte."""
     from jasper.multiroom.member_config import member_camilla_kwargs
     from jasper.multiroom.reconcile import SNAPFIFO
-    kw = member_camilla_kwargs(
-        _cfg(enabled=True, role="leader", channel="left", bond_id="b"))
-    assert kw["enable_rate_adjust"] is False
-    assert kw["playback_pipe_path"] == SNAPFIFO
-    assert "channel_delays_ms" not in kw
 
+    kw = member_camilla_kwargs(cfg)
 
-def test_member_camilla_kwargs_active_follower_is_solo_defaults():
-    """CANONICAL (Increment 5): an active FOLLOWER's local CamillaDSP is OUT
-    of the bonded playback path (the round-trip feeds outputd directly);
-    it keeps producing the normal direct lane — the inv-B fallback feed —
-    so its config stays byte-for-byte the solo config (rate_adjust=False is
-    correct there too: its sink is Ring B (ADR-0100), an ioplug CamillaDSP
-    cannot actuate rate_adjust on)."""
-    from jasper.multiroom.member_config import member_camilla_kwargs
-    kw = member_camilla_kwargs(_cfg(enabled=True, role="follower", channel="right",
-                                    bond_id="b", leader_addr="jts.local"))
-    assert kw["enable_rate_adjust"] is False
-    assert kw["playback_pipe_path"] is None
-
-
-def test_member_camilla_kwargs_solo_is_unchanged_defaults():
-    """Solo / off → the solo-speaker defaults (config byte-for-byte unchanged)."""
-    from jasper.multiroom.member_config import member_camilla_kwargs
-    kw = member_camilla_kwargs(_cfg())  # grouping off
-    assert kw["enable_rate_adjust"] is False
-    assert kw["playback_pipe_path"] is None
-
-
-def test_member_camilla_kwargs_stereo_leader_still_bakes_the_pipe():
-    """A leader bakes the pipe regardless of its OWN channel assignment —
-    the pipe always carries the full shared program."""
-    from jasper.multiroom.member_config import member_camilla_kwargs
-    from jasper.multiroom.reconcile import SNAPFIFO
-    kw = member_camilla_kwargs(_cfg(enabled=True, role="leader", channel="stereo", bond_id="b"))
-    assert kw["enable_rate_adjust"] is False
-    assert kw["playback_pipe_path"] == SNAPFIFO
+    assert kw == ({"playback_pipe_path": SNAPFIFO} if expects_pipe else {})
 
 
 def test_member_camilla_kwargs_active_leader_preserves_channel_delays():
@@ -130,15 +119,6 @@ def test_member_camilla_kwargs_active_leader_preserves_channel_delays():
 
     assert kw["room_peqs_right"] == []
     assert kw["channel_delays_ms"] == (1.25, 0.0)
-
-
-def test_member_camilla_kwargs_invalid_member_unchanged():
-    """Enabled-but-invalid is NOT active → solo defaults (fail-safe)."""
-    from jasper.multiroom.member_config import member_camilla_kwargs
-    kw = member_camilla_kwargs(_cfg(enabled=True, role="", channel="left",
-                                    bond_id="", error="bond_id empty"))
-    assert kw["enable_rate_adjust"] is False
-    assert kw["playback_pipe_path"] is None
 
 
 def test_member_camilla_kwargs_resolves_config_at_call_time(monkeypatch):
@@ -173,20 +153,26 @@ def test_member_camilla_kwargs_resolves_config_at_call_time(monkeypatch):
     # Our patched load_config supplied the cfg, and our patched is_active_leader
     # received THAT exact object — proving call-time module resolution.
     assert seen.get("cfg") is sentinel
-    assert kw["playback_pipe_path"] is None  # spy returned False → solo defaults
+    assert kw == {}  # spy returned False → solo defaults
 
 
 # ---------- generated sound configs emit the param ----------
 
 
-def test_sound_generator_honors_rate_adjust_param():
+def test_the_leader_bake_emits_rate_adjust_off_unasked():
+    """inv-5 at the emitter, with nobody passing the flag: the leader's
+    File/pipe sink is what resolves it, so a bonded leader's baked config cannot
+    carry a rate-adjuster to fight snapclient's sample-stuffing."""
+    from jasper.camilla_config_contract import parse_camilla_devices_config
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SimpleEq, SoundProfile
+
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=6.0))
-    assert "enable_rate_adjust: true" in emit_sound_config(profile)  # default
-    assert "enable_rate_adjust: false" in emit_sound_config(
-        profile, enable_rate_adjust=False,
+    parsed = parse_camilla_devices_config(
+        emit_sound_config(profile, playback_pipe_path="/run/snapfifo")
     )
+
+    assert parsed["enable_rate_adjust"] is False
 
 
 # ---------- jasper-doctor backstop ----------
@@ -277,23 +263,18 @@ def test_doctor_check_does_not_warn_on_a_dumb_follower(monkeypatch, tmp_path):
     """The scope's OTHER edge, and the reason it is not a bare `is_active_member`.
 
     A DUMB (passive, single-DAC) follower plays the bond through outputd's
-    dac_content lane; its own camilla#1 stays on the solo fallback feed, which
-    `member_camilla_kwargs` emits with `enable_rate_adjust=False` (that
-    fallback feed's sink is Ring B — ADR-0100 — an ioplug CamillaDSP cannot
-    actuate rate_adjust on). This check still must not warn there: it has no
-    bond apply on that box to catch, so it would red every passive follower
-    in the fleet regardless of the local config's value — a doctor that
-    cries wolf.
+    dac_content lane; its own camilla#1 stays on the solo fallback feed, whose
+    sink is Ring B (ADR-0100), an ioplug CamillaDSP cannot actuate rate_adjust
+    on. This check still must not warn there: it has no bond apply on that box
+    to catch, so it would red every passive follower in the fleet regardless of
+    the local config's value — a doctor that cries wolf.
     """
     import jasper.cli.doctor.correction as corrmod
     import jasper.multiroom.config as cfgmod
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
-    from jasper.multiroom.member_config import member_camilla_kwargs
 
     dumb_follower = _cfg(enabled=True, role="follower", channel="right",
                          bond_id="b", leader_addr="jts.local")
-    # Re-derived, not assumed: this is what the member policy emits there.
-    assert member_camilla_kwargs(dumb_follower)["enable_rate_adjust"] is False
 
     _stub_active_box(monkeypatch, False)
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: dumb_follower)
@@ -419,7 +400,6 @@ def test_leader_pipe_check_warns_on_solo_config_and_passes_on_emitted_pipe(
     config_file.write_text(
         emit_sound_config(
             SoundProfile(enabled=False),
-            enable_rate_adjust=False,
             playback_pipe_path=SNAPFIFO,
         )
     )

@@ -35,6 +35,7 @@ from jasper.camilla_config_contract import (
     FilterSpec,
     PeqFilter,
     resolve_camilla_latency_for_devices,
+    resolve_enable_rate_adjust,
     total_positive_boost_db,
 )
 from jasper.camilla_emit import (
@@ -152,33 +153,13 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     "jts_ring_playback",
 )
 
-# CamillaDSP queue/rate-adjust defaults for the roleful ALSA-sink emitters. They
-# are parameters rather than literals because an ACTIVE RING sink needs
-# different ones, and only different ones:
-#
-#   queuelimit 1 — the ring is a lock-step slot handshake, so a deeper queue is
-#   latency with no benefit; and
-#   enable_rate_adjust false — a blocking slot handshake gives the rate
-#   controller nothing to adjust TO, and on a ring capture the request cannot be
-#   actuated in any case: a ring PCM is an ioplug, alsa-lib reports card -1 for
-#   every ioplug, so CamillaDSP builds no HCtl, finds neither the Loopback nor
-#   the UAC2-gadget mixer element, and takes the arm that does nothing. `false`
-#   is therefore what IS, stated rather than requested-and-ignored — and
-#   `capture_status.rate_adjust` echoes the REQUEST, so `true` would read
-#   plausible on the websocket while nothing moved.
-#     (The repo's snd-aloop rate-adjust OSCILLATION record is NOT the reason:
-#     that predicate fires only on an aloop capture carrying an ASYNC
-#     RESAMPLER — `snd_aloop_rate_adjust_oscillation_reason` returns None
-#     without one — and JTS emits no resampler on this path at all.)
-#
-# The PARKED emitter is excluded deliberately rather than missed: its sink is a
-# ``File``, so it can never target a ring and has no reason to take the knobs.
+# The emitters' PARAMETER default for a lab emit that names no queue (Q6).
+# Production composes :func:`active_emit_devices`, which passes
+# ``jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`` — the certified queue/rate-adjust
+# pairing an ACTIVE RING sink needs — whole. Rate adjust itself needs no
+# default here: every emitter resolves it from its sink when not told
+# (:func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust`, ADR-0216).
 DEFAULT_ACTIVE_QUEUELIMIT = 4
-DEFAULT_ACTIVE_ENABLE_RATE_ADJUST = True
-# What the ACTIVE RING sink needs instead is
-# ``jasper.fanin_coupling.RING_CAMILLA_GEOMETRY``, the one home for the whole
-# certified pairing, which :func:`active_emit_devices` fills its ring branch
-# from.
 
 # The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
 # It emits ONLY the program domain (Layer B room correction + Layer C preference
@@ -445,7 +426,10 @@ def active_emit_devices(
       whole. This graph is built end-to-end on the ring and passes the certified
       pairing EXPLICITLY. That is not the fallback an ordinary stereo graph
       takes: those carry the box's own floor, clamped to the ring's capacity by
-      ``resolve_camilla_latency_for_devices``.
+      ``resolve_camilla_latency_for_devices``, and read their
+      ``enable_rate_adjust`` from
+      :func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust` — the
+      sink decides it on either branch (ADR-0216).
 
     A helper rather than emitter-internal derivation: the emitters keep taking
     the values as PARAMETERS (Q6), because a lab emit deliberately setting them
@@ -476,7 +460,7 @@ def active_emit_devices(
             chunksize=None,
             target_level=None,
             queuelimit=DEFAULT_ACTIVE_QUEUELIMIT,
-            enable_rate_adjust=DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+            enable_rate_adjust=resolve_enable_rate_adjust(playback_device),
         )
     wire_format = resolve_ring_wire(topology).sample_format
     return ActiveEmitDevices(
@@ -2375,7 +2359,7 @@ def emit_active_speaker_startup_config(
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
-    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+    enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
 ) -> str:
@@ -2450,6 +2434,8 @@ def emit_active_speaker_startup_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    if enable_rate_adjust is None:
+        enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
     # CamillaDSP YAML booleans are lowercase; Python's repr is not.
     enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
@@ -2984,7 +2970,7 @@ def emit_active_speaker_commissioning_config(
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
-    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+    enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
@@ -3100,6 +3086,8 @@ def emit_active_speaker_commissioning_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    if enable_rate_adjust is None:
+        enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
     # CamillaDSP YAML booleans are lowercase; Python's repr is not.
     enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
@@ -3631,7 +3619,7 @@ def emit_active_speaker_program_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
-    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+    enable_rate_adjust: bool | None = None,
     inverted_roles: Sequence[str] = (),
     measurement_delays_us: Mapping[str, float] | None = None,
     measurement_level_trims_db: Mapping[str, float] | None = None,
@@ -3877,6 +3865,8 @@ def emit_active_speaker_program_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    if enable_rate_adjust is None:
+        enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
     # CamillaDSP YAML booleans are lowercase; Python's repr is not.
     enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
@@ -3965,7 +3955,7 @@ def emit_active_speaker_baseline_config(
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
-    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+    enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
@@ -4149,6 +4139,8 @@ def emit_active_speaker_baseline_config(
     device: "{capture_device}"
     format: {capture_format}"""
 
+    if enable_rate_adjust is None:
+        enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
     # CamillaDSP YAML booleans are lowercase; Python's repr is not.
     enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
@@ -4249,7 +4241,7 @@ def emit_active_speaker_driver_domain_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int = DEFAULT_ACTIVE_QUEUELIMIT,
-    enable_rate_adjust: bool = DEFAULT_ACTIVE_ENABLE_RATE_ADJUST,
+    enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
@@ -4379,6 +4371,8 @@ def emit_active_speaker_driver_domain_config(
         metadata_comments.append(f"# baseline_id={baseline_id}")
     metadata_yaml = "\n".join(metadata_comments)
 
+    if enable_rate_adjust is None:
+        enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
     # CamillaDSP YAML booleans are lowercase; Python's repr is not.
     enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
     yaml = f"""---
@@ -4482,9 +4476,7 @@ def emit_active_speaker_program_bake_config(
     fence ``eq_on_active_bonded_member`` guards the interactive ``/sound`` EQ
     apply and is untouched by this path. The program assembly is
     :func:`jasper.sound.camilla_yaml.emit_sound_config`'s — reused verbatim with
-    a ``File``/pipe sink and ``enable_rate_adjust=False`` (a ``File`` backend has
-    no output clock for rate_adjust to steer; on the synced active chain the one
-    rate-tracker is upstream) — so the baked correction is byte-for-byte the
+    a ``File``/pipe sink — so the baked correction is byte-for-byte the
     program graph the speaker already ships. Only the ``# Source:`` provenance
     marker differs: this config carries :data:`ACTIVE_PROGRAM_BAKE_SOURCE` so the
     runtime verifier recognises it as a DAC-less program bake.
@@ -4521,10 +4513,6 @@ def emit_active_speaker_program_bake_config(
         volume_limit_db=volume_limit_db,
         profile_id=profile_id,
         output_trim_db=output_trim_db,
-        # The one rate-tracker on the synced active chain is upstream of
-        # camilla#1; a File sink has no output clock to steer anyway. The
-        # emit_sound_config pipe-sink guard enforces this pairing.
-        enable_rate_adjust=False,
         playback_pipe_path=SNAPFIFO,
     )
 

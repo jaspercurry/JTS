@@ -47,7 +47,6 @@ from jasper.fanin_coupling import (
     outputd_bridge_is_ring,
     capture_half,
     coupling_value_removed,
-    member_kwargs_are_pipe_sink,
     resolve_coupling,
     ring_active_endpoint_armed,
 )
@@ -265,7 +264,6 @@ class EmitSoundConfigKwargs(TypedDict, total=False):
     room_peqs_right: Any
     channel_delays_ms: Any
     playback_pipe_path: str | None
-    enable_rate_adjust: bool
     # Ring (shm_ring) coupling names its CamillaDSP capture/playback devices via
     # ALSA ioplug devices (jts_ring_capture, plus jts_ring_playback or — on an
     # armed roleful box — jts_ring_active_playback), so BOTH device and format
@@ -2177,18 +2175,18 @@ def apply_capture_precedence(
     """Apply capture-precedence policy to an ``emit_sound_config`` kwargs dict.
 
     The coupling is END-TO-END, but only its PLAYBACK half is ever owned by a
-    more-specific topology: a grouped/member pipe sink owns the sink, so it takes
-    :func:`~jasper.fanin_coupling.capture_half` only. It must still take THAT —
-    dropping the capture half too re-emits a bonded leader's LIVE camilla#1 onto
-    the tap an armed ring took fan-in off, silencing the whole bond. Everything
-    else takes both halves. Empty coupling kwargs return the input unchanged
-    (detached, for callers to mutate).
+    more-specific topology: a member's ``playback_pipe_path`` owns the sink, so
+    that emit takes :func:`~jasper.fanin_coupling.capture_half` only. It must
+    still take THAT — dropping the capture half too re-emits a bonded leader's
+    LIVE camilla#1 onto the tap an armed ring took fan-in off, silencing the
+    whole bond. Everything else takes both halves. Empty coupling kwargs return
+    the input unchanged (detached, for callers to mutate).
     """
 
     if not fanin_coupling_capture_kwargs:
         return cast(EmitSoundConfigKwargs, dict(emit_kwargs))
     merged = dict(emit_kwargs)
-    if member_kwargs_are_pipe_sink(dict(member_kwargs or {})):
+    if (member_kwargs or {}).get("playback_pipe_path"):
         merged.update(capture_half(fanin_coupling_capture_kwargs))
     else:
         merged.update(fanin_coupling_capture_kwargs)

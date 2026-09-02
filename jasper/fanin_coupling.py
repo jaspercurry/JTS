@@ -839,30 +839,3 @@ def coupling_capture_kwargs_from_env() -> dict[str, object]:
     ``/sound/`` or ``/correction/`` save.
     """
     return capture_kwargs_for_coupling()
-
-
-def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool:
-    """True when the resolved grouping member kwargs are a SnapFIFO pipe sink.
-
-    A bonded/grouped member (active-leader program bake, or a passive grouping
-    follower leader) writes CamillaDSP's playback to the Snapcast pipe with
-    ``enable_rate_adjust=False`` (snapclient is the sole rate-tracker — inv-5).
-    True therefore means the SINK is already owned, so the callers that branch on
-    it drop the coupling's PLAYBACK half ONLY: the capture half is still threaded
-    through :func:`capture_half`, or a bonded leader's live camilla#1 re-emits
-    onto the tap an armed ring took fan-in off. The SOLO defaults also return
-    True — they carry ``enable_rate_adjust=False`` for their own reason (Ring B
-    is an ioplug CamillaDSP cannot actuate rate_adjust on) — and the sink they
-    drop is the one they would have emitted: ``emit_sound_config`` defaults
-    ``playback_device`` to :data:`RING_PLAYBACK_DEVICE` already. Mirrors
-    ``jasper.multiroom.member_config``'s leader-vs-solo distinction without
-    importing it (this module stays import-cheap for the socket-activated
-    emitters).
-    """
-    if not member_kwargs:
-        return False
-    if member_kwargs.get("playback_pipe_path"):
-        return True
-    # An explicit enable_rate_adjust=False is the pipe-sink signal even if the
-    # path resolution is deferred; treat it as a sink to stay fail-safe.
-    return member_kwargs.get("enable_rate_adjust") is False
