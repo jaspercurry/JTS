@@ -27,10 +27,9 @@ on the shared one: ``banked_at_utc`` is spelled and formatted as
 alone knows — ``session_id``, ``source``, ``installed_sha``, ``git_absent`` and
 ``missing`` here; ``pi_host``, ``pi_user`` and ``script_commit`` there.
 
-**Nothing here evicts.** The campaign store is operator-pruned: no enforced
-budget, size disclosed by ``jasper-doctor``'s active-speaker storage check — so
-the tuning plan's retention rule (eviction never crosses an active round's
-boundary, docs/tuning-master-plan.md) holds trivially.
+**Nothing here evicts.** The campaign store is operator-pruned and has no
+enforced budget, so the tuning plan's retention rule (eviction never crosses
+an active round's boundary, docs/tuning-master-plan.md) holds trivially.
 
 The banked names and their SSOT paths are the reader's own
 (:mod:`~jasper.active_speaker.crossover_v2.round_inputs`), imported inside the
