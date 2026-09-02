@@ -20,6 +20,8 @@ order — so this list is what exists, not a plan:
 * :mod:`.tuning_scope` — the comparability fingerprint a round banks at entry:
   the graph's content hashed over the layers it measures through, preference
   EQ excluded.
+* :mod:`.round_inputs` — where one round's evidence inputs are, for both
+  shapes a round comes in: a banked tree or a live session bundle on the box.
 * :mod:`.round_views` — the round-grading comparison views a laptop campaign
   had been re-deriving by hand.
 * :mod:`.frequency_view` — retained round packets translated into the neutral
