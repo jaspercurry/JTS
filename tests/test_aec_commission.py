@@ -7,17 +7,21 @@ from __future__ import annotations
 import json
 import sys
 import types
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
 from jasper import chip_aec_shipped_alignment as shipped
+from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
 from jasper.chip_aec_alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
+    LevelProbe,
     MicTiming,
     ProductResult,
     Rejected,
+    TARGET_RAW_EXCESS_SNR_DB,
     TIMING_TRIALS,
     TimingRejected,
     TimingResult,
@@ -76,6 +80,9 @@ class _FakeIO:
         self.queue_calls = 0
         self.convergence_values = iter((0, 1))
         self.fail_product = fail_product
+        # jts.local's own run 4: the room measured 5.45 dB of raw excess SNR
+        # at MEASUREMENT_VOLUME_DB, well under the product gate's floor.
+        self.level_probe = LevelProbe(5.45, 0, -60.0, -55.0)
 
     def wait_reconciler_idle(self) -> None:
         self.events.append("idle")
@@ -86,6 +93,9 @@ class _FakeIO:
     def prepare_volume(self) -> float:
         self.events.append("volume_set")
         return -20.0
+
+    def set_volume(self, db: float) -> None:
+        self.events.append(f"volume_measurement:{db:.4f}")
 
     def restore_volume(self, _original: float) -> None:
         self.events.append("volume_restored")
@@ -128,8 +138,10 @@ class _FakeIO:
     def convergence(self, _dev) -> int:
         return next(self.convergence_values)
 
-    def warmup(self, _hardware, _stimulus, _directory) -> None:
-        self.events.append("discarded_warmup")
+    def warmup(self, _hardware, _stimulus, _active, directory) -> LevelProbe:
+        (directory / aec_commission.WARMUP_CAPTURE_NAME).write_bytes(b"RIFF")
+        self.events.append("level_warmup")
+        return self.level_probe
 
     def timing(
         self, _dev, _hardware, mic: int, _stimulus, _reference, _directory, label
@@ -184,13 +196,13 @@ def test_commissioning_resets_once_publishes_k_after_cleanup(
     # K = commissioned SYS_DELAY + median(the window K is built from).
     assert artifact.k_samples == -38 + 285
     assert f"apply:{xvf3800.CHIP_AEC_SYS_DELAY_DEFAULT}:0" in io.events
-    assert io.events.count("discarded_warmup") == 1
+    assert io.events.count("level_warmup") == 1
     timing = [event for event in io.events if event.startswith("timing:")]
     assert timing == [
         *(f"timing:initial:m{mic}" for mic in range(4)),
         *(f"timing:final:m{mic}" for mic in range(4)),
     ]
-    assert io.events.index("discarded_warmup") < io.events.index(timing[0])
+    assert io.events.index("level_warmup") < io.events.index(timing[0])
     assert io.events.count("reset_once") == 1
     assert io.events.index("device_closed") < io.events.index("volume_restored")
     assert io.events.index("volume_restored") < io.events.index("published")
@@ -274,8 +286,74 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     assert sorted(path.name for path in retained[0].iterdir()) == [
         "aec-off.wav",
         "aec-on.wav",
+        aec_commission.WARMUP_CAPTURE_NAME,
     ]
     assert str(retained[0]) in outcome["detail"]
+
+
+@pytest.mark.parametrize(
+    "probe, expected_offset_db",
+    [
+        # Run 4 (too quiet), on target, loud enough to come back DOWN, and a
+        # clipped capture — which understates its own excitation.
+        (LevelProbe(5.45, 0, -60.0, -55.0), 9.55),
+        (LevelProbe(TARGET_RAW_EXCESS_SNR_DB, 0, -60.0, -55.0), 0.0),
+        (LevelProbe(25.0, 0, -60.0, -55.0), -10.0),
+        (LevelProbe(5.45, 12, -60.0, -55.0), 0.0),
+        # HEARING: a whole audible step or more from the target is refused,
+        # never commanded in one jump and never silently under-shot.
+        (LevelProbe(2.0, 0, -60.0, -55.0), None),
+    ],
+)
+def test_the_warmup_probe_sets_one_capped_measurement_level(
+    tmp_path: Path, caplog, probe: LevelProbe, expected_offset_db: float | None
+) -> None:
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    io = _FakeIO()
+    io.level_probe = probe
+    rejections = tmp_path / "rejections"
+    refused = expected_offset_db is None
+    offset = AUDIBLE_RAMP_STEP_DB if refused else expected_offset_db
+    volume = aec_commission.MEASUREMENT_VOLUME_DB + offset
+
+    with (
+        pytest.raises(aec_commission.CommissioningError)
+        if refused
+        else nullcontext()
+    ) as rejection:
+        aec_commission.run_commissioning(
+            io,
+            marker_path=tmp_path / "active",
+            artifact_path=tmp_path / "alignment.json",
+            state_path=tmp_path / "commission-state.json",
+            rejection_dir=rejections,
+            effective_uid=0,
+        )
+
+    writes = [event for event in io.events if event.startswith("volume_measurement:")]
+    record = str(rejection.value) if refused else caplog.text
+    for field in (
+        f"warmup_raw_excess_snr_db={round(probe.raw_excess_snr_db, 2)}",
+        f"target_raw_excess_snr_db={TARGET_RAW_EXCESS_SNR_DB}",
+        f"level_offset_db={round(offset, 2)}",
+        f"selected_volume_db={round(volume, 2)}",
+        # Which guard dominates says whether the dB-for-dB assumption held.
+        "pre_guard_dbfs=-60.0",
+        "post_guard_dbfs=-55.0",
+    ):
+        assert field in record, field
+    if refused:
+        assert writes == []
+        assert f"step_cap_db={AUDIBLE_RAMP_STEP_DB}" in record
+        retained = sorted(rejections.iterdir())
+        assert [path.name for path in retained[0].iterdir()] == [
+            aec_commission.WARMUP_CAPTURE_NAME
+        ]
+        assert "volume_restored" in io.events
+        return
+    assert writes == [f"volume_measurement:{volume:.4f}"]
+    order = [io.events.index(e) for e in ("level_warmup", writes[0], "timing:initial:m0")]
+    assert order == sorted(order)
 
 
 class _RejectingIO(_FakeIO):
@@ -308,7 +386,10 @@ def test_a_timing_rejection_retains_its_captures_and_reports_both_arrivals(
         )
 
     retained = sorted(rejections.iterdir())
-    assert [path.name for path in retained[0].iterdir()] == ["initial-m0-0.wav"]
+    assert sorted(path.name for path in retained[0].iterdir()) == [
+        "initial-m0-0.wav",
+        aec_commission.WARMUP_CAPTURE_NAME,
+    ]
     # Both arrivals and the ratio that separates them, in the journal and in
     # the operator-facing failure alike; the ratio is the run's whole verdict
     # and 121 - 20 samples is what a reflection hypothesis is tested against.
@@ -358,6 +439,7 @@ def test_a_product_rejection_retains_its_pair_and_reports_the_threshold(
     assert sorted(path.name for path in retained[0].iterdir()) == [
         "aec-off.wav",
         "aec-on.wav",
+        aec_commission.WARMUP_CAPTURE_NAME,
     ]
     # The measurement that failed and the number it was held to, in the
     # operator-facing refusal and the journal alike.
@@ -410,7 +492,12 @@ def test_a_run_that_never_converges_retains_its_captures_and_its_counts(
 
     retained = sorted(rejections.iterdir())
     assert sorted(path.name for path in retained[0].iterdir()) == [
-        f"{phase}-m{mic}-0.wav" for phase in ("final", "initial") for mic in range(4)
+        *(
+            f"{phase}-m{mic}-0.wav"
+            for phase in ("final", "initial")
+            for mic in range(4)
+        ),
+        aec_commission.WARMUP_CAPTURE_NAME,
     ]
     for field in (
         f"chunks_played={aec_commission.ADAPTATION_CHUNKS}",
