@@ -1549,6 +1549,19 @@ def test_stopped_camilla_is_not_reported_as_a_clean_signal_path() -> None:
     assert health["overall"]["headline"] != "Audio is ready"
 
 
+def test_stopped_camilla_outranks_the_deafness_it_causes() -> None:
+    """The stopped DSP is the ring writer, so `output_deaf` is its symptom.
+
+    Naming the cause is strictly more useful than naming the silence, and
+    `output_deaf` is the one issue-status shape a stopped DSP displaces.
+    """
+    health = _compose_camilla(
+        _CAMILLA_CLEAN_STOP, outputd=_outputd(content_deaf=True)
+    )
+
+    assert health["signal_path"]["code"] == "camilla_stopped"
+
+
 def test_stopped_camilla_outranks_a_source_that_looks_like_it_is_playing() -> None:
     """mux still calls AirPlay "playing"; nothing reaches the drivers."""
     health = _compose_camilla(_CAMILLA_CLEAN_STOP, selected="airplay")

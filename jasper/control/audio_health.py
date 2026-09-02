@@ -2072,12 +2072,17 @@ def compose_audio_health(
     if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
         signal_path = _activity_unavailable_signal()
     stopped_dsp = _stopped_dsp_signal(ap, service_states)
-    if stopped_dsp is not None and signal_path.get("status") != "issue":
+    if stopped_dsp is not None and (
+        signal_path.get("status") != "issue"
+        or signal_path.get("code") == "output_deaf"
+    ):
         # Ahead of `parked` on the same principle parked states below: a
         # daemon that is not running is happening NOW and is fixed by starting
         # it, while parked is persistent and fixed by changing the layout.
-        # Same `!= "issue"` guard, so a concrete live fan-in / outputd failure
-        # still wins — this only claims the ground where the path looks clean.
+        # A concrete live fan-in / outputd failure still wins — this only
+        # claims the ground where the path looks clean, plus `output_deaf`,
+        # which is this exact fault's CONSEQUENCE: the stopped DSP is the ring
+        # writer, so naming it is strictly more useful than naming the silence.
         signal_path = stopped_dsp
     parked = _parked_signal(route_state)
     if parked is not None and signal_path.get("status") != "issue":
