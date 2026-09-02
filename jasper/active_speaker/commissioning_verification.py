@@ -24,6 +24,7 @@ from jasper.audio_measurement.evidence_identity import (
     json_fingerprint,
 )
 from jasper.log_event import log_event
+from jasper.os_fault import root_os_error
 
 from ._common import (
     ROOM_AUTHORITY_RECEIPT_ABSENT,
@@ -705,25 +706,6 @@ def _deny(reason: str, cause: str) -> dict[str, Any]:
     }
 
 
-def _root_os_error(exc: BaseException) -> OSError | None:
-    """The deepest OS fault under a wrapped exception, if there is one.
-
-    Wrappers nest: the evidence store raises through a bundle reader that
-    itself wrapped an artifact reader, so a permission fault on one file
-    arrives three ``__cause__`` links down.
-    """
-
-    seen: set[int] = set()
-    found: OSError | None = None
-    cursor: BaseException | None = exc
-    while cursor is not None and id(cursor) not in seen:
-        seen.add(id(cursor))
-        if isinstance(cursor, OSError):
-            found = cursor
-        cursor = cursor.__cause__
-    return found
-
-
 def _os_cause(exc: OSError) -> str:
     """Name the fault the way an operator can act on: class, errno, path."""
 
@@ -843,7 +825,7 @@ def read_commissioning_room_authority(
             return _deny(ROOM_AUTHORITY_RECEIPT_ABSENT, str(exc.code))
         if exc.code in _STORE_CONTENT_CODES:
             return _deny(ROOM_AUTHORITY_RECEIPT_MALFORMED, str(exc.code))
-        os_fault = _root_os_error(exc)
+        os_fault = root_os_error(exc)
         return _deny(
             ROOM_AUTHORITY_RECEIPT_UNREADABLE,
             _os_cause(os_fault) if os_fault is not None else str(exc.code),
@@ -857,7 +839,7 @@ def read_commissioning_room_authority(
     except OSError as exc:
         return _deny(ROOM_AUTHORITY_RECEIPT_UNREADABLE, _os_cause(exc))
     except (RuntimeError, TypeError, ValueError, KeyError) as exc:
-        os_fault = _root_os_error(exc)
+        os_fault = root_os_error(exc)
         if os_fault is not None:
             return _deny(ROOM_AUTHORITY_RECEIPT_UNREADABLE, _os_cause(os_fault))
         return _deny(ROOM_AUTHORITY_RECEIPT_MALFORMED, type(exc).__name__)

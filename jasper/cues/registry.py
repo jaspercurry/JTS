@@ -114,6 +114,21 @@ CUES: tuple[CueDef, ...] = (
         fallback="cant_connect",
     ),
     CueDef(
+        slug="network_down",
+        template=(
+            "I can't reach the network. Please check the Wi-Fi or "
+            "troubleshoot at {hostname}."
+        ),
+        description=(
+            "Names the remedy when the household's own link is down — a "
+            "DNS or route failure carrying no HTTP status. Names the URL "
+            "by the owner's call even though the page may be unreachable; "
+            "\"or\" keeps it an option rather than an instruction "
+            "(ADR-0215)."
+        ),
+        fallback="cant_connect",
+    ),
+    CueDef(
         slug="research_failed",
         template=(
             "Sorry, I couldn't finish that research. Please ask me again."
