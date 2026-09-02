@@ -257,8 +257,6 @@ def _candidate_frequency(
             "one_octave_below_lowpass_edge"
         )
     if highpass_hz is not None:
-        # A class with no floor figure of its own (``full_range``) contributes
-        # nothing here: the margin-bounded band's minimum is the only floor.
         preferred = max(profile_floor_hz or 0.0, minimum_tone_hz)
         if preferred >= maximum_tone_hz:
             return None, "highpass_floor_exceeds_frequency_ceiling"
@@ -281,10 +279,8 @@ def driver_test_signal_plan(
     band; if no such tone exists, the plan is blocked and must not be played.
 
     ``declared_floor_hz`` is :func:`~.driver_protection.driver_excitation_floor_hz`
-    of this role's own declaration, for a caller that holds it. The preset
-    carries only the stored protective high-pass, which is one of that answer's
-    three arms — enough for every class whose floor the code table anchors, and
-    not enough for ``full_range``, whose floor exists only in the declaration.
+    for a caller that holds the declaration; ``full_range``'s floor lives only
+    there, so without it that class has no floor and refuses every tone.
     """
 
     role_id = str(role or "").strip().lower()
@@ -332,18 +328,14 @@ def driver_test_signal_plan_from_edges(
     the class table keeps (#2874).
 
     ``declared_floor_hz`` is the wider excitation floor
-    (:func:`~.driver_protection.driver_excitation_floor_hz`) when the caller
-    resolved it from the declaration itself; the stored protective high-pass
-    above is that answer's second arm and stands in when it did not. Only the
-    ``full_range`` class reads it, and without it that class has no floor at
-    all and refuses every tone.
+    (:func:`~.driver_protection.driver_excitation_floor_hz`); the protective
+    high-pass above is its second arm and stands in when the caller has none.
     """
 
     role_id = str(role or "").strip().lower()
     margin = _finite_positive(edge_margin_ratio) or EDGE_MARGIN_RATIO
-    excitation_floor_hz = (
-        _finite_positive(declared_floor_hz)
-        or _finite_positive(declared_low_limit_hz)
+    excitation_floor_hz = _finite_positive(declared_floor_hz) or _finite_positive(
+        declared_low_limit_hz
     )
     profile = driver_protection_profile(
         role_id, driver_style=driver_style, declared_floor_hz=excitation_floor_hz,

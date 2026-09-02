@@ -569,12 +569,9 @@ def solve_blend_correction(
       incumbent: the blend correction the measured capture rode. ``None`` means
         it could not be established and the round refuses; ``()`` means it rode
         none, which is the ordinary first round.
-      no_crossover_reason: the caller's named answer to "does this speaker HAVE
-        a crossover region at all" — set only for a 1-way main, whose preset
-        declares none. It outranks every arm below, ``incumbent`` included:
-        those all describe a region a round could not establish, and one slug
-        covering that and "there is nothing here to blend" would send two
-        readers with two remedies to one door (#3480).
+      no_crossover_reason: set only for a 1-way main, whose preset declares no
+        region. It outranks every arm below, ``incumbent`` included: those all
+        describe a region a round could not establish (#3480).
       previous_residual_db: the region residual the PREVIOUS round read, or
         ``None`` for the first round of a series. The narrow-defect stop below
         turns on it.
@@ -662,9 +659,8 @@ def solve_blend_correction(
     # next actions — and the receipt writer uses exactly this field to decide
     # whether the round had a blend question worth banking.
     band = _band_from(band_hz)
-    # …and "a round that had no crossover region at all" — the fact the comment
-    # above names — is the ONE refusal that legitimately carries no band, so it
-    # answers first and answers with its caller's own reason.
+    # …and "no crossover region at all" is the ONE refusal that legitimately
+    # carries no band, so it answers first, with its caller's own reason.
     if no_crossover_reason is not None:
         return _hold(
             no_crossover_reason,

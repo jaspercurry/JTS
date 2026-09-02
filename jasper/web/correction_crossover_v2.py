@@ -4450,9 +4450,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     )
 
     topology = load_output_topology()
-    # A subless passive main has no active crossover, so the gates below —
-    # which all ask whether an ACTIVE crossover is commissioned — are not
-    # questions about it; its preset comes from the topology instead.
+    # A subless passive main has no active crossover, so the gates below — all
+    # asking whether an ACTIVE one is commissioned — are not questions about it.
     passive_mains = topology_is_subless_passive_mains(topology)
     if not passive_mains:
         if not status.get("active"):
@@ -4525,8 +4524,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             if role and fingerprint:
                 role_targets[role] = fingerprint
     if set(role_targets) != set(roles):
-        # The roles are the fact worth keeping, and the registry copy cannot
-        # carry them — so they go on the journal line beside the code.
+        # The registry copy cannot carry the roles; the journal line can.
         log_event(
             logger,
             "correction.crossover_v2_measurement_targets_missing",
@@ -4581,9 +4579,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
                 f"the {role}'s safe excitation limits could not be resolved"
             ) from exc
         # Flat-linearization plan PR-4: this role's confirmed measurement band.
-        # Its OWN except arm rather than the refusing one above, because a
-        # declared-metadata gap on this optional surface must never refuse a
-        # session — a role absent from the map simply has no declared band.
+        # Its OWN except arm: a declared-metadata gap on this optional surface
+        # must never refuse a session.
         try:
             measurement_bands[role] = resolve_driver_measurement_band_hz(
                 safety_profile, role_targets[role],
@@ -6422,9 +6419,8 @@ def prepare_v2_session(
         raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
         topology_prescription = None
         if raw_topology is not None:
-            # The declarations below are a TWO-role reading, so a 1-way main
-            # passes them all as ``None`` and the reader refuses on the way count
-            # instead. Woofer first, tweeter second — this context's own order.
+            # The declarations below are a TWO-role reading: a 1-way main passes
+            # ``None`` and the reader refuses on the way count instead.
             pair = (
                 context.roles_bands if len(context.roles_bands) == 2
                 and "tweeter" in context.role_targets else ()
@@ -6444,8 +6440,7 @@ def prepare_v2_session(
                         None if woofer_diameter_mm is None
                         else beaming_onset_hz(float(woofer_diameter_mm))
                     ),
-                    # ``None`` is the parameter's own "not stated": an unknown
-                    # shape leaves the way-count gate silent, never guessing.
+                    # ``None`` is "not stated": the gate stays silent, never guesses.
                     way_count=getattr(context.preset, "way_count", None),
                 )
             except TopologyPrescriptionRefused as exc:

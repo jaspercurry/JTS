@@ -890,9 +890,8 @@ def _commission_tone_signal_plan(
         if topology is not None
         else None
     )
-    # The declaration itself, when this path holds one: the preset carries only
-    # the stored protective high-pass, and a ``full_range`` driver's floor lives
-    # in the payload the preview was compiled from.
+    # The preset carries only the stored protective high-pass; a ``full_range``
+    # driver's floor lives in the declaration the preview was compiled from.
     preview_drivers = (
         crossover_preview.get("drivers") if isinstance(crossover_preview, dict) else None
     )

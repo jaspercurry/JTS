@@ -1188,11 +1188,10 @@ def build_measure_program(
     interleaved sweep cycles, one per declared driver.
 
     One or two drivers. On a 2-way, ``roles_bands[0]`` is the lower driver
-    (woofer, ch0) and ``roles_bands[1]`` the upper (tweeter, ch1). On a 1-way
-    (passive full-range) there is only ``roles_bands[0]``: each cycle is that
-    one role's sweep, the inter-driver gaps do not exist, and the segment ids
-    below keep their ``_w`` spelling. Layout for ``repeat_count`` cycles
-    (default :data:`MEASURE_REPEAT_COUNT`)::
+    (woofer, ch0) and ``roles_bands[1]`` the upper (tweeter, ch1). A 1-way
+    (passive full-range) has only ``roles_bands[0]``: one sweep per cycle, no
+    inter-driver gaps, and the ``_w`` segment spelling below. Layout for
+    ``repeat_count`` cycles (default :data:`MEASURE_REPEAT_COUNT`)::
 
         [ambient window → pilot lo → gap → pilot hi → gap →]
                                      (v2, when leading pilots requested)
@@ -1252,12 +1251,10 @@ def build_measure_program(
 
     Segment IDs: each driver's first occurrence keeps exactly ``sweep_w`` /
     ``sweep_t`` (existing lookups depend on these — ``program_analysis`` anchors
-    drift on ``sweep_w``, which is why a 1-way's single role keeps that
-    spelling); later occurrences follow :func:`_occurrence_suffix`
-    (``sweep_w_rep``, ``sweep_w_rep2``, … / ``sweep_t_rep``, ``sweep_t_rep2``,
-    …). Gap IDs carry the SAME suffix as the sweep that sizes them: ``gap_w_t``
-    / ``gap_t_w`` for the first 2-way cycle, ``gap_w_t_rep`` / ``gap_t_w_rep``
-    for the second, and so on; a 1-way's inter-cycle settle is ``gap_w_w``.
+    drift on ``sweep_w``, so a 1-way's single role keeps that spelling); later
+    occurrences follow :func:`_occurrence_suffix` (``sweep_w_rep``, …). Gap IDs
+    carry the SAME suffix as the sweep that sizes them: ``gap_w_t`` /
+    ``gap_t_w`` on a 2-way, ``gap_w_w`` for a 1-way's inter-cycle settle.
 
     ``leading_pilot_gains_db`` (v2 session, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` pilot pair on ``leading_pilot_role``'s
@@ -1426,10 +1423,8 @@ def build_measure_program(
         segments.append(sweep_w)
         cursor += sweep_w.n_samples
         if tweeter is None or t_band is None:
-            # One declared driver: no inter-driver gap exists, so the only
-            # silence between cycles is the MESM settle that lets the preceding
-            # sweep's IR tail decay. Named for what it separates. None after the
-            # last cycle — the tail silence follows directly.
+            # One declared driver: the only silence between cycles is the
+            # MESM settle. None after the last — the tail silence follows.
             if cycle < repeat_count - 1:
                 segments.append(_silence(f"gap_w_w{suffix}", cursor, gap_w_n))
                 cursor += gap_w_n
@@ -1485,15 +1480,11 @@ def build_verify_program(
     is low so the lower shoulder ``fc/2`` is always excited:
     ``f1 = min(VERIFY_F_LO_HZ, fc/2)``.
 
-    ``fc_hz=None`` is the NO-CROSSOVER mode — a 1-way passive main, which has no
-    corner and therefore no shoulder and no overlap notch. It requires
-    ``measurement_band_hz`` (the declared measurement band, which is the whole
-    speaker's own hull) and derives both bounds from it instead: the low edge
-    widens the same way (``min(VERIFY_F_LO_HZ, band_lo)``) and the pilot rides
-    the fixed flat window clamped INTO the declaration, falling back to the
-    declaration itself if the clamp collapses. Passing a stand-in ``fc`` here
-    instead would put a corner this speaker does not have into the pilot band
-    and into the segment record.
+    ``fc_hz=None`` is the NO-CROSSOVER mode — a 1-way passive main, with no
+    corner, shoulder or overlap notch. It requires ``measurement_band_hz`` (the
+    speaker's own declared hull) and derives both bounds from it: the low edge
+    widens the same way, and the pilot rides the fixed flat window clamped INTO
+    the declaration, falling back to the declaration if the clamp collapses.
 
     ``leading_pilot_gains_db`` (v2 session, Wave 5a — design §5.2) OPT-IN
     prepends a two-level ``(lo, hi)`` mono pilot pair (role ``"summed"``),
@@ -1550,8 +1541,8 @@ def build_verify_program(
         # sits above it, so the hi bound is clamped below the Fc/2 shoulder,
         # with an [fc/8, fc/4] fallback when the clamp collapses the band.
         if fc_hz is None:
-            # No corner, so no notch to clear: the fixed window only has to sit
-            # inside what this speaker declares it can be measured over.
+            # No corner, so no notch to clear: the fixed window need only sit
+            # inside the declared band.
             pilot_lo = max(VERIFY_PILOT_F_LO_HZ, band_lo)
             pilot_hi = min(VERIFY_PILOT_F_HI_HZ, band_hi)
             if not pilot_lo < pilot_hi:

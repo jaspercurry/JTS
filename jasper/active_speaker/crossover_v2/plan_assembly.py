@@ -4,12 +4,6 @@
 
 """The composed prediction of a linearized branch sum, and the plan it lands in.
 
-:func:`compose_linearized_prediction` is THE model of what the emitted graph
-will do; :func:`assemble_plan` charges the fitted chains their headroom and
-freezes the result as a :class:`LinearizationPlan`, which carries the three
-records below: the journal line the planner would have emitted, the
-level-definition disclosure, and the committed trim.
-
 Dependency direction: this module reads :mod:`.contracts`;
 :mod:`.intervention` imports it, never the reverse.
 """
@@ -193,10 +187,8 @@ class SummationFrame:
     never the applied delay — passing the applied delay double-counts the
     measured peak gap.
 
-    One or two branches, and the bound is the arithmetic's: ``polarity_sign``
-    and ``residual_delay_us`` describe how a SECOND branch lands against the
-    first, so they cannot be written N-ary without inventing a per-branch
-    polarity and delay nobody measured.
+    One or two branches: ``polarity_sign`` and ``residual_delay_us`` describe
+    how a SECOND branch lands against the first, so they cannot go N-ary.
     """
 
     freqs_hz: np.ndarray
@@ -214,10 +206,8 @@ def compose_linearized_prediction(
 ) -> tuple[np.ndarray, np.ndarray]:
     """A model of exactly what the emitted graph will do, as ``(freqs, dB)``.
 
-    THE composition: :func:`~.intervention.plan_linearization` composes from
-    the FIT's filters, the per-driver prescription merge recomposes from the
-    filters that will actually ship, and a second implementation of this
-    arithmetic is how a prediction and a graph drift apart.
+    THE composition: a second implementation of this arithmetic is how a
+    prediction and a graph drift apart.
 
     The correction is COMPLEX (minimum-phase), not a zero-phase magnitude
     scale: the emitted biquads rotate phase near their corners and this
@@ -272,10 +262,7 @@ class LinearizationPlan:
     role_attenuations_db: Mapping[str, float]
     linearization: Mapping[str, Any]
     trim: TrimDecision | None
-    """The committed inter-driver trim pair; ``None`` when there is no pair.
-
-    A 1-way main has one branch and therefore no handoff to level.
-    """
+    """The committed inter-driver trim pair; ``None`` on a 1-way main."""
     core_level_evidence: Mapping[str, Mapping[str, Any]]
     """Per role: the fit's core-band median, and the two bands behind it.
 
@@ -327,9 +314,8 @@ class LinearizationPlan:
     def outcome(self) -> str:
         """The persisted ``linearization_outcome`` string.
 
-        No trim decision means no PAIR existed to decide one for, which is its
-        own value rather than a bare ``"fitted"``: the proposal maps that one
-        onto a committed-pair strategy.
+        No trim decision means no PAIR existed to decide one for: its own value
+        rather than a bare ``"fitted"``.
         """
         if self.trim is None:
             return LINEARIZATION_OUTCOME_SINGLE_BRANCH
@@ -367,9 +353,7 @@ def assemble_plan(
 ) -> LinearizationPlan:
     """Charge the fitted chains and assemble the plan.
 
-    The keywords are exactly what a committed pair decides and a lone branch
-    does not, plus the journal — passed live because it is snapshotted AFTER
-    the headroom record below.
+    ``records`` is passed live: it is snapshotted AFTER the headroom record.
     """
     # The headroom charge, computed now that the trim is committed.
     #

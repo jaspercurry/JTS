@@ -439,16 +439,9 @@ class CandidateAcousticContext:
         """The context a candidate of this SHAPE is planned and proposed at.
 
         ``None`` for the one shape that legitimately has no corner: a 1-way
-        main, whose single branch runs full range and whose preset declares no
-        region. Every other shape still fails closed on an empty section set —
-        a preset naming two branches and no crossover describes no crossover,
-        and guessing one is the defect :meth:`from_sections` refuses.
-
-        THE one derivation. The planner (``planning.plan_for_candidate``) and
-        the proposal assembler (``proposal.build_intervention_proposal``) both
-        ask this question about the same candidate, and two implementations
-        deriving the role count independently is how they come to disagree
-        about whether a speaker has a corner.
+        main. Every other shape still fails closed on an empty section set, as
+        :meth:`from_sections` refuses. THE one derivation, asked by both the
+        planner and the proposal assembler.
         """
 
         if len(roles) == 1 and not any(sections_by_role.values()):
@@ -575,21 +568,14 @@ class TrimStrategy(str, Enum):
     NO_PAIR_TO_TRIM = "no_pair_to_trim"
     """The speaker has ONE branch, so no inter-driver trim exists to commit.
 
-    Distinct from :attr:`NOT_FITTED`, which says a fit that could have produced
-    a pair did not. This says the pair itself does not exist: a 1-way main's
-    branch IS fitted and ships at a fixed 0 dB, and calling that "not fitted"
-    would report the correction as absent. Reached from
-    :data:`LINEARIZATION_OUTCOME_SINGLE_BRANCH`.
+    Distinct from :attr:`NOT_FITTED`: a 1-way main's branch IS fitted and ships
+    at a fixed 0 dB. Reached from :data:`LINEARIZATION_OUTCOME_SINGLE_BRANCH`.
     """
 
 
 #: :attr:`~.plan_assembly.LinearizationPlan.outcome` for a round whose speaker
-#: has ONE branch — the fit ran and its filters ship, and there was no pair to
-#: trim.
-#:
-#: A sibling of ``"fitted"`` rather than that same value, because the two are
-#: read: ``"fitted"`` is mapped to
-#: :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED`, which would claim a
+#: has ONE branch. A sibling of ``"fitted"`` rather than that value, which maps
+#: to :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` and would claim a
 #: committed trim pair for a speaker that solved none.
 LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
@@ -764,8 +750,7 @@ class InterventionProposal:
     def fc_hz(self) -> float | None:
         """The candidate corner — read from the context, never from a session.
 
-        ``None`` when there is no context, which is a 1-way main declaring no
-        corner rather than a corner that could not be read.
+        ``None`` is a 1-way main declaring no corner, never an unreadable one.
         """
 
         return None if self.context is None else self.context.fc_hz
@@ -1592,9 +1577,8 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 #: side was declared" — and must never be minted here as a synonym for this.
 DESIGN_AXIS_DEG = 0
 
-#: The three states a plan §7 claim can be in. ``not_evaluated`` is first-class
-#: and never collapses into the other two — R18's entire point is that a claim
-#: nobody could grade must not read as one that passed.
+#: The three states a plan §7 claim can be in; ``not_evaluated`` is first-class
+#: and never collapses into the other two (R18).
 CLAIM_PASS = "pass"
 CLAIM_FAIL = "fail"
 CLAIM_NOT_EVALUATED = "not_evaluated"
@@ -1603,9 +1587,8 @@ CLAIM_NOT_EVALUATED = "not_evaluated"
 def measure_pair_claim(reason: str) -> dict[str, Any]:
     """The MEASURE verdict's pair claim when there was no pair to evaluate.
 
-    The INTER-DRIVER axes — corner, delay, polarity, inter-branch trim — are
-    statements about two branches, so a solo round names their absence rather
-    than publishing a single-branch lookalike of a two-branch answer.
+    The inter-driver axes — corner, delay, polarity, trim — are statements
+    about two branches, so a solo round names their absence.
     """
     return {"pair": {"status": CLAIM_NOT_EVALUATED, "reason": reason}}
 
@@ -1615,11 +1598,9 @@ def realized_branch_level(
 ) -> Mapping[str, Any] | None:
     """The committed pair's realized level, or the named absence of a pair.
 
-    THREE states, not two: a graded verdict; ``None`` when a pair existed and
-    nothing graded it (an ineligible mic tier, an under-repeated branch, a
-    failed fit); and, when ``pair_reason`` names why there was no pair at all,
-    that absence in the same ``not_evaluated`` vocabulary the MEASURE verdict
-    publishes it under.
+    ``None`` still means a pair existed and nothing graded it; ``pair_reason``
+    names the case where there was no pair, in the MEASURE verdict's own
+    ``not_evaluated`` vocabulary.
     """
     if verdict is not None or pair_reason is None:
         return verdict

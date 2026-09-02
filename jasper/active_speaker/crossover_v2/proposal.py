@@ -122,12 +122,10 @@ def trim_strategy_for_outcome(linearization_outcome: Any) -> tuple[TrimStrategy,
     :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` — deliberately not narrowed
     to ``ANCHORED_COMMITTED``/``RESOLVED_COMMITTED`` by guessing.
 
-    **``"fitted_single_branch"`` is precise, and is not a pair verdict.** A
-    1-way main's branch is fitted and its filters ship, and there was never a
-    pair to trim, so it maps to :attr:`TrimStrategy.NO_PAIR_TO_TRIM`. It must
-    not fall through to either neighbour: ``COMMITTED_PAIR_UNRECORDED`` would
-    claim a committed pair, and ``NOT_FITTED`` would report the correction the
-    speaker is about to run as absent.
+    **``"fitted_single_branch"`` is not a pair verdict.** A 1-way main's branch
+    is fitted and its filters ship, and there was never a pair to trim, so it
+    maps to :attr:`TrimStrategy.NO_PAIR_TO_TRIM` rather than to either
+    neighbour, which would claim a committed pair or report no correction.
     """
 
     outcome = str(linearization_outcome or "")
@@ -170,8 +168,7 @@ def _candidate_roles(candidate: Any) -> tuple[str, ...]:
     """The branches this candidate carries, read off its own committed trims.
 
     ``MeasuredCrossoverCandidate`` refuses a trim map that does not cover
-    exactly the preset's driver roles, so the map is the candidate's own
-    statement of its shape and needs no second walk through the preset.
+    exactly the preset's driver roles, so the map states the shape.
     """
     trims = getattr(candidate, "role_attenuations_db", None)
     return tuple(trims) if isinstance(trims, Mapping) else ()
@@ -214,11 +211,9 @@ def build_intervention_proposal(
 
     if candidate is None:
         raise CrossoverV2ContractError("a proposal needs a measured candidate")
-    # A 1-way main declares no crossover region, so it has no corner for a
-    # context to own — and refusing it here would cost the round its proposal
-    # (and the receipt's proposal fingerprint with it) over an absence that is
-    # the shape's own truth. Every OTHER candidate still needs one. The rule
-    # itself belongs to the context type, which the planner reads it from too.
+    # A 1-way main has no corner for a context to own, and refusing it here
+    # would cost the round its proposal over the shape's own truth. Every OTHER
+    # candidate still needs one; the rule belongs to the context type.
     context = CandidateAcousticContext.for_candidate(
         _candidate_sections(candidate), roles=_candidate_roles(candidate),
     )

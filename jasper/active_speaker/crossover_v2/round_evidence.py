@@ -791,9 +791,7 @@ def evaluate_round(
         # (no Fc, no crossover target, no trusted region) becomes "no band"
         # for free instead of needing its own translation.
         # The second half says, when there is no band, whether the speaker HAS
-        # no region or this round failed to establish the one it has. Both
-        # blocks below report absent either way; only that tells their two
-        # readers apart.
+        # no region or this round failed to establish the one it has.
         band_hz, no_crossover = _crossover_region(post_analysis)
         blend = solve_blend_correction(
             graded=graded_spec,
@@ -889,9 +887,7 @@ def _crossover_region(
     honest "there is no region to grade" and the reason the solver's
     ``no_trusted_band`` refusal needs no separate translation. The reason is
     :data:`ABSOLUTE_NO_CROSSOVER_TOPOLOGY` on that claim's ONE arm saying the
-    speaker HAS no region: every other arm describes a region a round could not
-    establish, a different fact with a different next action from a 1-way main
-    having none.
+    speaker HAS no region — a different next action from every other arm.
     """
 
     absolute = getattr(post_analysis, "verify_absolute", None)

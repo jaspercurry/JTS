@@ -1048,14 +1048,13 @@ def build_passive_mains_preset(
     """Build the 1-way (passive full-range mains, optional local sub) preset.
 
     The passive analogue of :func:`_preset_from_crossover_preview`: a passive
-    speaker has no active crossover preview to compile, so the full-range mains
-    — and the sub lane when the topology routes one — resolve directly from the
-    saved topology. Fail-closed where a sub IS declared (an unresolvable one
-    returns ``(None, issues, gates)`` — never a mains-only graph that leaves the
-    sub un-band-limited or full-range). A subless topology yields a preset with
-    ``crossover_regions=()`` and ``local_subwoofer=None``: the plant a
-    recommissioning session measures one routed solo of. It does not write YAML,
-    load CamillaDSP, or authorize playback.
+    speaker has no active crossover preview to compile, so the mains — and the
+    sub lane when the topology routes one — resolve directly from the saved
+    topology. Fail-closed where a sub IS declared (an unresolvable one returns
+    ``(None, issues, gates)``, never a mains-only graph that leaves the sub
+    un-band-limited). A subless topology yields ``crossover_regions=()`` and
+    ``local_subwoofer=None``. It does not write YAML, load CamillaDSP, or
+    authorize playback.
     """
     issues: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
@@ -1138,8 +1137,8 @@ def build_passive_mains_preset(
     try:
         preset = ActiveSpeakerPreset(
             # The with-sub id keeps its historical spelling: it is banked on
-            # every candidate a bass-managed box has already measured, and a
-            # rename would read as a preset mismatch at apply time.
+            # candidates already measured, and a rename would read as a preset
+            # mismatch at apply time.
             preset_id=(
                 f"passive-sub-{_safe_stem(topology.topology_id)}"
                 if local_subwoofer is not None

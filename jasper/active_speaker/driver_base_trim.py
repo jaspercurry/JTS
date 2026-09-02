@@ -108,24 +108,18 @@ REFUSE_NO_TRIM_SOURCE = "base_trim_no_trim_source"
 REFUSE_NO_SPEAKER_GROUP = "base_trim_no_speaker_group"
 REFUSE_ROLES_INCOMPLETE = "base_trim_roles_incomplete"
 REFUSE_NOT_ATTENUATION = "base_trim_not_attenuation"
-#: Fewer than two roles to level against each other. A base trim is a FRAME —
-#: one role's level relative to the others — so on a ``full_range_passive``
-#: (way-1) speaker there is nothing to be relative to, and the only value the
-#: writer could bank is the vacuous ``{"full_range": 0.0}``. Banking that would
-#: make an unlevelled speaker indistinguishable from a levelled one on every
-#: surface that reads this record.
+#: Fewer than two roles to level against each other. A base trim is a FRAME, so
+#: a way-1 speaker's only bankable value is the vacuous ``{"full_range": 0.0}``,
+#: which would read as a levelled speaker on every surface.
 REFUSE_NO_FRAME = "base_trim_no_frame"
 
 #: What the APPLY SEAM (``baseline_profile._bank_applied_base_trim``) did and
 #: why. A second closed vocabulary, deliberately separate from ``REFUSE_*``
 #: above: those name a writer envelope this module enforces, these name the
 #: seam's own reading of the applied profile. Both live here so one file holds
-#: every word an operator can see about this artifact.
-#:
-#: The ONE crossing is deliberate: a way-1 apply is left standing under
-#: :data:`REFUSE_NO_FRAME` itself, because there the seam and the writer are
-#: naming the identical fact about the same speaker, and minting a second slug
-#: for it would be the one-slug-per-fact rule inverted.
+#: every word an operator can see about this artifact. The one crossing: a way-1
+#: apply is left standing under :data:`REFUSE_NO_FRAME` itself, the identical
+#: fact about the same speaker.
 BANK_CORRECTIONS_UNREADABLE = "corrections_unreadable"
 BANK_READINESS_UNREADABLE = "readiness_unreadable"
 BANK_CORRECTION_ENTRY_UNREADABLE = "correction_entry_unreadable"
@@ -380,9 +374,8 @@ def write_base_trim(
             REFUSE_NO_SPEAKER_GROUP,
             "a base trim must name the speaker groups it covers",
         )
-    # Structural, so it is asked before coverage: a way-1 speaker's trims DO
-    # cover its declared roles, and answering it with a coverage complaint
-    # would send an operator to re-measure something that cannot exist.
+    # Asked before coverage: a way-1 speaker's trims DO cover its declared
+    # roles, so a coverage complaint would name the wrong fact.
     if len(set(ordered)) < 2:
         raise DriverBaseTrimError(
             REFUSE_NO_FRAME,

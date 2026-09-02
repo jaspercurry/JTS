@@ -1154,7 +1154,6 @@ def plan_linearization(
         # and the persisted VERIFY prediction).
         corrections[role] = complex_correction_response(fit.filters, resp.freqs_hz)
 
-    # Both arms below assemble from this one value.
     fitted = FittedBranches(
         fc_hz=fc_hz,
         fits=fits,
@@ -1166,8 +1165,7 @@ def plan_linearization(
     )
 
     if len(roles) == 1:
-        # One branch, so no handoff to level: no trim is solved and the branch
-        # ships at a fixed 0 dB with the fit's own filters.
+        # One branch, so no handoff to level: it ships at a fixed 0 dB.
         role = roles[0]
         attenuations = {role: 0.0}
         frame = SummationFrame(
@@ -1195,8 +1193,7 @@ def plan_linearization(
         )
 
     woofer_role, tweeter_role = roles
-    # A narrowing, not a check: construction guarantees a two-branch request
-    # carries a context, and a context carries a corner.
+    # A narrowing, not a check: a two-branch request carries a context.
     assert fc_hz is not None
 
     freqs = responses[woofer_role].freqs_hz

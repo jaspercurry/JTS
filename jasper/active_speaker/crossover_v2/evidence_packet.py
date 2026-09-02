@@ -138,6 +138,7 @@ from jasper.audio_measurement.evidence_identity import (
 # constant ``program_analysis.MeasurementGeometry`` and ``branch_chain`` import.
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+from jasper.audio_measurement.program_analysis import ABSOLUTE_NO_CROSSOVER_TOPOLOGY
 from jasper.json_fields import finite_float
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
@@ -2628,18 +2629,20 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
 def _region_block(receipt: dict[str, Any], reason: str) -> tuple[dict[str, Any], bool]:
     """The crossover region a proposal must sit inside, and whether it exists.
 
-    ``round_measurements.blend.band_hz`` and nothing else. That field is the
-    VERIFY absolute claim's own band, which decision 10 also makes the region
-    the blend correction is solved and graded over — so a prescription is
-    checked against byte-identically the band the deterministic solver was
-    bounded by, rather than a second derivation that could drift from it.
+    ``round_measurements.blend.band_hz`` is the VERIFY absolute claim's own
+    band, which decision 10 also makes the region the blend correction is
+    solved and graded over, so a prescription is checked against the band the
+    deterministic solver was bounded by rather than a second derivation.
     """
     blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
-    band, shape = blend.get("band_hz"), doors.no_crossover_reason(blend)
+    band = blend.get("band_hz")
+    shape = band is None and blend.get("reason") == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
     band_field = "round_measurements.blend.band_hz"
-    absent = _absence(reason if shape is None else shape, band is not None, band_field)
+    absent = _absence(
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY if shape else reason, band is not None, band_field
+    )
     if absent:
-        return {"available": False, **absent}, shape is not None
+        return {"available": False, **absent}, shape
     return {
         "available": True,
         "band_hz": band,
@@ -2648,7 +2651,7 @@ def _region_block(receipt: dict[str, Any], reason: str) -> tuple[dict[str, Any],
             "the VERIFY absolute claim's band, which is also the region the "
             "deterministic blend correction is solved and graded over"
         ),
-    }, shape is not None
+    }, shape
 
 
 def _incumbent_block(
@@ -3055,7 +3058,6 @@ def _not_evaluated(
     cloud_reason: str,
     state_reason: str,
     applied_profile_reason: str,
-    no_crossover: bool,
     classification_available: bool,
     drivers_available: bool,
     lateral_poses_available: bool,
@@ -3225,7 +3227,6 @@ def _not_evaluated(
                 "unknown rather than zero"
             ),
         })
-    entries.extend(doors.no_crossover_not_evaluated_entries(no_crossover))
     if isinstance(findings.get("findings"), list) and not findings["findings"]:
         entries.append({
             "field": "findings",
@@ -3509,7 +3510,6 @@ def build_crossover_evidence_packet(
             cloud_reason=cloud_reason,
             state_reason=state_reason,
             applied_profile_reason=applied_profile_reason,
-            no_crossover=no_crossover,
             classification_available=bool(classification.get("available")),
             drivers_available=bool(drivers.get("available")),
             lateral_poses_available=bool(lateral_poses.get("available")),

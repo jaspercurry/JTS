@@ -2222,8 +2222,7 @@ class CrossoverV2Session:
         )
         self._preset = source_preset
         self._roles = roles
-        # The declared roles, lowest first — the ONE spelling every
-        # role-count-generic seam reads. ``_tweeter`` is ``None`` on a 1-way
+        # The declared roles, lowest first. ``_tweeter`` is ``None`` on a 1-way
         # main, never aliased to ``_woofer``, which would double count it.
         self._role_names = tuple(band.role for band in roles)
         self._woofer = roles[0]
@@ -6237,8 +6236,7 @@ class CrossoverV2Session:
 
         roles = self._role_names
         if len(roles) > 1 and capture_fc_hz is None:
-            # The commanded axis over a PAIR is a statement about a crossover,
-            # so a capture naming no corner leaves the previous graph unnameable.
+            # The commanded axis over a PAIR is a statement about a crossover.
             # A 1-way main is not that case: its lone branch IS the graph.
             return _absent("no_crossover_to_command")
         seam = self._seams.applied_profile
@@ -8592,8 +8590,7 @@ class CrossoverV2Session:
 
     def _log_check_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
         woofer = _pilot_diag_fields(_pilot_by_role(analysis, self._woofer.role))
-        # A 1-way main declares no upper driver, so every ``tweeter_*`` field
-        # below publishes as absent.
+        # A 1-way main declares no upper driver: ``tweeter_*`` publishes absent.
         tweeter_role = self._tweeter_role
         tweeter = _pilot_diag_fields(
             _pilot_by_role(analysis, tweeter_role) if tweeter_role else None

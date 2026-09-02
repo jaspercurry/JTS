@@ -131,14 +131,11 @@ def _sweep_branches(
     measure_program: "ExcitationProgram | None",
 ) -> tuple["ProgramSegment", ...]:
     """The first-occurrence sweep of every branch the program carries, lowest
-    first — THE answer to "which branches did this session sweep".
+    first.
 
     ``build_measure_program`` pins ``sweep_w`` for the lower driver and
-    ``sweep_t`` for the upper one, and a 1-way main's solo keeps the
-    ``sweep_w`` spelling — so a missing ``sweep_t`` is a one-branch program,
-    not a broken one. Empty (no ``sweep_w`` at all, or no program yet) means
-    nothing was swept, and both readers below turn that into ``None`` rather
-    than a guess.
+    ``sweep_t`` for the upper one, and a 1-way main's solo keeps the ``sweep_w``
+    spelling, so a missing ``sweep_t`` is a one-branch program, not a broken one.
     """
     if measure_program is None:
         return ()
@@ -163,10 +160,7 @@ def measure_sweep_bounds(
     be a second answer to "what did this session sweep".
 
     On a pair that is the upper branch's sweep floor and the lower branch's
-    sweep ceiling. A 1-way main sweeps ONE branch, so the band all of its
-    branches share is that sweep's own — and VERIFY, whose summed sweep
-    deliberately reaches below MEASURE's floor, needs it for the same reason a
-    pair does.
+    sweep ceiling; on a 1-way main, the solo sweep's own band.
     """
     branches = _sweep_branches(measure_program)
     if not branches:

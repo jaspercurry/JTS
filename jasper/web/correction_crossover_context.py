@@ -4,9 +4,7 @@
 
 """The resolved inputs a crossover-v2 conductor session opens with.
 
-A value type, kept out of :mod:`~jasper.web.correction_crossover_v2` — the
-~7.8k-line host whose :func:`resolve_conductor_context` is its one writer —
-rather than adding to it.
+A value type, kept out of the host whose ``resolve_conductor_context`` writes it.
 """
 
 from __future__ import annotations

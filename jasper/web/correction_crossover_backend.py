@@ -1379,13 +1379,9 @@ def status_payload() -> dict[str, Any]:
     payload = web_measurement.status_payload()
     payload["commission"] = web_commissioning.commission_status_payload()
     # Layer-A gate: `active` means "this speaker has an inter-driver crossover
-    # to tune", which is what the envelope-driven page consumes. Read off the
-    # SUMMED targets alone: a summed target IS a claim about two branches adding
-    # up, so only `active_2_way` / `active_3_way` groups have one. The DRIVER
-    # list is deliberately not consulted — a subless `full_range_passive`
-    # speaker carries one full-range driver target (it is measured as a single
-    # routed solo), and counting that here would flip this flag on a speaker
-    # that still has no crossover to tune.
+    # to tune". Read off the SUMMED targets alone, which only `active_2_way` /
+    # `active_3_way` groups have; a subless `full_range_passive` speaker carries
+    # a driver target too, so counting those would flip the flag wrongly.
     targets_raw = payload.get("targets")
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])

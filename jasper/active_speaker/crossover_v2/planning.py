@@ -591,11 +591,9 @@ def plan_for_candidate(
     guessing one from the session would be the defect wearing a new hat.
 
     **A 1-way main is the one shape for which no context is the right answer**
-    rather than a missing one: one branch, no region, nothing to corner. That
-    discrimination has ONE owner,
+    rather than a missing one. That discrimination has ONE owner,
     :meth:`~..contracts.CandidateAcousticContext.for_candidate`, which the
-    proposal assembler asks the same question through — so the fail-closed rule
-    above is unchanged where it applies, and cannot come to mean two things.
+    proposal assembler asks the same question through.
 
     Only called after :func:`ineligible_reason` returns ``None`` — the planner
     assumes eligibility and does not re-check.
@@ -682,9 +680,8 @@ def build_candidate(
     ``cand`` is ``analysis.candidate``, passed rather than re-read: the host
     has already refused an analysis carrying none on a shape that owes one,
     under its own error vocabulary, and re-deriving it here would give this
-    function a second opinion about a fact the caller already settled. ``None``
-    is legal for exactly one shape — a 1-way main, whose MEASURE is one routed
-    solo and whose absent candidate is the honest answer rather than a refusal.
+    function a second opinion. ``None`` is legal for exactly one shape, a 1-way
+    main, whose MEASURE is one routed solo.
 
     ``plan`` and ``exclusion_evidence`` are ports; ``journal`` is the
     disclosure port the SF2 arm below says its one line through.  See the
@@ -728,9 +725,8 @@ def build_candidate(
     # mic AND both drivers paired N>=3 — anything else is byte-identical
     # to the pre-PR-C trims-only path (analysis.candidate.trim_db, empty
     # linearization dict). See ineligible_reason / plan_for_candidate.
-    # ``cand`` is ``None`` on a 1-way main: the measured pair candidate is a
-    # statement about two branches, so the analysis publishes none and the lone
-    # branch's attenuation is a fixed 0 dB rather than a solved one.
+    # ``cand`` is ``None`` on a 1-way main, whose lone branch's attenuation is
+    # a fixed 0 dB rather than a solved one.
     role_attenuations_db: Mapping[str, float] = (
         {role: 0.0 for role in roles} if cand is None else dict(cand.trim_db)
     )

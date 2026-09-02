@@ -591,8 +591,7 @@ def evaluate_region_benefit(
     The narrowing is applied to BOTH sides identically, so
     :func:`_comparability_mismatch`'s identical-mask guarantee is preserved.
 
-    ``no_crossover_reason`` is the caller's named answer to "does this speaker
-    HAVE a region at all", set only for a 1-way main. It is reported ahead of
+    ``no_crossover_reason`` (a 1-way main) is reported ahead of
     :data:`BENEFIT_NO_REGION_BAND`, which says a round could not establish the
     region its speaker does have — two facts with two remedies (#3480).
     """

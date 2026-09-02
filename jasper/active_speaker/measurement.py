@@ -216,11 +216,7 @@ def _valid_region(value: Any) -> dict[str, Any] | None:
 
 
 def _crossover_groups(topology: OutputTopology) -> list[Any]:
-    """The groups that carry an INTER-DRIVER crossover.
-
-    The summed-check vocabulary: a summed target is a claim about two driver
-    branches adding up, which only a group with a crossover between them has.
-    """
+    """The groups that carry an INTER-DRIVER crossover — the summed-check set."""
     return [
         group for group in topology.speaker_groups
         if group.mode in {"active_2_way", "active_3_way"}
@@ -230,11 +226,10 @@ def _crossover_groups(topology: OutputTopology) -> list[Any]:
 def _measured_groups(topology: OutputTopology) -> list[Any]:
     """The groups whose drivers need per-driver measurement evidence.
 
-    Every crossover group, PLUS a subless passive main: its one full-range
-    driver is the plant a recommissioning session measures with one routed
-    solo, so it needs the same declared target, safety limits and excitation
-    ceilings every other measured driver has. Passive mains WITH a sub are
-    excluded — that shape is bass management, not this session.
+    Every crossover group, PLUS a subless passive main, whose one full-range
+    driver a recommissioning session measures with one routed solo and so needs
+    the same target, safety limits and ceilings. Passive mains WITH a sub are
+    bass management, not this session.
     """
     groups = _crossover_groups(topology)
     if topology_is_subless_passive_mains(topology):
@@ -304,8 +299,7 @@ def _driver_targets_for(
 ) -> list[dict[str, Any]]:
     """Every channel of ``groups`` as a fingerprinted driver target.
 
-    The build is shared so the two eligibility filters above stay the only
-    difference between what a driver surface sees and what a summed one does.
+    Shared so the two eligibility filters above are the only difference.
     """
     return [
         physical_driver_target(topology, group, channel)
@@ -317,9 +311,7 @@ def _driver_targets_for(
 def active_driver_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return the driver targets that need measurement evidence.
 
-    Eligibility is :func:`_measured_groups`, which is WIDER than "has a
-    crossover" — see its docstring. ``active_summed_targets`` beside it keeps
-    the narrower filter, because a summed claim needs two branches.
+    Eligibility is :func:`_measured_groups`, WIDER than "has a crossover".
     """
 
     return _driver_targets_for(topology, _measured_groups(topology))
@@ -348,10 +340,8 @@ def active_summed_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return active speaker groups that need a summed crossover check."""
 
     crossover_groups = _crossover_groups(topology)
-    # NOT ``active_driver_targets``: that set is WIDER than this one, so asking
-    # it here would build and discard a passive main's full-range target on
-    # every call. The fingerprint below is unchanged — it only ever consumed
-    # the crossover groups' own targets.
+    # NOT ``active_driver_targets``: that set is WIDER, and the fingerprint
+    # below only ever consumed the crossover groups' own targets.
     driver_targets = _driver_targets_for(topology, crossover_groups)
     return [
         {

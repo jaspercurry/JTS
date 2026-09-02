@@ -912,10 +912,9 @@ class MeasurementPriors:
     ``measure_excited_band_hz`` carries the band every MEASURE branch was
     actually swept over forward to VERIFY, whose tracking comparison must trust
     the SAME band ``predicted_sum`` was built in (see ``overlap_band_hz``); a
-    wider band — the nominal Fc±1-octave one on a pair, the verify sweep's own
-    span on a 1-way main — would compare real VERIFY capture data against
-    sub-floor noise inherited from a branch MEASURE never drove there. ``None``
-    falls back to the unclamped band. ``alignment_delay_bounds_us`` is the
+    wider band would compare real VERIFY capture data against sub-floor noise
+    inherited from a branch MEASURE never drove there. ``None`` falls back to
+    the unclamped band. ``alignment_delay_bounds_us`` is the
     unsigned, declaration-derived applied-delay magnitude range the flatness
     refinement may search, derived by the session from the crossover region's
     ``delay_range_ms``; the drift-corrected physical peak gap orients and
@@ -1559,8 +1558,7 @@ class ProgramAnalysis:
     # numbers, or ``{"not_evaluated": <reason>}``; ``None`` elsewhere.
     verify_absolute: dict[str, Any] | None = None
     # Why a MEASURE analysis carries no ``alignment`` and no ``candidate``;
-    # ``None`` on every analysis that has them. Absence carries a reason so
-    # "nobody evaluated this" cannot read as "this passed".
+    # ``None`` on every analysis that has them, so absence cannot read as pass.
     measure_pair_not_evaluated: str | None = None
     # The SMOOTHED ``(freqs_hz, measured_db, predicted_db)`` triple the tracking
     # scalars above were reduced from. A separate field rather than a key inside
@@ -5290,16 +5288,12 @@ def _analyze_measure(
     program, capture, sample_rate, global_offset, locations,
     calibration, geometry, priors,
 ) -> ProgramAnalysis:
-    # ``None`` is legal for exactly one shape: a speaker with no crossover (a
-    # 1-way passive main). On a TWO-branch program it is still a missing prior
-    # and still raises below, where ``seg_t`` is known — the pair's whole
-    # vocabulary is derived from the corner.
+    # ``None`` is legal for exactly one shape: a 1-way passive main. On a
+    # TWO-branch program it still raises below, where ``seg_t`` is known.
     fc_hz = None if priors.crossover_fc_hz is None else float(priors.crossover_fc_hz)
     drift = _estimate_drift(program, capture, sample_rate, locations)
 
     seg_w = program.segment("sweep_w")
-    # The structural fact this analysis branches on: did the program carry a
-    # SECOND driver's sweep.
     seg_t = next(
         (seg for seg in program.segments if seg.segment_id == "sweep_t"), None
     )
@@ -5365,13 +5359,12 @@ def _analyze_measure(
     )
 
     # ONE branch: nothing to align across and nothing to blend, so both come
-    # back absent WITH A REASON rather than as a bare ``None``.
+    # back absent WITH A REASON.
     alignment: AlignmentEstimate | None = None
     candidate: CrossoverCandidate | None = None
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     pair_not_evaluated: str | None = MEASURE_PAIR_SINGLE_DRIVER
-    # ``fc_hz is not None`` is guaranteed by the raise above; restated so the
-    # narrowing is local.
+    # ``fc_hz is not None`` is guaranteed by the raise above; restated to narrow.
     if seg_t is not None and tweeter_full_ir is not None and fc_hz is not None:
         pair_not_evaluated = None
         alignment = _estimate_alignment(
@@ -5911,10 +5904,9 @@ def _build_candidate(
 ABSOLUTE_NO_FC = "no_crossover_fc"
 ABSOLUTE_NO_TARGET = "no_candidate_crossover_target"
 ABSOLUTE_NO_TRUSTED_BAND = "no_trusted_crossover_region"
-#: The speaker HAS no crossover region — a 1-way main, whose preset declares
-#: none. Its own slug rather than a fourth reader of the three above, which all
-#: say a round could not establish a region its speaker does have: those send an
-#: operator to re-measure, this one to nothing at all (#3480's rule).
+#: The speaker HAS no crossover region — a 1-way main. Its own slug rather than
+#: a fourth reader of the three above, which all say a round could not establish
+#: a region its speaker does have and send an operator to re-measure (#3480).
 ABSOLUTE_NO_CROSSOVER_TOPOLOGY = "no_crossover_topology"
 
 
@@ -5945,10 +5937,9 @@ def _verify_absolute_result(
     """
     transfers = priors.configured_crossover_response_by_role
     if transfers is not None and not transfers:
-        # An EMPTY map, never a missing one: the preset was read and declares
-        # no region. Asked BEFORE the corner, because "this speaker has no
+        # An EMPTY map, never a missing one. Asked BEFORE the corner: "has no
         # crossover" and "nobody said where its crossover is" are two facts
-        # with two remedies and both arrive with ``fc_hz is None``.
+        # with two remedies, and both arrive with ``fc_hz is None``.
         return {"not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY}
     if fc_hz is None:
         return {"not_evaluated": ABSOLUTE_NO_FC}

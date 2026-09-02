@@ -3762,11 +3762,9 @@ def emit_active_speaker_program_config(
         required_roles = set(required_driver_roles(preset.way_count))
         if set(protection_sections_by_role) != required_roles:
             raise ActiveSpeakerConfigError("program protection must cover every driver role")
-        # The protective high-pass proof is asked of the role that DECLARES one.
-        # A 1-way passive main declares no tweeter, so there is no branch here
-        # that a high-pass could be the protection of — the gate is absent, not
-        # waived (``_assert_program_graph_proven`` reaches the same conclusion
-        # from the emitted text, via an empty tweeter channel set).
+        # Asked of the role that DECLARES one: a 1-way main has no tweeter for
+        # a high-pass to protect, so the gate is absent, not waived
+        # (``_assert_program_graph_proven`` agrees from the emitted text).
         if "tweeter" in required_roles:
             tweeter_hps = [
                 (index, section)

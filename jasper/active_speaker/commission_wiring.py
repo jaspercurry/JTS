@@ -111,8 +111,7 @@ def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] |
 def _is_passive_mains(topology: Any) -> bool:
     """Whether this topology's mains carry no inter-driver crossover.
 
-    ``isinstance`` rather than a truth test: only a SAVED topology declares the
-    mode this route reads, and every caller's parameter is typed ``Any``.
+    ``isinstance`` because every caller's parameter is typed ``Any``.
     """
     from jasper.output_topology import OutputTopology, topology_is_passive_mains
 
@@ -124,8 +123,7 @@ def _is_passive_mains(topology: Any) -> bool:
 def _passive_mains_preset(topology: Any) -> Any:
     """The passive box's own preset, compiled from its saved topology.
 
-    Never the bundled 2-way JSON: that fallback opened a session naming a woofer
-    and a tweeter over a box that has neither.
+    Never the bundled 2-way JSON, which names drivers this box does not have.
     """
     from jasper.active_speaker.staging import build_passive_mains_preset
 
@@ -141,9 +139,7 @@ def resolve_capture_preset(topology: Any) -> Any:
     """Resolve the protected preset used by every capture-analysis surface.
 
     The passive arm is answered BEFORE ``resolve_commission_inputs``: a passive
-    box compiles no crossover preview, so loading the design draft and the saved
-    preview off disk to reach a branch that reads neither is work whose only
-    possible outcome is the one this route already knows.
+    box compiles no crossover preview for those reads to reach.
     """
 
     if _is_passive_mains(topology):
@@ -181,10 +177,8 @@ def resolve_commission_preset(
 ) -> Any:
     """Resolve explicit, passive-topology, preview-compiled, or fallback preset.
 
-    The passive arm is checked BEFORE the preview and the bundled fallback and
-    is never skipped — see :func:`_passive_mains_preset`. It stays here as well
-    as in :func:`resolve_capture_preset` because this function has its own
-    callers, which reach it with inputs already in hand.
+    The passive arm sits before the preview and the bundled fallback here too:
+    this function has its own callers, which arrive with inputs in hand.
     """
 
     if preset is not None:

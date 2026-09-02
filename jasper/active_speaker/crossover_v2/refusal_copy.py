@@ -204,17 +204,11 @@ REASON_PROGRAM_PROFILE_NOT_CONFIRMED = "program_profile_not_confirmed"
 # the evidence is the gate that names the action.
 REASON_PROGRAM_PROFILE_MISSING = "program_profile_missing"
 REASON_PROGRAM_PROFILE_INCOMPLETE = "program_profile_incomplete"
-# The session-open shape gate: this speaker is not one the v2 conductor knows
-# how to walk. It measures a 1-way passive main (one routed solo) or a 2-way;
-# anything else — a 3-way, or a preset whose way count the topology does not
-# support — needs a designed reshape rather than a session that would name
-# drivers this box does not have. Terminal, and there is no household action
-# that clears it, so the copy says so instead of offering one.
+# The session-open shape gate: the v2 conductor walks a 1-way passive main or a
+# 2-way, and this speaker is neither. Terminal — no household action clears it.
 REASON_SPEAKER_SHAPE_UNSUPPORTED = "speaker_shape_unsupported"
-# Its sibling one gate later: the speaker's SHAPE is one this flow walks, but the
-# live status does not carry a measurement target for every role that shape
-# declares. The roles themselves reach the journal on the refusal's event line;
-# the household copy names the one action that fixes it either way.
+# Its sibling one gate later: the shape is walkable, but live status carries no
+# measurement target for every role it declares. The roles reach the journal.
 REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
 
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught

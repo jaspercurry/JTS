@@ -2352,9 +2352,9 @@ def build_baseline_profile_candidate(
         else ("measurements" if summed_validation_complete else "missing")
     )
     # Passive mains ride the SAME multi-output emitter as the active path, via a
-    # degenerate 1-way preset built from the topology, skipping the gates only a
-    # real active crossover has. It is the preset ``commission_wiring`` answers a
-    # passive capture with, so the compiled graph and the measured plant are ONE.
+    # degenerate 1-way preset built from the topology — the preset
+    # ``commission_wiring`` answers a passive capture with, so the compiled
+    # graph and the measured plant are ONE.
     passive_mains = _passive.passive_mains_compiles_roleful(
         topology, measured_candidate, applied_anchor
     )

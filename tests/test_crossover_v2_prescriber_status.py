@@ -890,7 +890,8 @@ def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     # is told once which doors are shut and by what name.
     refusals = (
         cli.REGION_UNAVAILABLE,
-        *(code for _door, code in cli.HANDOFF_DOORS),
+        cli.ALIGNMENT_NO_CROSSOVER_REGION,
+        cli.TOPOLOGY_NO_CROSSOVER_REGION,
     )
     shut = [
         action for action in payload["next_actions"]

@@ -75,9 +75,9 @@ order — so this list is what exists, not a plan:
   replaces, which is the delta probe's commanded axis.
 * :mod:`.evidence_packet` — one round's banked evidence, gathered into one
   document a reader can answer from.
-* :mod:`.handoff_doors` — the one table of request-time doors that describe a
-  handoff between two branches, and how each refuses on a speaker that has no
-  crossover region.
+* :mod:`.handoff_doors` — the request-time doors that describe a handoff
+  between two branches, and how each refuses a speaker that has no crossover
+  region.
 * :mod:`.harmonic_evidence` — H2/H3 read out of one round's banked MEASURE
   captures, and filed.
 * :mod:`.ring_projection` — a banked round re-projected into the capture-ring

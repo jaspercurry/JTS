@@ -94,9 +94,7 @@ def required_driver_roles(way_count: int) -> tuple[str, ...]:
 def snapshot_declares_single_branch(snapshot: Any) -> bool:
     """Does this profile snapshot's own preset declare exactly one branch?
 
-    ``False`` for anything unreadable: a snapshot whose preset will not parse
-    is not evidence that a speaker is way-1, so the caller's ordinary arms
-    still apply to it.
+    ``False`` for anything unreadable: an unparseable preset is not evidence.
     """
     raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
     try:

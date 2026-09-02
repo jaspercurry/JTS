@@ -2178,9 +2178,8 @@ def build_v2_capture_plan(
     # is the verify program's even though stage 1 runs no VERIFY phase of its
     # own — and it is the ANNOUNCED one, because its program object is stage 2's
     # anchor (``program_for_phase``'s compared pair).
-    # The summed sweep's band, which a speaker with no corner takes from its
-    # own declarations instead — the same value ``SessionExcitation`` composes
-    # the played program at, so this budget stays exact.
+    # The summed sweep's band for a speaker with no corner — the same value
+    # ``SessionExcitation`` composes the played program at.
     band_hz = measurement_band_hz(roles)
     verify = build_verify_program(
         fc_hz,

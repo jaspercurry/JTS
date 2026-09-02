@@ -124,10 +124,9 @@ COURTESY_PRELUDE_PHASES = frozenset(
 def leading_pilot_role(roles: Sequence[RoleBand]) -> str:
     """The role whose solved gain the leading pilot pair rides — the lowest.
 
-    First in ``roles``, named so every composer states the rule rather than
-    repeating ``roles[0]`` — including
-    :func:`~.harmonic_evidence.rebuild_measure_program`, which composes the same
-    program from a banked round and holds no session object to ask.
+    Named so every composer states the rule rather than repeating ``roles[0]``,
+    including :func:`~.harmonic_evidence.rebuild_measure_program`, which holds
+    no session object to ask.
     """
     return roles[0].role
 

@@ -126,9 +126,8 @@ class GraphSummation:
     consumes them cannot drift into two different opinions about which graph is
     being described.
 
-    ``trim_db`` is keyed by this speaker's branches LOWEST FIRST, and that order
-    is load-bearing: :func:`graph_predicted_sum` reads the graph's own roles off
-    it rather than taking a second copy that could disagree.
+    ``trim_db`` is keyed by this speaker's branches LOWEST FIRST;
+    :func:`graph_predicted_sum` reads the graph's own roles off it.
 
     ``delay_us`` is SIGNED in the analysis frame (design §5.6.5: positive means
     the tweeter branch is delayed), never the non-negative magnitude a profile
@@ -163,12 +162,9 @@ def profile_graph_summation(
     """Read one applied profile as a :class:`GraphSummation`, or ``None``.
 
     ``roles`` is this speaker's branches LOWEST FIRST — one on a 1-way main,
-    two otherwise. Both of the frame conversions below are stated between
-    ``roles[0]`` and ``roles[-1]``, which on a lone branch are the same
-    declaration: it is delayed against nothing and inverted relative to
-    nothing, so the delay is zero and the sign is ``+1`` without a second arm.
-    More than two is refused: this summation states ONE delay and ONE relative
-    sign, so a third branch could only be dropped silently.
+    two otherwise. The frame conversions below are stated between ``roles[0]``
+    and ``roles[-1]``, the same declaration on a lone branch (zero delay, ``+1``
+    sign). More than two is refused: ONE delay and ONE relative sign.
 
     ``None`` — "this profile does not say what the speaker is playing" — for an
     absent profile, for one whose authoritative ``corrections`` mapping does not
@@ -322,18 +318,13 @@ def graph_predicted_sum(
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """``(freqs_hz, magnitude_db)`` this graph would produce on these branches.
 
-    THE SAME composition the applied side is built from —
-    :func:`~.plan_assembly.compose_linearized_prediction`, which owns the
-    correction chain, the trimmed signed delayed sum, and the 1-way arm where
-    a lone branch is its own sum — so the two curves differ by the GRAPH and by
-    nothing else. Only the residual is this function's own, through
-    :func:`~jasper.audio_measurement.program_analysis.
-    summed_model_residual_delay_us`, which is the ONLY correct way to enter a
-    delay here (its docstring carries the double-counting hazard).
-
-    The branches are the GRAPH's own, lowest first — the roles
-    :func:`profile_graph_summation` read the profile through — so this function
-    cannot be handed a role set the graph was not built for.
+    THE SAME composition the applied side is built from,
+    :func:`~.plan_assembly.compose_linearized_prediction`, so the two curves
+    differ by the GRAPH and by nothing else. Only the residual is this
+    function's own, through :func:`~jasper.audio_measurement.program_analysis.
+    summed_model_residual_delay_us` — the ONLY correct way to enter a delay
+    here (its docstring carries the double-counting hazard). The branches are
+    the GRAPH's own, lowest first.
 
     **The anchor is this capture's, and it does NOT cancel** — that is why it
     has to be this capture's. It sets where the blend null sits, and a null is
@@ -421,17 +412,10 @@ def corner_disagreement(
 
     Asked BEFORE the model is built: a previous graph modelled on branches
     composed through a crossover it never ran is wrong by up to 5.88 dB against
-    the delta probe's 1.5 dB tolerance (adversarial panel, PR #2614), and the
-    two doors that reach it — a ``/sound`` corner edit between rounds, and an
-    operator's TOPOLOGY PIN, which opens the session at the pinned corner while
-    the applied profile still holds the incumbent — are both live. It compares
-    corners rather than counting doors, so it covers whichever ones exist.
-
-    Both arms of the one disagreement: a profile naming a DIFFERENT corner from
-    this capture's, and a profile naming one at all when the capture ran none.
-    A relative tolerance, not equality: both numbers have been through a JSON
-    round trip, and the case this refuses is 1500 vs 1800, never 1500 vs
-    1500.0000001.
+    the delta probe's 1.5 dB tolerance (adversarial panel, PR #2614). Both arms
+    of the one disagreement: a profile naming a DIFFERENT corner from this
+    capture's, and a profile naming one at all when the capture ran none. A
+    relative tolerance because both numbers have been through a JSON round trip.
     """
     applied_fc_hz = profile_crossover_fc_hz(profile)
     if applied_fc_hz is None:
@@ -467,9 +451,7 @@ def previous_graph_prediction(
 ) -> PreviousGraph | str:
     """The previous graph on these branches, or the code refusing it.
 
-    A refusal is the code alone, which the caller journals. The graph comes
-    back beside its prediction because the caller discloses what the model
-    turned on.
+    The graph comes back beside its prediction; the caller journals both.
     """
     graph = profile_graph_summation(
         profile, roles=roles, draft_inverted_by_role=draft_inverted_by_role,
@@ -479,9 +461,8 @@ def previous_graph_prediction(
     if any(role not in responses for role in roles):
         return "capture_missing_a_declared_branch"
     predicted = graph_predicted_sum(
-        # The LOWEST branch's grid, which is the grid ``plan_linearization``
-        # builds the applied side on, so both sides of the subtraction land on
-        # one grid without an interpolation nobody asked for.
+        # The LOWEST branch's grid, the one ``plan_linearization`` builds the
+        # applied side on, so both sides land on one grid.
         responses[roles[0]].freqs_hz,
         {role: response.complex_tf for role, response in responses.items()},
         graph,

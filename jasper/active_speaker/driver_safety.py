@@ -2397,9 +2397,8 @@ def _profile_core(
             "field_provenance": provenance,
             "authority": "operator_visible_values",
         }
-        # Read off ``entry``, not ``visible``: the shape validator re-derives
-        # this policy from the STORED target and compares it for equality, so
-        # both sides must resolve the floor from the same three stamped fields.
+        # Read off ``entry``: the shape validator re-derives this policy from
+        # the STORED target and compares it for equality.
         policy = driver_protection_profile(
             role,
             driver_style=driver_styles.get(target_id) or "unspecified",

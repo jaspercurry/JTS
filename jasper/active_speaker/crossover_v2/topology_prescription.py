@@ -222,9 +222,7 @@ TOPOLOGY_MALFORMED = "topology_malformed"
 TOPOLOGY_FC_INVALID = "topology_fc_invalid"
 #: The speaker has ONE way, so there is no corner to re-topologize. Its own
 #: reason rather than :data:`TOPOLOGY_FC_INVALID`, on
-#: :data:`~.alignment_prescription.ALIGNMENT_NO_CROSSOVER_REGION`'s rule: an
-#: inadmissible corner on a real two-way is a number to re-choose, while a
-#: ``full_range_passive`` speaker has no corner for any number to be.
+#: :data:`~.alignment_prescription.ALIGNMENT_NO_CROSSOVER_REGION`'s rule.
 TOPOLOGY_NO_CROSSOVER_REGION = "topology_no_crossover_region"
 TOPOLOGY_ORDER_INVALID = "topology_order_invalid"
 #: An order the graph cannot emit.  Its own reason rather than
@@ -670,9 +668,8 @@ def read_topology_prescription(
     never-nanny rule.
 
     ``declared_floor_hz`` and ``lower_driver_ceiling_hz`` are the two role
-    bands a corner is admissible within — ``None`` only from a caller that has
-    no second role to read them off, which is the ``way_count == 1`` refusal
-    above and never reaches the bound check below — :func:`~.fc_sweep._fc_rejection`'s own
+    bands a corner is admissible within (``None`` only from a caller with no
+    second role to read them off) — :func:`~.fc_sweep._fc_rejection`'s own
     ``hf_hard_floor_hz`` / ``lower_driver_hard_ceiling_hz``.  They are the WHOLE
     frequency gate: a corner both drivers' declared hard bands admit is
     admitted, and the invented crossover search band that used to narrow them
@@ -699,16 +696,14 @@ def read_topology_prescription(
     repository's gates, and a strict comparison would make the legality of a
     round depend on floating-point noise.
 
-    ``way_count`` is the speaker's own declared way count, on
-    :func:`~.alignment_prescription.read_alignment_prescription`'s rule and with
-    its default: ``1`` is a ``full_range_passive`` speaker with no corner to
-    pin, and ``None`` is "the caller did not state it".
+    ``way_count`` follows
+    :func:`~.alignment_prescription.read_alignment_prescription`'s rule: ``1``
+    has no corner to pin, ``None`` is "the caller did not state it".
     """
     if raw is None:
         return None
-    # Before the parse and the two declared bands: a pin re-corners a
-    # crossover, and a way-1 main declares none, so the pinned frequency is not
-    # what is wrong and the bounds below name nothing.
+    # Before the parse and the two declared bands: a way-1 main declares no
+    # crossover, so the pinned frequency is not what is wrong.
     if way_count == 1:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_NO_CROSSOVER_REGION,
@@ -716,10 +711,8 @@ def read_topology_prescription(
             "region, so there is no corner or order to re-topologize",
         )
     if declared_floor_hz is None or lower_driver_ceiling_hz is None:
-        # The only caller that omits them is one with no second role to read
-        # them off, and the gate above already refused the shape that has none.
-        # Reached otherwise, a pin would be admitted against bounds nobody
-        # supplied — so it is refused, in this module's own vocabulary.
+        # The gate above already refused the shape with no second role, so
+        # reaching here would admit a pin against bounds nobody supplied.
         raise TopologyPrescriptionRefused(
             TOPOLOGY_MALFORMED,
             "the role bands a corner must sit between were not declared",
@@ -845,9 +838,8 @@ def apply_topology_pin(
     """What a pin DOES to a session's topology: ``(preset, fc_hz)``.
 
     ``(preset, fc_hz)`` unchanged when there is no pin — the automatic path.
-    ``fc_hz`` is ``None`` on a speaker that declares no corner, and a pin cannot
-    reach one: the request boundary refuses a topology prescription for a
-    speaker with no crossover to re-corner.
+    ``fc_hz`` is ``None`` on a speaker that declares no corner, which no pin can
+    reach: the request boundary refuses one for a speaker with no crossover.
     Otherwise the same preset re-cornered at the pinned corner and order
     (:func:`~.fc_sweep.recornered_preset`) and the pinned corner itself.
 

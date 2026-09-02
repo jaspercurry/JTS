@@ -81,8 +81,8 @@ DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
     "tweeter": (1600.0, 20000.0),
 }
 
-#: The 1-way default: the whole measurable span, since a passive main's own
-#: declared band is not derivable here. Same defaults-not-constants rule.
+#: The 1-way default: the whole measurable span in Hz, since a passive main's
+#: own declared band is not derivable here.
 DEFAULT_FULL_RANGE_BAND_HZ: tuple[float, float] = (150.0, 20000.0)
 
 
@@ -104,17 +104,10 @@ def round_bands_hz(
 ) -> dict[str, tuple[float, float]]:
     """The band each role THIS round swept, keyed by role.
 
-    The ROLES come from
-    :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.banked_roles`,
-    the same reader
-    :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.rebuild_measure_program`
-    composes against — so the CLI cannot hand it a shape it will only refuse. A
-    1-way passive main banks one role, and reading it as a pair composes a
-    program the round never played.
-
-    Refuses by name rather than dropping a role it cannot place: a partial band
-    map composes a program silently missing a sweep, which the ``program_id``
-    proof would then blame on the bank.
+    Roles come from :func:`~...harmonic_evidence.banked_roles`, the reader
+    ``rebuild_measure_program`` composes against, so the CLI cannot hand it a
+    shape it will only refuse. Refuses rather than dropping a role it cannot
+    place, which would compose a program silently missing a sweep.
     """
     roles = banked_roles(state)
     if not roles or not overrides.keys() >= set(roles):
@@ -123,9 +116,7 @@ def round_bands_hz(
             STATE_UNREADABLE,
             {
                 "missing": "a band for every role this round's gain plan names",
-                "gain_plan_roles": (
-                    sorted(gains) if isinstance(gains, Mapping) else []
-                ),
+                "gain_plan_roles": sorted(gains) if isinstance(gains, Mapping) else [],
                 "bands_offered": sorted(overrides),
             },
         )
@@ -218,16 +209,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="tweeter sweep band in Hz (default %(default)s)",
     )
     parser.add_argument(
-        "--full-range-band",
-        type=_band,
-        default=DEFAULT_FULL_RANGE_BAND_HZ,
-        metavar="LO:HI",
-        help=(
-            "1-way (passive full-range main) sweep band in Hz; used only when "
-            "the round banked one full-range role (default %(default)s)"
-        ),
-    )
-    parser.add_argument(
         "--calibration",
         type=Path,
         default=None,
@@ -312,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             round_bands_hz(state, {
                 "woofer": args.woofer_band,
                 "tweeter": args.tweeter_band,
-                "full_range": args.full_range_band,
+                "full_range": DEFAULT_FULL_RANGE_BAND_HZ,
             }),
             session_id=session_id,
             orders=HARMONIC_ORDERS,

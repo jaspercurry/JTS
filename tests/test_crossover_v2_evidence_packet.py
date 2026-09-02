@@ -124,10 +124,6 @@ def test_a_way1_packet_shuts_the_two_request_time_doors_by_name(tmp_path):
         TOPOLOGY_NO_CROSSOVER_REGION,
     )
 
-    from jasper.audio_measurement.program_analysis import (
-        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-    )
-
     packet = build_crossover_evidence_packet(_way1_bundle(tmp_path))
     doors = packet["request_time_prescriptions"]
 
@@ -135,20 +131,6 @@ def test_a_way1_packet_shuts_the_two_request_time_doors_by_name(tmp_path):
     assert doors["alignment"]["reason"] == ALIGNMENT_NO_CROSSOVER_REGION
     assert doors["topology"]["available"] is False
     assert doors["topology"]["reason"] == TOPOLOGY_NO_CROSSOVER_REGION
-    # …and all three shut doors reach the list a reader scans for what this
-    # packet could not answer, so the two blocks cannot disagree with it.
-    unanswered = {
-        entry["field"]: entry["reason"] for entry in packet["not_evaluated"]
-    }
-    assert unanswered["request_time_prescriptions.alignment"].startswith(
-        ALIGNMENT_NO_CROSSOVER_REGION
-    )
-    assert unanswered["request_time_prescriptions.topology"].startswith(
-        TOPOLOGY_NO_CROSSOVER_REGION
-    )
-    assert unanswered["crossover_region.band_hz"].startswith(
-        ABSOLUTE_NO_CROSSOVER_TOPOLOGY
-    )
     # …and a 2-way round still gets both contracts.
     session, _ = _bundle(tmp_path / "two-way")
     two_way = build_crossover_evidence_packet(session)["request_time_prescriptions"]

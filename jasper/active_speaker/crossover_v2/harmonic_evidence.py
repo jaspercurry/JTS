@@ -365,14 +365,9 @@ def _banked_sweep_durations_s(
 def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
     """WHICH branches this round swept, read off its own banked gain plan.
 
-    The shape table (``DRIVER_ROLES_BY_WAY``) resolved against the roles the
-    plan names, so a 1-way main answers ``("full_range",)`` and a pair answers
-    the pair — never assumed. Empty when the bank names no roles, or names a
-    set no speaker shape declares; every caller turns that into a refusal by
-    name rather than composing a program the round never played.
-
-    One reader, because "what did this round sweep" answered twice — here and
-    at the CLI door that resolves the bands — is how the two come to disagree.
+    ``DRIVER_ROLES_BY_WAY`` resolved against the roles the plan names. Empty
+    when the bank names no roles, or a set no speaker shape declares; every
+    caller turns that into a refusal by name.
     """
     gains = state.get("gain_plan_db")
     banked = set(gains) if isinstance(gains, Mapping) else set()
@@ -450,10 +445,7 @@ def rebuild_measure_program(
         raise HarmonicEvidenceRefused(
             STATE_UNREADABLE,
             {
-                "missing": (
-                    "a gain plan naming one speaker shape's roles, and a band "
-                    "for each of them"
-                ),
+                "missing": "a gain plan naming one shape's roles, and a band each",
                 "gain_plan_roles": sorted(gains),
                 "bands_supplied": sorted(bands),
                 "program_id": want[:12],
@@ -474,9 +466,7 @@ def rebuild_measure_program(
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
-    # Both pilot rules are the composer's own, asked rather than restated: a
-    # replay that spelled either formula a second time would reproduce a
-    # different program the moment the shipped one moved.
+    # Both pilot rules asked of the composer, never restated here.
     pilot_role = leading_pilot_role(roles_bands)
     for prelude in (shipped, not shipped):
         for downstream in _DOWNSTREAM_GRID_DB:

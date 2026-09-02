@@ -85,7 +85,12 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
 )
-from jasper.active_speaker.crossover_v2.handoff_doors import HANDOFF_DOORS
+from jasper.active_speaker.crossover_v2.alignment_prescription import (
+    ALIGNMENT_NO_CROSSOVER_REGION,
+)
+from jasper.active_speaker.crossover_v2.topology_prescription import (
+    TOPOLOGY_NO_CROSSOVER_REGION,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
@@ -1087,18 +1092,12 @@ def _next_actions(
                 f"{_band_phrase(*region['band_hz'])}"
             )
         elif region["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
-            # Not "not yet": this speaker HAS no crossover, so every door that
-            # describes a handoff is shut for good and the per-driver one is the
-            # whole loop. Sending an operator to re-measure for a band that
-            # cannot exist is the wrong next action. The doors and their codes
-            # are the packet's own table, so this line cannot name a door the
-            # packet does not shut, or shut one under another name.
-            doors = ("blend", *(door for door, _refusal in HANDOFF_DOORS))
-            codes = (REGION_UNAVAILABLE, *(code for _door, code in HANDOFF_DOORS))
             out.append(
-                f"this speaker has no crossover region, so the {', '.join(doors)} "
-                f"doors do not apply and refuse by name ({', '.join(codes)}) — "
-                "the per-driver door below is the whole loop here"
+                "this speaker has no crossover region, so the blend, alignment, "
+                "topology doors do not apply and refuse by name "
+                f"({REGION_UNAVAILABLE}, {ALIGNMENT_NO_CROSSOVER_REGION}, "
+                f"{TOPOLOGY_NO_CROSSOVER_REGION}) — the per-driver door below "
+                "is the whole loop here"
             )
         else:
             out.append(

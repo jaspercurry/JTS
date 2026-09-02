@@ -4,14 +4,10 @@
 
 """The bands a measurement comparison may be judged over.
 
-One owner for every "which frequencies may vote" question in the analysis:
-the branch-pair overlap, one branch's capture-SNR window, a summed capture's
-crossover region, and a VERIFY tracking comparison's graded band. They differ
-in what they clamp to and each docstring says why — a second derivation of any
-of them is how two surfaces come to grade different bands under one name.
+One owner for every "which frequencies may vote" question in the analysis; each
+docstring below says what it clamps to and why.
 
-Depends only on the stdlib and :mod:`jasper.audio_measurement.gate_disclosure`;
-:mod:`.program_analysis` imports this, never the reverse.
+Dependency direction: :mod:`.program_analysis` imports this, never the reverse.
 """
 
 from __future__ import annotations
@@ -75,9 +71,8 @@ def branch_snr_band_hz(
     swept to below ``Fc·ρ`` lowers ``hi``. ``radiated_band_hz`` of ``None``
     leaves the nominal band untouched.
 
-    The corner only ever BOUNDS this window, so a branch that has none — a
-    1-way main's lone full-range driver — is judged over what it radiated, and
-    only a branch with neither fact leaves the verdict unbuilt (``None``).
+    The corner only ever BOUNDS this window, so a branch that has none (a 1-way
+    main) is judged over what it radiated; neither fact means ``None``.
 
     Erring CONSERVATIVE on row width: a row the window keeps can still be WIDER
     than the sweep's coverage of it, and under a flat noise floor that
@@ -169,12 +164,10 @@ def verify_tracking_band_hz(
     """The band a VERIFY capture's tracking comparison may be graded over.
 
     With a corner, :func:`overlap_band_hz` clamped to what MEASURE actually
-    excited. A 1-way main declares no corner, so what scopes the comparison
-    instead is THIS sweep's radiated span intersected with that excited band:
-    the verify sweep deliberately reaches below MEASURE's floor, and the
-    predicted sum down there is deconvolution noise from a branch nothing
-    drove. ``None`` where no band is stated — absent rather than graded over
-    one nobody established.
+    excited. Without one (a 1-way main), THIS sweep's radiated span intersected
+    with that excited band: the verify sweep reaches below MEASURE's floor, and
+    the predicted sum down there is deconvolution noise. ``None`` where no band
+    is stated, rather than one nobody established.
     """
     if fc_hz is not None:
         sweep_lo_hz, sweep_hi_hz = measure_excited_band_hz or (None, None)
