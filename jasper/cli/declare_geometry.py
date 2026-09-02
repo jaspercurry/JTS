@@ -6,6 +6,10 @@
 rig geometry that :mod:`jasper.audio_measurement.measurement_geometry` derives
 an ``entanglement_floor_hz`` from. See issue #3502 for why: the measured
 reflection-finder structurally never fires on this rig class.
+
+Human-only output, unlike its report-tool siblings: this is a ``set``/``show``
+config door the person holding the tape measure runs under sudo, not a document
+a script reads.
 """
 from __future__ import annotations
 
@@ -19,12 +23,12 @@ from jasper.audio_measurement.measurement_geometry import (
     load_declared_geometry,
 )
 
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED
 from ._unit_pair import add_unit_pair, unit_pair_meters
 
-EXIT_OK = 0
-EXIT_REFUSED = 1
+#: Its own, because nothing else has one: `show` with no declaration yet is
+#: not an unreadable input, it is the ordinary pre-declaration state.
 EXIT_NOT_FOUND = 2
-EXIT_WRITE_FAILED = 3
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). This CLI

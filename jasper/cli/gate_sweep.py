@@ -13,8 +13,9 @@ speaker's directivity, and the two are the discrimination this tool exists
 to make (#3495).
 
 **A refusal is an output, not an error.** Every refusal names the input that
-was missing — no captures, no programs, a capture whose program could not be
-matched by content hash — as JSON on stdout and one sentence on stderr.
+was missing: no captures, no programs, a capture whose program could not be
+matched by content hash. It publishes the shared failure record, whose shape
+docs/tuning-operator-runbook.md's "Exit codes" states once.
 
 Applying anything this reports is NOT this tool's job. It plays nothing,
 changes nothing, and its numbers are evidence for an attribution argument,
@@ -37,22 +38,25 @@ from jasper.active_speaker.crossover_v2.gate_sweep import (
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 
 from ._logging import configure_verbose_logging
-from ._refusal import refused
+from ._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    failed,
+)
 from ._report import write_report
 
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
+#: Named like every other refusal here: the input that was missing.
+REFUSE_UNUSABLE_REQUEST = "gate_sweep_unusable_request"
+REFUSE_UNREADABLE_ROUND = "gate_sweep_unreadable_round"
+REFUSE_UNWRITABLE_OUT = "gate_sweep_unwritable_out"
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "advisory (plays nothing)"
 
 DEFAULT_OUT_NAME = "gate_sweep.json"
-
-
-def _refused(reason: str, detail: str) -> int:
-    return refused(reason, detail, exit_code=EXIT_REFUSED)
 
 
 def _sensitivity_line(label: str, payload: Mapping[str, Any]) -> str:
@@ -82,8 +86,18 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     try:
         report = sweep_round(round_dir, rungs_ms=args.rungs_ms, at_hz=args.at_hz or ())
     except RoundCapturesRefused as exc:
-        return _refused(exc.reason, json.dumps(exc.detail, sort_keys=True, default=str))
-    out = write_report(report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True)
+        return failed(
+            EXIT_REFUSED, exc.reason,
+            json.dumps(exc.detail, sort_keys=True, default=str),
+        )
+    try:
+        out = write_report(
+            report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True
+        )
+    except OSError as exc:
+        # The round read and the sweep ran; only the filing failed. Reporting
+        # that as an unreadable round sends the operator to the wrong place.
+        return failed(EXIT_WRITE_FAILED, REFUSE_UNWRITABLE_OUT, str(exc))
     print(json.dumps({"status": "swept", "out": str(out or "-")}, indent=2, sort_keys=True))
     for band in report["bands"]:
         label = f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"
@@ -164,7 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  0  EXIT_OK -- swept; the report was written\n"
             "  1  EXIT_REFUSED -- a named input was missing (no captures, no\n"
             "     programs, no content-hash match for a capture's program)\n"
-            "  2  EXIT_INPUT -- the round could not be read (OSError)"
+            "  2  EXIT_UNREADABLE -- the round could not be read\n"
+            "  3  EXIT_WRITE_FAILED -- swept, but --out could not be written"
         ),
     )
     parser.add_argument("--verbose", action="store_true")
@@ -199,11 +214,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except ValueError as exc:
-        print(f"unusable request: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return failed(EXIT_UNREADABLE, REFUSE_UNUSABLE_REQUEST, str(exc))
     except OSError as exc:
-        print(f"unreadable round: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return failed(EXIT_UNREADABLE, REFUSE_UNREADABLE_ROUND, str(exc))
 
 
 if __name__ == "__main__":  # pragma: no cover

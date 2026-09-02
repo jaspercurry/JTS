@@ -15,7 +15,7 @@ beside ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``. The round
 directory inside it is found by the SAME rule the packet reader uses
 (:func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`),
 so the artifact cannot land where the reader does not look, and a bundle
-carrying more than one round is refused rather than guessed at.
+carrying more than one round exits ``2`` rather than being guessed at.
 
 ``--dumps`` is the banked capture ring, which lives outside the bundle, and
 ``--state`` is the round's flow state — required, because the MEASURE program is
@@ -29,9 +29,9 @@ bands and a wrong pair simply fails the program-id proof rather than producing a
 wrong reading.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
-read and filed, ``1`` the round could not be read, ``2`` the instrument refused
-(the program did not reproduce, no MEASURE capture was banked, or every capture
-failed a fidelity gate), ``3`` the reading could not be written. ``2`` and ``3``
+read and filed, ``1`` the instrument refused (the program did not reproduce, no
+MEASURE capture was banked, or every capture failed a fidelity gate), ``2`` the
+round could not be read, ``3`` the reading could not be written. ``2`` and ``3``
 are separate because they send an operator to different places: ``2`` means fix
 the round, ``3`` means fix the filesystem. A refusal is the instrument working —
 ``--json`` prints its named ``reason`` and the evidence behind it.
@@ -52,6 +52,13 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     NO_ROUND_ARTIFACTS_REASON,
     round_artifact_dir,
 )
+from jasper.cli._refusal import (
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_UNREADABLE,
+    EXIT_WRITE_FAILED,
+    fail_with_payload,
+)
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HARMONIC_ORDERS,
     STATE_UNREADABLE,
@@ -59,11 +66,6 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     banked_roles,
     read_round_harmonics,
 )
-
-EXIT_OK = 0
-EXIT_ROUND_UNREADABLE = 1
-EXIT_REFUSED = 2
-EXIT_WRITE_FAILED = 3
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -148,12 +150,13 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  read; the reading is filed and a summary printed\n"
-            "  1  EXIT_ROUND_UNREADABLE -- bundle_dir, info.json, or\n"
-            "     --state could not be read\n"
-            "  2  EXIT_REFUSED -- the reading itself was refused (e.g. no\n"
+            "  1  EXIT_REFUSED -- the reading itself was refused (e.g. no\n"
             "     --applied-profile, or it named a corner this round did\n"
             "     not measure through); \"refused: <reason>\" on stderr,\n"
             "     and as JSON with --json\n"
+            "  2  EXIT_UNREADABLE -- bundle_dir, info.json or --state\n"
+            "     could not be read, or the bundle carries more than one\n"
+            "     round and this tool will not guess which\n"
             "  3  EXIT_WRITE_FAILED -- read, but the reading could not be\n"
             "     written"
         ),
@@ -242,14 +245,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _fail(message: str, payload: dict[str, Any], *, as_json: bool, code: int) -> int:
-    print(message, file=sys.stderr)
-    if as_json:
-        json.dump(payload, sys.stdout, indent=1)
-        sys.stdout.write("\n")
-    return code
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -261,11 +256,11 @@ def main(argv: list[str] | None = None) -> int:
                 " — bundle_dir must hold info.json beside "
                 "evidence/v1/artifacts/crossover_v2/<relay>/"
             )
-        return _fail(
+        return fail_with_payload(
             message,
             {"ok": False, "error": why},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
 
     session_id: str | None = None
@@ -279,20 +274,20 @@ def main(argv: list[str] | None = None) -> int:
             args.calibration.read_text() if args.calibration is not None else None
         )
     except (OSError, json.JSONDecodeError) as exc:
-        return _fail(
+        return fail_with_payload(
             f"cannot read the round: {exc}",
             {"ok": False, "error": str(exc)},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
     if isinstance(info, dict) and isinstance(info.get("session_id"), str):
         session_id = info["session_id"]
     if not isinstance(state, dict):
-        return _fail(
+        return fail_with_payload(
             f"the flow state at {args.state} is not a JSON object",
             {"ok": False, "error": "state is not a JSON object"},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
 
     try:
@@ -311,18 +306,18 @@ def main(argv: list[str] | None = None) -> int:
             applied_profile_path=args.applied_profile,
         )
     except HarmonicEvidenceRefused as refusal:
-        return _fail(
+        return fail_with_payload(
             f"refused: {refusal.reason}",
             {"ok": False, "reason": refusal.reason, "detail": refusal.evidence},
             as_json=args.json,
             code=EXIT_REFUSED,
         )
     except (OSError, ValueError) as exc:
-        return _fail(
+        return fail_with_payload(
             f"cannot read the round: {exc}",
             {"ok": False, "error": str(exc)},
             as_json=args.json,
-            code=EXIT_ROUND_UNREADABLE,
+            code=EXIT_UNREADABLE,
         )
 
     destination = args.out or (round_dir / HARMONICS_ARTIFACT)
@@ -331,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         # write would be read as a reading rather than as a broken file.
         atomic_write_text(destination, json.dumps(artifact, indent=1))
     except OSError as exc:
-        return _fail(
+        return fail_with_payload(
             f"read, but could not write {destination}: {exc}",
             {"ok": False, "error": str(exc), "path": str(destination)},
             as_json=args.json,
