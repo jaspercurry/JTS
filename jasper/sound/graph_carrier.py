@@ -294,8 +294,7 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
     The active leader's first CamillaDSP instance owns only the 2-channel program
     domain and writes it to Snapcast's FIFO; the second instance owns Layer A
     driver protection. It is therefore a valid host for program-domain room /
-    preference EQ, but only while re-emission keeps the File -> Snap FIFO sink
-    and rate-adjust remains off.
+    preference EQ, but only while re-emission keeps the File -> Snap FIFO sink.
     """
 
     def __init__(self, current_path: str | Path | None) -> None:
@@ -310,9 +309,7 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         )
 
     def _validate_member_kwargs(self, member_kwargs: dict) -> None:
-        pipe = member_kwargs.get("playback_pipe_path")
-        rate_adjust = member_kwargs.get("enable_rate_adjust")
-        if pipe and rate_adjust is False:
+        if member_kwargs.get("playback_pipe_path"):
             return
         raise CarrierCannotHostEq(
             "program_bake_pipe_unavailable",

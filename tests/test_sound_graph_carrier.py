@@ -341,7 +341,7 @@ def test_base_flat_reemits_with_no_room_peqs(tmp_path):
 
 def test_reemit_forwards_explicit_member_kwargs(tmp_path):
     # The bonded-leader bake injects its already-resolved cfg kwargs (the pipe
-    # sink + rate_adjust off) rather than the carrier's default disk read.
+    # sink) rather than the carrier's default disk read.
     with mock.patch(
         "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml"
     ) as emit:
@@ -349,10 +349,10 @@ def test_reemit_forwards_explicit_member_kwargs(tmp_path):
         carrier.reemit(
             mock.sentinel.profile,
             profile_id="id",
-            member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
+            member_kwargs={"playback_pipe_path": "/run/snapfifo"},
         )
     assert emit.call_args.kwargs["playback_pipe_path"] == "/run/snapfifo"
-    assert emit.call_args.kwargs["enable_rate_adjust"] is False
+    assert "enable_rate_adjust" not in emit.call_args.kwargs
 
 
 # --- L0: a stereo-host graph can't host EQ under a protected-tweeter topology -
@@ -500,10 +500,7 @@ def test_program_bake_carrier_hosts_eq_via_pipe_under_active_topology(
 
     with mock.patch(
         "jasper.multiroom.member_config.member_camilla_kwargs",
-        return_value={
-            "enable_rate_adjust": False,
-            "playback_pipe_path": "/run/jasper-snapserver/snapfifo",
-        },
+        return_value={"playback_pipe_path": "/run/jasper-snapserver/snapfifo"},
     ):
         carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
         assert carrier.kind == "active_leader_program_bake"
@@ -545,7 +542,6 @@ def test_generic_jts_pipe_sound_config_resolves_to_program_bake(tmp_path, monkey
     path.write_text(
         emit_sound_config(
             SoundProfile(enabled=False),
-            enable_rate_adjust=False,
             playback_pipe_path=SNAPFIFO,
         ),
         encoding="utf-8",
@@ -580,7 +576,6 @@ def test_sound_current_pipe_under_non_protected_topology_stays_sound_or_correcti
     path.write_text(
         emit_sound_config(
             SoundProfile(enabled=False),
-            enable_rate_adjust=False,
             playback_pipe_path=SNAPFIFO,
         ),
         encoding="utf-8",
@@ -611,7 +606,6 @@ def test_grouping_leader_pipe_config_does_not_resolve_to_program_bake(
     path.write_text(
         emit_sound_config(
             SoundProfile(enabled=False),
-            enable_rate_adjust=False,
             playback_pipe_path=SNAPFIFO,
         ),
         encoding="utf-8",
@@ -633,10 +627,7 @@ def test_program_bake_carrier_requires_pipe_sink(tmp_path):
         "jasper.sound.graph_carrier.emit_sound_config"
     ) as emit, mock.patch(
         "jasper.multiroom.member_config.member_camilla_kwargs",
-        return_value={
-            "enable_rate_adjust": True,
-            "playback_pipe_path": None,
-        },
+        return_value={"playback_pipe_path": None},
     ):
         carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
         with pytest.raises(CarrierCannotHostEq) as exc:
@@ -653,7 +644,7 @@ def test_reemit_defaults_to_disk_read_member_kwargs(tmp_path):
         "jasper.sound.graph_carrier.emit_sound_config", return_value="yaml"
     ) as emit, mock.patch(
         "jasper.multiroom.member_config.member_camilla_kwargs",
-        return_value={"enable_rate_adjust": True, "playback_pipe_path": None},
+        return_value={"playback_pipe_path": None},
     ) as disk_read:
         carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
         carrier.reemit(mock.sentinel.profile, profile_id="id")
@@ -1372,7 +1363,7 @@ def test_base_flat_no_coupling_kwargs_is_byte_identical(tmp_path):
 def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     # shm_ring at the chokepoint: the base-flat (stereo host) reemit flips capture
     # to the Ring A ioplug device and playback to the Ring B ioplug device.
-    # The member kwargs are the SOLO shape member_camilla_kwargs() returns, so
+    # No member kwargs — the SOLO shape member_camilla_kwargs() returns — so
     # the rate-adjust answer below is the one a solo box actually emits.
     from jasper.camilla_config_contract import parse_camilla_devices_config
 
@@ -1380,7 +1371,7 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
-        member_kwargs={"enable_rate_adjust": False, "playback_pipe_path": None},
+        member_kwargs={},
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
     devices = parse_camilla_devices_config(cfg)
@@ -1390,14 +1381,17 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     assert "type: AsyncSinc" not in cfg
 
 
-def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path):
+@pytest.mark.parametrize("wire", ["S32_LE", "S16_LE"])
+def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path, wire):
     """The COMMISSIONED stereo box's devices block, end to end.
 
     jts.local (Apple dongle, solo) runs chunk 256 / target 1536 over the ring:
     its DacProfile floor, which already fits the ring's capacity and so is
     passed through, NOT the certified 128/128 an end-to-end ring graph carries.
     Moving an ordinary stereo graph onto that pair is a retune, so this pins the
-    whole block rather than one field.
+    whole block rather than one field. BOTH halves of the coupling cross on a
+    solo box, so the emitted formats follow the declared wire — the narrow
+    rollback pin included — never the emitter's own default.
     """
     from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
     from jasper.camilla_config_contract import parse_camilla_devices_config
@@ -1412,7 +1406,9 @@ def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path):
         SoundProfile(enabled=False),
         profile_id="x",
         member_kwargs=member_camilla_kwargs(path=str(tmp_path / "grouping.env")),
-        fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
+        fanin_coupling_capture_kwargs={
+            **_SHM_RING_KWARGS, "capture_format": wire, "playback_format": wire,
+        },
     ).yaml
 
     expected = {
@@ -1422,6 +1418,8 @@ def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path):
         "enable_rate_adjust": False,
         "capture_device": RING_CAPTURE_DEVICE,
         "playback_device": RING_PLAYBACK_DEVICE,
+        "capture_format": wire,
+        "playback_format": wire,
     }
     devices = parse_camilla_devices_config(cfg)
     assert {key: devices.get(key) for key in expected} == expected
@@ -1441,7 +1439,7 @@ def test_shm_ring_coupling_keeps_the_capture_half_for_a_grouped_pipe_sink(tmp_pa
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
-        member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
+        member_kwargs={"playback_pipe_path": "/run/snapfifo"},
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
     assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
@@ -1463,7 +1461,7 @@ def test_program_bake_carrier_follows_the_coupling_on_capture_only(tmp_path):
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         out_path=config_dir / "out.yml",
-        member_kwargs={"playback_pipe_path": "/run/snapfifo", "enable_rate_adjust": False},
+        member_kwargs={"playback_pipe_path": "/run/snapfifo"},
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
     assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
@@ -1560,7 +1558,7 @@ def test_stereo_host_reemit_requires_explicit_passive_layout(
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))
-    golden = emit_sound_config(profile, room_peqs=[], enable_rate_adjust=False)
+    golden = emit_sound_config(profile, room_peqs=[])
 
     _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
     config_dir = tmp_path / "configured"
@@ -1675,10 +1673,7 @@ def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
     carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
     result = carrier.reemit(
         SoundProfile(enabled=False),
-        member_kwargs={
-            "enable_rate_adjust": False,
-            "playback_pipe_path": SNAPFIFO,
-        },
+        member_kwargs={"playback_pipe_path": SNAPFIFO},
     )
 
     assert "commission_mute" not in result.yaml

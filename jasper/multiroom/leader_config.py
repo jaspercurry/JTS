@@ -155,9 +155,8 @@ async def apply_bonded_leader_config(
 
     Reuses the /sound prepare shape: saved profile + settings, room PEQs
     preserved from the active config (custom configs refused, same as
-    /sound), the member policy supplying the pipe + rate_adjust
-    transforms, and the validated ``apply_dsp_config`` engine driving
-    CamillaDSP's glitch-free config swap.
+    /sound), the member policy supplying the pipe sink, and the validated
+    ``apply_dsp_config`` engine driving CamillaDSP's glitch-free config swap.
     """
     from jasper.dsp_apply import apply_dsp_config
     from jasper.sound.camilla_yaml import BASE_CONFIG_PATH
@@ -177,7 +176,7 @@ async def apply_bonded_leader_config(
         # the pipe), and treat a missing/flat current as the base (no PEQs).
         # The leader is the one caller that overrides the carrier's default
         # disk read of the member policy, injecting its already-resolved cfg
-        # kwargs (the pipe sink + rate_adjust off).
+        # kwargs (the pipe sink).
         carrier = carrier_for_loaded_config(
             current or str(BASE_CONFIG_PATH), config_dir=CONFIG_DIR
         )
@@ -277,10 +276,7 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
             # cannot form a bond in the first place (apply_bonded_leader_config
             # refuses an active `current` via the carrier), so `current` here
             # is never a roleful graph. Deliberately the SOLO defaults — no
-            # member kwargs: this IS the un-bonding. enable_rate_adjust=False
-            # is explicit rather than the emitter's own default: this box's
-            # playback sink is Ring B (ADR-0100), an ioplug CamillaDSP cannot
-            # actuate rate_adjust on (see member_config's module docstring).
+            # member kwargs: this IS the un-bonding.
             #
             # The channel plan IS one of those solo defaults (#2179): lenient
             # is not blind. Un-bonding hands the box its own DAC back, so the
@@ -294,7 +290,6 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
                     out_path=SOLO_RESTORE_PATH,
                     profile_id="grouping-solo-restore",
                     output_trim_db=output_trim_db(profile, settings),
-                    enable_rate_adjust=False,
                     muted_outputs=plan.muted_outputs,
                     mono_fold_output=plan.mono_fold_output,
                 )

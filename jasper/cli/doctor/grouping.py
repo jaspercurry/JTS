@@ -471,10 +471,10 @@ def check_grouping_rate_adjust() -> CheckResult:
     A DUMB (passive, single-DAC) follower is the one bonded shape still OUT of
     scope, and deliberately so: it plays the round-tripped stream through
     outputd's ``dac_content`` lane, and its own CamillaDSP stays on the solo
-    fallback feed — which :func:`jasper.multiroom.member_config.member_camilla_kwargs`
-    emits ``enable_rate_adjust=False`` too, into Ring B, an ioplug CamillaDSP
-    cannot actuate rate_adjust on. Its local CamillaDSP never joins the bonded
-    chain, so there is no bond apply here to catch.
+    fallback feed — whose sink is Ring B, so
+    :func:`jasper.camilla_config_contract.resolve_enable_rate_adjust` emits
+    ``false`` there too. Its local CamillaDSP never joins the bonded chain, so
+    there is no bond apply here to catch.
 
     This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed

@@ -17,9 +17,12 @@ from jasper.camilla_config_contract import (
     parse_camilla_devices_config,
     resolve_camilla_chunksize,
     resolve_camilla_target_level,
+    resolve_enable_rate_adjust,
     total_positive_boost_db,
 )
 from jasper.fanin_coupling import (
+    RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_CAMILLA_GEOMETRY,
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
     ring_capacity_frames,
@@ -486,6 +489,47 @@ def test_a_clockless_sink_clamps_on_its_ring_capture(monkeypatch, tmp_path):
     assert parsed["chunksize"] == ring_capacity_frames()
 
 
+@pytest.mark.parametrize(
+    ("playback_device", "rate_adjust"),
+    [
+        (RING_PLAYBACK_DEVICE, False),
+        (RING_ACTIVE_PLAYBACK_DEVICE, False),
+        (None, False),
+        ("hw:CARD=Dac,DEV=0", True),
+    ],
+    ids=["ring-b", "ring-active", "file", "alsa-dac"],
+)
+def test_enable_rate_adjust_follows_the_sink(playback_device, rate_adjust):
+    """The sink decides, never the graph's role: a File sink (``None``) has no
+    output clock to steer, and a ring PCM is an ioplug alsa-lib reports as card
+    -1, so CamillaDSP builds no HCtl and can actuate nothing. An ordinary ALSA
+    sink can.
+    """
+
+    assert resolve_enable_rate_adjust(playback_device) is rate_adjust
+
+
+def test_emit_sound_config_defaults_rate_adjust_from_the_sink():
+    """The emitter's own default is the resolver's answer for the sink it
+    emits — ring by default, True once pointed at an ordinary DAC."""
+
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    assert (
+        parse_camilla_devices_config(emit_sound_config(SoundProfile()))[
+            "enable_rate_adjust"
+        ]
+        is False
+    )
+    assert (
+        parse_camilla_devices_config(
+            emit_sound_config(SoundProfile(), playback_device="hw:CARD=Dac,DEV=0")
+        )["enable_rate_adjust"]
+        is True
+    )
+
+
 def test_generated_sound_config_clamps_stale_env_below_apple_dongle_floor(
     monkeypatch, tmp_path,
 ):
@@ -698,3 +742,13 @@ def test_camilla_floor_accepts_the_ring_capacity_at_exactly_4x():
     floor = CamillaFloor(chunksize=capacity, target_level=4 * capacity)
 
     assert (floor.chunksize, floor.target_level) == (capacity, 4 * capacity)
+
+
+def test_the_certified_ring_pairing_agrees_with_the_sink_rule():
+    """RING_CAMILLA_GEOMETRY is measured data passed whole by the end-to-end
+    ring graphs; its rate-adjust member must be what the sink rule resolves for
+    the ring it was certified on, or the two owners drift."""
+
+    assert RING_CAMILLA_GEOMETRY["enable_rate_adjust"] is resolve_enable_rate_adjust(
+        RING_ACTIVE_PLAYBACK_DEVICE
+    )

@@ -16,7 +16,7 @@ devices:
   queuelimit: 4
   target_level: 512
   volume_limit: 0.0
-  enable_rate_adjust: true
+  enable_rate_adjust: false
   capture:
     type: Alsa
     channels: 2
