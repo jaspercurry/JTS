@@ -147,6 +147,25 @@ def _serve_forever_with_fast_shutdown(
 socketserver.BaseServer.serve_forever = _serve_forever_with_fast_shutdown
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--regenerate-goldens",
+        action="store_true",
+        default=False,
+        help=(
+            "rewrite golden fixtures from the code under test, then fail the "
+            "golden tests so the run is visibly a regeneration; review with "
+            "`git diff` and re-run without the flag"
+        ),
+    )
+
+
+@pytest.fixture
+def regenerate_goldens(request: pytest.FixtureRequest) -> bool:
+    """True under ``--regenerate-goldens``: write fixtures instead of comparing."""
+    return bool(request.config.getoption("--regenerate-goldens"))
+
+
 @pytest.fixture(autouse=True)
 def _isolate_environ():
     """Snapshot os.environ before each test, restore after.
