@@ -279,10 +279,18 @@ install_streambox_web_unit_files() {
         "${SYSTEMD_DIR}/jasper-system-web.socket"
 }
 
+# Renderer/DSP + assistant wizard ports; the assistant ones are bound
+# whether or not the tier currently holds Capability.ASSISTANT, because a
+# static socket cannot follow the grant table. Forbidden = the WAKE_DETECTION
+# wizards, which a Zero-2-W-class board never runs. Kept in step with
+# deploy/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
+# tests/test_web_main_imports.py.
 validate_streambox_web_socket() {
     local socket="${SYSTEMD_DIR}/jasper-web.socket"
-    local -a expected_ports=(8765 8771 8773 8775 8783 8784 8785)
-    local -a forbidden_ports=(8767 8768 8774 8776 8777 8778 8779 8782)
+    local -a expected_ports=(
+        8765 8767 8768 8771 8773 8775 8777 8778 8779 8783 8784 8785 8786
+    )
+    local -a forbidden_ports=(8774 8782)
     local port
     for port in "${expected_ports[@]}"; do
         if ! grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
@@ -292,7 +300,7 @@ validate_streambox_web_socket() {
     done
     for port in "${forbidden_ports[@]}"; do
         if grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
-            echo "  ERROR: streambox jasper-web.socket still binds full-brain port ${port}" >&2
+            echo "  ERROR: streambox jasper-web.socket still binds wake-side port ${port}" >&2
             return 1
         fi
     done

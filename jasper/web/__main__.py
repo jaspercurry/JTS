@@ -8,9 +8,9 @@ Starts the setup wizards for this install profile in a single process —
 one ThreadingHTTPServer per nginx route. They share /var/lib/jasper as
 their persistence volume and shell out to systemctl together when
 something changes, so colocating them costs nothing extra and saves a
-separate systemd unit per wizard. Full speakers get every wizard below;
-streambox installs keep the local-renderer/DSP surfaces and omit the
-voice/wake/assistant-only pages. nginx routes:
+separate systemd unit per wizard. Which wizards a tier hosts is derived
+from that tier's ``Capability`` grants, never from its name — see
+``WizardSpec.requires``. nginx routes:
 
   /spotify/  →  127.0.0.1:8765  (jasper.web.spotify_setup)
   /voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
@@ -54,8 +54,9 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import BaseRequestHandler, StreamRequestHandler
 from jasper.install_profile import (
-    FULL_INSTALL_PROFILE,
-    STREAMBOX_INSTALL_PROFILE,
+    VALID_INSTALL_PROFILES,
+    Capability,
+    install_profile_has_capability,
     install_role_for_profile,
     read_install_profile,
 )
@@ -64,10 +65,6 @@ from jasper.log_event import log_event
 from . import _systemd
 
 logger = logging.getLogger(__name__)
-_FULL_ROLE = FULL_INSTALL_PROFILE
-_STREAMBOX_ROLE = STREAMBOX_INSTALL_PROFILE
-_FULL_ONLY = frozenset({_FULL_ROLE})
-_LOCAL_AUDIO_ROLES = frozenset({_FULL_ROLE, _STREAMBOX_ROLE})
 
 
 @dataclass(frozen=True)
@@ -78,14 +75,26 @@ class WizardSpec:
     env_var: str
     default_port: int
     make_server: Callable[[object], object]
-    roles: frozenset[str] = _FULL_ONLY
+    requires: Capability | None
     main_thread: bool = False
 
     def port(self) -> int:
         return int(os.environ.get(self.env_var, str(self.default_port)))
 
     def available_for(self, role: str) -> bool:
-        return role in self.roles
+        """Whether this tier hosts the wizard.
+
+        ``requires`` has no default on purpose: ``None`` — every valid
+        tier hosts it — must be chosen, not inherited. The membership
+        guard is what fails an unreadable marker closed
+        (``_active_install_role`` hands us a non-profile token), and it
+        keeps ``install_profile_has_capability`` off its raising paths.
+        """
+        if role not in VALID_INSTALL_PROFILES:
+            return False
+        if self.requires is None:
+            return True
+        return install_profile_has_capability(role, self.requires)
 
 
 def _serve_forever(server, label: str) -> None:
@@ -450,50 +459,73 @@ def _make_wake_corpus_server(target: object) -> object:
     )
 
 
+# `requires` is what makes a wizard reachable, so it is the tier gate:
+# ASSISTANT for the pages that configure what the assistant says and does
+# (provider, tool packs, integrations), WAKE_DETECTION for the always-on
+# wake/mic/AEC pages, None for the renderer/DSP/network pages every tier
+# hosts. Granting a tier a capability is then the ONLY edit needed to make
+# its wizards appear — nothing here names a profile.
 WIZARD_SPECS: tuple[WizardSpec, ...] = (
     WizardSpec(
         "/spotify", "JASPER_SPOTIFY_WEB_PORT", 8765,
-        _make_spotify_server, roles=_LOCAL_AUDIO_ROLES, main_thread=True,
+        _make_spotify_server, requires=None, main_thread=True,
     ),
-    WizardSpec("/voice", "JASPER_VOICE_WEB_PORT", 8767, _make_voice_server),
-    WizardSpec("/google", "JASPER_GOOGLE_WEB_PORT", 8768, _make_google_server),
+    WizardSpec(
+        "/voice", "JASPER_VOICE_WEB_PORT", 8767, _make_voice_server,
+        requires=Capability.ASSISTANT,
+    ),
+    WizardSpec(
+        "/google", "JASPER_GOOGLE_WEB_PORT", 8768, _make_google_server,
+        requires=Capability.ASSISTANT,
+    ),
     WizardSpec(
         "/airplay", "JASPER_AIRPLAY_WEB_PORT", 8771, _make_airplay_server,
-        roles=_LOCAL_AUDIO_ROLES,
+        requires=None,
     ),
     WizardSpec(
         "/sources", "JASPER_SOURCES_WEB_PORT", 8773, _make_sources_server,
-        roles=_LOCAL_AUDIO_ROLES,
+        requires=None,
     ),
-    WizardSpec("/wake", "JASPER_WAKE_WEB_PORT", 8774, _make_wake_server),
+    WizardSpec(
+        "/wake", "JASPER_WAKE_WEB_PORT", 8774, _make_wake_server,
+        requires=Capability.WAKE_DETECTION,
+    ),
     WizardSpec(
         "/wifi", "JASPER_WIFI_WEB_PORT", 8775, _make_wifi_server,
-        roles=_LOCAL_AUDIO_ROLES,
+        requires=None,
     ),
     WizardSpec(
         "/transit", "JASPER_TRANSIT_WEB_PORT", 8777, _make_transit_server,
+        requires=Capability.ASSISTANT,
     ),
-    WizardSpec("/ha", "JASPER_HA_WEB_PORT", 8778, _make_ha_server),
+    WizardSpec(
+        "/ha", "JASPER_HA_WEB_PORT", 8778, _make_ha_server,
+        requires=Capability.ASSISTANT,
+    ),
     WizardSpec(
         "/weather", "JASPER_WEATHER_WEB_PORT", 8779, _make_weather_server,
+        requires=Capability.ASSISTANT,
     ),
     WizardSpec(
         "/wake-corpus", "JASPER_WAKE_CORPUS_WEB_PORT", 8782,
-        _make_wake_corpus_server,
+        _make_wake_corpus_server, requires=Capability.WAKE_DETECTION,
     ),
     WizardSpec(
         "/speaker", "JASPER_SPEAKER_WEB_PORT", 8783, _make_speaker_server,
-        roles=_LOCAL_AUDIO_ROLES,
+        requires=None,
     ),
     WizardSpec(
         "/sound", "JASPER_SOUND_WEB_PORT", 8784, _make_sound_server,
-        roles=_LOCAL_AUDIO_ROLES,
+        requires=None,
     ),
     WizardSpec(
         "/rooms", "JASPER_ROOMS_WEB_PORT", 8785, _make_rooms_server,
-        roles=_LOCAL_AUDIO_ROLES,
+        requires=None,
     ),
-    WizardSpec("/tools", "JASPER_TOOLS_WEB_PORT", 8786, _make_tools_server),
+    WizardSpec(
+        "/tools", "JASPER_TOOLS_WEB_PORT", 8786, _make_tools_server,
+        requires=Capability.ASSISTANT,
+    ),
 )
 
 
