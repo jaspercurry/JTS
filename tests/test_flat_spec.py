@@ -439,6 +439,9 @@ def test_to_dict_round_trip_stability_keys_and_types():
         # clamps above, but it clamps nothing -- it marks bands.
         "entanglement_floor_hz",
         "entanglement_floor_source",
+        # The frame the bands' gate fields are stated in. Stamped by a reader
+        # holding the round's captures, never by this module.
+        "gate_sweep_frame",
     }
     assert type(d["reference_db"]) is float
     assert type(d["overall_passed"]) is bool
@@ -459,6 +462,9 @@ def test_to_dict_round_trip_stability_keys_and_types():
     # No entanglement floor supplied.
     assert d["entanglement_floor_hz"] is None
     assert d["entanglement_floor_source"] == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    # No sweep has read this report, so it carries no frame and no band
+    # carries a gate number -- pinned below beside the band keys.
+    assert d["gate_sweep_frame"] is None
 
     assert isinstance(d["bands"], list)
     assert len(d["bands"]) == len(SPEC_BANDS)
@@ -489,7 +495,21 @@ def test_to_dict_round_trip_stability_keys_and_types():
             # #3495: where inside this band the ROOM, not the window choice,
             # bounds what a gate can separate. Disclosure beside the grade.
             "room_entangled_below_hz",
+            # The gate ladder's read at THIS band's own worst bin -- room or
+            # speaker. Stamped afterwards by a reader holding the round's
+            # captures (`round_views.spec_with_gate_sensitivity`), so this
+            # module always emits them as None.
+            "gate_sensitivity_db",
+            "sigma_growth_ratio",
+            "n_valid_rungs",
+            "gate_sensitivity_note",
+            "gate_sensitivity_detail",
         }
+        assert band_dict["gate_sensitivity_db"] is None
+        assert band_dict["sigma_growth_ratio"] is None
+        assert band_dict["n_valid_rungs"] is None
+        assert band_dict["gate_sensitivity_note"] is None
+        assert band_dict["gate_sensitivity_detail"] is None
         for key in (
             "f_lo_hz",
             "f_hi_hz",
@@ -551,8 +571,8 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     """
     import dataclasses
 
-    assert len(dataclasses.fields(BandResult)) == 17
-    assert len(dataclasses.fields(FlatSpecReport)) == 12
+    assert len(dataclasses.fields(BandResult)) == 22
+    assert len(dataclasses.fields(FlatSpecReport)) == 13
 
     band = BandResult(
         f_lo_hz=100.0, f_hi_hz=200.0, tolerance_db=1.5,
@@ -561,6 +581,9 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
         level_deviation_db=0.5, max_ripple_db=-1.5, max_ripple_hz=160.0,
         graded_lo_hz=110.0, graded_hi_hz=190.0, max_at_graded_edge=True,
         room_entangled_below_hz=150.0,
+        gate_sensitivity_db=-1.25, sigma_growth_ratio=2.4, n_valid_rungs=5,
+        gate_sensitivity_note="short_rung_sigma_is_zero",
+        gate_sensitivity_detail={"reason": "round_no_captures", "round_dir": "/r"},
     )
     report = FlatSpecReport(
         reference_db=-20.0, bands=(band,), overall_passed=False,
@@ -571,6 +594,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
         graded_band_hz=(142.86, 15000.0),
         entanglement_floor_hz=1000.0,
         entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_DECLARED,
+        gate_sweep_frame={"rungs_ms": [3.0, 20.0], "n_fft": 65536},
     )
     assert FlatSpecReport.from_dict(report.to_dict()) == report
 
@@ -1525,6 +1549,42 @@ def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
     assert older.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
     assert all(band.room_entangled_below_hz is None for band in older.bands)
     assert older.overall_passed == report.overall_passed
+
+
+def test_a_pre_gate_sweep_document_rehydrates_as_never_swept():
+    """A banked report predating the gate fields must read as NOT MEASURED --
+    no numbers and no note -- never as a round whose worst bins were swept
+    and found window-invariant.
+    """
+    report = evaluate_flat_spec(_FREQS_HZ, _flat_db())
+    raw = report.to_dict()
+    del raw["gate_sweep_frame"]
+    for band in raw["bands"]:
+        for key in (
+            "gate_sensitivity_db",
+            "sigma_growth_ratio",
+            "n_valid_rungs",
+            "gate_sensitivity_note",
+        ):
+            del band[key]
+
+    older = FlatSpecReport.from_dict(raw)
+    assert older.gate_sweep_frame is None
+    assert all(band.gate_sensitivity_db is None for band in older.bands)
+    assert all(band.sigma_growth_ratio is None for band in older.bands)
+    assert all(band.n_valid_rungs is None for band in older.bands)
+    assert all(band.gate_sensitivity_note is None for band in older.bands)
+    assert older.overall_passed == report.overall_passed
+
+
+@pytest.mark.parametrize("stored", [7.0, "a frame", ["rungs_ms"], True])
+def test_a_gate_sweep_frame_that_is_not_a_mapping_rehydrates_as_absent(stored):
+    """A frame no reader can index is the same evidence as no frame at all,
+    and must not rehydrate as one that looks present.
+    """
+    raw = evaluate_flat_spec(_FREQS_HZ, _flat_db()).to_dict()
+    raw["gate_sweep_frame"] = stored
+    assert FlatSpecReport.from_dict(raw).gate_sweep_frame is None
 
 
 @pytest.mark.parametrize(

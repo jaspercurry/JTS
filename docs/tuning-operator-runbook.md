@@ -465,7 +465,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply` | Open, wait on and apply a crossover round from the speaker itself. The same three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate. | mutating-with-gates (`open`/`apply` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, and the shared frequency view — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|spec-sweep\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, the gate sweep read onto the spec verdict, and the shared frequency view — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
 | `jasper-round-bank` | Bank one live commissioning session into the on-box campaign home, where it outlives session retention. | mutating (copies evidence; changes nothing played) | `jasper/cli/round_bank.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
@@ -960,6 +960,29 @@ band publishes `room_entangled_below_hz` — the top of its own
 entangled sub-span, `null` when the band sits wholly above the floor. The band
 still grades and still passes or fails exactly as it did; what the field adds is
 the reservation on how far up that verdict is a claim about the speaker.
+
+**Room or speaker, at the band's own worst bin.** Run
+
+```
+jasper-round-views spec-sweep <round-dir>
+```
+
+and the round's own graded verdict comes back with five more fields per band
+and one on the report itself, written to
+`<round-dir>/spec_gate_sensitivity.json` (`--rungs-ms` sets the ladder, `--out`
+moves the file, `-` prints it). All six are disclosure — no grade moves — and
+every one is `null` on a report nothing stamped.
+
+| Field | What it says |
+|---|---|
+| `sigma_growth_ratio`, `gate_sensitivity_db` | same discriminator as `jasper-gate-sweep`'s `sensitivity` block — see "Reading a gate sweep" below, not restated here. |
+| `n_valid_rungs` | how many ladder rungs were resolution-valid at that bin — the denominator behind the two above. Present even when they are `null`. |
+| `gate_sensitivity_note` | why there is no number. **Read this first.** A `not_swept_` prefix means the ladder never ran (`not_swept_single_pose`, `not_swept_band_not_evaluable`, `not_swept_captures_unreadable`, `not_swept_bin_outside_analysis_grid`); a bare slug is the ladder's own refusal after running (`insufficient_valid_rungs`, `short_rung_sigma_is_zero`). Not measured is not the same as measured and inconclusive. |
+| `gate_sensitivity_detail` | beside a `not_swept_single_pose` / `not_swept_captures_unreadable` note only: the `RoundCapturesRefused` this round hit — `reason` plus its own evidence — so what was actually missing survives the bucket slug. `null` otherwise, swept or not. |
+| `gate_sweep_frame` | *(on the report)* the window shape, ladder, smoothing, grid and resolution bars every number above is stated in. One capture and one feature read a different depth under each defensible frame, so a sensitivity quoted without this one is the frame's number, not the room's. |
+
+Only `jasper-gate-sweep --at-hz <bin>` still answers for a bin the verdict did
+not flag; the flagged one is already on the report.
 
 **The reflector path is the ladder's tau times the speed of sound.** The
 `reflections` block publishes `reflector_path_distance_m` alongside the

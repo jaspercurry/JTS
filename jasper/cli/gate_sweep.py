@@ -100,6 +100,24 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def add_rungs_ms_argument(parser: argparse.ArgumentParser) -> None:
+    """The gate ladder flag, shared by every command that runs one
+    (:mod:`jasper.cli.round_views`'s ``spec-sweep`` included) so the default
+    ladder and its help text have one owner.
+    """
+    parser.add_argument(
+        "--rungs-ms",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_RUNGS_MS),
+        metavar="MS",
+        help=(
+            "gate ladder, in milliseconds "
+            f"(default: {' '.join(f'{r:g}' for r in DEFAULT_RUNGS_MS)})"
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-gate-sweep",
@@ -144,17 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "round_dir", help="banked round directory (the one holding bundle/)"
     )
-    parser.add_argument(
-        "--rungs-ms",
-        type=float,
-        nargs="+",
-        default=list(DEFAULT_RUNGS_MS),
-        metavar="MS",
-        help=(
-            "gate ladder, in milliseconds "
-            f"(default: {' '.join(f'{r:g}' for r in DEFAULT_RUNGS_MS)})"
-        ),
-    )
+    add_rungs_ms_argument(parser)
     parser.add_argument(
         "--at-hz",
         type=float,
