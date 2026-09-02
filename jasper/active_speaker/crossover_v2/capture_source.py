@@ -13,9 +13,9 @@ never the conductor's or the web host's.
 
 This module is the seam's VOCABULARY, deliberately logic-free (the same
 register as :mod:`.refusal_copy` and :mod:`.contracts`): the provider
-identities, the answer contract, and the two exceptions a conductor answers an
-``authorize_begin`` with. The halves of the conversation live here or where
-they already are:
+identities, the answer contract, and the exceptions the conversation is
+carried on. The halves of the conversation live here or where they already
+are:
 
 * **The ask.** The plan walk hands a provider three conductor-owned hooks —
   ``authorize_begin(index, attempt, entry)`` (admission, and the position
@@ -34,6 +34,11 @@ they already are:
   :class:`CaptureBeginDeferred` (a soft hold) below. They are the conductor's
   answers to ``authorize_begin``, so they are seam vocabulary and not a
   transport's: both providers raise and translate them.
+* **The two ways a capture ends badly.** :class:`CaptureFailed` (the capture
+  could not be produced or trusted) and :class:`CaptureStopped` (the host
+  stopped it). Capture vocabulary rather than a transport's, for the same
+  reason the pair above is: the provider raises them and the host maps them
+  onto its own reason codes.
 * **The answer.** :class:`CaptureAnswer` below. The relay's
   ``jasper.capture_relay.session.CaptureResult`` already satisfies it — the
   relay provider passes through what the phone sent — and a wired provider
@@ -133,6 +138,14 @@ class CaptureBeginDeferred(RuntimeError):
         super().__init__(user_message or code)
         self.code = str(code)
         self.user_message = str(user_message or code)
+
+
+class CaptureFailed(RuntimeError):
+    """A capture could not be produced or trusted (see ``__cause__``)."""
+
+
+class CaptureStopped(RuntimeError):
+    """The host explicitly stopped this capture."""
 
 
 #: The per-take integrity counters a provider's answer carries, in the exact

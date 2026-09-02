@@ -85,6 +85,10 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
+    CaptureBeginDeferred,
+    CaptureBeginRefused,
+    CaptureFailed,
+    CaptureStopped,
 )
 from jasper.active_speaker.crossover_v2.program_transaction import (
     StimulusCaptureError,
@@ -642,18 +646,6 @@ def build_v2_wired_run_and_consume(
             SessionGraphError,
         )
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-        # The begin-admission pair comes from the SEAM's own home (ADR-0188
-        # §2 — the live measurement path does not import the parked relay);
-        # ``CaptureFailed``/``CaptureStopped`` genuinely live in the relay
-        # session module and stay there.
-        from jasper.active_speaker.crossover_v2.capture_source import (
-            CaptureBeginDeferred,
-            CaptureBeginRefused,
-        )
-        from jasper.capture_relay.session import (
-            CaptureFailed,
-            CaptureStopped,
-        )
         from jasper.correction.coordinator import MeasurementWindowError
 
         # The host's side of the seam, late-bound on purpose (#2662): the

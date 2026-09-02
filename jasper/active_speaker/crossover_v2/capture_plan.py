@@ -90,6 +90,7 @@ from .programs import (
     measurement_band_hz,
 )
 from .spatial import GEOMETRY_RETRY_POSITIONS
+from .sweep_spec import build_crossover_sweep_spec
 
 logger = logging.getLogger(__name__)
 
@@ -2532,7 +2533,7 @@ def build_v2_verify_capture_plan(
     # phone and "Your speaker is tuned, BUT the result still measures further
     # from flat than the target…" on jts.local, for one session. The phone
     # cannot carry that caveat: its component vocabulary
-    # (``capture_relay.spec.UI_COMPONENT_TYPES``) has no result-shaped member,
+    # (``sweep_spec.UI_COMPONENT_TYPES``) has no result-shaped member,
     # and the only runtime seam that could deliver one — the relay's
     # LAST-WRITE-WINS host-event slot — is routinely overwritten by
     # ``capture_set_complete`` before the phone's ~250 ms poll reads the final
@@ -2676,7 +2677,7 @@ def build_v2_verify_session_spec(
     verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     **spec_kwargs: Any,
 ) -> Any:
-    """The relay v3 spec for a post-apply session (stage 2, or §5.2 recovery).
+    """The capture spec for a post-apply session (stage 2, or §5.2 recovery).
 
     **The consent surface is chosen by the PLAN's own shape, not by the caller's
     intent**, so a one-sweep session and a walk can never advertise each other's
@@ -2689,8 +2690,6 @@ def build_v2_verify_session_spec(
     guided consent surface with its own capture count and tier, exactly as
     :func:`build_v2_session_spec` does for stage 1.
     """
-    from jasper.capture_relay.spec import build_crossover_sweep_spec
-
     # Resolved ONCE here and handed to both readers below, so the sentence the
     # orientation quotes and the entries the walk prompts are literally the same
     # object rather than two calls that happen to agree.
@@ -2960,10 +2959,10 @@ def build_v2_session_spec(
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     **spec_kwargs: Any,
 ) -> Any:
-    """One relay v3 stage-1 spec, optionally including the pre-apply cloud (§5.7).
+    """One stage-1 capture spec, optionally including the pre-apply cloud (§5.7).
 
-    Rides the existing ``build_crossover_sweep_spec`` (same kind, transport,
-    and placement-acknowledgement machinery) with its stage-1 plan attached, and
+    Rides :func:`~.sweep_spec.build_crossover_sweep_spec` (same kind and
+    placement-acknowledgement machinery) with its stage-1 plan attached, and
     selects guided consent only when that plan includes the pre-apply cloud —
     the fixed-on-axis wording that builder emits by default promises a
     stationary mic for the whole session, which is exactly what a cloud
@@ -2976,8 +2975,6 @@ def build_v2_session_spec(
     threads into :func:`build_v2_cloud_index_phase_map` — see
     :class:`V2PlanShape` for why that matters.
     """
-    from jasper.capture_relay.spec import build_crossover_sweep_spec
-
     shape = _shape_from_kwargs(
         plan_shape,
         tier=tier,

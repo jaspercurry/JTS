@@ -1241,7 +1241,7 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
 
 
 async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeypatch):
-    from jasper.capture_relay.session import CaptureStopped
+    from jasper.active_speaker.crossover_v2.capture_source import CaptureStopped
     from jasper.correction import coordinator
 
     host_events = []

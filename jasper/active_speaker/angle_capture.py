@@ -1016,7 +1016,8 @@ def announced_indexes(request: AngleCaptureRequest) -> tuple[int, ...]:
 
     A walk run as its OWN session still owes the household an opening warning,
     and the consent builder enforces that: ``_courtesy_beeps_step``
-    (:mod:`jasper.capture_relay.spec`) refuses an empty ``announced_captures``
+    (:mod:`jasper.active_speaker.crossover_v2.sweep_spec`) refuses an empty
+    ``announced_captures``
     outright -- "must be a non-empty subset of this plan's 1..N captures". So a
     standalone runner cannot ship a silent opener by accident; it has to open on
     an announced capture the way stage 1 does, on CHECK. Minting a prelude

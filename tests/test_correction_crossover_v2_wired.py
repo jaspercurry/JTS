@@ -47,6 +47,10 @@ import pytest
 from jasper.active_speaker.crossover_v2.capture_source import (
     INTEGRITY_COUNTER_KEYS,
     CaptureAnswer,
+    CaptureBeginDeferred,
+    CaptureBeginRefused,
+    CaptureFailed,
+    CaptureStopped,
     SOURCE_RELAY,
     SOURCE_WIRED,
 )
@@ -63,13 +67,7 @@ from jasper.audio_measurement.wired_capture import (
     WiredRecorder,
     decode_wav_to_mono,
 )
-from jasper.capture_relay.session import (
-    CaptureBeginDeferred,
-    CaptureBeginRefused,
-    CaptureFailed,
-    CaptureStopped,
-)
-from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
+from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_relay as v2relay
 from jasper.web import correction_crossover_v2_wired as v2wired
@@ -179,7 +177,7 @@ def test_open_wired_capture_mints_identity_and_validates_the_spec():
 def test_open_wired_capture_refuses_an_invalid_spec():
     import dataclasses
 
-    from jasper.capture_relay.spec import CaptureSpecError
+    from jasper.capture_protocol import CaptureSpecError
 
     bad = dataclasses.replace(_real_verify_spec(), sample_rate_hz=44_100)
     with pytest.raises(CaptureSpecError):

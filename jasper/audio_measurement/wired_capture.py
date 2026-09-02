@@ -80,7 +80,7 @@ neither create nor hide a run.
 **Format is preserved end-to-end — no dither/truncation decision to make.**
 The UMIK-2 capture descriptor is S32_LE only; the engine records native
 S32_LE and :func:`encode_wav_s32` writes 32-bit integer PCM. The pipeline
-pins the RATE (``capture_relay.spec.REQUIRED_SAMPLE_RATE_HZ``), not the
+pins the RATE (``crossover_v2.sweep_spec.REQUIRED_SAMPLE_RATE_HZ``), not the
 width: the analyze seam decodes format from the container
 (``scipy.io.wavfile`` reads int32 and normalizes by the dtype max — see
 :func:`decode_wav_to_mono` below, this module's own inverse), and

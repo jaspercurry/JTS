@@ -630,7 +630,7 @@ def test_the_capacity_gate_admits_exactly_what_the_relay_accepts(
     ``…is_where_the_capacity_gate_bites`` (base 11, and 19 stops do not). Read
     the three together — this one says they agree, those two say about what.
     """
-    from jasper.capture_relay.spec import CaptureSpecError, _validate_capture_plan
+    from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpecError, _validate_capture_plan
 
     shape = flow.resolve_plan_shape(flow.TIER_FULL)
     base_entries = len(flow.build_v2_cloud_index_phase_map(

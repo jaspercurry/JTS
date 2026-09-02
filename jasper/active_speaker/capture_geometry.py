@@ -65,10 +65,10 @@ DRIVER_PLACEMENT_TARGET_CM = 3.0
 # deliberate addition here once its acknowledgement choreography is confirmed
 # equivalent -- never a silent pass-through.
 #
-# The literals are duplicated rather than imported on purpose: capture_relay.spec
-# imports THIS module (lazily, for placement copy), so importing it back at
-# module scope would invert that dependency. Containment of
-# capture_relay.spec.CAPTURE_PROTOCOL_VERSION is pinned by
+# The literals are duplicated rather than imported on purpose:
+# crossover_v2.sweep_spec imports THIS module (lazily, for placement copy), so
+# importing it back at module scope would invert that dependency. Containment
+# of its CAPTURE_PROTOCOL_VERSION is pinned by
 # tests/test_active_speaker_commissioning_capture.py.
 PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
@@ -382,13 +382,12 @@ def driver_placement_instruction(role: str) -> str:
 #
 # Device-agnostic rather than conditional-on-tier BY NECESSITY, not preference:
 # calibration presence is not knowable where this copy is rendered. Both call
-# sites — `capture_relay.spec.build_crossover_sweep_spec` and
+# sites — `crossover_v2.sweep_spec.build_crossover_sweep_spec` and
 # `web.correction_setup`'s fixed-axis level target — build the string before the
-# household has picked a mic on the phone, and the one calibration-shaped
-# argument in reach (`default_setup_calibration`) is an optional prefill HINT
-# that legacy callers omit even when a calibration exists. Plumbing real
-# calibration state through two layers to vary one clause would buy a worse
-# sentence than one honest one.
+# household has chosen a mic, and the one calibration-shaped argument in reach
+# (`default_setup_calibration`) is an optional prefill HINT that callers omit
+# even when a calibration exists. Plumbing real calibration state through two
+# layers to vary one clause would buy a worse sentence than one honest one.
 _AIM_CLAUSE = "pointed at the speaker unless its calibration file says otherwise"
 
 
@@ -434,7 +433,7 @@ def cloud_walk_placement_instruction() -> str:
     about ``{captures}`` measurements…", one line under a derived tier line
     that had just said "…10 measurements, about 7 minutes" — the same number,
     twice, in the densest block on the screen. The tier line
-    (``spec._guided_tier_step``) owns that number; this owns the mark. The
+    (``sweep_spec._guided_tier_step``) owns that number; this owns the mark. The
     other two facts it used to carry moved to where they earn their keep:
     *every position is measured from the mark, named with a distance* now
     motivates the tape measure in the what-to-bring step, and *how far the
