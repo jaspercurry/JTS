@@ -1929,6 +1929,7 @@ async def _live_draft_profile(
     from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
     from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.live_edit import does_live_edits, plan_live_edit_for
 
     cam = camilla_factory()
     config_path = Path(config_dir)
@@ -1938,24 +1939,20 @@ async def _live_draft_profile(
     # profile's own EQ, so a draft-derived trim would fold into
     # `active_baseline_headroom`'s VALUE and be written in place — an instant,
     # un-ducked, full-spectrum level step mid-drag. The durable save realises
-    # any change across a swap that ducks anyway. `settings` is still re-read
-    # above, so a settings-page change to headroom_trim_db or match_loudness
-    # does move the trim, at one swap; the property this buys is only "not
-    # draft-derived". Safe because the trim is comfort accounting, not a clip
-    # guard — `devices.volume_limit` stays the hard ceiling regardless
+    # the change instead, once and on the same rule (ADR-0219). `settings` is
+    # still re-read above, so a settings-page change to headroom_trim_db or
+    # match_loudness does move the trim, at one swap; the property this buys
+    # is only "not draft-derived". Safe because the trim is comfort accounting,
+    # not a clip guard — `devices.volume_limit` stays the hard ceiling regardless
     # (`jasper.camilla_stereo_prefix`). The cost is that match-loudness stops
     # tracking the draft until save.
     output_trim_db = _output_trim(load_profile(profile_path), settings)
     sound_filter_count = len(build_sound_filters(profile))
-    try:
-        loader = getattr(cam, "set_active_config_raw")
-    except AttributeError:
-        loader = None
 
     def _live_payload(*, status: str, current_epoch: str) -> dict[str, Any]:
         return {"live_status": status, "dsp_write_epoch": current_epoch}
 
-    if loader is None:
+    if not does_live_edits(cam):
         current_epoch = dsp_write_epoch()
         _log_live_draft_unavailable(
             reason="active_config_raw_unavailable",
@@ -1990,8 +1987,6 @@ async def _live_draft_profile(
             fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
         )
         yaml = result.yaml
-        from jasper.sound.live_edit import plan_live_edit_for
-
         plan = await plan_live_edit_for(cam, yaml)
         method = plan.method
 
@@ -1999,7 +1994,9 @@ async def _live_draft_profile(
             # Duck-or-not is decided in jasper.sound.live_edit; an unchanged
             # graph is not written at all.
             if method != "unchanged":
-                await loader(yaml, best_effort=False, duck=plan.duck)
+                await cam.set_active_config_raw(
+                    yaml, best_effort=False, duck=plan.duck,
+                )
         except Exception as e:  # noqa: BLE001
             _log_live_draft_unavailable(
                 reason=f"{method}_failed",

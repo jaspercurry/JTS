@@ -23,6 +23,7 @@ import os
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -360,7 +361,7 @@ def measure_pcm_24k_mono(pcm: bytes, *, wide: bool = False) -> LoudnessMeasureme
         raise ValueError("empty PCM")
     if mono.size % 2:
         mono = mono[:-1]
-    upsampled = _upsample_24k_to_48k(mono)
+    upsampled = upsample_2x(mono)
     weighted = _k_weighted_stereo_energy(upsampled)
     lufs, voiced_frames = _gated_lufs(weighted, MEASURE_RATE)
     peak = float(np.max(np.abs(upsampled))) / FULL_SCALE
@@ -373,22 +374,60 @@ def measure_pcm_24k_mono(pcm: bytes, *, wide: bool = False) -> LoudnessMeasureme
     )
 
 
-def _upsample_24k_to_48k(samples: "Any") -> "Any":
-    # Production TtsPlayout uses scipy.resample_poly. For tests and
-    # lightweight developer environments without scipy, linear
-    # interpolation is close enough for a loudness profile seed.
-    try:
-        from scipy.signal import resample_poly  # type: ignore
-    except Exception:  # noqa: BLE001
-        import numpy as np
-        if samples.size <= 1:
-            return np.repeat(samples, 2)
-        out = np.empty(samples.size * 2, dtype=np.float64)
-        out[0::2] = samples
-        out[1:-1:2] = (samples[:-1] + samples[1:]) * 0.5
-        out[-1] = samples[-1]
-        return out
-    return resample_poly(samples, up=2, down=1).astype("float64")
+#: 2x interpolation FIR geometry, matching what ``scipy.signal.resample_poly``
+#: designs for up=2/down=1: 41 taps (``10 * max_rate`` either side of centre),
+#: Kaiser beta 5.0, and 21 leading output samples dropped to undo the filter's
+#: group delay. Keeping the geometry identical keeps the assistant's samples at
+#: the fractional delay this path has always shipped.
+_UPSAMPLE_2X_HALF_LEN = 20
+_UPSAMPLE_2X_BETA = 5.0
+_UPSAMPLE_2X_TRIM = _UPSAMPLE_2X_HALF_LEN + 1
+
+
+@lru_cache(maxsize=1)
+def _upsample_2x_phases() -> "tuple[Any, Any]":
+    import numpy as np
+
+    n = 2 * _UPSAMPLE_2X_HALF_LEN + 1
+    m = np.arange(n, dtype=np.float64) - _UPSAMPLE_2X_HALF_LEN
+    # Ideal half-band lowpass (cutoff 0.5 x Nyquist) x Kaiser window, then
+    # normalised to unity DC gain and scaled by the interpolation factor so
+    # zero-stuffing does not drop the level by 2.
+    taps = 0.5 * np.sinc(0.5 * m) * np.kaiser(n, _UPSAMPLE_2X_BETA)
+    taps *= 2.0 / taps.sum()
+    padded = np.concatenate((np.zeros(1, dtype=np.float64), taps))
+    lower, upper = padded[0::2], padded[1::2]
+    # Cached across calls: a stray in-place write would corrupt every later
+    # upsample on the audible path.
+    lower.setflags(write=False)
+    upper.setflags(write=False)
+    return lower, upper
+
+
+def upsample_2x(samples: "Any") -> "Any":
+    """Interpolate 24 kHz mono speech to 48 kHz. Returns float64.
+
+    Polyphase FIR (anti-imaged), not zero-order hold or linear
+    interpolation: this feeds the assistant's audible output path.
+    Equals ``scipy.signal.resample_poly(x, up=2, down=1)`` to within
+    float rounding (worst case -311 dB in float64, -138 dB through the
+    float32 playout path); numpy-only because scipy costs ~58 MB RSS a
+    streambox does not have (issue #3697). One dimension only.
+    """
+    import numpy as np
+
+    x = np.asarray(samples, dtype=np.float64)
+    if x.size == 0:
+        return x
+    even, odd = _upsample_2x_phases()
+    # Convolving each phase against x is the zero-stuffed convolution with
+    # the multiply-by-zero half skipped.
+    lower = np.convolve(x, even)
+    upper = np.convolve(x, odd)
+    out = np.empty(lower.size + upper.size, dtype=np.float64)
+    out[0::2] = lower
+    out[1::2] = upper
+    return out[_UPSAMPLE_2X_TRIM:_UPSAMPLE_2X_TRIM + 2 * x.size]
 
 
 def _k_weighted_stereo_energy(samples_48k: "Any") -> "Any":

@@ -138,6 +138,25 @@ def is_transient(exc: BaseException) -> bool:
     return True
 
 
+def survive_terminal_initial_connect(
+    exc: Exception, wake_supervisor: Callable[[], object],
+) -> None:
+    """Rule a failed first connect, from a provider's own except block.
+
+    A terminal rejection (blocked account, revoked key) does NOT
+    propagate: every provider's reconnect path already survives the same
+    rejection indefinitely, and dying here instead crash-looped the unit
+    into ``StartLimitAction=reboot``. Waking the supervisor leaves the
+    daemon up — wake word, cues and local tools alive, ``/state``
+    reporting the outage — until the provider accepts again.
+
+    A budget-exhausted TRANSIENT failure re-raises: a fresh process gets
+    a fresh budget, which is what that path is for."""
+    if is_transient(exc):
+        raise exc
+    wake_supervisor()
+
+
 def is_network_down(exc: BaseException) -> bool:
     """Whether this failure is the household's own link being down.
 
@@ -189,6 +208,7 @@ class OutageTracker:
         self.cue: str | None = None
         self._announced: str | None = None
         self._network_streak = 0
+        self._held_cue = Deferred()
         self._cb: CuePlayer | None = None
 
     @property
@@ -199,8 +219,33 @@ class OutageTracker:
         return self.cue or CANT_CONNECT_CUE_SLUG
 
     def set_callback(self, cb: CuePlayer | None) -> None:
-        """None keeps the edge and its log line but plays nothing."""
+        """None keeps the edge and its log line but plays nothing.
+
+        The daemon can only wire this once the object that owns cue
+        playback exists, which is after the connection's ``start()`` —
+        so an outage that began on the very first connect has already
+        claimed its edge. Play what it held back."""
         self._cb = cb
+        if cb is not None:
+            self._held_cue.fire_if_pending(self._announce)
+
+    def _announce(self) -> None:
+        cue = self.cue
+        if cue is None:
+            # The outage ended (or turned transient) before a player
+            # existed: there is nothing left to announce.
+            self._held_cue.clear()
+            return
+        if self._cb is None:
+            self._held_cue.request()
+            return
+        self._held_cue.clear()
+        # Fire-and-forget: cue playback must not stall the reconnect
+        # cadence.
+        asyncio.create_task(
+            self._cb(cue),
+            name="jasper-supervisor-escalation-cue",
+        )
 
     def on_failure(self, exc: BaseException) -> None:
         """Record a failed session open, announcing a terminal one once."""
@@ -225,14 +270,7 @@ class OutageTracker:
             exc=type(exc).__name__,
             level=logging.WARNING,
         )
-        if self._cb is None:
-            return
-        # Fire-and-forget: cue playback must not stall the reconnect
-        # cadence.
-        asyncio.create_task(
-            self._cb(cue),
-            name="jasper-supervisor-escalation-cue",
-        )
+        self._announce()
 
     def on_recovery(self) -> None:
         """A session opened: clear the outage and re-arm, silently."""
@@ -240,52 +278,46 @@ class OutageTracker:
         self.cue = None
         self._announced = None
         self._network_streak = 0
+        self._held_cue.clear()
 
 
-class DeferredReconnect:
-    """Defer a mid-turn reconnect until the in-flight turn releases.
+class Deferred:
+    """One action held back until the moment it may happen.
 
-    Both real-time providers need to reconnect *during* a session but
-    must not tear down the WebSocket while a turn is actively replying —
-    doing so cuts the user off mid-sentence. The shared MECHANISM is a
-    pending flag set by some trigger and fired from ``_on_turn_released``
-    once the turn ends. Only the TRIGGER differs per provider:
+    Three sites need the same dance — request → hold → fire-on-release,
+    plus clear-when-it-no-longer-applies so a later release can't fire a
+    spurious second time:
 
-      * OpenAI: the proactive pre-cap watchdog fires inside the 5-minute
-        buffer before the 60-minute hard cap.
-      * Gemini: a ``GoAway`` lands mid-turn with ample ``time_left``.
+      * OpenAI: a mid-turn reconnect (the pre-cap watchdog fires inside
+        the buffer before the 60-minute hard cap); tearing the socket
+        down mid-reply would cut the user off mid-sentence.
+      * Gemini: the same, triggered by a ``GoAway`` with ample
+        ``time_left``.
+      * ``OutageTracker``: an escalation cue raised before the daemon
+        wired a cue player.
 
-    This class owns the flag and its lifecycle so a future fourth
-    provider reuses it instead of re-deriving the same three-state dance
-    (request → defer → fire-on-release, plus clear-when-reconnect-starts
-    so a later turn release can't fire a spurious second reconnect)."""
+    The flag is cleared BEFORE ``fire`` runs, so a re-entrant release
+    cannot double-fire."""
 
     def __init__(self) -> None:
         self._pending = False
 
     @property
     def pending(self) -> bool:
-        """Whether a reconnect is currently deferred."""
+        """Whether an action is currently held."""
         return self._pending
 
     def request(self) -> None:
-        """A trigger fired mid-turn: mark a reconnect as deferred."""
+        """Hold the action until something releases it."""
         self._pending = True
 
     def clear(self) -> None:
-        """A reconnect is now underway: drop any deferred request so a
-        later turn release cannot fire a spurious second reconnect."""
+        """Drop any held request without firing it."""
         self._pending = False
 
     def fire_if_pending(self, fire: Callable[[], object]) -> bool:
-        """Fire a deferred reconnect, if one is pending.
-
-        Called from ``_on_turn_released``. If a reconnect was deferred,
-        clear the flag, invoke ``fire`` (which sets the connection's
-        reconnect event), and return ``True`` so the caller can log. The
-        flag is cleared BEFORE ``fire`` so a re-entrant turn release
-        can't double-fire. Returns ``False`` (and does nothing) when no
-        reconnect is pending."""
+        """Fire the held action, if one is held. Returns whether it
+        fired, so the caller can log."""
         if not self._pending:
             return False
         self._pending = False

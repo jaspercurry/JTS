@@ -585,8 +585,9 @@ async def test_409_on_initial_connect_retries():
 
 
 async def test_non_409_failure_on_initial_connect_does_not_retry():
-    """Non-409 exceptions on the initial connect path should propagate
-    immediately (auth errors etc don't fix themselves with a wait)."""
+    """A transient non-409 exception on the initial connect path
+    propagates immediately — the 409 loop is for conflicts only, and a
+    fresh process gets a fresh budget."""
     factory = _FakeConnect()
     factory.next_exceptions = [RuntimeError("malformed config")]
     conn = GeminiLiveConnection(
@@ -603,6 +604,42 @@ async def test_non_409_failure_on_initial_connect_does_not_retry():
         await conn.start(registry, "system")
     # State is FAILED, not CONNECTED.
     assert conn._state is ConnectionState.FAILED
+
+
+async def test_terminal_initial_connect_stays_up_and_heals():
+    """A terminal first connect (403, account blocked) must not kill the
+    daemon: `start()` returns with the connection paused and the
+    supervisor running, and self-heals once the provider accepts."""
+
+    class _Blocked(Exception):
+        status_code = 403
+
+    factory = _FakeConnect()
+    factory.next_exceptions = [_Blocked("team blocked")]
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        voice="Aoede",
+        context_reset_sec=9999.0,
+        keepalive_period_sec=9999.0,
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    await conn.start(ToolRegistry(), "system")
+    try:
+        # No await between start() and these — the supervisor task is
+        # scheduled but has not run, so the post-failure state is intact.
+        assert conn._supervisor_task is not None
+        assert conn.is_paused()
+        assert isinstance(conn.last_failure_detail(), str)
+
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        assert not conn.is_paused()
+        assert conn.last_failure_detail() is None
+    finally:
+        await conn.stop()
 
 
 async def test_stop_is_idempotent():

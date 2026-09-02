@@ -389,13 +389,7 @@ async def test_outputd_transport_requires_48khz_output_rate():
 
 
 async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
@@ -423,14 +417,9 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
 
 
 async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkeypatch):
-    import scipy.signal
 
     monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
@@ -453,7 +442,6 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
 async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
     monkeypatch,
 ):
-    import scipy.signal
 
     class _FailSecondWrite(_CaptureOutputdStream):
         def __init__(self) -> None:
@@ -467,11 +455,7 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
             super().write(data)
 
     monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
@@ -492,13 +476,7 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
 
 
 async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
@@ -521,13 +499,7 @@ async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
 
 
 async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypatch):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     profile = AssistantLoudnessProfile(
         provider="openai",
         model="gpt-realtime-2",
@@ -568,13 +540,7 @@ async def test_outputd_transport_caches_loudness_profile_between_chunks(monkeypa
 
 
 async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
 
     def fail_profile_lookup(*_args, **_kwargs):
         raise AssertionError("explicit profile should skip voice profile lookup")
@@ -614,13 +580,7 @@ async def test_outputd_transport_uses_explicit_source_profile(monkeypatch):
 
 
 async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
@@ -944,14 +904,9 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     monkeypatch,
     caplog,
 ) -> None:
-    import scipy.signal
 
     monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 0.2)
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     parent, child = socket.socketpair()
     parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     child.settimeout(0.5)
@@ -1057,13 +1012,7 @@ def test_outputd_stream_adapter_sends_loudness_control_protocol():
 
 
 async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
@@ -1099,13 +1048,7 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
 async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
     monkeypatch,
 ):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
+    monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = OutputdTtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         output_rate=48000,

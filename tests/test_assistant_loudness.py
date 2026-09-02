@@ -23,6 +23,7 @@ from jasper.assistant_loudness import (
     profile_for_outputd,
     tts_envelope_lufs_for_level,
     update_profile_from_measurement,
+    upsample_2x,
 )
 
 
@@ -316,3 +317,70 @@ def test_grok_tts_generator_honors_single_attempt(monkeypatch):
 
     assert calls == [20]
     assert sleeps == []
+
+
+def _pcm_24k(kind: str, n: int = 2400):
+    np = pytest.importorskip("numpy")
+    t = np.arange(n) / 24_000.0
+    if kind == "dc":
+        return np.full(n, 1000.0)
+    if kind == "tone":
+        return 8000.0 * np.sin(2.0 * np.pi * 1000.0 * t)
+    rng = np.random.default_rng(11)
+    return (
+        6000.0 * np.sin(2.0 * np.pi * 220.0 * t)
+        + 3000.0 * np.sin(2.0 * np.pi * 3400.0 * t + 1.3)
+        + 200.0 * rng.standard_normal(n)
+    )
+
+
+# 0 Hz is DC; 9 kHz sits just under the 24 kHz source's usable band.
+@pytest.mark.parametrize("hz", [0.0, 200.0, 1000.0, 3400.0, 9000.0])
+def test_upsample_2x_reconstructs_the_band_limited_source(hz):
+    """The invented samples land on the source waveform, not beside it.
+
+    A linear-phase interpolator passes the source through on one output
+    phase and invents the samples between them. Both halves are checked
+    here, without scipy, because a streambox has no scipy to fall back
+    on: zero-order hold, linear interpolation or a dead filter phase all
+    reproduce the source samples correctly and only get the in-between
+    samples wrong.
+    """
+    np = pytest.importorskip("numpy")
+    n, amplitude = 2400, 8000.0
+    sample = np.arange(n)
+    source = amplitude * np.cos(2.0 * np.pi * hz * sample / 24_000.0)
+
+    out = upsample_2x(source)
+
+    assert out.shape == (2 * n,)
+    # Skip the FIR's edge transient at each end.
+    interior = slice(64, n - 64)
+    midpoints = amplitude * np.cos(
+        2.0 * np.pi * hz * (sample + 0.5) / 24_000.0
+    )
+    assert np.max(np.abs(out[0::2][interior] - source[interior])) <= 5e-3 * amplitude
+    assert np.max(np.abs(out[1::2][interior] - midpoints[interior])) <= 5e-3 * amplitude
+
+
+@pytest.mark.parametrize("kind", ["dc", "tone", "speechlike"])
+def test_upsample_2x_tracks_the_polyphase_reference(kind):
+    np = pytest.importorskip("numpy")
+    scipy_signal = pytest.importorskip("scipy.signal")
+    source = _pcm_24k(kind)
+
+    out = upsample_2x(source)
+    reference = scipy_signal.resample_poly(source, up=2, down=1)
+
+    rms_reference = float(np.sqrt(np.mean(reference**2)))
+    rms_error = float(np.sqrt(np.mean((out - reference) ** 2)))
+    # -120 dB relative: the taps and output phase are the reference's, so the
+    # only difference left is float64 rounding.
+    assert rms_error <= 1e-6 * rms_reference
+
+
+def test_upsample_2x_accepts_degenerate_inputs():
+    np = pytest.importorskip("numpy")
+
+    assert upsample_2x(np.zeros(0)).size == 0
+    assert upsample_2x(np.array([1.0])).size == 2

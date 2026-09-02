@@ -24,6 +24,7 @@ from .assistant_loudness import (
     confidence_for_measurement,
     profile_for_outputd,
     update_profile_from_measurement,
+    upsample_2x,
 )
 from .assistant_volume import EffectiveVolumeContext
 from .log_event import log_event
@@ -772,8 +773,8 @@ def _quantize_to_wire(arr, *, wide: bool):
     inherit the narrow one's history.
 
     The scaling multiply runs in **float64**, and it is worth being exact about
-    why, because the obvious reason is wrong. ``arr`` is float32 (``resample_poly``
-    returns what it was given), and multiplying it by 2^16 is EXACT in float32:
+    why, because the obvious reason is wrong. ``arr`` is float32 (the resampler
+    is cast back to it), and multiplying it by 2^16 is EXACT in float32:
     a power of two changes only the exponent, so no mantissa bit moves and no
     precision is recovered by widening. The upcast buys two smaller things —
     ``np.rint`` and the clip compare against the i32 rails at a width that
@@ -1429,8 +1430,6 @@ class OutputdTtsPlayout(TtsPlayout):
         return stream
 
     async def __aenter__(self) -> "OutputdTtsPlayout":
-        from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
-
         self._stream = await self._connect_stream_adapter()
         return self
 
@@ -1668,8 +1667,9 @@ class OutputdTtsPlayout(TtsPlayout):
                 self._assistant_meter = AssistantSourceMeter()
             self._assistant_meter.observe_pcm_24k(pcm)
         if self._upsample > 1:
-            from scipy.signal import resample_poly
-            arr = resample_poly(arr, up=self._upsample, down=1)
+            # __init__ pins output_rate to 48 kHz on this transport, so the
+            # only ratio that reaches here is 2.
+            arr = upsample_2x(arr).astype(np.float32, copy=False)
         mono = _quantize_to_wire(arr, wide=self._wire_wide)
         stereo = np.repeat(mono, 2)
 

@@ -2,19 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for `DeferredReconnect` — the shared mid-turn reconnect-deferral
-primitive in `jasper.voice._supervisor`.
+"""Unit tests for `Deferred` — the shared hold-then-fire primitive in
+`jasper.voice._supervisor`.
 
 It is provider-agnostic (no genai/openai import), so its tests live in this
 un-gated module rather than under the genai-skipped provider test files."""
 from __future__ import annotations
 
-from jasper.voice._supervisor import DeferredReconnect
+from jasper.voice._supervisor import Deferred
 
 
 def test_deferred_reconnect_request_clear_pending():
     """request() marks pending; clear() drops it. Starts not-pending."""
-    d = DeferredReconnect()
+    d = Deferred()
     assert d.pending is False
     d.request()
     assert d.pending is True
@@ -27,7 +27,7 @@ def test_deferred_reconnect_fire_if_pending_fires_once_and_clears():
     once, clears the flag, and returns True. A second call with no new
     request is a no-op returning False — the mechanism that keeps a
     later turn release from firing a spurious second reconnect."""
-    d = DeferredReconnect()
+    d = Deferred()
     calls: list[int] = []
     d.request()
     assert d.fire_if_pending(lambda: calls.append(1)) is True
@@ -41,7 +41,7 @@ def test_deferred_reconnect_fire_if_pending_fires_once_and_clears():
 def test_deferred_reconnect_fire_if_pending_noop_when_not_pending():
     """With nothing deferred, fire_if_pending() must not call fire and
     must return False (the common path on every turn release)."""
-    d = DeferredReconnect()
+    d = Deferred()
     called = False
 
     def _fire() -> None:

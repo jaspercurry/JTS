@@ -4,47 +4,20 @@
 
 //! ALSA fan-in mixer — the core work loop.
 //!
-//! Reads from N capture PCMs (one per renderer's snd-aloop substream
-//! pair), sums sample-wise, writes the summed stream to one playback
-//! PCM (the "summed music" substream that CamillaDSP dsnoops on; the
-//! AEC bridge's read of it was retired in U4/P7-1).
+//! Reads N capture lanes (snd-aloop substream, renderer SHM ring, or the USB
+//! gadget), sums them sample-wise, and publishes the sum to the program SHM
+//! ring, this daemon's only final-output transport (ADR-0100).
 //!
-//! ## Pacing
+//! PACING: the blocking ring publish is the metronome — see
+//! [`write_ring_period`]. INPUTS are opened NON-BLOCKING: a renderer that is
+//! not producing returns `-EAGAIN` and the lane renders silence for that
+//! period, and an overrun is `try_recover`ed and rendered as silence too.
 //!
-//! The OUTPUT PCM is the metronome. We open it in blocking mode;
-//! `writei()` blocks until the kernel has room in the output ring
-//! (which empties at the system sample rate). That's what gates the
-//! work loop to the right cadence.
-//!
-//! INPUTS are opened in non-blocking mode. Each iteration we read
-//! one period from each input. If a renderer isn't producing audio
-//! right now (the substream's writer hasn't opened, or is paused),
-//! the non-blocking read returns -EAGAIN and we substitute silence
-//! for that input. If a renderer produces faster than we drain
-//! (shouldn't happen at matched 48 kHz steady-state, but possible
-//! during a burst), the input substream overruns; we `try_recover`
-//! and treat the affected period as silence.
-//!
-//! ## Mix math
-//!
-//! Renderer lane inputs are S16_LE interleaved stereo; the USB DIRECT lane
-//! additionally carries S32 on a box whose output wire resolves wide (see
-//! [`ProgramWidth`]). We accumulate into an **i64** scratch buffer (using
-//! `saturating_add`) so simultaneous full-scale inputs don't wrap — with real
-//! headroom above full scale at either numeric scale — then clamp back to i16
-//! for the output. Matches
-//! ALSA dmix's clip behavior — audio sounds identical to today during
-//! the Tier 2A transition (saturating clipping is louder than scaled
-//! averaging when sources are simultaneous, but mux normally enforces
-//! single-active anyway, so simultaneous is the brief handover case
-//! only).
-//!
-//! ## Per-frame discipline
-//!
-//! `step()` does one period's worth of work: read all inputs, sum,
-//! write output. `run()` calls `heartbeat.bump_progress()` after
-//! every successful `step()`, satisfying the JTS progress-sentinel
-//! contract documented in `src/watchdog.rs`.
+//! Lane inputs are interleaved stereo, S16_LE or (on a box whose wire resolves
+//! wide) S32_LE. The sum accumulates into an **i64** scratch with
+//! `saturating_add`, so simultaneous full-scale lanes keep real headroom above
+//! full scale at either numeric scale — see [`ProgramWidth`] — before the
+//! consumer clamps.
 
 mod direct_capture;
 mod lane_fade;
@@ -61,9 +34,7 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 
 use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
-// The ONE shared per-lane RMS level helper + silence-floor sentinel. Importing
-// them from the pure crate keeps the USB DIRECT activity gate independent of
-// the ALSA owner and avoids a local metric copy.
+
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
 use crate::config::{Config, RingWireFormat, MEASUREMENT_LANE, RING_SLOT_FRAMES};
@@ -84,19 +55,16 @@ pub use ring_capture::RingLaneObservability;
 pub const CHANNELS: u32 = 2;
 
 /// PCM sample format for this daemon's snd-aloop capture lanes — the
-/// per-renderer inputs, which since ADR-0100 are the only aloop lanes left.
+/// per-renderer inputs, the only aloop lanes left since ADR-0100.
 ///
 /// Lane ingress is NOT its own width axis: it is this box's one resolved wire
 /// ([`Config::program_wire_is_wide`]), the same fact that decides the program
-/// ring's payload and the assistant wire. An operator's
-/// `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` rollback therefore narrows ingress
-/// with everything else.
+/// ring's payload and the assistant wire.
 ///
 /// snd-aloop pins both halves of a cable to one format, so the renderer
 /// aliases' slaves in `deploy/alsa/asoundrc.jasper` declare the same width and
-/// move with this; `tests/test_fanin_wiring.py` pins that side and
-/// `check_fanin_asound_wiring` compares the deployed file against the wire the
-/// box resolves.
+/// move with this; `tests/test_fanin_wiring.py` and `check_fanin_asound_wiring`
+/// pin that side.
 fn lane_capture_format(program_wire_is_wide: bool) -> Format {
     if program_wire_is_wide {
         Format::S32LE
@@ -139,11 +107,9 @@ const CATCHUP_TARGET_PERIODS: i64 = 1;
 /// MONOTONICALLY (its producer's average rate exceeds ours), so it always
 /// crosses this; a healthy lane's burst+stall peak stays below it.
 ///
-/// NOT drift correction: this is a controlled, occasional drop-resync at the
-/// residual drift rate, not a drop-FREE resampler (that is the later per-lane
-/// adaptive resampler). Honest tradeoff: a backed-up lane loses a bounded
-/// chunk of audio at each resync instead of cascading into an upstream
-/// producer overflow.
+/// NOT drift correction and NOT drop-free: a controlled, occasional drop-resync
+/// at the residual drift rate. A backed-up lane loses a bounded chunk of audio
+/// at each resync instead of cascading into an upstream producer overflow.
 const CATCHUP_HIGH_WATER_PERIODS: i64 = 14;
 
 /// Hard cap on whole periods discarded in a single resync, so a pathological
@@ -155,49 +121,37 @@ const CATCHUP_MAX_DRAIN_PERIODS: i64 = 64;
 
 /// Emit the rate-limited `event=fanin.input.catchup` log on the 1st resync
 /// for a lane and then every Nth, so a chronically free-running lane can't
-/// spam the journal. A resync only fires when a lane crosses the high-water,
-/// which is already infrequent; this is defense-in-depth against a wedged
-/// producer. Count-based (not time-based) so the hot loop never reads a clock.
+/// spam the journal. Count-based (not time-based) so the hot loop never
+/// reads a clock.
 const CATCHUP_LOG_EVERY: u64 = 64;
 
-/// USB DIRECT capture open envelope (C1) — the parameters proven on the UAC2
-/// gadget before the retired bridge was removed, NOT fan-in's aloop-tuned
-/// `configure_pcm`: S32_LE 2ch 48k, period 256, buffer ~768 (near).
+/// USB DIRECT capture open envelope, hardware-proven on the UAC2 gadget and
+/// deliberately NOT fan-in's aloop-tuned `configure_pcm`: S32_LE 2ch 48k,
+/// period 256, buffer ~768 (near).
 ///
-/// `DIRECT_PERIOD_FRAMES` is the DEFAULT gadget open period; the actual open
-/// period is overridable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` (lever 2 —
-/// the H1 "hw-pointer/period granularity" test knob). Unset ⇒ this default ⇒
-/// byte-identical to today. The chunk-read cap and the narrowing scratch below
-/// stay pinned to this default regardless of the open period: they bound the
-/// per-`readi` granularity (256 frames), which is independent of the gadget's
-/// period IRQ cadence, so a larger open period never overflows the fixed
-/// scratch and a smaller one never under-reads.
+/// This is the DEFAULT gadget open period; the actual open period is
+/// overridable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`. The chunk-read cap
+/// and the narrowing scratch below stay pinned to this default regardless of
+/// the open period: they bound the per-`readi` granularity (256 frames), which
+/// is independent of the gadget's period IRQ cadence, so a larger open period
+/// never overflows the fixed scratch and a smaller one never under-reads.
 const DIRECT_PERIOD_FRAMES: u32 = 256;
 
-/// Deep-buffer safety floor for the (tunable) direct open period (lever 2). The
-/// negotiated capture buffer must clear BOTH bounds so the H1 experiment (open
-/// period 64) rides a DEEP buffer (12 periods) rather than the refuted shallow
-/// 2-period URB-headroom class: at least three whole periods, and at least the
-/// proven 768-frame floor. At the default period 256 this reproduces the old
-/// fixed 768-frame envelope exactly (3×256 = 768). `resolve_direct_buffer_frames`
-/// is the single owner of this rule (pure, scratch-crate tested).
+/// Deep-buffer safety floor for the (tunable) direct open period: the
+/// negotiated capture buffer must clear BOTH bounds — at least three whole
+/// periods, and at least the proven 768-frame floor. At the default period 256
+/// the two coincide (3×256 = 768). `resolve_direct_buffer_frames` is the single
+/// owner of this rule.
 ///
-/// Identity caveat (lever 2): the direct lane's ACCEPTANCE floor is this
-/// `max(3×period, 768)`, tightened from the earlier validator's `2×period`. The
-/// open REQUEST is byte-identical when the period knob is unset, but a
-/// hypothetical negotiation to 512..767 frames that the old floor would have
-/// accepted (with a `buffer_near` warn) now fails validation and sends the lane
-/// Absent. Deliberate — fail-loud beats running the refuted shallow class.
-///
-/// What the lane actually depends on is this ACCEPTANCE rule — `≥ max(3×period,
-/// 768)` and period-aligned — not on the kernel granting the exact request.
-/// Observed on jts.local 2026-08-11, `/proc/asound/UAC2Gadget/pcm0c/sub0/hw_params`
-/// with the lane open: `period_size: 256`, `buffer_size: 1024`, `format: S32_LE`.
-/// So `u_audio` rounded the 768-frame request UP to four periods and the open was
-/// accepted with the `buffer_near` warn `DirectObservability::buffer_frames`
-/// documents. Do not read that as a negotiation contract: it is one box on one
-/// kernel, which is exactly why the acceptance rule is a range and STATUS reports
-/// the buffer the PCM is really running rather than the one that was asked for.
+/// What the lane depends on is this ACCEPTANCE rule — `≥ max(3×period, 768)`
+/// and period-aligned — not on the kernel granting the exact request. Observed
+/// with the lane open on one Pi, `/proc/asound/UAC2Gadget/pcm0c/sub0/hw_params`
+/// read `period_size: 256`, `buffer_size: 1024`, `format: S32_LE`: `u_audio`
+/// rounded the 768-frame request UP to four periods and the open was accepted
+/// with the `buffer_near` warn. That is one box on one kernel, not a
+/// negotiation contract — which is why the acceptance rule is a range and
+/// STATUS reports the buffer the PCM is really running rather than the one
+/// that was asked for.
 const DIRECT_BUFFER_MIN_PERIODS: u32 = 3;
 const DIRECT_BUFFER_MIN_FRAMES: u32 = 768;
 
@@ -205,9 +159,8 @@ const DIRECT_BUFFER_MIN_FRAMES: u32 = 768;
 /// deep-buffer safety floor (≥ `DIRECT_BUFFER_MIN_PERIODS` periods AND ≥
 /// `DIRECT_BUFFER_MIN_FRAMES`), then rounded UP to a whole period multiple so
 /// the negotiated geometry is period-aligned (a fractional buffer would shear;
-/// `direct_open_params_ok` rejects it). At the default period 256 this yields
-/// exactly 768 (byte-identical to today: 3×256 = 768 ≥ 768). Pure so the floor
-/// math is unit-testable without ALSA.
+/// `direct_open_params_ok` rejects it). Pure so the floor math is unit-testable
+/// without ALSA.
 fn resolve_direct_buffer_frames(period: u32) -> u32 {
     let by_periods = period.saturating_mul(DIRECT_BUFFER_MIN_PERIODS);
     let floor = by_periods.max(DIRECT_BUFFER_MIN_FRAMES);
@@ -216,18 +169,15 @@ fn resolve_direct_buffer_frames(period: u32) -> u32 {
     floor.div_ceil(period).saturating_mul(period)
 }
 
-/// Number of fixed histogram buckets for the drain-entry avail distribution
-/// (lever 2 observability). Boundaries at 64-frame steps: `[0,64) [64,128)
-/// [128,192) [192,256) [256,320) [320,+)`. Chosen so the measured ~186-frame
-/// standing gadget avail lands mid-histogram and the H1 signature (avail
-/// quantized near 0/256 — bimodal in bucket 0 and buckets 3/4) is visible.
+/// Number of fixed histogram buckets for the drain-entry avail distribution.
+/// Boundaries at 64-frame steps: `[0,64) [64,128) [128,192) [192,256)
+/// [256,320) [320,+)`. Chosen so the measured ~186-frame standing gadget avail
+/// lands mid-histogram and a bimodal avail (quantized near 0/256) is visible.
 const DRAIN_AVAIL_BUCKETS: usize = 6;
 
 /// Classify a drain-entry `avail` (frames) into one of [`DRAIN_AVAIL_BUCKETS`]
-/// fixed buckets. Pure so the bucketing is scratch-crate testable without ALSA.
-/// Negative avail (never observed at a real `avail_update` Ok, but the ALSA
-/// `Frames` type is `i64`) and 0 both land in bucket 0; anything ≥ 320 saturates
-/// into the top bucket.
+/// fixed buckets. Negative avail is never observed at a real `avail_update` Ok,
+/// but the ALSA `Frames` type is `i64`, so it lands in bucket 0 with 0.
 fn drain_avail_bucket(avail: i64) -> usize {
     if avail < 64 {
         0
@@ -245,14 +195,12 @@ fn drain_avail_bucket(avail: i64) -> usize {
 }
 
 /// Emit the rate-limited drain-stats INFO line every this many drains. Gated by
-/// the drain counter itself (no wall clock, no extra state) so the log cadence
-/// is O(1) and self-throttling on the hot path. `2^15` ≈ one line per ~3 min at
-/// the default 256-frame render period (5.33 ms/cycle) — deliberately coarse:
-/// one drain is recorded every render cycle the gadget PCM is open, INCLUDING
-/// while the host is attached but idle, so a tighter cadence would spam the
-/// persistent journal 24/7 on a direct-enabled box (this is a permanent surface,
-/// not a debug trace). The since-boot STATUS block is the fine-grained read; this
-/// line is just a periodic journal breadcrumb.
+/// the drain counter itself (no wall clock) so the cadence costs nothing on the
+/// hot path. `2^15` ≈ one line per ~3 min at the default 256-frame render period
+/// (5.33 ms/cycle) — deliberately coarse: one drain is recorded every render
+/// cycle the gadget PCM is open, INCLUDING while the host is attached but idle,
+/// so a tighter cadence would spam the persistent journal 24/7 on a
+/// direct-enabled box.
 const DRAIN_STATS_LOG_EVERY: u64 = 1 << 15;
 
 /// Length of the S16 narrowing scratch the direct drain uses per chunk read.
@@ -270,78 +218,55 @@ const fn direct_narrow_scratch_samples() -> usize {
     (DIRECT_PERIOD_FRAMES as usize) * (CHANNELS as usize)
 }
 
-/// Bounded impulse-tap channel capacity (C4). The single detector fires at most
-/// once per refractory window (~4/s at the 250 ms default), so this can never
-/// fill under the harness; it exists as a drop-and-count safety net so the
-/// mixer thread's `try_send` is always non-blocking.
+/// Bounded impulse-tap channel capacity. The single detector fires at most once
+/// per refractory window (~4/s at the 250 ms default), so this can never fill
+/// under the harness; it is a drop-and-count safety net that keeps the mixer
+/// thread's `try_send` non-blocking.
 const TAP_CHANNEL_CAPACITY: usize = 256;
 
 /// USB DIRECT reopen retry cadence, in render PERIODS (~2 s at 256/48k = 375).
 /// While the gadget is Absent, the lane attempts a reopen at most once per this
 /// many periods it renders — a period-counted cadence so the hot loop never
-/// reads a wall clock (same discipline as the auto-trim frames-delta latch, C3).
+/// reads a wall clock.
 const DIRECT_REOPEN_RETRY_PERIODS: u64 = 375;
 
-/// Consecutive zero-avail drains that mark a ZOMBIE capture handle (C, defect
-/// 2026-07-05). When the gadget function is REBUILT underneath fan-in (a UDC
-/// rebind / usbsink stop-start), fan-in's open `hw:UAC2Gadget` PCM stays attached
-/// to a DESTROYED instance: `avail_update()` returns `Ok(0)` forever — NOT an
-/// errno, so `classify_pcm_errno` never fires and the DeviceLost path never
-/// triggers. The drain just sees avail=0, reads nothing, and the lane goes deaf
-/// (observed: drain_count 71k / 6.4k with zero frames, opens=1 retries=0, /proc
-/// pcm0c 'closed'). This threshold (~2 s at the default 256/48k period, matching
-/// `DIRECT_REOPEN_RETRY_PERIODS`) is how many consecutive render periods of
-/// exactly-zero avail — while the handle is Present — trip a forced close +
-/// bounded re-open. A genuinely idle-but-healthy host still streams silence
-/// frames (avail > 0), so sustained EXACTLY-zero avail means the gadget is no
-/// longer feeding this handle at all: either a zombie (reopen fixes it) or a
-/// clean host-stream-stop (reopen re-establishes an identical handle, harmless
-/// since no audio was flowing). Either way a bounded reopen is the safe recovery.
+/// Consecutive zero-avail drains that mark a ZOMBIE capture handle. When the
+/// gadget function is REBUILT underneath fan-in (a UDC rebind / usbsink
+/// stop-start), fan-in's open `hw:UAC2Gadget` PCM stays attached to a DESTROYED
+/// instance: `avail_update()` returns `Ok(0)` forever — NOT an errno, so
+/// `classify_pcm_errno` never fires and the DeviceLost path never triggers, and
+/// the lane goes deaf. This threshold (~2 s at the default 256/48k period,
+/// matching `DIRECT_REOPEN_RETRY_PERIODS`) is how many consecutive render
+/// periods of exactly-zero avail — while the handle is Present — trip a forced
+/// close + bounded re-open. A genuinely idle-but-healthy host still streams
+/// silence frames (avail > 0), so sustained EXACTLY-zero avail means the gadget
+/// is no longer feeding this handle at all: either a zombie (reopen fixes it) or
+/// a clean host-stream-stop (reopen re-establishes an identical handle, harmless
+/// since no audio was flowing).
 const DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS: u64 = 375;
 
-/// Pure zombie-handle predicate (C): does the current handle state mark it as a
-/// zombie to force-reopen? Two conditions must BOTH hold:
-///   1. `frames_flowed` — frames have actually flowed on this handle at least once
-///      (avail > 0 seen since the last open). This is the flowing→dead gate that
-///      distinguishes a real gadget rebuild from an ordinary attached-idle host:
-///      a Mac wired but silent streams avail≈0 drains forever with `frames_flowed`
-///      never latched, so it accumulates the streak but never trips.
-///   2. a run of `zero_avail_streak` consecutive zero-avail drains at or beyond
-///      `threshold` — the handle went deaf after having fed the lane.
+/// Pure zombie-handle predicate. Both conditions must hold: frames have
+/// actually flowed on this handle since the last open, AND the zero-avail run
+/// has reached `threshold`.
 ///
-/// Extracted (arming condition and all) so the detection is scratch-crate testable
-/// without ALSA — the `Ok(0)`-forever gadget-rebuild condition and the attached-idle
-/// avail≈0 stream can't be reproduced in a unit test otherwise, and the false-
-/// positive the 2026-07-05 review caught lived in exactly this arming gate.
+/// The `frames_flowed` arming gate is what distinguishes a real gadget rebuild
+/// from an ordinary attached-idle host: a host wired but silent streams avail≈0
+/// drains forever without ever latching `frames_flowed`, so it accumulates the
+/// streak but never trips. Extracted so that arming condition is testable
+/// without ALSA — neither the `Ok(0)`-forever rebuild nor the attached-idle
+/// stream is reproducible in a unit test otherwise.
 fn zombie_handle_suspected(frames_flowed: bool, zero_avail_streak: u64, threshold: u64) -> bool {
     frames_flowed && threshold > 0 && zero_avail_streak >= threshold
 }
 
 /// Coarse per-direct-lane capture health for the STATUS `direct.health` field.
-/// This makes fan-in's local recovery visible without creating a second USB
-/// lifecycle authority. A BROKEN sample means the direct handle reached the
-/// flowing-to-dead zombie signature; IDLE means no host, an attached host not
-/// streaming, or a handle being reopened. Neither classification changes gadget
-/// composition or canonical source intent.
+/// A pure classification over the direct lane's EXISTING atomics — no new
+/// hot-path state — and no authority over gadget composition or source intent.
 ///
-/// It is a PURE classification over the direct lane's EXISTING atomics — no new
-/// hot-path state — so the "reuse fan-in's detection state" contract holds:
-///
-/// - `Broken` reuses [`zombie_handle_suspected`] verbatim: the flowing→dead deaf
-///   handle (frames actually flowed on this handle, then `avail_update` returned
-///   exactly 0 for ~2 s — the gadget was rebuilt underneath a live stream). That
-///   gate is ALREADY proven immune to the attached-idle false-positive (a Mac
-///   wired but silent never latches `frames_flowed`, so it can never read Broken).
-/// - `Idle` covers BOTH "not present" (Absent — no host, or the gadget being
-///   (re)opened; a Mac unplug is an idle transition, not a failure) AND
-///   "present but never flowed" (host attached, not yet streaming).
-/// - `Capturing` is present + has-flowed + not-deaf — the healthy active state.
-///
-/// The `health` field is the INSTANTANEOUS classification (the zombie streak is
-/// reset by the self-heal reopen the moment it trips, so Broken is a brief live
-/// window). Cumulative `reopens` / `card_gen_reopens` counters preserve durable
-/// diagnostic evidence for `/state`, doctor, and journal correlation; successful
-/// recovery counters are telemetry, not permission to disable USB audio.
+/// `health` is the INSTANTANEOUS classification: the zombie streak is reset by
+/// the self-heal reopen the moment it trips, so `Broken` is a brief live window.
+/// The cumulative `reopens` / `card_gen_reopens` counters are what carry durable
+/// evidence for `/state`, doctor, and journal correlation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectHealth {
     /// Present, frames have flowed, handle not deaf — actively capturing.
@@ -380,9 +305,8 @@ pub(crate) fn direct_health_str(h: DirectHealth) -> &'static str {
     }
 }
 
-/// Read the live atomics of a [`DirectObservability`] and classify (using the
-/// production zombie threshold). The one call site is `state.rs`'s STATUS emit,
-/// which already holds `&DirectObservability`.
+/// Read the live atomics of a [`DirectObservability`] and classify, using the
+/// production zombie threshold.
 pub(crate) fn direct_health_str_from_obs(d: &DirectObservability) -> &'static str {
     direct_health_str(direct_health(
         d.present.load(Ordering::Relaxed),
@@ -392,75 +316,48 @@ pub(crate) fn direct_health_str_from_obs(d: &DirectObservability) -> &'static st
     ))
 }
 
-/// Cadence for the HANDLE-LIVENESS probe (C, defect 2026-07-06), in render
-/// PERIODS between one `snd_pcm_status(2)` ioctl on the open capture handle.
-/// ~1/s at the default 256/48k period (≈188 periods) — the probe is a real
-/// syscall (unlike the mmap-served `avail_update`), so it rides the existing
-/// drain-stats housekeeping cadence (once per drain call, i.e. once per period)
-/// gated to roughly one second rather than firing on the per-period hot path.
-/// 187 is the whole-period count nearest one second at the default geometry; the
-/// cadence is advisory (detection latency, not correctness), so an
-/// off-by-a-few-periods drift under a non-default period override is harmless. A
-/// rebuilt-and-still-attached gadget is thus detected within ~1 s regardless of
-/// whether frames ever flowed on the handle — the gap the flowing→dead latch
-/// structurally cannot close.
+/// Cadence for the HANDLE-LIVENESS probe, in render PERIODS between one
+/// `snd_pcm_status(2)` ioctl on the open capture handle. 187 is the whole-period
+/// count nearest one second at the default 256/48k geometry. The probe is a real
+/// syscall (unlike the mmap-served `avail_update`), so it rides the drain-stats
+/// housekeeping cadence rather than the per-period hot path. The cadence is
+/// advisory — detection latency, not correctness — so drift under a non-default
+/// period override is harmless.
 const DIRECT_LIVENESS_PROBE_EVERY_PERIODS: u64 = 187;
 
-/// Pure handle-liveness decision (C, defect 2026-07-06): map the result of one
-/// `snd_pcm_status` ioctl on the open capture handle to "is this handle dead
-/// (force a reopen) or live (no-op)?".
+/// Pure handle-liveness decision: map the result of one `snd_pcm_status` ioctl
+/// on the open capture handle to "is this handle dead (force a reopen) or live
+/// (no-op)?". The argument is the PCM `State` the ioctl reported, or `None` when
+/// the ioctl ITSELF errored. Split from the impure [`probe_direct_liveness`] so
+/// the decision is unit-testable without ALSA.
 ///
-/// The argument is the PCM `State` the ioctl reported, or `None` when the ioctl
-/// ITSELF errored (`status()` returned `Err`). Split from the impure
-/// [`probe_direct_liveness`] so the decision is unit-testable without ALSA.
+/// Why this is the deterministic discriminator: when the UAC2 gadget FUNCTION is
+/// rebuilt underneath the open handle (a UDC unbind/rebind or a usbsink
+/// stop-start), the kernel runs `snd_card_disconnect`, which swaps the stale
+/// file's fops to the shutdown set. `snd_pcm_status` is a real
+/// `SNDRV_PCM_IOCTL_STATUS` ioctl — the hw plugin never serves it from the mmap'd
+/// control page — so on a disconnected card it deterministically returns
+/// `-ENODEV` or reports `State::Disconnected`. That is exactly why `avail_update`
+/// cannot see the zombie: it reads the frozen mmap status page and keeps
+/// returning `Ok(0)`.
 ///
-/// Why this is the deterministic discriminator (and the procfs-inode compare it
-/// replaced was not): when the UAC2 gadget FUNCTION is rebuilt underneath the
-/// open handle (a UDC unbind/rebind or a usbsink stop-start), the kernel runs
-/// `snd_card_disconnect`, which swaps the stale file's fops to the shutdown set.
-/// `snd_pcm_status` is a real `SNDRV_PCM_IOCTL_STATUS` ioctl (the hw plugin never
-/// serves it from the mmap'd control page), so on a disconnected card it
-/// deterministically returns `-ENODEV` (→ `None` here) or reports
-/// `State::Disconnected`. That is exactly why `avail_update` cannot see the
-/// zombie — it reads the frozen mmap status page and keeps returning `Ok(0)` —
-/// and why issuing ONE real syscall per second closes the gap by kernel contract,
-/// with no dependence on procfs inode-reuse semantics or dcache retention.
-///
-/// Precedence + semantics (asserted by the unit tests):
-///   - `None` (ioctl errored) → dead. On a rebuilt/disconnected card the STATUS
-///     ioctl returns `-ENODEV`; any other query error likewise means the handle
-///     cannot be confirmed live, so we fail toward the bounded reopen (safe: a
-///     reopen that lands on a healthy handle is a cheap no-op re-establish).
-///   - `Some(State::Disconnected)` → dead. The kernel explicitly reports the
-///     stream disconnected underneath the handle.
-///   - `Some(_any_other_state_)` → live. Prepared/Running/Setup/Xrun/etc. all mean
-///     the handle still refers to a live kernel object; no reopen.
-///
-/// There is NO false-positive on an attached-IDLE host: an idle-but-attached Mac
-/// keeps the capture stream alive (`Prepared`/`Running`), so the probe reports a
-/// live state and this returns `false` no matter how long the host sits silent.
-/// That is the exact gap the flowing→dead latch left open, closed here without
-/// reintroducing the attached-idle churn that latch was added to prevent, and
-/// without a frames-flowed gate (an idle host cannot make a live handle report
-/// `Disconnected`).
+/// An ioctl error is treated as dead: the handle cannot be confirmed live, and a
+/// reopen that lands on a healthy handle is a cheap no-op re-establish. There is
+/// no false-positive on an attached-IDLE host — an idle-but-attached host keeps
+/// the capture stream `Prepared`/`Running`, so this returns `false` however long
+/// it sits silent.
 fn liveness_probe_dead(state: Option<State>) -> bool {
     match state {
-        // The STATUS ioctl itself errored — on a disconnected card that is
-        // `-ENODEV`; any error means we can't confirm liveness → reopen.
         None => true,
-        // Kernel explicitly reports the stream disconnected.
         Some(State::Disconnected) => true,
-        // Any live state (Prepared/Running/Setup/Xrun/Draining/Paused/Suspended/
-        // Open) → the handle is fine.
         Some(_) => false,
     }
 }
 
 /// Issue one `snd_pcm_status` ioctl on the open capture handle and reduce it to
 /// the [`liveness_probe_dead`] input: `Some(state)` on success, `None` when the
-/// ioctl errored (`-ENODEV` on a rebuilt/disconnected card). Impure (one
-/// syscall); kept tiny and isolated so the DECISION built on it stays pure and
-/// testable. Called on the housekeeping cadence, never the per-period hot path.
+/// ioctl errored (`-ENODEV` on a rebuilt/disconnected card). Called on the
+/// housekeeping cadence, never the per-period hot path.
 fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
     pcm.status().ok().map(|s| s.get_state())
 }
@@ -474,42 +371,39 @@ fn probe_direct_liveness(pcm: &PCM) -> Option<State> {
 /// `JASPER_FANIN_AUTO_TRIM=enabled`.
 const AUTO_TRIM_DELAY_SECONDS: u64 = 2;
 
-/// Post-lock cushion-decay warm-up window (latency lever 1): the continuous
-/// locked + DLL-`l0_locked` + calm duration required before the FIRST decay
-/// step. 10 s gives the outer host-clock DLL time to finish its per-session
-/// probe (up to 14 s worst case, but the fill is pinned well before that) and
-/// prove the steady regime before latency is reclaimed. Not an env knob — the
-/// three tunable decay knobs (floor/step/interval) are the operator surface;
-/// this is the internal "is it stable yet" gate. Converted to render periods by
-/// the lane from the live sample rate.
+/// Post-lock cushion-decay warm-up window: the continuous locked +
+/// DLL-`l0_locked` + calm duration required before the FIRST decay step. 10 s
+/// gives the outer host-clock DLL time to finish its per-session probe (up to
+/// 14 s worst case, but the fill is pinned well before that) and prove the
+/// steady regime before latency is reclaimed. Not an env knob — the three
+/// tunable decay knobs (floor/step/interval) are the operator surface.
+/// Converted to render periods by the lane from the live sample rate.
 const CUSHION_DECAY_STABILITY_MS: u64 = 10_000;
 
-/// Cascade-stability guard (latency lever 1): decay pauses while the outer DLL's
-/// |commanded_ppm| exceeds this. Above it the DLL is working hard and the fill
-/// is in transient, so lowering the setpoint would fight the loop — the exact
-/// two-controller oscillation class the cascade design avoids. 400 ppm is well
-/// inside the ±1000 ppm servo authority: it flags "actively correcting" without
-/// tripping on the small steady-state trims a settled loop makes. The command
-/// compared here reflects genuine host-clock correction, not the descent: the
-/// decay's own demand is subtracted from the servo's observable at the source
-/// (decontamination, #3466), so a settled descent's steady demand can no
-/// longer feed back into this command. A host whose genuine standing offset
-/// keeps |cmd| above the guard holds decay frozen for the session — by design:
-/// that host is being corrected hard and the cushion is load-bearing.
+/// Cascade-stability guard: decay pauses while the outer DLL's |commanded_ppm|
+/// exceeds this. Above it the DLL is working hard and the fill is in transient,
+/// so lowering the setpoint would fight the loop — the two-controller
+/// oscillation class the cascade design avoids. 400 ppm is well inside the
+/// ±1000 ppm servo authority: it flags "actively correcting" without tripping on
+/// the small steady-state trims a settled loop makes. The command compared here
+/// reflects genuine host-clock correction, not the descent — the decay's own
+/// demand is subtracted from the servo's observable at the source (#3466). A
+/// host whose genuine standing offset keeps |cmd| above the guard holds decay
+/// frozen for the session, by design: that host is being corrected hard and the
+/// cushion is load-bearing.
 const CUSHION_DECAY_CASCADE_GUARD_PPM: f64 = 400.0;
 
 /// Per-lane TRIM control + counters, shared (`Arc`) between the mixer work
-/// thread (which owns the `LaneResampler` and performs the actual ring trim)
-/// and the state-server thread (which requests trims and reads the counters for
-/// STATUS). Mirrors the `selected_input_index` cross-thread atomic idiom: the
-/// control endpoint cannot touch the mixer-owned resampler directly, so it sets
-/// `pending` and the work loop does the trim at its next period boundary.
+/// thread — which OWNS the `LaneResampler` and performs the actual ring trim —
+/// and the state-server thread, which only requests trims and reads the
+/// counters for STATUS. The control endpoint cannot touch the mixer-owned
+/// resampler directly, so it sets `pending` and the work loop does the trim at
+/// its next period boundary.
 #[derive(Debug)]
 pub struct TrimControl {
     /// Set by a `TRIM` control command; consumed (cleared) by the work loop at
-    /// the next period boundary, which then performs the trim. Idempotent — a
-    /// second `TRIM` before the loop consumed the first just re-sets the same
-    /// flag (one trim results).
+    /// the next period boundary. Idempotent — a second `TRIM` before the loop
+    /// consumed the first just re-sets the same flag (one trim results).
     pub pending: AtomicBool,
     /// Set by a `DECAY_SNAP` control command; consumed by the work loop the same
     /// way. The ONLY lever that opens a cushion-refill window on demand — a
@@ -519,13 +413,11 @@ pub struct TrimControl {
     /// Cumulative TRIM operations that actually dropped ≥1 frame on this lane.
     pub trims: AtomicU64,
     /// Cumulative frames dropped by TRIM from this lane's resampler ring. Paired
-    /// with `trims` so STATUS shows both how often and how much (like the
-    /// catch-up pair).
+    /// with `trims` so STATUS shows both how often and how much.
     pub trimmed_frames: AtomicU64,
-    /// AUTO-TRIM one-shot latch. `false` while the lane is idle (armed to fire);
-    /// set `true` once the auto-trim has fired for the current active session so
-    /// it fires exactly once per idle→active→…→idle cycle. Re-armed (set back to
-    /// `false`) when the lane goes idle. Only used when auto-trim is enabled.
+    /// AUTO-TRIM one-shot latch: `true` once the auto-trim has fired for the
+    /// current active session, so it fires exactly once per idle→active→…→idle
+    /// cycle. Re-armed when the lane goes idle. Only used when auto-trim is on.
     pub auto_fired: AtomicBool,
 }
 
@@ -541,8 +433,7 @@ impl TrimControl {
     }
 
     /// Construct a `TrimControl` seeded with explicit counter values, for the
-    /// state-server STATUS/command tests (which build `InputSnapshotSource`
-    /// fixtures directly, without a live mixer). Not compiled into the daemon.
+    /// state-server STATUS/command tests. Not compiled into the daemon.
     #[cfg(test)]
     pub fn test_fixture(trims: u64, trimmed_frames: u64, pending: bool) -> Self {
         Self {
@@ -569,19 +460,9 @@ struct AutoTrimDecision {
 /// `delay_frames`, decide whether the one-shot trim fires and produce the next
 /// latch state. No ALSA, no clock, no atomics — unit-testable on any host.
 ///
-/// State machine (one latch per lane, re-armed each idle→active cycle):
-///   - Lane read audio this period iff `frames_read > state.last_frames_read`.
-///   - idle→active (was `None`, now active): record `active_since = frames_read`
-///     and do NOT fire yet (the standing fill hasn't accumulated).
-///   - active and `frames_read - active_since >= delay_frames`: report `fire`.
-///     This function reports `fire` on EVERY period past the delay; the caller's
-///     `TrimControl::auto_fired` latch makes it one-shot and survives across
-///     periods (encoding "already fired this session" as an atomic the pure
-///     function cannot see).
-///   - active→idle (no read this period, was active): clear `active_since` to
-///     `None` so the NEXT activation re-arms.
-///
-/// `last_frames_read` is always advanced to the current value.
+/// This reports `fire` on EVERY period past the delay; ONE-SHOT is the caller's
+/// `TrimControl::auto_fired` latch, which encodes "already fired this session"
+/// as an atomic this pure function cannot see.
 fn auto_trim_decision(
     frames_read: u64,
     state: AutoTrimLaneState,
@@ -596,7 +477,8 @@ fn auto_trim_decision(
         match state.active_since {
             None => {
                 // idle→active: arm the delay from here; never fire on the
-                // activation period itself.
+                // activation period itself (the standing fill has not
+                // accumulated yet).
                 next.active_since = Some(frames_read);
                 AutoTrimDecision { next, fire: false }
             }
@@ -614,10 +496,7 @@ fn auto_trim_decision(
     }
 }
 
-/// The Ring A output — the daemon's ONLY final-output transport (ADR-0100): the
-/// SPSC ring writer, its shared observability counters, and the derived
-/// self-pacing period (used only when the reader is absent — one period's sleep
-/// per dropped publish so a readerless ring does not hot-spin the loop).
+/// The Ring A output — the daemon's ONLY final-output transport (ADR-0100).
 ///
 /// The blocking ring publish (bounded, on a full-ring-with-live-reader) is the
 /// sole timing owner of the fan-in work loop. NO ALSA playback PCM is opened:
@@ -630,8 +509,6 @@ struct RingOutput {
     /// self-pacing sleep, precomputed so the hot loop never divides.
     self_pace_period_ns: u64,
     /// Edge-detection state machine for the ring stall event (issue #1524).
-    /// `write_ring_period` feeds it one [`RingStallInput`] per period and logs any
-    /// returned [`RingStallEvent`]; steady state emits nothing.
     stall: RingStallTracker,
 }
 
@@ -654,20 +531,17 @@ impl RingOutput {
 ///   - [`io::ErrorKind::InvalidInput`] — `Geometry::validate_self` rejecting the
 ///     geometry fan-in built from its own env (an unsupported sample format, an
 ///     out-of-range `n_slots`, an over-large slot), plus a ring path containing
-///     a NUL. `layout.rs` documents this kind as "a config-class fault, distinct
-///     from a runtime one".
+///     a NUL.
 ///   - [`io::ErrorKind::InvalidData`] — the attach-time field-by-field header
 ///     mismatch, the header/file-size cross-check, and an unreclaimable
 ///     magic-less file. A stale ring from a prior geometry lands here.
 ///
-/// Everything else is TRANSIENT and must keep the restart ladder:
-/// `WouldBlock` (another process holds the `.open.lock` — the old daemon has not
-/// finished exiting yet, which a retry 5 s later clears), `PermissionDenied`
-/// (the tmpfs directory's mode/group not yet applied by systemd-tmpfiles),
-/// `StorageFull` / `OutOfMemory` (tmpfs pressure), `AlreadyExists`,
-/// `IsADirectory`, and any raw OS error. Parking on those would take the
-/// speaker's audio down until a human noticed, over faults that clear
-/// themselves — the failure mode this narrowing exists to prevent.
+/// Everything else is TRANSIENT and must keep the restart ladder: `WouldBlock`
+/// (another process still holds the `.open.lock`), `PermissionDenied` (tmpfs
+/// mode/group not yet applied by systemd-tmpfiles), `StorageFull` /
+/// `OutOfMemory`, `AlreadyExists`, `IsADirectory`, and any raw OS error. Parking
+/// on those would take the speaker's audio down over faults that clear
+/// themselves.
 ///
 /// Deliberately matched on the CLOSED accept-set rather than an open
 /// "everything but X" list: a kind this daemon has not reasoned about defaults
@@ -682,11 +556,11 @@ fn ring_open_error_is_config_class(error: &std::io::Error) -> bool {
 /// Turn a `RingWriter::create_or_attach` failure into the error `Mixer::new`
 /// returns, logging the matching journal event.
 ///
-/// The WHOLE decision lives here — classify, log, and (only for the
-/// config class) attach the [`crate::ConfigClassError`] marker — so the park
-/// behaviour is reachable from a hardware-free test. `Mixer::new` cannot be
-/// constructed without ALSA, so a decision left inline in its `map_err` closure
-/// would be untestable, which is how the over-wide marker shipped.
+/// The WHOLE decision lives here — classify, log, and (only for the config
+/// class) attach the [`crate::ConfigClassError`] marker — so the park behaviour
+/// is reachable from a hardware-free test: `Mixer::new` cannot be constructed
+/// without ALSA, so a decision left inline in its `map_err` closure would be
+/// untestable.
 ///
 /// The two events are distinct on purpose. `config_error` means "the geometry
 /// you declared cannot work"; `open_error` means "the ring could not be opened
@@ -732,56 +606,33 @@ pub(crate) struct ProgramWidthAudit {
 /// Cross-check the program width against BOTH things that must agree with it,
 /// returning the CONFIG-CLASS error to fail construction with, or `None`.
 ///
-/// # The two axes
-///
 /// The declared width is one derivation ([`ProgramWidth::from_config`]), but it
-/// is consumed in two places that could each drift from it independently:
+/// is consumed in two places that could each drift from it independently — the
+/// OUTPUT (the ring publishes from its own attached header) and the LANES (each
+/// lane decides at construction whether to allocate a spine-scale period
+/// buffer). The two axes are checked DIFFERENTLY, and the asymmetry is the
+/// point:
 ///
-/// * the OUTPUT — the ring publishes from its own attached header, and
-///   `fill_wide_ring_payload` keys off that header rather than off
-///   `program_width`;
-/// * the LANES — each lane constructor decides at construction whether to
-///   allocate a spine-scale period buffer (`spine_read_buf`), and the mixer
-///   reads exactly that allocation (`read_buf_wide.is_empty()`) to pick a
-///   lane's sum entry.
-///
-/// The two axes are checked DIFFERENTLY, and the asymmetry is the whole point.
-///
-/// * The OUTPUT axis is an EQUALITY. The sum's scale and the wire's scale must
-///   match in both directions: a narrow sum on a wide wire under-drives it by
-///   96 dB, a wide sum on a narrow wire over-drives it by the same.
+/// * The OUTPUT axis is an EQUALITY. A narrow sum on a wide wire under-drives it
+///   by 96 dB; a wide sum on a narrow wire over-drives it by the same.
 /// * The LANE axis is a ONE-WAY IMPLICATION — `any_lane_is_wide` implies
 ///   `declared_wide`, never the reverse. A spine-scale lane feeding a
 ///   narrow-scale sum is the +96 dB fault worth parking for. The reverse, a
 ///   wide sum with no wide lane, is **legal and must construct**: a box with
 ///   no lanes at all still resolves a wide wire, and any i16 lane promotes at
-///   `mix_into`'s Wide arm — which is exactly what
-///   `wide_payload_is_information_equivalent_to_the_narrow_payload` pins.
+///   `mix_into`'s Wide arm. Requiring equality here would park a CORRECT box —
+///   exit 78, no audio path, no self-recovery.
 ///
-/// Requiring equality on the lane axis would therefore park a CORRECT box —
-/// exit 78, no audio path, no self-recovery. Fail-closed is right for the
-/// fault; it is a liveness hazard when pointed at a legal state.
+/// The error carries the config-class marker because a width disagreement is
+/// permanent: nothing about restarting changes which wire the box resolved or
+/// which buffers its lanes allocated. Without [`crate::ConfigClassError`] the
+/// unit would take the `Restart=on-failure` ladder into
+/// `StartLimitAction=reboot`; with it, `park_on_config_class` exits 78 and the
+/// unit parks visibly.
 ///
-/// What the surviving check guards is a lane contributing at the wrong numeric
-/// scale. The `debug_assert` in `mix_into_wide` states the same contract but is
-/// compiled OUT of the release build the Pi runs, so it is a developer aid, not
-/// this.
-///
-/// # Why the error carries the config-class marker
-///
-/// A width disagreement is permanent: nothing about restarting changes which
-/// wire the box resolved or which buffers its lanes allocated. Without the
-/// [`crate::ConfigClassError`] marker this error would reach `main` as an
-/// ordinary failure, the unit would take the `Restart=on-failure` ladder, and
-/// five starts in five minutes would hit `StartLimitAction=reboot` — the exact
-/// shape that crash-looped `jasper-outputd` into three Pi reboots on
-/// 2026-06-11. With the marker, `park_on_config_class` exits 78 and the unit
-/// parks visibly instead.
-///
-/// Extracted rather than left inline for the reason
-/// [`ring_open_error`]'s own doc gives: `Mixer::new` cannot be constructed
-/// without ALSA, so a decision left in its body is unreachable from a
-/// hardware-free test — which is how the over-wide marker shipped.
+/// Extracted rather than left inline for the reason [`ring_open_error`]'s own
+/// doc gives: `Mixer::new` cannot be constructed without ALSA, so a decision
+/// left in its body is unreachable from a hardware-free test.
 pub(crate) fn program_width_disagreement(audit: ProgramWidthAudit) -> Option<anyhow::Error> {
     let declared_wide = matches!(audit.declared, ProgramWidth::Wide);
     // Output: equality, both directions are faults.
@@ -818,22 +669,17 @@ pub struct Mixer {
     /// the summed write consults this one value rather than re-deriving the
     /// width from the transport.
     program_width: ProgramWidth,
-    /// Per-period scratch: the sum accumulator absorbs the saturating-add
-    /// accumulation before its consumers narrow or saturate it. Holds
-    /// `period_frames * CHANNELS` samples, in the scale `program_width` names.
-    /// `i64` so the mix keeps real headroom above full scale at BOTH scales —
-    /// see [`ProgramWidth`] for why that headroom is audible rather than
-    /// theoretical.
+    /// Per-period scratch: `period_frames * CHANNELS` samples in the scale
+    /// `program_width` names. `i64` so the mix keeps real headroom above full
+    /// scale at BOTH scales — see [`ProgramWidth`] for why that headroom is
+    /// audible rather than theoretical.
     sum_buf: Vec<i64>,
     /// Per-period output buffer (i16 interleaved). Same length as
     /// sum_buf.
     output_buf: Vec<i16>,
     /// Per-period payload for an S32LE Ring A wire: `sum_buf` saturated into the
-    /// i32 spine range, already little-endian on the wire. (A wide wire implies a
-    /// wide sum, so no scale change happens here — the promotion already
-    /// happened at each lane's sum entry.) EMPTY (and therefore zero heap) on
-    /// every other path — a `Vec` with no capacity does not allocate — so a
-    /// narrow-ring box carries no new allocation at all.
+    /// i32 spine range, little-endian. EMPTY (and therefore zero heap — a `Vec`
+    /// with no capacity does not allocate) on a narrow wire.
     ///
     /// Bytes rather than `Vec<i32>` because the wire is explicitly
     /// LITTLE-endian: `to_le_bytes` states that, where reinterpreting an `i32`
@@ -852,8 +698,8 @@ pub struct Mixer {
     /// Last observed ALSA playback delay for the output PCM. Pinned at
     /// [`OUTPUT_DELAY_UNAVAILABLE`] since ADR-0100 — there is no playback PCM to
     /// sample. Both stay in STATUS because live Python readers
-    /// (`jasper.control.airplay_health`, the AirPlay latency derivation) already
-    /// read them through their absent/zero shape on a ring box.
+    /// (`jasper.control.airplay_health`, the AirPlay latency derivation) read
+    /// them through their absent/zero shape on a ring box.
     pub output_delay_frames: Arc<AtomicU64>,
     /// Selected input index. -1 means auto/mix all active inputs;
     /// -2 means pass no renderer lanes; non-negative means pass only
@@ -861,12 +707,10 @@ pub struct Mixer {
     /// diagnostics keep working even if the household selected a
     /// renderer manually or mux temporarily selected NONE.
     selected_input_index: Arc<AtomicI32>,
-    /// Channel for forwarding xrun events to the off-thread log
-    /// writer. `try_send` is non-blocking on an unbounded channel
-    /// (std::sync::mpsc::Sender::send only fails when the receiver
-    /// is dropped, which happens at shutdown). Keeps the work loop's
-    /// hot path off of disk I/O — the writer thread is the one
-    /// stuck on fdatasync.
+    /// Channel for forwarding xrun events to the off-thread log writer. Sending
+    /// on this unbounded channel is non-blocking and only fails when the
+    /// receiver is dropped (shutdown), which keeps the work loop's hot path off
+    /// disk I/O — the writer thread is the one stuck on fdatasync.
     xrun_tx: Sender<XrunEvent>,
     period_frames: u32,
     tts: Option<TtsMixer>,
@@ -874,9 +718,8 @@ pub struct Mixer {
     /// 1.0 = no duck. `step()` glides this toward the per-period target
     /// (1.0, or the configured duck level while TTS/cue/chirp audio is
     /// queued) at `program_duck_attack_step` / `program_duck_release_step`
-    /// per frame. Before this, the ~25 dB program duck was applied as a
-    /// hard per-period step, which clicked and pumped the music around
-    /// every earcon/cue.
+    /// per frame. Applying the ~25 dB duck as a hard per-period step instead
+    /// clicks and pumps the music around every earcon/cue.
     program_duck_current: f32,
     /// Per-frame linear-gain decrement while ducking DOWN (attack).
     program_duck_attack_step: f32,
@@ -900,26 +743,23 @@ pub struct Mixer {
     /// (no wall clock in the hot loop) to detect idle↔active transitions and to
     /// measure the post-activation delay.
     auto_trim_lane_state: Vec<AutoTrimLaneState>,
-    /// The relocated impulse tap over the USB DIRECT capture ingress (C4). The
-    /// tap detector + the per-lane cumulative capture cursor + the channel to
-    /// the writer thread live here; it runs inline over the converted S16 slice
-    /// in `read_direct_and_render`, before `push_input`. Present regardless of
-    /// the direct flag (a non-direct build simply never calls into it); its
-    /// disarmed cost is one relaxed atomic load per direct read (C4).
+    /// The impulse tap over the USB DIRECT capture ingress. Runs inline over the
+    /// converted S16 slice in `read_direct_and_render`, before `push_input`.
+    /// Present regardless of the direct flag; its disarmed cost is one relaxed
+    /// atomic load per direct read.
     direct_tap: DirectTapHook,
     /// The receiver half of the tap channel, taken by `main` to drive the
     /// `fanin-tap-writer` thread (the single JSONL writer). `None` after
     /// `take_direct_tap_receiver`.
     direct_tap_receiver: Option<std::sync::mpsc::Receiver<TapEvent>>,
     /// REVERSE host-clock signals (servo thread → mixer) for the DEFAULT-OFF
-    /// post-lock cushion decay. The `fanin-host-clock` thread WRITES these every
-    /// servo tick (via the `Arc` clones it takes in `host_clock_signals`); the
-    /// mixer's per-period decay tick READS them. `ladder_l0` = the DLL is
-    /// `l0_locked` (decay's steady-state gate); `commanded_milli_ppm` = the DLL's
-    /// last commanded bias (× 1000) for the cascade guard. When the servo thread
-    /// is not running (host-clock off / no direct lane), these stay at their
-    /// init (`false` / 0), so decay never leaves the ceiling — decay REQUIRES the
-    /// DLL, which is correct.
+    /// post-lock cushion decay. The `fanin-host-clock` thread only ever WRITES
+    /// these, every servo tick; the mixer's per-period decay tick only ever
+    /// READS them. `ladder_l0` = the DLL is `l0_locked` (decay's steady-state
+    /// gate); `commanded_milli_ppm` = the DLL's last commanded bias (× 1000) for
+    /// the cascade guard. When the servo thread is not running (host-clock off /
+    /// no direct lane) these stay at their init (`false` / 0), so decay never
+    /// leaves the ceiling — decay REQUIRES the DLL.
     host_clock_ladder_l0: Arc<AtomicBool>,
     host_clock_commanded_milli_ppm: Arc<AtomicI64>,
 }
@@ -941,16 +781,15 @@ struct AutoTrimLaneState {
 /// The live SPSC ring counters the mixer step updates each period (from the
 /// writer's [`jasper_ring::WriterMetrics`]). Cloned into
 /// [`RingObservability`] for STATUS so the endpoint reads the same atomics the
-/// work loop writes. Distinct from `WriterMetrics` (a value snapshot): these are
-/// the shared atomics.
+/// work loop writes. Distinct from `WriterMetrics`, which is a value snapshot.
 #[derive(Clone)]
 struct RingCounters {
     published: Arc<AtomicU64>,
     full_waits: Arc<AtomicU64>,
     /// Live-but-STUCK reader drops (issue #1524) — the bounded-wait give-ups
-    /// (`DroppedStuck`) plus the sticky demotions (`DroppedStuckDemoted`). Split
-    /// out of the old folded `drops` so a heartbeat-live wedge is distinguishable
-    /// from a benign no-reader reload.
+    /// (`DroppedStuck`) plus the sticky demotions (`DroppedStuckDemoted`). Kept
+    /// separate from `drop_no_reader` so a heartbeat-live wedge is
+    /// distinguishable from a benign no-reader reload.
     stuck_reader_drops: Arc<AtomicU64>,
     /// Dead/absent-reader free-run drops (`DroppedNoReader`) — the normal
     /// CamillaDSP-reload transient.
@@ -979,12 +818,7 @@ impl RingCounters {
 }
 
 /// The shared ring counters (cloned Arcs) plus the observed wire geometry, for
-/// the STATUS endpoint's `ring` block: `{path, slots, wire_format, channels,
-/// occupancy, published, full_waits, stuck_reader_drops, drop_no_reader,
-/// stall_active, last_stall_ms}`.
-/// The stuck-reader vs no-reader drop counts are UN-FOLDED (issue #1524) so a
-/// heartbeat-live wedge is distinguishable from a benign no-reader reload;
-/// `stall_active` / `last_stall_ms` surface a live/recent stall episode.
+/// the STATUS endpoint's `ring` block.
 ///
 /// `wire_format` / `channels` are plain values, not atomics: they come off the
 /// header the writer attached against, which is immutable for the ring file's
@@ -1009,9 +843,9 @@ pub struct RingObservability {
 
 /// Render a ring header `sample_format` id as the wire vocabulary token
 /// [`RingObservability::wire_format`] publishes. The vocabulary itself lives
-/// once, in [`RingWireFormat`]; this only names the id it cannot map. An
-/// unmappable id cannot reach a running ring (attach validates the accept-set
-/// first), so `unknown` is an honest placeholder rather than a state to act on.
+/// once, in [`RingWireFormat`]. An unmappable id cannot reach a running ring
+/// (attach validates the accept-set first), so `unknown` is a placeholder
+/// rather than a state to act on.
 fn ring_wire_format_label(sample_format: u32) -> &'static str {
     match RingWireFormat::from_sample_format_id(sample_format) {
         Some(format) => format.as_str(),
@@ -1024,16 +858,15 @@ fn ring_wire_format_label(sample_format: u32) -> &'static str {
 /// ONE edge-triggered `event=fanin.ring.stall_detected`. Deliberately EQUAL to
 /// the writer's [`jasper_ring::STUCK_READER_GRACE_NS`] (1 s) so the writer's
 /// sticky-stuck demotion and this observability edge fire together — above a
-/// normal reload/reattach turn, 5× below the 5 s fan-in progress watchdog, 12×
-/// below the ~12 s downstream correction-lane aplay timeout the old unbounded
-/// back-pressure used to trip.
+/// normal reload/reattach turn, 5× below the 5 s fan-in progress watchdog, and
+/// 12× below the ~12 s downstream correction-lane aplay timeout.
 const RING_STALL_EVENT_NS: u64 = jasper_ring::STUCK_READER_GRACE_NS;
 
 /// Minimum gap between one stall episode CLEARING and arming the next
-/// `stall_detected` — the re-arm rate limit that keeps a flapping reader (rapid
-/// clear→restall cycles) from spamming the journal. A single sustained stall is
-/// already exactly one detected + one cleared (the edge trigger owns that); this
-/// only suppresses repeated SHORT episodes. The first-ever episode always arms.
+/// `stall_detected` — the re-arm rate limit that keeps a flapping reader from
+/// spamming the journal. It bounds only the frequency of NEW episodes: a single
+/// sustained stall is one detected + one cleared regardless. The first-ever
+/// episode always arms.
 const RING_STALL_REARM_MIN_GAP_NS: u64 = 10_000_000_000; // 10 s
 
 /// Bounded escalation threshold: if a logged stall episode persists this long
@@ -1119,23 +952,12 @@ enum RingStallEvent {
 ///
 /// PURE: [`Self::observe`] takes explicit `now_ns` / `stall_ns` so it is a
 /// deterministic function of its inputs (no internal clock) and can be unit
-/// tested without any real waiting. `write_ring_period` owns the wiring — it
-/// computes a [`RingStallInput`] from the writer's real accessors each period and
-/// logs whatever event `observe` returns.
+/// tested without any real waiting. `write_ring_period` owns the wiring.
 ///
-/// Semantics:
-/// - A "drop run" is a contiguous sequence of dropped periods (the ring not
-///   draining). Its duration is the writer's `stall_ns` (time since the reader
-///   last advanced); its `dropped_periods` is the count of dropped periods.
-/// - `Detected` fires ONCE when, during a drop run, `stall_ns` first crosses
-///   [`RING_STALL_EVENT_NS`] AND the re-arm rate limit allows (≥
-///   [`RING_STALL_REARM_MIN_GAP_NS`] since the LAST detected, so a flapping
-///   reader logs at most once per gap and cannot spam).
-/// - `Unrecovered` fires ONCE if a logged episode's `stall_ns` later crosses
-///   [`RING_STALL_UNRECOVERED_NS`].
-/// - `Cleared` fires ONCE when the drop run ends (a non-drop period) IFF a
-///   `Detected` was emitted for it — so a suppressed/short run is fully silent.
-/// - Steady state and normal sub-threshold reloads emit NOTHING.
+/// A "drop run" is a contiguous sequence of dropped periods. Its duration is
+/// the writer's `stall_ns` — time since the READER last advanced — not a count
+/// of periods. Each of `Detected` / `Unrecovered` / `Cleared` fires at most once
+/// per run; steady state and normal sub-threshold reloads emit NOTHING.
 #[derive(Debug, Clone)]
 struct RingStallTracker {
     run_active: bool,
@@ -1176,8 +998,7 @@ impl RingStallTracker {
 
     fn observe(&mut self, input: RingStallInput) -> Option<RingStallEvent> {
         if !input.dropped_this_period {
-            // The ring drained this period → any drop run (and logged episode)
-            // ends. Only emit Cleared if we had emitted Detected for it.
+            // Only emit Cleared if a Detected was emitted for this run.
             if self.run_active {
                 self.run_active = false;
             }
@@ -1196,7 +1017,6 @@ impl RingStallTracker {
             return None;
         }
 
-        // A dropped period: extend (or start) the contiguous drop run.
         let reason = if input.reader_live {
             StallReason::StuckReader
         } else {
@@ -1216,10 +1036,6 @@ impl RingStallTracker {
         }
 
         if !self.logged {
-            // Re-arm rate limit: suppress a NEW detected if the LAST detected was
-            // emitted too recently (flapping guard). First-ever episode arms. A
-            // sustained stall is one detected regardless — the `logged` edge below
-            // owns that; this gate only bounds the frequency of NEW episodes.
             let armed = !self.ever_detected
                 || input.now_ns.saturating_sub(self.last_detected_ns)
                     >= RING_STALL_REARM_MIN_GAP_NS;
@@ -1242,8 +1058,7 @@ impl RingStallTracker {
             });
         }
 
-        // Already logged: keep the live duration fresh for /state, and emit the
-        // one-shot unrecovered escalation if the episode has run past the bound.
+        // Keep the live duration fresh for /state.
         self.last_stall_ms = stall_ms;
         if !self.unrecovered_logged && input.stall_ns >= RING_STALL_UNRECOVERED_NS {
             self.unrecovered_logged = true;
@@ -1317,8 +1132,7 @@ pub enum LaneSource {
     Lane,
     /// The USB gadget capture, read directly (`hw:UAC2Gadget`).
     Direct,
-    /// A per-renderer SHM slot ring written by the renderer's `jts_ring` ioplug
-    /// (U3 / P6).
+    /// A per-renderer SHM slot ring written by the renderer's `jts_ring` ioplug.
     Ring,
 }
 
@@ -1337,35 +1151,30 @@ pub struct Input {
     /// do not read an aloop substream at all: the USB DIRECT lane
     /// (`direct.is_some()`), whose audio comes from the `hw:UAC2Gadget` capture in
     /// `direct`, and a renderer-ingress RING lane (`ring.is_some()`), whose audio
-    /// comes from the SHM slot ring in `ring`. Every other lane always has `Some`
-    /// (the byte-identical-to-today path).
+    /// comes from the SHM slot ring in `ring`. Every other lane has `Some`.
     ///
     /// At most one of `direct` / `ring` is ever `Some`: they are alternative lane
     /// SOURCES, and `Mixer::new` picks exactly one arm per lane.
     pcm: Option<PCM>,
     /// DEFAULT-OFF USB DIRECT capture. `Some` only on the usbsink lane when
     /// `JASPER_FANIN_USB_DIRECT=enabled`; the lane then reads `hw:UAC2Gadget`
-    /// directly instead of its aloop substream, deleting the bridge+aloop hop.
-    /// `None` (and `pcm.is_some()`) on every other lane and on this lane when
-    /// the flag is off.
+    /// directly instead of its aloop substream. `None` (and `pcm.is_some()`) on
+    /// every other lane and on this lane when the flag is off.
     direct: Option<DirectCapture>,
     /// The DIRECT lane's deferred device-open channel (#2533). `Some` alongside
-    /// `direct` (spawned at lane construction); `None` on every other lane and on
-    /// the direct lane only if the opener thread could not be spawned. The render
-    /// loop hands every `snd_pcm_open` / `snd_pcm_close` to it instead of running
-    /// one inside the period budget.
+    /// `direct`; `None` if the opener thread could not be spawned. The render
+    /// loop hands every `snd_pcm_open` / `snd_pcm_close` to it rather than
+    /// running one inside the period budget.
     direct_opener: Option<direct_capture::DirectOpener>,
-    /// DEFAULT-EMPTY renderer-ingress ring capture (U3 / P6). `Some` only on a
-    /// lane whose label is in `JASPER_FANIN_RENDERER_RING_LANES`; the lane then
-    /// reads `/dev/shm/jts-ring/lane-<label>.ring` instead of its aloop substream,
-    /// deleting the snd-aloop hop for that renderer. `None` (and `pcm.is_some()`)
-    /// on every unarmed lane and every lane on an unarmed box.
+    /// DEFAULT-EMPTY renderer-ingress ring capture. `Some` only on a lane whose
+    /// label is in `JASPER_FANIN_RENDERER_RING_LANES`; the lane then reads
+    /// `/dev/shm/jts-ring/lane-<label>.ring` instead of its aloop substream.
+    /// `None` (and `pcm.is_some()`) on every unarmed lane.
     ring: Option<ring_capture::RingCapture>,
-    /// The ring lane's deferred ATTACH channel (#2538). `Some` alongside `ring`
-    /// (spawned at lane construction); `None` on every other lane and on a ring
-    /// lane only if the attacher thread could not be spawned. The render loop
-    /// hands every `RingReader::create_or_attach` — and the bounded inter-process
-    /// `flock` inside it — to this thread instead of running one inside the
+    /// The ring lane's deferred ATTACH channel (#2538). `Some` alongside `ring`;
+    /// `None` if the attacher thread could not be spawned. The render loop hands
+    /// every `RingReader::create_or_attach` — and the bounded inter-process
+    /// `flock` inside it — to this thread rather than running one inside the
     /// period budget. One per lane, so each lane's in-flight latch is its own.
     ring_attacher: Option<ring_capture::RingAttacher>,
     pub label: String,
@@ -1377,9 +1186,7 @@ pub struct Input {
     read_buf: Vec<i16>,
     /// Per-input SPINE-SCALE read buffer (i32 interleaved stereo), allocated
     /// on a wide wire and EMPTY — so zero heap, a `Vec` with no capacity does
-    /// not allocate — on a box an operator has pinned to the narrow wire. Since
-    /// the wire's resolver defaults wide, an ordinary box allocates this
-    /// without declaring anything (`spine_read_buf`).
+    /// not allocate — on a box pinned to the narrow wire (`spine_read_buf`).
     ///
     /// Non-empty is the lane's OWN width switch, and the mixer reads it exactly
     /// that way (`read_buf_wide.is_empty()` picks the sum entry). One allocation
@@ -1389,12 +1196,11 @@ pub struct Input {
     pub xrun_count: Arc<AtomicU64>,
     pub frames_read: Arc<AtomicU64>,
     /// Per-lane content level: the most recent period's RMS in dBFS, ×100 and
-    /// rounded into an `i32`. Overwritten EVERY period from exactly
-    /// the samples this lane contributed to the sum; silence / gadget-absent
-    /// renders the `RMS_DBFS_FLOOR` (-120 dBFS). STATUS surfaces it as the
-    /// lane's `rms_dbfs`; mux's combo-liveness gate reads the USB DIRECT lane's
-    /// value to reject a host streaming digital silence (a muted Zoom / an idle
-    /// tab).
+    /// rounded into an `i32`. Overwritten EVERY period from exactly the samples
+    /// this lane read; silence / gadget-absent renders the `RMS_DBFS_FLOOR`
+    /// (-120 dBFS). STATUS surfaces it as the lane's `rms_dbfs`; mux's
+    /// combo-liveness gate reads the USB DIRECT lane's value to reject a host
+    /// streaming digital silence.
     pub rms_dbfs_x100: Arc<AtomicI32>,
     /// Cumulative frames DISCARDED by the bounded catch-up resync on this
     /// lane (see `drain_input_excess`). Non-zero only on a free-running
@@ -1409,8 +1215,7 @@ pub struct Input {
     /// OPTIONAL per-input adaptive resampler (DEFAULT-OFF). `Some` only on the
     /// configured clock-crossing lane when `JASPER_FANIN_INPUT_RESAMPLER` is
     /// `enabled`. When `Some`, this lane is rate-reconciled to the DAC clock
-    /// (drop-free) instead of catch-up-drained; when `None` (the default for
-    /// every lane), the read path is byte-for-byte today's behaviour.
+    /// (drop-free) instead of catch-up-drained.
     resampler: Option<LaneResampler>,
     /// Per-lane TRIM control + counters, shared with the state-server thread.
     /// The control endpoint sets `pending`; the work loop trims the resampler
@@ -1425,17 +1230,14 @@ pub struct Input {
     /// the gate. This is mux's latest-source-wins arbitration primitive for the
     /// USB lane — the sole USB-silencing mechanism in the one-pipeline design.
     /// NOT persisted: a fan-in restart comes up unmuted and mux reasserts.
-    /// Default `false` (contribute).
     muted: Arc<AtomicBool>,
     /// OPTIONAL USB DIRECT observability, shared with the state-server thread.
     /// `Some` only on the USB DIRECT lane (`direct.is_some()`); STATUS renders a
-    /// `direct{}` block from it (C7). `None` (and absent from STATUS) for every
-    /// other lane.
+    /// `direct{}` block from it.
     direct_obs: Option<DirectObservability>,
     /// OPTIONAL renderer-ingress ring observability, shared with the state-server
     /// thread. `Some` only on a ring lane (`ring.is_some()`); STATUS renders a
-    /// `ring{}` block from it. `None` (and absent from STATUS) for every other
-    /// lane — the same optional-block idiom as `direct_obs` and `resampler`.
+    /// `ring{}` block from it.
     ring_obs: Option<ring_capture::RingLaneObservability>,
     /// Per-lane WAKE FADE-IN and SELECTION FADE state (issue #3443). Held by
     /// every lane and usable at both lane scales, because it runs over this
@@ -1460,11 +1262,9 @@ impl Mixer {
         let mut inputs = Vec::with_capacity(config.input_pcms.len());
         // The lane's position, handed to the ring lanes so each seeds its reattach
         // latch at a different phase of the retry window (#2538) instead of every
-        // detached lane retrying in the same render period. Taken over ALL lanes
-        // rather than over ring lanes only: the property wanted is "two ring lanes
-        // get different phases", which distinct indices already give, and counting
-        // ring lanes first would need a second pass to learn a number nothing else
-        // uses.
+        // detached lane retrying in the same render period. Counted over ALL
+        // lanes, not ring lanes only — distinct indices are all the phase spread
+        // needs.
         let lane_count = config.input_renderers.len();
         for (lane_index, (label, pcm_name)) in config
             .input_renderers
@@ -1472,34 +1272,25 @@ impl Mixer {
             .zip(&config.input_pcms)
             .enumerate()
         {
-            // DEFAULT-OFF: build a per-input resampler on the configured
-            // clock-crossing lane when EITHER the input resampler OR USB DIRECT
-            // is enabled (both steer this lane to the DAC clock; direct has no
-            // aloop catch-up fallback so it MUST own a resampler — C6). Every
-            // other lane (and every lane when both flags are off) gets `None` —
-            // the byte-identical-to-today path. A construction failure degrades
-            // to `None` with a warning rather than failing the daemon.
+            // Build a per-input resampler on the configured clock-crossing lane
+            // when EITHER the input resampler OR USB DIRECT is enabled: both
+            // steer this lane to the DAC clock, and direct has no aloop catch-up
+            // fallback so it MUST own a resampler. A construction failure
+            // degrades to `None` with a warning rather than failing the daemon.
             let resampler = if config.lane_wants_resampler(label) {
                 build_lane_resampler(label, config)
             } else {
                 None
             };
             // USB DIRECT: this lane reads hw:UAC2Gadget directly instead of its
-            // aloop substream (DEFAULT-OFF; only the resampler lane label). The
-            // open is best-effort — a gadget-absent lane starts Absent and
-            // renders silence with a bounded reopen retry (C3), never failing
-            // the daemon (the fail-hard "every input required" contract is
-            // exempted ONLY for this lane).
+            // aloop substream. The open is best-effort — a gadget-absent lane
+            // starts Absent and renders silence with a bounded reopen retry. The
+            // fail-hard "every input required" contract is exempted ONLY here.
             let is_direct =
                 config.usb_direct_enabled && label == &config.input_resampler_lane_label;
-            // Renderer-ingress RING lane (U3 / P6; DEFAULT-EMPTY). Like the direct
-            // lane, the open is best-effort: an unavailable ring starts Detached
-            // and renders silence with a bounded reattach, never failing the
-            // daemon. DIRECT wins if a box somehow armed both on one lane — the
-            // gadget capture is the more specific claim and the two are mutually
-            // exclusive sources, so resolving the overlap here (rather than
-            // letting both be `Some`) keeps `Input`'s invariant true by
-            // construction.
+            // Renderer-ingress RING lane; best-effort like the direct lane. DIRECT
+            // wins if a box somehow armed both on one lane, so at most one of
+            // `direct`/`ring` is ever `Some` by construction.
             let is_ring = !is_direct && config.lane_is_renderer_ring(label);
             let input = if is_direct {
                 open_direct_input(label, pcm_name, config, resampler)
@@ -1542,12 +1333,9 @@ impl Mixer {
             );
         }
 
-        // DEFAULT-OFF feature: if the resampler is armed by env but its
-        // configured lane label matched no live input, NO `LaneResampler` was
-        // constructed above — the feature silently no-ops. Surface that ONCE
-        // (the review's flagged-missing diagnostic) so an operator who set the
-        // env var can see WHY they observed no effect, with the available
-        // labels to fix the typo.
+        // If the resampler is armed by env but its configured lane label matched
+        // no live input, the feature silently no-ops. Warn ONCE with the
+        // available labels so an operator can see why they observed no effect.
         if let Some(available) = resampler_lane_not_found(
             config.input_resampler_enabled || config.usb_direct_enabled,
             &config.input_resampler_lane_label,
@@ -1559,15 +1347,12 @@ impl Mixer {
             );
         }
 
-        // Ring A — the only final-output transport (ADR-0100). Create-or-attach
-        // the SPSC ring as the WRITER. Geometry: the configured wire format /
-        // 2ch / 48k, slot = 128 frames pinned (the outputd DAC-period contract;
-        // period_frames % 128 == 0 was validated at config parse), n_slots =
-        // ring_slots. A geometry mismatch against an already-created ring is a
-        // config-class fault: it is tagged so main() exits 78 (EX_CONFIG) and the
-        // unit parks (RestartPreventExitStatus=78) instead of climbing the
-        // restart burst into StartLimitAction=reboot. Everything else this open
-        // can fail with is TRANSIENT and keeps the restart ladder — see
+        // Ring A — the only final-output transport (ADR-0100). Slot is pinned to
+        // 128 frames by the outputd DAC-period contract; `period_frames % 128 ==
+        // 0` was validated at config parse. A geometry mismatch against an
+        // already-created ring is a config-class fault (main() exits 78,
+        // `RestartPreventExitStatus=78` parks the unit); everything else this
+        // open can fail with is TRANSIENT and keeps the restart ladder — see
         // `ring_open_error_is_config_class`.
         let geometry = Geometry {
             rate: config.sample_rate,
@@ -1580,16 +1365,13 @@ impl Mixer {
             .map_err(|e| ring_open_error(&config.ring_path, config.ring_wire_format.as_str(), e))
             .with_context(|| format!("opening fan-in→camilla SHM ring {}", config.ring_path))?;
         // NOTHING else is opened. The ring IS the program path: no ALSA playback
-        // PCM is opened or fed, and none is configured or echoed — the output
-        // device and buffer this daemon once parsed are retired (ADR-0100).
+        // PCM is opened or fed (ADR-0100).
         let counters = RingCounters::new();
         let self_pace_period_ns =
             (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
         // The wire this ring OBSERVABLY carries, read back from the header the
-        // writer attached against — not echoed from config. On a create it equals
-        // the requested geometry; on an attach it is the geometry that survived
-        // the field-by-field compare. Either way it is what the reader on the
-        // other end sees.
+        // writer attached against — not echoed from config, so it is what the
+        // reader on the other end sees.
         let attached = writer.geometry();
         let wire_format = ring_wire_format_label(attached.sample_format);
         info!(
@@ -1624,7 +1406,6 @@ impl Mixer {
 
         let input_count = inputs.len();
         // AUTO-TRIM delay in frames: `AUTO_TRIM_DELAY_SECONDS` at the live rate.
-        // Only consulted when the DEFAULT-OFF flag is set.
         let auto_trim_delay_frames = (config.sample_rate as u64) * AUTO_TRIM_DELAY_SECONDS;
         if config.auto_trim_enabled {
             info!(
@@ -1638,11 +1419,11 @@ impl Mixer {
                 config.input_resampler_lane_label, config.usb_direct_device,
             );
         }
-        // Impulse-tap channel (C4). Default-disarmed: the tap state starts
-        // unarmed so the direct read pays one relaxed atomic load until a
-        // TAP_ARM verb arrives. The bounded channel keeps the mixer thread's
-        // hand-off non-blocking (drop-and-count on Full); the fanin-tap-writer
-        // thread (spawned in main) is the sole JSONL writer.
+        // Impulse-tap channel. Default-disarmed: the tap state starts unarmed so
+        // the direct read pays one relaxed atomic load until a TAP_ARM verb
+        // arrives. The bounded channel keeps the mixer thread's hand-off
+        // non-blocking (drop-and-count on Full); the fanin-tap-writer thread is
+        // the sole JSONL writer.
         let (tap_sender, tap_receiver) =
             std::sync::mpsc::sync_channel::<TapEvent>(TAP_CHANNEL_CAPACITY);
         let direct_tap = DirectTapHook::new(
@@ -1650,9 +1431,7 @@ impl Mixer {
             Arc::new(Mutex::new(TapConfig::default())),
             tap_sender,
         );
-        // The wide Ring A payload is allocated ONCE here, and only for a ring
-        // whose attached header says S32LE. A narrow ring gets an empty Vec (no
-        // allocation, no per-period work).
+        // Allocated ONCE, and only for a ring whose attached header says S32LE.
         let output_is_wide = output.wire_is_wide();
         let ring_wide_payload = if output_is_wide {
             vec![0u8; period_samples * WIDE_BYTES_PER_SAMPLE]
@@ -1699,8 +1478,7 @@ impl Mixer {
             auto_trim_lane_state: vec![AutoTrimLaneState::default(); input_count],
             direct_tap,
             direct_tap_receiver: Some(tap_receiver),
-            // Reverse host-clock signals for the DEFAULT-OFF cushion decay. Init
-            // to the inert state (not-l0, 0 ppm) so decay never leaves the
+            // Init to the inert state (not-l0, 0 ppm) so decay never leaves the
             // ceiling until the servo thread actually reports `l0_locked`.
             host_clock_ladder_l0: Arc::new(AtomicBool::new(false)),
             host_clock_commanded_milli_ppm: Arc::new(AtomicI64::new(0)),
@@ -1713,26 +1491,22 @@ impl Mixer {
         self.inputs.len()
     }
 
-    /// Read-only access to per-input counters for the STATUS endpoint
-    /// (chunk 3 will use this).
+    /// Read-only access to per-input counters for the STATUS endpoint.
     pub fn inputs(&self) -> &[Input] {
         &self.inputs
     }
 
     /// Clone the cross-thread signals the combo-mode `fanin-host-clock` thread
-    /// reads (C5). Returns `Some` ONLY when the USB DIRECT lane exists AND owns a
-    /// resampler (the normal combo-mode shape); `None` when direct is off, or
-    /// when resampler construction failed and the lane fell back to no resampler
-    /// (fail-soft — the caller then runs inert, warn-once). The `HostClock`
-    /// thread holds only these `Arc` atomics; it never touches the mixer.
+    /// reads. Returns `Some` ONLY when the USB DIRECT lane exists AND owns a
+    /// resampler; `None` when direct is off, or when resampler construction
+    /// failed and the lane fell back to no resampler. The `HostClock` thread
+    /// holds only these `Arc` atomics; it never touches the mixer.
     ///
-    /// The signals ride the atomics the mixer already publishes for STATUS
-    /// (resampler `fill_frames`/`input_frames`/`output_frames`/`locked`, direct
-    /// `present`), so this adds no new hot-path work — it only clones the
-    /// existing `Arc`s. `main` calls this before `mixer.run`. Note: `input_frames`
-    /// is passed RAW; the host-clock adapter must NOT trim-compensate it (a
-    /// `trim_ring` moves only the read cursor, so the `capture − playback`
-    /// divergence the ladder differences is already trim-invariant).
+    /// The signals ride atomics the mixer already publishes for STATUS, so this
+    /// adds no hot-path work. `input_frames` is passed RAW: the host-clock
+    /// adapter must NOT trim-compensate it — a `trim_ring` moves only the read
+    /// cursor, so the `capture − playback` divergence the ladder differences is
+    /// already trim-invariant.
     pub fn host_clock_signals(&self) -> Option<crate::host_clock::HostClockSignals> {
         let direct = self.inputs.iter().find(|inp| inp.is_direct())?;
         let resampler = direct.resampler_observability()?;
@@ -1743,14 +1517,12 @@ impl Mixer {
             output_frames: Arc::clone(&resampler.output_frames),
             locked: Arc::clone(&resampler.locked),
             present: Arc::clone(&direct_obs.present),
-            // Reuse the direct capture's existing monotonic successful-open
-            // counter as the sole capture-generation source of truth.
+            // The direct capture's monotonic successful-open counter is the sole
+            // capture-generation source of truth.
             capture_generation: Arc::clone(&direct_obs.opens),
-            // The resampler's LIVE correction ppm gauge (its `ratio_milli_ppm`,
-            // milli-ppm i64-bits-in-u64) — the COMBO-mode probe/servo observable.
-            // Owned/written by the resampler on the mixer thread; the servo thread
-            // only ever READS it (single source of truth, no new hot-path work —
-            // just clones the existing Arc).
+            // The resampler's LIVE correction ppm gauge (milli-ppm,
+            // i64-bits-in-u64). Written by the resampler on the mixer thread; the
+            // servo thread only ever READS it.
             correction_milli_ppm: Arc::clone(&resampler.ratio_milli_ppm),
             // The cushion decay's live demand gauge, published by the decay
             // itself; `build_obs` subtracts it from the ratio above (#3466).
@@ -1761,12 +1533,11 @@ impl Mixer {
             // The static acquisition ceiling — build_obs's anchor for
             // descent-compensating the fill it feeds the ladder (#3466).
             ceiling_fill_frames: resampler.target_fill_frames,
-            // The LIVE held-target gauge — the single source of truth the servo
-            // thread re-pins its setpoint to each tick (tracks the cushion decay).
+            // The LIVE held-target gauge the servo thread re-pins its setpoint to
+            // each tick (tracks the cushion decay).
             held_target_frames: Arc::clone(&resampler.held_target_frames),
-            // The REVERSE signals the servo thread writes and the mixer's decay
-            // tick reads. Owned here (created with the mixer) so both sides share
-            // the same atomics; the servo thread only ever WRITES these two.
+            // The REVERSE signals: owned here so both sides share the same
+            // atomics, and the servo thread only ever WRITES these two.
             ladder_l0: Arc::clone(&self.host_clock_ladder_l0),
             commanded_milli_ppm: Arc::clone(&self.host_clock_commanded_milli_ppm),
         })
@@ -1794,13 +1565,13 @@ impl Mixer {
     }
 
     /// The shared impulse-tap state (armed + counters + knobs), cloned for the
-    /// state-server thread's `TAP_ARM`/`TAP_DISARM`/STATUS handling (C4).
+    /// state-server thread's `TAP_ARM`/`TAP_DISARM`/STATUS handling.
     pub fn direct_tap_state(&self) -> Arc<TapState> {
         self.direct_tap.state()
     }
 
     /// The last-armed impulse-tap config, cloned for the state-server thread
-    /// (published on arm, read on STATUS) and the writer thread (C4).
+    /// (published on arm, read on STATUS) and the writer thread.
     pub fn direct_tap_config(&self) -> Arc<Mutex<TapConfig>> {
         self.direct_tap.config()
     }
@@ -1827,8 +1598,7 @@ impl Mixer {
     /// escalation.
     pub fn run(&mut self, shutdown: &AtomicBool, heartbeat: &Heartbeat) -> Result<()> {
         // No prime + start: the SHM ring transport has no kernel ring to prime
-        // and no PREPARED→RUNNING transition; it publishes into the SPSC ring
-        // inside step() and paces on the ring.
+        // and no PREPARED→RUNNING transition.
         info!(
             "event=fanin.mixer.running inputs={} output_xruns=0",
             self.inputs.len(),
@@ -1850,13 +1620,11 @@ impl Mixer {
 
     /// One period of work: read all inputs, sum, write output.
     fn step(&mut self) -> Result<()> {
-        // 1. Clear the sum scratch (i64, in the scale program_width names).
         self.sum_buf.fill(0);
 
-        // 2. Drain TTS/control commands once at the period boundary.
-        // When voice ducking is routed through fan-in, attenuate only
-        // renderer/program lanes. TTS is mixed after this step so it
-        // remains audible and then flows through CamillaDSP crossover.
+        // Drain TTS/control commands once at the period boundary. Voice ducking
+        // attenuates only renderer/program lanes; TTS is mixed after the duck so
+        // it stays unattenuated.
         let mut program_target = 1.0f32;
         if let Some(tts) = self.tts.as_mut() {
             if tts.prepare_period() {
@@ -1864,75 +1632,62 @@ impl Mixer {
             }
         }
 
-        // 2b. Service TRIM requests (manual control-endpoint `pending` flags +
-        // the DEFAULT-OFF one-shot AUTO-TRIM latch) at the period boundary,
-        // before the read loop, so the render below sees the trimmed ring. A
-        // no-request period does one atomic load per lane and nothing else.
+        // Service TRIM at the period boundary, BEFORE the read loop, so the
+        // render below sees the trimmed ring.
         let period_frames = self.period_frames as usize;
         self.maybe_trim();
 
-        // 2c. Snapshot the REVERSE host-clock signals ONCE per period for the
-        // DEFAULT-OFF cushion-decay tick below (avoids a self-borrow inside the
-        // per-input loop). `l0` gates decay to the DLL's steady state;
-        // `commanded_ppm_abs` drives the cascade guard. Both are inert (false / 0)
-        // when the servo thread is not running, so decay never leaves the ceiling
-        // without the DLL — the correct dependency.
+        // Snapshot the REVERSE host-clock signals ONCE per period for the
+        // cushion-decay tick below (a per-input read would self-borrow). `l0`
+        // gates decay to the DLL's steady state; `commanded_ppm_abs` drives the
+        // cascade guard. Both are inert (false / 0) when the servo thread is not
+        // running, so decay never leaves the ceiling without the DLL.
         let decay_l0 = self.host_clock_ladder_l0.load(Ordering::Relaxed);
         let decay_commanded_ppm_abs =
             (self.host_clock_commanded_milli_ppm.load(Ordering::Relaxed) as f64 / 1000.0).abs();
-        // 3. Read from each input, accumulate into sum_buf.
         let selected_input = self.selected_input_index.load(Ordering::Relaxed);
         for (idx, input) in self.inputs.iter_mut().enumerate() {
             let frames = if input.direct.is_some() {
-                // USB DIRECT lane (DEFAULT-OFF): read hw:UAC2Gadget directly,
-                // narrow S32→S16, feed the SAME resampler, render one DAC-paced
-                // period. Gadget-absent → silence + bounded reopen retry (C3).
-                // The aloop substream is never touched (`pcm` is None). The tap
-                // (C4) runs inline over the converted slice inside this call.
+                // USB DIRECT lane: read hw:UAC2Gadget directly, narrow S32→S16,
+                // feed the SAME resampler, render one DAC-paced period. The aloop
+                // substream is never touched (`pcm` is None). The tap runs inline
+                // over the converted slice inside this call.
                 read_direct_and_render(input, period_frames, &mut self.direct_tap, &self.xrun_tx)
             } else if input.ring.is_some() {
-                // Renderer-ingress RING lane (U3 / P6; DEFAULT-EMPTY): consume
-                // exactly one slot from this lane's SHM ring into `read_buf`. The
-                // ring's slot IS one render period, so there is no drain loop and
-                // no catch-up resync — a bounded ring cannot back up past its own
-                // depth the way an aloop capture ring can, which is why
-                // `drain_input_excess` is deliberately NOT called on this arm. An
-                // empty ring or a detached lane renders silence (bounded reattach).
+                // Renderer-ingress RING lane: consume exactly one slot from this
+                // lane's SHM ring. The slot IS one render period, and a bounded
+                // ring cannot back up past its own depth the way an aloop capture
+                // ring can, so this arm deliberately runs no catch-up resync.
                 read_ring_and_render(input, period_frames)
             } else if input.resampler.is_some() {
-                // ARMED clock-crossing lane (DEFAULT-OFF; only the USB lane when
-                // enabled). The resampler OWNS rate reconciliation: read ALL
-                // available frames into it (DLL-steered to the DAC clock) and
-                // render exactly one DAC-paced period. The catch-up drain is
-                // bypassed here on purpose — the resampler holds the ring at a
-                // small fixed fill (no sawtooth), which is the whole point.
+                // ARMED clock-crossing lane. The resampler OWNS rate
+                // reconciliation: read ALL available frames into it (DLL-steered
+                // to the DAC clock) and render exactly one DAC-paced period. The
+                // catch-up drain is bypassed on purpose — the resampler holds the
+                // ring at a small fixed fill, with no sawtooth.
                 read_into_resampler_and_render(input, period_frames, &self.xrun_tx)?
             } else {
-                // DEFAULT path — byte-for-byte today's behaviour.
-                //
                 // Bounded catch-up resync BEFORE the period read, for EVERY lane
                 // regardless of selection. A free-running lane (the USB host-clock
-                // lane) backs its capture ring up past the high-water; we discard
-                // the excess down to one period here so the upstream producer never
-                // overflows and back-pressure can reach the host. A DAC-locked lane
-                // sits at one period and this is a single `avail_update` no-op.
-                // INTENTIONALLY independent of `input_selected` below: a de-selected
-                // (muxed-out) free-running lane STILL backs up and must be drained,
-                // so do NOT move this under the selection gate. Drop-controlled,
-                // not drop-free — see the constant docs.
+                // lane) backs its capture ring up past the high-water; discarding
+                // the excess down to one period here keeps the upstream producer
+                // from overflowing so back-pressure can reach the host. A
+                // DAC-locked lane sits at one period and this is a single
+                // `avail_update` no-op. INTENTIONALLY independent of
+                // `input_selected` below: a de-selected (muxed-out) free-running
+                // lane STILL backs up and must be drained, so do NOT move this
+                // under the selection gate.
                 drain_input_excess(input, period_frames);
                 read_input(input, period_frames, &self.xrun_tx)?
             };
-            // 3a2. Per-lane content level (RMS dBFS ×100). Computed for EVERY
-            // lane, BEFORE the selection gate below, so a muxed-out lane still
-            // reports its true level to STATUS. Mirrors the solo bridge's
-            // per-period `rms_dbfs_x100` store; silence / gadget-absent → the
-            // RMS_DBFS_FLOOR. `active` is the exact slice this lane contributes
-            // to the sum (0 when it read nothing), reused by the mix below.
+            // Per-lane content level (RMS dBFS ×100), computed for EVERY lane
+            // BEFORE the selection gate below so a muxed-out lane still reports
+            // its true level to STATUS. `active` is the exact slice this lane
+            // contributes to the sum (0 when it read nothing).
             let active = frames * (CHANNELS as usize);
             // Read the level off whichever buffer actually holds this lane's
             // period. The two RMS functions report the SAME dBFS for the same
-            // signal (they differ only in the full-scale normalizer), so mux's
+            // signal — they differ only in the full-scale normalizer — so mux's
             // activity gate and the STATUS `rms_dbfs` keep one meaning across
             // widths.
             let lane_rms_dbfs = if input.read_buf_wide.is_empty() {
@@ -1943,16 +1698,12 @@ impl Mixer {
             input
                 .rms_dbfs_x100
                 .store((lane_rms_dbfs * 100.0).round() as i32, Ordering::Relaxed);
-            // 3a3. WAKE FADE-IN, tracking half (issue #3443). Read-only, and
+            // WAKE FADE-IN, tracking half (issue #3443). Read-only, and
             // deliberately for EVERY lane regardless of selection: silence is a
-            // property of what the lane CAPTURES, so the run has to be counted
-            // on the same periods the lane reads. Nothing is shaped here — the
-            // meter above must keep reporting a de-selected lane's TRUE level,
-            // and the window itself belongs to the periods that reach the sum
-            // (applied after the gate below). One INFO line per arming: the
-            // state machine cannot re-arm without another ARM_SILENCE_MS of
-            // silence, so this is bounded far below the throttled hot-path logs
-            // this daemon already emits inline (`record_drain_entry`).
+            // property of what the lane CAPTURES, so the run has to be counted on
+            // the same periods the lane reads. Nothing is shaped here — the window
+            // itself is applied after the gate below. The INFO line is bounded by
+            // the state machine's own ARM_SILENCE_MS re-arm requirement.
             let woke = if input.read_buf_wide.is_empty() {
                 input
                     .lane_fade
@@ -1965,15 +1716,13 @@ impl Mixer {
             if woke {
                 info!("event=fanin.lane_wake_ramp label={}", input.label);
             }
-            // 3b. Advance the DEFAULT-OFF post-lock cushion decay one render
-            // period on this lane's resampler (if armed). Done AFTER the render
-            // so the tick sees this period's fresh lock state, and independent of
-            // the selection gate below (a de-selected but locked lane must keep
-            // decaying — the held target is a property of the lane's clock
-            // reconciliation, not of which source is passed to the sum). No-op
-            // when no resampler / decay disabled.
+            // Advance the post-lock cushion decay one render period on this
+            // lane's resampler. AFTER the render, so the tick sees this period's
+            // fresh lock state, and independent of the selection gate below: the
+            // held target is a property of the lane's clock reconciliation, not
+            // of which source is passed to the sum.
             if let Some(r) = input.resampler.as_mut() {
-                // The DECAY_SNAP lever, consumed on the thread that owns the
+                // The DECAY_SNAP lever, consumed on the thread that OWNS the
                 // resampler (the control thread cannot touch it), before the
                 // tick so the window is open by the time the gauges publish.
                 if input.trim.decay_snap_pending.swap(false, Ordering::Acquire) {
@@ -1981,30 +1730,26 @@ impl Mixer {
                 }
                 r.tick_decay(decay_l0, decay_commanded_ppm_abs);
             }
-            // Selection AND mute gate. Both are applied at the SUM only — the
-            // per-lane telemetry (rms_dbfs_x100 stored above; frames_read bumped
-            // in the read above) is already accounted, so a de-selected OR muted
+            // Selection AND mute gate, applied at the SUM only: the per-lane
+            // telemetry above is already accounted, so a de-selected OR muted
             // lane still reports its true captured level/liveness to STATUS. mux
-            // reads the USB DIRECT lane's pre-mute level to keep a muted-but-
-            // streaming host "playing" (no mute→release→mute flap). See
-            // `lane_mix_contributes`.
+            // reads the USB DIRECT lane's pre-mute level to keep a
+            // muted-but-streaming host "playing" (no mute→release→mute flap).
             let contributes = lane_mix_contributes(
                 selected_input,
                 idx,
                 &input.label,
                 input.muted.load(Ordering::Relaxed),
             );
-            // 3c. PER-LANE FADES, application half (issue #3443): the wake
-            // window on a period that enters the sum, then the selection window
-            // that carries the lane in and out of it. The gate's verdict is an
-            // INPUT here rather than a `continue` — a lane mux has just dropped
-            // keeps reaching the sum until its window closes, which is what
-            // stops a switch away from an already-PLAYING source removing a
+            // PER-LANE FADES, application half (issue #3443). The gate's verdict
+            // is an INPUT here rather than a `continue`: a lane mux has just
+            // dropped keeps reaching the sum until its window closes, which is
+            // what stops a switch away from an already-PLAYING source removing a
             // full-amplitude waveform between one sample and the next. Only a
             // period that enters the sum spends the wake window, so a lane that
-            // woke while mux still had it out keeps that ramp owed until
-            // `SELECT` lands (mux arbitrates at 1 Hz). `false` means the lane is
-            // fully out and contributes nothing this period.
+            // woke while mux still had it out keeps that ramp owed until `SELECT`
+            // lands (mux arbitrates at 1 Hz). `false` means the lane is fully out
+            // and contributes nothing this period.
             let reaches_sum = if input.read_buf_wide.is_empty() {
                 input.lane_fade.shape_period(
                     &mut input.read_buf[..active],
@@ -2021,11 +1766,9 @@ impl Mixer {
             if !reaches_sum {
                 continue;
             }
-            // Only sum the samples we actually got (`active`, computed above for
-            // the per-lane RMS). `read_input` zero-pads the tail of
-            // input.read_buf so reading the full period is also safe; explicit
-            // bounds save a few unnecessary saturating_add calls when an input
-            // is silent.
+            // Only sum the samples actually read. `read_input` zero-pads the tail
+            // so reading the full period would also be safe; the explicit bound
+            // just saves saturating_add calls on a silent input.
             if input.read_buf_wide.is_empty() {
                 mix_into(
                     &mut self.sum_buf[..active],
@@ -2033,9 +1776,8 @@ impl Mixer {
                     self.program_width,
                 );
             } else {
-                // A spine-scale lane: its period is already in the sum's own
-                // scale, so it enters with no shift and no narrowing — the low
-                // bits a hi-res source sent reach the summed write.
+                // A spine-scale lane enters with no shift and no narrowing, so
+                // the low bits a hi-res source sent reach the summed write.
                 mix_into_wide(
                     &mut self.sum_buf[..active],
                     &input.read_buf_wide[..active],
@@ -2051,11 +1793,9 @@ impl Mixer {
             );
             tts.observe_content_period(&self.content_meter_buf);
         }
-        // Apply the program-lane duck as a per-sample ramp toward the
-        // period target, so a ~25 dB duck engages/releases smoothly rather
-        // than stepping at the period boundary (the click/pump-the-music
-        // artifact). Fast paths: skip entirely when fully un-ducked, and
-        // flat-multiply when already at a steady ducked level.
+        // Apply the program-lane duck as a per-sample ramp toward the period
+        // target, so a ~25 dB duck engages/releases smoothly rather than stepping
+        // at the period boundary (the click/pump artifact).
         if program_target == 1.0 && self.program_duck_current == 1.0 {
             // no duck — common path, nothing to do
         } else if program_target == self.program_duck_current {
@@ -2079,33 +1819,20 @@ impl Mixer {
             tts.mix_period(&mut self.sum_buf, self.program_width);
         }
 
-        // 4. Clamp the sum -> i16 output.
         saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width);
 
-        // 5. Publish period_frames/128 slots into the SHM ring (blocks; paces the
-        //    loop). The blocking-on-full publish (bounded, live reader) is the
-        //    pacer; reader-absent self-paces (one period's sleep per dropped
-        //    publish) so a readerless ring never hot-spins. The mixed sum_buf
-        //    (post-duck, post-TTS) is what enters — TTS/duck ride along with zero
-        //    special handling. The ring publish is the daemon's ONLY write: no
-        //    ALSA playback PCM is opened or fed.
-        //
-        //    S32LE wire only: build the wide slot payload from the SAME post-duck
-        //    post-TTS sum_buf. NO scale change happens here — the `<< 16` that
-        //    used to left-justify at this point now happens per lane, in
-        //    `mix_into`'s Wide arm, which is the site a scale bug would be
-        //    introduced at. All that is left here is the i64→i32 saturation and
-        //    the explicit little-endian order. The ring's own attached header is
-        //    the ONE predicate here — the same `wire_is_wide()` that decides which
-        //    payload `write_ring_period` publishes — so the fill and the publish
-        //    cannot disagree about the wire.
+        // On an S32LE wire, build the wide slot payload from the SAME post-duck
+        // post-TTS sum. No scale change happens here — the promotion is per lane,
+        // in `mix_into`'s Wide arm — only the i64→i32 saturation and the explicit
+        // little-endian order. The ring's own attached header is the ONE
+        // predicate, the same `wire_is_wide()` that decides which payload
+        // `write_ring_period` publishes, so the fill and the publish cannot
+        // disagree about the wire.
         if self.output.wire_is_wide() {
             fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
         }
         // Count only frames that actually ENTERED the ring — a fully-dropped
-        // period (reader absent / stuck) adds nothing. The stuck_reader_drops /
-        // drop_no_reader split disambiguates, so the top-line counter stays
-        // honest rather than optimistic.
+        // period (reader absent / stuck) adds nothing.
         let published_frames = write_ring_period(
             &mut self.output,
             &self.output_buf,
@@ -2118,22 +1845,18 @@ impl Mixer {
     }
 
     /// Service TRIM at the period boundary, before the render loop. Two
-    /// triggers, both funnel through the single `trim_input` path:
-    ///   - MANUAL: a control-endpoint `TRIM` set the lane's `pending` flag.
-    ///     Consumed (cleared) here with an `Acquire` swap so the request is
-    ///     handled exactly once even if two `TRIM`s raced in.
-    ///   - AUTO (DEFAULT-OFF): the one-shot latch, ~`AUTO_TRIM_DELAY_SECONDS`
-    ///     after a lane goes active, guarded by `TrimControl::auto_fired` so it
-    ///     fires at most once per idle→active session.
+    /// triggers, both funnelling through the single `trim_input` path: a
+    /// control-endpoint `TRIM` that set the lane's `pending` flag, and the
+    /// one-shot AUTO latch ~`AUTO_TRIM_DELAY_SECONDS` after a lane goes active.
     ///
     /// The common no-request period is one `pending` load per lane (plus, when
     /// auto-trim is enabled, one pure latch update) and nothing else.
     fn maybe_trim(&mut self) {
         for (idx, input) in self.inputs.iter_mut().enumerate() {
-            // MANUAL: consume the pending flag with an Acquire swap. `Acquire`
-            // pairs with the control thread's `Release` store so we observe the
-            // request; the actual counters are Relaxed (staleness across the
-            // STATUS read is fine, same as every other fan-in counter).
+            // `Acquire` pairs with the control thread's `Release` store so the
+            // request is observed and handled exactly once even if two `TRIM`s
+            // raced in. The counters stay Relaxed — staleness across the STATUS
+            // read is fine, as for every other fan-in counter.
             let manual = input.trim.pending.swap(false, Ordering::Acquire);
             if manual {
                 trim_input(input);
@@ -2150,7 +1873,6 @@ impl Mixer {
                 continue;
             }
 
-            // AUTO: advance the pure latch on this lane's cumulative frames_read.
             let frames_read = input.frames_read.load(Ordering::Relaxed);
             let decision = auto_trim_decision(
                 frames_read,
@@ -2159,16 +1881,15 @@ impl Mixer {
             );
             self.auto_trim_lane_state[idx] = decision.next;
 
-            // Re-arm the one-shot guard when the lane returns to idle so the next
-            // activation can fire again. `active_since == None` after the update
-            // means "idle right now".
+            // Re-arm the one-shot guard when the lane returns to idle
+            // (`active_since == None` after the update) so the next activation
+            // can fire again.
             if decision.next.active_since.is_none() {
                 input.trim.auto_fired.store(false, Ordering::Relaxed);
                 continue;
             }
 
-            // Fire exactly once per active session: the pure decision says the
-            // delay elapsed AND we have not already fired this session.
+            // Fire exactly once per active session.
             if decision.fire && !input.trim.auto_fired.swap(true, Ordering::Relaxed) {
                 let dropped = trim_input(input);
                 info!(
@@ -2199,27 +1920,19 @@ impl Mixer {
 ///
 /// **Ring stall self-recovery + observability (issue #1524).** A reader that
 /// stays heartbeat-live but stops advancing `read_seq` (CamillaDSP wedged in
-/// Prepared, still polling) used to pin every publish in the bounded wait —
-/// running fan-in at ~1/9 real time and back-pressuring the input lanes until a
-/// downstream aplay timed out, with no fan-in-side signal. The writer now DEMOTES
-/// such a reader past its grace and free-runs (`DroppedStuckDemoted`), which the
-/// self-pace below turns back into real-time pacing (a demoted period drops, so
-/// it self-paces one period like the no-reader path). This function additionally
-/// feeds the writer's per-period stall signals to a [`RingStallTracker`] and logs
-/// ONE edge-triggered `event=fanin.ring.stall_detected` / `stall_cleared`
-/// (steady state and normal sub-threshold reloads emit nothing), and un-folds the
-/// stuck-reader vs no-reader drop counters into `/state.shm_ring`.
+/// Prepared, still polling) would otherwise pin every publish in the bounded
+/// wait, running fan-in at ~1/9 real time and back-pressuring the input lanes.
+/// The writer DEMOTES such a reader past its grace and free-runs
+/// (`DroppedStuckDemoted`), which the self-pace below turns back into real-time
+/// pacing. This function additionally feeds the writer's per-period stall signals
+/// to a [`RingStallTracker`] and logs ONE edge-triggered
+/// `event=fanin.ring.stall_detected` / `stall_cleared`.
 ///
 /// **Which payload the ring gets.** The ring publishes `output_buf` on an S16LE
 /// wire and `wide_payload` on an S32LE one, chosen from the ring's OWN attached
 /// header — never a parallel flag, so the bytes published cannot disagree with
 /// the header the reader validated against. Exactly one of the two arguments is
-/// read per call; the other is the wire that was not taken.
-///
-/// This function writes NOTHING else. Until U4/P7-4 it also fed a lossy aloop
-/// mirror `output_buf` on both wires, which is why `output_buf` was handed in
-/// even on the wide wire that does not publish it; that side-tap is gone, so the
-/// ring publish is the whole of this function's output.
+/// read per call. The ring publish is the whole of this function's output.
 fn write_ring_period(
     ring: &mut RingOutput,
     output_buf: &[i16],
@@ -2228,9 +1941,7 @@ fn write_ring_period(
 ) -> u32 {
     let slots_per_step = period_frames / RING_SLOT_FRAMES;
     let samples_per_slot = (RING_SLOT_FRAMES as usize) * (CHANNELS as usize);
-    // The ring's OWN attached geometry decides which payload is published —
-    // never a parallel flag, so the bytes published can never disagree with the
-    // header the reader validated against.
+    // The ring's OWN attached geometry decides which payload is published.
     let wide = ring.wire_is_wide();
     let mut dropped_this_period = false;
     let mut published_slots: u32 = 0;
@@ -2249,8 +1960,8 @@ fn write_ring_period(
             PublishOutcome::Published => {
                 published_slots += 1;
             }
-            // A demoted publish (issue #1524) is a drop like the others — it
-            // self-paces below, returning fan-in to real time.
+            // A demoted publish (issue #1524) is a drop like the others, so it
+            // self-paces below and fan-in returns to real time.
             PublishOutcome::DroppedNoReader
             | PublishOutcome::DroppedStuck
             | PublishOutcome::DroppedStuckDemoted => {
@@ -2259,7 +1970,6 @@ fn write_ring_period(
         }
     }
 
-    // Publish the writer's counter snapshot into the shared atomics for STATUS.
     let m = ring.writer.metrics();
     ring.counters
         .published
@@ -2267,9 +1977,6 @@ fn write_ring_period(
     ring.counters
         .full_waits
         .store(m.full_waits, Ordering::Relaxed);
-    // UN-FOLDED (issue #1524): a heartbeat-live wedge (stuck_reader_drops — both
-    // the bounded-wait give-ups and the sticky demotions) is now distinguishable
-    // in /state from a benign no-reader reload (drop_no_reader).
     ring.counters
         .stuck_reader_drops
         .store(m.stuck_reader_drops, Ordering::Relaxed);
@@ -2280,10 +1987,8 @@ fn write_ring_period(
         .occupancy
         .store(m.occupancy, Ordering::Relaxed);
 
-    // Ring stall detection (issue #1524): feed the writer's real per-period stall
-    // signals to the edge-detection tracker and log any transition. Steady state
-    // and normal sub-threshold reloads return None (no journal spam). The
-    // demotion self-recovery lives in the writer; this is pure observability.
+    // The demotion self-recovery lives in the writer; this is pure
+    // observability.
     let liveness = ring.writer.reader_liveness();
     let stall_ns = ring.writer.ns_since_read_seq_advance();
     if let Some(event) = ring.stall.observe(RingStallInput {
@@ -2329,42 +2034,39 @@ fn write_ring_period(
         }
     }
 
-    // Frames that actually entered the ring this period — the caller counts only
-    // these toward `frames_written` (a fully-dropped period returns 0).
     published_slots * RING_SLOT_FRAMES
 }
 
 impl Input {
     /// The lane's resampler observability handles for STATUS, or `None` when no
-    /// resampler is armed on this lane (the default — DEFAULT-OFF feature).
+    /// resampler is armed on this lane.
     pub fn resampler_observability(&self) -> Option<LaneResamplerObservability> {
         self.resampler.as_ref().map(|r| r.observability())
     }
 
     /// The lane's USB DIRECT observability handles for the STATUS `direct{}`
-    /// block, or `None` when this is not the direct lane (C7).
+    /// block, or `None` when this is not the direct lane.
     pub fn direct_observability(&self) -> Option<DirectObservability> {
         self.direct_obs.clone()
     }
 
-    /// Whether this lane is the USB DIRECT lane. C7.
+    /// Whether this lane is the USB DIRECT lane.
     pub fn is_direct(&self) -> bool {
         self.direct.is_some()
     }
 
     /// The lane's renderer-ingress ring observability handles for the STATUS
-    /// `ring{}` block, or `None` when this is not a ring lane (U3 / P6).
+    /// `ring{}` block, or `None` when this is not a ring lane.
     pub fn ring_observability(&self) -> Option<ring_capture::RingLaneObservability> {
         self.ring_obs.clone()
     }
 
     /// This lane's transport — the ONE derivation of STATUS's `source` field.
     ///
-    /// Read off the lane-source `Option`s themselves rather than off a separate
+    /// Read off the lane-source `Option`s themselves rather than a separate
     /// stored flag, so "which arm of the read dispatch does this lane take" and
-    /// "what does `/state` say it takes" cannot disagree. The dispatch in
-    /// `render_period` matches on the same two `Option`s in the same precedence
-    /// order.
+    /// "what does `/state` say it takes" cannot disagree — `step()` matches on
+    /// the same two `Option`s in the same precedence order.
     pub fn lane_source(&self) -> LaneSource {
         if self.direct.is_some() {
             LaneSource::Direct
@@ -2376,16 +2078,13 @@ impl Input {
     }
 
     /// The lane's shared TRIM control + counters, cloned for the state-server
-    /// thread. The control endpoint sets `pending` here; the work loop trims
-    /// this lane's resampler ring at its next period boundary and bumps the
-    /// counters.
+    /// thread, which may set `pending` but never touches the resampler itself.
     pub fn trim_control(&self) -> Arc<TrimControl> {
         Arc::clone(&self.trim)
     }
 
     /// The lane's shared MIX-MUTE flag, cloned for the state-server thread. The
-    /// control endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads
-    /// it at the SUM stage via `lane_mix_contributes`.
+    /// work loop reads it at the SUM stage via `lane_mix_contributes`.
     pub fn muted_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.muted)
     }
@@ -2393,7 +2092,7 @@ impl Input {
 
 /// The numeric scale fan-in's program sum carries this run — the ONE width
 /// decision every stage between a lane's read and the summed write consults
-/// (U2 / #2223).
+/// (#2223).
 ///
 /// # What the two scales mean
 ///
@@ -2405,16 +2104,10 @@ impl Input {
 ///   is ±2^31, an `i16` lane is promoted by `widen_i16_to_i32` at its sum entry,
 ///   and the USB DIRECT lane contributes its gadget samples untouched.
 ///
-/// # Why the promotion moved to the sum entry
-///
-/// Before this, the S32LE ring wire got its width by left-justifying the
-/// FINISHED narrow sum at the write. That carried zero extra precision by
-/// construction — a lane's low bits were already gone at the `>> 16` in its
-/// capture, so the wire was a wide container around 16-bit content. Promoting at
-/// each lane's sum entry instead is what lets a lane that HAS more bits keep
-/// them; the promotion of the lanes that do not is exactly the same
-/// `<< 16` as before, just applied earlier, so their contribution is unchanged
-/// sample for sample.
+/// Promoting at each lane's SUM ENTRY (rather than left-justifying the finished
+/// narrow sum) is what lets a lane that HAS more than 16 significant bits keep
+/// them. For a lane that does not, the promotion is the same `<< 16` applied
+/// earlier, so its contribution is unchanged sample for sample.
 ///
 /// # Why the accumulator is i64
 ///
@@ -2428,9 +2121,7 @@ impl Input {
 /// scale), at the cost of 4 more bytes per sample of per-period scratch —
 /// 2 KiB at the default 256-frame stereo period, allocated once in
 /// `Mixer::new` — and no measurable arithmetic on a 64-bit ARM core. It also
-/// retires the clamp-before-shift hazard the
-/// write-time promotion had to defend against: `widen_i16_to_i32` into an `i64`
-/// cannot wrap.
+/// rules out clamp-before-shift: `widen_i16_to_i32` into an `i64` cannot wrap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProgramWidth {
     /// The i16 numeric scale — an S16 wire, and the shipped default.
@@ -2461,10 +2152,8 @@ impl ProgramWidth {
 /// Accumulate one lane's i16 period into the sum at the sum's own scale, with
 /// saturating arithmetic. Pulled out for unit testability — no ALSA needed.
 ///
-/// `Narrow` adds the sample as-is (unchanged behaviour). `Wide` promotes it with
-/// the shared `widen_i16_to_i32` primitive first — the same
-/// information-preserving `<< 16` the wide wire used to apply at the write, done
-/// per lane so a wide lane's own bits are not forced through the narrow scale.
+/// `Narrow` adds the sample as-is; `Wide` promotes it with the shared,
+/// information-preserving `widen_i16_to_i32` first.
 fn mix_into(sum: &mut [i64], input: &[i16], width: ProgramWidth) {
     debug_assert_eq!(sum.len(), input.len());
     match width {
@@ -2482,14 +2171,12 @@ fn mix_into(sum: &mut [i64], input: &[i16], width: ProgramWidth) {
 }
 
 /// Accumulate one lane's **already spine-scale** period into the sum — the USB
-/// DIRECT lane on a wide wire (U2 / #2223), the only producer that has more than
-/// 16 significant bits to contribute.
+/// DIRECT lane on a wide wire (#2223), the only producer with more than 16
+/// significant bits to contribute. Nothing is shifted and nothing is narrowed,
+/// so the low word a hi-res host sends survives from `readi` to the summed
+/// write.
 ///
-/// Nothing is shifted and nothing is narrowed: the i32 the gadget capture
-/// produced is added as-is. That is the whole point of the wide route — the low
-/// word a hi-res host sends survives from `readi` to the summed write.
-///
-/// Only meaningful against a [`ProgramWidth::Wide`] sum; a narrow sum is in the
+/// Only meaningful against a [`ProgramWidth::Wide`] sum: a narrow sum is in the
 /// i16 scale and adding a spine-scale sample to it would be 96 dB of gain. The
 /// mixer picks the pairing per lane from the ONE resolved width, and the
 /// `debug_assert` states that contract for anyone who wires a new caller.
@@ -2511,20 +2198,17 @@ fn mix_into_wide(sum: &mut [i64], input: &[i32], width: ProgramWidth) {
 ///
 /// Width-dispatched. A linear gain commutes with the promotion, so the two arms
 /// are the same operation on paper — but not in floating point, and not at the
-/// rails, which is why PR [#2330](https://github.com/jaspercurry/JTS/pull/2330)
-/// deferred this to the tail that owns gain width. Both halves of that note are
-/// closed here:
+/// rails:
 ///
-/// **The rails.** `Narrow` keeps the `i32` clamp verbatim, where it has always
-/// been unreachable (a narrow sum of every lane is ~2^18 and a duck only ever
-/// attenuates) and where changing it would move shipped bytes for no benefit.
-/// `Wide` drops it: a spine-scale sum LEGITIMATELY exceeds `i32::MAX` — that
-/// headroom above full scale is the reason the accumulator is `i64` — and the
-/// duck's whole job is to pull such a sum back into range. Clamping to `i32`
-/// first would spend the headroom before the duck could use it, turning a
-/// recoverable over-full-scale sum into a clipped one. Saturation is the
-/// consumer's job (`saturate_to_i16` / `clamp_sum_to_spine`), where it can see
-/// the value that is actually leaving.
+/// **The rails.** `Narrow` keeps the `i32` clamp, where it is unreachable (a
+/// narrow sum of every lane is ~2^18 and a duck only ever attenuates). `Wide`
+/// drops it: a spine-scale sum LEGITIMATELY exceeds `i32::MAX` — that headroom
+/// above full scale is the reason the accumulator is `i64` — and the duck's
+/// whole job is to pull such a sum back into range. Clamping to `i32` first
+/// would spend the headroom before the duck could use it, turning a recoverable
+/// over-full-scale sum into a clipped one. Saturation is the consumer's job
+/// (`saturate_to_i16` / `clamp_sum_to_spine`), where it can see the value that
+/// is actually leaving.
 ///
 /// **The mantissa.** `f32` carries 24 bits, so `sum as f32` at spine scale
 /// discards the bottom bits before the multiply happens — the same reason
@@ -2568,10 +2252,9 @@ fn duck_step_per_frame(ms: u32, sample_rate: u32) -> f32 {
 /// `current == target` to detect a settled duck. Returns the updated
 /// `current` for the caller to persist across periods.
 ///
-/// This replaces a hard per-period gain step: a ~25 dB program duck that
-/// switched levels in one sample injected a broadband click and a "pump"
-/// into music playing under a short earcon/cue. Ramping the edges removes
-/// both.
+/// A ~25 dB program duck that switches level in one sample injects a broadband
+/// click and a "pump" into music playing under a short earcon/cue; ramping the
+/// edges removes both.
 ///
 /// Width-dispatched for exactly the reasons [`apply_gain_to_sum`] documents —
 /// this is the same multiply with a per-frame gain, and its steady state is
@@ -2615,18 +2298,18 @@ fn ramp_program_duck(
     current
 }
 
-/// Clamp the sum back to i16 for an S16 consumer — the aloop output, the narrow
-/// ring wire, and the assistant content meter. Pulled out for unit testability.
+/// Clamp the sum back to i16 for an S16 consumer — the narrow ring wire and the
+/// assistant content meter. Pulled out for unit testability.
 ///
-/// `Narrow` is a bare clamp, exactly as it always was: the sum is already in the
-/// i16 numeric scale, so the only question is saturation.
+/// `Narrow` is a bare clamp: the sum is already in the i16 numeric scale, so the
+/// only question is saturation.
 ///
 /// `Wide` has 16 more bits to shed, and sheds them with the shared
-/// [`jasper_resampler::narrow_i32_to_i16_round`] — the round-to-nearest speaker-edge
-/// quantizer, NOT a truncating shift. It inverts `widen_i16_to_i32` exactly, so a
-/// wide sum built only from promoted i16 lanes narrows back to the identical
-/// bytes the narrow sum would have produced; a wide sum carrying real low bits
-/// rounds rather than stepping half an LSB toward −∞ on every sample.
+/// [`jasper_resampler::narrow_i32_to_i16_round`] — a round-to-nearest quantizer,
+/// NOT a truncating shift. It inverts `widen_i16_to_i32` exactly, so a wide sum
+/// built only from promoted i16 lanes narrows back to the identical bytes the
+/// narrow sum would have produced; a wide sum carrying real low bits rounds
+/// rather than stepping half an LSB toward −∞ on every sample.
 fn saturate_to_i16(sum: &[i64], out: &mut [i16], width: ProgramWidth) {
     debug_assert_eq!(sum.len(), out.len());
     match width {
@@ -2661,28 +2344,18 @@ const WIDE_BYTES_PER_SAMPLE: usize = 4;
 /// A wide wire implies a [`ProgramWidth::Wide`] sum (`Mixer::new` refuses to run
 /// any other pairing), so the sum is ALREADY in the wire's own spine scale: the
 /// only conversion left is the `i64`→`i32` saturation the accumulator's headroom
-/// made necessary, plus the explicit little-endian byte order.
-///
-/// This is where the wide wire's content changed. It used to left-justify the
-/// finished narrow sum, which carried zero extra precision — the same clamp
-/// `saturate_to_i16` applies, moved 16 bits up. Now the promotion happens at
-/// each lane's sum entry, so a lane with more than 16 significant bits (the USB
-/// DIRECT capture) puts them here intact. A period built only from i16 lanes
-/// still lands on exactly the old bytes, which
-/// `wide_payload_is_information_equivalent_to_the_narrow_payload` pins.
-///
-/// The clamp-BEFORE-shift hazard the old write-time promotion had to defend
-/// against (shifting a 65534 two-full-scale-lane sum wrapped the sign bit into
-/// non-monotonic fold-over) cannot arise on this path: the promotion is now a
-/// widen into an `i64`, which has 32 bits of room above spine full scale, and
-/// the single saturation happens at the end rather than the beginning.
+/// made necessary, plus the explicit little-endian byte order. Because the
+/// promotion happens at each lane's sum entry, a lane with more than 16
+/// significant bits puts them here intact, while a period built only from i16
+/// lanes lands on exactly the bytes the narrow payload would carry —
+/// `wide_payload_is_information_equivalent_to_the_narrow_payload` pins that.
 ///
 /// `out` is the preallocated `ring_wide_payload` — `4 * sum.len()` bytes,
 /// sized once at construction from the same `period_samples` that sizes
-/// `sum_buf`, so this allocates nothing and copies nothing beyond the samples.
-/// `to_le_bytes` states the wire's little-endianness rather than inheriting the
-/// host's. The 4-byte `copy_from_slice` cannot fail: `chunks_exact_mut(4)`
-/// yields exactly 4-byte chunks and `to_le_bytes` returns exactly 4 bytes.
+/// `sum_buf`, so this allocates nothing. `to_le_bytes` states the wire's
+/// little-endianness rather than inheriting the host's, and the 4-byte
+/// `copy_from_slice` cannot fail: `chunks_exact_mut(4)` yields exactly 4-byte
+/// chunks and `to_le_bytes` returns exactly 4 bytes.
 fn fill_wide_ring_payload(sum: &[i64], out: &mut [u8]) {
     debug_assert_eq!(out.len(), sum.len() * WIDE_BYTES_PER_SAMPLE);
     for (chunk, &s) in out.chunks_exact_mut(WIDE_BYTES_PER_SAMPLE).zip(sum) {
@@ -2701,19 +2374,17 @@ fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool 
 /// the lane to or from that state across a 10 ms window, so a lane this returns
 /// `false` for still reaches the sum, decaying, until its window closes.
 ///
-/// The mute is mux's latest-source-wins arbitration primitive for the USB
-/// lane — the only USB-silencing mechanism. It is
-/// applied at the SUM ONLY: the caller stores this lane's `rms_dbfs_x100` and
-/// bumps `frames_read` BEFORE consulting this gate, so a muted lane still
-/// reports its true captured level and liveness to STATUS. mux depends on that
-/// decoupling — it reads the USB DIRECT lane's pre-mute level/frames to keep
-/// seeing a muted-but-streaming host as "playing", so silencing the lane never
-/// makes mux think the host stopped (which would flap mute→release→mute).
+/// The mute is mux's latest-source-wins arbitration primitive for the USB lane —
+/// the only USB-silencing mechanism — and is applied at the SUM ONLY: the caller
+/// stores this lane's `rms_dbfs_x100` and bumps `frames_read` BEFORE consulting
+/// this gate, so a muted lane still reports its true captured level and liveness
+/// to STATUS. mux depends on that decoupling: it reads the USB DIRECT lane's
+/// pre-mute level/frames to keep seeing a muted-but-streaming host as "playing",
+/// so silencing the lane never makes mux think the host stopped (which would
+/// flap mute→release→mute).
 ///
-/// Selection and mute both drop the lane from the sum, so a muted lane is
-/// silenced exactly like a de-selected one — the same window. This function
-/// takes only values (no atomics/side effects) so the decision is exhaustively
-/// unit-testable without ALSA and can never itself perturb telemetry.
+/// Takes only values (no atomics, no side effects) so the decision is
+/// exhaustively unit-testable without ALSA and can never perturb telemetry.
 fn lane_mix_contributes(selected_input: i32, input_index: usize, label: &str, muted: bool) -> bool {
     input_selected(selected_input, input_index, label) && !muted
 }
@@ -2749,13 +2420,9 @@ fn catchup_drain_periods(avail: i64, period_frames: i64) -> i64 {
 ///
 /// Returns `Some(available_labels_csv)` when the resampler is ENABLED but its
 /// configured `lane_label` matches NONE of the live `input_labels` — the state
-/// in which the feature silently does nothing because `Mixer::new` constructs
-/// no `LaneResampler`. Returns `None` (no warning) when the feature is off, or
-/// when the label DOES match a live lane (the normal armed path). The returned
-/// CSV is the human-facing "here are the labels you could have meant" hint.
-///
-/// Pulled out as a pure function (no ALSA) so the once-only warning decision is
-/// unit-testable on a non-Linux host via the macOS-ALSA-scratch convention.
+/// in which the feature silently does nothing because `Mixer::new` constructs no
+/// `LaneResampler`. The CSV is the "here are the labels you could have meant"
+/// hint. Pure (no ALSA) so the warning decision is unit-testable.
 fn resampler_lane_not_found(
     enabled: bool,
     lane_label: &str,
@@ -2783,8 +2450,7 @@ fn resampler_lane_not_found(
 /// STRUCTURAL minimum (`target + warm-up cushion + period + radius + 1`) so a
 /// tiny configured value can never make `LaneResampler::new` reject the ring.
 ///
-/// Pure over primitives (no ALSA, no `Config`) so it is unit-testable on a
-/// non-Linux host via the macOS-ALSA-scratch convention.
+/// Pure over primitives (no ALSA, no `Config`) so it is unit-testable.
 fn resampler_ring_frames(
     requested_ring_frames: u32,
     input_buffer_frames: u32,
@@ -2807,7 +2473,7 @@ fn resampler_ring_frames(
 }
 
 /// Build the per-input resampler for the clock-crossing lane, or `None` on a
-/// construction failure (which we log and degrade past — the lane just runs the
+/// construction failure (logged and degraded past — the lane then runs the
 /// catch-up fallback). Sizes the resampler's input ring for burst headroom and
 /// holds a warm-up cushion above the base target during acquisition/steady
 /// state (see `lane_resampler.rs`).
@@ -2821,9 +2487,8 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
     );
     let cushion = config.input_resampler_warmup_cushion_frames as usize;
     let target = config.input_resampler_target_frames as usize;
-    // DEFAULT-OFF post-lock cushion decay (latency lever 1). The knobs are
-    // validated fail-loud in Config::from_env; the lane derives the ceiling
-    // (target + cushion) and the render-period intervals itself.
+    // The decay knobs are validated fail-loud in Config::from_env; the lane
+    // derives the ceiling (target + cushion) and the render-period intervals.
     let decay_params = crate::lane_resampler::DecayParams {
         enabled: config.input_resampler_cushion_decay_enabled,
         floor_frames: config.input_resampler_cushion_decay_floor_frames as u64,
@@ -2843,15 +2508,12 @@ fn build_lane_resampler(label: &str, config: &Config) -> Option<LaneResampler> {
         decay_params,
     ) {
         Ok(r) => {
-            // Canonical arming line the operator greps for to confirm the
-            // DEFAULT-OFF feature engaged on this lane. Keep the event name and
-            // the lane/base target/held target/max-ppm fields stable —
-            // jasper-trace / doc point at them. warmup_cushion + ring_frames
-            // are extra diagnostic detail.
+            // Keep this event name and its lane / base target / held target /
+            // max-ppm fields STABLE: jasper-trace and the docs point at them.
             let held_target = target + cushion;
-            // Post-lock cushion decay breadcrumb (DEFAULT-OFF): when armed, the
-            // held target above is the acquisition CEILING it decays FROM toward
-            // the floor once locked + DLL-l0 + stable. `off` when disabled.
+            // When decay is armed, the held target above is the acquisition
+            // CEILING it decays FROM toward the floor once locked + DLL-l0 +
+            // stable.
             let decay_note = if config.input_resampler_cushion_decay_enabled {
                 format!(
                     "decay=on floor={} step={} interval_ms={}",
@@ -2893,9 +2555,8 @@ fn open_input(
     config: &Config,
     resampler: Option<LaneResampler>,
 ) -> Result<Input> {
-    // Non-blocking so a silent renderer's substream doesn't stall
-    // the work loop. read_input handles -EAGAIN as "no data; treat
-    // as silence."
+    // Non-blocking so a silent renderer's substream doesn't stall the work loop;
+    // read_input handles -EAGAIN as "no data, treat as silence".
     let pcm = PCM::new(pcm_name, Direction::Capture, true)
         .with_context(|| format!("opening capture PCM {}", pcm_name))?;
     configure_pcm(&pcm, config, config.input_buffer_frames)
@@ -2930,13 +2591,11 @@ fn open_input(
 }
 
 /// Zero a lane's period buffer from `from_sample` on — whichever width the lane
-/// holds its period in. Every read path renders a fault, an idle producer or a
-/// short read as silence, and none of them should have to restate the width
-/// fork to do it.
+/// holds its period in.
 ///
 /// Takes the two buffers rather than the `Input` so a caller can silence its
-/// lane while holding a borrow of another of the lane's fields — every read
-/// path silences with its PCM or its ring reader borrowed.
+/// lane while holding a borrow of another of the lane's fields; every read path
+/// silences with its PCM or its ring reader borrowed.
 pub(super) fn silence_period(narrow: &mut [i16], wide: &mut [i32], from_sample: usize) {
     if wide.is_empty() {
         narrow[from_sample..].fill(0);
@@ -2952,9 +2611,9 @@ pub(super) fn silence_period(narrow: &mut [i16], wide: &mut [i32], from_sample: 
 /// Non-empty `read_buf_wide` is not merely a buffer — it is the lane's OWN
 /// width switch, read by the drain (which side of the capture fork), by the
 /// render (which `render_period`), and by the sum (which entry). Inverting it
-/// points every one of those at the wrong scale at once, so the decision earns
-/// a test that a pure helper makes possible and an inline `if` on a `&Config`
-/// does not. An empty `Vec` has no capacity, so a narrow box allocates nothing.
+/// points every one of those at the wrong scale at once, which is why the
+/// decision is a testable pure helper rather than an inline `if` on a `&Config`.
+/// An empty `Vec` has no capacity, so a narrow box allocates nothing.
 fn spine_read_buf(program_wire_is_wide: bool, period_samples: usize) -> Vec<i32> {
     if program_wire_is_wide {
         vec![0i32; period_samples]
@@ -2964,11 +2623,11 @@ fn spine_read_buf(program_wire_is_wide: bool, period_samples: usize) -> Vec<i32>
 }
 
 /// Build the USB DIRECT lane. Opens `hw:UAC2Gadget` (or the override) with the
-/// bridge's proven envelope (C1); on failure the lane starts `Absent` and will
-/// render silence with a bounded reopen retry (C3) — a gadget-absent box never
-/// fails the daemon. The aloop substream is NOT opened (`pcm: None`): this
-/// lane's audio comes only from the gadget capture. Never returns `Err` — the
-/// fail-hard "every input required" contract is exempted for this lane alone.
+/// proven envelope; on failure the lane starts `Absent` and renders silence with
+/// a bounded reopen retry, so a gadget-absent box never fails the daemon. The
+/// aloop substream is NOT opened (`pcm: None`): this lane's audio comes only
+/// from the gadget capture. Never returns `Err` — the fail-hard "every input
+/// required" contract is exempted for this lane alone.
 fn open_direct_input(
     label: &str,
     pcm_name: &str,
@@ -2988,11 +2647,6 @@ fn open_direct_input(
     let present = Arc::new(AtomicBool::new(false));
     let opens = Arc::new(AtomicU64::new(0));
     let retries = Arc::new(AtomicU64::new(0));
-    // Handle-liveness probe (C, defect 2026-07-06) needs no captured baseline: it
-    // queries the LIVE open handle each cadence tick via `snd_pcm_status`, so a
-    // rebuild that leaves the handle attached to a destroyed instance is detected
-    // even when no frame ever flows on it (the ioctl returns `-ENODEV` /
-    // `Disconnected` where the frozen-mmap `avail_update` keeps returning `Ok(0)`).
     let direct = match open_direct_capture(&device, open_period) {
         Ok((pcm, negotiated_buffer)) => {
             present.store(true, Ordering::Relaxed);
@@ -3006,8 +2660,8 @@ fn open_direct_input(
         }
         Err(e) => {
             // Gadget absent at startup (source not yet advertised, unplugged
-            // host, or another process holds hw:UAC2Gadget). Start Absent; the lane
-            // renders silence and retries on its own cadence (C3). Not fatal.
+            // host, or another process holds hw:UAC2Gadget). Not fatal: the lane
+            // renders silence and retries on its own cadence.
             warn!(
                 "event=fanin.usb_direct.absent device={} errno={} detail={:#} (startup; will retry ~every {}s)",
                 device,
@@ -3024,9 +2678,8 @@ fn open_direct_input(
     let read_buf_wide = spine_read_buf(config.program_wire_is_wide(), period_samples);
     // The deferred device-open channel (#2533). Spawned at construction, before
     // `main` calls `mlockall`, like every other fan-in helper thread. A spawn
-    // failure leaves the lane WITHOUT self-heal rather than restoring the inline
-    // open: an `snd_pcm_open` inside the render loop's 5.33 ms period budget,
-    // against a two-slot downstream ring, is the defect being fixed.
+    // failure leaves the lane WITHOUT self-heal rather than restoring an inline
+    // `snd_pcm_open` inside the render loop's 5.33 ms period budget.
     let reopen_pending = Arc::new(AtomicBool::new(false));
     let direct_opener = match direct_capture::DirectOpener::spawn(Arc::clone(&reopen_pending)) {
         Ok(opener) => Some(opener),
@@ -3042,7 +2695,7 @@ fn open_direct_input(
     };
     Input {
         // The direct lane does NOT open its aloop substream — its only source
-        // is the gadget capture in `direct` (C6).
+        // is the gadget capture in `direct`.
         pcm: None,
         direct: Some(direct),
         direct_opener,
@@ -3085,19 +2738,18 @@ fn open_direct_input(
     }
 }
 
-/// Open the USB DIRECT capture PCM with the hardware-validated gadget envelope
-/// (C1) — deliberately NOT fanin's aloop-tuned `configure_pcm` (which sets an
-/// exact buffer). S32_LE 2ch 48k, `set_period_size(open_period, Nearest)`,
-/// `set_buffer_size_near(resolve_direct_buffer_frames(open_period))`; then the
-/// validated post-negotiation checks. `open_period` is 256 by default
-/// (the on-device-proven value) or the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES`
-/// override (lever 2 H1 knob). Non-blocking (the direct lane rides the resampler
-/// read slot like the aloop lane) and `start()`ed so reads return data / EAGAIN.
-/// Returns `(open PCM, negotiated buffer frames)` — the second element is the
-/// live `hwp.get_buffer_size()`, which the caller stores into
-/// `DirectObservability.buffer_frames` and logs so STATUS reports the buffer the
-/// PCM is really running rather than the requested size. On failure returns an
-/// `alsa::Error` the caller maps to the `Absent` state.
+/// Open the USB DIRECT capture PCM with the hardware-validated gadget envelope —
+/// deliberately NOT fanin's aloop-tuned `configure_pcm`, which sets an exact
+/// buffer. S32_LE 2ch 48k, `set_period_size(open_period, Nearest)`,
+/// `set_buffer_size_near(resolve_direct_buffer_frames(open_period))`, then the
+/// post-negotiation checks. `open_period` is 256 (the on-device-proven value) or
+/// the `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` override. Non-blocking and
+/// `start()`ed so reads return data / EAGAIN.
+///
+/// Returns `(open PCM, negotiated buffer frames)`; the second element is the live
+/// `hwp.get_buffer_size()`, so STATUS reports the buffer the PCM is really
+/// running rather than the requested size. On failure returns an `alsa::Error`
+/// the caller maps to the `Absent` state.
 fn open_direct_capture(
     device: &str,
     open_period: u32,
@@ -3117,18 +2769,16 @@ fn open_direct_capture(
         let period = hwp.get_period_size()? as u32;
         let buffer = hwp.get_buffer_size()? as u32;
         pcm.hw_params(&hwp)?;
-        // Bridge-parity validation. Rate/period MUST land exactly (the bridge
-        // bails otherwise); buffer is warn-on-near-mismatch but must clear the
-        // deep-buffer + alignment structural floor. A validation failure closes
-        // the PCM (drop) and returns an error → the lane goes Absent.
+        // Rate/period MUST land exactly; the buffer is warn-on-near-mismatch but
+        // must clear the deep-buffer + alignment floor. A validation failure
+        // drops the PCM and returns an error, so the lane goes Absent.
         if let Err(reason) = direct_open_params_ok(rate, period, buffer, open_period) {
             warn!(
                 "event=fanin.usb_direct.open_rejected device={} rate={} period={} buffer={} reason={}",
                 device, rate, period, buffer, reason,
             );
-            // Manufacture an errno-bearing alsa::Error so the caller's Absent
-            // path logs a consistent shape. EINVAL = "negotiated an unusable
-            // geometry".
+            // An errno-bearing alsa::Error keeps the caller's Absent-path log
+            // shape consistent. EINVAL = "negotiated an unusable geometry".
             return Err(alsa::Error::new("direct_open_params", libc::EINVAL));
         }
         if buffer != want_buffer {
@@ -3143,13 +2793,12 @@ fn open_direct_capture(
     Ok((pcm, negotiated_buffer))
 }
 
-/// Pure post-negotiation validation of the direct capture geometry (C1),
-/// unit-testable without ALSA. Rate must be exactly 48000 and period exactly
-/// `want_period` (the requested open period — the bridge bails on any drift);
-/// buffer must clear the deep-buffer floor (≥ `DIRECT_BUFFER_MIN_PERIODS`
-/// periods AND ≥ `DIRECT_BUFFER_MIN_FRAMES`) and be a whole multiple of the
-/// period (a fractional buffer would shear). Returns the rejection reason string
-/// on failure.
+/// Pure post-negotiation validation of the direct capture geometry,
+/// unit-testable without ALSA. Rate must be exactly 48000 and period exactly the
+/// requested `want_period`; buffer must clear the deep-buffer floor (≥
+/// `DIRECT_BUFFER_MIN_PERIODS` periods AND ≥ `DIRECT_BUFFER_MIN_FRAMES`) and be
+/// a whole multiple of the period, since a fractional buffer would shear.
+/// Returns the rejection reason string on failure.
 fn direct_open_params_ok(
     rate: u32,
     period: u32,
@@ -3201,23 +2850,20 @@ fn classify_pcm_errno(errno: i32) -> PcmIoFate {
     }
 }
 
-/// The nominal sample rate the direct lane opens at. Kept as a named const so
-/// the open envelope and the pure validator agree (C1). Distinct from
-/// `config.sample_rate` on purpose: the gadget capture is a FIXED 48 kHz
-/// endpoint (the bridge's contract), not a configurable fan-in knob.
+/// The nominal sample rate the direct lane opens at, named so the open envelope
+/// and the pure validator agree. Distinct from `config.sample_rate` on purpose:
+/// the gadget capture is a FIXED 48 kHz endpoint, not a configurable fan-in knob.
 const SAMPLE_RATE_HZ: u32 = 48_000;
 
-/// Pull the errno out of an `alsa::Error` for logging. Small helper so the
-/// Absent-path log lines stay terse. (`alsa::Error::errno()` already returns the
-/// `i32` errno, matching the `libc::E*` constants the read paths compare against.)
+/// Pull the errno out of an `alsa::Error` for logging. It matches the `libc::E*`
+/// constants the read paths compare against.
 fn errno_of(e: &alsa::Error) -> i32 {
     e.errno()
 }
 
 fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
-    // HwParams must be dropped before pcm.hw_params() is called.
-    // The alsa-rs API: build the params, install them, drop the
-    // handle in this nested scope.
+    // HwParams must be dropped before pcm.hw_params() is called, hence the
+    // nested scope.
     {
         let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
         hwp.set_channels(CHANNELS)
@@ -3240,11 +2886,10 @@ fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
 
 /// Read and throw away up to `periods` whole periods, returning the frames
 /// discarded. On non-blocking capture, `readi` returns `Err(EAGAIN)` the instant
-/// the ring drops below one period (it drained faster than `avail` claimed) —
-/// that `Err` arm is the normal early-stop. `Ok(0)` is a defensive guard for a
-/// 0-frame return that shouldn't occur here. The `0..periods` bound (≤ MAX)
-/// means it can never spin regardless. Generic over the sample type so the
-/// lane's width picks the IO handle and the scratch together.
+/// the ring drops below one period — that `Err` arm is the normal early stop;
+/// `Ok(0)` is a defensive guard. The `0..periods` bound means it can never spin
+/// regardless. Generic over the sample type so the lane's width picks the IO
+/// handle and the scratch together.
 fn discard_periods<S: Copy>(io: &IO<'_, S>, scratch: &mut [S], periods: i64) -> u64 {
     let mut discarded: u64 = 0;
     for _ in 0..periods {
@@ -3260,51 +2905,39 @@ fn discard_periods<S: Copy>(io: &IO<'_, S>, scratch: &mut [S], periods: i64) -> 
 /// Bounded per-input catch-up resync. Called once per lane per period,
 /// BEFORE the normal `read_input`.
 ///
-/// ## Why this exists
-///
-/// Every lane is read exactly one period per work-loop iteration, and the
-/// loop is paced by the blocking OUTPUT write (the local DAC clock). A lane
-/// whose producer is clocked off the *same* DAC (every networked renderer:
-/// AirPlay / Spotify / Bluetooth / TTS) keeps its capture ring at ~one
-/// period forever — it can't outrun a consumer on its own clock. The USB
-/// lane is different: its producer is the host (Mac) clock, and the gadget's
-/// async feedback currently tracks the snd-aloop jiffies timer, not the DAC,
-/// so a small residual rate gap accumulates. With a strict one-period read
-/// and no catch-up, that excess never drains — the ring fills monotonically
-/// until it overruns, by which point the *upstream* usbsink producer queue
-/// has already overflowed (dropped_full) because back-pressure never reached
-/// the host.
+/// Every lane is read exactly one period per work-loop iteration, and the loop
+/// is paced by the local DAC clock. A lane whose producer is clocked off the
+/// *same* DAC (every networked renderer: AirPlay / Spotify / Bluetooth / TTS)
+/// keeps its capture ring at ~one period forever — it cannot outrun a consumer
+/// on its own clock. The USB lane is different: its producer is the host clock,
+/// and the gadget's async feedback tracks the snd-aloop jiffies timer rather
+/// than the DAC, so a small residual rate gap accumulates. With a strict
+/// one-period read and no catch-up, that excess never drains — the ring fills
+/// monotonically until it overruns, by which point the *upstream* usbsink
+/// producer queue has already overflowed because back-pressure never reached the
+/// host.
 ///
 /// This drains the excess down to one period when a lane's readable backlog
-/// crosses the high-water, so the ring stays bounded and back-pressure can
-/// propagate. It is GENERIC per-input: it only ever fires for a lane that
-/// actually backs up. A DAC-locked lane sits at one period and this is a
+/// crosses the high-water. A DAC-locked lane sits at one period and this is a
 /// single non-blocking `avail_update` — no reads, no effect.
 ///
-/// ## Honesty
+/// Drop-CONTROLLED, not drop-FREE: a backed-up lane loses a few ms of audio at
+/// each resync, traded against a cascading upstream overflow. This does NOT
+/// resample.
 ///
-/// Drop-CONTROLLED, not drop-FREE: a backed-up lane loses a few ms of audio
-/// at each resync (an occasional discard at the residual drift rate), traded
-/// against a cascading upstream overflow. True drop-free for the mixed path
-/// is the later per-lane adaptive resampler; this does NOT resample.
-///
-/// ## RT-safety
-///
-/// No allocation (discards into the lane's existing `read_buf` scratch) and
-/// no blocking (`avail_update` is a non-blocking query; the discard `readi`
-/// only ever reads frames `avail_update` already reported ready). The number
-/// of discard reads is capped per call (`CATCHUP_MAX_DRAIN_PERIODS`). The
-/// log is count-gated, so the common no-resync path touches no clock and
-/// emits nothing.
+/// RT-safety: no allocation (discards into the lane's existing `read_buf`
+/// scratch) and no blocking (`avail_update` is a non-blocking query; the discard
+/// `readi` only ever reads frames it already reported ready). Discard reads are
+/// capped per call (`CATCHUP_MAX_DRAIN_PERIODS`), and the log is count-gated, so
+/// the common no-resync path touches no clock and emits nothing.
 fn drain_input_excess(input: &mut Input, period_frames: usize) {
     // Non-direct lanes always have Some(pcm); the direct lane never reaches
     // this path (it routes to read_direct_and_render). Guard defensively.
     let Some(pcm) = input.pcm.as_ref() else {
         return;
     };
-    // Non-blocking query of how many frames are readable right now.
-    // EAGAIN/error here just means "no usable reading right now" — leave
-    // the normal read_input path to handle recovery; never block or panic.
+    // An error here means "no usable reading right now" — leave recovery to the
+    // normal read_input path; never block or panic.
     let avail = match pcm.avail_update() {
         Ok(a) => a,
         Err(_) => return,
@@ -3314,9 +2947,9 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
         return; // healthy lane — the overwhelmingly common path.
     }
 
-    // Discard whole periods into the lane's existing period scratch (reused; no
-    // allocation), at the width that lane holds. read_input overwrites the same
-    // buffer next, so trashing it here is safe.
+    // Discard whole periods into the lane's existing period scratch, at the
+    // width that lane holds. read_input overwrites the same buffer next, so
+    // trashing it here is safe.
     let discarded_frames = if input.read_buf_wide.is_empty() {
         match pcm.io_i16() {
             Ok(io) => discard_periods(&io, &mut input.read_buf, to_drain),
@@ -3336,8 +2969,6 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
         .catchup_resync_frames
         .fetch_add(discarded_frames, Ordering::Relaxed);
     let events = input.catchup_events.fetch_add(1, Ordering::Relaxed) + 1;
-    // Rate-limited: 1st event for this lane, then every Nth. Count-based so
-    // the hot loop reads no clock. Logged outside any tight inner loop.
     if events == 1 || events % CATCHUP_LOG_EVERY == 0 {
         warn!(
             "event=fanin.input.catchup label={} discarded_frames={} avail_frames={} \
@@ -3360,35 +2991,29 @@ fn drain_input_excess(input: &mut Input, period_frames: usize) {
 /// already at/below its held target — never panics, never blocks, never does
 /// ALSA I/O).
 ///
-/// ## Why the reservoir is the resampler ring (v2)
-///
-/// The full-ring-graph standing head-start does NOT live in the ALSA readable
-/// backlog on the armed lane: `read_into_resampler_and_render` already drains
-/// every frame ALSA reports ready each period, so the kernel ring is held
-/// shallow by design. The reservoir is the resampler's CURSOR-RELATIVE fill
-/// (`write_frame - next_input_frame`) — observed on-device at ~1919 frames
-/// against a 512-held target with lock churn. This trim drops THAT in place via
+/// The standing head-start does NOT live in the ALSA readable backlog on an
+/// armed lane: `read_into_resampler_and_render` already drains every frame ALSA
+/// reports ready each period, so the kernel ring is held shallow by design. The
+/// reservoir is the resampler's CURSOR-RELATIVE fill (`write_frame -
+/// next_input_frame`) — observed on-device at ~1919 frames against a 512-frame
+/// held target with lock churn. This trim drops THAT in place via
 /// [`LaneResampler::trim_ring`]: the cursor skips forward over the oldest
 /// buffered frames (one discontinuity at the skip) while lock and the DLL loop
-/// state survive — the exact opposite of the v1 `reset()` path, which was the
-/// unlock/reprime churn we are eliminating.
+/// state survive, so it costs no unlock/reprime churn.
 ///
-/// An UNARMED lane (no resampler) has no such userspace reservoir — its
-/// standing fill would be the ALSA backlog, which the catch-up drain already
-/// bounds and which is not the full-ring-graph carrier this trim targets — so
-/// TRIM on an unarmed lane is a documented 0-frame no-op. It still clears its
-/// `pending` flag so the control command completes cleanly.
+/// An UNARMED lane has no such userspace reservoir — its standing fill would be
+/// the ALSA backlog, which the catch-up drain already bounds — so TRIM there is
+/// a 0-frame no-op. It still clears its `pending` flag so the control command
+/// completes cleanly.
 ///
 /// RT-safety: pure host-memory work inside the resampler (one fill compute, one
 /// cursor advance, one `drop_before`), no syscalls, no allocation, no blocking.
-/// Runs on the WORK thread (which owns the mixer's `LaneResampler`), triggered
-/// by a control-endpoint `pending` flag or the AUTO-TRIM latch — never on the
-/// state-server thread.
+/// Runs on the WORK thread, which OWNS the mixer's `LaneResampler` — never on
+/// the state-server thread.
 fn trim_input(input: &mut Input) -> u64 {
     let dropped = match input.resampler.as_mut() {
         Some(r) => r.trim_ring(),
-        // No resampler on this lane: the standing-fill reservoir this PoC
-        // targets does not exist here. A documented no-op (see fn docs).
+        // No resampler on this lane: no standing-fill reservoir to trim.
         None => 0,
     };
     if dropped == 0 {
@@ -3400,8 +3025,7 @@ fn trim_input(input: &mut Input) -> u64 {
         .trimmed_frames
         .fetch_add(dropped, Ordering::Relaxed)
         + dropped;
-    // One log line per trim (trims are operator/auto events, not per-period —
-    // no spam gate needed).
+    // Trims are operator/auto events, not per-period, so this needs no spam gate.
     info!(
         "event=fanin.trim label={} dropped_ring_frames={} trims={} total_trimmed_frames={}",
         input.label, dropped, trims, total,
@@ -3409,12 +3033,12 @@ fn trim_input(input: &mut Input) -> u64 {
     dropped
 }
 
-/// The mixer-thread side of the relocated impulse tap (C4). Holds the shared
-/// [`TapState`] (armed + detector knobs, read lock-free), the last-armed
-/// [`TapConfig`] (read only on an arm-generation change), the bounded channel to
-/// the `fanin-tap-writer` thread, and the mixer-local detector state + per-lane
-/// cumulative capture cursor. Constructed once in `Mixer::new`; runs inline in
-/// `read_direct_and_render` over the converted S16 slice BEFORE `push_input`.
+/// The mixer-thread side of the impulse tap. Holds the shared [`TapState`]
+/// (armed + detector knobs, read lock-free), the last-armed [`TapConfig`] (read
+/// only on an arm-generation change), the bounded channel to the
+/// `fanin-tap-writer` thread, and the mixer-local detector state + cumulative
+/// capture cursor. Runs inline in `read_direct_and_render` over the converted
+/// S16 slice BEFORE `push_input`.
 ///
 /// Disarmed cost: one relaxed atomic load per direct read
 /// ([`TapState::armed`]) and nothing else.
@@ -3426,8 +3050,8 @@ pub struct DirectTapHook {
     detector: Option<ImpulseDetector>,
     last_generation: u64,
     /// Cumulative direct-capture frames read BEFORE the current read (the
-    /// detector's `read_start_frame`, so refractory anchoring is stable across
-    /// reads of any size — the bridge's `capture_frames_cursor` idiom).
+    /// detector's `read_start_frame`), so refractory anchoring is stable across
+    /// reads of any size.
     capture_frames_cursor: u64,
 }
 
@@ -3456,12 +3080,11 @@ impl DirectTapHook {
         Arc::clone(&self.config)
     }
 
-    /// Run the tap over one converted S16 read, BEFORE it enters the resampler
-    /// (the route's own ingress). Mirrors usbsink's `tap_over_read`: reloads the
-    /// detector only on a fresh arm generation, timestamps with the caller's
-    /// post-read `read_ns`, and non-blocking `try_send`s the event
-    /// (drop-and-count on Full). Only called from the armed branch; the
-    /// disarmed fast path is the caller's `state.armed()` check.
+    /// Run the tap over one converted S16 read, BEFORE it enters the resampler.
+    /// Reloads the detector only on a fresh arm generation, timestamps with the
+    /// caller's post-read `read_ns`, and non-blocking `try_send`s the event
+    /// (drop-and-count on Full). Only called from the armed branch; the disarmed
+    /// fast path is the caller's `state.armed()` check.
     ///
     /// - `converted`: the S16 slice just narrowed from S32 (this read only).
     /// - `read_frames`: frames in this read.
@@ -3514,12 +3137,11 @@ impl DirectTapHook {
     }
 }
 
-/// `CLOCK_MONOTONIC` in nanoseconds — the direct tap's ingress timeline (C4).
-/// The tap and the Python mic harness both read `CLOCK_MONOTONIC` on the same
-/// Pi; that shared timeline is the only reason their cross-process subtraction
-/// is valid. On the (never-observed) syscall failure returns 0 rather than
-/// crashing the work loop; a stray 0-anchored event is dropped by the harness's
-/// pairing window.
+/// `CLOCK_MONOTONIC` in nanoseconds — the direct tap's ingress timeline. The tap
+/// and the Python mic harness both read `CLOCK_MONOTONIC` on the same Pi; that
+/// shared timeline is the only reason their cross-process subtraction is valid.
+/// On a syscall failure this returns 0 rather than crashing the work loop; a
+/// stray 0-anchored event is dropped by the harness's pairing window.
 fn monotonic_ns() -> i128 {
     let mut ts = MaybeUninit::<libc::timespec>::uninit();
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) };
@@ -3554,8 +3176,8 @@ fn read_input(
         return Ok(0);
     };
     // Read at the width this lane holds its period in. The PCM was opened at
-    // that same width (`lane_capture_format`) — one allocation decision sizes
-    // both — so the typed IO handle can never disagree with the wire.
+    // that same width (`lane_capture_format`), so the typed IO handle can never
+    // disagree with the wire.
     let read = if input.read_buf_wide.is_empty() {
         let io = pcm.io_i16().context("getting i16 IO handle for input")?;
         io.readi(&mut input.read_buf)
@@ -3568,11 +3190,9 @@ fn read_input(
             input
                 .frames_read
                 .fetch_add(frames as u64, Ordering::Relaxed);
-            // Zero the tail of the period buffer if we got less than a full
-            // period. The mixer's sum loop bounds the read region by
-            // `frames`, but defense-in-depth: future code paths that
-            // read the whole buffer (e.g., RMS for active detection)
-            // should see zeros, not stale data, in the unfilled tail.
+            // Zero the tail on a short read: the sum loop bounds its region by
+            // `frames`, but a path that reads the whole buffer (RMS, the fade
+            // tracker) must see zeros rather than stale data there.
             if frames < requested_frames {
                 silence_period(
                     &mut input.read_buf,
@@ -3584,23 +3204,20 @@ fn read_input(
         }
         Err(e) => match classify_pcm_errno(e.errno()) {
             PcmIoFate::WouldBlock => {
-                // Non-blocking read with no data ready. Renderer is
-                // idle (or hasn't opened its substream yet). Treat
-                // as silence.
+                // No data ready: the renderer is idle, or has not opened its
+                // substream yet.
                 silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
                 Ok(0)
             }
             PcmIoFate::Xrun => {
-                // Input overrun: renderer produced faster than we
-                // drained. snd_pcm_recover restarts the stream.
+                // Overrun: the renderer produced faster than we drained.
                 let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
                 warn!(
                     "event=fanin.xrun source=input label={} count={}",
                     input.label, count,
                 );
-                // Best-effort forward to the off-thread xrun log
-                // writer. Send error means the receiver was dropped
-                // (shutdown in progress); fine to ignore.
+                // A send error means the receiver was dropped (shutdown in
+                // progress); fine to ignore.
                 let _ = xrun_tx.send(XrunEvent {
                     source: XrunSource::Input,
                     label: input.label.clone(),
@@ -3621,7 +3238,7 @@ fn read_input(
 
 /// Cap on period-equivalent work for the ARMED lane drain in one `step()` call.
 /// Like `CATCHUP_MAX_DRAIN_PERIODS`, this bounds syscall work per period so a
-/// pathological `avail` (driver fault) can't spin the hot loop. Frames beyond
+/// pathological `avail` (driver fault) cannot spin the hot loop. Frames beyond
 /// the cap stay in the kernel ring and are read next period — the resampler's
 /// own ring is the rate buffer, so leaving a little behind is harmless.
 const RESAMPLER_MAX_READ_PERIODS: i64 = 64;
@@ -3655,18 +3272,18 @@ fn recover_resampler_input_xrun(
         frames: period_frames as u32,
         count,
     });
-    // The aloop resampler lane always has Some(pcm) (only the direct lane is
-    // None, and it uses recover_direct_xrun instead).
+    // The aloop resampler lane always has Some(pcm); only the direct lane is
+    // None, and it uses recover_direct_xrun instead.
     let Some(pcm) = input.pcm.as_ref() else {
         silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
         return Ok(());
     };
     pcm.try_recover(error, true)
         .context("recovering resampler input xrun")?;
-    // `try_recover` can leave a capture PCM in PREPARED. The ordinary
-    // read_input path will kick that forward with the next readi(), but the
-    // resampler path polls avail_update() before reading; without an explicit
-    // restart it can sit at avail=0 forever after a startup xrun.
+    // `try_recover` can leave a capture PCM in PREPARED. The ordinary read_input
+    // path kicks that forward with its next readi(), but the resampler path
+    // polls avail_update() before reading; without an explicit restart it can
+    // sit at avail=0 forever after a startup xrun.
     if pcm.state() != State::Running {
         pcm.start()
             .with_context(|| format!("restarting resampler input {} after xrun", input.label))?;
@@ -3681,12 +3298,11 @@ fn recover_resampler_input_xrun(
 /// Read all currently-available frames from an ARMED lane into its resampler,
 /// then render exactly one DAC-paced period into `read_buf`. Returns the number
 /// of real (non-silence) frames the render produced — `period_frames` when the
-/// resampler is locked, `0` while it is priming or underfilled (the lane is
-/// silent, exactly as an idle renderer's substream is today).
+/// resampler is locked, `0` while it is priming or underfilled, which renders
+/// the lane silent exactly as an idle renderer's substream does.
 ///
-/// This REPLACES the `drain_input_excess` + strict-one-period `read_input` pair
-/// for the armed lane. Rate reconciliation lives in the resampler (DLL-steered
-/// to the DAC clock); the catch-up drain is intentionally bypassed here.
+/// Rate reconciliation lives in the resampler (DLL-steered to the DAC clock),
+/// so the catch-up drain is intentionally bypassed on this path.
 ///
 /// RT-safety: bounded syscalls (`avail_update` probes plus reads of frames
 /// already reported ready, capped at `RESAMPLER_MAX_READ_PERIODS` periods
@@ -3709,10 +3325,10 @@ fn read_into_resampler_and_render(
     let mut read_budget_remaining =
         period_frames.saturating_mul(RESAMPLER_MAX_READ_PERIODS as usize);
     if read_budget_remaining > 0 {
-        // Drain every frame ALSA reports ready, including final partial periods.
-        // Re-check after each drained snapshot so frames that arrive during this
-        // step do not sit in the kernel ring for a full extra render period.
-        // The total work remains bounded by `read_budget_remaining`.
+        // Drain every frame ALSA reports ready, including final partial periods,
+        // re-checking after each snapshot so frames arriving during this step do
+        // not sit in the kernel ring for a full extra render period. The total
+        // work stays bounded by `read_budget_remaining`.
         let mut stop_drain = false;
         while read_budget_remaining > 0 && !stop_drain {
             let avail = match input
@@ -3797,9 +3413,9 @@ fn read_into_resampler_and_render(
                             break;
                         }
                         PcmIoFate::Xrun => {
-                            // Lane overrun: a discontinuity. Recover the PCM and
-                            // reset the resampler so it re-primes from fresh input
-                            // rather than interpolating across the gap.
+                            // A discontinuity: reset the resampler so it re-primes
+                            // from fresh input rather than interpolating across
+                            // the gap.
                             recover_resampler_input_xrun(
                                 input,
                                 e,
@@ -3822,10 +3438,9 @@ fn read_into_resampler_and_render(
         }
     }
 
-    // Render exactly one DAC-paced period into the lane's period buffer for the
-    // mixer to sum. Same resampling kernel either way — only the emit tail's
-    // rails differ (`render_period_wide` rounds at i32 instead of dividing the
-    // spine-scale accumulator back down to i16).
+    // Same resampling kernel either way — only the emit tail's rails differ:
+    // `render_period_wide` rounds at i32 instead of dividing the spine-scale
+    // accumulator back down to i16.
     let real_frames = match input.resampler.as_mut() {
         Some(r) => {
             if wide {
@@ -3835,8 +3450,7 @@ fn read_into_resampler_and_render(
             }
         }
         None => {
-            // Unreachable in practice (only called when resampler.is_some()),
-            // but stay safe: emit silence.
+            // Unreachable: only called when resampler.is_some().
             silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
             0
         }
@@ -3900,15 +3514,15 @@ mod tests {
         assert!(lane_mix_contributes(-1, 2, "usbsink", false));
     }
 
-    // ---- USB DIRECT pure helpers (C1/C2) ---------------------------------
+    // ---- USB DIRECT pure helpers -----------------------------------------
 
     #[test]
     fn direct_open_params_accepts_bridge_envelope() {
         // Default geometry: period 256, buffer 768 = 3×period (the deep-buffer
-        // floor), byte-identical to the pre-lever-2 envelope.
+        // floor).
         assert!(direct_open_params_ok(48_000, 256, 768, 256).is_ok());
-        // H1 geometry: open period 64 with a DEEP buffer (768 = 12 periods, well
-        // over the 3-period + 768-frame floor).
+        // Open period 64 with a DEEP buffer (768 = 12 periods, well over the
+        // 3-period + 768-frame floor).
         assert!(direct_open_params_ok(48_000, 64, 768, 64).is_ok());
         // A larger negotiated buffer at the default period is fine (period-aligned).
         assert!(direct_open_params_ok(48_000, 256, 1024, 256).is_ok());
@@ -3926,14 +3540,14 @@ mod tests {
         assert!(direct_open_params_ok(48_000, 256, 512, 256).is_err());
         // Buffer not period-aligned.
         assert!(direct_open_params_ok(48_000, 256, 700, 256).is_err());
-        // A shallow 2-period buffer at period 64 (128 frames) is the REFUTED
-        // shallow-buffer class — it clears 2×period but not the deep floor.
+        // A shallow 2-period buffer at period 64 (128 frames) clears 2×period
+        // but not the deep floor.
         assert!(direct_open_params_ok(48_000, 64, 128, 64).is_err());
     }
 
     #[test]
     fn resolve_direct_buffer_frames_holds_deep_floor() {
-        // Default period reproduces the historical fixed 768-frame buffer.
+        // Default period lands exactly on the 768-frame floor.
         assert_eq!(resolve_direct_buffer_frames(256), 768);
         // Small period is floored to ≥768 AND ≥3 periods, period-aligned:
         // 64 → 768 (12 periods, 768 ≥ max(192, 768)).
@@ -4011,7 +3625,7 @@ mod tests {
 
     #[test]
     fn direct_reopen_cadence_is_about_two_seconds() {
-        // 375 periods × 256 frames / 48000 Hz = 2.0 s (C3).
+        // 375 periods × 256 frames / 48000 Hz = 2.0 s.
         let seconds = (DIRECT_REOPEN_RETRY_PERIODS as f64) * (DIRECT_PERIOD_FRAMES as f64)
             / (SAMPLE_RATE_HZ as f64);
         assert!(
@@ -4057,12 +3671,11 @@ mod tests {
 
     #[test]
     fn zombie_handle_never_fires_on_attached_idle_host() {
-        // The 2026-07-05 review's BLOCKER: an ordinary attached-but-silent host
-        // (Mac wired 24/7, music paused/asleep) streams avail≈0 drains forever
-        // with frames NEVER having flowed on the handle (measured on jts.local).
-        // The flowing→dead gate MUST hold the
-        // detector off no matter how long the zero-avail streak grows, or the
-        // flagship box churns a reopen + WARN every ~2 s with no gadget rebuild.
+        // An ordinary attached-but-silent host (wired 24/7, music paused or
+        // asleep) streams avail≈0 drains forever with frames NEVER having flowed
+        // on the handle. The flowing→dead gate MUST hold the detector off no
+        // matter how long the zero-avail streak grows, or the box churns a
+        // reopen + WARN every ~2 s with no gadget rebuild.
         // No amount of accumulated zero-avail can trip while frames_flowed=false:
         assert!(!zombie_handle_suspected(
             false,
@@ -4183,7 +3796,7 @@ mod tests {
         assert_eq!(direct_health_str(DirectHealth::Broken), "broken");
     }
 
-    // ---- C: handle-liveness probe / card-generation signal (defect 2026-07-06) --
+    // ---- handle-liveness probe / card-generation signal ------------------
 
     #[test]
     fn liveness_probe_dead_when_ioctl_errored() {
@@ -4253,8 +3866,8 @@ mod tests {
 
     #[test]
     fn direct_lane_narrows_via_shared_conversion() {
-        // The direct lane uses jasper_resampler's narrowing (C2). Re-assert the
-        // pinned sign-boundary vector here too so a drift fails the fanin suite.
+        // The direct lane uses jasper_resampler's narrowing. The pinned
+        // sign-boundary vector is re-asserted here so a drift fails this suite too.
         assert_eq!(jasper_resampler::s32_high_word_to_s16(0), 0);
         assert_eq!(jasper_resampler::s32_high_word_to_s16(0x7fff_ffff), 0x7fff);
         assert_eq!(jasper_resampler::s32_high_word_to_s16(i32::MIN), i16::MIN);
@@ -4376,8 +3989,8 @@ mod tests {
     #[test]
     fn ramp_program_duck_glides_it_does_not_step() {
         // A constant program signal, one period long. Ducking DOWN toward
-        // 0.5 must NOT drop every frame to 0.5 at once (the old hard step);
-        // early frames stay near full level and the level descends monotonically.
+        // 0.5 must NOT drop every frame to 0.5 at once: early frames stay near
+        // full level and the level descends monotonically.
         let channels = 2usize;
         let frames = 64usize;
         let mut sum = vec![10_000i64; frames * channels];
@@ -4757,8 +4370,8 @@ mod tests {
     // Ring A output path. These construct a real SPSC ring (via jasper_ring)
     // under the OS temp dir and drive `write_ring_period` directly, so they run
     // on any host that can build the crate (CI Linux). `RingOutput` holds no
-    // ALSA handle at all since U4/P7-4, so the ring publish + reader roundtrip
-    // is the whole contract — there is nothing else for a test to stub out.
+    // ALSA handle at all, so the ring publish + reader roundtrip is the whole
+    // contract — there is nothing else for a test to stub out.
 
     use jasper_ring::{RingReader, SlotRead, SAMPLE_FORMAT_S16LE};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
@@ -4901,15 +4514,11 @@ mod tests {
             .collect()
     }
 
-    /// The overflow pin, restated for the accumulator that replaced the i32 sum.
-    ///
-    /// It used to guard an ORDER: the wide payload had to clamp into the i16
-    /// range before shifting, because `65534 << 16` in an `i32` wrapped the sign
-    /// bit and turned the loudest possible program into non-monotonic fold-over.
-    /// The promotion now happens at each lane's sum entry into an `i64`, where
-    /// that hazard cannot exist — so what needs pinning is the property that
-    /// replaced it: two full-scale lanes land at exactly twice one lane, in the
-    /// right sign, with no wrap, at BOTH widths.
+    /// The overflow pin: two full-scale lanes land at exactly twice one lane, in
+    /// the right sign, with no wrap, at BOTH widths. An `i32` accumulator could
+    /// not hold that — `65534 << 16` wraps the sign bit and turns the loudest
+    /// possible program into non-monotonic fold-over — which is why the
+    /// promotion happens at each lane's sum entry into an `i64`.
     #[test]
     fn two_full_scale_lanes_do_not_wrap_at_either_width() {
         // Narrow: unchanged — 65534, comfortably inside the accumulator.
@@ -5672,11 +5281,9 @@ mod tests {
     /// route — capture narrowing, resampler push, render, sum entry, summed
     /// write — pinned to committed bytes. Every box in the fleet runs this path.
     ///
-    /// **The golden was captured by running this same fixture against the
-    /// PRE-CHANGE code on `origin/main`**, not by printing what the new code
-    /// happens to produce. That is the difference between a byte-identity proof
-    /// and a tautology: these numbers are evidence about the old behaviour, and
-    /// the new code has to meet them.
+    /// The golden is committed evidence about the narrow route's bytes, not a
+    /// printout of what this code happens to produce, so a change to the route
+    /// has to meet it rather than restate it.
     ///
     /// What moves them: the capture narrowing itself; the narrowing ORDER
     /// (narrow-then-resample — resampling first and narrowing after is
@@ -5686,7 +5293,7 @@ mod tests {
     #[test]
     fn the_narrow_direct_route_is_byte_identical_to_its_committed_golden() {
         let output = narrow_direct_route_golden_output();
-        // Captured from origin/main @ 8f021e6ac (pre-change), same fixture.
+        // Committed bytes for this fixture.
         let expected: [i16; 24] = [
             6921, 2186, 7688, 2077, 8462, 1983, 9211, 1903, 9904, 1838, 10513, 1786, 11015, 1747,
             11390, 1721, 11624, 1707, 11709, 1704, 11644, 1713, 11434, 1731,
@@ -5902,12 +5509,10 @@ mod tests {
     /// wide lane — `declared=Wide, output_is_wide=true, any_lane_is_wide=false`
     /// — must construct: any i16 lane simply promotes at `mix_into`'s Wide arm.
     ///
-    /// An earlier revision of this check required equality on the lane axis and
-    /// would have exited 78 here: no audio path, no self-recovery, operator-only
-    /// — on a correct configuration, and reachable by a household toggling USB
-    /// off at `/sources/`. Fail-closed is right for a fault and a liveness
-    /// hazard when pointed at a legal state, which is why the lane axis is an
-    /// implication and this test names the shape it must never park.
+    /// Requiring equality on the lane axis would exit 78 here: no audio path, no
+    /// self-recovery, operator-only — on a correct configuration, and reachable
+    /// by a household toggling USB off at `/sources/`. Fail-closed is right for
+    /// a fault and a liveness hazard when pointed at a legal state.
     #[test]
     fn a_wide_wire_with_usb_audio_input_off_constructs() {
         assert!(
@@ -5927,9 +5532,8 @@ mod tests {
     /// The marker is the load-bearing half. Without it the error reaches `main`
     /// as an ordinary failure, the unit takes `Restart=on-failure`, and five
     /// starts in five minutes reach `StartLimitAction=reboot` — a permanent,
-    /// unrepairable-by-restarting condition rebooting the Pi in a loop, which is
-    /// exactly what happened to `jasper-outputd` on 2026-06-11. Asserting only
-    /// "it returns Some" would pass with the marker deleted.
+    /// unrepairable-by-restarting condition rebooting the Pi in a loop.
+    /// Asserting only "it returns Some" would pass with the marker deleted.
     ///
     /// `(Wide, output wide, no wide lane)` is deliberately NOT here — it is the
     /// legal USB-off shape, pinned by
@@ -5965,16 +5569,14 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // U2 PR-2 — closing PR #2330's deferred correctness-n5: the `i32` rails
-    // and the `f32` mantissa on what is now an `i64` accumulator.
+    // The `i32` rails and the `f32` mantissa on the `i64` accumulator.
     // ------------------------------------------------------------------
 
     /// THE NARROW DUCK'S BYTES, pinned as literals.
     ///
-    /// `apply_gain_to_sum` and `ramp_program_duck` gained a width parameter;
-    /// the narrow arm must be the same arithmetic it always was, down to the
-    /// `f32` multiply and the (unreachable) `i32` clamp. These are the numbers
-    /// a narrow box has always produced.
+    /// The narrow arm of `apply_gain_to_sum` / `ramp_program_duck` must stay the
+    /// same arithmetic down to the `f32` multiply and the (unreachable) `i32`
+    /// clamp. These are the numbers a narrow box produces.
     #[test]
     fn the_narrow_duck_is_byte_identical_to_its_committed_golden() {
         let mut sum = vec![20_000i64, -20_000, 1_500, -1_500, 32_767, -32_768];
@@ -6044,11 +5646,10 @@ mod tests {
         apply_gain_to_sum(&mut sum, duck, ProgramWidth::Wide);
         assert_eq!(sum[0], 3_221_127_168, "the ducked sum keeps its headroom");
 
-        // THE OLD VALUE IS COMPUTED FROM THE OLD EXPRESSION, not written down.
-        // An earlier revision used the literal `i32::MAX` here and was wrong by
-        // one: `i32::MAX as f32` rounds UP to 2^31, so the old
-        // `.clamp(_, i32::MAX as f32) as i64` actually landed on 2_147_483_648.
-        // A hand-written "what the old code did" is a claim; this is the code.
+        // The clamped value is COMPUTED FROM THE CLAMPING EXPRESSION rather
+        // than written down: `i32::MAX as f32` rounds UP to 2^31, so
+        // `.clamp(_, i32::MAX as f32) as i64` lands on 2_147_483_648, not
+        // `i32::MAX`.
         let spent_value = ((ducked_probe as f32) * duck)
             .round()
             .clamp(i32::MIN as f32, i32::MAX as f32) as i64;
@@ -6073,11 +5674,9 @@ mod tests {
         saturate_to_i16(&kept, &mut kept_out, ProgramWidth::Wide);
         saturate_to_i16(&spent, &mut spent_out, ProgramWidth::Wide);
         assert_eq!(kept_out[0], 18_633);
-        // 2_250 on BOTH old rail candidates (i32::MAX and the f32 clamp's
-        // 2^31): the two differ by one spine LSB, which is far below one i16
-        // step, so the audible verdict is the same either way. Verified
-        // mechanically rather than reasoned — an earlier revision of this line
-        // said 2_251 from hand arithmetic and jts3 caught it.
+        // 2_250 on BOTH rail candidates (i32::MAX and the f32 clamp's 2^31):
+        // the two differ by one spine LSB, far below one i16 step, so the
+        // audible verdict is the same either way.
         assert_eq!(spent_out[0], 2_250);
         assert_eq!(
             {
@@ -6098,8 +5697,8 @@ mod tests {
         );
     }
 
-    /// The ramp carries the same fix — it is the same multiply with a per-frame
-    /// gain, and `step()` reaches it on every duck transition.
+    /// The ramp is the same multiply with a per-frame gain, and `step()` reaches
+    /// it on every duck transition.
     #[test]
     fn the_wide_ramp_keeps_the_same_headroom_as_the_flat_wide_multiply() {
         const FULL_SCALE_WIDE: i64 = (32_767i64) << 16;
