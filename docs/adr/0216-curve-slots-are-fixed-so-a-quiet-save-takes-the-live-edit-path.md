@@ -40,13 +40,25 @@ whether this particular write needed it. `#3637` asks.
 - Flat → Harman → B&K, and any Saved-tab pick between presets that share
   the fixed slots, is now silent at both the live-edit and the durable-save
   layer.
-- Three cases are deliberately left ducking, each pinned in `#3637`:
+- Four cases are deliberately left ducking, each pinned in `#3637`:
   a load of a **different file** (the audition preview) is a real swap and
   keeps its bracket; a controller with **no raw-config API** — the
   statefile transport, with CamillaDSP down — cannot be asked the question
-  and keeps the file loader; and an in-place **rollback** reloads the
+  and keeps the file loader; an in-place **rollback** reloads the
   pre-`prepare` bytes through the file loader rather than re-sending the
-  candidate that failed, because the quiet vehicle is one-shot per prepare.
+  candidate that failed, because the quiet vehicle is one-shot per prepare;
+  and a moved **`Gain`** keeps its bracket even though CamillaDSP would
+  write it in place — `plan_live_edit`'s structural rule was safe on the
+  live-draft path only because that path freezes the output trim, and a
+  durable save is exactly where a trim change (a `/sound` headroom drag, a
+  match-loudness toggle, `active_baseline_headroom`) is realised; it
+  matches the filter's kind rather than its three emitted trim names so a
+  future trim needs no list to keep in step, and a preference-EQ drag or
+  curve preset pick still writes in place because those bands are Biquads.
+- The Gain hold-back has a cost worth naming: with match loudness on, a
+  Saved/Off or profile-to-profile A/B whose loudness compensation differs
+  moves `sound_preamp` and still ducks; a preset sweep and any A/B at equal
+  trim are silent.
 - The fixed-slot half is hardware-verified: two fader-probe runs on jts3
   after all four curve-slot PRs (`#3462`, `#3513`, `#3527`, `#3526`) logged
   50 and 24 live edits with 0 swaps and 0 ducks from a live edit (`#3636`).
