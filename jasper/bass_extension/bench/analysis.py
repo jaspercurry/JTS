@@ -5,12 +5,10 @@
 """Campaign verdicts, composed from the existing measurement kernels.
 
 The runner does not reinvent measurement math. This module composes the
-existing kernels — ``assess_capture`` (capture quality), ``thd_curve`` /
-``compression_curve`` / ``tracking_error_db`` (signal analysis), and the
-``snr_policy`` gate — into the pass/fail verdicts the frozen bundle records, and
-adds the three analyses the protocol names but no kernel owns: the isolated
-digital-transfer SHA match, the paired sweep-transparency comparison, and the
-sustain sag / corner-shift checks.
+existing ``tracking_error_db`` (signal analysis) kernel into the pass/fail
+verdicts the frozen bundle records, and adds the analyses the protocol names
+but no kernel owns: the isolated digital-transfer SHA match, the paired
+sweep-transparency comparison, and the sustain sag / corner-shift checks.
 
 Thresholds are never invented inside this module. The driver-protection bounds
 (THD, compression, sustain sag, corner-shift) come from the selected
@@ -27,17 +25,11 @@ tests — the math here is real.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
-from jasper.audio_measurement.analysis import (
-    compression_curve,
-    thd_curve,
-    tracking_error_db,
-)
-from jasper.audio_measurement.quality import CaptureQuality, assess_capture
+from jasper.audio_measurement.analysis import tracking_error_db
 from jasper.bass_extension.targets import MarginPolicy
 
 Verdict = str  # "pass" | "fail"
@@ -90,89 +82,6 @@ def transfer_match(
         and deployed_byte_size == reference_byte_size
     )
     return _PASS if matched else _FAIL
-
-
-@dataclass(frozen=True, slots=True)
-class SweepVerdicts:
-    quality_verdict: Verdict
-    protection_verdict: Verdict
-    thd_max: float
-    compression_max_db: float
-    tracking_rms_db: float
-    tracking_max_db: float
-    repeat_spread_db: float
-    snr_db: float
-
-
-def assess_sweep(
-    *,
-    captured: np.ndarray,
-    sample_rate: int,
-    sweep_n_samples: int,
-    has_mic_calibration: bool,
-    fund_freqs: np.ndarray,
-    fund_db: np.ndarray,
-    harmonics: Mapping[int, tuple[np.ndarray, np.ndarray]],
-    compression_rungs: Sequence[tuple[float, tuple[float, ...]]],
-    tracking_freqs: np.ndarray,
-    tracking_measured_db: np.ndarray,
-    tracking_predicted_db: np.ndarray,
-    repeat_band_levels_db: Sequence[float],
-    snr_db: float,
-    band: tuple[float, float],
-    margin: MarginPolicy,
-    min_snr_db: float,
-    max_repeat_spread_db: float,
-) -> SweepVerdicts:
-    """Compose the kernels + policy gates into sweep verdicts.
-
-    Driver-protection bounds (THD, compression) come from ``margin``; the
-    measurement-quality bounds ``MarginPolicy`` does not carry — ``min_snr_db``
-    and ``max_repeat_spread_db`` — are supplied by the caller's measurement
-    policy, never defaulted here.
-    """
-
-    quality: CaptureQuality = assess_capture(
-        np.asarray(captured, dtype=np.float64),
-        sample_rate=sample_rate,
-        expected_sample_rate=sample_rate,
-        sweep_n_samples=sweep_n_samples,
-        has_mic_calibration=has_mic_calibration,
-    )
-
-    _thd_freqs, thd_values = thd_curve(fund_freqs, fund_db, dict(harmonics), band=band)
-    thd_max = float(np.max(thd_values)) if len(thd_values) else 0.0
-
-    compression = compression_curve(list(compression_rungs))
-    compression_max = (
-        max((abs(value) for rung in compression for value in rung), default=0.0)
-    )
-
-    tracking_rms, tracking_max = tracking_error_db(
-        tracking_freqs, tracking_measured_db, tracking_predicted_db, band
-    )
-
-    levels = [float(value) for value in repeat_band_levels_db]
-    repeat_spread = (max(levels) - min(levels)) if levels else 0.0
-
-    quality_ok = (
-        not quality.failed
-        and thd_max <= float(margin.thd_fail_ratio)
-        and repeat_spread <= float(max_repeat_spread_db)
-        and snr_db >= min_snr_db
-    )
-    protection_ok = compression_max <= float(margin.compression_fail_db)
-
-    return SweepVerdicts(
-        quality_verdict=_PASS if quality_ok else _FAIL,
-        protection_verdict=_PASS if protection_ok else _FAIL,
-        thd_max=thd_max,
-        compression_max_db=float(compression_max),
-        tracking_rms_db=float(tracking_rms),
-        tracking_max_db=float(tracking_max),
-        repeat_spread_db=float(repeat_spread),
-        snr_db=float(snr_db),
-    )
 
 
 @dataclass(frozen=True, slots=True)
