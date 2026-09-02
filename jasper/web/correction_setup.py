@@ -441,9 +441,7 @@ def _enforce_session_volume_ceiling(v2host: Any) -> None:
     that outlived the ceiling its stage armed. What is added is telling the
     session's :class:`~.correction_crossover_v2.PositionGate`, when there is
     one, so a hold blocking on a slow-but-alive positioner ends by NAME
-    (``session_ceiling_expired``) instead of limping on to the relay link's own
-    expiry and reaching the household as ``relay_timeout`` — a transport claim
-    about a transport that never failed.
+    (``session_ceiling_expired``) rather than as an anonymous timeout.
 
     It has to be told rather than sample the plan itself: this call drains what
     it finds, so the plan stops reporting ``stale_active`` immediately after,
@@ -578,8 +576,8 @@ def _begin_relay_finishing(kind_label: str) -> bool:
     """Atomically end the Stop window after playback and rollback finish.
 
     ``False`` means Stop won the same lock first. Once this returns ``True``,
-    the phone owns bounded recorder close/encryption/upload and the host cannot
-    delete its relay session underneath an in-flight PUT.
+    the capture owns bounded recorder close and storage, and the host cannot
+    tear its session down underneath that.
     """
 
     global _relay_capture, _relay_stop_request
@@ -1059,19 +1057,15 @@ def _household_mic_path() -> Path:
 
 def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
     """Persist a just-established calibration as the household's default
-    measurement mic (Wave-2 household-mic persistence,
-    ``jasper.correction.household_mic``).
+    measurement mic (``jasper.correction.household_mic``).
 
-    Called from every point a calibration is NEWLY established, or the
-    household's already-remembered one is explicitly RE-confirmed: the phone
-    relay flow (``_relay_calibration_from_setup``, shared by the room and
-    crossover flows — its ``serial``/``upload`` modes establish a new
-    calibration, its ``stored`` mode re-confirms the current one) and the
-    local/laptop flow (``_handle_calibration_fetch`` /
-    ``_handle_calibration_upload``, below). Handlers that merely load an
-    already-established ``calibration_id`` WITHOUT the household saying so
-    (``_handle_start``, ``_handle_local_capture_setup``) do not call this —
-    the household record only moves on a new success or an explicit confirm.
+    Called from the two points a calibration is NEWLY established —
+    ``_handle_calibration_fetch`` and ``_handle_calibration_upload`` below.
+    Handlers that merely load an already-established ``calibration_id``
+    WITHOUT the household saying so (``_handle_start``,
+    ``_handle_local_capture_setup``) do not call this, and neither does a
+    capture resolving the reference minted from this record: the household
+    record only moves on a new success.
 
     Fail-soft: a write failure must never block the calibration that
     triggered it. A different mic than the currently-remembered one is
@@ -1147,15 +1141,13 @@ def _resolved_household_mic() -> tuple[Any, Any] | None:
 
 def _default_setup_calibration_for_spec() -> Any | None:
     """Build the capture spec's OPTIONAL ``default_setup.calibration`` hint
-    from the household's remembered mic (Wave-2 household-mic persistence).
+    from the household's remembered mic.
 
-    Never binding — the 2026-07 Wave-2 capture page reads it and renders a
-    one-tap confirm screen that submits ``{mode: "stored", calibration_id,
-    model}`` when the hint is marked ``resolvable: true`` (minted by the
-    ``mode="stored"`` branch of ``_relay_calibration_from_setup`` below —
-    see `DefaultSetupCalibration`'s docstring); an older page still ignores
-    unknown spec fields, so this stays a safe no-op there. Fail-soft: any
-    resolution miss yields no hint rather than blocking the capture.
+    Never binding. The measurement source reads the hint and mints the
+    capture's own ``setup.calibration`` reference from it when it is marked
+    ``resolvable: true`` (``correction_crossover_v2_wired
+    ._wired_setup_reference``). Fail-soft: any resolution miss yields no hint
+    rather than blocking the capture.
 
     ``resolvable`` is a SECOND, freshly-taken resolver call — not inferred
     from ``found`` succeeding above — so the flag always reflects a
@@ -1165,7 +1157,9 @@ def _default_setup_calibration_for_spec() -> Any | None:
     miss here simply leaves `resolvable` at its `False` default, which
     `DefaultSetupCalibration.to_dict()` omits from the wire payload.
     """
-    from jasper.capture_relay.spec import DefaultSetupCalibration
+    from jasper.active_speaker.crossover_v2.sweep_spec import (
+        DefaultSetupCalibration,
+    )
     from jasper.correction.household_mic import resolve_household_mic_calibration
 
     found = _resolved_household_mic()
@@ -1188,7 +1182,7 @@ def _default_setup_calibration_for_spec() -> Any | None:
 
 def _household_mic_prefill_payload() -> dict[str, Any] | None:
     """Server-rendered prefill for the room wizard's local mic/calibration
-    UI (Wave-2 household-mic persistence). ``None`` when there is no
+    UI. ``None`` when there is no
     household default, or its calibration is no longer resolvable — the page
     then renders exactly as it did before this feature. Reuses
     ``_calibration_payload``'s shape (``{"calibration": ..., "preview":
@@ -1196,9 +1190,8 @@ def _household_mic_prefill_payload() -> dict[str, Any] | None:
     consume it unmodified; `model_key` additionally selects the right
     `<option>` in the model picker.
 
-    The crossover flow has no equivalent local UI — its mic setup runs
-    entirely through the phone relay page, covered by the spec
-    `default_setup` hint above.
+    The crossover flow has no equivalent local UI — it reads the spec
+    `default_setup` hint above instead.
     """
     found = _resolved_household_mic()
     if found is None:
@@ -1386,154 +1379,6 @@ def _calibration_device_mismatch(
             "measurement mic before measuring"
         )
     return None
-
-
-def _normalize_label_token(value: str) -> str:
-    """Lowercase, punctuation-stripped comparison key for a device label.
-
-    Shared normalization so ``"UMIK-2 (2752:002b)"`` and an alias of
-    ``"umik-2"`` compare equal regardless of casing/hyphenation/parenthetical
-    USB descriptor suffixes the OS appends.
-    """
-    return re.sub(r"[^a-z0-9]", "", value.lower())
-
-
-def _stored_calibration_model_mismatch(
-    record: Any, device: Mapping[str, Any] | None
-) -> str | None:
-    """Detect a resolved measurement-mic calibration that is for a DIFFERENT
-    external mic than the one this capture's ``device`` reports (2026-07-20
-    incident: a Dayton iMM-6C capture silently carried a remembered UMIK-2
-    calibration — ``setup.calibration.mode == "stored"`` re-confirms whatever
-    calibration_id the phone echoes, independent of which mic actually
-    recorded). Calibration is frequency-magnitude, so applying the WRONG
-    mic's curve corrupts a same-frequency measurement just as surely as the
-    built-in-mic case `_calibration_device_mismatch` guards — this is that
-    check's sibling for external-mic-vs-external-mic identity.
-
-    Conservative and anchored, never a fuzzy label guess: reuses the SAME
-    curated ``SUPPORTED_MODELS``/``model_label_aliases`` registry the wizard's
-    own label-based auto-inference uses (single source of truth for "which OS
-    label names which model" — not a new heuristic). Only trips when the
-    device's own reported label positively matches a DIFFERENT registered
-    model's aliases than the record's own model. An unrecognized model on
-    either side, or a device label that matches nothing (or matches its OWN
-    model), is NOT a mismatch — there's nothing concrete to contradict the
-    stored choice with, so the current (apply) behavior is preserved.
-    """
-    from jasper.audio_measurement.calibration import (
-        SUPPORTED_MODELS,
-        model_label_aliases,
-    )
-
-    model_key = str(getattr(record, "model", "") or "")
-    if model_key not in SUPPORTED_MODELS:
-        return None
-    label = ""
-    if isinstance(device, Mapping):
-        label = str(device.get("label") or device.get("browser_label") or "")
-    if not label:
-        return None
-    normalized_label = _normalize_label_token(label)
-    if any(
-        _normalize_label_token(alias) in normalized_label
-        for alias in model_label_aliases(model_key)
-    ):
-        return None  # matches its own model — fine
-    for other_key, spec in SUPPORTED_MODELS.items():
-        if other_key == model_key:
-            continue
-        if any(
-            _normalize_label_token(alias) in normalized_label
-            for alias in model_label_aliases(other_key)
-        ):
-            return (
-                f'stored calibration is for "{SUPPORTED_MODELS[model_key]["label"]}" '
-                f'but the captured device "{label}" looks like a '
-                f'"{spec["label"]}"'
-            )
-    return None
-
-
-def _stored_calibration_identity_refused(
-    record: Any, device: Mapping[str, Any] | None
-) -> bool:
-    """``_stored_calibration_model_mismatch`` plus its WARN, as ONE decision.
-
-    Extracted so both points a relay flow can hold the resolved calibration
-    and the phone's device label at the same time consult the same rule and
-    emit the same event, rather than one of them growing a second copy:
-
-    - ``_resolve_relay_calibration`` — the UNBOUND flows, which carry the
-      device straight into resolution (and the v2 crossover path, via
-      ``correction_crossover_v2.resolve_relay_calibration``);
-    - ``_apply_bound_calibration_for_device`` — the BOUND flows, where the
-      calibration is resolved during the ``setup_validate`` handshake, whose
-      payload declares no device at all. The page HAS opened a microphone by
-      then (``requestMicPermissionForSetup``) and the picker screen shows a
-      selected label, but that label is a PREDICTION of what will record; the
-      realized capture device is authoritative only from the first level batch
-      (issue #1660).
-
-    Returns True when the stored calibration belongs to a different mic than
-    the one this capture reports, i.e. when the caller must not apply it.
-    """
-    mismatch = _stored_calibration_model_mismatch(record, device)
-    if mismatch is None:
-        return False
-    device_label = (
-        str(device.get("label") or device.get("browser_label") or "")
-        if isinstance(device, Mapping) else ""
-    )
-    log_event(
-        logger,
-        "correction.calibration_device_identity_mismatch",
-        level=logging.WARNING,
-        stored_model=str(getattr(record, "model", "") or ""),
-        device_label=_short_text(device_label) or "",
-        reason=mismatch,
-    )
-    return True
-
-
-
-
-
-
-@dataclass(frozen=True)
-class _BoundRelayCalibration:
-    """What ONE setup binding's calibration choice resolved to.
-
-    ``mode`` is the phone's declared calibration mode, ``record`` the resolved
-    ``CalibrationRecord``, ``serial`` whatever `_save_household_mic` should be
-    told (the raw serial for a vendor lookup, the carried-forward display for a
-    stored re-confirm, ``None`` for an upload), and ``saved`` whether this
-    binding's household-mic write has already happened.
-
-    It exists because "which calibration this binding bound" is one fact with
-    the BINDING's lifetime, not the level match's: a session runs several level
-    matches under one binding (Retry level check, Check verification level), and
-    each must re-decide against its OWN realized microphone.
-    """
-
-    mode: str
-    record: Any
-    serial: str | None = None
-    saved: bool = False
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -2105,11 +1950,10 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             state_started = False
 
         if state_started:
-            if sess.capture_transport == "local":
-                # Browser permission + device selection are human-paced. The
-                # ordinary upload watchdog resumes when the first noise upload
-                # actually begins, after setup and level matching are done.
-                sess.suspend_capture_timeout()
+            # Browser permission + device selection are human-paced. The
+            # ordinary upload watchdog resumes when the first noise upload
+            # actually begins, after setup and level matching are done.
+            sess.suspend_capture_timeout()
             _clear_start_slot()
         else:
             _clear_start_slot()
@@ -2516,12 +2360,11 @@ def _handle_autolevel_start(
 
     sess = _get_or_create_session()
     if (
-        getattr(sess, "capture_transport", "local") != "local"
-        or sess.state != SessionState.NEEDS_NOISE_CAPTURE
+        sess.state != SessionState.NEEDS_NOISE_CAPTURE
         or not bool(getattr(sess, "local_capture_setup_bound", False))
     ):
         raise RequestConflict(
-            "local microphone setup must be complete before level matching"
+            "microphone setup must be complete before level matching"
         )
     retryable_statuses = {
         AutolevelStatus.IDLE,
@@ -2748,166 +2591,6 @@ def _handle_calibration_upload(
     return _calibration_payload(record)
 
 
-def _relay_calibration_from_setup(
-    setup: dict[str, Any] | None, *, device: Mapping[str, Any] | None = None,
-) -> Any | None:
-    """Materialize the phone wizard's calibration choice AND persist it.
-
-    Resolve-then-save, in that order: `_resolve_relay_calibration` below owns
-    the resolution (and the identity refusal), this owns the household-mic
-    write. Returns the stored calibration record, or None for phone/no
-    calibration — an unchanged contract for every caller that had one,
-    including `correction_crossover_v2.resolve_relay_calibration`.
-
-    The two halves are split because the BOUND relay flows must resolve at
-    `setup_validate` but must NOT persist there: the realized capture device
-    is not known until the first level batch, so saving at bind time would
-    stamp the household record's `updated_at` as if a mic nobody has seen yet
-    were confirmed. Those flows call the resolver directly and hand the save
-    to `_apply_bound_calibration_for_device`, which runs it only once the
-    device is known and the calibration is actually applied.
-    """
-    bound = _resolve_relay_calibration(setup, device=device)
-    if bound is None:
-        return None
-    _save_household_mic(bound.record, serial=bound.serial)
-    return bound.record
-
-
-def _resolve_relay_calibration(
-    setup: dict[str, Any] | None, *, device: Mapping[str, Any] | None = None,
-) -> _BoundRelayCalibration | None:
-    """Resolve the phone wizard's calibration choice WITHOUT persisting it.
-
-    The phone cannot call the Pi directly, so serial/upload/stored choices
-    ride the relay event that arms the sweep. This mirrors the local
-    `/calibration/*` handlers and returns the resolved record plus what a
-    later household-mic save would need, or None for phone/no calibration.
-
-    Shared by BOTH the room and crossover flows (both drive their level
-    match through `_run_relay_level_match`). `mode == "stored"` (the one-tap
-    "Using {mic} — confirm" follow-up) re-confirms an already-remembered
-    calibration rather than establishing a new one, but still counts as
-    success here for the same reason: the household explicitly confirmed
-    intent to use it.
-
-    ``device`` (optional, the capture's phone-reported input device — see
-    `CaptureResult.device`) is consulted ONLY in the `mode == "stored"`
-    branch: a re-confirmed calibration is a passive carry-over the household
-    never re-selects a mic for, so it is the one mode where a DIFFERENT
-    physical mic can silently ride a stale pairing (the 2026-07-20 incident —
-    see `_stored_calibration_model_mismatch`). A detected mismatch returns
-    `None`, so no caller applies it and no caller saves it — the existing "no
-    calibration resolved" path already degrades to an annotated-uncalibrated
-    analysis, never a blocked capture. `serial`/`upload` are the household
-    actively establishing a NEW pairing in the moment, a different risk shape,
-    and are unchanged here — callers that don't have a `device` to offer (the
-    default) see byte-identical behavior.
-    """
-    calibration = setup.get("calibration") if isinstance(setup, dict) else None
-    if not isinstance(calibration, dict):
-        return None
-    mode = str(calibration.get("mode") or "none").strip()
-    if mode in ("", "none"):
-        return None
-    if mode == "serial":
-        from jasper.audio_measurement.calibration import fetch_vendor_calibration
-
-        serial = str(calibration.get("serial") or "").strip()
-        record = fetch_vendor_calibration(
-            model_key=str(calibration.get("model") or "").strip(),
-            serial=serial,
-            orientation=str(calibration.get("orientation") or "unknown").strip()
-            or "unknown",
-            root=_calibration_root(),
-        )
-        return _BoundRelayCalibration(mode=mode, record=record, serial=serial)
-    if mode == "upload":
-        from jasper.audio_measurement.calibration import (
-            DEFAULT_SIGN_CONVENTION,
-            store_calibration,
-        )
-
-        filename = str(calibration.get("filename") or "uploaded-calibration.txt")
-        record = store_calibration(
-            text=str(calibration.get("content") or ""),
-            provider="manual_upload",
-            model=str(calibration.get("model") or "other").strip() or "other",
-            label=str(calibration.get("label") or filename).strip()
-            or "Uploaded calibration",
-            source=f"uploaded:{filename}",
-            # The phone page declares neither of these. `orientation` has an
-            # honest "I was not told" value and keeps it. The sign convention
-            # has none — every value is a factual claim about the file — so
-            # the phone flow states the ecosystem convention outright rather
-            # than reading a key the page has never sent (it posts exactly
-            # {mode, filename, content}: capture-page/js/main.js, pinned by
-            # test_capture_page_upload_never_declares_a_sign_convention). A
-            # household with a genuine correction-convention file uses the
-            # local /correction/ upload card, which does expose the control.
-            orientation=str(calibration.get("orientation") or "unknown").strip()
-            or "unknown",
-            sign_convention=DEFAULT_SIGN_CONVENTION,
-            root=_calibration_root(),
-        )
-        return _BoundRelayCalibration(mode=mode, record=record)
-    if mode == "stored":
-        from jasper.correction.household_mic import (
-            HouseholdMicRecord,
-            read_household_mic,
-            resolve_household_mic_calibration,
-        )
-
-        calibration_id = str(calibration.get("calibration_id") or "").strip()
-        if not calibration_id:
-            raise ValueError("calibration_id is required for a stored calibration")
-        model = str(calibration.get("model") or "").strip()
-        # The one-tap confirm only ever echoes calibration_id + model (no raw
-        # serial, no file hash) — see DefaultSetupCalibration. Thread the
-        # household's OWN file_sha256/serial_display through when the id still
-        # matches the current default, so resolution gets the same content-hash
-        # fallback a full HouseholdMicRecord would carry, and a re-confirm
-        # doesn't blank out the "...1234" display on the next hint.
-        previous = read_household_mic(path=_household_mic_path())
-        if previous is not None and previous.calibration_id != calibration_id:
-            previous = None
-        candidate = HouseholdMicRecord(
-            model_key=model,
-            label=model or "Stored microphone",
-            calibration_id=calibration_id,
-            file_sha256=previous.file_sha256 if previous is not None else "",
-            orientation="unknown",
-            provider="stored",
-        )
-        resolved = resolve_household_mic_calibration(
-            candidate, root=_calibration_root(),
-        )
-        if resolved is None:
-            raise ValueError(
-                "the remembered microphone calibration is no longer available; "
-                "set it up again"
-            )
-        if _stored_calibration_identity_refused(resolved, device):
-            # Refuse to apply AND refuse to re-persist the wrong pairing —
-            # never a blocked capture (the caller degrades to an annotated-
-            # uncalibrated analysis), but never silent either.
-            return None
-        # `serial=` is documented as the RAW serial, but a stored re-confirm
-        # never sees one — the phone only echoes calibration_id + model. The
-        # already-truncated last-4 display is carried deliberately:
-        # serial_display_from_raw is idempotent for values of <= 4 characters
-        # (returns them unchanged), so the household record keeps its
-        # "...1234" display across re-confirms instead of blanking it.
-        return _BoundRelayCalibration(
-            mode=mode,
-            record=resolved,
-            serial=previous.serial_display if previous is not None else None,
-        )
-    raise ValueError(f"unknown calibration mode: {mode}")
-
-
-
-
 
 
 
@@ -3115,20 +2798,16 @@ def _handle_local_capture_setup(
 ) -> dict[str, Any]:
     """POST /local-capture/setup: bind the realized browser input.
 
-    Local capture asks for microphone permission after the run is reserved.
+    The browser asks for microphone permission after the run is reserved.
     This narrow setup write makes the selected device/calibration the live
-    session authority before any audio upload; relay setup remains owned by
-    its versioned capture binding.
+    session authority before any audio upload.
     """
     from jasper.audio_measurement.calibration import load_calibration_record
     from jasper.correction.session import SessionState
 
     sess = _get_or_create_session()
-    if (
-        getattr(sess, "capture_transport", "local") != "local"
-        or sess.state != SessionState.NEEDS_NOISE_CAPTURE
-    ):
-        raise RequestConflict("local microphone setup is not available now")
+    if sess.state != SessionState.NEEDS_NOISE_CAPTURE:
+        raise RequestConflict("microphone setup is not available now")
 
     body = _read_json_body(handler)
     requested_session_id = str(body.get("session_id") or "")
@@ -3157,7 +2836,7 @@ def _handle_local_capture_setup(
             timeout=3.0,
         )
     except RuntimeError as exc:
-        raise RequestConflict("local microphone setup is not available now") from exc
+        raise RequestConflict("microphone setup is not available now") from exc
 
     log_event(
         logger,
@@ -3189,31 +2868,6 @@ def _handle_upload_noise(
     if sess.state != SessionState.NEEDS_NOISE_CAPTURE:
         raise RuntimeError(
             f"cannot accept noise capture from state {sess.state.value}"
-        )
-    if getattr(sess, "capture_transport", "local") != "local":
-        # Mirrors the refusal /autolevel/start and /local-capture/setup
-        # already give a non-local session (both `!= "local"` ->
-        # RequestConflict). This endpoint is the local-browser capture
-        # path: it plays the sweep via _schedule_measurement_sweep, which
-        # never reasserts a locked measurement volume — it just trusts
-        # that AutolevelController's lock left CamillaDSP's volume where
-        # the ramp parked it, true for the whole local session. A relay
-        # level match instead restores household listening volume the
-        # moment it locks (MeasurementSession.run_level_match) and only
-        # reasserts the locked level around its own /relay/capture sweep
-        # (ensure_level_match_volume). So even a relay session with a
-        # genuinely locked level check would measure at the wrong volume
-        # here — checking "is it locked" is not enough. Relay capture,
-        # first position included, goes only through /relay/capture,
-        # which owns that reassertion; the envelope never offers this
-        # endpoint to a relay session (jasper/correction/envelope.py
-        # gates its "/upload-noise" branch on capture_transport !=
-        # "relay"). Without this refusal a same-origin client could
-        # still POST here directly and reach analysis with no level
-        # match at all (issue #2041).
-        raise RequestConflict(
-            "room noise upload is local-only; this session captures "
-            "through the relay flow instead"
         )
     if not bool(getattr(sess, "local_capture_setup_bound", False)):
         raise RequestConflict(

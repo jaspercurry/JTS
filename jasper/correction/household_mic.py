@@ -2,40 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The household's remembered measurement microphone (Wave-2 persistence).
-
-Before this module, nothing about the measurement mic persisted across
-correction sessions:
-
-* the phone relay's "setup" (mic model + serial/upload calibration) is
-  validated against a ``setup_binding_id`` that is a per-run
-  ``session_id``/``context_id`` (see ``_validated_relay_setup_binding`` and
-  ``_run_relay_level_match`` in ``jasper/web/correction_setup.py``), minted
-  fresh on every run, so a phone-side "remembered setup" can never validate
-  against a NEW session's binding; and
-* an uploaded calibration is stored via
-  ``store_calibration(provider="manual_upload", serial=None)`` — with no
-  serial, so the vendor-lookup cache (``find_stored_calibration``, keyed by
-  ``serial_hash`` + model + orientation) can never reach it again.
-
-Every session made the household re-select a mic model and re-supply the
-calibration (re-type a serial or re-upload a file) from scratch.
+"""The household's remembered measurement microphone.
 
 This module owns exactly ONE durable JSON record —
-``/var/lib/jasper/correction/household_mic.json`` — recording the mic/
-calibration that most recently succeeded. It is written after every
-SUCCESSFUL calibration establishment (a vendor fetch or an accepted upload)
-or explicit re-confirmation of the current one (a phone one-tap "Using
-{mic} — confirm"), from both the phone-relay flow (room + crossover share
-``_relay_calibration_from_setup`` in ``jasper/web/correction_setup.py``,
-whose ``mode="stored"`` branch is the re-confirm path) and the local/laptop
-flow (``_handle_calibration_fetch`` / ``_handle_calibration_upload`` in the
-same module). Downstream consumers — the capture-spec ``default_setup``
-prefill hint (``jasper/active_speaker/crossover_v2/sweep_spec.py``) and the
-room wizard's
-server-rendered mic selection — read it so the household does not re-enter
-what it already told JTS. A session that establishes a DIFFERENT mic is
-never blocked; the new success simply replaces the record (see
+``/var/lib/jasper/correction/household_mic.json`` — recording the mic and
+calibration that most recently succeeded. It is written at the two points a
+calibration is ESTABLISHED (``_handle_calibration_fetch`` /
+``_handle_calibration_upload`` in ``jasper/web/correction_setup.py``), and
+nowhere else: without it every session made the household re-select a mic
+model and re-supply the calibration (re-type a serial or re-upload a file)
+from scratch. A session that establishes a DIFFERENT mic is never blocked;
+the new success simply replaces the record (see
 ``correction.household_mic_replaced`` in ``jasper/web/correction_setup.py``).
 
 No secrets land in the record: ``serial_hash`` is the same one-way hash the
@@ -44,26 +21,22 @@ raw serial's last 4 characters, purely for the UI. The full serial is never
 persisted here (or anywhere else in the calibration registry — see
 ``jasper/audio_measurement/calibration.py``).
 
-The phone page's one-tap "Using {label} · {serial_display} — one tap to
-confirm" screen (``capture-page/js/main.js``'s ``renderCalibrationConfirm``,
-2026-07 Wave-2 batch) reads the capture spec's ``default_setup`` field this
-module feeds (``correction_setup.py``'s
-``_default_setup_calibration_for_spec``) and — when the hint is marked
-``resolvable: true`` — submits ``setup.calibration = {mode: "stored",
-calibration_id}`` (plus ``model``, display-only) for the Pi to resolve via
-``resolve_household_mic_calibration`` below, through the ``mode="stored"``
-branch of ``_relay_calibration_from_setup``. ``resolvable`` is minted fresh
-at spec-build time (a second, independent resolver call — not inferred from
-the hint existing at all), so a household record whose calibration has gone
-missing from disk since the last session still ships the OTHER hint fields
-but without the marker, and an older Pi build (pre-``stored``-mode) never
-mints it either; either way the page falls back to its plain full picker. A
-rejection at submit time (the record went stale in the narrow window
-between mint and tap) is not a dead end either — the page catches it and
-re-offers the full picker with a plain sentence. An older capture page
-ignores unknown spec fields (verified against
-``capture-page/js/transport-integrity.js``), so shipping ``default_setup``
-is safe against any deployed page in either direction.
+The record reaches a measurement two ways, and both start here:
+
+* the capture spec's OPTIONAL ``default_setup`` prefill hint
+  (``jasper/active_speaker/crossover_v2/sweep_spec.py``, built by
+  ``correction_setup._default_setup_calibration_for_spec``), whose
+  ``resolvable`` flag is minted fresh at spec-build time — a second,
+  independent :func:`resolve_household_mic_calibration` call rather than an
+  inference from the hint existing — so a record whose calibration has gone
+  missing from disk still ships the other hint fields without the marker;
+* the capture's own ``setup.calibration`` REFERENCE, which the measurement
+  source mints from that hint
+  (``correction_crossover_v2_wired._wired_setup_reference``) and
+  :func:`resolve_setup_calibration` materializes back into a
+  ``CalibrationRecord`` for the analysis.
+
+The room wizard's server-rendered mic selection reads the record directly.
 """
 from __future__ import annotations
 
@@ -308,3 +281,133 @@ def resolve_household_mic_calibration(
     return find_stored_calibration_by_content_hash(
         file_sha256=record.file_sha256, root=calibration_root,
     )
+
+
+def _label_token(value: str) -> str:
+    """Lowercase, punctuation-stripped comparison key for a device label.
+
+    Shared normalization so ``"UMIK-2 (2752:002b)"`` and an alias of
+    ``"umik-2"`` compare equal regardless of casing, hyphenation, or the
+    parenthetical USB descriptor suffix the OS appends.
+    """
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _wrong_mic(record: Any, device: Mapping[str, Any] | None) -> str | None:
+    """Whether ``record``'s calibration is for a DIFFERENT mic than ``device``.
+
+    Calibration is frequency-magnitude, so applying the wrong mic's curve
+    corrupts a same-frequency measurement (the 2026-07-20 incident: a Dayton
+    iMM-6C capture silently carried a remembered UMIK-2 calibration).
+
+    Conservative and anchored, never a fuzzy label guess: it reuses the SAME
+    curated ``SUPPORTED_MODELS``/``model_label_aliases`` registry the wizard's
+    own label-based auto-inference uses. It trips only when the device's
+    reported label positively matches a DIFFERENT registered model's aliases
+    than the record's own. An unrecognized model on either side, or a label
+    that matches nothing (or matches its OWN model), is not a mismatch —
+    there is nothing concrete to contradict the remembered pairing with.
+    """
+    from jasper.audio_measurement.calibration import (
+        SUPPORTED_MODELS,
+        model_label_aliases,
+    )
+
+    model_key = str(getattr(record, "model", "") or "")
+    if model_key not in SUPPORTED_MODELS:
+        return None
+    label = ""
+    if isinstance(device, Mapping):
+        label = str(device.get("label") or device.get("browser_label") or "")
+    if not label:
+        return None
+    token = _label_token(label)
+    if any(_label_token(alias) in token for alias in model_label_aliases(model_key)):
+        return None  # matches its own model — fine
+    for other_key, spec in SUPPORTED_MODELS.items():
+        if other_key == model_key:
+            continue
+        if any(
+            _label_token(alias) in token
+            for alias in model_label_aliases(other_key)
+        ):
+            return (
+                f'stored calibration is for "{SUPPORTED_MODELS[model_key]["label"]}" '
+                f'but the captured device "{label}" looks like a '
+                f'"{spec["label"]}"'
+            )
+    return None
+
+
+def resolve_setup_calibration(
+    setup: Mapping[str, Any] | None,
+    *,
+    device: Mapping[str, Any] | None = None,
+    root: Path | None = None,
+    path: Path = DEFAULT_HOUSEHOLD_MIC_PATH,
+) -> Any | None:
+    """Materialize a capture's ``setup.calibration`` reference as a record.
+
+    The reference is minted from this module's own record
+    (``correction_crossover_v2_wired._wired_setup_reference``) and carries
+    ``{"mode": "stored", "calibration_id", "model"}``; resolution turns it
+    back into the stored ``CalibrationRecord`` the analysis applies. No
+    reference, or one declaring no calibration, answers ``None`` — the
+    analysis then runs annotated-uncalibrated rather than blocked.
+
+    ``device`` is the capture's REALIZED input device. A reference is a
+    passive carry-over the household never re-selects a mic for, so it is the
+    one place a different physical mic can ride a stale pairing: a detected
+    mismatch is journalled and answered ``None``, so no caller applies it.
+
+    A reference naming a calibration that is no longer on disk raises
+    ``ValueError`` — it is a stale claim about this household's own record,
+    not a household that chose nothing.
+    """
+    calibration = setup.get("calibration") if isinstance(setup, Mapping) else None
+    if not isinstance(calibration, Mapping):
+        return None
+    mode = str(calibration.get("mode") or "none").strip()
+    if mode in ("", "none"):
+        return None
+    if mode != "stored":
+        raise ValueError(f"unknown calibration mode: {mode}")
+    calibration_id = str(calibration.get("calibration_id") or "").strip()
+    if not calibration_id:
+        raise ValueError("calibration_id is required for a stored calibration")
+    # The reference echoes only calibration_id + model. Thread the household's
+    # own file_sha256 through when the id still matches the current record, so
+    # resolution gets the same content-hash fallback a full record carries.
+    previous = read_household_mic(path=path)
+    if previous is not None and previous.calibration_id != calibration_id:
+        previous = None
+    candidate = HouseholdMicRecord(
+        model_key=str(calibration.get("model") or "").strip(),
+        label=str(calibration.get("model") or "").strip() or "Stored microphone",
+        calibration_id=calibration_id,
+        file_sha256=previous.file_sha256 if previous is not None else "",
+        orientation="unknown",
+        provider="stored",
+    )
+    resolved = resolve_household_mic_calibration(candidate, root=root)
+    if resolved is None:
+        raise ValueError(
+            "the remembered microphone calibration is no longer available; "
+            "set it up again"
+        )
+    mismatch = _wrong_mic(resolved, device)
+    if mismatch is None:
+        return resolved
+    device_label = (
+        str(device.get("label") or device.get("browser_label") or "")
+        if isinstance(device, Mapping) else ""
+    )
+    log_event(
+        logger,
+        "correction.calibration_device_identity_mismatch",
+        level=logging.WARNING,
+        stored_model=str(getattr(resolved, "model", "") or ""),
+        device_label=device_label[:160],
+        reason=mismatch,
+    )
+    return None

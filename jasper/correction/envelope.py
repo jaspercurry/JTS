@@ -1184,9 +1184,6 @@ def _run_defaults(session: Any, *, screen: str) -> dict[str, Any]:
         },
         "repeat_main_position": repeat_main_position,
         "repeat_disclosure": repeat_disclosure,
-        "capture_transport": str(
-            getattr(session, "capture_transport", "local")
-        ),
         "change_allowed": (
             screen == SCREEN_IDLE and session.state.value == "idle"
         ),

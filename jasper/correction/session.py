@@ -489,10 +489,6 @@ class MeasurementSession:
         # the same time.  Serialize the write + restored flag so the lease is
         # released exactly once and a failed CamillaDSP write remains retryable.
         self._level_restore_lock = asyncio.Lock()
-        # Presentation/orchestration choice for this run.  The measurement
-        # state machine remains transport-agnostic; the server envelope uses
-        # this marker only to choose the correct thin adapter action.
-        self.capture_transport = "local"
         # The local browser learns its realized device only after `/start`.
         # This one-shot guard prevents a stale tab or later position from
         # changing capture identity after the run has been admitted.
@@ -1483,8 +1479,6 @@ class MeasurementSession:
             )
 
         async with self._lock:
-            if self.capture_transport != "local":
-                raise RuntimeError("local capture setup is unavailable for this run")
             if self.state != SessionState.NEEDS_NOISE_CAPTURE:
                 raise RuntimeError(
                     "cannot bind local capture setup from state "
@@ -2582,7 +2576,6 @@ class MeasurementSession:
         async with self._autolevel_gate:
             if (
                 self._autolevel_reset_intent is not None
-                or self.capture_transport != "local"
                 or self.state != SessionState.NEEDS_NOISE_CAPTURE
                 or not self.local_capture_setup_bound
                 or self.autolevel.status not in retryable
