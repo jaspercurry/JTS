@@ -51,7 +51,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
 
@@ -177,7 +176,7 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
         taken = _take()
 
     assert taken is not None
-    prompts, consumer, _specs, _trims, _geometry, _candidates = taken
+    prompts, consumer, _specs, _trims, _candidates = taken
     assert consumer == LATERAL_CONSUMER_FORWARD_MODEL
     assert [flow.position_angle_deg(p) for p in prompts] == CAMPAIGN_ANGLES
 
@@ -264,27 +263,6 @@ def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
         flow.wall_clock_ceiling_s(flow.stage1_base_entries() + len(request.stops))
         == session_ceiling_s
     )
-@pytest.mark.parametrize("declared", [True, False])
-def test_the_take_carries_the_households_declared_geometry_out(slot, declared):
-    """The take is the hop the geometry rides (#3498).
-
-    Carried, never judged: the session banks it and the entanglement floor is
-    derived offline. ``None`` is every walk nobody was asked about.
-    ``tests/test_crossover_v2_stage_bridge.py`` pins where it lands.
-    """
-    geometry = DeclaredGeometry(0.9, 1.0, 1.05) if declared else None
-    spool.stage_angle_request(
-        ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
-            declared_geometry=geometry,
-        )
-    )
-    taken = _take()
-
-    assert taken is not None
-    assert taken[4] == geometry
-
-
 def test_a_refused_walk_refuses_the_open_and_is_consumed(slot, caplog):
     """Fail-closed on BOTH the walk and the session (#2879).
 
@@ -366,7 +344,7 @@ def test_a_raised_walk_survives_the_spool_and_reaches_the_session(slot):
             mover=ac.MOVER_HUMAN,
         )
     )
-    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
+    prompts, _consumer, _specs, _trims, _candidates = _take()
 
     assert [flow.position_elevation_deg(p) for p in prompts] == [0, 20, -20]
     assert [flow.position_angle_deg(p) for p in prompts] == [0, 22, -22]
@@ -432,7 +410,7 @@ def test_the_taken_walk_becomes_the_sessions_map_and_its_prompted_entries(slot):
     six spots while the conductor measured five.
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
-    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
+    prompts, _consumer, _specs, _trims, _candidates = _take()
     shape = _hand_shape()
 
     mapping = flow.build_v2_cloud_index_phase_map(
@@ -471,7 +449,7 @@ def test_an_arm_driven_walk_declares_the_angle_its_gate_waits_for(slot):
     spool.stage_angle_request(
         ac.per_driver_at(CAMPAIGN_ANGLES, mover=ac.MOVER_ARM)
     )
-    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take(_arm_shape())
+    prompts, _consumer, _specs, _trims, _candidates = _take(_arm_shape())
     plan = flow.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=_arm_shape(),
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
@@ -494,7 +472,7 @@ def test_the_consent_copy_quotes_the_walk_the_household_will_actually_take(slot)
     reach at a household about to be walked past it is the dishonesty the
     orientation sentence exists to prevent."""
     spool.stage_angle_request(ac.per_driver_at([0, 45, -45]))
-    prompts, _consumer, _specs, _trims, _geometry, _candidates = _take()
+    prompts, _consumer, _specs, _trims, _candidates = _take()
     wide = flow.walk_shape_for(
         cloud_positions=0, lateral=True, lateral_prompts=prompts,
     )
@@ -577,7 +555,7 @@ def test_a_candidate_stop_banks_under_the_graph_it_actually_played(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
         level_matched=True,
     ))
-    _prompts, _consumer, specs, _trims, _geometry, claims = _take(preset=preset)
+    _prompts, _consumer, specs, _trims, claims = _take(preset=preset)
 
     spec, = [s for i, s in specs.items() if s.candidate_id]
     claim, = claims
@@ -599,7 +577,7 @@ def test_a_polarity_only_candidate_reaches_a_spec_the_open_accepts(
     spool.stage_angle_request(ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
     ))
-    _prompts, _consumer, specs, _trims, _geometry, _claims = _take(preset=preset)
+    _prompts, _consumer, specs, _trims, _claims = _take(preset=preset)
 
     spec, = [s for i, s in specs.items() if s.candidate_id]
     assert (spec.delayed_role, spec.delay_us) == ("", 0.0)
@@ -654,7 +632,7 @@ def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatc
     the validated pair and the played pair get to differ.
     """
     spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
-    _prompts, _consumer, specs, _trims, _geometry, _candidates = _take()
+    _prompts, _consumer, specs, _trims, _candidates = _take()
     spec = specs[_MEASURE_INDEX]
 
     played = _played_measure_spec(spec, monkeypatch)
@@ -679,7 +657,7 @@ def test_a_staged_confirmation_coordinate_reaches_the_engine_legs_measure_spec(
         delayed_role=DRIVER_ROLE_TWEETER,
         delay_us=250.0,
     ))
-    _prompts, _consumer, specs, _trims, _geometry, _candidates = _take()
+    _prompts, _consumer, specs, _trims, _candidates = _take()
     spec = specs[_MEASURE_INDEX]
 
     played = _played_measure_spec(spec, monkeypatch)
@@ -717,7 +695,7 @@ def test_a_level_matched_walk_carries_the_boxs_own_trims_to_the_session(
         inverted_role=DRIVER_ROLE_TWEETER, level_matched=True,
     ))
     with caplog.at_level(logging.INFO):
-        _prompts, _consumer, specs, trims, _geometry, _candidates = _take()
+        _prompts, _consumer, specs, trims, _candidates = _take()
         spec = specs[_MEASURE_INDEX]
 
     assert spec.level_matched is True
@@ -740,7 +718,7 @@ def test_an_ordinary_walk_resolves_no_trims_and_reads_no_evidence(
 
     monkeypatch.setattr(v2host, "_resolve_measurement_level_trims", _spy)
     spool.stage_angle_request(ac.per_driver_at([0]))
-    _prompts, _consumer, specs, trims, _geometry, _candidates = _take()
+    _prompts, _consumer, specs, trims, _candidates = _take()
     spec = specs[_MEASURE_INDEX]
 
     assert spec.level_matched is False and trims == {}

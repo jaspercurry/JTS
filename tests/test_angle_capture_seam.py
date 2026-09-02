@@ -45,7 +45,6 @@ from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
@@ -994,25 +993,6 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
         )
 
     assert excinfo.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
-
-
-# --------------------------------------------------------------------------- #
-# 7. the household's declared geometry -- carried, never judged here
-# --------------------------------------------------------------------------- #
-
-
-def test_the_declared_geometry_is_opt_in_and_passed_through_untouched() -> None:
-    """A program states POSE geometry; the ROOM stays the caller's to state.
-
-    The room itself is
-    :mod:`jasper.audio_measurement.measurement_geometry`'s -- its own tests
-    own the bounds and the banked shape; this seam only carries it.
-    """
-    assert ac.per_driver_at([0]).declared_geometry is None
-    room = DeclaredGeometry(speaker_height_m=0.9, mic_height_m=1.0, distance_m=1.05)
-    assert ac.request_for_program(
-        mp.program("baseline", "express"), declared_geometry=room,
-    ).declared_geometry is room
 
 
 # --------------------------------------------------------------------------- #

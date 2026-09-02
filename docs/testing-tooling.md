@@ -2413,11 +2413,6 @@ jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
 # capture riding the tweeter branch sign-flipped
 jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
 
-# THE ROOM the household measured, asked once and banked with the session
-jasper-angle-capture stage --program baseline --size express \
-  --speaker-height-m 0.92 --mic-height-m 1.0 --distance-m 1.0 \
-  --ceiling-height-m 2.44
-
 # withdraw the staged walk
 jasper-angle-capture withdraw
 ```
@@ -2457,22 +2452,19 @@ is no second validator in the CLI or the mailbox — bounds, whole-degree-ness,
 the regime vocabulary and the mover vocabulary are all
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py)'s.
 
-`--speaker-height-m` / `--mic-height-m` / `--distance-m` are the
-household's own tape measure in **metres** (`--ceiling-height-m` optional), and
-are stated together or not at all; omit all three and `stage` falls back to
-whatever `jasper-declare-geometry set` stored on the box, which is the same
-[`DeclaredGeometry`](../jasper/audio_measurement/measurement_geometry.py) the
-flags build. The driving LLM asks once, in-session; the
-walk carries them to the session, which banks them as
-`crossover_v2/<relay_session_id>/declared_geometry.json` and reports them at
-`session.declared_geometry` in the evidence packet — an absence block naming
-its reason when there is no room to report, so "nobody was asked" and "the
-banked file could not be read" never read alike. The declaration rides the
-durable state into the grading stage, which re-banks it in its own bundle.
-Nothing in the session computes from them — the room's entanglement floor
-(`2.5 / t_first_bounce`) is an offline toolbox step, and this human answer is
-its only viable source because the reflection finder is structurally blind on
-this rig class.
+**The household's tape measure has one writer and no walk flags.**
+`jasper-declare-geometry set` stores the rig's
+[`DeclaredGeometry`](../jasper/audio_measurement/measurement_geometry.py) at
+`/var/lib/jasper/measurement_geometry.json`; `stage` merely echoes what is
+stored so the operator can see what a round will bank. The evidence packet
+reads that same file while a round banks and reports it at
+`session.declared_geometry` — an absence block naming its reason when there is
+none, so "nobody declared one" and "the file could not be read" never read
+alike. Because the packet is built on the box at bank time, the banked packet
+is the frozen copy. Nothing in the session computes from it — the room's
+entanglement floor (`2.5 / t_first_bounce`) is an offline toolbox step, and
+this human answer is its only viable source because the reflection finder is
+structurally blind on this rig class.
 
 **`--polarity` / `--inverted-role` are WALK-level, not per angle**, because the
 reverse-null is one act at one place: the pair names what this session's

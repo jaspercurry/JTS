@@ -15,10 +15,10 @@ DERIVED and disclosed with ``declared_geometry`` provenance, never
 mistaken for a measurement. See issue #3502.
 
 ``jasper-declare-geometry`` (:mod:`jasper.cli.declare_geometry`, the
-single writer) stores :class:`DeclaredGeometry` to :data:`DEFAULT_PATH`,
-and ``jasper-angle-capture stage`` reads it back as the standing answer for
-the walk it banks. :meth:`DeclaredGeometry.to_dict` is the one banked shape
-every other writer -- the angle spool, the session artifact -- carries.
+single writer) stores :class:`DeclaredGeometry` to :data:`DEFAULT_PATH`.
+Every reader asks the file where it lives, at the point of use: the gate
+disclosures, and the crossover-v2 evidence packet, which reads it while
+banking a round so the banked packet carries the frozen copy.
 """
 from __future__ import annotations
 

@@ -174,8 +174,6 @@ from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
-    "DECLARED_GEOMETRY_ARTIFACT",
-    "DECLARED_GEOMETRY_KIND",
     "HARMONICS_ARTIFACT",
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
@@ -323,21 +321,6 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: writer would have to travel back the other way. The packet owns the names of
 #: the artifacts it reads; :mod:`.feature_classifier` takes the same direction.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
-
-#: The household's own tape measure (#3498), banked by the session that took
-#: the walk it was stated on. Optional and reported absent: the reflection
-#: finder is structurally blind on this rig class, so this human answer is the
-#: only source for the room's entanglement floor -- but most sessions never
-#: asked. Named here on the same rule as the two above: the packet owns the
-#: names of the artifacts it reads, and ``correction_crossover_v2`` writes it.
-DECLARED_GEOMETRY_ARTIFACT = "declared_geometry.json"
-
-DECLARED_GEOMETRY_KIND = "jts_active_speaker_declared_geometry"
-
-#: What that artifact carries ABOUT ITSELF rather than about the room.
-#: Subtracted rather than allow-listing the measurements, so a distance the
-#: writer later adds reaches the reader without a second edit here.
-DECLARED_GEOMETRY_ENVELOPE_FIELDS = frozenset({"schema_version", "kind"})
 
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns.
@@ -590,20 +573,30 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _declared_geometry_block(raw: Any, reason: str) -> dict[str, Any]:
-    """The banked room, in metres, or WHICH absence this is.
+def _declared_geometry_block() -> dict[str, Any]:
+    """The household's own tape measure, in metres, or WHICH absence this is.
 
-    An artifact that never arrived (nobody was asked, which is most sessions),
-    one this install could not read, and one carrying nothing but its own
-    envelope are three different facts about the round. Collapsing them to a
-    single ``None`` is the reading defect :func:`_absence` exists to fix, so
-    the reason travels here on exactly the terms the sibling blocks state it.
+    Read where it lives -- the file ``jasper-declare-geometry set`` writes,
+    the same one every gate disclosure asks -- rather than from an artifact
+    some earlier stage copied into the round. A packet is built on the box,
+    so the banked packet IS the frozen copy of what the household had
+    declared when the round was banked.
+
+    A household that never declared one (most of them) and a declaration this
+    install could not read are two different facts about the round, kept apart
+    on exactly the terms the sibling blocks state them.
     """
-    room = {
-        key: value for key, value in _mapping(raw).items()
-        if key not in DECLARED_GEOMETRY_ENVELOPE_FIELDS
-    }
-    return room or _absence(reason, False, DECLARED_GEOMETRY_ARTIFACT)
+    from jasper.audio_measurement import measurement_geometry
+
+    try:
+        geometry = measurement_geometry.load_declared_geometry(
+            measurement_geometry.DEFAULT_PATH
+        )
+    except (OSError, ValueError) as exc:
+        return _absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry")
+    if geometry is None:
+        return _absence("source_absent", False, "declared_geometry")
+    return geometry.to_dict()
 
 
 def _ordinal(value: Any) -> int:
@@ -3297,9 +3290,6 @@ def build_crossover_evidence_packet(
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
-    geometry_raw, geometry_reason = _read_json(
-        round_dir / DECLARED_GEOMETRY_ARTIFACT
-    )
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
     findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
     classification_raw, classification_reason = _read_json(
@@ -3382,12 +3372,7 @@ def build_crossover_evidence_packet(
             "state": info_raw.get("state"),
             "started_at": info_raw.get("started_at"),
             "round_id": receipt.get("round_id"),
-            # The household's own tape measure, in metres, or an ``_absence``
-            # naming why there is none. The envelope keys are dropped: what a
-            # reader wants is the room, not the wrapper it arrived in.
-            "declared_geometry": _declared_geometry_block(
-                geometry_raw, geometry_reason
-            ),
+            "declared_geometry": _declared_geometry_block(),
             "note": (
                 "bundle_session_id and relay_session_id are different id "
                 "namespaces; the round artifacts are filed under the relay id"

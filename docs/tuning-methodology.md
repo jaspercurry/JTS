@@ -201,9 +201,8 @@ price and a handoff URL; hand that URL to the household, then poll
 `jasper-crossover-prescriber status` until the walk's takes appear under
 `banked`. Ask the household ONCE, in metres, for the driver acoustic-centre
 height, the mic height and the mic-to-speaker distance (ceiling optional) and
-pass them at `stage` (`--speaker-height-m` / `--mic-height-m` /
-`--distance-m` / `--ceiling-height-m`), or declare them once on the box with
-`jasper-declare-geometry set` and let `stage` pick them up — the room's
+store them with `jasper-declare-geometry set` — every reader, including the
+banked evidence packet, reads that file where it lives. The room's
 entanglement floor is derived from that answer and nothing on the rig can
 measure it.
 Depth is PULLED afterwards through the analysis verbs — the receipt
