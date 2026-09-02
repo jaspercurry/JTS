@@ -22,6 +22,7 @@ from jasper.wake_corpus import bridge_session
 from jasper.wake_corpus import recording_backend
 from jasper.web import wake_corpus_setup
 
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
 from tests.wake_corpus_setup_fixtures import (
     _FakeUdpMicCapture,
     _allow_capture_plan_conformance,
@@ -1173,9 +1174,7 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
         trigger_thread.join(timeout=0.25)
         assert not trigger_thread.is_alive()
 
-        deadline = time.monotonic() + 1.0
-        while not task._task.done() and time.monotonic() < deadline:
-            time.sleep(0.005)
+        wait_until_sync(lambda: task._task.done(), interval=0.005)
         assert task._task.done(), "safety stop did not quiesce frame capture"
         assert backend.is_recording() is True
         with backend._lock:
@@ -1196,13 +1195,12 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     finally:
         backend._lifecycle_lock.release()
 
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
+    def _stop_saved():
         with backend._lock:
             pending_stop = backend._pending_stop
-        if not backend.is_recording() and pending_stop is None:
-            break
-        time.sleep(0.01)
+        return not backend.is_recording() and pending_stop is None
+
+    wait_until_sync(_stop_saved)
     assert backend.is_recording() is False, (
         "deferred safety stop was not saved after its owner released"
     )
@@ -1546,7 +1544,7 @@ def test_retry_timer_can_initiate_shutdown_without_self_join(
         backend._auto_stop_safe(generation)
     finally:
         backend._lifecycle_lock.release()
-    assert callback_done.wait(timeout=2)
+    assert callback_done.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     assert backend._loop_thread is not None and not backend._loop_thread.is_alive()
     with backend._lock:
         assert backend._pending_stop is None
@@ -1562,9 +1560,7 @@ def test_shutdown_terminal_rejects_start_and_retry_admission(backend) -> None:
     assert task is not None and task._task is not None
     generation = (started["clip_id"], task)
     backend._quiesce_current_capture(generation)
-    deadline = time.monotonic() + 1
-    while not task._task.done() and time.monotonic() < deadline:
-        time.sleep(0.005)
+    wait_until_sync(lambda: task._task.done(), interval=0.005)
     assert task._task.done()
     backend.shutdown()
 
@@ -1603,7 +1599,7 @@ def test_concurrent_shutdown_call_returns_to_the_teardown_owner(
 
     monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
     backend._auto_stop_threadsafe(generation)
-    assert worker_entered.wait(timeout=2)
+    assert worker_entered.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
     first_done = threading.Event()
 
@@ -1613,12 +1609,12 @@ def test_concurrent_shutdown_call_returns_to_the_teardown_owner(
 
     first = threading.Thread(target=first_shutdown)
     first.start()
-    deadline = time.monotonic() + 1
-    while time.monotonic() < deadline:
+
+    def _first_owns_shutdown():
         with backend._lock:
-            if backend._shutdown_owner is first:
-                break
-        time.sleep(0.005)
+            return backend._shutdown_owner is first
+
+    wait_until_sync(_first_owns_shutdown, interval=0.005)
     with backend._lock:
         assert backend._shutdown_owner is first
 

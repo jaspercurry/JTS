@@ -91,3 +91,24 @@ async def wait_until(
             return
         await asyncio.sleep(interval)
     raise AssertionError("condition not met before timeout")
+
+
+def wait_until_sync(
+    predicate: Callable[[], bool],
+    *,
+    timeout: float = DEFAULT_SIGNAL_TIMEOUT_S,
+    interval: float = 0.01,
+) -> None:
+    """Synchronous twin of `wait_until`, for tests polling from a plain
+    thread rather than an event loop (e.g. a background-thread runner's
+    completion). Same hang-breaker framing as `wait_signalled`: the default
+    timeout is a generous backstop, not a timing assertion — a loaded box
+    should never turn a passing test red on this alone.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(interval)
+    raise AssertionError(f"condition not met within {timeout}s")

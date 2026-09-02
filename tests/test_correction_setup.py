@@ -47,6 +47,7 @@ from jasper.active_speaker.runtime_contract import (
     GraphSafety,
 )
 
+from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
 from ._web_test_helpers import request_with_csrf
 
 
@@ -310,15 +311,13 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
         response = correction_setup._request_relay_stop("crossover_sweep:")
         assert response["status"] == "stopping"
         assert stop_event.is_set()
-        assert cleanup_started.wait(timeout=2)
+        assert cleanup_started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert correction_setup._get_relay_capture()["status"] == "stopping"
         assert not correction_setup._begin_relay_capture("crossover_sweep:summed")
         release_cleanup.set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            if correction_setup._get_relay_capture()["status"] == "stopped":
-                break
-            time.sleep(0.01)
+        wait_until_sync(
+            lambda: correction_setup._get_relay_capture()["status"] == "stopped"
+        )
         assert correction_setup._get_relay_capture()["status"] == "stopped"
     finally:
         release_cleanup.set()
@@ -437,23 +436,19 @@ def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
         # Held from the moment the POST returns — before the runner has even
         # been scheduled, which is the window a phone-only session sits in.
         assert idle_hold.events == [("acquire", "relay:crossover_v2:session")]
-        assert runner_entered.wait(timeout=2)
+        assert runner_entered.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert idle_hold.active == 1
 
         release_runner.set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            if correction_setup._get_relay_capture()["status"] == "complete":
-                break
-            time.sleep(0.01)
+        wait_until_sync(
+            lambda: correction_setup._get_relay_capture()["status"] == "complete"
+        )
         assert correction_setup._get_relay_capture()["status"] == "complete"
     finally:
         release_runner.set()
         correction_setup._set_relay_capture(None)
 
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and idle_hold.active:
-        time.sleep(0.01)
+    wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0, "the completed session released its hold"
     assert idle_hold.events == [
         ("acquire", "relay:crossover_v2:session"),
@@ -470,7 +465,6 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
     paths.
     """
     idle_hold = _RecordingIdleHold()
-    finished = threading.Event()
 
     def open_capture(_client, _relay_base, _capture_origin, _return_url):
         return SimpleNamespace(
@@ -493,19 +487,13 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
             return_url="http://jts.local/correction/crossover/",
             idle_hold=idle_hold,
         )
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            if correction_setup._get_relay_capture()["status"] == "failed":
-                finished.set()
-                break
-            time.sleep(0.01)
-        assert finished.is_set()
+        wait_until_sync(
+            lambda: correction_setup._get_relay_capture()["status"] == "failed"
+        )
     finally:
         correction_setup._set_relay_capture(None)
 
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and idle_hold.active:
-        time.sleep(0.01)
+    wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0
     assert idle_hold.events == [
         ("acquire", "relay:crossover_v2:verify"),
@@ -807,23 +795,19 @@ def test_room_level_ramp_holds_the_idle_exit_for_the_whole_ramp(monkeypatch):
         # Held from the moment the POST returns — before the ramp has even
         # started, which is the window a phone-only session sits in.
         assert idle_hold.events == [("acquire", "relay:level_ramp:room")]
-        assert ramp_entered.wait(timeout=2)
+        assert ramp_entered.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert idle_hold.active == 1
 
         release_ramp.set()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            if correction_setup._get_relay_capture()["status"] == "complete":
-                break
-            time.sleep(0.01)
+        wait_until_sync(
+            lambda: correction_setup._get_relay_capture()["status"] == "complete"
+        )
         assert correction_setup._get_relay_capture()["status"] == "complete"
     finally:
         release_ramp.set()
         correction_setup._set_relay_capture(None)
 
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and idle_hold.active:
-        time.sleep(0.01)
+    wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0, "the completed ramp released its hold"
     assert idle_hold.events == [
         ("acquire", "relay:level_ramp:room"),
@@ -872,18 +856,14 @@ def test_room_level_ramp_releases_the_idle_hold_when_the_ramp_fails(monkeypatch)
             SimpleNamespace(headers={"Host": "jts3.local"}),
             idle_hold=idle_hold,
         )
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            if correction_setup._get_relay_capture()["status"] == "failed":
-                break
-            time.sleep(0.01)
+        wait_until_sync(
+            lambda: correction_setup._get_relay_capture()["status"] == "failed"
+        )
         assert correction_setup._get_relay_capture()["status"] == "failed"
     finally:
         correction_setup._set_relay_capture(None)
 
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and idle_hold.active:
-        time.sleep(0.01)
+    wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0
     assert idle_hold.events == [
         ("acquire", "relay:level_ramp:room"),
@@ -1029,13 +1009,11 @@ def test_relay_capture_failure_names_the_ramp_reason_not_the_exception_class(cap
             return_url="http://jts.local/correction/",
             idle_hold=no_hold,
         )
-        deadline = time.monotonic() + 2
-        relay = None
-        while time.monotonic() < deadline:
-            relay = correction_setup._get_relay_capture()
-            if relay is not None and relay.get("status") == "failed":
-                break
-            time.sleep(0.01)
+        wait_until_sync(
+            lambda: (correction_setup._get_relay_capture() or {}).get("status")
+            == "failed"
+        )
+        relay = correction_setup._get_relay_capture()
     finally:
         correction_setup._set_relay_capture(None)
 
@@ -1205,12 +1183,12 @@ def test_run_async_timeout_waits_for_coroutine_cleanup():
 
     worker = threading.Thread(target=invoke, daemon=True)
     worker.start()
-    assert started.wait(timeout=2)
-    assert cleanup_started.wait(timeout=2)
+    assert started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+    assert cleanup_started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     assert not finished.is_set()
     release_cleanup.set()
-    assert finished.wait(timeout=2)
-    worker.join(timeout=2)
+    assert finished.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+    worker.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
     assert failures == []
 
 
@@ -1253,13 +1231,13 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
     worker = threading.Thread(target=invoke, daemon=True)
     worker.start()
     try:
-        assert cleanup_started.wait(timeout=2)
-        assert drain_alarm.wait(timeout=2)
+        assert cleanup_started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        assert drain_alarm.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert not finished.is_set()
     finally:
         release_cleanup.set()
-    assert finished.wait(timeout=2)
-    worker.join(timeout=2)
+    assert finished.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+    worker.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
 
 async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeypatch):

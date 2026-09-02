@@ -1652,18 +1652,26 @@ def test_every_lane_has_a_distinct_ring_path_device_and_key(label):
 
 @pytest.mark.parametrize("label", rl.MIGRATABLE_LABELS)
 def test_every_registered_label_is_a_real_fanin_lane(label):
-    """A label fan-in does not know is refused at config (ConfigClassError →
-    park). Catching it here is the difference between a failed test and a
-    speaker that will not start."""
+    """A label absent from fan-in's compiled-in default input_renderers is
+    refused at config (ConfigClassError -> park) UNLESS
+    JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed env — this pins
+    the compiled-in default, not the guaranteed runtime outcome."""
     rs = FANIN_CONFIG_RS.read_text()
     m = re.search(
         r'"JASPER_FANIN_INPUT_RENDERERS",\s*&\[(.*?)\]', rs, re.S
     )
-    assert m, "fan-in's input_renderers default moved"
-    fanin_labels = re.findall(r'"([a-z0-9_]+)"', m.group(1))
+    assert m, f"input_renderers default array not found in {FANIN_CONFIG_RS}"
+    # Resolve bare identifiers (named constants) as well as quoted literals —
+    # a scrape that only matched `"..."` would silently miss a label spelled
+    # via a `pub const NAME: &str = "...";` reference (issue #3461).
+    consts = dict(re.findall(r'pub const (\w+): &str = "([^"]+)";', rs))
+    raw_items = [x.strip().strip('"') for x in m.group(1).split(",") if x.strip()]
+    fanin_labels = [consts.get(item, item) for item in raw_items]
     assert label in fanin_labels, (
-        f"lane label {label!r} is not one of fan-in's lanes {fanin_labels}; "
-        "fan-in would refuse the arm with a config-class park"
+        f"lane label {label!r} is missing from fan-in's compiled-in default "
+        f"input_renderers {fanin_labels} (scraped from {FANIN_CONFIG_RS.name}); "
+        "unless JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed "
+        "env, fan-in will not recognize this lane"
     )
 
 

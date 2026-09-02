@@ -296,13 +296,9 @@ def test_outputd_latency_floor_actions_set_profile_floor_when_no_operator_env():
 
 
 def test_python_outputd_buffer_contract_matches_rust_validator():
-    config_rs = (ROOT / "rust" / "jasper-outputd" / "src" / "config.rs").read_text(
-        encoding="utf-8"
-    )
-
-    assert "fn validate_buffer(" in config_rs
-    assert "period_frames.saturating_mul(2)" in config_rs
-    assert "minimum ALSA jitter margin" in config_rs
+    """Pins the Python-side error message and multiplier the doctor/CLI show
+    the operator; Rust's own `validate_buffer` is pinned by its own test
+    suite, not scraped here (issue #3461)."""
     assert OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER == 2
     assert outputd_dac_buffer_pair_error(
         period_frames=1024,
