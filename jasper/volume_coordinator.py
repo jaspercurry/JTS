@@ -4,41 +4,31 @@
 
 """Source-aware volume coordinator.
 
-The user perceives "speaker volume" as a single number 0-100. Underneath,
-several attenuators sit on the audio chain:
+The user perceives "speaker volume" as one 0-100 number. Underneath,
+several attenuators sit on the real audio chain:
 
     track_loudness × airplay_sender_vol × spotify_connect_vol
         × bt_avrcp_vol × camilla_main_volume → DAC
 
-Most of these are upstream of CamillaDSP. If the iPhone slider is at 30%,
-moving CamillaDSP's main_volume between 0% and 100% only spans the
-remaining 70% of perceived loudness — and feels disconnected from the
-"set volume to 80%" voice command that triggered it.
+This module owns which one the number applies to. One canonical state
+persists in /var/lib/jasper/speaker_volume.json, interpreted by
+``VolumeState`` as ``listening_level`` plus temporary mute intent. Spotify
+and Bluetooth are push-mode: their own protocol sliders carry
+`listening_level` and CamillaDSP stays at 0 dB, asserting `main_mute` at 0%
+so content/music zero is a final-output mute rather than source-side
+attenuation. Idle, AirPlay, and USB sink are camilla-as-master: CamillaDSP
+`main_volume` carries `listening_level`. AirPlay's inbound observation
+arrives from shairport's volume hook rather than a poller (ADR-0206).
 
-This module owns the coordination. There is one canonical volume state,
-persisted in /var/lib/jasper/speaker_volume.json and interpreted by
-``VolumeState`` as remembered ``listening_level`` plus temporary mute intent.
-Outbound commands (voice tool, remote, "louder") apply this level to the
-current source's reliable volume surface. Spotify and Bluetooth are
-push-mode: their own protocol sliders carry `listening_level` and
-CamillaDSP normally stays at 0 dB. At 0%, CamillaDSP also asserts
-`main_mute` so content/music zero is a final-output mute rather than
-source-side attenuation. Idle, AirPlay, and USB sink are camilla-as-master:
-CamillaDSP `main_volume` carries `listening_level`. Every source's inbound
-observations update the canonical level in real time — AirPlay's arrive from
-shairport's volume hook rather than a poller (ADR-0206).
+Every outbound write timestamps itself per source; an inbound observation of
+the same source within `ECHO_WINDOW_SEC` (500 ms) is treated as our own echo
+and ignored — this also covers a short stale-read window where a poll lands
+before the protocol surface has caught up with our write.
 
-Echo prevention. Every outbound write timestamps itself per source.
-When an inbound observer sees that source within `ECHO_WINDOW_SEC`
-(500 ms), it is treated as our own echo and ignored. This guards both
-matching PropertiesChanged echoes and a short stale-read window where a
-poll lands before the protocol surface has caught up with our write.
-
-This file is the dispatch layer (Phase 1, "Paradigm B"). The
-inbound observers live in `volume_observers.py` and are started by
-voice_daemon at boot. The control daemon imports this module too —
-both daemons read/write listening_level via the same persistence
-file, so remote-driven changes converge with voice-driven changes.
+This file is the dispatch layer. Inbound observers live in
+`volume_observers.py`, started by voice_daemon at boot; jasper-control's
+per-request coordinators share the same persistence file, so remote- and
+voice-driven changes converge.
 """
 from __future__ import annotations
 
@@ -85,17 +75,14 @@ logger = logging.getLogger(__name__)
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 
-# Source-unit mappings. Pure functions: clamp to [0, 100] first, then
-# convert. These are 1:1 inverses of the corresponding _from_X helpers.
-# AirPlay is the exception with no pair here — its native map lives in
-# shairport's volume hook, deploy/bin/jasper-airplay-volume (ADR-0206).
+# AirPlay's native map lives in shairport's volume hook,
+# deploy/bin/jasper-airplay-volume (ADR-0206), not here.
 
-# AirPlay's volume range is -30..0 dB, with -144 reserved as "muted". Nothing
-# in Python converts that scale: the hook owns the dB→percent map, maps the
-# mute sentinel onto 0% (this module's content mute), and reaches the
-# coordinator in percent. These bounds are what
-# `VolumeObserver._read_airplay_db` clamps its diagnostic reading to, and what
-# tests pin the hook's endpoints against.
+# AirPlay's volume range is -30..0 dB, with -144 reserved as "muted". The
+# hook owns the dB→percent map, maps the mute sentinel onto 0% (this
+# module's content mute), and reaches the coordinator in percent. These
+# bounds are what `VolumeObserver._read_airplay_db` clamps its diagnostic
+# reading to, and what tests pin the hook's endpoints against.
 AIRPLAY_DB_MIN = -30.0
 AIRPLAY_DB_MAX = 0.0
 
@@ -132,36 +119,31 @@ ECHO_WINDOW_SEC = 0.5
 PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 
 
-# Type alias for the cross-daemon Camilla-ownership probe. The constructor
-# parameter retains its older ``duck_active_probe`` spelling for call-site
-# compatibility. None fails open, so a wedged jasper-voice cannot freeze the
-# remote.
+# Cross-daemon Camilla-ownership probe. None fails open, so a wedged
+# jasper-voice cannot freeze the remote.
 CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
-# Reconciler thresholds. `maybe_reconcile_camilla` is the self-healing
-# backstop in `VolumeObserver._tick`: when no session is active and the
-# active source is camilla-as-master, it converges `main_volume_db`
-# toward `percent_to_db(listening_level)` if they've drifted apart.
+# Reconciler thresholds. `maybe_reconcile_camilla` converges
+# `main_volume_db` toward `percent_to_db(listening_level)` when it has
+# drifted, no session is active, and the active source is camilla-as-master.
 #
-# `RECONCILE_DRIFT_DB` is the dead band — drift smaller than this is
-# ignored (covers camilla's <0.1 dB jitter with safe margin). Below
-# human-noticeable, well above any normal jitter.
+# `RECONCILE_DRIFT_DB` is the dead band — below human-noticeable, well
+# above camilla's normal <0.1 dB jitter.
 #
-# `RECONCILE_DUCK_SKIP_DB` is directional. If Camilla is much QUIETER than
-# expected, skip to avoid un-ducking; if it is much LOUDER, always correct —
-# that is exactly the safety case the reconciler exists to catch.
+# `RECONCILE_DUCK_SKIP_DB` is directional: skip when Camilla is much
+# QUIETER than expected (avoid un-ducking); always correct when much
+# LOUDER (the safety case the reconciler exists to catch).
 #
-# It is an inference from a dB gap, which ADR-0177 forbids as evidence of
-# ownership, and neither in-process duck needs it: this reconciler writes by
-# declaring the HOUSEHOLD claim, which a held `TRANSIENT_DUCK` outranks. The
-# graph-swap bracket takes no claim and is asked through the DSP writer lock
-# instead (ADR-0213). What is left is the fader claim taken by the
-# volume-floor audition in `jasper-web`, a process whose owner this one cannot
-# reach and whose claim does not survive its own exit (#3038). REMOVE THIS
-# THRESHOLD when that audition announces itself — a writer-lock hold or a
-# MEASURE_PAUSE would both do it — because until then a duck stranded by a
-# killed swap stays stranded.
+# A dB gap is not valid evidence of fader ownership (ADR-0177), and
+# neither in-process duck needs this skip: the reconciler writes via the
+# HOUSEHOLD claim, which a held `TRANSIENT_DUCK` outranks, and the
+# graph-swap bracket is asked through the DSP writer lock instead
+# (ADR-0213). What remains is the volume-floor audition in `jasper-web`,
+# whose claim does not survive its own exit and whose owner this process
+# cannot reach (#3038). REMOVE THIS THRESHOLD once that audition announces
+# itself via a writer-lock hold or MEASURE_PAUSE — until then a duck
+# stranded by a killed swap stays stranded.
 RECONCILE_DRIFT_DB = 1.0
 RECONCILE_DUCK_SKIP_DB = 10.0
 MUTE_DB_EPSILON = 1e-6
@@ -705,13 +687,13 @@ class VolumeCoordinator:
         it was intentionally declined.
         """
         if source == Source.AIRPLAY:
-            # shairport's run_this_when_volume_is_set hook
-            # (deploy/bin/jasper-airplay-volume) has already mapped the
-            # sender's -30..0 dB onto this scale and dropped the -144 mute
-            # sentinel, so AirPlay arrives in listening-level units like
-            # USBSINK's. AirPlay is camilla-master, so the carrier sync
-            # below moves the ramped master fader; the sender's own slider
-            # is still never written (ADR-0176 outbound, ADR-0206 inbound).
+            # shairport's volume hook (deploy/bin/jasper-airplay-volume,
+            # ADR-0206) has already mapped AirPlay's dB scale onto this one
+            # and dropped its mute sentinel, so AirPlay arrives in
+            # listening-level units like USBSINK's. AirPlay is
+            # camilla-master, so the carrier sync below moves the ramped
+            # master fader; the sender's own slider is still never written
+            # (ADR-0176).
             level = max(0, min(100, int(native_value)))
         elif source == Source.SPOTIFY:
             level = spotify_percent_to_listening_level(int(native_value))
@@ -724,9 +706,6 @@ class VolumeCoordinator:
             # identity to listening_level — the coordinator doesn't need to
             # know about ALSA mixer units, step indices, or the gadget's dB
             # range.
-            # _sync_camilla_observed_level below then turns this level back into
-            # Camilla dB via percent_to_db — the two ends of the same
-            # volume-curve contract.
             level = max(0, min(100, int(native_value)))
         else:
             logger.debug("observe_source_volume: unknown source %s", source)
@@ -1071,9 +1050,8 @@ class VolumeCoordinator:
                         ),
                     )
             else:
-                # IDLE and USBSINK both land here. USBSINK is
-                # camilla-master like AirPlay; we don't write back
-                # to the gadget's mixer (the host's slider is
+                # USBSINK is camilla-master like AirPlay; we don't write
+                # back to the gadget's mixer (the host's slider is
                 # observed-only — see observe_source_volume above and
                 # historical/usbsink-implementation-appendix.md §3.2).
                 await self._set_camilla(level)
@@ -1111,7 +1089,6 @@ class VolumeCoordinator:
             result: str = "ok",
             detail: str = "",
         ) -> SourceHandoff:
-            """Build one result from the handoff state accumulated so far."""
             return SourceHandoff(
                 prev_source=prev_source,
                 current_source=current_source,
@@ -1749,16 +1726,10 @@ class VolumeCoordinator:
         to land camilla at the canonical level regardless of what the
         duck delta was or what other writers did during the session.
 
-        Refreshes from disk before deriving the effective level. jasper-control
-        and jasper-voice are separate processes that each cache
-        listening_level in memory; without a refresh here, a remote
-        twist that lands between this daemon's own set/adjust calls
-        leaves `_level` stale. Real symptom: remote spun to 100% via
-        the control daemon, voice-daemon's stale `_level` still
-        reflected the boot value, and `Ducker.restore()` after a
-        failed turn raised camilla by tens of dB to satisfy the
-        out-of-date target. (Or, in the inverse case, dropped it
-        below the user's intent.)"""
+        Refreshes from disk before deriving the effective level: jasper-control
+        and jasper-voice each cache listening_level in memory, and a stale
+        in-process value here would make `Ducker.restore()` land camilla tens
+        of dB from the user's actual intent after a duck."""
         self._refresh_from_disk()
         effective_level = self._effective_level()
         source = await self._active_source()
@@ -1963,12 +1934,6 @@ class VolumeCoordinator:
         if mux reports one, prefer it even when raw renderer probes
         say a different source is active. Fail soft to raw probes when
         mux is unavailable or an older RendererClient lacks the method.
-
-        USB sink comes last among the active priorities — between two
-        camilla-master sources (AirPlay vs USBSINK), AirPlay was the
-        first to ship and any in-flight session there is more likely
-        to be intentional than a USB session that happens to be
-        bouncing back from the host's idle state.
         """
         selected_source = getattr(self._backend, "selected_source", None)
         if selected_source is not None:
@@ -2785,21 +2750,16 @@ async def _busctl_set_property(
 def install_env_canonical_target_provider() -> None:
     """Register this process's canonical main_volume target AND its fader owner.
 
-    Both, from one call, because they answer the same process's question and a
-    process that had one without the other would be half-arbitrated. Every
-    existing call site gets the owner with no edit of its own, which is also
-    why the two cannot drift apart later.
+    Both, from one call: a process with one but not the other would be
+    half-arbitrated, and every existing call site gets the owner without an
+    edit of its own — so the two cannot drift apart.
 
     Every process that performs a CamillaDSP graph swap needs one. A swap's
     duck release lands at ``min(canonical, current + own depth)``; with no
     canonical target it falls back to the entry snapshot, which an interleaved
-    voice cue may already have ducked, and the fader strands tens of dB quiet
-    inside the band `maybe_reconcile_camilla` refuses to heal.
-
-    Every swap that ducks now uses the canonical target, with no exception. The
-    crossover-v2 measurement swap used to supply its own reference (#2929);
-    wave 6d stopped that swap ducking at all, so there is no release left for a
-    session-owned level to steer.
+    voice cue may already have ducked, stranding the fader tens of dB quiet
+    inside the band `maybe_reconcile_camilla` refuses to heal. Every swap that
+    ducks now uses the canonical target, with no exception.
 
     A process that already owns a long-lived coordinator registers that
     coordinator's own :meth:`VolumeCoordinator.get_camilla_target_db` instead
