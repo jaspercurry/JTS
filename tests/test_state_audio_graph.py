@@ -73,7 +73,14 @@ def test_audio_graph_state_aggregates_route_fanin_and_outputd(
 # --- /state.audio_graph.coupling (P2) ----------------------------------------
 
 
-def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch):
+def _pin_fanin_env(monkeypatch, tmp_path, text: str) -> None:
+    """Point the coupling block at a real fanin.env holding ``text``."""
+    path = tmp_path / "fanin.env"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(path))
+
+
+def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch, tmp_path):
     """ADR-0100: only the ring PAIR is coherent, and one half here has not moved.
 
     The two halves answer absence differently, and that is the point of this
@@ -81,12 +88,9 @@ def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch):
     default), while the persisted coupling is a written token that says
     ``loopback``. So the bridge reports the ring — what outputd runs — and the
     pair is still incoherent, because the fan-in half names the retired
-    transport.
+    transport, which this surface publishes AS WRITTEN.
     """
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
+    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
     monkeypatch.setattr(
         "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
         "/nonexistent/outputd.env",
@@ -116,10 +120,7 @@ def test_coupling_state_ring_armed_reports_coherent_pair(
 ):
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(outputd_env_text)
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "shm_ring",
-    )
+    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
         "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
     )
@@ -265,10 +266,7 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     # now something an operator (or a stale env file) declared.
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n")
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "shm_ring",
-    )
+    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
         "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
     )
@@ -286,17 +284,15 @@ def test_coupling_state_fail_soft_reports_the_unknown_rather_than_a_default(
     It used to degrade to ``"persisted": "loopback"`` with
     ``"intent_coherent": True`` — after ADR-0100 that named the RETIRED
     transport and called it healthy, so an unreadable env file surfaced as a
-    working speaker. ``None`` says what actually happened. OSError is the
-    realistic failure (an unreadable env file); the catch is a concrete
-    exception set, not a blind except.
+    working speaker. ``None`` says what actually happened. The catch is a
+    concrete exception set, not a blind except, so this drives it with one
+    member of that set (a malformed value) rather than an invented error.
     """
 
     def _boom(*a, **k):
-        raise OSError("boom")
+        raise ValueError("boom")
 
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling", _boom
-    )
+    monkeypatch.setattr("jasper.env_file.read_value", _boom)
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block == {
         "persisted": None,

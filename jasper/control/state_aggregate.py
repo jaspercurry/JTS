@@ -313,20 +313,24 @@ def _coupling_state(
     try:
         from pathlib import Path
 
-        from ..fanin.ring_health import (
-            FANIN_ENV_PATH,
-            OUTPUTD_ENV_PATH,
-            read_persisted_coupling,
-        )
+        from ..fanin.ring_health import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
         from ..fanin_coupling import (
-            COUPLING_SHM_RING,
+            COUPLING_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+            coupling_value_removed,
             outputd_bridge_is_ring,
         )
         from ..env_file import read_value
 
-        coupling = read_persisted_coupling()
+        try:
+            fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
+        except OSError:
+            fanin_text = ""
+        # The token AS WRITTEN, not a resolved transport: this block exists to
+        # name a migrating box's retired value, which a resolver answering
+        # "the ring or nothing" cannot spell.
+        coupling = (read_value(fanin_text, COUPLING_ENV_VAR) or "").strip().lower()
         try:
             outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
         except OSError:
@@ -343,20 +347,19 @@ def _coupling_state(
             )
             else "direct"
         )
-        try:
-            fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
-        except OSError:
-            fanin_text = ""
         live_transport = None
         if isinstance(fanin_status, dict):
             output = fanin_status.get("output")
             if isinstance(output, dict):
                 live_transport = output.get("transport")
         return {
-            "persisted": coupling,
+            "persisted": coupling or None,
             "content_bridge": content_bridge,
+            # Each end asked its own daemon's accept set, so UNDECLARED is the
+            # ring on both — the pair this used to call incoherent on every box
+            # the reconciler had not written.
             "intent_coherent": (
-                coupling == COUPLING_SHM_RING
+                not coupling_value_removed(coupling)
                 and content_bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
             ),
             "live_transport": live_transport,

@@ -517,7 +517,10 @@ def test_ring_only_is_derived_from_the_coupling_vocabulary(monkeypatch):
     monkeypatch.setattr(
         fanin_coupling,
         "VALID_COUPLINGS",
-        frozenset({fanin_coupling.COUPLING_SHM_RING, fanin_coupling.COUPLING_LOOPBACK}),
+        # The retired token, spelled inline: this simulates the two-transport
+        # tree that existed before ADR-0100, and fanin_coupling no longer names
+        # it (nothing outside this simulation may).
+        frozenset({fanin_coupling.COUPLING_SHM_RING, "loopback"}),
     )
     assert transport_park.ring_only_transport() is False
 

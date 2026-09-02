@@ -89,8 +89,6 @@ def test_outputd_unit_runtime_and_exec_paths():
     for expected in [
         'Environment="JASPER_OUTPUTD_BACKEND=alsa"',
         'Environment="JASPER_OUTPUTD_DAC_PCM=outputd_dac"',
-        'Environment="JASPER_OUTPUTD_PERIOD_FRAMES=1024"',
-        'Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"',
         'Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"',
     ]:
         assert expected in unit
@@ -103,11 +101,23 @@ def test_outputd_unit_runtime_and_exec_paths():
     assert "/run/jasper-outputd" in read_write
 
 
-def test_outputd_operator_retune_file_is_after_packaged_defaults():
+def test_the_unit_pins_neither_frame_default_over_the_operator_seam():
+    """systemd applies env in FILE ORDER and a later line wins.
+
+    An `Environment=` for either frame key sits BELOW `EnvironmentFile=`
+    /etc/jasper/jasper.env and would therefore beat it — making the packaged
+    default a middle layer while every reader (the plan, the doctor, the ring
+    assets) documents jasper.env as the operator override. outputd resolves both
+    keys against its own compile-time defaults when absent, so the layering the
+    plan models is true only while these lines stay out.
+    """
     unit = _read_unit()
-    assert unit.index(
-        'Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"'
-    ) < unit.index("EnvironmentFile=-/var/lib/jasper/outputd.env")
+
+    for key in ("JASPER_OUTPUTD_PERIOD_FRAMES", "JASPER_OUTPUTD_DAC_BUFFER_FRAMES"):
+        assert f"Environment=\"{key}=" not in unit, key
+    assert unit.index("EnvironmentFile=/etc/jasper/jasper.env") < unit.index(
+        "EnvironmentFile=-/var/lib/jasper/outputd.env"
+    )
 
 
 def test_install_builds_installs_and_enables_outputd():

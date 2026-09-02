@@ -319,7 +319,11 @@ def _assistant_width_token(env_path: str | Path) -> str:
         )
         wide = assistant_wire_is_wide(
             wire_format=wire_format,
-            coupling=read_persisted_coupling(env_path),
+            # `or ""` keeps this half AUTHORITATIVE: `assistant_wire_is_wide`
+            # reads `None` as "not supplied" and would fall back to the default
+            # fanin.env, discarding the caller's env_path. A file naming no
+            # transport resolves narrow either way.
+            coupling=read_persisted_coupling(env_path) or "",
         )
     except (OSError, ValueError):
         # An unreadable/typo'd declaration is fan-in's fault to report (it parks

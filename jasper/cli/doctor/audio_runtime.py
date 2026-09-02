@@ -1199,7 +1199,7 @@ def check_audio_runtime_plan() -> CheckResult:
         f"profile={plan.profile_id}, route={plan.route_mode}, "
         f"route_profile={plan.route_profile.route_id}, "
         f"route_hash={plan.route_config_hash}, "
-        f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value}, "
+        f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value or '(unset)'}, "
         f"camilla_policy={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
         f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
         + (
@@ -1230,22 +1230,31 @@ def check_audio_runtime_plan() -> CheckResult:
 def check_fanin_coupling_value() -> CheckResult:
     """The persisted fan-in coupling must be a RECOGNIZED token.
 
-    A migrating box may carry ``JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`` (the
-    removed coupling) or a typo. ``resolve_coupling`` fails such a value
-    safe to loopback at daemon start, and the ``--auto`` reconciler converges it
-    loudly (``event=…result=removed_coupling_failsafe``); this surfaces the stale
-    value until that pass runs so the operator knows the persisted file names a
+    A migrating box may carry ``JASPER_FANIN_CAMILLA_COUPLING=loopback`` (the
+    removed transport) or a typo. jasper-fanin REFUSES such a value at start
+    (exit 78) and the ``--auto`` reconciler converges it loudly
+    (``event=…result=removed_coupling_failsafe``); this surfaces the stale value
+    until that pass runs so the operator knows the persisted file names a
     transport that no longer exists.
+
+    An ABSENT key is not that state: fan-in serves the ring for it (ADR-0100),
+    so a box the reconciler has not written yet is ``ok`` on the ring.
     """
     from jasper.fanin.ring_health import FANIN_ENV_PATH
-    from jasper.fanin_coupling import COUPLING_ENV_VAR, coupling_value_removed
+    from jasper.fanin_coupling import (
+        COUPLING_ENV_VAR,
+        COUPLING_SHM_RING,
+        coupling_value_removed,
+    )
     from jasper.env_file import read_value
 
     label = "fan-in coupling value"
     try:
         text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
     except OSError:
-        return CheckResult(label, "ok", "no fanin.env — coupling defaults to loopback")
+        return CheckResult(
+            label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}"
+        )
     raw = read_value(text, COUPLING_ENV_VAR)
     if coupling_value_removed(raw):
         return CheckResult(
@@ -1256,7 +1265,11 @@ def check_fanin_coupling_value() -> CheckResult:
             "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
             "the file.",
         )
-    return CheckResult(label, "ok", f"{COUPLING_ENV_VAR}={raw or '(unset → loopback)'}")
+    return CheckResult(
+        label,
+        "ok",
+        f"{COUPLING_ENV_VAR}={raw or f'(unset → {COUPLING_SHM_RING})'}",
+    )
 
 
 def _requires_roleful_graph() -> bool:
@@ -3049,7 +3062,6 @@ def _outputd_transport_health(
     :func:`check_ring_split_transport`'s question.
     """
     from jasper.fanin_coupling import (
-        COUPLING_SHM_RING,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         outputd_bridge_is_ring,
     )
@@ -3068,13 +3080,9 @@ def _outputd_transport_health(
     outputd_on_ring = outputd_bridge_is_ring(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
-    # ``None`` is the planner's own spelling for "not the ring" — it resolves to
-    # the non-ring shape without this module naming a retired token.
-    coupling = COUPLING_SHM_RING if outputd_on_ring else None
-    topology = transport_topology_for_coupling(
-        coupling,
-        outputd_env=outputd_env,
-    )
+    # NO COUPLING HANDED IN: the planner reads outputd's own bridge out of the
+    # env, which is the half this check is about.
+    topology = transport_topology_for_coupling(outputd_env=outputd_env)
     expected_content_source = topology.outputd_content_source
     actual_content_source = content.get("source")
     if actual_content_source != expected_content_source:
@@ -3105,7 +3113,6 @@ def _outputd_transport_health(
         )
     else:
         transport_report = transport_coherence_report(
-            coupling=coupling,
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
         )
