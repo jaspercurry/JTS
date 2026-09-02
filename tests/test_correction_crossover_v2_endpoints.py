@@ -9172,13 +9172,13 @@ def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
         topology_prescription as topology_mod,
     )
 
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(
         v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
     )
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store",
@@ -9237,13 +9237,13 @@ def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
         topology_prescription as topology_mod,
     )
 
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(
         v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
     )
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     # A working stub, not a fail-arm: the bundle opens BEFORE the re-point in
     # the verify-only prepare, so arming it to fail would stop this run short

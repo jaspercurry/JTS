@@ -132,16 +132,6 @@ def test_render_page_embeds_csrf_meta_and_fetch_helpers():
     assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in js
 
 
-def test_render_page_flags_capture_relay_mode_from_env(monkeypatch):
-    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
-    body = correction_setup._render_page("jts.local").decode()
-    assert 'data-capture-relay-enabled="0"' in body
-
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.jasper.tech")
-    body = correction_setup._render_page("jts.local").decode()
-    assert 'data-capture-relay-enabled="1"' in body
-
-
 def test_capture_relay_ui_contract_is_wired():
     body = correction_setup._render_page("jts.local").decode()
     js = _module_js()
@@ -570,17 +560,14 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
             request_stop=lambda: None,
-            # A relay session is paced by the page's own tap, so it carries no
-            # position gate; the field is stated rather than omitted so this
-            # stub keeps matching the real V2PreparedSession the dispatch
-            # reads.
+            # An ungated session carries no position gate; the field is
+            # stated rather than omitted so this stub keeps matching the real
+            # V2PreparedSession the dispatch reads.
             position_gate=None,
-            # #2662 W2b: the dispatch reads the resolved capture source (to
-            # gate the relay-base requirement and mark the kind local) and
-            # forwards the wired session's two local signals — the
-            # all-spots-measured confirmation and the per-take retake (#2879).
-            # Relay defaults, stated.
-            capture_source=v2host.SOURCE_RELAY,
+            # #2662 W2b: the dispatch forwards the session's two local signals
+            # — the all-spots-measured confirmation and the per-take retake
+            # (#2879). Stated rather than omitted so this stub keeps matching
+            # the real V2PreparedSession.
             request_complete=None,
             request_retake=None,
         )
@@ -665,7 +652,6 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
             run_and_consume=lambda *a, **kw: None,
             request_stop=lambda: None,
             position_gate=None,
-            capture_source=v2host.SOURCE_RELAY,
             request_complete=None,
             request_retake=None,
         )

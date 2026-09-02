@@ -156,7 +156,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     "this phone capture cannot be stopped safely": "internal guard message",
     "phone capture is not ready to commit evidence": "internal guard message",
     "phone capture is not ready to finish": "internal guard message",
-    "phone capture is not configured": "internal guard message",
     "a phone-mic relay capture is already in progress": "internal guard message",
     "phone capture failed": "console.warn diagnostic in the /correction/ module",
     # --- Operator-facing configuration text naming the subsystem by its name.

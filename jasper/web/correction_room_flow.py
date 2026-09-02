@@ -27,9 +27,9 @@ from .correction_hub import section_tabs
 # server-owned GET /envelope contract controls whole-page membership and
 # order; the browser has no parallel screen-to-section policy.
 #
-# getUserMedia requires a secure context, which the relay's publicly trusted
-# capture origin supplies; /correction/ itself is plain HTTP and never
-# redirects into the speaker's self-signed origin (issue #2632). The back link
+# getUserMedia requires a secure context; /correction/ itself is plain HTTP
+# and never redirects into the speaker's self-signed origin (issue #2632),
+# which is what the local-capture certificate warning is for. The back link
 # is an absolute http://<host>/ so the Home affordance lands on the plain-HTTP
 # dashboard even when this page was opened over HTTPS by hand. Page-specific
 # styling lives in /assets/correction/correction.css.
@@ -37,7 +37,7 @@ from .correction_hub import section_tabs
 
 _PAGE_BODY = """
 __HEADER__
-<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-capture-relay-enabled="__CAPTURE_RELAY_ENABLED__" data-level-trust-margin-db="__LEVEL_TRUST_MARGIN_DB__">
+<main class="page correction-stack" data-required-sr="__REQUIRED_SR__" data-level-trust-margin-db="__LEVEL_TRUST_MARGIN_DB__">
 __TABS__
 <p class="page-sub">Measure your room with a microphone and apply the result to the speaker.</p>
 
@@ -389,9 +389,6 @@ def render_page(
     # The server-owned envelope fills both after the first presentation read.
     run_defaults_summary = ""
     repeat_main_position_disclosure = ""
-    from jasper.capture_relay import correction_adapter
-
-    capture_relay_enabled = correction_adapter.relay_enabled()
     household_mic_island = json_island(
         "household-mic-data", household_mic_prefill_payload
     )
@@ -414,10 +411,6 @@ def render_page(
         .replace(
             "__REPEAT_MAIN_POSITION_DISCLOSURE__",
             repeat_main_position_disclosure,
-        )
-        .replace(
-            "__CAPTURE_RELAY_ENABLED__",
-            "1" if capture_relay_enabled else "0",
         )
         .replace(
             "__LEVEL_TRUST_MARGIN_DB__",

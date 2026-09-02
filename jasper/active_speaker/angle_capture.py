@@ -99,9 +99,7 @@ __all__ = [
     "WALK_STOP_NO_LONGER_VALID",
     "WALK_DELAY_NOT_ACCEPTED",
     "WALK_POLARITY_NOT_ACCEPTED",
-    "WALK_POLARITY_NEEDS_WIRED",
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
-    "WALK_LEVEL_MATCH_NEEDS_WIRED",
     "WALK_CANDIDATE_NOT_MEASURABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
@@ -784,17 +782,6 @@ WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 #: keeps ``_validated_angle``'s.
 WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
 
-#: The walk asks for a sign-flipped branch and this session's capture source
-#: cannot deliver one. Only a WIRED session binds the engine's MEASURE leg (the
-#: Pi's own microphone records what the Pi plays); every other source runs
-#: MEASURE on the flow leg, which knows nothing about polarity and would play
-#: the ordinary graph. Refusing is the only honest arm: the alternative banks a
-#: normal capture under a record that says ``inverted``. Declared here so the
-#: vocabulary has one home; raised by the CALLER, since this module does not
-#: read session facts — the same split :data:`WALK_LATERAL_GROUP_ALREADY_PLANNED`
-#: already uses.
-WALK_POLARITY_NEEDS_WIRED = "walk_polarity_needs_wired"
-
 #: The walk's ``(delayed_role, delay_us)`` pair is not one
 #: :class:`~.crossover_v2.measure_spec.MeasureSpec` accepts — an unknown branch,
 #: a half-stated pair, or a coordinate past the DSP ceiling. Its own slug rather
@@ -813,22 +800,8 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 #: and a datasheet estimate is not the box's measurement however plausible it
 #: looks. Declared here so the vocabulary has one home; raised by the CALLER,
 #: since this module reads no box state — the same split
-#: :data:`WALK_POLARITY_NEEDS_WIRED` already uses.
+#: :data:`WALK_LATERAL_GROUP_ALREADY_PLANNED` already uses.
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
-
-#: The walk asks its graph to level-match the driver branches and this
-#: session's capture source cannot deliver one. The level match lives in the
-#: measurement graph's per-driver gain, and only a WIRED session binds the
-#: engine's MEASURE leg that installs it; every other source runs MEASURE on
-#: the flow leg, which installs the ordinary graph and knows nothing about the
-#: trims. The exact twin of :data:`WALK_POLARITY_NEEDS_WIRED`, and refused for
-#: its reason: the alternative banks an unmatched capture — and journals
-#: ``level_matched=true`` — under a walk that says it was levelled, the S12 lie
-#: through a seam the graph does not cover. Its own slug rather than the
-#: polarity one so an operator reading ``reason=`` learns WHICH capability the
-#: non-wired source cannot play. Declared here so the vocabulary has one home;
-#: raised by the CALLER, since this module reads no session facts.
-WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
 
 #: A stop names a banked candidate this walk cannot PLAY. The per-driver
 #: MEASURE graph omits crossover, linearization and the applied delays by
@@ -850,9 +823,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_STOP_NO_LONGER_VALID,
     WALK_POLARITY_NOT_ACCEPTED,
     WALK_DELAY_NOT_ACCEPTED,
-    WALK_POLARITY_NEEDS_WIRED,
     WALK_LEVEL_MATCH_NO_EVIDENCE,
-    WALK_LEVEL_MATCH_NEEDS_WIRED,
     WALK_CANDIDATE_NOT_MEASURABLE,
 })
 

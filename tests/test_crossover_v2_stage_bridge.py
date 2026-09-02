@@ -74,7 +74,6 @@ from jasper.active_speaker import design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.crossover_v2 import contracts
-from jasper.active_speaker.crossover_v2.capture_source import SOURCE_RELAY
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -90,14 +89,13 @@ from jasper.active_speaker.crossover_v2_flow import (
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.capture_relay import correction_adapter
 from jasper.output_topology import (
     ACTIVE_PLAYBACK_DEVICE_ENV,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )
 from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_relay as v2relay
+from tests.crossover_v2_fixtures import fake_measurement_mic
 
 
 # Production refuses a session with no volume owner; stand one up.
@@ -246,16 +244,13 @@ def _production_host_seams(monkeypatch, tmp_path):
     Everything a preparer DECIDES — the plan shape, the index→phase map, the
     seam bindings, the conductor construction, the persist — runs for real.
     """
-    # The preparers' source gate (#2662 W2b, gate fix round S3) resolves the
-    # capture source and asks the relay-configured question BEFORE any
-    # evidence bundle opens. These suites drive the PHONE-RELAY provider, so
-    # they name it: wired is the default source (ADR-0188),
-    # and a host with no measurement mic discloses rather than opening a
-    # relay session nobody asked for. Both halves of that — the disclosure
-    # and the relay-LESS refusal — have their own pins in
+    # The preparers' mic gate (#2662 W2b, gate fix round S3) resolves the
+    # measurement mic BEFORE any evidence bundle opens; the disclosure it
+    # raises with none plugged in has its own pin in
     # tests/test_correction_crossover_v2_wired.py.
-    monkeypatch.setenv("JASPER_CAPTURE_SOURCE", SOURCE_RELAY)
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_wired_mic", fake_measurement_mic,
+    )
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import model_error_store
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
@@ -391,9 +386,9 @@ def _production_host_seams(monkeypatch, tmp_path):
     yield
 
 
-# What the stubbed relay mint hands back as the session id. Both stages bind
-# their conductor to whatever ``open_capture`` minted, so this is the id the
-# persist rebinds to — deliberately not the seeded stage-1 one.
+# What the stubbed mint hands back as the session id. Both stages bind their
+# conductor to whatever the mint returned, so this is the id the persist
+# rebinds to — deliberately not the seeded stage-1 one.
 _MINTED_RELAY_SESSION_ID = "cap_minted_by_this_stage"
 
 
@@ -402,14 +397,14 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
 
     ``_open`` is where BOTH preparers do the work this module is about: it
     builds the seams, constructs the conductor, and persists. The two seams
-    stubbed here are the relay mint (network) and the plan runner (a thread);
-    the runner stub is also how the conductor is captured, since ``_open``
-    hands it over as ``build_v2_run_and_consume``'s first argument and keeps no
-    other reference a caller can reach.
+    stubbed here are the session mint and the plan runner (a thread); the
+    runner stub is also how the conductor is captured, since ``_open`` hands
+    it over as the runner builder's first argument and keeps no other
+    reference a caller can reach.
     """
     captured: dict[str, Any] = {}
 
-    def _fake_open_capture(_client, spec, **_kwargs):
+    def _fake_mint(_device, spec):
         return SimpleNamespace(
             pi_session=SimpleNamespace(session_id=_MINTED_RELAY_SESSION_ID), spec=spec,
         )
@@ -422,8 +417,8 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
 
         return _run
 
-    monkeypatch.setattr(correction_adapter, "open_capture", _fake_open_capture)
-    monkeypatch.setattr(v2relay, "build_v2_run_and_consume", _fake_runner)
+    monkeypatch.setattr(v2host, "_mint_wired_session", _fake_mint)
+    monkeypatch.setattr(v2host, "_build_wired_run", _fake_runner)
 
     prepared.open(object(), "http://relay.test", "http://origin.test", "http://return.test")
 
@@ -574,6 +569,7 @@ class _RecordingCheckStore:
     """An evidence store that keeps what was published through it."""
 
     session_id = "bundle-check-pin"
+    bundle_dir = "/var/lib/jasper/bundle-check-pin"
 
     def __init__(self) -> None:
         self.published: list[tuple[str, Any]] = []

@@ -217,7 +217,7 @@ def resolve_wired_mic(
     non-UTF-8 proc file (the ring_assets precedent for reads of
     kernel-owned text). ``None`` means "no mic answered", never a source
     choice: what a caller does with it is the caller's (the v2 flow
-    discloses and refuses to guess — ``resolve_v2_capture_source``).
+    discloses and refuses to measure — ``resolve_v2_wired_mic``).
     """
     from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 
