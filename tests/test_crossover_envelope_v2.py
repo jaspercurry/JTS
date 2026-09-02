@@ -22,6 +22,8 @@ disclosure, the way back to the previous tuning beside the forward actions.
 """
 from __future__ import annotations
 
+import json
+import math
 import time
 from typing import Mapping
 
@@ -342,6 +344,74 @@ def test_check_phase_tier_durations_and_counts_are_derived_not_hand_written():
     # post-apply cloud actually samples.
     assert "confirm the result at the mark" in express["description"]
     assert "re-check the result at several spots around the mark" in full["description"]
+
+
+def test_check_phase_states_a_staged_walks_price_before_start(tmp_path, monkeypatch):
+    """WP2b (#3498): the session open takes a staged walk whichever tier is
+    pressed, so the chooser is the last screen that can say what it costs.
+
+    Both cards carry the same document, each priced against ITS OWN tier: the
+    walk belongs to the session, and ``ceiling_min`` is that whole session's
+    ceiling, so the card cannot quote 4 min for a 46-minute sitting. An empty
+    slot adds nothing at all, and a slot the spool refuses to read costs the
+    chooser its offer rather than the screen.
+    """
+    from jasper.active_speaker import angle_capture as ac
+    from jasper.active_speaker import angle_capture_spool as spool
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from jasper.active_speaker import measurement_programs as mp
+
+    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
+    monkeypatch.setattr(
+        "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
+        tmp_path / "session_volume.json",
+    )
+    try:
+        idle = build_crossover_envelope_v2(_status(phase="check"))
+        express = mp.program("baseline", "express")
+        spool.stage_angle_request(ac.request_for_program(express))
+        offered = build_crossover_envelope_v2(_status(phase="check"))
+        # A peek, not a take: the session open is still the only take.
+        assert spool.staged_angle_request_pending() is True
+        # A field the document cannot coerce refuses in the spool's own
+        # vocabulary (``tests/test_angle_capture_take.py``), which this screen
+        # already catches — so the chooser renders, minus the offer.
+        path = spool.angle_request_spool_path()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["delay_us"] = "12us"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        unreadable = build_crossover_envelope_v2(_status(phase="check"))
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+    for env in (idle, unreadable):
+        for action in [env["next_action"], *env["alternate_actions"]]:
+            assert "staged_walk" not in action
+
+    for action in [offered["next_action"], *offered["alternate_actions"]]:
+        # Built through the SAME tier → shape resolution the chooser prices
+        # with, so this pins that the ceiling follows the tier rather than a
+        # figure written down twice.
+        ceiling_min = math.ceil(
+            flow.wall_clock_ceiling_s(
+                flow.stage1_base_entries(
+                    flow.resolve_plan_shape(action["body"]["tier"])
+                )
+                + express.capture_count
+            ) / 60
+        )
+        assert action["staged_walk"] == {
+            "program": "baseline/express",
+            "mic_moves": express.mic_move_count,
+            "captures": express.capture_count,
+            "ceiling_min": ceiling_min,
+        }
+        # The price is on the description too, because that is the only field
+        # the page renders (``wrapChoice`` in crossover/js/main.js).
+        assert "baseline/express" in action["description"]
+        assert str(express.mic_move_count) in action["description"]
+        assert str(express.capture_count) in action["description"]
+        assert str(ceiling_min) in action["description"]
 
 
 def test_check_phase_recommends_full_on_a_first_commission():

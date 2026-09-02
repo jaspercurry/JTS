@@ -120,6 +120,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
+from jasper.active_speaker.measurement_programs import HOLD_BUDGET_S
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
 
@@ -4633,43 +4634,28 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: How long ONE position hold waits for whoever is moving the microphone
 #: before the session refuses rather than holding forever.
 #:
-#: A hold is UNBOUNDED as far as the transport is concerned — the capture page
-#: re-posts the same begin every 1.5 s and each re-post rearms the runner's
-#: inactivity deadline (``capture_relay.session.run_capture_plan``) — so nothing
-#: below this module would ever end a hold nobody answers. That is right for the
-#: household-facing apply hold it was built for, where a person stands at the
-#: phone; it is wrong here, where the release comes from somewhere this process
-#: cannot see — a program that crashes silently, or a person who walked away —
-#: leaving the speaker holding its measurement volume, its paused voice, and the
-#: relay slot indefinitely.
-#:
-#: Ten minutes because it covers BOTH movers and the slower one sets it: an arm
-#: swings in seconds plus its driver's settle and transport retries; a person
-#: walking a tape to the next bearing and posting the release is the longer of
-#: the two. Either way it is an order of magnitude past the move and an order of
-#: magnitude short of "nobody is coming".
+#: The NUMBER and why it is ten minutes belong to
+#: :data:`~jasper.active_speaker.measurement_programs.HOLD_BUDGET_S`; this is
+#: the gate that spends it. A hold is unbounded as far as the transport is
+#: concerned — the capture page re-posts the same begin every 1.5 s and each
+#: re-post rearms the runner's inactivity deadline
+#: (``capture_relay.session.run_capture_plan``) — so without this budget nothing
+#: below this module would end a hold nobody answers, leaving the speaker
+#: holding its measurement volume, its paused voice and the relay slot
+#: indefinitely.
 #:
 #: **This is a PER-HOLD bound, and it is not the operative total.** The session's
 #: own wall-clock ceiling
 #: (:func:`~jasper.active_speaker.crossover_v2_flow.session_wall_clock_ceiling_s`,
-#: derived per plan — 1800 s for remote's stage 1 and 2040 s for its stage 2 at
-#: the shipped shape) covers the WHOLE walk, so a run spending anywhere near
-#: this budget on several holds ends on that ceiling long before any individual
-#: hold expires: stage 1's ceiling is exactly 3 holds' worth of a 3-capture
-#: stage, so a remote stage 1 that spent a FULL hold at every position would
-#: land precisely on its ceiling. (Before the 2026-08-18 lateral pause the same
-#: sentence read 2520 s, 4.2 holds' worth, and the FIFTH full hold of a
-#: nine-capture walk exceeding it — the pause dropped both the ceiling and the
-#: captures, and left more hold per position, not less.)
-#: A mover that stalls once is caught
-#: here by name; one that is merely slow at every position is caught by the
-#: ceiling, and since issue #2506 that death has its OWN name too —
-#: :data:`SESSION_CEILING_EXPIRED_CODE`, raised by :meth:`PositionGate.gate`
-#: once :func:`enforce_session_volume_ceiling_if_stale` reports the walk
-#: outlived its ceiling. Whether the per-hold budget should instead be DERIVED
-#: from the ceiling and the capture count is still open; the two bounds are
-#: named separately on purpose, because they describe different failures.
-REMOTE_POSITION_HOLD_BUDGET_S = 600.0
+#: derived per plan) covers the WHOLE walk, so a run spending anywhere near this
+#: budget on several holds ends on that ceiling long before any individual hold
+#: expires. A mover that stalls once is caught here by name; one that is merely
+#: slow at every position is caught by the ceiling, and since issue #2506 that
+#: death has its OWN name — :data:`SESSION_CEILING_EXPIRED_CODE`, raised by
+#: :meth:`PositionGate.gate` once
+#: :func:`enforce_session_volume_ceiling_if_stale` reports the walk outlived its
+#: ceiling.
+REMOTE_POSITION_HOLD_BUDGET_S = float(HOLD_BUDGET_S)
 
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
 #: branches on these, and the phone renders the message beside them.

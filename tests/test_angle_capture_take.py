@@ -22,6 +22,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ import pytest
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
+from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
@@ -181,6 +183,80 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
     # Single-use: the next session is an ordinary one. The document is spent by
     # the take, not by the session succeeding.
     assert _take() is None
+
+
+def test_a_peek_reads_the_staged_walk_without_spending_it(slot):
+    """The page prices a staged walk before Start; the open is still the take.
+
+    Same reader, same request object -- what a peek does NOT do is empty the
+    slot, so a household that reads the price and never presses Start still has
+    its walk.
+    """
+    assert spool.peek_staged_angle_request() is None
+
+    request = ac.request_for_program(mp.program("baseline", "express"))
+    spool.stage_angle_request(request)
+    assert spool.peek_staged_angle_request() == request
+    assert spool.staged_angle_request_pending() is True
+    assert spool.peek_staged_angle_request() == request
+
+    assert spool.take_staged_angle_request() == request
+    assert spool.staged_angle_request_pending() is False
+    assert spool.peek_staged_angle_request() is None
+
+
+@pytest.mark.parametrize(
+    "read", [spool.peek_staged_angle_request, spool.take_staged_angle_request],
+)
+def test_a_field_the_document_cannot_coerce_refuses_by_name(slot, read):
+    """A hand-edited ``delay_us`` is a REFUSAL, not a bare ``ValueError``.
+
+    Both readers, because the page peeks this slot on every poll while only the
+    session open takes it: a coercion escaping as ``ValueError`` would take the
+    tier chooser down on every poll and 500 the open, instead of costing the
+    chooser one offer and refusing the open by name.
+    """
+    path = spool.angle_request_spool_path()
+    spool.stage_angle_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["delay_us"] = "12us"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    with pytest.raises(spool.AngleRequestRefused) as excinfo:
+        read()
+    assert excinfo.value.reason == spool.SPOOL_MALFORMED
+
+
+def test_a_staged_walks_stated_price_covers_the_session_that_takes_it(slot):
+    """A program's clocks are honoured STRUCTURALLY, not wired a second time.
+
+    The walk's stops enter the plan's ``capture_target``
+    (``build_v2_cloud_index_phase_map`` counts ``lateral_prompts``), and the
+    session ceiling scales on that target -- so the price stated before Start
+    is never under what the session that takes the walk actually budgets.
+    """
+    express = mp.program("baseline", "express")
+    request = ac.request_for_program(express)
+    spool.stage_angle_request(request)
+    prompts, _consumer, _spec, _trims = _take()
+
+    plan = flow.build_v2_capture_plan(
+        _ROLES_BANDS, _FC_HZ, plan_shape=_hand_shape(),
+        include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
+        include_lateral=True,
+        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        lateral_prompts=prompts,
+    )
+    assert plan.capture_target >= express.capture_count
+    session_ceiling_s = flow.session_wall_clock_ceiling_s(plan)
+    # The stops are the ONLY entries this walk adds to the base plan, so the
+    # stated price is that session's own ceiling rounded up -- not merely a
+    # bound over it, and not a base the price counted for itself.
+    assert ac.walk_price(request)["ceiling_min"] == math.ceil(session_ceiling_s / 60)
+    assert (
+        flow.wall_clock_ceiling_s(flow.stage1_base_entries() + len(request.stops))
+        == session_ceiling_s
+    )
 
 
 def test_a_refused_walk_refuses_the_open_and_is_consumed(slot, caplog):

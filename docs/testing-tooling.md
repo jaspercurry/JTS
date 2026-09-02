@@ -2459,6 +2459,12 @@ that session's lateral group. Every accepted pose banks its raw WAV plus a
 sidecar carrying `position_deg`, `offset_cm`, `at_mark`, `regime` and
 `lateral_consumer`.
 
+**The price is stated before Start.** While a walk is staged, the
+`microphone_check` tier chooser names it and prices it (`staged_walk`:
+`program` / `mic_moves` / `captures`) on both tiers, read through
+`peek_staged_angle_request` — a peek, so the session open is still the only
+take.
+
 **A taken walk is EVIDENCE: its last pose adjudicates nothing — and as of
 2026-08-22, no lateral walk's close ever does.** The stage-1 selector walk
 this once distinguished itself from is retired: `fc_sweep.py`'s candidate

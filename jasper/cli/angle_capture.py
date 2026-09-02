@@ -67,7 +67,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import sys
 from typing import Any, Sequence
 
@@ -86,6 +85,7 @@ from jasper.active_speaker.angle_capture import (
     position_angle_deg,
     request_for_program,
     resolve_request,
+    walk_price,
 )
 from jasper.active_speaker.angle_capture_spool import (
     AngleRequestRefused,
@@ -97,10 +97,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLES,
     POLARITIES,
     POLARITY_NORMAL,
-)
-from jasper.active_speaker.crossover_v2.capture_plan import (
-    CAPTURE_PLAN_TARGET,
-    wall_clock_ceiling_s,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
@@ -240,25 +236,6 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     )
 
 
-def _price(request: AngleCaptureRequest) -> dict[str, int]:
-    """What this walk costs the person holding the microphone.
-
-    Derived from the stops rather than read off a program, so a named walk and
-    a free-form one are priced by one rule and the receipt has one shape.
-    ``mic_moves`` counts DISTINCT poses because repeats stay at one bearing;
-    ``ceiling_min`` prices the SESSION that takes the walk, whose capture
-    target is the plan's base entries PLUS these stops, rounded UP to whole
-    minutes so the printed number is never under the real ceiling.
-    """
-    return {
-        "mic_moves": len({(s.angle_deg, s.elevation_deg) for s in request.stops}),
-        "captures": len(request.stops),
-        "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(CAPTURE_PLAN_TARGET + len(request.stops)) / 60
-        ),
-    }
-
-
 def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
     """The resolved walk, as one JSON-able document.
 
@@ -280,7 +257,7 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
     stops = resolve_request(request)
     return {
         "program": request.program,
-        "price": _price(request),
+        "price": walk_price(request),
         "handoff_url": speaker_url(CROSSOVER_PAGE_PATH),
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
