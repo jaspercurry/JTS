@@ -25,6 +25,7 @@ Two vocabulary points the assertions lean on throughout:
 """
 from __future__ import annotations
 
+import inspect
 import json
 import math
 
@@ -1548,3 +1549,72 @@ def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
     assert older.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
     assert all(band.room_entangled_below_hz is None for band in older.bands)
     assert older.overall_passed == report.overall_passed
+
+
+@pytest.mark.parametrize(
+    ("floor_hz", "source"),
+    [
+        (1000.0, gating.ENTANGLEMENT_SOURCE_UNKNOWN),
+        (None, gating.ENTANGLEMENT_SOURCE_DECLARED),
+        (float("nan"), gating.ENTANGLEMENT_SOURCE_MEASURED),
+        # The coercion above this one leaves the source unknown; the number
+        # beside it must not survive that.
+        (1000.0, "surveyed"),
+    ],
+)
+def test_a_document_whose_floor_and_source_disagree_rehydrates_as_unknown(
+    floor_hz, source
+):
+    """The pair is read as a pair, so a rehydration cannot outlive the seam.
+
+    ``evaluate_flat_spec`` refuses a known floor with no provenance and a
+    provenance with no floor. A document carrying one is corrupt in exactly
+    that way, and rehydrating it verbatim would build a report that raises the
+    moment anything re-grades in its frame.
+    """
+    raw = evaluate_flat_spec(
+        _FREQS_HZ,
+        _flat_db(),
+        entanglement_floor_hz=1000.0,
+        entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_MEASURED,
+    ).to_dict()
+    raw["entanglement_floor_hz"] = floor_hz
+    raw["entanglement_floor_source"] = source
+
+    rehydrated = FlatSpecReport.from_dict(raw)
+
+    assert rehydrated.entanglement_floor_hz is None
+    assert rehydrated.entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    # It survives the seam it was coerced for.
+    evaluate_flat_spec(_FREQS_HZ, _flat_db(), **rehydrated.frame_kwargs)
+
+
+def test_a_reports_frame_is_the_evaluators_own_clamp_and_floor_keywords():
+    """``frame_kwargs`` is splatted at every re-grade site, so its keys are a
+    contract with ``evaluate_flat_spec``'s signature rather than a convenience.
+
+    Asserted on the key SET, not on values: what a re-grade must not be able to
+    do is state three of the four and quietly take a default for the fourth.
+    """
+    report = evaluate_flat_spec(
+        _FREQS_HZ,
+        _flat_db(),
+        trusted_floor_hz=200.0,
+        trusted_ceiling_hz=16000.0,
+        entanglement_floor_hz=1000.0,
+        entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_DECLARED,
+    )
+
+    assert set(report.frame_kwargs) == {
+        "trusted_floor_hz",
+        "trusted_ceiling_hz",
+        "entanglement_floor_hz",
+        "entanglement_floor_source",
+    }
+    assert set(report.frame_kwargs) <= set(
+        inspect.signature(evaluate_flat_spec).parameters
+    )
+    # A re-grade in this frame reports the same frame back.
+    assert evaluate_flat_spec(
+        _FREQS_HZ, _flat_db(), **report.frame_kwargs
+    ).frame_kwargs == report.frame_kwargs

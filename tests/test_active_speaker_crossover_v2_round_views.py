@@ -1252,6 +1252,40 @@ def test_the_entry_state_is_graded_by_the_shipped_evaluator(tmp_path):
     assert grade.report.to_dict() == expected.to_dict()
 
 
+def test_a_re_grade_reads_the_rounds_room_floor_back_instead_of_re_deriving_it(
+    tmp_path,
+):
+    """#3502 — a re-evaluation states the ROUND's room floor, never its own.
+
+    This door grades a stored take in the round's own frame. The room floor is
+    part of that frame: the round pooled it from the seats it actually
+    measured, and a floor recomputed at this door would be a second opinion
+    about one room, stated over a curve that never saw it. So it is read off
+    the banked report — provenance included, because a floor that arrived here
+    as ``declared_geometry`` may not print as measured downstream.
+    """
+    round_dir = _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
+    banked_path = next(round_dir.glob("bundle/*/evidence/v1/artifacts/**/cloud_verify.json"))
+    cloud = json.loads(banked_path.read_text())
+    cloud["spec"]["entanglement_floor_hz"] = 610.0
+    cloud["spec"]["entanglement_floor_source"] = "declared_geometry"
+    banked_path.write_text(json.dumps(cloud))
+    banked = load_banked_round(round_dir)
+    assert banked.report is not None
+    assert banked.report.entanglement_floor_hz == 610.0
+
+    report = entry_state_grade(banked).report
+
+    assert report is not None
+    assert report.entanglement_floor_hz == banked.report.entanglement_floor_hz
+    assert report.entanglement_floor_source == banked.report.entanglement_floor_source
+    # It MARKS and does not clamp: the graded edges are the round's, untouched.
+    assert [b.graded_lo_hz for b in report.bands] == [
+        b.graded_lo_hz for b in banked.report.bands
+    ]
+    assert any(b.room_entangled_below_hz == 610.0 for b in report.bands)
+
+
 def test_the_entry_grade_carries_a_per_band_table(tmp_path):
     """The same per-band rows a round's own ``spec`` block carries.
 

@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
 )
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
@@ -430,7 +431,10 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
         geometry=flow.position_geometry(stop.prompt),
         captured_at=0.0, session_id="s", gate_window_ms=None,
         gate_floor_source=None, gate_disclosure=None, gate_moved_rms_db=None,
-        gate_reflection_delay_ms=None, validity_floor_hz=None,
+        gate_reflection_delay_ms=None,
+        gate_entanglement_floor_hz=None,
+        gate_entanglement_floor_source=gating.ENTANGLEMENT_SOURCE_UNKNOWN,
+        validity_floor_hz=None,
         gating_applied=False, summed_ripple_db=None, glitch_detected=False,
         wav_sha256=None,
     )

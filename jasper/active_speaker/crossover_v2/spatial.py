@@ -65,7 +65,13 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
+from jasper.audio_measurement.gating import (
+    ENTANGLEMENT_SOURCE_DECLARED,
+    ENTANGLEMENT_SOURCE_MEASURED,
+    ENTANGLEMENT_SOURCE_UNKNOWN,
+    ENTANGLEMENT_SOURCES,
+    TRUSTED_FLOOR_MULTIPLIER,
+)
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
@@ -135,6 +141,7 @@ __all__ = [
     "LateralPoseCurve",
     "assemble_cloud_group_result",
     "carve_outs_by_band",
+    "cloud_entanglement_floor_hz",
     "cloud_position_capture",
     "cloud_trusted_floor_hz",
     "cloud_validity_floor_hz",
@@ -1107,6 +1114,8 @@ def cloud_position_record(
     gate_disclosure: str | None,
     gate_moved_rms_db: float | None,
     gate_reflection_delay_ms: float | None,
+    gate_entanglement_floor_hz: float | None,
+    gate_entanglement_floor_source: str,
     validity_floor_hz: float | None,
     gating_applied: bool,
     summed_ripple_db: float | None,
@@ -1155,6 +1164,22 @@ def cloud_position_record(
     block's absolute ``first_reflection_ms``: see
     :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.reflection_delay_ms`
     for why the absolute time is meaningless to a reader.
+
+    ``gate_entanglement_floor_hz`` is the ROOM's floor at THIS seat and
+    ``gate_entanglement_floor_source`` is which of
+    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` it came
+    from — never one without the other, because the number is unreadable
+    without knowing whether a reflection timed it or the operator's tape
+    measure did (#3502).  It is banked per SEAT rather than once per rig
+    because it is derived at the seat's own ``mark_distance_m``, which is why
+    :func:`cloud_entanglement_floor_hz` pools the seats rather than reading one
+    rig fact — though every pose a round walks declares the same distance
+    today, so the pooled seats currently agree; see
+    :meth:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry.first_bounce_s`.
+    ``unknown`` with a null floor is the ordinary
+    state on a rig whose first bounce lands while the direct sound is still
+    decaying — the reflection finder structurally never fires there and no
+    geometry was declared.
 
     The identity half — phase, index, attempt, ``take_id``, ``session_id``, the
     ``wav_sha256`` verifier and the engine's own :class:`TakeClaim` fields — is
@@ -1213,6 +1238,8 @@ def cloud_position_record(
         "gate_disclosure": gate_disclosure,
         "gate_moved_rms_db": gate_moved_rms_db,
         "gate_reflection_delay_ms": gate_reflection_delay_ms,
+        "gate_entanglement_floor_hz": gate_entanglement_floor_hz,
+        "gate_entanglement_floor_source": gate_entanglement_floor_source,
         "validity_floor_hz": validity_floor_hz,
         "gating_applied": gating_applied,
         "summed_ripple_db": summed_ripple_db,
@@ -2719,6 +2746,56 @@ def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
     return TRUSTED_FLOOR_MULTIPLIER * floor
 
 
+def cloud_entanglement_floor_hz(
+    per_position: Sequence[tuple[float | None, str]],
+) -> tuple[float | None, str]:
+    """The group's ROOM floor and its provenance — the WORST of its positions'.
+
+    :func:`cloud_trusted_floor_hz`'s "worst of the positions" argument, applied
+    to the floor no window choice can lower (#3495): the combined curve is a
+    power mean ACROSS these seats, so a bin below any one seat's entanglement
+    floor is room-entangled in the average. The MAX is the only floor under
+    which every marked bin is marked at every contributing capture.
+
+    **One position that does not know its floor un-knows the group's.** A max
+    over the seats that DID know would claim the silent seat is cleaner than
+    the others, which is the one thing nobody measured. Empty in, unknown out,
+    for the same reason.
+
+    **The source is the WEAKEST of the pooled provenances.** A group is
+    ``measured`` only when every seat's floor was timed off its own reflection;
+    a single declared seat makes the aggregate ``declared``, because that is
+    what the reader would have to assume about the pool. Anything outside
+    :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` is unknown —
+    the vocabulary is closed here as it is at every other seam.
+
+    The pair is returned together and consumed together:
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` refuses a floor
+    and a source that disagree about whether a floor is known.
+    """
+    if not per_position:
+        return None, ENTANGLEMENT_SOURCE_UNKNOWN
+    floors: list[float] = []
+    sources: list[str] = []
+    for floor_hz, source in per_position:
+        if (
+            source not in ENTANGLEMENT_SOURCES
+            or source == ENTANGLEMENT_SOURCE_UNKNOWN
+            or floor_hz is None
+        ):
+            return None, ENTANGLEMENT_SOURCE_UNKNOWN
+        floor = float(floor_hz)
+        if not math.isfinite(floor) or floor <= 0.0:
+            return None, ENTANGLEMENT_SOURCE_UNKNOWN
+        floors.append(floor)
+        sources.append(source)
+    return max(floors), (
+        ENTANGLEMENT_SOURCE_MEASURED
+        if all(s == ENTANGLEMENT_SOURCE_MEASURED for s in sources)
+        else ENTANGLEMENT_SOURCE_DECLARED
+    )
+
+
 @dataclass(frozen=True)
 class CloudGroupResult:
     """:func:`assemble_cloud_group_result`'s payload, plus the line a failure earns.
@@ -2959,10 +3036,25 @@ def assemble_cloud_group_result(
         # same caller: the spec may not grade above where the microphone is
         # trusted, which is also where the fitter was allowed to command and
         # the delta probe allowed to grade (#2649).
+        # The ROOM's floor rides beside the window's, pooled from the same
+        # seats the curve was pooled from (#3502). It CLAMPS NOTHING and
+        # changes no grade — it only lets every band say which of its bins no
+        # window could have separated from the room.
+        entanglement_floor_hz, entanglement_floor_source = cloud_entanglement_floor_hz(
+            [
+                (
+                    row.get("gate_entanglement_floor_hz"),
+                    str(row.get("gate_entanglement_floor_source") or ""),
+                )
+                for row in position_records
+            ]
+        )
         spec_report = evaluate_flat_spec(
             combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
             trusted_floor_hz=trusted_floor_hz,
             trusted_ceiling_hz=trusted_ceiling_hz,
+            entanglement_floor_hz=entanglement_floor_hz,
+            entanglement_floor_source=entanglement_floor_source,
         )
         # #2291/#2160: hand the LIVE report to a caller that needs the object
         # rather than the serialized copy below. ``evaluate_spec`` reads

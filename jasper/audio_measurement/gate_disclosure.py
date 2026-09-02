@@ -453,7 +453,21 @@ def describe_gate(
     *,
     declared_first_bounce_s: float | None = None,
 ) -> str:
-    """The one honest sentence about a gating block. THE single writer of it.
+    """:func:`build_gate_disclosure` then :func:`render_gate`, for a caller
+    holding a block rather than a typed record.
+
+    ``declared_first_bounce_s`` reaches :func:`build_gate_disclosure`
+    unchanged. A caller that already built the record must call
+    :func:`render_gate` instead: building it twice from one block is two
+    readings of one fact, and only the second one is rendered.
+    """
+    return render_gate(
+        build_gate_disclosure(block, declared_first_bounce_s=declared_first_bounce_s)
+    )
+
+
+def render_gate(d: GateDisclosure) -> str:
+    """The one honest sentence about a gate. THE single writer of it.
 
     This is the #1966 fix at the surface: a record that prints
     ``gate_window_ms = 7.0`` and nothing else reads as "reflections
@@ -464,11 +478,7 @@ def describe_gate(
 
     Consumers render this verbatim. They do not re-phrase the fields —
     re-phrasing is how the two states started printing identically.
-
-    ``declared_first_bounce_s`` reaches :func:`build_gate_disclosure`
-    unchanged.
     """
-    d = build_gate_disclosure(block, declared_first_bounce_s=declared_first_bounce_s)
     if d.exempt_reason:
         return (
             f"gating not applicable ({d.exempt_reason}); no reflection "

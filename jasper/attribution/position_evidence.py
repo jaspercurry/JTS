@@ -115,6 +115,11 @@ _RECORD_FIELDS: tuple[str, ...] = (
     # row — see ``evidence_packet._gate_numbers_reason``.
     "gate_moved_rms_db",
     "gate_reflection_delay_ms",
+    # The ROOM's floor at this seat, and the word that says where it came
+    # from. Projected as a PAIR — a floor without its provenance reads as a
+    # measurement whatever produced it (#3502).
+    "gate_entanglement_floor_hz",
+    "gate_entanglement_floor_source",
     "validity_floor_hz",
     "gating_applied",
     "summed_ripple_db",
@@ -241,6 +246,26 @@ FIELD_DESCRIPTIONS: Mapping[str, str] = {
         "first_reflection_ms, whose origin is the deconvolution window's and "
         "means nothing on its own. Absent — never 0.0 — when the window was "
         "capped at the search ceiling, because nothing was found to time."
+    ),
+    "gate_entanglement_floor_hz": (
+        "The ROOM's floor at this seat, Hz. Below it no gate window, however "
+        "long, separates the speaker from the room, so nothing there is a "
+        "speaker measurement — it is the floor no window choice can lower, "
+        "and it is stated beside the window's own two rather than instead of "
+        "them. Absent when unknown. Banked per SEAT because it is derived at "
+        "that seat's own mark distance, though every pose a round walks "
+        "declares the same distance today, so these rows currently carry one "
+        "number — see DeclaredGeometry.first_bounce_s."
+    ),
+    "gate_entanglement_floor_source": (
+        "Which of three things produced gate_entanglement_floor_hz: "
+        "measured_reflection (a reflection was found and timed), "
+        "declared_geometry (the operator's declared rig heights and this "
+        "seat's distance), or unknown. Declared is not measured and never "
+        "prints as if it were. unknown is the ordinary state on a rig whose "
+        "first bounce arrives while the direct sound is still decaying, and "
+        "is resolved by declaring the geometry rather than by measuring "
+        "harder."
     ),
     "summed_ripple_db": "This capture's own summed-response ripple, dB.",
     "wav_sha256": (

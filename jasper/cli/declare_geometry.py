@@ -15,6 +15,7 @@ import sys
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
     DeclaredGeometry,
+    load_declared_geometry,
 )
 
 #: 1 international inch, exactly (25.4 mm).
@@ -56,6 +57,24 @@ def _required_meters(args: argparse.Namespace, dest_prefix: str) -> float:
 
 def _both_units(meters: float) -> str:
     return f"{meters:.4f} m ({meters / METERS_PER_INCH:.2f} in)"
+
+
+def _print_derived(geometry: DeclaredGeometry) -> None:
+    """The two derived lines, labelled with the distance they were derived at.
+
+    Both depend on the speaker-to-mic distance as well as the two heights, and
+    a capture is evaluated at its OWN distance rather than at this one
+    (``DeclaredGeometry.first_bounce_s``). Printing them bare invites a reader
+    to expect these digits on every row.
+    """
+    at = f"at declared distance {geometry.distance_m:.4f} m; captures use their own"
+    rows = (
+        (f"first bounce ({at}):", f"{geometry.first_bounce_s() * 1000:.3f} ms"),
+        (f"entanglement floor ({at}):", f"{geometry.entanglement_floor_hz():.1f} Hz"),
+    )
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        print(f"  {label:<{width}} {value}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,7 +124,13 @@ def _cmd_set(args: argparse.Namespace) -> int:
     try:
         geometry.save(args.path)
     except OSError as exc:
-        print(f"jasper-declare-geometry: could not write {args.path}: {exc}", file=sys.stderr)
+        # /var/lib/jasper is a 0770 StateDirectory owned by the daemon's user,
+        # so the login account cannot write it without sudo.
+        hint = " — run with sudo" if isinstance(exc, PermissionError) else ""
+        print(
+            f"jasper-declare-geometry: could not write {args.path}: {exc}{hint}",
+            file=sys.stderr,
+        )
         return EXIT_WRITE_FAILED
 
     print(f"stored declared rig geometry -> {args.path}")
@@ -114,19 +139,18 @@ def _cmd_set(args: argparse.Namespace) -> int:
     print(f"  distance:       {geometry.distance_m:.4f} m")
     if geometry.ceiling_height_m is not None:
         print(f"  ceiling height: {geometry.ceiling_height_m:.4f} m")
-    print(f"  first bounce:       {geometry.first_bounce_s() * 1000:.3f} ms")
-    print(f"  entanglement floor: {geometry.entanglement_floor_hz():.1f} Hz")
+    _print_derived(geometry)
     return EXIT_OK
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
     try:
-        geometry = DeclaredGeometry.load(args.path)
-    except FileNotFoundError:
-        print(f"jasper-declare-geometry: no declared geometry at {args.path}", file=sys.stderr)
-        return EXIT_NOT_FOUND
+        geometry = load_declared_geometry(args.path)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"jasper-declare-geometry: could not read {args.path}: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    if geometry is None:
+        print(f"jasper-declare-geometry: no declared geometry at {args.path}", file=sys.stderr)
         return EXIT_NOT_FOUND
 
     print(f"declared rig geometry <- {args.path}")
@@ -137,8 +161,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  ceiling height: {_both_units(geometry.ceiling_height_m)}")
     else:
         print("  ceiling height: not declared")
-    print(f"  first bounce:       {geometry.first_bounce_s() * 1000:.3f} ms")
-    print(f"  entanglement floor: {geometry.entanglement_floor_hz():.1f} Hz")
+    _print_derived(geometry)
     print("  provenance: declared by the operator, not measured -- see #3502")
     return EXIT_OK
 

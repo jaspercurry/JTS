@@ -621,7 +621,10 @@ def _evaluate_position(
     site would be a second owner of the same walk.
 
     The evaluator is called with the report's OWN
-    ``trusted_floor_hz``/``trusted_ceiling_hz`` and the report's OWN
+    :attr:`~jasper.active_speaker.flat_spec.FlatSpecReport.frame_kwargs` —
+    read back, never re-derived: this position is being re-graded in the
+    round's frame, and a clamp or a room floor recomputed here would be a
+    second opinion about the same round — and the report's OWN
     published exclusion intervals, so a per-position number and the pooled
     number are stated in the same frame over the same region of spectrum.
     ``reference_db_override``, when not ``None``, is passed straight through
@@ -641,8 +644,7 @@ def _evaluate_position(
                 np.asarray(position.freqs_hz, dtype=float), report.excluded_intervals,
             ),
             smoothing_fraction=position.smoothing_fraction,
-            trusted_floor_hz=report.trusted_floor_hz,
-            trusted_ceiling_hz=report.trusted_ceiling_hz,
+            **report.frame_kwargs,
             reference_db_override=reference_db_override,
         )
     except ValueError as exc:

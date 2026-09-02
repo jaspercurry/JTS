@@ -613,17 +613,23 @@ def test_the_declared_gate_number_paths_are_paths_the_packet_really_publishes(
         "disclosure": "reflection measured at 5.33 ms after the direct arrival",
         "reflection_measured": True,
         "moved_rms_db": 2.59, "reflection_delay_ms": 5.33,
+        "entanglement_floor_hz": 400.0,
+        "entanglement_floor_source": "declared_geometry",
     }}}
     session, state_path = _bundle(tmp_path, state=state, position_over={
         "gate_moved_rms_db": 1.37, "gate_reflection_delay_ms": 5.33,
+        "gate_entanglement_floor_hz": 400.0,
+        "gate_entanglement_floor_source": "declared_geometry",
     })
     packet = build_crossover_evidence_packet(session, state_path=state_path)
     declared = packet["reflections"]["uncertainty"]["not_uncertainties"]
 
     foreign = sorted(name for name in declared if "." in name or "[]" in name)
     assert foreign == [
+        "positions[].gate_entanglement_floor_hz",
         "positions[].gate_moved_rms_db",
         "positions[].gate_reflection_delay_ms",
+        "verify.gate.entanglement_floor_hz",
         "verify.gate.moved_rms_db",
         "verify.gate.reflection_delay_ms",
     ]

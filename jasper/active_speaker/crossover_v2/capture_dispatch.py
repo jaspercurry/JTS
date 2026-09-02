@@ -722,18 +722,54 @@ def _gate_reflection_delay_ms(response: Any) -> float | None:
     return gate_disclosure.build_gate_disclosure(response.gating).reflection_delay_ms
 
 
-def _gate_record(response: Any) -> dict[str, Any] | None:
+def _gate_entanglement_floor(
+    response: Any, *, declared_first_bounce_s: float | None = None
+) -> tuple[float | None, str]:
+    """``(floor_hz, source)`` — the ROOM's floor at this capture, with provenance.
+
+    Read off the same typed record as every other gate fact, so a position
+    row and the sentence beside it cannot state two different floors.
+    ``declared_first_bounce_s`` is the operator's rig geometry evaluated at
+    THIS capture's own distance
+    (:func:`jasper.audio_measurement.measurement_geometry.declared_first_bounce_s`),
+    and is only reached when the gate measured no reflection to time (#3502).
+
+    A capture with no gating block still has a room: the floor survives an
+    ungateable capture, because the geometry that sets it is the rig's rather
+    than the window's. ``(None, unknown)`` is the honest pair when nothing was
+    declared and nothing was measured, and it is the ordinary one.
+    """
+    from jasper.audio_measurement import gate_disclosure
+
+    d = gate_disclosure.build_gate_disclosure(
+        getattr(response, "gating", None),
+        declared_first_bounce_s=declared_first_bounce_s,
+    )
+    return d.entanglement_floor_hz, d.entanglement_floor_source
+
+
+def _gate_record(
+    response: Any, *, declared_first_bounce_s: float | None = None
+) -> dict[str, Any] | None:
     """The gate reduced to the facts that leave this capture, or ``None``.
 
     ``{"disclosure": <the sentence>, "reflection_measured": <bool>,
-    "moved_rms_db": <float|None>, "reflection_delay_ms": <float|None>}``. Every
-    one is :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivation,
-    taken here at compose time — the sentence is :func:`_gate_disclosure`'s,
-    the bool is
+    "moved_rms_db": <float|None>, "reflection_delay_ms": <float|None>,
+    "entanglement_floor_hz": <float|None>,
+    "entanglement_floor_source": <str>}``. Every one is
+    :mod:`~jasper.audio_measurement.gate_disclosure`'s own derivation, taken
+    off ONE typed record built here at compose time — the sentence is
+    :func:`~jasper.audio_measurement.gate_disclosure.render_gate`'s, the
+    bool is
     :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`
-    (the single owner of "may this record claim reflections were removed"), and
-    the two numbers are :func:`_gate_moved_rms_db` and
-    :func:`_gate_reflection_delay_ms`. None is re-derived downstream.
+    (the single owner of "may this record claim reflections were removed"),
+    and the numbers are that record's fields. None is re-derived downstream.
+
+    ``declared_first_bounce_s`` reaches that record unchanged and is the
+    entanglement floor's fallback source — see
+    :func:`_gate_entanglement_floor`. It is a number rather than a path so
+    the loading of the operator's file stays with the caller that knows which
+    capture's distance to evaluate it at.
 
     **A reduction, not the block.** What travels to the wizard's durable state
     is these derived facts rather than the gating fragment itself, so the
@@ -752,18 +788,20 @@ def _gate_record(response: Any) -> dict[str, Any] | None:
     of the one typed record for the same reason the sentence is, so widening
     this record buys no new schema dependency.
     """
-    disclosure = _gate_disclosure(response)
-    if disclosure is None:
+    if response is None or not getattr(response, "gating", None):
         return None
     from jasper.audio_measurement import gate_disclosure
 
+    typed = gate_disclosure.build_gate_disclosure(
+        response.gating, declared_first_bounce_s=declared_first_bounce_s
+    )
     return {
-        "disclosure": disclosure,
-        "reflection_measured": gate_disclosure.build_gate_disclosure(
-            response.gating
-        ).gated_anything,
-        "moved_rms_db": _gate_moved_rms_db(response),
-        "reflection_delay_ms": _gate_reflection_delay_ms(response),
+        "disclosure": gate_disclosure.render_gate(typed),
+        "reflection_measured": typed.gated_anything,
+        "moved_rms_db": typed.delta_rms_db,
+        "reflection_delay_ms": typed.reflection_delay_ms,
+        "entanglement_floor_hz": typed.entanglement_floor_hz,
+        "entanglement_floor_source": typed.entanglement_floor_source,
     }
 
 

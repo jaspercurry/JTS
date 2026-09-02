@@ -49,7 +49,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
-from jasper.audio_measurement import program
+from jasper.audio_measurement import gating, program
 from jasper.audio_measurement.program_analysis import (
     INTEGRITY_FAIL,
     CaptureIntegrity,
@@ -376,6 +376,8 @@ def _cloud_record(**overrides):
         "captured_at": 1.0, "session_id": "sess", "gate_window_ms": 12.0,
         "gate_floor_source": "reflection", "gate_disclosure": "a wall",
         "gate_moved_rms_db": 2.59, "gate_reflection_delay_ms": 5.33,
+        "gate_entanglement_floor_hz": 1000.0,
+        "gate_entanglement_floor_source": gating.ENTANGLEMENT_SOURCE_MEASURED,
         "validity_floor_hz": 100.0, "gating_applied": True,
         "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
     }

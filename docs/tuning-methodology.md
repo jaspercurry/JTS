@@ -56,6 +56,37 @@ round's receipts.
 | microphone tier | `MIC_TIERS` = `reference`/`consumer`/`phone` | `mic_trust_limit` ceiling, σ tolerance |
 | microphone calibration | per-serial cal file | absolute SPL — unavailable ⇒ refused, never guessed |
 | gate window | **measured per capture** | `f_valid_floor_hz(T)`, `f_trusted_floor_hz(T) ≈ 2.5/T` (`gating.py`), carried as `GateDisclosure.f_min_hz` / `f_trusted_hz` |
+| rig geometry | `jasper-declare-geometry` → `/var/lib/jasper/measurement_geometry.json` | `entanglement_floor_hz` — the room's floor, which no window choice can lower |
+
+**Ask the operator for the rig's geometry before the first capture.** Speaker
+acoustic-centre height, microphone height, speaker-to-mic distance, and the
+ceiling height if they know it (optional — a low ceiling can beat the floor to
+the microphone). Then run it once:
+
+```
+sudo -n /opt/jasper/.venv/bin/jasper-declare-geometry set \
+  --speaker-height-in 33 --mic-height-in 33 --distance-in 39
+```
+
+(`/var/lib/jasper` is the daemon's `StateDirectory`, so the login user cannot
+write it without `sudo`.)
+
+From then on every gate disclosure and every spec report carries
+`entanglement_floor_source = declared_geometry` beside the floor itself, and the
+floor is evaluated at **each capture's own distance** rather than once for the
+rig. Every pose a round walks declares the same 1 m mark distance today, so
+every seat currently gets the same floor; the per-capture evaluation is what
+lets a row that carries its own distance be graded at it later. Nothing is
+clamped and no grade moves: the floor only marks which bins no window could have
+separated from the room (§9).
+
+Skipping this is allowed and warns about nothing, but it is not clean. This rig
+class's first bounce arrives while the direct sound is still decaying, so the
+measured reflection finder structurally never fires (#3502) — with no
+declaration, `entanglement_floor_source` stays `unknown` on every capture of
+every round, and "unknown" means no bin between the trusted floor and the room's
+floor is proven clean. Declaring the geometry is what resolves it; measuring
+harder is not.
 
 **Three inputs the literature assumes and this system does not carry.** Do not
 write a sentence that pretends otherwise.

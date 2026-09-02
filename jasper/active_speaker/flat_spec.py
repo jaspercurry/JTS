@@ -321,6 +321,26 @@ class FlatSpecReport:
     entanglement_floor_hz: float | None = None
     entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
+    @property
+    def frame_kwargs(self) -> dict[str, Any]:
+        """This report's FRAME, as :func:`evaluate_flat_spec`'s own keywords.
+
+        Every re-grade in the round's frame -- an entry baseline, a single
+        position's own reference, a per-position re-evaluation -- states these
+        four together or states a frame nobody produced. Splatting one dict is
+        what makes "together" structural instead of remembered: a frame field
+        added here reaches all three sites at once.
+
+        Deliberately NOT ``smoothing_fraction``: that is caller attestation
+        about ONE curve, and a re-grade of a different curve states its own.
+        """
+        return {
+            "trusted_floor_hz": self.trusted_floor_hz,
+            "trusted_ceiling_hz": self.trusted_ceiling_hz,
+            "entanglement_floor_hz": self.entanglement_floor_hz,
+            "entanglement_floor_source": self.entanglement_floor_source,
+        }
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "reference_db": self.reference_db,
@@ -353,7 +373,11 @@ class FlatSpecReport:
         outside
         :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES`
         rehydrates as ``unknown`` rather than becoming a fourth word no
-        consumer knows how to read.
+        consumer knows how to read. The floor and that word are then read as a
+        PAIR: a document where one says a floor is known and the other says it
+        is not rehydrates as ``(None, unknown)``, the state
+        :func:`evaluate_flat_spec` refuses outright, so a rehydrated report can
+        never be re-graded into a refusal by a disagreement it inherited.
         """
         kwargs: dict[str, Any] = {}
         reference_band = raw.get("reference_band_hz")
@@ -368,6 +392,15 @@ class FlatSpecReport:
             or entanglement_source not in gating.ENTANGLEMENT_SOURCES
         ):
             entanglement_source = gating.ENTANGLEMENT_SOURCE_UNKNOWN
+        entanglement_floor_hz = raw.get("entanglement_floor_hz")
+        floor_known = entanglement_floor_hz is not None and math.isfinite(
+            float(entanglement_floor_hz)
+        )
+        if floor_known == (
+            entanglement_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
+        ):
+            entanglement_floor_hz = None
+            entanglement_source = gating.ENTANGLEMENT_SOURCE_UNKNOWN
         return cls(
             reference_db=float(raw["reference_db"]),
             bands=tuple(BandResult.from_dict(b) for b in raw["bands"]),
@@ -379,7 +412,7 @@ class FlatSpecReport:
             smoothing_fraction=int(raw["smoothing_fraction"]),
             trusted_floor_hz=raw.get("trusted_floor_hz"),
             trusted_ceiling_hz=raw.get("trusted_ceiling_hz"),
-            entanglement_floor_hz=raw.get("entanglement_floor_hz"),
+            entanglement_floor_hz=entanglement_floor_hz,
             entanglement_floor_source=entanglement_source,
             **kwargs,
         )
