@@ -27,17 +27,22 @@ gen-click OUT.wav
 capture SECONDS OUT.raw
     Capture outputd's post-DSP reference tap (127.0.0.1:9891 UDP, S16LE
     stereo 48 kHz, ch0=woofer lane / ch1=tweeter lane) for SECONDS,
-    remotely. Pushes a small stdlib-only sniffer to a session-unique
+    remotely. Pushes a small sniffer to a session-unique
     /tmp/tapsniff-<id>.py on the box every run (so a wiped /tmp never
-    matters), runs it under `sudo` (AF_PACKET needs CAP_NET_RAW), and
-    scp's the result back. The sniffer reads "lo" at the packet level,
-    which delivers each loopback datagram TWICE (both directions of the
-    same local hop) -- it writes each as a length-prefixed record (4-byte
-    LE length + payload). It records only real UDP datagrams to the port
-    (ref9891_pcap.parse_udp_payload's rule, mirrored): an ICMP error
-    quoting a loopback header otherwise parses as a plausible one. What
-    that laxer read would have admitted is counted by
-    protocol/fragment/length rather than stored.
+    matters), runs it under `sudo` (AF_PACKET needs CAP_NET_RAW) with
+    PYTHONPATH=/opt/jasper so it IMPORTS ref9891_pcap.classify_frame out
+    of the installed tree rather than copying the rule, and scp's the
+    result back. Because the rule now comes from the box, a run first
+    REFUSES (exit 4) unless /var/lib/jasper/build.txt names this
+    checkout's commit; --allow-skew overrides, since for a box knowingly
+    behind the alternative to an override is a silent wrong parse. The
+    sniffer reads "lo" at the packet level, which delivers each loopback
+    datagram TWICE (both directions of the same local hop) -- it writes
+    each as a length-prefixed record (4-byte LE length + payload). Only
+    real UDP datagrams to the port are recorded: an ICMP error quoting a
+    loopback header otherwise parses as a plausible one, and what that
+    laxer read would have admitted is counted by protocol/fragment/length
+    rather than stored.
 
     Laptop-side reassembly EXCISES BEFORE IT PAIRS. The period comes from
     outputd's own STATUS (`dac.period_frames`), so a record of any other
@@ -174,16 +179,12 @@ from jasper.route_latency.click_track import SAMPLE_RATE_HZ as CLICK_TRACK_RATE_
 from jasper.route_latency.click_track import click_samples
 from jasper.route_latency.ref9891_pcap import BYTES_PER_FRAME as TAP_BYTES_PER_FRAME
 from jasper.route_latency.ref9891_pcap import RATE as TAP_RATE_HZ
+from jasper.route_latency.ref9891_pcap import REF_UDP_PORT as TAP_UDP_PORT
 from jasper.route_latency.ref9891_pcap import REFUSAL_ALL_ZERO
 from jasper.route_latency.ref9891_pcap import REFUSAL_NO_GEOMETRY, REFUSAL_NO_PACKETS
 from jasper.route_latency.ref9891_pcap import build_capture_manifest, capture_manifest_path
 from jasper.route_latency.ref9891_pcap import capture_provenance, is_tap_period
 from jasper.route_latency.ref9891_pcap import read_capture_manifest
-
-# Same tap jasper.route_latency.ref9891_pcap reads from a pcap; its own
-# _REF_UDP_PORT is private, so the number is declared once here and
-# interpolated into the embedded sniffer below rather than typed twice.
-TAP_UDP_PORT = 9891
 
 # ControlPath lives under /tmp itself, NOT tempfile.gettempdir(): macOS's
 # default TMPDIR is a deep per-user path, and AF_UNIX sun_path caps at
@@ -293,99 +294,43 @@ READY_TIMEOUT_S = 10.0
 # wrapper can attribute this one unambiguously.
 CAPTURE_INSTRUMENT_BLIND_EXIT = 3
 
-OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
+# `capture`/`latency` exit code for "this box is not running this checkout".
+# The sniffer below imports its :9891 rules from the box's own /opt/jasper,
+# so an install behind this checkout would parse the wire by an older rule
+# than this side reassembles by -- silently. Distinct from 2 (argparse) and
+# from CAPTURE_INSTRUMENT_BLIND_EXIT so a wrapper can attribute it.
+BUILD_SKEW_EXIT = 4
 
+# The sniffer's import root on the box (deploy/lib/install/python-runtime.sh
+# rsyncs the jasper tree here) and the commit marker deploy/install.sh writes
+# beside it once an install has verifiably completed.
+REMOTE_INSTALL_DIR = "/opt/jasper"
+REMOTE_BUILD_MANIFEST = "/var/lib/jasper/build.txt"
 
-# The sniffer is pushed to the box and run there under `sudo python3` with
-# no venv and no jasper import available -- it must stay stdlib-only, so its
-# packet parse MIRRORS jasper.route_latency.ref9891_pcap.parse_udp_payload
-# rather than importing it. test_sniffer_source_rejects_what_the_shared_
-# parser_rejects execs this string and pins the two against one input set.
+# The sniffer is pushed to the box and run there under the SYSTEM python3
+# (`sudo`, no venv) with PYTHONPATH=/opt/jasper, so it IMPORTS the :9891
+# rules and the STATUS reader the installed tree already owns instead of
+# copying them. That is what require_matching_build() protects: the copy is
+# gone, so the box's commit is now part of this instrument's calibration.
 # Pairing/dedup is deliberately NOT done here: it happens laptop-side in
 # reassemble_records(), once, on the length-prefixed record stream this
 # writes (see the module docstring's `capture` entry).
-SNIFFER_SOURCE = f'''\
+SNIFFER_SOURCE = '''\
 import json
 import socket
 import struct
 import sys
 import time
 
-TAP_PORT = {TAP_UDP_PORT}
-BYTES_PER_FRAME = {TAP_BYTES_PER_FRAME}
-CONTROL_SOCKET = "{OUTPUTD_CONTROL_SOCKET}"
+from jasper.route_latency.ref9891_pcap import BYTES_PER_FRAME, REF_UDP_PORT, classify_frame
+from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
 
 
 def period_bytes():
     """outputd's own dac.period_frames, over its control socket. The tap
     geometry is a fact the box holds; nothing here infers it."""
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.settimeout(2.0)
-        sock.connect(CONTROL_SOCKET)
-        sock.sendall(b"STATUS\\n")
-        chunks = []
-        while True:
-            data = sock.recv(65536)
-            if not data:
-                break
-            chunks.append(data)
-    finally:
-        sock.close()
-    status = json.loads(b"".join(chunks).decode("utf-8"))
+    status = read_status_socket(OUTPUTD_STATUS_SOCKET, timeout=2.0)
     return int(status["dac"]["period_frames"]) * BYTES_PER_FRAME
-
-
-def udp_payload(packet, port):
-    """The UDP payload this frame carries to `port`, or None."""
-    if len(packet) < 42:
-        return None
-    if struct.unpack(">H", packet[12:14])[0] != 0x0800:
-        return None
-    if packet[23] != 17:
-        return None
-    if struct.unpack(">H", packet[20:22])[0] & 0x3FFF:
-        return None
-    off = 14 + (packet[14] & 0x0F) * 4
-    if len(packet) < off + 8:
-        return None
-    if struct.unpack(">H", packet[off + 2:off + 4])[0] != port:
-        return None
-    length = struct.unpack(">H", packet[off + 4:off + 6])[0]
-    if length < 8 or len(packet) < off + length:
-        return None
-    return packet[off + 8:off + length]
-
-
-def naive_port(packet):
-    """The destination port a parse checking neither protocol nor fragment
-    reads, so an ICMP error quoting a :9891 header matches. Kept only to
-    count what such a read admits -- the evidence for what else on lo
-    reaches the port."""
-    if len(packet) < 42:
-        return None
-    if struct.unpack(">H", packet[12:14])[0] != 0x0800:
-        return None
-    off = 14 + (packet[14] & 0x0F) * 4
-    if len(packet) < off + 8:
-        return None
-    return struct.unpack(">H", packet[off + 2:off + 4])[0]
-
-
-def classify(packet, port):
-    """(payload, reject_key). A real datagram yields a payload; a packet only
-    a laxer read would call one yields the key it is counted under; anything
-    else is neither -- most of lo has nothing to do with this port."""
-    payload = udp_payload(packet, port)
-    if payload is not None:
-        return payload, None
-    if naive_port(packet) != port:
-        return None, None
-    return None, "proto=%d,frag=%d,wire_len=%d" % (
-        packet[23],
-        1 if struct.unpack(">H", packet[20:22])[0] & 0x3FFF else 0,
-        len(packet),
-    )
 
 
 def tap_payloads(packets, port, rejected):
@@ -394,7 +339,7 @@ def tap_payloads(packets, port, rejected):
     A generator, not a list: a 300 s capture is ~57 MB and this runs on a
     1 GB box, so payloads stream to the file as they arrive."""
     for packet in packets:
-        payload, reject = classify(packet, port)
+        payload, reject = classify_frame(packet, port)
         if payload is not None:
             yield payload
         elif reject is not None:
@@ -416,7 +361,7 @@ def main():
     sys.stderr.write("START_REALTIME_NS=%d\\n" % time.time_ns())
     sys.stderr.flush()
     deadline = start + seconds
-    rejected = {{}}
+    rejected = {}
 
     def frames():
         while True:
@@ -430,7 +375,7 @@ def main():
                 return
 
     with open(out_path, "wb") as out:
-        for payload in tap_payloads(frames(), TAP_PORT, rejected):
+        for payload in tap_payloads(frames(), REF_UDP_PORT, rejected):
             out.write(struct.pack("<I", len(payload)))
             out.write(payload)
     sys.stderr.write("REJECTED_BY_HEADER=%s\\n" % json.dumps(rejected, sort_keys=True))
@@ -545,6 +490,40 @@ def remote_click_path(session: str) -> str:
     return f"/tmp/tapsniff-{session}-click.wav"
 
 
+def require_matching_build(host: str, user: str, *, allow_skew: bool) -> None:
+    """Refuse to run the sniffer unless the box runs this checkout's commit.
+
+    build.txt is the verified-install marker and is root-readable only, so
+    this reuses the sudo the sniffer already needs, over the ssh multiplex
+    already open -- no extra handshake. Read the way scripts/_lib.sh's
+    build_manifest_value does: last JASPER_GIT_SHA_FULL= line wins, CR and
+    surrounding space stripped. An unreadable marker counts as skew, since
+    it cannot say the box matches. --allow-skew is a deliberate escape
+    hatch: for a box knowingly behind, the alternative to an override is a
+    silent wrong parse, not a safer one.
+    """
+    proc = ssh_run(host, user, f"sudo cat {shlex.quote(REMOTE_BUILD_MANIFEST)}", timeout=20)
+    lines = proc.stdout.replace("\r", "").splitlines() if proc.returncode == 0 else []
+    installed = next(
+        (ln.partition("=")[2].strip() for ln in reversed(lines)
+         if ln.startswith("JASPER_GIT_SHA_FULL=")), "unreadable")
+    local = subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip() or "unknown"
+    if installed == local != "unknown":
+        return
+    print(
+        f"build_skew: {host} has {installed} installed, this checkout is {local} -- "
+        f"the sniffer imports its :{TAP_UDP_PORT} parse from that box's "
+        f"{REMOTE_INSTALL_DIR}, so the two sides need not agree on what a datagram "
+        f"is. Deploy, or pass --allow-skew to accept the installed rule.",
+        file=sys.stderr,
+    )
+    if not allow_skew:
+        raise SystemExit(BUILD_SKEW_EXIT)
+
+
 def push_sniffer(host: str, user: str, session: str) -> None:
     remote_path = remote_sniffer_path(session)
     _run_checked(
@@ -556,11 +535,15 @@ def push_sniffer(host: str, user: str, session: str) -> None:
 def remote_capture_cmd(seconds: float, session: str) -> str:
     sniffer = remote_sniffer_path(session)
     out_path = remote_capture_path(session)
+    # `sudo env` rather than `sudo PYTHONPATH=...`: whether sudo forwards a
+    # command-line env var depends on the box's sudoers env policy, while
+    # `env` is just a program it execs.
     # chmod after the sniffer exits: it ran under sudo (root-owned output),
     # and scp runs as the plain ssh user -- readability must not depend on
     # the box's umask.
     return (
-        f"sudo python3 {shlex.quote(sniffer)} {seconds} {shlex.quote(out_path)} "
+        f"sudo env PYTHONPATH={shlex.quote(REMOTE_INSTALL_DIR)} python3 "
+        f"{shlex.quote(sniffer)} {seconds} {shlex.quote(out_path)} "
         f"&& sudo chmod 644 {shlex.quote(out_path)}"
     )
 
@@ -1019,6 +1002,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
     if args.seconds <= 0:
         raise SystemExit("SECONDS must be > 0")
     host, user = resolve_target(args.host)
+    require_matching_build(host, user, allow_skew=args.allow_skew)
     session = new_session_id()
     push_sniffer(host, user, session)
     try:
@@ -1384,6 +1368,7 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
 
 def cmd_latency(args: argparse.Namespace) -> int:
     host, user = resolve_target(args.host)
+    require_matching_build(host, user, allow_skew=args.allow_skew)
     session = new_session_id()
     push_sniffer(host, user, session)
     deltas: list[float] = []
@@ -1440,6 +1425,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cap.add_argument("seconds", type=float)
     p_cap.add_argument("out", type=Path)
     p_cap.add_argument("--host", default=None, help="ssh target override (default: scripts/_pi_target.py resolution)")
+    p_cap.add_argument("--allow-skew", action="store_true", help="run even when the box's installed commit is not this checkout's")
     p_cap.set_defaults(func=cmd_capture)
 
     p_ana = sub.add_parser("analyze", help="read a captured tap and report per-second metrics")
@@ -1450,6 +1436,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_lat = sub.add_parser("latency", help="measure lane-to-tap latency")
     p_lat.add_argument("lane_pcm")
     p_lat.add_argument("--host", default=None, help="ssh target override (default: scripts/_pi_target.py resolution)")
+    p_lat.add_argument("--allow-skew", action="store_true", help="run even when the box's installed commit is not this checkout's")
     p_lat.add_argument("--repeats", type=int, default=5)
     p_lat.set_defaults(func=cmd_latency)
 
