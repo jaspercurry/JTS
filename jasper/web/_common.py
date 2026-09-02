@@ -555,6 +555,35 @@ def restart_systemd_units(*units: str) -> None:
     )
 
 
+def bonded_follower_park_reason() -> str:
+    """Bounded presentation reason local sources (and Bluetooth) are parked,
+    or "" when not parked.
+
+    One of two values: ``"bonded_follower"`` (this speaker is an active
+    bonded follower — the pair-member case UI copy already names) or
+    ``"role_transition_in_progress"`` (any other reconciler-reported reason,
+    collapsed so callers never have to branch on — or leak to a client —
+    the reconciler's own internal `blocked_reason` vocabulary).
+    """
+    try:
+        from ..multiroom.config import (
+            LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER,
+            load_config,
+        )
+        from ..multiroom.effective_role import (
+            effective_local_sources_park_reason,
+        )
+
+        reason = effective_local_sources_park_reason(load_config())
+    except Exception:  # noqa: BLE001 — fail-open
+        return ""
+    if reason is None:
+        return ""
+    if reason == LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER:
+        return reason
+    return "role_transition_in_progress"
+
+
 def bonded_follower_active() -> bool:
     """True when a requested follower role actually remains effective.
 
@@ -563,15 +592,7 @@ def bonded_follower_active() -> bool:
     that safe fallback from an active follower; missing/stale status keeps a
     requested follower parked until reconciliation proves otherwise.
     """
-    try:
-        from ..multiroom.config import load_config
-        from ..multiroom.effective_role import (
-            effective_local_sources_park_reason,
-        )
-
-        return effective_local_sources_park_reason(load_config()) is not None
-    except Exception:  # noqa: BLE001 — fail-open
-        return False
+    return bool(bonded_follower_park_reason())
 
 
 def bonded_follower_leader_addr() -> str:

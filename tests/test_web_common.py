@@ -859,6 +859,33 @@ def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
     assert "stereo pair" in html and "/rooms/" in html
 
 
+def test_bonded_follower_park_reason_bounds_to_two_values(monkeypatch):
+    """/bluetooth/state (issue #3349) needs the WHY, not just the bool
+    bonded_follower_active() already gives — but only as one of two bounded
+    presentation values, never the reconciler's raw blocked_reason
+    vocabulary verbatim."""
+    import jasper.multiroom.config as mrc
+    import jasper.multiroom.effective_role as er
+    import jasper.web._common as common
+
+    monkeypatch.setattr(mrc, "load_config", lambda: object())
+
+    monkeypatch.setattr(er, "effective_local_sources_park_reason", lambda cfg: None)
+    assert common.bonded_follower_park_reason() == ""
+
+    monkeypatch.setattr(
+        er, "effective_local_sources_park_reason",
+        lambda cfg: mrc.LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER,
+    )
+    assert common.bonded_follower_park_reason() == "bonded_follower"
+
+    for other_reason in ("role_transition_in_progress", "some_other_blocked_reason"):
+        monkeypatch.setattr(
+            er, "effective_local_sources_park_reason", lambda cfg, r=other_reason: r,
+        )
+        assert common.bonded_follower_park_reason() == "role_transition_in_progress"
+
+
 def test_local_web_host_prefers_mdns_and_rejects_raw_ips():
     import jasper.web._common as common
 
