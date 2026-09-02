@@ -416,16 +416,6 @@ class FeatureVerdict:
         """
         return self.classification == DEFECT_CUTTABLE
 
-    @property
-    def is_defect_boostable(self) -> bool:
-        """Is a boost at least the right KIND of instrument for this feature?
-
-        The mirror of :attr:`is_defect_cuttable`, and just as insufficient: a
-        boost additionally owes a measured depth, and
-        :mod:`.driver_prescription` is where that is required.
-        """
-        return self.classification == DEFECT_BOOSTABLE
-
     def to_dict(self) -> dict[str, Any]:
         """The verdict as a refusal, a packet block, or a receipt carries it.
 

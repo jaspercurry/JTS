@@ -215,15 +215,6 @@ def _merged_design_inputs(design_draft: Mapping[str, Any]) -> Mapping[str, Any] 
     }
 
 
-def _range_floor(driver: Mapping[str, Any] | None) -> float | None:
-    if not driver:
-        return None
-    raw = driver.get("usable_frequency_range_hz")
-    if isinstance(raw, list) and raw:
-        return _finite_positive(raw[0])
-    return None
-
-
 def _range_ceiling(driver: Mapping[str, Any] | None) -> float | None:
     if not driver:
         return None

@@ -609,26 +609,6 @@ def _plan_with_bounded_tone(plan: dict[str, Any], tone: dict[str, Any]) -> dict[
     return bounded
 
 
-def _plan_with_output_count(plan: dict[str, Any], channel_count: int) -> dict[str, Any]:
-    bounded_count = _bounded_int(
-        channel_count,
-        default=2,
-        lo=1,
-        hi=MAX_ARTIFACT_CHANNELS,
-    )
-    out = dict(plan)
-    channel_map = (
-        dict(plan.get("channel_map"))
-        if isinstance(plan.get("channel_map"), dict)
-        else {}
-    )
-    output_indices = _target_output_indices(plan)
-    existing_count = _channel_count(plan, output_indices) if output_indices else 0
-    channel_map["output_count"] = max(bounded_count, existing_count)
-    out["channel_map"] = channel_map
-    return out
-
-
 def _tone_sample(
     *,
     sample_index: int,

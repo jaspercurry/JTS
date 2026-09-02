@@ -1422,16 +1422,6 @@ class CommissioningEvidenceStore:
         for capture in evidence.captures:
             self._verify_isolated_capture(capture, budget)
 
-    def verify_complete(
-        self,
-        evidence: CompleteCommissioningEvidence,
-    ) -> CompleteCommissioningEvidence:
-        """Strictly verify every child byte and both admission boundaries."""
-
-        self._assert_session(evidence)
-        self._verify_complete(evidence, _ReadBudget())
-        return evidence
-
     def verify_complete_isolated_driver_evidence(
         self,
         evidence: CompleteIsolatedDriverEvidence,
