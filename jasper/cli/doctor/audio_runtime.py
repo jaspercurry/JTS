@@ -25,24 +25,14 @@ from ...output_hardware import active_dac_profile_id
 from ._shared import CheckResult, _run
 from .correction import _active_camilla_config_path
 
-# Asset paths are shared with the coupling reconciler. Historical private names
-# remain available for focused tests and downstream imports.
+# Aliases of the ring_assets SSOT; tests monkeypatch these names.
 _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
 _JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
 _JTS_RING_CONF_D = ring_assets.RING_CONF_D
 _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # Every PCM the ring conf.d defines, with the tool that probes its direction and
-# the ring file it names. The THIRD entry is the ACTIVE ring — a roleful box's
-# post-crossover per-driver hop. It is listed for the same reason the other two
-# are: the conf.d defines it on every box, so an inert box's open-probe must
-# prove it resolves, and a missing entry would leave one shipped PCM unprobed.
-#
-# The PCM NAMES and the ring FILENAMES are taken from ``jasper.ring_assets``,
-# which already owns both facts for the renderer, the reconciler and the stale-
-# file guard. Only the probe TOOL is local — it is a doctor concern (which of
-# arecord/aplay opens this direction) and belongs to nobody else. Spelling the
-# names again here would have made the doctor a second place to update when a
-# ring is added; the assertion below is what keeps the derived order honest.
+# the ring file it names. Names and filenames come from ``jasper.ring_assets``;
+# only the probe TOOL (which of arecord/aplay opens this direction) is local.
 _JTS_RING_PCMS = (
     (ring_assets.RING_A_CONF_PCM, "arecord", os.path.basename(ring_assets.RING_A_PROGRAM_FILE)),
     (ring_assets.RING_B_CONF_PCM, "aplay", os.path.basename(ring_assets.RING_B_CONTENT_FILE)),
@@ -52,17 +42,12 @@ _JTS_RING_PCMS = (
         os.path.basename(ring_assets.RING_ACTIVE_CONTENT_FILE),
     ),
 )
-# One home for "which blocks exist", proven rather than assumed: the doctor's
-# table must cover exactly the conf.d's blocks, in the same order.
 assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_assets.RING_CONF_PCMS
 
 @doctor_check(order=49, group="audio")
 def check_fanin_binary_installed() -> CheckResult:
     """The jasper-fanin Rust daemon ships as an installed binary at
-    /opt/jasper/bin/jasper-fanin. install.sh runs cargo build during
-    deploy; this check verifies the build actually produced the
-    binary. A missing binary means cargo build silently failed and
-    renderer audio cannot run.
+    /opt/jasper/bin/jasper-fanin.
     """
     path = Path("/opt/jasper/bin/jasper-fanin")
     if not path.exists():
@@ -96,9 +81,8 @@ def _asound_non_comment_text(text: str) -> str:
 def _asound_pcm_block(text: str, name: str) -> str | None:
     """Return a top-level pcm.NAME block body from an asoundrc.
 
-    The deployed ALSA snippets keep each top-level PCM block separated
-    by the next `pcm.` or `ctl.` definition. We do not need a full ALSA
-    parser here; this is a drift detector for our own generated file.
+    Not a general ALSA parser: a drift detector for our own generated file,
+    where each top-level block ends at the next `pcm.`/`ctl.` definition.
     """
     pattern = re.compile(rf"^pcm\.{re.escape(name)}\s*\{{", re.MULTILINE)
     match = pattern.search(text)
@@ -110,8 +94,7 @@ def _asound_pcm_block(text: str, name: str) -> str | None:
         return tail[:match.end() - match.start() + next_def.start()]
     return tail
 
-#: The lane roster on a box with NO renderer lane armed — the shipped fleet
-#: shape, and the one this check compared against unconditionally before U3.
+#: The lane roster on a box with NO renderer lane armed (the shipped fleet shape).
 _FANIN_EXPECTED_ALOOP_INPUTS = [
     ("spotify", "hw:Loopback,1,0"),
     ("airplay", "hw:Loopback,1,1"),
@@ -126,16 +109,9 @@ def _fanin_expected_inputs(
 ) -> list[tuple[str, str]]:
     """The `(label, pcm)` roster fan-in's STATUS should report on THIS box.
 
-    A renderer-ingress lane (U3 / P6) reports its RING PATH as its `pcm`,
-    because that is where its audio actually comes from — so on an armed box
-    the roster legitimately differs from the shipped aloop one, and comparing
-    against a hardcoded list would diagnose a correctly-armed box as drifted.
-
-    The armed set is read from the lane map (`jasper.renderer_lanes`), which is
-    the same file fan-in itself reads, so this check's expectation and the
-    daemon's behaviour come from ONE source. That is also what keeps the drift
-    check meaningful: a lane whose STATUS `pcm` disagrees with what the map
-    says is a real fault, and still fails.
+    An armed renderer-ingress lane reports its RING PATH as its `pcm`, so the
+    armed set is read from the lane map (`jasper.renderer_lanes`) fan-in itself
+    reads rather than compared against a hardcoded list.
     """
     from jasper import renderer_lanes as rl
 
@@ -163,8 +139,8 @@ _STATUS_RESPONSE_MAX_BYTES = 1_048_576
 def _read_status_socket_bytes(socket_path: str, *, timeout: float) -> bytes:
     """Return the raw reply from a local JTS ``STATUS\n`` control socket.
 
-    This helper owns only the shared socket lifecycle.  Callers deliberately
-    retain their own retry, UTF-8/JSON parsing, and fail-versus-skip policy.
+    Owns the socket lifecycle only; retry, decoding and fail-versus-skip policy
+    stay with the callers.
     """
 
     deadline = time.monotonic() + timeout
@@ -207,21 +183,14 @@ def _outputd_reconciled_env() -> dict[str, str]:
 
     BOTH FILES, in ``jasper-outputd.service``'s own ``EnvironmentFile=`` order:
     ``outputd.env`` then ``grouping-outputd.env``, so a bonded box's grouping
-    pins win here exactly as they win for the daemon. Reading only the first
-    layer reported a bonded box on an env it is not running. (The grouping layer
-    no longer pins a content bridge — ADR-0100 left the round-trip lane no route
-    to pin — but it still pins the lane's own keys, so the order still matters.)
-
-    The merge is :func:`jasper.control.transport_park._outputd_env`'s, consumed
-    rather than restated, so the doctor and ``/state`` cannot disagree about
-    what outputd's env says.
+    pins win here exactly as they win for the daemon.
     """
     from ...control.transport_park import _outputd_env
 
     override = os.environ.get("JASPER_OUTPUTD_ENV_FILE")
     if override:
-        # The test/operator seam for the FIRST layer only; the grouping layer
-        # keeps its own path so an override cannot hide a bonded pin.
+        # Overrides the FIRST layer only: the grouping layer keeps its own path
+        # so an override cannot hide a bonded pin.
         from ...multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
 
         return merged_env_files((override, OUTPUTD_GROUPING_ENV_FILE))
@@ -239,13 +208,10 @@ def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
     return value if 2 <= value <= 8 else None
 
 
-# outputd STATUS reports, per content/dac section, an all-time xrun_count plus
-# two rolling fields the daemon already computes: xrun_rate_per_hour (count /
-# uptime-hours) and last_xrun_age_ms (ms since the most recent xrun, null when
-# none). The doctor WARN keys on BOTH so it flags a *sustained, current*
-# problem — a high rate alone could be a long-ago burst diluting slowly as
-# uptime grows, and a recent single xrun alone is a normal transient. Only a
-# rate that's still meaningfully high AND a recent xrun is worth a yellow line.
+# outputd STATUS publishes xrun_rate_per_hour (count / uptime-hours) and
+# last_xrun_age_ms (ms since the most recent xrun, null when none). The WARN
+# keys on BOTH: a high rate alone can be a long-ago burst diluting as uptime
+# grows, and a recent single xrun alone is a normal transient.
 _OUTPUTD_XRUN_RATE_WARN_PER_HOUR = 6.0
 _OUTPUTD_XRUN_RECENT_AGE_MS = 300_000  # 5 minutes
 
@@ -257,10 +223,7 @@ def _outputd_xrun_rate_warning(
     """Return a one-clause WARN reason when either outputd lane shows a
     sustained xrun rate with a recent xrun, else None.
 
-    Keyed on the daemon-computed ``xrun_rate_per_hour`` and ``last_xrun_age_ms``
-    so a burst that has since cleared (recent-but-low-rate, or high-rate but
-    stale) does NOT warn. Both sections are checked independently; the worst
-    qualifying lane is reported.
+    Both sections are checked independently; the worst qualifying lane wins.
     """
 
     def _f(value: object) -> float | None:
@@ -292,23 +255,16 @@ def _outputd_xrun_rate_warning(
 # and maps a malformed value there too. tests/test_audio_safety_pins.py reads
 # the Rust literal and fails if this copy drifts.
 #
-# There is deliberately NO fixed positive ceiling: the fixed -6 dB ceiling was
-# removed in "Remove fixed TTS gain ceiling" (2026-07-01) because it pinned
-# quiet, peaky voices below music. A pre-DSP (fan-in) decision legitimately goes
-# positive — it pre-compensates for CamillaDSP's downstream attenuation. The
-# ceiling that IS enforced is dynamic and per-decision: the peak-aware cap
-# (max_peak_dbfs - source_peak_dbfs), which STATUS publishes next to the gain it
-# limited. See docs/audio-paths.md "Hearing safety is peak-aware".
+# There is deliberately NO fixed positive ceiling: a pre-DSP (fan-in) decision
+# legitimately goes positive, pre-compensating for CamillaDSP's downstream
+# attenuation. The enforced ceiling is dynamic and per-decision — the peak-aware
+# cap (max_peak_dbfs - source_peak_dbfs), published next to the gain it limited.
+# See docs/audio-paths.md "Hearing safety is peak-aware".
 _ASSISTANT_GAIN_FLOOR_DB = -60.0
-# Under today's publish paths the comparison below is EXACT: both round
-# monotonically to 0.1 dB, min/max commute with any monotone map, and the floor
-# is fixed under that rounding — so the value recomputed from the published
-# inputs equals the published final_gain_db, with no residue. Fuzzing both paths
-# (fan-in's pack-x10-then-format and outputd's format, under both tie rules)
-# put the worst disagreement at 0.000000 dB over 400k samples each. This
-# tolerance is therefore a deliberate cushion against a future publish path that
-# rounds differently, NOT a bound derived from the current arithmetic; a real
-# clamp regression is dB-scale and clears it by an order of magnitude.
+# Under today's publish paths the comparison below is EXACT (both sides round
+# monotonically to 0.1 dB). This tolerance is a cushion against a future publish
+# path that rounds differently, NOT a bound derived from the current arithmetic;
+# a real clamp regression is dB-scale and clears it by an order of magnitude.
 _ASSISTANT_GAIN_ROUNDING_DB = 0.15
 
 
@@ -320,11 +276,7 @@ def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
 
         final = max(MIN_TTS_GAIN_DB, min(requested_gain, peak_cap_gain))
 
-    Both daemons publish all three numbers from the SAME decision under one
-    seqlock, so the doctor asserts the relation rather than a magic range —
-    that keeps the peak cap, not a literal, as the single owner of "how loud may
-    the assistant get". A daemon too old to publish the two inputs is held to
-    the floor alone.
+    A daemon too old to publish the two inputs is held to the floor alone.
     """
 
     def _f(value: object) -> float | None:
@@ -358,26 +310,9 @@ def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
 def check_fanin_asound_wiring() -> CheckResult:
     """Verify the deployed ALSA graph is the fan-in graph.
 
-    The RENDERER side of the snd-aloop graph, which the ring did not
-    replace: each renderer writes its own private lane and jasper-fanin
-    reads all of them. A lane whose slave or wire has drifted from
-    `deploy/alsa/asoundrc.jasper` costs that renderer its audio, so this
-    is file-level drift detection against the shipped template.
-
-    It does NOT check CamillaDSP's capture. Under ADR-0100 the ring is
-    the one fan-in → CamillaDSP transport, and what carries it is
-    reported elsewhere: `check_ring_platform_assets` for whether the
-    ioplug, the conf.d drop-in and /dev/shm/jts-ring EXIST, and
-    `check_ring_geometry_coherence` for whether the `jts_ring_capture`
-    block's geometry agrees with fan-in's env and the on-disk header. A
-    third partial reader of that same drop-in here would be a second
-    answer, not a stronger one. It is not an AEC check either: the
-    bridge's reference is jasper-outputd's UDP speaker monitor and it
-    opens no ALSA tap.
-
-    The one assertion that is not about the graph is the trailing
-    `audio_topology.env` probe, which warns about a leftover from the
-    retired dmix/fanin switcher.
+    Scope is the RENDERER side of the snd-aloop graph only — drift detection
+    against `deploy/alsa/asoundrc.jasper`. The ring (ADR-0100) is covered by
+    `check_ring_platform_assets` and `check_ring_geometry_coherence`.
     """
     label = "fan-in ALSA wiring"
     path = Path("/etc/asound.conf")
@@ -403,21 +338,18 @@ def check_fanin_asound_wiring() -> CheckResult:
             f"front end. Re-run deploy/install.sh.",
         )
 
-    # No usbsink_substream write alias: USB audio is DIRECT-captured by jasper-fanin
-    # from hw:UAC2Gadget (the aloop solo bridge that wrote hw:Loopback,0,3 was
-    # removed 2026-07-10). fan-in still READS the pair-3 capture side as the usbsink
-    # lane's idle fallback — see _FANIN_EXPECTED_ALOOP_INPUTS above — but nothing writes it.
+    # No usbsink_substream write alias: USB audio is DIRECT-captured by
+    # jasper-fanin from hw:UAC2Gadget. fan-in still READS the pair-3 capture side
+    # as the usbsink lane's idle fallback, but nothing writes it.
     expected_aliases = {
         "librespot_substream": "hw:Loopback,0,0",
         "shairport_substream": "hw:Loopback,0,1",
         "bluealsa_substream": "hw:Loopback,0,2",
         CORRECTION_SUBSTREAM: "hw:Loopback,0,4",
     }
-    # The lane WIDTH is not this file's to choose: snd-aloop pins both halves of
-    # a cable to one format, and the reader half is jasper-fanin, which opens
-    # every capture side at the box's one resolved wire. So the expectation is
-    # that wire, and an operator's narrow rollback pin that did not also narrow
-    # /etc/asound.conf shows up here rather than as a renderer whose open fails.
+    # snd-aloop pins both halves of a cable to one format, and the reader half is
+    # jasper-fanin, which opens every capture side at the box's one resolved
+    # wire. So the expected lane width is that wire.
     try:
         wire = read_declared_ring_wire_format()
     except ValueError as e:
@@ -437,9 +369,7 @@ def check_fanin_asound_wiring() -> CheckResult:
             wrong.append(f"{alias}≠{slave}")
         elif f"format {wire}" not in block:
             # Reported apart from a wrong slave: the lane is wired correctly and
-            # only its WIDTH disagrees with the box's resolved wire, which has
-            # its own remedy (narrow the shipped asoundrc and redeploy, or drop
-            # the pin) and would be misdiagnosed as a broken lane.
+            # only its WIDTH disagrees, which has its own remedy.
             sheared.append(alias)
     if missing or wrong or sheared:
         parts = []
@@ -476,11 +406,6 @@ def check_fanin_asound_wiring() -> CheckResult:
 def check_fanin_service() -> CheckResult:
     """The jasper-fanin systemd unit is required for renderer audio.
 
-    Fan-in is the only supported renderer topology. If the daemon is
-    disabled or inactive, AirPlay/Spotify/Bluetooth/USB-in may write to
-    their private lanes, but nothing publishes the summed stream to
-    CamillaDSP or the AEC bridge.
-
     Returns:
       - ok ("active, responding") when enabled and the UDS endpoint
         replies to STATUS with a fresh progress sentinel.
@@ -509,7 +434,6 @@ def check_fanin_service() -> CheckResult:
             "systemd unit not installed. Re-run install.sh.",
         )
 
-    # Unit is enabled (or masked, alias, ...) — operator opted in.
     if active != "active":
         return CheckResult(
             "jasper-fanin service",
@@ -518,8 +442,6 @@ def check_fanin_service() -> CheckResult:
             f"Check: journalctl -u jasper-fanin",
         )
 
-    # Service is active. Probe the UDS endpoint to verify the work
-    # loop is making progress (catches "process alive but wedged").
     socket_path = "/run/jasper-fanin/control.sock"
     last_error: OSError | None = None
     for attempt in range(2):
@@ -563,12 +485,11 @@ def check_fanin_service() -> CheckResult:
             "fail",
             "active but STATUS response missing output{}",
         )
-    # The ring is the only transport a running fan-in can be on (ADR-0100): the
-    # daemon refuses any other declaration at config parse and parks at exit 78,
-    # so a LIVE STATUS can only come from a ring box. Expected is therefore a
-    # constant, NOT a mapping from the persisted file — deriving it from
-    # /var/lib/jasper/fanin.env would FAIL a healthy box whose key has not been
-    # written yet (coupling-auto runs After=jasper-fanin.service).
+    # The ring is the only transport a running fan-in can be on (ADR-0100), so
+    # the expectation is a constant, NOT a mapping from the persisted file:
+    # deriving it from /var/lib/jasper/fanin.env would FAIL a healthy box whose
+    # key has not been written yet (coupling-auto runs
+    # After=jasper-fanin.service).
     actual_transport = output.get("transport")
     if actual_transport != "shm_ring":
         return CheckResult(
@@ -774,8 +695,8 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
     attempt = probe.get("attempt")
     max_attempts = probe.get("max_attempts")
     if ladder == "probing":
-        # Await-lock, baseline, step, and the single retry wait are expected,
-        # bounded acquisition states—not permanent doctor failures.
+        # Await-lock, baseline, step and the single retry wait are bounded
+        # acquisition states, not permanent failures.
         return CheckResult(
             label,
             "ok",
@@ -795,18 +716,12 @@ def _host_clock_health_from_status(data: dict[str, object]) -> CheckResult:
 def check_camilla_service() -> CheckResult:
     """The jasper-camilla systemd unit must never stay stopped.
 
-    Every source's audio runs through CamillaDSP, so a stopped unit is a
-    silent speaker. The peer checks miss a CLEAN stop (#2163):
-    `check_service_runtime_state` flags only `failed`, and
-    `check_camilla_websocket` reports the same state as "can't reach
-    127.0.0.1:1234", which reads as a websocket problem rather than a
-    stopped unit. That state is reachable — `jasper-camilla-recover` parks
-    the unit stopped after an exhausted start-limit burst, and
-    `OnFailure=jasper-camilla-recover` does not fire on a clean exit.
-
-    "Enabled but not active" is unambiguous here because CamillaDSP has no
-    gate that makes `inactive` legitimate, unlike jasper-outputd (missing-DAC
-    `ExecCondition`) or jasper-voice (`voice-input-absent` marker).
+    Owns the CLEAN-stop state its peers miss (#2163): `check_service_runtime_state`
+    flags only `failed`, and `check_camilla_websocket` reports it as an
+    unreachable 127.0.0.1:1234. "Enabled but not active" is unambiguous here
+    because CamillaDSP has no gate that makes `inactive` legitimate, unlike
+    jasper-outputd (missing-DAC `ExecCondition`) or jasper-voice
+    (`voice-input-absent` marker).
 
     Returns:
       - ok when enabled and active.
@@ -857,17 +772,11 @@ def check_fanin_host_clock() -> CheckResult:
 def check_fanin_tts_drops() -> CheckResult:
     """Report fan-in TTS protocol errors and pending-budget drops.
 
-    A protocol error closes the client socket, which can mute the assistant
-    and its failure cue when voice and fan-in disagree on the wire. fan-in's
-    TTS lane also drops whole audio commands that arrive while its
-    bounded pending queue is full (it cannot block the socket reader
-    without stalling barge-in FLUSH behind queued audio). The Python
-    writer paces itself to stay under that budget
-    (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/audio_io.py), so a nonzero drop
-    counter means assistant/cue audio audibly skipped ("fast-forward"
-    garble) since fan-in last started — either the writer-side pacing
-    contract regressed or an unpaced client wrote to the TTS socket.
-    The 2026-06-11 JTS3 incident surfaced exactly this signature.
+    fan-in's TTS lane drops whole audio commands that arrive while its bounded
+    pending queue is full (it cannot block the socket reader without stalling
+    barge-in FLUSH behind queued audio). The Python writer paces itself to stay
+    under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/audio_io.py), so a
+    nonzero drop counter means assistant/cue audio audibly skipped.
 
     Returns:
       - ok when counters are zero, the TTS lane is disabled, or STATUS
@@ -932,19 +841,15 @@ def check_fanin_tts_drops() -> CheckResult:
 
 @doctor_check(order=51.55, group="audio")
 def check_fanin_ring_stall() -> CheckResult:
-    """A live fan-in→CamillaDSP ring stall (issue #1524) means the SHM ring is
-    full AND CamillaDSP is not draining it (heartbeat-live but ``read_seq``
-    frozen, e.g. wedged in Prepared — or the reader has been absent > 1 s). The
-    writer self-recovers by DEMOTING the stuck reader to free-run (so fan-in stays
-    real time instead of running at ~1/9 speed and wedging the correction-lane
-    aplay), but content is being dropped and the DSP is not consuming — the
-    household hears no music through the ring. ``stall_active`` is true for exactly
-    as long as the reader stays stuck, so it is the live/sustained signal;
-    ``stuck_reader_drops`` climbs alongside it.
+    """A live fan-in→CamillaDSP ring stall (issue #1524).
 
-    Reachability is owned by the 'jasper-fanin service' check — an unreadable
-    STATUS, or one carrying no ring block, reports OK here rather than
-    double-failing a daemon that check already fails.
+    The ring is full AND CamillaDSP is not draining it (heartbeat-live but
+    ``read_seq`` frozen, or the reader absent > 1 s). The writer self-recovers by
+    DEMOTING the stuck reader to free-run so fan-in stays real time, but content
+    drops. ``stall_active`` is true for exactly as long as the reader stays
+    stuck, so it is the live/sustained signal.
+
+    Reachability is owned by the 'jasper-fanin service' check.
 
     Returns:
       - ok when the ring is draining normally, when STATUS carries no ring
@@ -969,10 +874,8 @@ def check_fanin_ring_stall() -> CheckResult:
     output = data.get("output")
     ring = output.get("ring") if isinstance(output, dict) else None
     if not isinstance(ring, dict):
-        # A running fan-in always publishes a ring block (ADR-0100), so this is
-        # a STATUS-shape guard, not a topology branch: with no counters to read
-        # there is nothing to assess. The missing block itself is FAILed by the
-        # 'jasper-fanin service' check — one fact, one owner.
+        # A running fan-in always publishes a ring block (ADR-0100); the missing
+        # block itself is FAILed by the 'jasper-fanin service' check.
         return CheckResult(
             name,
             "ok",
@@ -1001,12 +904,7 @@ def check_fanin_ring_stall() -> CheckResult:
 
 
 def _loaded_device_field(config_path: Path, block: str, field: str) -> str | None:
-    """A field from ``devices.<block>`` in a CamillaDSP config, or None.
-
-    Thin path-typed wrapper over the shared scan in
-    ``jasper.camilla_config_contract.read_camilla_device_field`` (the SSOT it
-    shares with the installer's deploy-ordering probe).
-    """
+    """A field from ``devices.<block>`` in a CamillaDSP config, or None."""
     return read_camilla_device_field(config_path, block, field)
 
 
@@ -1028,11 +926,9 @@ def _loaded_playback_filename(config_path: Path) -> str | None:
 def _graph_feeds_the_bond(config_path: Path) -> bool:
     """Is this graph's post-DSP endpoint the bond rather than a local ring?
 
-    A bonded LEADER's camilla#1 plays into the Snapcast pipe
-    (:data:`jasper.multiroom.reconcile.SNAPFIFO`, imported rather than
-    respelled) and never touches a ring device. Any OTHER ``File`` sink is not
-    this endpoint — a stale local pipe is a real fault and must keep failing the
-    playback axis, which is why the filename is compared and not just the type.
+    A bonded LEADER's camilla#1 plays into the Snapcast pipe and never touches a
+    ring device. The FILENAME is compared, not just the type: any other ``File``
+    sink is a stale local pipe and must keep failing the playback axis.
     """
     from ...multiroom.reconcile import SNAPFIFO
 
@@ -1058,14 +954,9 @@ def _expected_playback_format(
     """``(expected_format, constant_name)`` for a loaded config's playback lane.
 
     Three lanes, three owners of the width — see
-    :func:`check_camilla_playback_format` for why each is what it is.
-
-    The first two predicates are DISJOINT in every reachable config, so their
-    order is belt only, not load-bearing: a ``File`` sink names its target with
-    ``filename`` and carries no ``device`` key at all, so ``playback_device`` is
-    ``None`` on every pipe/parked graph. Do not read the sequence here as a
-    precedence rule that something depends on — a mutation swapping the two
-    kills no test, precisely because no config can satisfy both.
+    :func:`check_camilla_playback_format`. The first two predicates are DISJOINT
+    in every reachable config (a ``File`` sink carries no ``device`` key), so
+    their order is not load-bearing.
     """
     from jasper.camilla_config_contract import (
         DEFAULT_PIPE_SINK_FORMAT,
@@ -1079,18 +970,9 @@ def _expected_playback_format(
 
     if playback_type == "File":
         return DEFAULT_PIPE_SINK_FORMAT, "DEFAULT_PIPE_SINK_FORMAT"
-    # MEMBERSHIP over every ring device, not one `==`. Both rings carry the
-    # resolved ring WIRE format — that axis is one per box, shared by all three
-    # ring ends — so a device-specific answer would be wrong, while omitting the
-    # active ring would fall through to DEFAULT_PLAYBACK_FORMAT and red-line a
-    # perfectly healthy armed box whenever the two differ. Since the ring wire's
-    # resolver defaults wide they no longer differ on an undeclared box; an
-    # operator's narrow pin is what separates them, and this branch is what
-    # keeps such a box green.
+    # MEMBERSHIP over every ring device, not one `==`: the resolved ring WIRE
+    # format is one axis per box, shared by all three ring ends.
     if playback_device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
-        # Named for the RESOLVER, not for a constant: the ring's width is a
-        # per-box resolution, and a detail line citing a constant would send a
-        # reader to a value that is only one of the answers it can give.
         return resolve_ring_wire().sample_format, "resolve_ring_wire"
     return DEFAULT_PLAYBACK_FORMAT, "DEFAULT_PLAYBACK_FORMAT"
 
@@ -1098,79 +980,31 @@ def _expected_playback_format(
 @doctor_check(order=51.75, group="audio")
 def check_camilla_playback_format() -> CheckResult:
     """The loaded CamillaDSP config's declared playback format must match its
-    LANE's expected format (wide-output-path program, D-list survey finding
-    1): today NOTHING read the emitted playback format back off a live
-    config, so a half-flip — an emitter regenerating a config against one
-    value of the expected constant while the running process (or an
-    un-reconciled stale file) reflects another — was silent rather than a red
-    doctor line.
+    LANE's expected format.
 
-    LANE-AWARE, and there are THREE lanes, not two — the width has three
-    separate owners and this check must ask the right one
-    (:func:`_expected_playback_format`):
+    LANE-AWARE, and there are THREE lanes (:func:`_expected_playback_format`):
 
     - a ``File`` sink (the bonded-leader pipe, or the active-speaker parked
-      graph's ``/dev/null``) expects ``DEFAULT_PIPE_SINK_FORMAT`` — pinned
-      narrow by the snapserver wire contract (D4) regardless of the general
-      program lane;
-    - the SHM ring's playback device (``RING_PLAYBACK_DEVICE``) expects the ring
-      wire ``resolve_ring_wire`` resolves — an ARMED RING IS ``type: Alsa``, so
-      the File split alone does not cover it. Its width comes from the coupling's
-      own kwargs (``capture_kwargs_for_coupling``), which read that same
-      resolver, which is exactly why a ring-coupled box keeps a coherent lane on
-      a box whose general default is wide (the PR-6 ring ruling). The ring
-      LAYOUT accepts S16LE and S32LE, so this check is what catches a ring
-      config that drifted to the other one — the attach would not;
-    - every other sink — the ALSA loopback lane, every real active-speaker DAC
-      graph — expects ``DEFAULT_PLAYBACK_FORMAT``.
+      graph's ``/dev/null``) expects ``DEFAULT_PIPE_SINK_FORMAT``, pinned narrow
+      by the snapserver wire contract;
+    - a ring playback device expects the wire ``resolve_ring_wire`` resolves —
+      an armed ring is ``type: Alsa``, so the File split alone does not cover
+      it, and the ring LAYOUT accepts both S16LE and S32LE, so nothing but this
+      catches a ring config that drifted to the other one;
+    - every other sink expects ``DEFAULT_PLAYBACK_FORMAT``.
 
-    Miss either split and this check red-lines a HEALTHY box with a remediation
-    that regenerates the identical config: without the File split, every
-    pipe-sink leader and parked box; without the ring split, every armed-ring box
-    (including the low-latency USB box), whose canary criterion is
-    literally "doctor green". The pipe/File sink stays pinned narrow
-    (``DEFAULT_PIPE_SINK_FORMAT`` ``S16_LE``) regardless of the ring wire flip,
-    so it still diverges in force from the loopback lane's
-    ``DEFAULT_PLAYBACK_FORMAT`` (``S32_LE``). The ring split no longer buys a
-    THIRD distinct value on an undeclared box — the ring wire's resolver
-    defaults wide too now, so an unpinned ring box's expected format equals
-    the loopback lane's — but the split stays load-bearing because the ring's
-    expected value is a per-box RESOLUTION (``resolve_ring_wire``), not a
-    constant: an operator's narrow rollback pin
-    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) is exactly the box this check
-    must still catch, and reading it off ``DEFAULT_PLAYBACK_FORMAT`` instead
-    would miss that box entirely.
+    Keyed on the LOADED CONFIG's own ``device``/``type``, never on the persisted
+    coupling, so a box mid-arm reads as whatever the config in front of it says.
 
-    Keyed on the LOADED CONFIG's own ``device``/``type``, not on the persisted
-    coupling: this check's one job is "does the config on disk match what its own
-    lane should be", so introducing a second source (``read_persisted_coupling``)
-    would let a box mid-arm — coupling flipped, config not yet swapped — read as
-    healthy or as broken depending on which source won, when the honest answer is
-    determined by the config in front of it. It also keeps the check a pure read
-    of one file, matching every sibling here.
-
-    THIS CHECK FAILS OPEN ON A CONFIG IT CANNOT READ, and that bound has to be
-    stated because the check is cited elsewhere as the detector for a suppressed
-    DSP reconcile (PR #2601). An unreadable / absent statefile, an unresolvable
-    ``config_path``, or a config with no ``devices.playback.format`` field all
-    return ``ok`` here — deliberately, because "I could not read it" is not
-    evidence of a mismatch, and a second reason for one absent file would bury
-    the check that names the fix. So this catches a config that is present and
-    WRONG, never a config that is missing.
-
-    The unreadable half is owned by ``check_correction_current_config``
-    (``jasper/cli/doctor/correction.py``), which reads the statefile through the
-    SAME :func:`_active_camilla_config_path` helper and is the one that speaks:
-    ``warn`` when ``config_path`` cannot be read out of the statefile, ``fail``
-    when the statefile points at a config that does not exist. So the pair
-    covers both states between them, and neither restates the other's verdict.
-    See ``captures/PLAN-wide-output-path-2026-08-07.md`` PR-1, PR-6, D4, D5.
+    THIS CHECK FAILS OPEN ON A CONFIG IT CANNOT READ (it is cited elsewhere as
+    the detector for a suppressed DSP reconcile, PR #2601): an unreadable/absent
+    statefile, an unresolvable ``config_path``, or a missing
+    ``devices.playback.format`` all return ``ok``. The unreadable half is owned
+    by ``check_correction_current_config`` (``jasper/cli/doctor/correction.py``).
     """
     label = "camilla playback format"
     _, config_path = _active_camilla_config_path()
     if config_path is None:
-        # FAIL-OPEN, disclosed in the docstring above: no readable config is not
-        # a mismatch, and a sibling check owns the absent-statefile verdict.
         return CheckResult(label, "ok", "no loaded config to compare")
     path = Path(config_path)
     loaded_format = _loaded_playback_format(path)
@@ -1212,9 +1046,8 @@ def check_audio_runtime_plan() -> CheckResult:
     from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
 
     plan = build_audio_runtime_plan_from_system()
-    # Policy vs observation: see AudioRuntimePlan.camilla_emitted. This check
-    # reports the difference, never judges it — the `camilla ring chunk` check
-    # owns the over-capacity failure.
+    # Policy vs observation: see AudioRuntimePlan.camilla_emitted. Reported, not
+    # judged — the `camilla ring chunk` check owns the over-capacity failure.
     emitted = plan.camilla_emitted
     summary = (
         f"profile={plan.profile_id}, route={plan.route_mode}, "
@@ -1251,15 +1084,10 @@ def check_audio_runtime_plan() -> CheckResult:
 def check_fanin_coupling_value() -> CheckResult:
     """The persisted fan-in coupling must be a RECOGNIZED token.
 
-    A migrating box may carry ``JASPER_FANIN_CAMILLA_COUPLING=loopback`` (the
-    removed transport) or a typo. jasper-fanin REFUSES such a value at start
-    (exit 78) and the ``--auto`` reconciler converges it loudly
-    (``event=…result=removed_coupling_failsafe``); this surfaces the stale value
-    until that pass runs so the operator knows the persisted file names a
-    transport that no longer exists.
-
-    An ABSENT key is not that state: fan-in serves the ring for it (ADR-0100),
-    so a box the reconciler has not written yet is ``ok`` on the ring.
+    jasper-fanin REFUSES an unrecognized value at start (exit 78) and the
+    ``--auto`` reconciler converges it; this surfaces the stale value until that
+    pass runs. An ABSENT key is not that state: fan-in serves the ring for it
+    (ADR-0100), so a box the reconciler has not written yet is ``ok``.
     """
     from jasper.fanin.ring_health import FANIN_ENV_PATH
     from jasper.fanin_coupling import (
@@ -1299,11 +1127,8 @@ def _requires_roleful_graph() -> bool:
     NOT a ``@doctor_check`` — a plain helper, and it must stay above the next
     decorated function rather than between a decorator and its target.
 
-    Fail-soft to False: this only ever SOFTENS a message or adds an eligibility
-    sentence, never gates anything, so an unreadable topology should leave the
-    generic wording in place rather than assert a class it cannot prove. Every
-    caller that acts on rolefulness reads it from the fail-CLOSED loaders
-    instead.
+    Fail-soft to False: it only ever softens a message, never gates anything.
+    Every caller that ACTS on rolefulness reads the fail-CLOSED loaders instead.
     """
     from jasper.active_speaker.runtime_contract import classify_output_contract
     from jasper.output_topology import (
@@ -1324,24 +1149,18 @@ def _requires_roleful_graph() -> bool:
 def check_fanin_coupling() -> CheckResult:
     """The loaded CamillaDSP graph must name this box's ring devices.
 
-    Since ADR-0100 the ring is the only transport, so the capture axis has ONE
-    expectation and no second one to select between: ``jts_ring_capture``
-    (Ring A). The playback axis has two legal endpoints — the post-DSP ring this
+    Since ADR-0100 the capture axis has ONE expectation, ``jts_ring_capture``
+    (Ring A). The playback axis has two legal endpoints: the post-DSP ring this
     box's endpoint marker names (``jts_ring_playback``, or
     ``jts_ring_active_playback`` once the active endpoint is armed), or the
-    Snapcast pipe a bonded LEADER feeds instead of any local ring. A graph
-    naming anything else is a stale artifact — CamillaDSP reads or writes a
-    device nobody is at the far end of. The fix is to re-run the ordered
-    reconciler: ``jasper-fanin-coupling-reconcile shm_ring``.
+    Snapcast pipe a bonded LEADER feeds instead of any local ring.
 
-    KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``. A
-    running fan-in is on the ring whatever that file says — the daemon refuses
-    every other value at parse and parks — so a healthy box whose key has not
-    been written yet (coupling-auto runs ``After=jasper-fanin.service``) read as
-    a half-applied transition while the expectation came from the file. The
-    file's own legacy-token question belongs to
-    :func:`check_fanin_coupling_value`, and whether outputd consumes what this
-    graph writes belongs to :func:`check_ring_split_transport`.
+    KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``: a
+    running fan-in is on the ring whatever that file says, and a healthy box's
+    key may not be written yet (coupling-auto runs
+    ``After=jasper-fanin.service``). The file's own legacy-token question
+    belongs to :func:`check_fanin_coupling_value`, and whether outputd consumes
+    what this graph writes to :func:`check_ring_split_transport`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -1352,29 +1171,15 @@ def check_fanin_coupling() -> CheckResult:
     from jasper.multiroom.reconcile import SNAPFIFO
 
     label = "fan-in coupling"
-    # _active_camilla_config_path returns (statefile, active_config_path|None);
-    # the active path is what CamillaDSP actually loaded. Fall back to the JTS
-    # sound config when the statefile names nothing.
     _, active_path = _active_camilla_config_path()
     config_path = Path(active_path) if active_path else Path(
         "/var/lib/camilladsp/configs/sound_current.yml"
     )
     capture = _loaded_capture_type(config_path)
     if capture is None:
-        # No JTS config loaded yet (fresh box / non-JTS graph) — nothing to
-        # compare the expectation against.
+        # No JTS config loaded yet (fresh box / non-JTS graph).
         return CheckResult(label, "ok", "no loaded capture to compare")
 
-    # WHAT PUTS A BOX HERE. A CamillaDSP restart re-seeds the graph the
-    # statefile points at, so a STALE ARTIFACT (one emitted before the endpoint
-    # moved) reappears on the next restart — that is the finding-5 revert shape,
-    # and its repair is a baseline re-emit, not a re-arm. The MARKER is not moved
-    # by a camilla restart at all: its only writer is
-    # jasper-audio-hardware-reconcile, which re-derives it from the loaded graph
-    # on boot, on udev, and on every deploy — so those are the events that can
-    # de-arm a box whose artifact drifted, and a camilla restart alone is not one
-    # of them.
-    #
     # WHICH post-DSP ring is EXACTLY ONE answer, taken from the reconciler's
     # marker — not "either is fine". Accepting both would read green through the
     # crossing this rung exists to prevent: a roleful box's graph pointed at the
@@ -1382,12 +1187,9 @@ def check_fanin_coupling() -> CheckResult:
     armed = ring_active_endpoint_armed()
     expected_playback = RING_ACTIVE_PLAYBACK_DEVICE if armed else RING_PLAYBACK_DEVICE
     # A ROLEFUL box with a CLEARED marker has no honest stereo expectation:
-    # jts_ring_playback is a FORBIDDEN token for every active emitter, so such a
-    # box's graph can never name it, and printing "(expected jts_ring_playback)"
-    # would send an operator to a device the emitters refuse to write. The honest
-    # statement is that this box is mid-arm — the artifact moved to the ring but
-    # the marker has not been re-derived (or the reverse) — and the remedy is the
-    # ladder, not a re-arm.
+    # jts_ring_playback is a FORBIDDEN token for every active emitter, so naming
+    # it as expected would send an operator to a device the emitters refuse to
+    # write. Such a box is mid-arm, and the remedy is the ladder, not a re-arm.
     roleful = _requires_roleful_graph()
     capture_device = _loaded_device_field(config_path, "capture", "device")
     playback_device = _loaded_device_field(config_path, "playback", "device")
@@ -1397,11 +1199,9 @@ def check_fanin_coupling() -> CheckResult:
             f"capture={capture}/{capture_device or '(missing)'} "
             f"(expected Alsa/{RING_CAPTURE_DEVICE})"
         )
-    # A box has TWO legal post-DSP endpoints, and only one of them is a ring: a
-    # bonded LEADER's camilla#1 writes the Snapcast pipe and reaches no ring
-    # device at all (jasper.multiroom.reconcile owns that lane). The playback
-    # axis is this check's business only on the ring endpoint; comparing anyway
-    # read `(missing)` against a ring name and warned a box feeding the group.
+    # A bonded LEADER's camilla#1 writes the Snapcast pipe and reaches no ring
+    # device at all, so the playback axis is this check's business only on the
+    # ring endpoint.
     feeds_the_bond = _graph_feeds_the_bond(config_path)
     if not feeds_the_bond and playback_device != expected_playback:
         if roleful and not armed:
@@ -1424,15 +1224,12 @@ def check_fanin_coupling() -> CheckResult:
             "ok",
             f"capture={RING_CAPTURE_DEVICE}, playback={endpoint}",
         )
-    # Severity stays WARN. Under the arm ladder this is a mid-procedure
-    # TRANSIENT — the graph moves first, the marker is re-derived second — so a
-    # box observed between those steps is exactly this state and is not broken.
-    # What the detail owes the operator is the command that finishes it.
+    # Severity stays WARN: under the arm ladder the graph moves first and the
+    # marker is re-derived second, so a box observed between those steps is
+    # exactly this state and is not broken.
     if roleful:
         # The first two steps are the SAME ladder the transport-park check
-        # records, composed from its constant rather than respelled, so the
-        # two surfaces cannot prescribe different things to the same
-        # operator while both live. Only the third step is this check's own.
+        # records, composed from its constant rather than respelled.
         from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
 
         recovery = (
@@ -1455,9 +1252,8 @@ def check_fanin_coupling() -> CheckResult:
 
 def _jts_ring_path_for(pcm: str) -> str | None:
     """The SHM ring-file path a given inert PCM's open probe would create,
-    or None if the PCM name is not one of ours. Derived from _JTS_RING_SHM_DIR
-    (so tests can repoint the dir) + the basename registered in _JTS_RING_PCMS
-    (which mirrors deploy/alsa/conf.d/60-jts-ring.conf's `path` values)."""
+    or None if the PCM name is not one of ours. The basenames in _JTS_RING_PCMS
+    mirror deploy/alsa/conf.d/60-jts-ring.conf's `path` values."""
     for name, _tool, ring_basename in _JTS_RING_PCMS:
         if name == pcm:
             return os.path.join(_JTS_RING_SHM_DIR, ring_basename)
@@ -1469,25 +1265,13 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     when this conf.d block's wire is indeterminate (unreadable file, missing
     block, or a torn declaration — nothing safe to ask ALSA for).
 
-    From the conf.d block itself — :func:`~jasper.ring_assets.ring_conf_channels`
-    / :func:`~jasper.ring_assets.ring_conf_format` — NOT from
-    :func:`~jasper.fanin_coupling.resolve_ring_wire`. The ioplug advertises
-    EXACTLY what THIS conf.d, as it stands on disk, declares as its hw_params
-    constraint, so the probe's question is "what does the file say" — a
-    DIFFERENT question from "what SHOULD this box declare", which is what the
-    resolver answers. Those two answers are independently gated: conf
-    rendering (``render_ring_conf_wire``, driven by a detected DAC's declared
-    ``LatencyFloor``) and ring coupling (the ``shm_ring`` arm) are separate
-    gates, so a box can carry a per-box-rendered Ring B conf.d while still
-    sitting coupling-inert (or the reverse) — probing the resolver's answer on
-    such a box would ask ALSA for the wrong width. An absent
-    ``format``/``channels`` key means the ioplug default
-    (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT` /
-    :data:`~jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS`), which both parsers
-    already encode, so this answers a never-rendered file correctly too — no
-    separate "unrendered" branch needed. That path now carries only
-    ``channels``: the shipped conf.d SPELLS ``format S32_LE`` in every block, so
-    the format axis is read from the file rather than inferred. The ring PCMs
+    From the conf.d block itself, NOT from
+    :func:`~jasper.fanin_coupling.resolve_ring_wire`: the ioplug advertises
+    exactly what the file on disk declares as its hw_params constraint, and conf
+    rendering and ring coupling are independently gated, so a box can carry a
+    per-box-rendered conf.d while sitting coupling-inert (or the reverse). An
+    absent ``format``/``channels`` key means the ioplug default, which both
+    parsers encode, so a never-rendered file answers correctly too. The ring PCMs
     can legitimately differ on channels, hence the per-PCM lookup.
     """
     channels = ring_assets.ring_conf_channels(pcm, _JTS_RING_CONF_D)
@@ -1500,17 +1284,12 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
 def _jts_ring_probeable_pcms() -> list[tuple[str, str]]:
     """The ``(pcm, tool)`` pairs an open-probe may safely touch right now.
 
-    EMPTY unless ``jasper-fanin`` is inactive: fan-in is Ring A's only writer,
-    and a box whose fan-in is down is not carrying audio through any ring, so
-    nothing can be disturbed by opening one. While fan-in runs, a probe would
-    contend with a live transport for no diagnostic gain — the ioplug is
-    demonstrably registered, because the graph is using it.
-
-    Within that, only PCMs whose ring FILE is absent: an existing file may still
-    be attached (CamillaDSP writes Ring B, outputd reads it), and an absent one
-    cannot be. That is a GATE, not a guarantee — the ``exists`` check races a
-    daemon restarting underneath it — but a probe that loses that race still
-    unlinks only what it created, and the ioplug's SPSC guard is what refuses it.
+    EMPTY unless ``jasper-fanin`` is inactive: fan-in is Ring A's only writer, so
+    a box whose fan-in is down is carrying audio through no ring. Within that,
+    only PCMs whose ring FILE is absent. That is a GATE, not a guarantee — the
+    ``exists`` check races a daemon restarting underneath it — but a probe that
+    loses the race still unlinks only what it created, and the ioplug's SPSC
+    guard refuses it.
     """
     if _run(["systemctl", "is-active", "jasper-fanin.service"]).stdout.strip() == (
         "active"
@@ -1529,27 +1308,20 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     conf.d name AND dlopen()ed the ioplug .so AND the writer-dead/no-reader
     silence path terminated. A 1-second probe against an absent ring is
     safe: the ioplug free-runs (playback) or emits timer-paced silence
-    (capture) rather than blocking (the lab resolvability-step contract).
+    (capture) rather than blocking.
 
     THE ONLY DETECTION for the -DPIC / arch-mismatch class (a structurally
-    invalid .so that presence checks pass and ALSA cannot dlopen). Reached only
-    through :func:`_jts_ring_probeable_pcms`, which is what keeps it off a ring
-    the daemons are using.
+    invalid .so that passes presence checks and ALSA cannot dlopen).
 
     Leaves no residue: the ioplug open path is create-or-attach
-    (O_RDWR|O_CREAT|O_EXCL), so probing an ABSENT ring CREATES the ring file.
-    A doctor-created ring would (a) violate P1's inertness invariant ("no ring
-    file exists until P2 arms") on every box after every deploy, and (b) poison
-    P2's first arm, because a valid-magic ring carrying the conf.d PLACEHOLDER
-    geometry is a fail-closed open error (only magic-less files are reclaimed).
-    So we snapshot the ring path's existence before the probe and unlink ONLY a
-    file the probe itself created. A live armed ring pre-exists (it is in the
-    "existed before" set and is never unlinked; it also EBUSYs the probe via the
-    SPSC guard), so this can never remove a ring in use.
+    (O_RDWR|O_CREAT|O_EXCL), so probing an ABSENT ring CREATES the ring file, and
+    a doctor-created ring poisons the next arm (a valid-magic ring carrying the
+    conf.d PLACEHOLDER geometry is a fail-closed open error; only magic-less
+    files are reclaimed). So the ring path's existence is snapshotted before the
+    probe and ONLY a file the probe itself created is unlinked.
 
-    Returns (ok, detail). detail carries the tail of stderr on failure so
-    a broken registration (e.g. the -DPIC "undefined symbol: snd_dlsym_start"
-    class) is legible, not just "probe failed".
+    Returns (ok, detail). detail carries the tail of stderr on failure so a
+    broken registration is legible, not just "probe failed".
     """
     if not shutil.which(tool):
         return False, f"{tool} not found"
@@ -1564,14 +1336,10 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     ring_path = _jts_ring_path_for(pcm)
     pre_existed = ring_path is not None and os.path.exists(ring_path)
     # arecord -> /dev/null (discard captured silence); aplay -> /dev/zero
-    # (feed silence in). 48 kHz / 1 s; the width comes from what THIS
-    # conf.d's own pcm.<name> block declares (an absent key is the ioplug's
-    # own default) — see _jts_ring_probe_wire.
+    # (feed silence in). 48 kHz / 1 s.
     sink = "/dev/null" if tool == "arecord" else "/dev/zero"
-    # 4 s, not 6: the caller probes up to three PCMs in one row, and a doctor row
-    # is cut off at 15 s — at 6 s each, three hung probes overrun it and the
-    # operator loses the stderr this probe exists to surface. 4 s still leaves
-    # 3 s of slack over a 1 s capture/playback.
+    # 4 s, not 6: up to three PCMs are probed in one row and a doctor row is cut
+    # off at 15 s. 4 s still leaves 3 s of slack over a 1 s capture/playback.
     try:
         proc = _run(
             [tool, "-D", pcm, "-c", str(channels), "-r", "48000",
@@ -1581,9 +1349,8 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     except subprocess.TimeoutExpired:
         return False, "open probe hung (>4 s) — ioplug no-reader/no-writer path may be broken"
     finally:
-        # Remove a ring file the probe created (it did not exist beforehand).
         # Best-effort: a failure to unlink must not turn a clean probe into a
-        # doctor error, but the residue would still be visible next run.
+        # doctor error.
         if ring_path and not pre_existed and os.path.exists(ring_path):
             try:
                 os.unlink(ring_path)
@@ -1600,14 +1367,8 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
 def _grouped_dac_content_lane_parked() -> bool:
     """Is this box the bonded shape whose post-DSP hop is not a ring at all?
 
-    ``jasper.control.transport_park`` is the one place that answers which park a
-    box is in, so this asks it rather than re-deriving "is it bonded" from the
-    grouping config — a second derivation would drift from the surface the
-    household and ``/state`` read.
-
     Fail-soft to False: an unreadable topology must not silence a real split.
-    The park check's own ``unavailable`` branch is where that read failure is
-    reported.
+    The park check's own ``unavailable`` branch reports that read failure.
     """
     from ...control import transport_park
 
@@ -1636,52 +1397,31 @@ def check_ring_split_transport() -> CheckResult:
     Both leave the speaker silent with every daemon healthy and every other
     check green, which is why this is a ``fail``.
 
-    KEYED ON THE BRIDGE, not on ``JASPER_FANIN_CAMILLA_COUPLING``. Under
-    ADR-0100 that file selects nothing — a running fan-in is on the ring
-    whatever it says — so it cannot imply what outputd reads. The bridge is what
-    decides that (``rust/jasper-outputd/src/config.rs``), and it is observable
-    from outputd's own env, so this check reports the state the operator can act
-    on rather than an intent the daemons ignore.
+    KEYED ON THE BRIDGE, not on ``JASPER_FANIN_CAMILLA_COUPLING``: under
+    ADR-0100 that file selects nothing, while the bridge
+    (``rust/jasper-outputd/src/config.rs``) decides what outputd reads and is
+    observable from outputd's own env.
 
-    IT IS ALSO THE DETECTION SURFACE FOR AN INTERRUPTED CONVERGENCE (#2285 P7).
-    ``jasper.fanin.converge`` moves the graph to the ring and the pass flips the
-    bridge seconds later; a process killed between those leaves exactly this
-    split. It self-heals at the next boot, deploy or DAC hotplug — the
-    convergence step is idempotent and re-enters from current state — and until
-    then this check is what names it, which is why it carries the remedy.
+    IT IS ALSO THE DETECTION SURFACE FOR AN INTERRUPTED CONVERGENCE (#2285 P7):
+    ``jasper.fanin.converge`` moves the graph to the ring and flips the bridge
+    seconds later, and a process killed between those leaves exactly this split.
+    It self-heals at the next boot, deploy or DAC hotplug.
 
-    WHY TWO TERMS AND NOT THREE — do not "helpfully" add the third back.
-    The original design specified a third conjunct, ``writer_alive:false``.
-    It is not observable in this check's own target state, and conditioning on
-    it would make the check silently never fire:
+    TWO TERMS, NOT THREE: a ``writer_alive:false`` conjunct would make the check
+    never fire. ``writer_alive`` is a READER-REPORTED metric
+    (``jts_ring_shm.h``), and outputd publishes it only inside its ``shm_ring``
+    block, which exists iff ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring``
+    (``rust/jasper-outputd/src/state.rs``) — absent exactly when this check would
+    need it.
 
-    * ``writer_alive`` is a READER-REPORTED metric — ``jts_ring_shm.h:99``
-      states it is "what a reader REPORTS". With outputd off the ring NOTHING
-      reads it, so there is no reader to report it.
-    * outputd publishes it only inside its ``shm_ring`` block, and
-      ``shm_ring_path`` is ``Some`` **iff** ``JASPER_OUTPUTD_CONTENT_BRIDGE=
-      shm_ring`` (``rust/jasper-outputd/src/state.rs:220-223``). Off the ring
-      that block is ``{"enabled": false}`` with no further fields, so the key is
-      absent exactly when this check would need it.
+    Out of scope: a box with NEITHER end on the ring (that pair is coherent; see
+    :func:`check_ring_transport_park` and :func:`check_fanin_coupling`), and the
+    grouped park, which runs ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` by design
+    while its graph still loads the stereo ring.
 
-    A BOX WITH NEITHER END ON THE RING IS NOT THIS CHECK'S FAULT. That pair is
-    coherent; whether the shape is one the single transport can serve at all is
-    :func:`check_ring_transport_park`'s question, and whether the graph is the
-    one this box should be running is :func:`check_fanin_coupling`'s.
-
-    NOR IS THE GROUPED PARK. A bonded box whose dac_content lane is armed runs
-    ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` by design (its grouping env pins
-    it, and ``jasper.cli.doctor.grouping`` requires that pin while bonded) while
-    its graph still loads the stereo ring — a pair this predicate reads as a
-    split on a box that is playing. It is a park with a name and an issue, and
-    the arm this check would prescribe is one
-    ``coupling_supported_for_route`` refuses for exactly that box, so the park
-    is carved out rather than double-reported with a dead remedy.
-
-    KNOWN TRANSIENT. The arm ladder moves the graph first and the bridge later,
-    so a doctor run taken INSIDE an active arm ladder can FAIL here for the
-    seconds between those rungs. That is the ladder working, not a fault. The
-    arm's own terminal doctor pass is the authoritative read.
+    KNOWN TRANSIENT: the arm ladder moves the graph first and the bridge later,
+    so a doctor run taken inside an active ladder can FAIL here for the seconds
+    between those rungs. The arm's own terminal doctor pass is authoritative.
     """
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
@@ -1696,19 +1436,14 @@ def check_ring_split_transport() -> CheckResult:
 
     label = "ring split transport"
     if _grouped_dac_content_lane_parked():
-        # A bonded box's grouping env pins the DIRECT bridge and its graph feeds
-        # the dac_content lane, so the pair below reads as a split while the box
-        # is playing. That shape has an owner — `check_ring_transport_park`
-        # names it `grouped_dac_content_lane` with its tracked issue — and this
-        # check must not prescribe an arm the coupling support matrix refuses
-        # for exactly that box.
+        # A bonded box's grouping env pins the DIRECT bridge while its graph
+        # feeds the dac_content lane, which reads as a split on a box that is
+        # playing. `check_ring_transport_park` owns that shape.
         return CheckResult(
             label, "ok", "grouped dac_content lane; see the transport-park check"
         )
     outputd_env = _outputd_reconciled_env()
-    # `(unset, = the ring)` rather than a bare `(unset)`: an undeclared bridge IS
-    # the ring (config.rs), so a reader who saw only "unset" beside a ring graph
-    # would think the pair disagreed when it agrees.
+    # An undeclared bridge IS the ring (config.rs), hence the spelt-out default.
     bridge = (
         str(outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
         or "(unset, = the ring)"
@@ -1717,22 +1452,12 @@ def check_ring_split_transport() -> CheckResult:
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
 
-    # BOTH STATEFILES, first-recognized-endpoint-wins — the same reader the
-    # `check_outputd_service` transport note used before #2285 folded that note
-    # into this check. Reading only the primary was the gap that fold left: an
-    # active leader keeps a program-bake graph in the primary statefile and its
-    # real output endpoint in camilla#2's, so a box whose primary names no
-    # registered endpoint (a bake, a parked graph, a statefile pointing at a
-    # deleted config) while camilla#2 names the ACTIVE ring would have gone
-    # quiet from BOTH surfaces. Measured, not assumed: two such shapes were
-    # constructed on disk and are pinned in
-    # tests/test_doctor_audio_runtime.py.
-    #
-    # The primary path still comes from `_active_camilla_config_path()` so an
-    # operator's `JASPER_CAMILLA_STATEFILE` override keeps working; the reader
-    # falls through to camilla#2 by itself when the primary is unreadable, which
-    # is why the old hardcoded `sound_current.yml` rescue is gone rather than
-    # kept beside it.
+    # BOTH STATEFILES, first-recognized-endpoint-wins: an active leader keeps a
+    # program-bake graph in the primary statefile and its real output endpoint in
+    # camilla#2's, so a box whose primary names no registered endpoint while
+    # camilla#2 names the ACTIVE ring must still be judged. The primary path
+    # comes from `_active_camilla_config_path()` so an operator's
+    # `JASPER_CAMILLA_STATEFILE` override keeps working.
     statefile, _ = _active_camilla_config_path()
     evidence = output_endpoint_evidence_from_statefiles(
         statefile, DEFAULT_CAMILLA2_STATEFILE_PATH
@@ -1777,38 +1502,23 @@ def check_ring_split_transport() -> CheckResult:
 def check_active_ring_path_projection() -> CheckResult:
     """A ring PATH that lags its endpoint marker is SILENT — outputd refuses it.
 
-    The complement of :func:`check_ring_split_transport`, and the two partition
-    the bridge: that one owns every state where the graph and the bridge
-    disagree about the ring, and this one starts where they agree ON the ring.
-    Between them the ACTIVE-ring arm ladder has no unowned rung.
+    The complement of :func:`check_ring_split_transport`: that one owns every
+    state where the graph and the bridge disagree about the ring, this one starts
+    where they agree ON it.
 
-    The state this catches: with outputd on the ring bridge, its ring PATH
-    disagrees with its endpoint MARKER. outputd enforces a biconditional — the
-    active ring file may be read only by an armed active endpoint, and an armed
-    active endpoint may read only that file — so it bails at startup on the
-    crossed pair, with ``RestartPreventExitStatus=78`` parking the unit rather
-    than looping. The speaker is silent, and the daemon that would have explained
-    it is not running.
+    outputd enforces a biconditional — the active ring file may be read only by
+    an armed active endpoint, and an armed active endpoint may read only that
+    file — so it bails at startup on the crossed pair, with
+    ``RestartPreventExitStatus=78`` parking the unit rather than looping. That is
+    why this reads PERSISTED evidence only: at its own target state outputd is
+    not active, so ``check_outputd_service`` returns the systemd failure first
+    and never reaches the same contradiction.
 
-    WHY IT CANNOT LIVE IN ``check_outputd_service``. That check reports the same
-    contradiction from ``transport_coherence_report``, but only after
-    ``_outputd_service_state_failure()`` and the STATUS read — and at this exact
-    state outputd is NOT active, so it returns the systemd failure first and the
-    transport finding is never reached. A check whose whole target state makes
-    the daemon refuse to start cannot depend on that daemon's live surface, so
-    this one reads persisted evidence only — outputd's own env, which is both
-    the gate (the content bridge) and the subject (the ring path and the
-    endpoint marker the path projects).
-
-    BOTH DIRECTIONS, one question. The path is a projection of the marker with a
-    single derivation (``_outputd_ring_path_for``), so "is the projection
-    current?" is one predicate covering the arm lag (marker armed, path still
+    One predicate covers both directions: the arm lag (marker armed, path still
     Ring B) and the disarm lag (marker cleared, path still the active ring).
 
-    KNOWN TRANSIENT, like its sibling. The marker's writer runs first and the
-    path's writer follows, so a doctor run taken between those two rungs FAILs
-    here for the seconds between them. That is the ladder working. The remedy is
-    the same pass the ladder's own next step runs.
+    KNOWN TRANSIENT, like its sibling: the marker's writer runs first and the
+    path's writer follows, so a doctor run between those rungs FAILs here.
     """
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
     from jasper.fanin.coupling_reconcile import _outputd_ring_path_for
@@ -1822,27 +1532,22 @@ def check_active_ring_path_projection() -> CheckResult:
 
     label = "active ring path projection"
     # THE BRIDGE, not the persisted coupling: outputd's ring-path allowlist runs
-    # iff outputd is on the ring bridge, so that key is what makes this one live
-    # or inert. A box off the ring bridge is the sibling check's subject.
-    #
-    # LAYERED, because a bonded box's grouping env pins this key and the unit
-    # reads that file last — the gate has to see what outputd sees.
+    # iff outputd is on the ring bridge. Read LAYERED, because a bonded box's
+    # grouping env pins this key and the unit reads that file last.
     declared = str(
         _outputd_reconciled_env().get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or ""
     ).strip()
     if not outputd_bridge_is_ring(declared):
-        # A box that named the retired route reads no ring, so the allowlist has
-        # nothing to project. It is not healthy — it parks — and the park is the
-        # transport-park check's subject, not this one's.
+        # No ring read means nothing to project. Such a box parks, and the park
+        # is the transport-park check's subject.
         return CheckResult(
             label,
             "ok",
             f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={declared}; no ring path to read",
         )
     # The SUBJECT stays outputd.env's own text: the marker and the ring path are
-    # single-writer keys of that file (the grouping layer pins neither), and
-    # `_outputd_ring_path_for` is contracted on one snapshot of the file being
-    # reconciled — a merged view would fork that derivation.
+    # single-writer keys of that file, and `_outputd_ring_path_for` is contracted
+    # on one snapshot of the file being reconciled.
     try:
         outputd_env = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
     except OSError:
@@ -1873,37 +1578,27 @@ def check_ring_platform_assets() -> CheckResult:
 
     Three assets: the compiled ioplug .so, the conf.d PCM definitions
     (jasper.ring_assets.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
-    They are ALWAYS load-bearing since ADR-0100 — the ring is the only fan-in →
-    CamillaDSP transport, so CamillaDSP's capture and post-DSP playback resolve
-    through them on every box.
+    Since ADR-0100 they are load-bearing on every box.
 
     Statuses:
       ok    — .so + conf.d + shm dir present.
-              CAVEAT: presence passes on a STALE .so left by a failed rebuild
-              (the 2026-07-02 class) — it is structurally valid, so it dlopens
-              and registers. `check_ring_ioplug_provenance` is the check that
-              separates the two, by comparing the installer's record against the
-              plugin on disk. See ring-platform.sh.
-      fail  — an asset is missing: the graph cannot resolve its ring devices,
-              and there is no second transport to fall back to. Or a present
-              ioplug ALSA cannot actually load (the -DPIC / arch-mismatch
-              class), which only the open-probe can tell apart from a healthy
-              one.
+              CAVEAT: presence passes on a STALE .so left by a failed rebuild —
+              it is structurally valid, so it dlopens and registers.
+              `check_ring_ioplug_provenance` separates the two.
+      fail  — an asset is missing, or a present ioplug ALSA cannot load (the
+              -DPIC / arch-mismatch class), which only the open-probe can tell
+              apart from a healthy one.
 
     THE OPEN-PROBE RUNS ONLY WHERE IT CANNOT DISTURB ANYTHING —
-    :func:`_jts_ring_probeable_pcms` decides, on fan-in's systemd state plus
-    each ring file's absence, and answers nothing on a box carrying audio. That
-    gate replaced a persisted-token one (``JASPER_FANIN_CAMILLA_COUPLING``),
-    which probed a LIVE ring on any box whose key had not been written yet
-    (coupling-auto runs ``After=jasper-fanin.service``).
+    :func:`_jts_ring_probeable_pcms` decides and answers nothing on a box
+    carrying audio.
 
-    The "is the ring coherent + alive" verdict is not here: it belongs to
-    `check_fanin_coupling` (the loaded graph) and `check_ring_geometry_coherence`
-    (env vs conf.d vs the on-disk header).
+    The "is the ring coherent + alive" verdict belongs to `check_fanin_coupling`
+    and `check_ring_geometry_coherence`.
     """
     label = "ring platform"
-    # Pass the module-level constants (which tests monkeypatch, and which alias the
-    # ring_assets SSOT) so the presence snapshot honors a repointed path.
+    # Module-level constants (tests monkeypatch them) so the presence snapshot
+    # honors a repointed path.
     presence = ring_assets.ring_asset_presence(
         plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR,
         conf_d=_JTS_RING_CONF_D,
@@ -1912,14 +1607,6 @@ def check_ring_platform_assets() -> CheckResult:
     missing = list(presence.missing())
 
     if missing:
-        # ONE VERDICT, because there is no inert phase left to be degraded into.
-        # This used to split on a persisted ``ring_armed`` token: a missing asset
-        # FAILED an armed box and merely WARNED an unarmed one, on the reasoning
-        # that "loopback still carries audio". ADR-0100 retired that route, so the
-        # unarmed branch claimed a transport the box does not have — a speaker
-        # emitting nothing, reported as degraded-but-playing. The verdict no
-        # longer turns on a persisted token at all: the ring is the only way this
-        # box makes sound, and an asset it needs is absent.
         return CheckResult(
             label,
             "fail",
@@ -1966,14 +1653,9 @@ def _resolved_ring_wire():
     """The ring wire an arm would render into the conf.d, or ``None``.
 
     The same two calls the arm's own capability gate makes
-    (:func:`jasper.fanin.coupling_reconcile.ring_wire_caps_ready`), so the doctor
-    weighs a provenance record against the wire the RECONCILER will use rather
-    than deriving a second answer to the same question.
-
-    ``None`` when the box declares a wire neither language recognizes: that
-    refusal belongs to ``resolve_wire_for_gate``, which already names it in the
-    arm's own log, and restating it as a provenance verdict would give one
-    failure two reasons.
+    (:func:`jasper.fanin.coupling_reconcile.ring_wire_caps_ready`). ``None`` when
+    the box declares a wire neither language recognizes; that refusal is
+    ``resolve_wire_for_gate``'s to report.
     """
     try:
         from ...fanin.ring_health import (
@@ -1991,50 +1673,31 @@ def _resolved_ring_wire():
 def check_ring_ioplug_provenance() -> CheckResult:
     """Is the INSTALLED ioplug the one the installer built, and what can it parse?
 
-    THE GAP THIS CLOSES. ``check_ring_platform_assets`` reports presence, and its
-    open-probe passes on a structurally-valid plugin — so a STALE ``.so`` (the
-    ioplug build degrades to a WARN, leaving the previous one installed beside
-    freshly-installed Rust daemons) read as ``ok`` and the only signal was a WARN
-    in a deploy transcript that had long since scrolled away. The installer now
-    records the sha and the conf.d fields of the plugin it installed, and revokes
-    that record on every path where it did NOT produce the installed file, so
-    this check can say "stale" where it used to say nothing.
+    ``check_ring_platform_assets`` reports presence and its open-probe passes on
+    any structurally-valid plugin, so a STALE ``.so`` (the ioplug build degrades
+    to a WARN and leaves the previous one installed) reads ``ok`` there. The
+    installer records the sha and conf.d fields of the plugin it installed, and
+    revokes that record on every path where it did NOT produce the installed
+    file.
 
-    THE VERDICT IS WEIGHED BY THE BOX'S OWN WIRE, because that is what decides
-    whether an unvouched plugin costs anything:
+    THE VERDICT IS WEIGHED BY THE BOX'S OWN WIRE, because that decides whether an
+    unvouched plugin costs anything:
 
     * a wire that renders no conf.d field beyond the ioplug's own defaults needs
-      nothing from any installed plugin, so "cannot vouch" is a ``warn`` — real,
-      but nothing is refused on such a box;
+      nothing from any installed plugin, so "cannot vouch" is a ``warn``;
     * a wire that declares a non-default sample FORMAT is refused at the arm by
       ``ring_wire_caps_ready``, which is a ``fail``: a stale/mismatched ioplug
-      otherwise presents as CamillaDSP crash-looping on ``-EINVAL`` at
-      ``open()`` against the ring. This gate only catches it earlier, on the
-      roleful ``--auto`` converge path (its sole caller) — the manual
-      ``jasper-fanin-coupling-reconcile shm_ring`` remedy skips it entirely.
-      Reporting that as a warning would bury the one verdict that predicts
-      the crash loop.
+      otherwise presents as CamillaDSP crash-looping on ``-EINVAL`` at ``open()``
+      against the ring, and the manual
+      ``jasper-fanin-coupling-reconcile shm_ring`` remedy skips that gate.
 
-    WHAT THE PREDICATE COVERS, so this does not over-promise:
-    ``ring_wire_capabilities`` reads the sample format, the Ring A / Ring B
-    channel counts, and — since the ring-wire default flip — the ACTIVE block's
-    own ``channels`` axis, so a roleful box whose post-crossover width forces
-    that key is weighed here too. What stays outside it is the FILE: the
-    predicate answers "which keys does this wire force onto the conf.d", not
-    "which keys does the conf.d on disk declare", and the shipped conf.d now
-    spells ``format`` explicitly. So a box an operator has pinned narrow
+    SCOPE: ``ring_wire_capabilities`` answers which keys the WIRE forces onto the
+    conf.d, not which keys the conf.d on disk declares, so a box pinned narrow
     resolves an empty capability set while its rendered conf.d still carries a
-    ``format`` line — see ``ring_wire_capabilities``' own note, and #2597.
-
-    The escalation asks :func:`jasper.ring_assets.ring_ioplug_wire_supported` —
-    the gate's own predicate, remediation text included — rather than restating
-    its rule, and that call SHORT-CIRCUITS to ok before reading the record or
-    hashing the plugin when the wire needs nothing. So on every box carrying a
-    wire that declares no extra field this branch is inert and the verdicts
-    below are exactly what they were.
+    ``format`` line (#2597).
 
     Skips when the ``.so`` is absent: that is ``check_ring_platform_assets``'s
-    missing-asset verdict, and one absent file should produce one reason.
+    missing-asset verdict.
     """
     label = "ring ioplug provenance"
     so_path = ring_assets.ring_ioplug_so_path(plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR)
@@ -2044,11 +1707,6 @@ def check_ring_ioplug_provenance() -> CheckResult:
         )
     wire = _resolved_ring_wire()
     if wire is not None:
-        # A capability-needing wire hashes the .so here and again in the
-        # record-compare below. Left as two reads rather than threading a
-        # digest between the layers: the plugin is tens of KB, and the gate
-        # owning its own comparison end-to-end is what makes the verdict
-        # quotable rather than reassembled.
         support = ring_assets.ring_ioplug_wire_supported(
             wire, plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR
         )
@@ -2105,14 +1763,11 @@ def check_ring_ioplug_provenance() -> CheckResult:
 # MUST exceed the C ioplug's writer-lock acquisition budget
 # (``JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS``, 500 ms): ``acquire_writer_lock``
 # opens the lock file FIRST and only then spins on ``flock`` until that budget
-# expires, so for up to that long a perfectly healthy box legitimately has TWO
-# processes holding an fd on one ``.writer.lock`` — the live incumbent and a
-# transient contender that is about to be refused. A single-sample count would
-# report that ordinary race as the two-live-writers defect. Pinned against the
-# header by ``tests/test_ring_slot_ceiling_pin.py``.
+# expires, so for up to that long a healthy box legitimately has TWO processes
+# holding an fd on one ``.writer.lock``. Pinned against the header by
+# ``tests/test_ring_slot_ceiling_pin.py``.
 _WRITER_LOCK_CONFIRM_DELAY_SEC = 0.75
-# The procfs root the writer-lock sweep reads. A module constant, resolved at
-# CALL time by everything below, so a test can repoint it at a synthetic tree.
+# Resolved at CALL time below, so a test can repoint it at a synthetic tree.
 _PROC_ROOT = "/proc"
 
 
@@ -2125,20 +1780,16 @@ def _ring_writer_lock_holders(
 
     Returns ``({lock_path: {pid: target_was_unlinked}}, unreadable_pid_count)``.
 
-    WHY fds AND NOT ``/proc/*/maps``. The obvious enumeration — scan maps for
-    the RING file — cannot work: the Rust reader mmaps the very same ring file
-    ``PROT_READ|PROT_WRITE`` (``rust/jasper-ring/src/lib.rs`` ``mmap_fd``), so
-    on every armed box the ring has two mappers by design and ">1 mapper" is the
-    healthy state. The WRITER LOCK is the discriminator, because only the C
-    ioplug's writer ever opens it: Rust takes the ``.open.lock`` transaction lock
-    and never this one.
+    fds, NOT ``/proc/*/maps``: the Rust reader mmaps the same ring file
+    ``PROT_READ|PROT_WRITE`` (``rust/jasper-ring/src/lib.rs`` ``mmap_fd``), so on
+    every armed box ">1 mapper" is the healthy state. The WRITER LOCK is the
+    discriminator — only the C ioplug's writer ever opens it; Rust takes the
+    ``.open.lock`` transaction lock and never this one.
 
-    WHY the pathname is the grouping key. It is the shape of the residual
+    Grouped by PATHNAME because that is the shape of the residual
     :func:`check_ring_writer_lock_exclusivity` documents: an orphaned incumbent
-    and the fresh file that replaced it share one PATHNAME while holding two
-    different inodes, so grouping by pathname puts both halves in one bucket.
-    ``/proc``'s ``" (deleted)"`` suffix on the incumbent's fd names which half
-    is the orphan.
+    and the fresh file that replaced it share one pathname across two inodes.
+    ``/proc``'s ``" (deleted)"`` suffix names which half is the orphan.
     """
     root = ring_assets.RING_SHM_DIR if shm_dir is None else shm_dir
     procfs = _PROC_ROOT if proc_root is None else proc_root
@@ -2162,8 +1813,7 @@ def _ring_writer_lock_holders(
             unreadable += 1
             continue
         except OSError:
-            # ENOENT — the pid exited between the two listdirs. Not a blind
-            # spot: a process that is gone holds nothing.
+            # ENOENT — the pid exited between the two listdirs; it holds nothing.
             continue
         for fd in fds:
             try:
@@ -2188,24 +1838,17 @@ def _ring_writer_lock_holders(
 def check_ring_writer_lock_exclusivity() -> CheckResult:
     """Do two live writers hold one ring's writer lock?
 
-    THE RESIDUAL THIS CLOSES. ``c/jts-ring-ioplug/jts_ring_shm.c`` records it
-    verbatim: an ``flock``'s identity is the PATHNAME, not the inode, so
-    UNLINKING ``<ring>.writer.lock`` while a writer holds it voids exclusivity
-    SILENTLY — "two live writers proceed with no log line between them.
-    Measured." It stays reachable because nothing stops an operator (or a
-    cleanup script) from ``rm -rf``-ing the tmpfs directory out from under a
-    live writer. The C comment names its own fix, a
-    doctor check that notices two live writer pids on one ring; this is it. It
-    lands here, and not as a follow-up, because the grouping reconciler's
-    active-leader arm now DEPENDS on that lock as a safety signal (the
-    active-content release barrier, ``jasper/multiroom/reconcile.py``).
+    An ``flock``'s identity is the PATHNAME, not the inode, so UNLINKING
+    ``<ring>.writer.lock`` while a writer holds it voids exclusivity SILENTLY —
+    two live writers proceed with no log line between them
+    (``c/jts-ring-ioplug/jts_ring_shm.c``). Nothing stops an operator or a
+    cleanup script from ``rm -rf``-ing the tmpfs directory under a live writer,
+    and the grouping reconciler's active-leader arm DEPENDS on that lock as a
+    safety signal (``jasper/multiroom/reconcile.py``).
 
-    THE HEADER CANNOT ANSWER THIS. ``writer_pid`` is a SINGLE header slot
-    (offset 56, ``_Static_assert``-pinned), so a second writer's attach simply
-    overwrites it: the shared file can only ever name one writer and is
-    structurally blind to the exact condition being detected. This reads the
-    KERNEL's view — who holds an fd on the lock — which is the only view the
-    pathname-vs-inode residual cannot fool.
+    THE HEADER CANNOT ANSWER THIS: ``writer_pid`` is a SINGLE header slot (offset
+    56, ``_Static_assert``-pinned), so a second writer's attach overwrites it.
+    This reads the KERNEL's view — who holds an fd on the lock.
 
     Statuses:
       ok    — no lock path has more than one live holder (the normal state,
@@ -2297,34 +1940,22 @@ def check_ring_writer_lock_exclusivity() -> CheckResult:
 def check_ring_reader_stall() -> CheckResult:
     """A ring being WRITTEN but not READ, judged from the SHARED HEADER.
 
-    THE INDEPENDENT OBSERVER, and that is the whole point. Its sibling
-    ``check_fanin_ring_stall`` (order 51.55) asks fan-in's STATUS socket — the
-    WRITER reporting on itself, which works for Ring A because fan-in owns that
-    ring's writer in Rust and keeps the counters. The ACTIVE ring has no such
-    witness: its writer is CamillaDSP through the **C ioplug**, whose
-    ``published_slots`` / ``drop_no_reader`` / ``full_waits`` are process-local
-    ``jts_ring_writer_t`` fields printed at close, not shared-header fields, so
-    no reader can see them; and its reader is outputd, which during exactly this
-    fault is blocked in ``writei`` and is not even sampling occupancy. The doctor
-    is blocked in neither end, so it reads the header directly.
+    THE INDEPENDENT OBSERVER. Its sibling ``check_fanin_ring_stall`` asks
+    fan-in's STATUS socket, which works only for Ring A. Every other ring's
+    writer is the C ioplug, whose ``published_slots`` / ``drop_no_reader`` /
+    ``full_waits`` are process-local fields printed at close rather than
+    shared-header fields, and whose reader is blocked in ``writei`` during
+    exactly this fault. The doctor is blocked in neither end.
 
-    THE CONJUNCTION, and why it is this one: ``writer_heartbeat_ns`` FRESH while
-    ``reader_heartbeat_ns`` is STALE. Not ``read_seq``-flat — the writer advances
-    ``read_seq`` on the absent reader's behalf at demotion, so a ``read_seq``
-    clause goes false exactly when the drops begin. See
-    :class:`jasper.ring_assets.RingStallVerdict` for the full derivation.
+    THE CONJUNCTION: ``writer_heartbeat_ns`` FRESH while ``reader_heartbeat_ns``
+    is STALE. Not ``read_seq``-flat — the writer advances ``read_seq`` on the
+    absent reader's behalf at demotion, so a ``read_seq`` clause goes false
+    exactly when the drops begin. See
+    :class:`jasper.ring_assets.RingStallVerdict`.
 
-    The GROUPING ring is judged for the same reason and rides the same shape: its
-    writer is snapclient through that same C ioplug, so it has no witness either,
-    and its reader is the bonded endpoint's CamillaDSP. It is SILENT until
-    something creates the file — ``present=False`` — so listing it here costs one
-    stat on every box and self-arms on the box where the ring exists.
-
-    Judges every ring in the tuple below, because the fault is a property of a
-    ring file rather than of a coupling, and reports per-ring so an operator
-    knows which daemon to look at. Absent / idle rings are silent:
-    ``present=False`` covers the unarmed fleet, where none of these files exists
-    at all.
+    Judges every ring in the tuple below and reports per-ring so an operator
+    knows which daemon to look at. ``present=False`` keeps absent/idle rings
+    silent, which covers the unarmed fleet.
 
     Returns:
       - ok when no ring is stalled (including every unarmed box, where there is
@@ -2346,8 +1977,6 @@ def check_ring_reader_stall() -> CheckResult:
         ("Ring A (fan-in -> CamillaDSP)", RING_A_PROGRAM_FILE),
         ("Ring B (CamillaDSP -> outputd)", RING_B_CONTENT_FILE),
         ("ACTIVE ring (CamillaDSP -> outputd)", RING_ACTIVE_CONTENT_FILE),
-        # Path imported from the grouping transport's own identity module, not
-        # respelled here — one owner for the name and the file.
         ("GROUPING ring (snapclient -> CamillaDSP)", GROUPING_RING_FILE),
     )
     stalled: list[str] = []
@@ -2374,34 +2003,23 @@ def check_ring_reader_stall() -> CheckResult:
 
 @doctor_check(order=51.9, group="audio")
 def check_ring_geometry_coherence() -> CheckResult:
-    """Verify the Ring-A geometry agrees across env, conf.d, and on-disk (defect A).
+    """Verify the Ring-A geometry agrees across env, conf.d, and on-disk.
 
-    The ring geometry must match or CamillaDSP's ioplug attach fails hard
-    (hw_params EINVAL + ``attach_fatal reason=ring header does not match expected
-    geometry`` → crash-loop → start-limit-hit). ``n_slots`` is checked on THREE
-    axes, and the on-disk header is then compared on EVERY axis the attach
-    compares:
+    The geometry must match or CamillaDSP's ioplug attach fails hard (hw_params
+    EINVAL → crash-loop → start-limit-hit). ``n_slots`` is checked on THREE axes,
+    and the on-disk header is then compared on EVERY axis the attach compares:
 
       1. fan-in's resolved ``JASPER_FANIN_RING_SLOTS`` (jasper.env -> fanin.env
          systemd env chain, default 2)
       2. the conf.d ``jts_ring_capture`` ``n_slots`` (the ioplug attach authority)
       3. the on-disk ``program.ring`` header vs that conf.d block, on ``n_slots``,
          ``period_frames`` (the ring slot IS one outputd period, so a stale period
-         fails the attach even with matching slots — Nit-7, 2026-07-05),
-         ``sample_format`` and ``channels``
+         fails the attach even with matching slots), ``sample_format`` and
+         ``channels``
 
-    The 2026-07-06 default migration class is old 8-slot state making fan-in or
-    the existing ring file present 8 slots while the conf.d pins 2. The coupling
-    reconciler preflights + self-heals this at arm time (and on the CONFIRM path
-    for an already-armed box); this check is the standing surface that catches
-    drift on a live box.
-
-    UNCONDITIONAL since ADR-0100. Ring A is never inert: it is the only fan-in →
-    CamillaDSP transport, so the graph opens it on every box. This used to skip
-    unless the persisted coupling read ``shm_ring``, which silently stopped
-    assessing a crash-loop-class defect on any box whose key had not been written
-    yet. A mismatch is ``fail`` (the graph cannot run); an indeterminate conf.d /
-    env is ``warn`` (redeploy to reinstall).
+    UNCONDITIONAL since ADR-0100: Ring A is the only fan-in → CamillaDSP
+    transport, so the graph opens it on every box. A mismatch is ``fail`` (the
+    graph cannot run); an indeterminate conf.d/env is ``warn``.
     """
     label = "ring geometry"
     try:
@@ -2453,21 +2071,18 @@ def check_ring_geometry_coherence() -> CheckResult:
     # Axis 3: the on-disk ring header (what the writer actually created).
     header = ring_assets.read_ring_header(ring_assets.RING_A_PROGRAM_FILE)
     if not header.valid:
-        # No coherent on-disk ring yet: fan-in may be between restarts, or the
-        # ring was cleared. The env/conf.d agree, so the next writer create
-        # is coherent — noteworthy, not a hard failure.
+        # No coherent on-disk ring yet (fan-in between restarts, or the ring was
+        # cleared). env/conf.d agree, so the next writer create is coherent.
         return CheckResult(
             label, "warn",
             f"env + conf.d agree (n_slots={fanin_slots}) but {ring_assets.RING_A_PROGRAM_FILE} "
             "has no valid ring header yet (fan-in restarting / ring cleared). It "
             "will be created coherently on the next fan-in start.",
         )
-    # Axes 3-6: every axis the ioplug attach compares — n_slots, period_frames,
+    # Every axis the ioplug attach compares — n_slots, period_frames,
     # sample_format and channels — through the SAME comparator the coupling
     # reconciler's stale-file guard and CONFIRM self-heal use, so the doctor
-    # cannot call a file coherent that the reconciler is about to delete (or
-    # vice versa). A ring that shears on format or channel count must fail
-    # here, not just be reported and left uncompared.
+    # cannot call a file coherent that the reconciler is about to delete.
     verdict = ring_assets.ring_header_matches_conf(
         ring_assets.RING_A_PROGRAM_FILE,
         ring_assets.RING_A_CONF_PCM,
@@ -2497,88 +2112,45 @@ def check_ring_conf_floor_render() -> CheckResult:
     The ring slot IS one outputd DAC period, so a box whose DAC declares a
     :class:`~jasper.audio_hardware.dac.LatencyFloor` has its conf.d
     ``period_frames`` RENDERED from that floor by
-    ``jasper-audio-hardware-reconcile``. This check is the standing surface that
-    catches a box where that render did not land (an install that re-laid the
-    shipped conf.d without a reconcile after it, a hand-edited conf.d, a DAC
-    swapped while the reconciler was down).
-
-    Both facts are read from their owners: the floor from the DAC registry
+    ``jasper-audio-hardware-reconcile``. The floor is read from the DAC registry
     (``latency_floor_for``), the period from the conf.d file itself.
 
     Statuses:
       ok    — no active DAC in the reconciler's record (nothing to render);
               no declared floor (the shipped default stands, by rule); a
-              declared floor that is not ``RING_SLOT_FRAMES`` (a documented
-              product boundary, not drift — see below); or the conf.d already
+              declared floor that is not ``RING_SLOT_FRAMES`` (a product
+              boundary, not drift — see below); or the conf.d already
               declares the floor's period.
       warn  — a renderable floor the conf.d has NOT been rendered to, or an
               indeterminate conf.d period. Never fail: an unrendered conf.d
-              is inert until something arms shm_ring against it, so this is a
-              dormant render gap, not a live fault — the remedy is the one
-              command each warn detail below names.
+              is inert until something arms shm_ring against it.
 
     An ``ok`` that leaves shm_ring's floor-optimal period unreached SAYS WHY
-    (issue #2294). Both no-floor and non-matching-floor are ok — the conf.d is
-    right either way — but they also bear on ring eligibility, so reporting
-    only "nothing to render" left the household's actual question ("why
-    hasn't this box reached shm_ring?") answered nowhere.
+    (issue #2294).
 
     WHAT THOSE BRANCHES MAY AND MAY NOT CLAIM. They read the DECLARED floor,
-    which is not the same fact as outputd's RESOLVED period — the two diverge
-    through the documented operator seam, ``JASPER_OUTPUTD_PERIOD_FRAMES`` in
-    ``/etc/jasper/jasper.env``, which outranks the reconciler's floor-derived
-    value. So a floorless box CAN ring, and one did: jts4 (InnoMaker HiFi AMP
-    Pro, no declared floor at the time) armed shm_ring on 2026-08-14 with the
-    period and DAC buffer hand-set in that file. These branches therefore say
-    what is not RENDERED and name both routes to a ring; they must not say the
-    ring is unavailable, which is a claim about the resolved period they do not
-    read. No preflight owns that axis: ``ring geometry`` compares only the
-    on-disk pair (conf.d vs the ring file header), and the arm spine
-    (``reconcile_coupling`` -> ``_converge_ring``) never reads the resolved
-    period — a conf.d/resolved-period divergence surfaces as outputd's hard
-    ioplug ``open()`` error at attach, not as a refusal.
+    which is not outputd's RESOLVED period: the two diverge through
+    ``JASPER_OUTPUTD_PERIOD_FRAMES`` in ``/etc/jasper/jasper.env``, which
+    outranks the reconciler's floor-derived value, so a floorless box CAN ring.
+    They may therefore say what is not RENDERED and name both routes to a ring;
+    they must not say the ring is unavailable. Nothing preflights the
+    conf.d/resolved-period divergence — it surfaces as outputd's hard ioplug
+    ``open()`` error at attach.
 
-    THE FLOOR IS NOT THE ONLY REASON, and R7b changed what this check can say
-    about the other one. A ROLEFUL (active-crossover) box does not ring on the
-    strength of its floor however good it is: its ring is the ACTIVE ring, which
-    the unattended pass arms only for a box already carrying a proven graph
-    (``ring_roleful_unattended_ready``'s two arms — a hardware-fingerprint-matched
-    applied baseline, or the all-muted anchor) and refuses otherwise. So on a
-    roleful box a green period line
-    means "the conf.d is ready", NOT "this box will ring" — and saying only the
-    former is how an operator concludes the arm is broken when nothing is. Every
-    OK branch below therefore carries the rolefulness sentence when it applies,
-    read from the saved topology (:func:`_requires_roleful_graph`). The two WARN
-    branches deliberately do not: each is a concrete render failure with one
-    remedy, and appending "…and even then it would not ring on its own" would
-    bury the action the operator has to take.
-
-    (This supersedes R7a's scope note, which said a roleful topology "has no
-    ring width at all" and that the reason was one this check could not see.
-    Both were true when it was written and neither is now:
-    ``active_ring_channels_for_topology`` answers a roleful width, and the check
-    reads the topology. jts3 is the box where the two reasons swapped — before
-    the DAC8X declared a floor its reason was the floor; after it, the reason is
-    the topology.)
+    THE FLOOR IS NOT THE ONLY REASON. A ROLEFUL (active-crossover) box rings on
+    the ACTIVE ring, which the unattended pass arms only for a box already
+    carrying a proven graph (``ring_roleful_unattended_ready``). So on such a box
+    a green period line means "the conf.d is ready", NOT "this box will ring",
+    and every OK branch carries the rolefulness sentence. The WARN branches do
+    not: each is a concrete render failure with one remedy.
 
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
-    ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env
-    override), so only a floor that EQUALS it is renderable. A DAC declaring
-    any other floor never gets a rendered conf.d — shm_ring cannot reach its
-    floor-optimal period this way — and the floor's outputd period/buffer
-    geometry still applies through ``outputd.env`` regardless. That is a
-    known limit with an owner (issue #2147), so it reports ok, not warn.
-
-    Scope: this compares the conf.d against the DECLARED floor, which is what
-    the renderer uses. An operator ``JASPER_OUTPUTD_PERIOD_FRAMES`` override
-    moves outputd's EFFECTIVE period away from the floor; nothing preflights
-    that divergence (``ring geometry`` covers only the on-disk axis) — it
-    fails outputd's ring attach hard at ``open()`` — and it is deliberately
-    not this check's to catch either.
+    ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env override),
+    so only a floor that EQUALS it is renderable. A DAC declaring any other floor
+    never gets a rendered conf.d, and its outputd period/buffer geometry still
+    applies through ``outputd.env``. Known limit, issue #2147, so ok not warn.
     """
     label = "ring conf floor"
-    # Local import: audio_runtime_plan is heavy and the doctor's other ring
-    # checks already reach for it lazily.
     from ...audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
 
     dac_id = active_dac_profile_id()
@@ -2589,15 +2161,9 @@ def check_ring_conf_floor_render() -> CheckResult:
             "is no declared floor to render",
         )
     floor = latency_floor_for(dac_id)
-    # The eligibility half this check cannot read off the conf.d. Appended to
-    # every OK branch, so an operator never has to already know that the floor is
-    # only one of the two gates. The WARN branches leave it off on purpose — see
-    # the docstring.
     # Says "roleful box", NOT "commissioned box": step 1 accepts either roleful
     # boot graph — an applied baseline or the all-muted startup anchor a
-    # mid-commission box boots from — so an operator on the fleet-typical
-    # composite must not read this and conclude the arm is out of reach until
-    # commissioning finishes. It is not.
+    # mid-commission box boots from.
     roleful_note = (
         " This box is ROLEFUL (active crossover), so even a rendered conf.d "
         "does not make it ring on its own. The unattended default pass now "
@@ -2806,13 +2372,7 @@ def _outputd_status_payload() -> dict[str, object] | CheckResult:
 
 
 def _outputd_content_bridge_detail(data: dict[str, object]) -> str:
-    """Report outputd's resolved content source (``direct`` or ``shm_ring``).
-
-    A plain mode readout. The rate-matched bridge that once published
-    fill/ppm/lock/anomaly counters under this key was deleted; the SHM ring's
-    own health has its own ``shm_ring`` block, so there is nothing left to
-    raise a warning about here.
-    """
+    """Report outputd's resolved content source (``direct`` or ``shm_ring``)."""
     bridge = data.get("content_bridge")
     if not isinstance(bridge, dict):
         return "content_bridge=missing"
@@ -2866,23 +2426,18 @@ def _outputd_buffer_health(
 ) -> str | CheckResult:
     """Validate ALSA or SHM-ring buffer geometry and return ring detail.
 
-    ``outputd_env`` is the reconciled ``outputd.env`` the caller already read.
-    It decides WHICH ring's width the observed channels are compared against —
-    Ring B's or the ACTIVE ring's — via the endpoint marker. Passing the env
-    rather than re-reading it keeps one read per check; ``None`` falls back to a
-    file-fresh read so a focused test can call this helper directly.
+    ``outputd_env`` is the reconciled ``outputd.env`` the caller already read; it
+    decides via the endpoint marker WHICH ring's width the observed channels are
+    compared against, Ring B's or the ACTIVE ring's. ``None`` falls back to a
+    file-fresh read.
     """
     ring_detail = ""
     if ring_mode:
-        # Ring B (SHM ping-pong content ring): outputd reads the post-DSP program
-        # from an n-slot SHM ring, NOT an ALSA capture PCM (neither outputd sink
-        # opens a content PCM under shm_ring). content.buffer_frames is therefore
-        # a synthetic period-sized stand-in, so the generic ">= 2x period" ALSA
-        # jitter-margin floor does not apply — a bounded n-slot queue is not an ALSA
-        # buffer, and every shm_ring box would otherwise structurally fail that floor
-        # (content.buffer_frames == period < 2 x period). Validate the TRUE ring
-        # geometry from content.ring instead (the honesty contract outputd publishes
-        # next to the synthetic; capacity_frames == n_slots x slot_frames).
+        # Under shm_ring neither outputd sink opens a content PCM, so
+        # content.buffer_frames is a synthetic period-sized stand-in and the
+        # generic ">= 2x period" ALSA jitter-margin floor does not apply (every
+        # shm_ring box would structurally fail it). The TRUE geometry comes from
+        # content.ring, where capacity_frames == n_slots x slot_frames.
         if not isinstance(content_buffer, int) or content_buffer < period_frames:
             return CheckResult(
                 "jasper-outputd",
@@ -2924,9 +2479,8 @@ def _outputd_buffer_health(
                 f"shm_ring content.ring.capacity_frames={ring_capacity!r}; expected "
                 f"n_slots*slot_frames ({expected_capacity})",
             )
-        # Runtime health (occupancy/attach) rides the top-level shm_ring block; a
-        # transient empty ring is normal (idle), so surface it in the detail without
-        # gating on it here.
+        # A transient empty ring is normal (idle), so occupancy/attach are
+        # surfaced in the detail without gating on them.
         shm_ring_block = data.get("shm_ring")
         ring_occupancy = (
             shm_ring_block.get("occupancy")
@@ -2936,14 +2490,12 @@ def _outputd_buffer_health(
             bool(shm_ring_block.get("attached", False))
             if isinstance(shm_ring_block, dict) else None
         )
-        # THE WIRE, compared and not merely printed. outputd's shm_ring block
-        # publishes the format/channels it read back off the header it ATTACHED
-        # to; the resolver answers what this box's wire is supposed to be. Those
-        # are two independent sources, so a disagreement is a real shear — the
-        # reader consuming a geometry nobody declared — rather than a constant
-        # echoing itself. Only checked once ATTACHED: before that outputd
-        # reports its own declaration, which proves nothing about a ring that
-        # does not exist yet.
+        # THE WIRE, compared and not merely printed: outputd publishes the
+        # format/channels it read back off the header it ATTACHED to, and the
+        # resolver answers what this box's wire should be, so a disagreement is a
+        # real shear. Only checked once ATTACHED — before that outputd reports
+        # its own declaration, which proves nothing about a ring that does not
+        # exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
             from jasper.fanin.ring_health import load_topology_for_wire
             from jasper.fanin_coupling import (
@@ -2952,24 +2504,16 @@ def _outputd_buffer_health(
             )
 
             # TOPOLOGY-THREADED, like every reconciler gate that compares this
-            # wire (``ring_edge_width_ready`` / ``ring_wire_caps_ready`` both
-            # pass ``load_topology_for_wire()``). The channel counts are the
-            # PER-TOPOLOGY axes in the wire, so resolving with ``None`` here
-            # would answer the shipped stereo declaration and report a FAIL
-            # against a box whose post-DSP ring legitimately carries a different
-            # width — the doctor contradicting the reconciler that armed it.
-            # Threading the topology is also why the two agree on a box that
-            # cannot read its topology at all: the helper fails soft to ``None``
-            # and both sides then ask the same shipped-geometry question.
+            # wire (``ring_edge_width_ready`` / ``ring_wire_caps_ready``): the
+            # channel counts are PER-TOPOLOGY axes, so resolving with ``None``
+            # would answer the shipped stereo declaration and FAIL a box whose
+            # post-DSP ring legitimately carries a different width.
             wire = resolve_ring_wire(load_topology_for_wire())
-            # WHICH ring outputd attached decides which width it is held to.
-            # An armed ACTIVE endpoint reads the post-crossover per-driver ring,
-            # whose width is ``ring_active_channels``; comparing it against Ring
-            # B's stereo width is the same D5 red-line shape as an unrecognized
-            # endpoint — a healthy armed box failing forever on a number nobody
-            # claimed. An armed endpoint whose active width does not resolve
-            # (``None``) has no honest expectation to compare, so the channels
-            # axis is skipped rather than compared against a fallback.
+            # WHICH ring outputd attached decides which width it is held to: an
+            # armed ACTIVE endpoint reads the post-crossover per-driver ring,
+            # whose width is ``ring_active_channels``. An armed endpoint whose
+            # active width does not resolve (``None``) has no honest expectation,
+            # so the channels axis is skipped rather than compared to a fallback.
             active_endpoint = ring_active_endpoint_armed(outputd_env)
             expected_channels = (
                 wire.ring_active_channels if active_endpoint else wire.ring_b_channels
@@ -3032,18 +2576,10 @@ def _outputd_buffer_health(
 def _transport_route_remedy() -> str:
     """Return the remedy that actually clears a post-DSP route disconnect.
 
-    Honest branch: when the saved layout needs a roleful graph and the resolved
-    DAC declares no active outputd lane, no reconcile can pair the lanes — the
-    reconciler is *correctly* resolving passive for hardware that has no active
-    lane, so recommending it sends an operator into a loop. Naming the
-    reconciler stays right for the reconcilable case: an active-capable DAC
-    whose generated env has drifted.
-
-    A third branch — the layout needs a roleful graph but the DAC's
-    ``device_id`` has no registered profile at all — gets its own sentence
-    rather than falling into either bucket: the reconciler is not proven
-    futile there (no profile says it *can't* work), but it is not proven to
-    help either, so naming it alone would be a guess dressed as a remedy.
+    Three branches, because naming the reconciler is only right for one of them:
+    a roleful layout on a DAC with no active outputd lane can never be
+    reconciled, and a DAC with no registered profile is neither proven futile nor
+    proven reconcilable.
     """
     from jasper.active_speaker.playback_route import (
         ActiveLaneCapabilityGap,
@@ -3088,16 +2624,12 @@ def _outputd_transport_health(
 ) -> tuple[str, str, str, bool] | CheckResult:
     """Validate outputd's live topology, endpoint coherence, PCMs, and references.
 
-    OUTPUTD'S OWN ENV IS THE EXPECTATION, not ``JASPER_FANIN_CAMILLA_COUPLING``.
-    Under ADR-0100 the fan-in file selects nothing — the daemon serves the ring
-    whatever it says — so it cannot predict what outputd opened. The content
-    bridge does, and ``outputd_env`` here is the daemon's own env read through
-    the unit's ``EnvironmentFile=`` layering (:func:`_outputd_reconciled_env`),
-    so a bonded box's grouping pin is part of the expectation exactly as it is
-    part of what outputd started with. That makes this comparison "is the
-    running daemon on the env it was last given?" — a restart it missed after a
-    reconcile. Whether that env is the RIGHT one for this box is
-    :func:`check_ring_split_transport`'s question.
+    OUTPUTD'S OWN ENV IS THE EXPECTATION, not ``JASPER_FANIN_CAMILLA_COUPLING``
+    (which under ADR-0100 selects nothing). ``outputd_env`` is read through the
+    unit's ``EnvironmentFile=`` layering (:func:`_outputd_reconciled_env`), so
+    the question here is "is the running daemon on the env it was last given?".
+    Whether that env is the RIGHT one for this box is
+    :func:`check_ring_split_transport`'s.
     """
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -3118,7 +2650,7 @@ def _outputd_transport_health(
     outputd_on_ring = outputd_bridge_is_ring(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
-    # NO COUPLING HANDED IN: the planner reads outputd's own bridge out of the
+    # No coupling handed in: the planner reads outputd's own bridge out of the
     # env, which is the half this check is about.
     topology = transport_topology_for_coupling(outputd_env=outputd_env)
     expected_content_source = topology.outputd_content_source
@@ -3160,23 +2692,14 @@ def _outputd_transport_health(
                 "fail",
                 "; ".join(transport_report.errors) + _transport_route_remedy(),
             )
-        # NOTES ARE DELIBERATELY NOT ELEVATED HERE — do not re-add the WARN.
-        # Every note has an OWNING check that FAILs on the same state and
-        # carries the runnable remedy, so elevating the same fact to a WARN
-        # under this check's name would make one problem read as two. The two
-        # notes and their owners, which between them cover both rungs of the
-        # ACTIVE-ring arm ladder and partition the content bridge:
+        # Notes are deliberately not elevated: each has an OWNING check that
+        # FAILs on the same state with a runnable remedy, and both read PERSISTED
+        # evidence rather than outputd's live STATUS (at the endpoint rung
+        # outputd has refused to start, so this function returns its systemd
+        # failure long before reaching here).
         #
-        #   graph rung (the graph and the bridge disagreeing about the ring)
-        #     -> :func:`check_ring_split_transport`
-        #   endpoint rung (the ring PATH lagging its endpoint marker on the
-        #     ring bridge) -> :func:`check_active_ring_path_projection`
-        #
-        # Both owners read PERSISTED evidence rather than outputd's live STATUS,
-        # which is what lets them fire at all: at the endpoint rung outputd has
-        # refused to start, so this function returns its systemd failure long
-        # before reaching here. Errors above still FAIL here, because those are
-        # outputd's own coherence, not a ladder rung.
+        #   graph rung    -> :func:`check_ring_split_transport`
+        #   endpoint rung -> :func:`check_active_ring_path_projection`
     local_pipe_detail = f"content_source={actual_content_source}"
     if dac.get("pcm") != expected_dac_pcm:
         return CheckResult(
@@ -3222,10 +2745,8 @@ def _outputd_transport_health(
 def check_outputd_service() -> CheckResult:
     """Validate the outputd final-output-owner daemon.
 
-    Current main expects outputd to own the physical DAC. Treat
-    disabled/inactive outputd as a real audio-path failure and verify
-    the STATUS socket, runtime backend, negotiated buffers, xrun
-    counters, and progress sentinel.
+    outputd owns the physical DAC, so disabled/inactive is a real audio-path
+    failure.
     """
     service_failure = _outputd_service_state_failure()
     if service_failure is not None:
@@ -3419,21 +2940,17 @@ def check_outputd_service() -> CheckResult:
 def check_aec_clock_drift() -> CheckResult:
     """Surface the passive chip-AEC clock-drift estimate (Layer 0).
 
-    Reads ``reference_outputs.aec_clock`` from outputd STATUS — the
-    observe-only SRO (sample-rate-offset) estimator's verdict, ppm, and
-    latency budget. This is purely diagnostic; no audio path depends on it.
+    Reads ``reference_outputs.aec_clock`` from outputd STATUS — the observe-only
+    SRO (sample-rate-offset) estimator's verdict, ppm, and latency budget. Purely
+    diagnostic; no audio path depends on it.
 
-      - skip (ok + "skipped — …") when outputd is disabled/inactive,
-        STATUS is unreachable or invalid, the chip reference is not
-        configured, or the aec_clock block is absent (pre-Layer-0 builds /
-        no XVF reference). Mirrors the skip-if-not-configured idiom used by
-        the other audio checks — a non-applicable probe is OK, not a fail.
-      - warn only when sro_estimator_status == "untrusted" (the clock
-        signal itself cannot be trusted right now).
-      - ok otherwise: coherent, compensable (a real steady offset a future
-        layer would compensate — the *expected* state on independent-clock
-        DACs like the HiFiBerry), and observing (still measuring) are all
-        healthy. Echoes the estimate and the latency budget.
+      - skip (ok + "skipped — …") when outputd is disabled/inactive, STATUS is
+        unreachable or invalid, the chip reference is not configured, or the
+        aec_clock block is absent.
+      - warn only when sro_estimator_status == "untrusted".
+      - ok otherwise: coherent, compensable (a real steady offset, the expected
+        state on independent-clock DACs like the HiFiBerry), and observing
+        (still measuring) are all healthy.
     """
     label = "AEC clock drift"
     enabled = _run(
@@ -3499,9 +3016,8 @@ def check_aec_clock_drift() -> CheckResult:
     status = aec_clock.get("sro_estimator_status")
     sro_ppm = aec_clock.get("chip_ref_sro_ppm")
     reason = aec_clock.get("verdict_reason")
-    # Observe mode: the chip-ref writer was armed purely to MEASURE drift on
-    # the software-AEC3 mic path (chip-AEC observe mode), not for production
-    # chip-AEC. Surfaced so an operator can tell why the writer is running.
+    # Observe mode: the chip-ref writer was armed purely to MEASURE drift on the
+    # software-AEC3 mic path, not for production chip-AEC.
     observe = aec_clock.get("observe")
     latency = aec_clock.get("latency") or {}
     dac_ms = latency.get("dac_presentation_ms")
@@ -3513,10 +3029,8 @@ def check_aec_clock_drift() -> CheckResult:
         f"dac_presentation_ms={dac_ms}, playback_queue_ms={playback_ms}, "
         f"chip_ref_queue_ms={chip_ref_ms}"
     )
-    # Warn only on a genuinely untrusted clock signal. "observing" (still
-    # measuring at startup) and "compensable" (real drift a future layer
-    # handles — expected on independent-clock DACs) are both healthy; warning
-    # on them would cry wolf at boot and on exactly the DACs we target.
+    # "observing" (still measuring at startup) and "compensable" (expected on
+    # independent-clock DACs) are both healthy.
     if status == "untrusted":
         return CheckResult(
             label,
@@ -3528,48 +3042,35 @@ def check_aec_clock_drift() -> CheckResult:
 
 @doctor_check(order=52.65, group="audio")
 def check_renderer_ring_lanes() -> CheckResult:
-    """Every ARMED renderer-ingress lane is attached, fed, and coherent (U3/P6).
+    """Every ARMED renderer-ingress lane is attached, fed, and coherent.
 
-    An unarmed box — the shipped fleet state — reports ``ok``: no lane armed
-    means nothing to judge, and the fleet default is a healthy state, not a
-    finding.
+    An unarmed box — the shipped fleet state — reports ``ok``.
 
-    On an armed box it answers three questions, in the order an operator needs
-    them, because they have different remedies:
+    On an armed box it answers three questions, which have different remedies:
 
-    1. **Is the lane ATTACHED?** A detached lane renders silence. The
+    1. **Is the lane ATTACHED?** A detached lane renders silence, and the
        ``detach_reason`` token names which remedy: ``geometry`` is a conf.d /
        fan-in shear, ``refused`` is almost always the renderer user's
        ``jts-ring`` membership or a missing ``UMask=0007``, ``unavailable`` is a
        ring that has not been created yet.
     2. **Is anything WRITING it?** ``writer_alive`` false on an attached lane is
-       the ordinary "renderer is not playing" state and NOT a fault, so it never
-       fails on its own — but combined with (3) it separates two very different
-       situations.
-    3. **Has it EVER been written?** This is what
-       ``startup_empty_reads`` vs ``empty_reads`` discriminates, and it is the
-       reason both are published separately. A lane whose empty reads are ALL
-       startup ones has never received a single slot since fan-in attached — the
-       renderer has never successfully opened its ring, which looks identical to
-       "paused" on every other signal. A lane with steady-state ``empty_reads``
-       has been fed and is now idle, which is just a paused renderer.
+       the ordinary "renderer is not playing" state and never fails on its own.
+    3. **Has it EVER been written?** ``startup_empty_reads`` vs ``empty_reads``
+       discriminates: all-startup empty reads means the renderer has never
+       successfully opened its ring, which looks identical to "paused" on every
+       other signal.
 
     Never FAILS on a paused renderer; WARNs on a lane that is detached or has
-    never been fed, with the remediation on the line.
+    never been fed.
     """
     from jasper import renderer_lanes as rl
 
     label_name = "renderer ring lanes"
     armed = rl.read_armed_labels()
     if not armed:
-        # "ok", NOT a novel "skip" status: the doctor vocabulary is
-        # ok|warn|fail (CheckResult.status), and render()'s else-branch
-        # turns anything unknown into a red ✗ + exit 1 — which briefly made
-        # every unarmed box (the fleet default) report failure. Unarmed-is-
-        # healthy follows the established unconfigured-is-ok convention
-        # (check_chip_reference above, Spotify auth, capture relay, Google
-        # integrations). Pinned by tests/test_doctor_audio_runtime.py's
-        # unarmed-lane tests, including one through render()'s exit path.
+        # "ok", NOT a novel "skip" status: the doctor vocabulary is ok|warn|fail
+        # (CheckResult.status) and render()'s else-branch turns anything unknown
+        # into a red ✗ + exit 1.
         return CheckResult(label_name, "ok", "no renderer lane armed (fleet default)")
 
     try:
@@ -3618,33 +3119,23 @@ def check_renderer_ring_lanes() -> CheckResult:
                 f"{ring.get('retries')}) — {_ring_detach_remedy(str(reason))}"
             )
             continue
-        # Attached. Has it ever actually been fed? All-startup empty reads with
-        # no filled slot means the renderer has never opened its ring.
+        # All-startup empty reads with no filled slot means the renderer has
+        # never opened its ring.
         steady = ring.get("empty_reads") or 0
         startup = ring.get("startup_empty_reads") or 0
         frames = entry.get("frames_read") or 0
         if not frames and startup:
             if _ring_lane_is_on_demand(lane_label):
-                # An on-demand lane (correction — ephemeral aplay writers,
-                # U3/P6c) is fed only while a measurement is playing, so
-                # armed-attached-never-fed is its RESTING state between
-                # measurements — the same "not a fault" class as a paused
-                # renderer, not the daemon-renderer wiring failure the WARN
-                # below diagnoses. Warning here would put a standing false
-                # warning on every armed box.
+                # An on-demand lane (ephemeral aplay writers) is fed only while a
+                # measurement is playing, so armed-attached-never-fed is its
+                # RESTING state.
                 #
-                # STATED RESIDUAL: this carve-out cannot tell resting from
-                # broken-at-open. A writer that can NEVER open its ring
-                # (missing jts-ring membership, geometry shear) produces the
-                # SAME armed-attached-never-fed signature, and this branch
-                # reports it healthy. Accepted because correction playback
-                # is operator-initiated: the first real measurement fails at
-                # the point of use (aplay open error -> PlaybackError ->
-                # _raise_legacy_error -> the wizard surfaces it), which is
-                # louder and better-attributed than a standing doctor WARN
-                # could be — but the detail string below must carry the
-                # hint so a doctor reading never implies the writer path
-                # was PROVEN.
+                # STATED RESIDUAL: a writer that can NEVER open its ring (missing
+                # jts-ring membership, geometry shear) has the SAME signature and
+                # is reported healthy here. Accepted because correction playback
+                # is operator-initiated and fails loudly at the point of use; the
+                # detail below must keep the hint so a doctor reading never
+                # implies the writer path was PROVEN.
                 healthy.append(
                     f"{lane_label}(attached, on-demand, no measurement "
                     "played yet — a writer that cannot open looks identical "
@@ -3670,11 +3161,7 @@ def check_renderer_ring_lanes() -> CheckResult:
 
 
 def rl_source_ring() -> str:
-    """The STATUS ``source`` token a ring lane publishes.
-
-    Read from ``jasper.fanin.status`` rather than spelled here, so the doctor
-    and the Rust serializer cannot disagree about the token.
-    """
+    """The STATUS ``source`` token a ring lane publishes."""
     from jasper.fanin.status import FANIN_INPUT_SOURCE_RING
 
     return FANIN_INPUT_SOURCE_RING
@@ -3683,18 +3170,10 @@ def rl_source_ring() -> str:
 def _ring_lane_is_on_demand(label: str) -> bool:
     """Whether this lane's writers are ephemeral spawns (no renderer unit).
 
-    Unitless lanes (correction, U3/P6c) are fed only while a measurement
-    plays; the never-fed WARN's daemon-renderer wiring diagnosis does not
-    apply to them.
-
-    STATED RESIDUAL of routing a lane through the on-demand branch: the
-    doctor then cannot distinguish "resting between measurements" from "the
-    writer can NEVER open its ring" (missing group membership, geometry
-    shear) — both are armed-attached-never-fed. Accepted for
-    operator-initiated lanes: the first real measurement fails loudly at
-    the point of use (the wizard surfaces the playback error), and the
-    healthy detail carries a run-a-measurement-to-confirm hint so the
-    doctor reading never claims the writer path was proven.
+    Unitless lanes are fed only while a measurement plays, so the never-fed
+    WARN's daemon-renderer wiring diagnosis does not apply to them. Routing a
+    lane here costs the residual stated at that call site: resting and
+    broken-at-open are indistinguishable.
     """
     from jasper import renderer_lanes as rl
 
@@ -3705,9 +3184,7 @@ def _ring_lane_is_on_demand(label: str) -> bool:
 def _ring_lane_unit(label: str) -> str:
     """The restartable thing a lane's remedy strings should name.
 
-    Only unit-ful lanes reach the never-fed remedy (on-demand lanes branch
-    off before it), but the fallbacks stay total so a remedy string can
-    never interpolate ``None``.
+    Total by design: a remedy string must never interpolate ``None``.
     """
     from jasper import renderer_lanes as rl
 
@@ -3757,19 +3234,11 @@ def _ring_detach_remedy(reason: str) -> str:
 def check_camilla_recover_park() -> CheckResult:
     """The core DSP graph is not parked by jasper-camilla-recover.
 
-    ``deploy/bin/jasper-camilla-recover`` parks the graph — CamillaDSP
-    stopped out-of-band, every core-graph client already stopped — when its
-    one bounded recovery pass cannot bring it back (ADR-0175). That park is
-    TERMINAL for the boot by design: the handler stops re-entering so the box
-    holds a stable floor instead of stopping all eleven units again every
-    cooldown.
-
-    Severity is ``fail`` for the same reason the outputd park's is: a park
-    means the speaker emits NOTHING and no automatic path recovers it.
-
-    The record's own ``action=``/``re_arm=`` text is surfaced verbatim rather
-    than restated here — a second copy of that prose in Python is a
-    guaranteed drift site.
+    ``deploy/bin/jasper-camilla-recover`` parks the graph when its one bounded
+    recovery pass cannot bring it back (ADR-0175), and that park is TERMINAL for
+    the boot by design. Severity is ``fail``: the speaker emits NOTHING and no
+    automatic path recovers it. The record's own ``action=``/``re_arm=`` text is
+    surfaced verbatim rather than restated here.
     """
     label = "camilla recovery park"
 
@@ -3824,25 +3293,16 @@ def check_ring_transport_park() -> CheckResult:
     """No topology this box declares is one the ring cannot serve (ADR-0178).
 
     ADR-0100 makes ``shm_ring`` the only central transport; ADR-0178 names the
-    four shapes it cannot carry and the tracked issue each waits on. A parked
-    box emits NOTHING and no automatic path recovers it, which is the
-    ``fail`` definition the rest of the doctor uses for a park.
+    four shapes it cannot carry and the tracked issue each waits on. A parked box
+    emits NOTHING and no automatic path recovers it, hence ``fail``. The
+    classification, issue numbers and remedy text all come from
+    ``jasper.control.transport_park``, the reader
+    ``/state.resilience.transport_park`` and the household audio card also use.
 
-    The classification, the issue numbers and the remedy text all come from
-    ``jasper.control.transport_park`` — the same reader
-    ``/state.resilience.transport_park`` and the household audio card use, so
-    the three surfaces cannot name different issues for the same box.
-
-    Three shapes land between ``ok`` and a park, and all warn rather than park
-    because none carries a rebuild issue or a command, which is the bar
-    ADR-0178 sets for a class: the ADR-0184 coverage seam (a width resolves
-    for a box no class can name, and nothing armed the endpoint), a converge
-    refusal (the marker IS armed and the program still never reached the
-    endpoint), and ADR-0189's mirror of the seam (the marker is armed under no
-    active modes, on a non-composite sink). All three ride alongside
-    ``status`` in the same snapshot, so this check reads them here rather than
-    letting ``ok`` speak for a box neither the ring nor the converge pass is
-    actually serving.
+    Three shapes land between ``ok`` and a park and all WARN, because none
+    carries a rebuild issue or a command (the bar ADR-0178 sets for a class): the
+    ADR-0184 coverage seam, a converge refusal, and ADR-0189's mirror of the
+    seam.
     """
     label = "ring transport parks"
 
@@ -3861,11 +3321,9 @@ def check_ring_transport_park() -> CheckResult:
 
     if status == "ok":
         if state.get("unproven_endpoint"):
-            # ADR-0184's coverage seam: a width resolves, so none of the three
-            # topology classes fires, and the box is not active-crossover, so
-            # the endpoint class is scoped out — the greenest verdict on a box
-            # nothing has proved. A warn, never a park: there is no rebuild
-            # issue and no command to carry, which is the bar ADR-0178 sets.
+            # ADR-0184's coverage seam: a width resolves so no topology class
+            # fires, and the box is not active-crossover so the endpoint class is
+            # scoped out.
             return CheckResult(
                 label,
                 "warn",
@@ -3878,12 +3336,9 @@ def check_ring_transport_park() -> CheckResult:
             )
         refusal = state.get("converge_refused")
         if refusal:
-            # The seam's neighbour: the marker IS armed, so the endpoint class
-            # is scoped out and every topology class already passed — the box
-            # is ring-ELIGIBLE and still going nowhere. The reason is the
-            # snapshot's own sentence, carried verbatim so this surface cannot
-            # describe the refusal differently from `/state` and the /system
-            # card, which read the same field.
+            # The marker IS armed and every topology class passed, so the box is
+            # ring-ELIGIBLE and still going nowhere. The reason is the snapshot's
+            # own sentence, carried verbatim.
             return CheckResult(
                 label,
                 "warn",
@@ -3893,11 +3348,9 @@ def check_ring_transport_park() -> CheckResult:
                 "ring endpoint if sound is missing.",
             )
         if state.get("endpoint_armed_without_active_modes"):
-            # ADR-0189, the seam's mirror image: the marker is armed on a
-            # layout that declares no active mode, which its writers only do
-            # for an active-speaker graph. Composite sinks are excluded in the
-            # classifier, so reaching here means reconfiguration lag or a
-            # genuine mismatch — never the served-composite shape.
+            # ADR-0189: the marker is armed on a layout that declares no active
+            # mode. Composite sinks are excluded in the classifier, so reaching
+            # here means reconfiguration lag or a genuine mismatch.
             return CheckResult(
                 label,
                 "warn",
@@ -3908,9 +3361,6 @@ def check_ring_transport_park() -> CheckResult:
                 "its next pass; if it persists, report the saved layout "
                 "(/sound/setup/).",
             )
-        # The honest claim, not "the ring can serve this box": a box with no
-        # ring geometry that no class names lands in `unclassified` below, and
-        # this sentence must not have already told the operator it was fine.
         return CheckResult(
             label, "ok", "this box is in none of the four named transport parks"
         )
@@ -3946,24 +3396,7 @@ def check_ring_transport_park() -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
-# The aloop-remnant guard (audio-graph consolidation #2285, P9-C).
-#
-# WHY THIS EXISTS. P9-C moved every solo box's content lane onto SHM rings and
-# deleted snd-aloop pair 5's PCM definitions, leaving the bounded remnant this
-# check measures: the pairs `_derive_registered_pairs` reads out of their owning
-# constants below. (The bonded grouping ingress used to ride pair 6 raw; it is
-# on `jasper.multiroom.grouping_ring`'s SHM ring now and declares no aloop pair
-# at all.) A bounded remnant is only bounded if
-# something measures it, and the design names the failure mode directly
-# (risk 5.1): "the remnant becomes permanent by silence." This check is the
-# measurement, and it names in its own text who owns what is left, so an
-# operator who reads it learns where the remnant is scheduled to die.
-#
-# #2508 retired the GROUPING half — the bonded ingress that used to ride pair 6
-# raw. ADR-0100 then retired the rest: outputd's passive content lane (pair 6)
-# and fan-in's summed music output (pair 7) both moved to SHM rings, and
-# deploy/alsa/asoundrc.jasper declares neither. What survives is fan-in's five
-# CAPTURE lanes and nothing else.
+# The aloop-remnant guard (audio-graph consolidation #2285, P9-C; ADR-0100).
 #
 # WHAT IT ASSERTS. Every OPEN aloop substream has a REGISTERED purpose, where
 # the registered set is DERIVED — never restated — from the one place that
@@ -3971,69 +3404,33 @@ def check_ring_transport_park() -> CheckResult:
 #
 #   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
 #
-# Deriving rather than tabulating is what makes retirement MECHANICAL: a pair
-# stops being registered the moment its owning constant stops naming it, with
-# no edit here and no phase label to remember. A hand-maintained table would
-# be a fourth restatement of the allocation (after the modprobe conf prose,
-# asoundrc.jasper, and the constant above) and would silently keep
-# permitting a lane after its owner dropped it — risk 5.1's "permanent by
-# silence" transplanted onto the very instrument built to measure it.
+# Deriving rather than tabulating makes retirement MECHANICAL: a pair stops
+# being registered the moment its owning constant stops naming it. The roster is
+# read in its ALOOP form, not through `_fanin_expected_inputs()`, because a
+# ring-armed renderer lane still RESERVES its aloop pair, so the registered set
+# must not flap with arming state.
 #
-# The input roster is read in its ALOOP form deliberately, not through
-# `_fanin_expected_inputs()`: a ring-armed renderer lane still RESERVES its
-# aloop pair (nothing else may take it), so the registered set must not flap
-# with arming state.
-#
-# Pairs 5, 6 and 7 are absent because no owner names any of them: P9-C deleted
-# pair 5's PCM definitions and ADR-0100 deleted pairs 6 and 7's. So an open
-# pair in that range is a box that resurrected a deleted lane (a rolled-back
-# binary, a stale asoundrc, a hand-started process) and is exactly the
-# regression those two changes can produce. That is the FAIL. Reserved rather
-# than reclaimed, per deploy/modprobe.d/snd-aloop.conf: pcm_substreams stays 8
-# so no surviving pair renumbers.
-#
-# NOT ASSERTABLE, AND NOW PERMANENTLY SO — the first half of design :497. That
-# bullet opened "snd-aloop present ⟹ grouping-capable box" (restated at :441 as
-# "the module loads only on a grouping-capable box"). It was carried forward on
-# the premise that the remnant would become grouping-only. It did the opposite:
-# grouping LEFT pair 6 for the SHM ring, and every pair the set still registers
-# belongs to fan-in's capture side on every box. `check_loopback`
-# (jasper/cli/doctor/audio.py) asserts the module must be present fleet-wide,
-# which is now simply the end state rather than a temporary disagreement. The
-# clause is recorded as retired, not carried.
-#
-# WHY NOT A LITERAL SET. The registered pairs stay DERIVED even now that only
-# one owner is left, because a literal would keep permitting a lane after its
-# owner dropped it. Live evidence for why the surviving five must not be
-# blanket-failed, 2026-08-14: jts4 holds `/proc/asound/Loopback/pcm1c/sub3` in
-# `state: RUNNING`, owner cgroup `jasper-fanin.service` — the usbsink lane's
-# idle-read fallback that deploy/modprobe.d/snd-aloop.conf documents ("fan-in
-# still OPENS hw:Loopback,1,3 as the usbsink lane's idle read fallback when USB
-# Audio Input is off"). jts3 and jts.local held nothing. A guard that fails on
-# a documented, healthy holder is a false positive, and a doctor that cries
-# wolf is worse than no doctor.
+# Pairs 5, 6 and 7 are absent because no owner names them: P9-C deleted pair 5's
+# PCM definitions and ADR-0100 deleted pairs 6 and 7's, so an open pair in that
+# range has resurrected a deleted lane. That is the FAIL. They stay reserved
+# rather than reclaimed, per deploy/modprobe.d/snd-aloop.conf: pcm_substreams
+# stays 8 so no surviving pair renumbers.
 #
 # BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
 # small procfs files), plus one `comm`/`cgroup` read per offender, capped at
 # `_ALOOP_OFFENDER_DETAIL_CAP` offenders in the message.
 #
-# FAIL-SOFT. An unreadable /proc is `warn`, never an exception and never a
-# FAIL: the guard must not convert "I could not look" into "something is
-# wrong".
+# FAIL-SOFT. An unreadable /proc is `warn`, never an exception and never a FAIL.
 #
 # SERIALIZED. `exclusive_group="audio-probe"` shares a lane with
 # `check_renderer_device_resolvable` (renderers.py), which opens real PCMs with
-# `aplay` as its probe. Today the false positive is UNREACHABLE: every PCM that
-# probe opens maps to a pair this check still registers (0/1/2 renderer lanes,
-# 4 correction), so an observed temporary open reads as `ok` either way. The
-# serialization is kept because an unregistered pair briefly held open by a
-# co-tenant probe would read as an offender, and its cost is near zero.
+# `aplay`, so an unregistered pair briefly held open by that probe would read as
+# an offender.
 # ---------------------------------------------------------------------------
 
-#: procfs ALSA root. Overridable for tests, matching the established
-#: `JASPER_ASOUND_ROOT` hook already used by deploy/bin/jasper-camilla-recover
-#: and jasper/cli/xvf_profile.py, so this check tests the same way the rest of
-#: the tree already does.
+#: procfs ALSA root. Overridable for tests through the same
+#: `JASPER_ASOUND_ROOT` hook deploy/bin/jasper-camilla-recover and
+#: jasper/cli/xvf_profile.py use.
 _ALOOP_PROC_ROOT_ENV = "JASPER_ASOUND_ROOT"
 _ALOOP_PROC_ROOT_DEFAULT = "/proc/asound"
 
@@ -4042,15 +3439,10 @@ _ALOOP_PROC_ROOT_DEFAULT = "/proc/asound"
 _ALOOP_CARD_ID = "Loopback"
 
 #: snd-aloop exposes two PCM devices, each with a playback and a capture side.
-#: Verified on jts3 (2026-08-14): /proc/asound/Loopback contains exactly
-#: pcm0c, pcm0p, pcm1c, pcm1p, each with sub0..sub7.
 _ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")
 
 #: `pcm_substreams=8` in deploy/modprobe.d/snd-aloop.conf — pairs 0..7. Pinned
-#: against that file by tests/test_doctor_audio_runtime.py so a future
-#: reduction cannot leave this walker scanning a range the module no longer
-#: has, and cannot leave the owning constants naming a pair that no longer
-#: exists.
+#: against that file by tests/test_doctor_audio_runtime.py.
 _ALOOP_SUBSTREAMS = 8
 
 #: Cap on how many offenders are spelled out in the FAIL detail, so a
@@ -4080,17 +3472,11 @@ def _pair_from_loopback_pcm(pcm: str) -> int | None:
 
 
 def _derive_registered_pairs() -> dict[int, str] | None:
-    """``{pair: provenance}`` derived from the owning facts.
+    """``{pair: provenance}`` derived from the owning facts (see header comment).
 
-    The registered set is never written down here — it is read out of the
-    constant that already owns the allocation (see the header comment). A pair
-    leaves the set exactly when its owner stops naming it, which is how pairs 6
-    and 7 left when ADR-0100 moved both onto SHM rings.
-
-    Returns None if ANY source entry is unparseable. That is deliberately
-    all-or-nothing: a partial derivation would silently shrink the registered
-    set, and a shrunk set turns legitimate holders into doctor FAILs. Better to
-    say "I could not derive this" than to red-doctor a healthy speaker.
+    Returns None if ANY source entry is unparseable — all-or-nothing, because a
+    partial derivation would shrink the registered set and turn legitimate
+    holders into doctor FAILs.
     """
     registered: dict[int, str] = {}
 
@@ -4106,10 +3492,9 @@ def _derive_registered_pairs() -> dict[int, str] | None:
 def _aloop_substream_owner(status_text: str) -> str:
     """Best-effort ``pid=N comm=… cgroup=…`` for an open substream.
 
-    Returns ``""`` when nothing is readable. Naming the offender is the point
-    of the FAIL, but a procfs race (the owner exits between the status read
-    and the comm read) must never turn into a crash or a different verdict —
-    every step here degrades to LESS DETAIL, never to a changed status.
+    Returns ``""`` when nothing is readable: a procfs race (the owner exits
+    between the status read and the comm read) degrades to LESS DETAIL, never to
+    a changed status.
     """
     m = re.search(r"owner_pid\s*:\s*(\d+)", status_text)
     if not m:
@@ -4127,8 +3512,7 @@ def _aloop_substream_owner(status_text: str) -> str:
         if not value:
             continue
         if name == "cgroup":
-            # Keep only the leaf unit — the full cgroup path is long and the
-            # unit name is the actionable half.
+            # Keep only the leaf unit; the full cgroup path is long.
             value = value.splitlines()[-1].rsplit("/", 1)[-1]
         parts.append(f"{name}={value}")
     return " ".join(parts)
@@ -4143,20 +3527,13 @@ def check_aloop_registered_substreams() -> CheckResult:
     """snd-aloop is loaded only for the bounded aloop remnant this check
     measures — nothing else holds it.
 
-    Audio-graph consolidation #2285, P9-C. See the header comment above for
-    the full rationale; the operator-facing summary:
+    See the header comment above for the rationale; the statuses:
 
     - snd-aloop absent            -> ok (no remnant on this box)
     - registered set underivable  -> warn (never a shrunken set)
     - /proc unreadable            -> warn (fail-soft; never a FAIL)
     - every open pair registered  -> ok, reporting the remnant's current size
     - an UNREGISTERED pair open   -> fail, naming the offender
-
-    The registered set is DERIVED from the constant that owns the pair
-    allocation, so it shrinks on its own as pairs retire. The unregistered
-    cases are pairs 5, 6 and 7: P9-C deleted pair 5's PCM definitions and
-    ADR-0100 deleted pairs 6 and 7's, so anything holding one of them has
-    resurrected a deleted lane.
     """
     label = "aloop remnant"
 
@@ -4194,8 +3571,8 @@ def check_aloop_registered_substreams() -> CheckResult:
                     encoding="utf-8", errors="replace"
                 )
             except FileNotFoundError:
-                # A substream this kernel does not expose is not evidence of
-                # anything — absence is a narrower module, not a fault.
+                # A substream this kernel does not expose is a narrower module,
+                # not a fault.
                 continue
             except OSError:
                 unreadable += 1

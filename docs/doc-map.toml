@@ -438,12 +438,9 @@ docs = [
   "docs/AEC-DIAG-03-timing-probe.md",
   "docs/AEC-DIAG-04-timing-results.md",
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
-  # The reconciler is the single writer of the mic presence-gate marker;
-  # a change to its park/start paths must route here.
-  "docs/CHIP-AEC-EXPERIMENT.md",
 ]
 requires_docs_when = [
-  "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, debug captures, or chip-AEC experiment controls change.",
+  "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, or debug captures change.",
   "AEC reference source, reference transport, or speaker-reference semantics change.",
   "The mandatory-v1 / optional-v2 capability boundary, background install state, runtime authorization gate, or enhancement status API changes.",
 ]

@@ -225,11 +225,12 @@ Interpretation:
   about 2-4 dB of the fixed-beam RMS values in the diagnostic run.
 - Left/right host delivery is safe: outputd's UDP reference was exactly
   matched left/right for the stimulus (`0.00 dB` delta), and the outputd chip
-  downsampler writes dual mono. `docs/CHIP-AEC-EXPERIMENT.md` documents the
-  XVF AEC reference channel as left/channel 0, and the live XVF reports one
-  far-end (`AEC_NUM_FARENDS=1`); in the current dual-mono writer, a
-  right-channel ignore/use difference cannot remove or corrupt the intended
-  left/channel-0 reference.
+  downsampler writes dual mono (`ChipRefDownsampler` in
+  `rust/jasper-outputd/src/main.rs`) precisely because the XVF AEC reference
+  channel is left/channel 0, and the live XVF reports one far-end
+  (`AEC_NUM_FARENDS=1`); in the current dual-mono writer, a right-channel
+  ignore/use difference cannot remove or corrupt the intended left/channel-0
+  reference.
 - Raw mic channels were hotter than the fixed beams and one raw channel peaked
   near full scale during the chirp. That is a diagnostic stimulus-level caution,
   not reference clipping; future raw-channel probes should use a lower

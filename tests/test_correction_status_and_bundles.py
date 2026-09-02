@@ -618,11 +618,26 @@ async def test_apply_copies_yaml_into_bundle(tmp_path: Path, monkeypatch):
 
     calls: list[str] = []
 
+    from .correction_session_fixtures import (
+        default_bass_profile_summary,
+        seed_prior_sound_config,
+        stateful_camilla_stub,
+    )
+
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_set_config(path: str) -> bool:
         calls.append(path)
+        note_loaded(path)
         return True
 
-    await sess.apply(fake_set_config)
+    await sess.apply(
+        fake_set_config,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     assert sess.state == SessionState.APPLIED
     assert sess.config_path is not None
     assert sess.config_path.exists()
@@ -654,10 +669,25 @@ async def test_correction_apply_preserves_saved_sound_profile(
     )
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile_path))
 
+    from .correction_session_fixtures import (
+        default_bass_profile_summary,
+        seed_prior_sound_config,
+        stateful_camilla_stub,
+    )
+
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_set_config(path: str) -> bool:
+        note_loaded(path)
         return True
 
-    await sess.apply(fake_set_config)
+    await sess.apply(
+        fake_set_config,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
 
     assert sess.config_path is not None
     yaml = sess.config_path.read_text()
