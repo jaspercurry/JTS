@@ -12,9 +12,11 @@ declaration, not a constant, so callers pass it in (outputd's STATUS
 
 This module owns what a ``:9891`` datagram IS for every reader of the port:
 :func:`parse_udp_payload` (which packets are datagrams at all),
-:func:`is_tap_period` (which datagrams are the tap), and the
-``unexpected_by_length`` / ``REFUSAL_*`` vocabulary for reporting the rest
-(#3509). ``scripts/jasper-pipe-probe`` consumes all three.
+:func:`is_tap_period` (which datagrams are the tap), :func:`classify_frame`
+(what to call the rest), and the ``unexpected_by_length`` / ``REFUSAL_*``
+vocabulary for reporting them (#3509). ``scripts/jasper-pipe-probe``
+consumes all of it -- including from the sniffer it runs on the box, which
+imports this module out of ``/opt/jasper`` rather than copying it.
 
 Pcap timestamps are ``CLOCK_REALTIME``; the harness pairs on
 ``CLOCK_MONOTONIC``, so a single realtime-monotonic offset sampled on this
@@ -47,7 +49,7 @@ REFUSAL_NO_PACKETS = "no_packets"
 REFUSAL_ALL_ZERO = "all_zero"
 REFUSAL_NO_GEOMETRY = "no_geometry"
 
-_REF_UDP_PORT = 9891
+REF_UDP_PORT = 9891
 _IPPROTO_UDP = 17
 _ETHERTYPE_IPV4 = 0x0800
 # IPv4 flags+fragment-offset word: the low 13 bits are the offset and bit 13 is
@@ -137,7 +139,7 @@ def build_capture_manifest(
         "start_monotonic_ns": start_monotonic_ns,
         "start_realtime_ns": start_realtime_ns,
         "tap": {
-            "udp_port": _REF_UDP_PORT,
+            "udp_port": REF_UDP_PORT,
             "rate_hz": RATE,
             "bytes_per_frame": BYTES_PER_FRAME,
             "period_bytes": period_bytes,
@@ -229,6 +231,40 @@ def parse_udp_payload(frame: bytes, port: int) -> bytes | None:
     return frame[udp_off + 8 : udp_off + udp_len]
 
 
+def _naive_dest_port(frame: bytes) -> int | None:
+    """The destination port a parse checking neither protocol nor fragment
+    reads. Kept only to count what such a read admits."""
+
+    if len(frame) < 14 + 20 + 8:
+        return None
+    if struct.unpack(">H", frame[12:14])[0] != _ETHERTYPE_IPV4:
+        return None
+    off = 14 + (frame[14] & 0x0F) * 4
+    if len(frame) < off + 8:
+        return None
+    return struct.unpack(">H", frame[off + 2 : off + 4])[0]
+
+
+def classify_frame(frame: bytes, port: int) -> tuple[bytes | None, str | None]:
+    """``(payload, reject_key)`` for one captured Ethernet frame.
+
+    A real datagram yields its payload. A frame only a laxer read would
+    call one -- the ICMP error quoting a loopback header that #3509 was --
+    yields the key it is counted under in ``rejected_by_header``, so that
+    bucket's producer sits beside the schema that declares it. Anything
+    else is neither: most of what a loopback tap sees has nothing to do
+    with this port, and counting it would read as evidence about the port.
+    """
+
+    payload = parse_udp_payload(frame, port)
+    if payload is not None:
+        return payload, None
+    if _naive_dest_port(frame) != port:
+        return None, None
+    frag = 1 if struct.unpack(">H", frame[20:22])[0] & _IPV4_FRAG_MASK else 0
+    return None, "proto=%d,frag=%d,wire_len=%d" % (frame[14 + 9], frag, len(frame))
+
+
 def payloads(path: Path) -> Iterator[tuple[float, bytes]]:
     """Yield ``(realtime_seconds, payload_bytes)`` for each ``:9891`` datagram in a pcap.
 
@@ -272,7 +308,7 @@ def payloads(path: Path) -> Iterator[tuple[float, bytes]]:
                 return
             if incl < orig_len:
                 continue
-            payload = parse_udp_payload(data, _REF_UDP_PORT)
+            payload = parse_udp_payload(data, REF_UDP_PORT)
             if payload is None:
                 continue
             yield ts_s + ts_frac / ts_div, payload
@@ -414,11 +450,13 @@ __all__ = [
     "REFUSAL_NO_PACKETS",
     "CAPTURE_MANIFEST_KIND",
     "CAPTURE_MANIFEST_SCHEMA",
+    "REF_UDP_PORT",
     "ConversionResult",
     "build_capture_manifest",
     "capture_manifest_path",
     "capture_provenance",
     "capture_refusal",
+    "classify_frame",
     "convert_pcap_to_detections",
     "read_capture_manifest",
     "is_tap_period",

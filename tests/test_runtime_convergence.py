@@ -152,7 +152,7 @@ def test_committed_unconfigured_topology_persists_parked_path_through_camilla(
 def test_transaction_resolves_persisted_coupling_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from jasper.fanin import coupling_reconcile
+    from jasper.fanin import ring_health
 
     topology = _topology([])
     controller = _Controller(tmp_path / "graph.lock")
@@ -168,7 +168,7 @@ def test_transaction_resolves_persisted_coupling_once(
         selected_couplings.append(kwargs.get("coupling"))
         return real_select(*args, **kwargs)
 
-    monkeypatch.setattr(coupling_reconcile, "read_persisted_coupling", read_coupling)
+    monkeypatch.setattr(ring_health, "read_persisted_coupling", read_coupling)
     monkeypatch.setattr(
         runtime_convergence, "safe_graph_for_current_topology", capture_coupling
     )

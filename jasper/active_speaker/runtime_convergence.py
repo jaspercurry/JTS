@@ -289,7 +289,7 @@ async def _park_and_commit_topology(
         CANONICAL_DSP_WRITER_LOCK_PATH,
         camilla_graph_mutation,
     )
-    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.control.restart_broker import manage_units
 
     controller = _controller(controller_factory)

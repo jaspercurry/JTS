@@ -263,7 +263,7 @@ def resolve_live_active_endpoint(
     # caller here is a cold path. runtime_contract is the owner of which devices
     # are legal active endpoints — read, never restated.
     from jasper.active_speaker.runtime_contract import OUTPUTD_LEGAL_ENDPOINT_DEVICES
-    from jasper.fanin.coupling_reconcile import read_loaded_camilla_graph
+    from jasper.fanin.ring_health import read_loaded_camilla_graph
 
     graph = read_loaded_camilla_graph()
     device = graph.devices.get("playback_device")

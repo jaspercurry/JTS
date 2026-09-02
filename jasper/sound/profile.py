@@ -818,18 +818,7 @@ def sound_filter_slot_names() -> frozenset[str]:
         {spec.name for preset in CURVE_PRESETS for spec in preset.filters}
         | {band.filter_name for band in SIMPLE_BANDS}
         | {spec.name for spec in _advanced_filters(())}
-        | _RETIRED_CURVE_SLOT_NAMES
     )
-
-
-# Curve slots as graphs written before the fixed pair spell them; still the
-# preference layer when such a graph is read back. Delete once every Pi's
-# banked graphs have been re-emitted (none names them in /var/lib/jasper).
-_RETIRED_CURVE_SLOT_NAMES = frozenset(
-    f"sound_curve_{preset}_{slot}"
-    for preset in ("harman", "bk")
-    for slot in ("bass", "tilt")
-)
 
 
 def build_sound_filters(profile: SoundProfile) -> tuple[FilterSpec, ...]:
