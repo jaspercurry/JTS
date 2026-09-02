@@ -178,7 +178,7 @@ pub mod writer;
 
 pub use layout::{
     Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES, MIN_N_SLOTS,
-    SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE, VERSION,
+    RING_SLOT_FRAMES, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE, VERSION,
 };
 pub use writer::{
     PublishOutcome, ReaderLiveness, RingWriter, WriterMetrics, MAX_FULL_WAIT_TICKS,

@@ -114,8 +114,9 @@ pub const DAC_CONTENT_RING_SLOTS: u32 = 16;
 /// runs outputd here. A box whose `period_frames` is not this value — the
 /// floorless profile, left at `DEFAULT_PERIOD_FRAMES` — cannot serve the lane,
 /// and `Config::from_env` refuses to arm it rather than creating a ring the
-/// writer's ioplug can never open.
-pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = 128;
+/// writer's ioplug can never open. Read from `jasper_ring` — the crate that
+/// owns the ring geometry — rather than spelled again here.
+pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = jasper_ring::RING_SLOT_FRAMES;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShmRingConfig {

@@ -18,12 +18,12 @@ use jasper_env::{env_f32, env_parse, env_str};
 
 use crate::loudness::AssistantLoudnessConfig;
 
-/// The SHM ring's pinned slot size in frames (Ring A). Matches the outputd
-/// DAC-period contract and the ring header geometry; fan-in publishes
-/// `period_frames / RING_SLOT_FRAMES` slots per mixer step. Kept in lockstep by
-/// value (not import) with the ring's 128-frame slots — the `period_frames %
-/// RING_SLOT_FRAMES == 0` config guard is the drift catch.
-pub const RING_SLOT_FRAMES: u32 = 128;
+/// The SHM ring's pinned slot size in frames (Ring A), re-exported from the
+/// crate that owns the ring geometry so fan-in and outputd read one constant.
+/// Matches the outputd DAC-period contract and the ring header geometry; fan-in
+/// publishes `period_frames / RING_SLOT_FRAMES` slots per mixer step, and the
+/// `period_frames % RING_SLOT_FRAMES == 0` config guard is the drift catch.
+pub use jasper_ring::RING_SLOT_FRAMES;
 
 /// The ring's `n_slots` bounds (Ring A). Mirrors `jasper_ring::MIN_N_SLOTS` /
 /// `MAX_N_SLOTS`; the ring header validates the same range at attach. A present
