@@ -43,6 +43,8 @@ from .tts_routing import FANIN_TTS_SOCKET
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import sounddevice as sd
 
 
@@ -432,10 +434,11 @@ def make_mic_capture(
 class TtsPlayout:
     """Shared TtsPlayout base: gain validation, rate bookkeeping, and
     drain-deadline timing. Playback (write/flush/segment lifecycle) is
-    entirely subclass-owned — `OutputdTtsPlayout` is the only transport
+    subclass-owned except emission admission, which `write_segment` owns
+    here for every transport — `OutputdTtsPlayout` is the only one
     `make_tts_playout` can construct, since both it and `Config`'s
-    `tts_transport` validation refuse anything else. The methods below
-    that OutputdTtsPlayout overrides raise here; they stay declared so
+    `tts_transport` validation refuse anything else. The other methods
+    below raise until a subclass overrides them; they stay declared so
     code typed on `TtsPlayout` (turn_playback.py, voice_daemon.py) still
     type-checks against every transport's interface.
 
@@ -492,6 +495,9 @@ class TtsPlayout:
         # is briefly a legitimate now() value on a freshly-booted Pi.
         self._drain_tail_sec = float(drain_tail_sec)
         self._ring_end_monotonic: float | None = None
+        # Emission-time admission authority — see set_emission_admission.
+        self._emission_admission: "Callable[[], str | None] | None" = None
+        self._emission_refusal_logged = False
         # Apply the constructor's gain_db through the same validation +
         # validation path as runtime updates. If a caller passes the
         # legacy "-8.0 fixed gain" value, this becomes the active level.
@@ -535,7 +541,56 @@ class TtsPlayout:
     async def __aexit__(self, *exc) -> None:
         raise NotImplementedError
 
+    def set_emission_admission(
+        self,
+        admission: "Callable[[], str | None] | None",
+    ) -> None:
+        """Install the authority asked before every write.
+
+        `admission` returns a refusal code while assistant audio must not
+        be heard at all (an armed room-correction window), else None. It is
+        asked per write, not per episode, so a caller that passed an earlier
+        check and is already mid-playout is refused too (issue #1913)."""
+        self._emission_admission = admission
+
     async def write_segment(
+        self,
+        pcm: bytes,
+        *,
+        provider_item_id: str | None = None,
+        segment_kind: str = "assistant",
+        source_profile=None,
+        pcm_wide: bool = False,
+    ) -> None:
+        """Sole emission seam: every assistant byte passes through here —
+        cues, earcons, announcements and live-session TTS, directly or via
+        `write`. Refused bytes are dropped, not queued, so drain accounting
+        is untouched and an episode holding output still releases it."""
+        admission = self._emission_admission
+        refusal = admission() if admission is not None else None
+        if refusal is not None:
+            # Once per refusal streak: a burst-delivery provider hands over a
+            # whole response as many chunks, and one line each would flood the
+            # journal for the length of a held measurement session.
+            if not self._emission_refusal_logged:
+                self._emission_refusal_logged = True
+                log_event(
+                    logger,
+                    "tts_write.refused",
+                    reason=refusal,
+                    segment_kind=segment_kind,
+                )
+            return
+        self._emission_refusal_logged = False
+        await self._write_segment(
+            pcm,
+            provider_item_id=provider_item_id,
+            segment_kind=segment_kind,
+            source_profile=source_profile,
+            pcm_wide=pcm_wide,
+        )
+
+    async def _write_segment(
         self,
         pcm: bytes,
         *,
@@ -1554,7 +1609,7 @@ class OutputdTtsPlayout(TtsPlayout):
     async def write(self, pcm: bytes) -> None:
         await self.write_segment(pcm)
 
-    async def write_segment(
+    async def _write_segment(
         self,
         pcm: bytes,
         *,
@@ -1814,9 +1869,10 @@ def make_tts_playout(
     """Construct the selected TTS playout transport.
 
     ``outputd`` is the only implementation `TtsPlayout` has: the base class
-    is a typed contract (stub bodies that raise `NotImplementedError`) and
-    `OutputdTtsPlayout` overrides all of it. ``sounddevice`` is refused here
-    rather than accepted and routed nowhere.
+    is a typed contract (it owns emission admission; the rest raises until
+    overridden) and `OutputdTtsPlayout` supplies the transport.
+    ``sounddevice`` is refused here rather than accepted and routed
+    nowhere.
     """
     if transport == "sounddevice":
         raise RuntimeError(

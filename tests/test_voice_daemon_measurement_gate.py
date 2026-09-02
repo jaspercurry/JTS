@@ -2,37 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Room-correction measurement gate for proactive cue/announce paths
-(issue #1786).
+"""Assistant audio is refused for the whole room-correction measurement
+window (issues #1786, #1898, #1913).
 
-`_measurement_active` is set for the duration of a room-correction
-measurement sweep (`measurement_pause()` / `measurement_resume()`,
-driven by the coordinator's MEASURE_PAUSE/RESUME UDS commands — see
-`jasper.correction.coordinator.measurement_window()`, which the
-crossover-v2 flow holds open for a whole session via
-`acquire_session_measurement_pause()`). Several proactive/admin
-playback paths checked only the assistant-output gate and/or session
-state, not this flag, so a background cue or a timer firing mid-sweep
-could speak into the capture and corrupt it.
+A window is opened and closed by `measurement_pause()` /
+`measurement_resume()` (the coordinator's MEASURE_PAUSE/RESUME UDS
+commands — see `jasper.correction.coordinator.measurement_window()`,
+which the crossover-v2 flow holds open for a whole session via
+`acquire_session_measurement_pause()`). Refusal happens at one
+admission authority asked at two moments: `AssistantOutputGate`
+refuses an episode that has not started, and the `TtsPlayout`
+emission seam refuses the bytes of one that already had — so a task
+that passed an earlier check, including a wake already in flight when
+the pause landed, still cannot reach the capture.
 
-These tests pin that `play_cue`, `play_supervisor_cue`, and
-`announce_timer` all refuse to play while a measurement is active, log
-a structured event naming the suppressed cue/timer and why, and behave
-normally once the flag is clear.
+These tests pin that refusal at both moments, the structured code that
+names it, and normal playback once the window closes.
 
-`announce_research_ready`'s equivalent coverage — plus the adjacent
-`_open_confirmation_window` fix for a job whose measurement window
-opens between the "ready?" prompt and the confirmation attempt — lives
-in tests/test_voice_daemon_research_announce.py, colocated with the
-pre-existing research-announce guard-ladder tests it had to correct
-(that ladder previously asserted a measurement-active job gets read
-aloud immediately, which was itself the bug).
+`announce_research_ready` keeps its own early check (a queued job is
+held, not dropped); that coverage lives in
+tests/test_voice_daemon_research_announce.py.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 
+from jasper.audio_io import TtsPlayout
 from jasper.timers import Timer
 
 
@@ -52,7 +48,7 @@ async def test_play_cue_refuses_during_measurement(caplog) -> None:
 
     wl = WakeLoop.for_tests()
     wl._cues = _RefusingCues()
-    wl._measurement_active.set()
+    assert await wl.measurement_pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await wl.play_cue("cant_connect")
@@ -61,6 +57,7 @@ async def test_play_cue_refuses_during_measurement(caplog) -> None:
     assert "event=cue.skipped" in caplog.text
     assert "reason=measurement_active" in caplog.text
     assert "slug=cant_connect" in caplog.text
+    await wl.measurement_resume()
 
 
 async def test_play_cue_plays_normally_when_not_measuring() -> None:
@@ -85,36 +82,15 @@ async def test_play_supervisor_cue_refuses_during_measurement(caplog) -> None:
 
     wl = WakeLoop.for_tests()
     wl._cues = _RefusingCues()
-    wl._measurement_active.set()
+    assert await wl.measurement_pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await wl.play_supervisor_cue("cant_connect")
 
-    assert result == "skipped_measurement_active"
+    assert result == "measurement_active"
     assert "event=cue.skipped" in caplog.text
     assert "reason=measurement_active" in caplog.text
-
-
-async def test_play_supervisor_cue_measurement_takes_priority_over_output_busy() -> (
-    None):
-    """issue #1786 (C-5): measurement and output-active CAN both be true
-    at once (measurement_pause() only refuses on an active session, not
-    on output), so the skip reason must name the more fundamental cause
-    — measurement, not output — when both hold. Checking measurement
-    first is what pins this; checking output first would misattribute
-    the skip to "output happened to be busy" in the journal."""
-    from jasper.voice_daemon import WakeLoop
-
-    wl = WakeLoop.for_tests()
-    wl._cues = _RefusingCues()
-    wl._measurement_active.set()
-    turn = await wl._output_gate.begin_turn()
-    try:
-        result = await wl.play_supervisor_cue("cant_connect")
-    finally:
-        await wl._output_gate.end_turn(turn)
-
-    assert result == "skipped_measurement_active"
+    await wl.measurement_resume()
 
 
 async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
@@ -137,19 +113,25 @@ async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
 async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
     from jasper.voice_daemon import WakeLoop
 
-    async def _refuse(_text: str) -> bool:
-        raise AssertionError("timer must not speak during a measurement window")
+    class _Cues:
+        async def prerender_text(self, _text: str) -> bool:
+            return True
+
+        async def speak_text(self, _text: str) -> None:
+            raise AssertionError(
+                "timer must not speak during a measurement window"
+            )
 
     wl = WakeLoop.for_tests()
-    wl._measurement_active.set()
-    wl._play_dynamic_text = _refuse
+    wl._cues = _Cues()
+    assert await wl.measurement_pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         await wl.announce_timer(_timer())
 
-    assert "event=timer.announce_suppressed" in caplog.text
+    assert "event=dynamic_text.skipped" in caplog.text
     assert "reason=measurement_active" in caplog.text
-    assert "timer_id=t1" in caplog.text
+    await wl.measurement_resume()
 
 
 async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
@@ -169,47 +151,6 @@ async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
     assert spoken == ["Your pasta timer is up."]
 
 
-async def test_announce_timer_rechecks_measurement_after_grace_wait(monkeypatch,
-) -> None:
-    """A measurement window that opens while announce_timer is waiting
-    out an output-busy condition must still be caught — the post-loop
-    re-check (not just the up-front one) is what closes this race.
-
-    Deterministic, no real sleeping: a stub `_output_gate.is_active`
-    reports busy on its first read (entering the grace-wait loop), then
-    flips to idle on the next read while arming `_measurement_active` as
-    a side effect — simulating a measurement window opening in the same
-    instant prior output clears. `asyncio.sleep` is stubbed so the loop's
-    0.5 s poll doesn't cost real wall-clock time.
-    """
-    from jasper.voice_daemon import WakeLoop
-
-    async def _refuse(_text: str) -> bool:
-        raise AssertionError("timer must not speak during a measurement window")
-
-    wl = WakeLoop.for_tests()
-    wl._play_dynamic_text = _refuse
-
-    class _OutputGateStub:
-        def __init__(self) -> None:
-            self.reads = 0
-
-        @property
-        def is_active(self) -> bool:
-            self.reads += 1
-            if self.reads == 1:
-                return True
-            wl._measurement_active.set()
-            return False
-
-    wl._output_gate = _OutputGateStub()
-
-    async def _fake_sleep(_seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", _fake_sleep)
-
-    await wl.announce_timer(_timer())
 async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
     """A timer past its early check is still stopped at atomic admission."""
 
@@ -258,3 +199,61 @@ async def test_measurement_pause_blocks_mute_click_admission() -> None:
 
     assert writes == []
     await wl.measurement_resume()
+
+
+class _RecordingTts(TtsPlayout):
+    """The production emission seam over a recording transport."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.segments: list[bytes] = []
+
+    async def _write_segment(self, pcm: bytes, **_kwargs) -> None:
+        self.segments.append(pcm)
+
+    async def pause_content_meter(self) -> None:
+        return None
+
+    async def resume_content_meter(self) -> None:
+        return None
+
+
+async def test_wake_in_flight_when_pause_lands_cannot_emit(
+    monkeypatch, caplog,
+) -> None:
+    """issue #1913: the wake owns output before PAUSE and outlives the
+    bounded drain, so neither an earlier check nor the drain can stop its
+    audio — only the emission seam can. Zeroing the drain bound makes the
+    ordering exact (episode acquired, then pause, then emit) with no wait."""
+    from jasper.voice_daemon import WakeLoop
+
+    monkeypatch.setattr(
+        "jasper.voice_daemon.MEASUREMENT_INFLIGHT_DRAIN_SEC", 0.0,
+    )
+    tts = _RecordingTts()
+    wl = WakeLoop.for_tests(tts=tts)
+    await wl._begin_turn_output_episode()
+
+    assert await wl.measurement_pause() == "ok"
+
+    with caplog.at_level(logging.INFO, logger="jasper.audio_io"):
+        await wl._play_listening_chirp(going_on=True)
+        await wl._tts.write_segment(b"\x00\x00", segment_kind="assistant")
+
+    assert tts.segments == []
+    assert "event=tts_write.refused" in caplog.text
+    assert "reason=measurement_active" in caplog.text
+    await wl.measurement_resume()
+
+
+async def test_emission_proceeds_once_the_window_closes() -> None:
+    from jasper.voice_daemon import WakeLoop
+
+    tts = _RecordingTts()
+    wl = WakeLoop.for_tests(tts=tts)
+
+    assert await wl.measurement_pause() == "ok"
+    await wl.measurement_resume()
+    await wl._play_listening_chirp(going_on=True)
+
+    assert tts.segments == [wl._chirp_on_pcm]
