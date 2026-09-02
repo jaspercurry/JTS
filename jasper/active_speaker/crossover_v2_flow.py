@@ -2203,7 +2203,7 @@ class CrossoverV2Session:
         driver_prescription: "DriverPrescription | None" = None,
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
-        lateral_candidate_ids: Sequence[str] = (),
+        lateral_claims: Sequence["_spatial.TakeClaim"] = (),
         verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
@@ -2416,10 +2416,11 @@ class CrossoverV2Session:
             tuple(lateral_prompts) if lateral_prompts is not None
             else LATERAL_POSE_PROMPTS
         )
-        # WHICH banked candidate each pose of the walk measures (#3498), in the
-        # same order as the prompts above. Empty on every walk that measures
-        # the speaker as it stands, which is every shipped one.
-        self._lateral_candidate_ids: tuple[str, ...] = tuple(lateral_candidate_ids)
+        # What each pose of the walk was measured UNDER (#3498) — the banked
+        # candidate, and the graph axes its stop carried — in the same order as
+        # the prompts above. Empty on every walk that measures the speaker as
+        # it stands, which is every shipped one.
+        self._lateral_claims: tuple[_spatial.TakeClaim, ...] = tuple(lateral_claims)
         # The POST-APPLY walk's pose set, resolved through the same one resolver
         # the plan builder uses so the session and the plan cannot read
         # different tables — the desync ``V2PlanShape`` exists to close, applied
@@ -5264,28 +5265,27 @@ class CrossoverV2Session:
                 position_deg=position_angle_deg(prompt),
                 vertical_deg=position_elevation_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
-                claim=_spatial.TakeClaim(
-                    candidate_id=self._lateral_candidate_id(pose.index),
-                ),
+                claim=self._lateral_claim(pose.index),
                 **self._capture_stamp(result),
             ),
         )
 
-    def _lateral_candidate_id(self, index: int) -> str:
-        """WHICH candidate the pose at this capture index measures.
+    def _lateral_claim(self, index: int) -> "_spatial.TakeClaim":
+        """What the pose at this capture index was measured under.
 
-        Resolved through the walk's own group offsets, the same derivation
-        ``_prompt_at`` uses, so the label and the prompt can never come from
-        two different positions of one walk. ``""`` for every pose no walk
-        named a candidate for.
+        Positioned by ``group_offsets(PHASE_LATERAL).index``, the derivation
+        :meth:`_cloud_prompt` uses to pick this index's prompt out of the same
+        walk table, so the claim and the prompt can never come from two
+        different positions of one walk. An empty claim for every pose no walk
+        stated one for, which is every shipped walk.
         """
         offsets = self._journey.plan.group_offsets(PHASE_LATERAL)
         try:
             position = offsets.index(index)
         except ValueError:
-            return ""
-        ids = self._lateral_candidate_ids
-        return ids[position] if position < len(ids) else ""
+            return _spatial.TakeClaim()
+        claims = self._lateral_claims
+        return claims[position] if position < len(claims) else _spatial.TakeClaim()
 
     def _close_lateral_walk(self) -> dict[str, Any]:
         """Record that the walk finished. Publishes nothing.

@@ -40,6 +40,8 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
     POLARITY_NORMAL,
 )
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -1129,11 +1131,45 @@ def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> Non
     )
 
 
+def test_a_branch_no_measurement_graph_carries_refuses_by_name() -> None:
+    """The flipped branch is read off the candidate's own crossover, so a
+    region whose upper driver is not a branch the graph carries would reach
+    ``MeasureSpec`` as a pair it refuses. Same corner on both sides, so the
+    ONLY thing this can be refusing is the branch."""
+    odd = _fake_preset(upper="horn")
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.candidate_measure_axes(
+            _fake_candidate(polarity="invert", preset=odd), preset=odd,
+        )
+
+    assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
+
+
+def test_a_polarity_only_candidate_states_no_half_delay() -> None:
+    """The candidate model allows ``(0.0, role)`` and ``MeasureSpec`` refuses
+    it, so an alignment that delays nothing must reach the spec naming nothing
+    -- otherwise a walk stages and then dies at the open with its document
+    already consumed."""
+    axes = ac.candidate_measure_axes(
+        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=0.0),
+        preset=_fake_preset(),
+    )
+
+    assert (axes["delayed_role"], axes["delay_us"]) == ("", 0.0)
+    # The whole point: the spec these axes are for accepts them.
+    spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **axes)
+    assert (spec.polarity, spec.inverted_role) == (POLARITY_INVERTED, "tweeter")
+
+
 @pytest.mark.parametrize(
     ("candidate", "reason"),
     [
         (
             _fake_candidate(linearization={"tweeter": {"filters": [{}]}}),
+            ac.WALK_CANDIDATE_NOT_MEASURABLE,
+        ),
+        (
+            _fake_candidate(delay_role="horn", delay_us=250.0),
             ac.WALK_CANDIDATE_NOT_MEASURABLE,
         ),
         (
@@ -1149,7 +1185,8 @@ def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> Non
             ac.WALK_CANDIDATE_CORNER_MISMATCH,
         ),
     ],
-    ids=["linearization", "another-corner", "another-slope", "unreadable"],
+    ids=["linearization", "unknown-delayed-branch", "another-corner",
+         "another-slope", "unreadable"],
 )
 def test_a_candidate_this_graph_cannot_play_refuses_in_the_walk_vocabulary(
     candidate: object, reason: str,

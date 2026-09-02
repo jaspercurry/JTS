@@ -29,6 +29,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker import candidate_bank
 from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
@@ -541,6 +542,68 @@ def _played_measure_spec(measure_spec, monkeypatch):
     assert leg(1, 1, entry=None) == "the-engine-take"
     one, = played
     return one
+
+
+def _banked(monkeypatch, **alignment):
+    """A banked candidate whose corner is the preset ``_take`` is handed."""
+    region = SimpleNamespace(
+        fc_hz=2000.0, target_type="LinkwitzRiley", order=4,
+        lower_driver="woofer", upper_driver=DRIVER_ROLE_TWEETER,
+    )
+    preset = SimpleNamespace(crossover_regions=(region,))
+    monkeypatch.setattr(
+        candidate_bank, "find_banked_candidate",
+        lambda fingerprint, **kw: SimpleNamespace(candidate=SimpleNamespace(
+            fingerprint=fingerprint, linearization={}, source_preset=preset,
+            alignment=SimpleNamespace(**alignment),
+        )),
+    )
+    return preset
+
+
+def test_a_candidate_stop_banks_under_the_graph_it_actually_played(
+    slot, monkeypatch,
+):
+    """The pose record's claim is the STOP's graph, not the walk's default.
+
+    A reader selecting by ``candidate_id`` is asking what that variant
+    measured; a claim that said ``normal`` and ``level_matched=false`` while
+    the stop rode a flipped branch through the speaker's own level match would
+    answer with a graph that never played.
+    """
+    preset = _banked(monkeypatch, polarity="invert", delay_role=None, delay_us=None)
+    _with_measured_trims(monkeypatch, {DRIVER_ROLE_TWEETER: -9.5})
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
+        level_matched=True,
+    ))
+    _prompts, _consumer, specs, _trims, _geometry, claims = _take(preset=preset)
+
+    spec, = [s for i, s in specs.items() if s.candidate_id]
+    claim, = claims
+    assert (claim.candidate_id, claim.polarity) == ("fp-a", spec.polarity)
+    assert claim.polarity == POLARITY_INVERTED
+    assert (claim.level_matched, spec.level_matched) == (True, True)
+    assert claim.level_match_trims_db == {DRIVER_ROLE_TWEETER: -9.5}
+
+
+def test_a_polarity_only_candidate_reaches_a_spec_the_open_accepts(
+    slot, monkeypatch,
+):
+    """A zero delay stated with a branch is a pair ``MeasureSpec`` refuses, and
+    at the open the document is already consumed — so the walk must reach a
+    spec that builds rather than a ValueError with nothing left to re-stage."""
+    preset = _banked(
+        monkeypatch, polarity="invert", delay_role=DRIVER_ROLE_TWEETER, delay_us=0.0,
+    )
+    spool.stage_angle_request(ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
+    ))
+    _prompts, _consumer, specs, _trims, _geometry, _claims = _take(preset=preset)
+
+    spec, = [s for i, s in specs.items() if s.candidate_id]
+    assert (spec.delayed_role, spec.delay_us) == ("", 0.0)
+    assert spec.inverted_role == DRIVER_ROLE_TWEETER
 
 
 def test_the_engine_leg_plays_the_spec_its_own_index_names(monkeypatch):

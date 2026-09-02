@@ -83,7 +83,11 @@ from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
-from .crossover_v2.contracts import POLARITY_INVERTED, POLARITY_NORMAL
+from .crossover_v2.contracts import (
+    DRIVER_ROLES,
+    POLARITY_INVERTED,
+    POLARITY_NORMAL,
+)
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import MeasurementProgram
@@ -1005,6 +1009,12 @@ def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, A
     Returns exactly those keyword arguments, so the caller builds one spec and
     this function names no fields the spec does not have.
 
+    The axes come back NORMALISED to what that spec accepts, so a candidate
+    the model allowed cannot reach it as a pair it refuses:
+    :data:`WALK_CANDIDATE_NOT_MEASURABLE` for a branch outside
+    :data:`~.crossover_v2.contracts.DRIVER_ROLES` (named by axis), and a
+    zero delay stated with no branch.
+
     Raises :data:`WALK_CANDIDATE_NOT_MEASURABLE` for a candidate whose
     linearization EQ this graph cannot play, and
     :data:`WALK_CANDIDATE_CORNER_MISMATCH` for one minted against another
@@ -1061,13 +1071,32 @@ def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, A
             )
     alignment = getattr(candidate, "alignment", None)
     inverted = getattr(alignment, "polarity", None) == POLARITY_INVERT
+    # The candidate's convention is the region's UPPER driver relative to its
+    # lower one, which is the branch named here.
+    inverted_role = roles[1] if inverted else ""
+    delay_us = float(getattr(alignment, "delay_us", None) or 0.0)
+    # A zero delay names no branch. ``MeasuredCrossoverAlignment`` accepts the
+    # pair ``(0.0, role)`` and :class:`MeasureSpec` refuses it, so an alignment
+    # that delays nothing is stated here as one that names nothing rather than
+    # reaching the spec as a half-stated pair.
+    delayed_role = (
+        str(getattr(alignment, "delay_role", None) or "") if delay_us else ""
+    )
+    for axis, role in (
+        ("inverted_role", inverted_role), ("delayed_role", delayed_role),
+    ):
+        if role and role not in DRIVER_ROLES:
+            raise LateralWalkRefused(
+                WALK_CANDIDATE_NOT_MEASURABLE,
+                f"banked candidate {fingerprint} names {role!r} as its "
+                f"{axis}, and a measurement graph carries only "
+                f"{', '.join(DRIVER_ROLES)}",
+            )
     return {
-        # The candidate's convention is the region's UPPER driver relative to
-        # its lower one, which is the branch named here.
         "polarity": POLARITY_INVERTED if inverted else POLARITY_NORMAL,
-        "inverted_role": roles[1] if inverted else "",
-        "delayed_role": str(getattr(alignment, "delay_role", None) or ""),
-        "delay_us": float(getattr(alignment, "delay_us", None) or 0.0),
+        "inverted_role": inverted_role,
+        "delayed_role": delayed_role,
+        "delay_us": delay_us,
     }
 
 

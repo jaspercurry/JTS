@@ -1956,10 +1956,10 @@ def _take_staged_angle_walk(
     preset: Any,
     topology: Any,
 ) -> tuple[
-    tuple[Any, ...], str, dict[int, Any], dict[str, float], Any, tuple[str, ...]
+    tuple[Any, ...], str, dict[int, Any], dict[str, float], Any, tuple[Any, ...]
 ] | None:
     """This session's staged angle walk as
-    ``(poses, consumer, specs, trims, geometry, candidate_ids)``, or ``None``.
+    ``(poses, consumer, specs, trims, geometry, claims)``, or ``None``.
 
     :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
     ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
@@ -1997,8 +1997,10 @@ def _take_staged_angle_walk(
     spec. A STOP is in it only when it names a candidate: a candidate is played
     as the alignment it was minted with, which only the engine leg can install,
     where a walk naming none is the shipped one and stays on the leg it already
-    ran on. ``candidate_ids`` is that label per stop, for the pose records the
-    flow banks.
+    ran on. ``claims`` is what each stop's graph CARRIED — the candidate, the
+    polarity it rode, the level match it played through — for the pose records
+    the flow banks, so a reader selecting by candidate sees the graph the take
+    was measured under rather than the default one.
 
     ``trims`` is the per-role attenuation a ``--level-matched`` walk's graph
     will carry, RESOLVED HERE and empty for every walk that asked for none.
@@ -2085,6 +2087,7 @@ def _take_staged_angle_walk(
         MeasureSpec,
         inverted_roles_for,
     )
+    from jasper.active_speaker.crossover_v2.spatial import TakeClaim
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2218,24 +2221,48 @@ def _take_staged_angle_walk(
         for index, phase in walk_index_phase.items()
         if phase == PHASE_MEASURE
     }
-    for index, prompt, stop in zip(
-        sorted(i for i, phase in walk_index_phase.items() if phase == PHASE_LATERAL),
-        prompts,
-        request.stops,
-    ):
-        if not stop.candidate_id:
-            continue
-        specs_by_index[index] = MeasureSpec(
-            kind=MEASURE_KIND_CANDIDATE,
-            positions=(stop.angle_deg,),
-            vertical_deg=stop.elevation_deg,
-            pose_prompts=(prompt.text,),
+    try:
+        for index, prompt, stop in zip(
+            sorted(
+                i for i, phase in walk_index_phase.items()
+                if phase == PHASE_LATERAL
+            ),
+            prompts,
+            request.stops,
+        ):
+            if not stop.candidate_id:
+                continue
+            specs_by_index[index] = MeasureSpec(
+                kind=MEASURE_KIND_CANDIDATE,
+                positions=(stop.angle_deg,),
+                vertical_deg=stop.elevation_deg,
+                pose_prompts=(prompt.text,),
+                candidate_id=stop.candidate_id,
+                # The level match stays the WALK's: the trims are the
+                # speaker's own and are resolved once above, never per
+                # candidate.
+                level_matched=request.level_matched,
+                **axes_by_candidate[stop.candidate_id],
+            )
+    except ValueError as exc:
+        # The BACKSTOP behind ``candidate_measure_axes``'s normalisation: the
+        # axes here come from the candidate rather than the operator, so a pair
+        # this spec refuses is a candidate this walk cannot play — refused in
+        # the spec's own sentence rather than escaping the open as a 500 with
+        # the document already consumed.
+        raise refused(WALK_CANDIDATE_NOT_MEASURABLE, str(exc)) from exc
+    lateral_claims = tuple(
+        TakeClaim(
             candidate_id=stop.candidate_id,
-            # The level match stays the WALK's: the trims are the speaker's own
-            # and are resolved once above, never per candidate.
-            level_matched=request.level_matched,
-            **axes_by_candidate[stop.candidate_id],
-        )
+            # WHAT THE STOP'S GRAPH CARRIED, never the walk's default: a stop
+            # that played a candidate's flipped branch under the speaker's own
+            # level match must not bank as an ordinary pose.
+            polarity=axes_by_candidate[stop.candidate_id]["polarity"],
+            level_matched=measure_spec.level_matched,
+            level_match_trims_db=dict(level_trims) or None,
+        ) if stop.candidate_id else TakeClaim()
+        for stop in request.stops
+    )
     log_event(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
@@ -2265,7 +2292,7 @@ def _take_staged_angle_walk(
         specs_by_index,
         level_trims,
         request.declared_geometry,
-        candidate_ids,
+        lateral_claims,
     )
 
 
@@ -6530,9 +6557,9 @@ def prepare_v2_session(
     # adoption beside it. Empty on every session that stages no level-matched
     # walk, which is every ordinary one.
     engine_level_trims: dict[str, float] = {}
-    # The candidate each stop of a staged walk measures, in stop order, for the
-    # pose records the flow banks. Empty on every session that stages none.
-    lateral_candidate_ids: tuple[str, ...] = ()
+    # What each stop of a staged walk was measured UNDER, in stop order, for
+    # the pose records the flow banks. Empty on every session that stages none.
+    lateral_claims: tuple[Any, ...] = ()
     # The household's tape measure, if the operator was asked for it. Bound
     # beside the two above for the same reason: ``_open`` reads it on both
     # stages. Stage 2 stages no walk, so it rehydrates the room from durable
@@ -6581,7 +6608,7 @@ def prepare_v2_session(
                 engine_measure_specs,
                 engine_level_trims,
                 declared_geometry,
-                lateral_candidate_ids,
+                lateral_claims,
             ) = staged_walk
             include_lateral = True
             stage1_index_phase = build_v2_cloud_index_phase_map(
@@ -7019,7 +7046,7 @@ def prepare_v2_session(
                 # #2732 P2. From the SAME take the map and the spec above read.
                 lateral_consumer=lateral_consumer,
                 lateral_prompts=lateral_prompts,
-                lateral_candidate_ids=lateral_candidate_ids,
+                lateral_claims=lateral_claims,
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
                 tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
