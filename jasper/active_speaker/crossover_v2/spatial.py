@@ -68,9 +68,8 @@ import numpy as np
 from jasper.audio_measurement.gating import (
     ENTANGLEMENT_SOURCE_DECLARED,
     ENTANGLEMENT_SOURCE_MEASURED,
-    ENTANGLEMENT_SOURCE_UNKNOWN,
-    ENTANGLEMENT_SOURCES,
     TRUSTED_FLOOR_MULTIPLIER,
+    EntanglementFloor,
 )
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
@@ -2747,8 +2746,8 @@ def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
 
 
 def cloud_entanglement_floor_hz(
-    per_position: Sequence[tuple[float | None, str]],
-) -> tuple[float | None, str]:
+    per_position: Sequence[tuple[Any, Any]],
+) -> EntanglementFloor:
     """The group's ROOM floor and its provenance — the WORST of its positions'.
 
     :func:`cloud_trusted_floor_hz`'s "worst of the positions" argument, applied
@@ -2769,30 +2768,22 @@ def cloud_entanglement_floor_hz(
     :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` is unknown —
     the vocabulary is closed here as it is at every other seam.
 
-    The pair is returned together and consumed together:
-    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` refuses a floor
-    and a source that disagree about whether a floor is known.
+    The floor and its provenance travel as one value:
+    :class:`~jasper.audio_measurement.gating.EntanglementFloor` holds the rule
+    binding them, and each seat is read through its lenient door because a
+    seat's pair comes off a persisted position row.
     """
-    if not per_position:
-        return None, ENTANGLEMENT_SOURCE_UNKNOWN
-    floors: list[float] = []
-    sources: list[str] = []
-    for floor_hz, source in per_position:
-        if (
-            source not in ENTANGLEMENT_SOURCES
-            or source == ENTANGLEMENT_SOURCE_UNKNOWN
-            or floor_hz is None
-        ):
-            return None, ENTANGLEMENT_SOURCE_UNKNOWN
-        floor = float(floor_hz)
-        if not math.isfinite(floor) or floor <= 0.0:
-            return None, ENTANGLEMENT_SOURCE_UNKNOWN
-        floors.append(floor)
-        sources.append(source)
-    return max(floors), (
+    seats = [
+        EntanglementFloor.coerce(floor_hz, source) for floor_hz, source in per_position
+    ]
+    known = [seat.hz for seat in seats if seat.hz is not None]
+    if not seats or len(known) != len(seats):
+        return EntanglementFloor.unknown()
+    return EntanglementFloor(
+        max(known),
         ENTANGLEMENT_SOURCE_MEASURED
-        if all(s == ENTANGLEMENT_SOURCE_MEASURED for s in sources)
-        else ENTANGLEMENT_SOURCE_DECLARED
+        if all(seat.source == ENTANGLEMENT_SOURCE_MEASURED for seat in seats)
+        else ENTANGLEMENT_SOURCE_DECLARED,
     )
 
 
@@ -3040,11 +3031,11 @@ def assemble_cloud_group_result(
         # seats the curve was pooled from (#3502). It CLAMPS NOTHING and
         # changes no grade — it only lets every band say which of its bins no
         # window could have separated from the room.
-        entanglement_floor_hz, entanglement_floor_source = cloud_entanglement_floor_hz(
+        entanglement = cloud_entanglement_floor_hz(
             [
                 (
                     row.get("gate_entanglement_floor_hz"),
-                    str(row.get("gate_entanglement_floor_source") or ""),
+                    row.get("gate_entanglement_floor_source"),
                 )
                 for row in position_records
             ]
@@ -3053,8 +3044,8 @@ def assemble_cloud_group_result(
             combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
             trusted_floor_hz=trusted_floor_hz,
             trusted_ceiling_hz=trusted_ceiling_hz,
-            entanglement_floor_hz=entanglement_floor_hz,
-            entanglement_floor_source=entanglement_floor_source,
+            entanglement_floor_hz=entanglement.hz,
+            entanglement_floor_source=entanglement.source,
         )
         # #2291/#2160: hand the LIVE report to a caller that needs the object
         # rather than the serialized copy below. ``evaluate_spec`` reads

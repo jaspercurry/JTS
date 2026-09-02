@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -369,15 +369,13 @@ class FlatSpecReport:
         four clamp fields and the two entanglement fields are read with
         :meth:`dict.get` and fall back to the dataclass defaults.
 
-        ``entanglement_floor_source`` is a VOCABULARY, not free text: a value
-        outside
-        :data:`~jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES`
-        rehydrates as ``unknown`` rather than becoming a fourth word no
-        consumer knows how to read. The floor and that word are then read as a
-        PAIR: a document where one says a floor is known and the other says it
-        is not rehydrates as ``(None, unknown)``, the state
-        :func:`evaluate_flat_spec` refuses outright, so a rehydrated report can
-        never be re-graded into a refusal by a disagreement it inherited.
+        The two entanglement fields are read as a PAIR, through
+        :meth:`~jasper.audio_measurement.gating.EntanglementFloor.coerce` --
+        the lenient door, where :func:`evaluate_flat_spec` takes the strict
+        one. Anything a document can carry that the evaluator would refuse
+        rehydrates as ``(None, unknown)``, so a rehydrated report can never be
+        re-graded into a refusal by a disagreement it inherited. The rule
+        itself is the type's; this seam only chooses which door.
         """
         kwargs: dict[str, Any] = {}
         reference_band = raw.get("reference_band_hz")
@@ -386,18 +384,9 @@ class FlatSpecReport:
         graded_band = raw.get("graded_band_hz")
         if graded_band is not None:
             kwargs["graded_band_hz"] = (float(graded_band[0]), float(graded_band[1]))
-        entanglement_source = raw.get("entanglement_floor_source")
-        if not _valid_entanglement_source(entanglement_source):
-            entanglement_source = gating.ENTANGLEMENT_SOURCE_UNKNOWN
-        entanglement_floor_hz = raw.get("entanglement_floor_hz")
-        floor_known = entanglement_floor_hz is not None and math.isfinite(
-            float(entanglement_floor_hz)
+        entanglement = gating.EntanglementFloor.coerce(
+            raw.get("entanglement_floor_hz"), raw.get("entanglement_floor_source")
         )
-        if floor_known == (
-            entanglement_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
-        ):
-            entanglement_floor_hz = None
-            entanglement_source = gating.ENTANGLEMENT_SOURCE_UNKNOWN
         return cls(
             reference_db=float(raw["reference_db"]),
             bands=tuple(BandResult.from_dict(b) for b in raw["bands"]),
@@ -409,8 +398,8 @@ class FlatSpecReport:
             smoothing_fraction=int(raw["smoothing_fraction"]),
             trusted_floor_hz=raw.get("trusted_floor_hz"),
             trusted_ceiling_hz=raw.get("trusted_ceiling_hz"),
-            entanglement_floor_hz=entanglement_floor_hz,
-            entanglement_floor_source=cast(str, entanglement_source),
+            entanglement_floor_hz=entanglement.hz,
+            entanglement_floor_source=entanglement.source,
             **kwargs,
         )
 
@@ -492,16 +481,15 @@ def _room_entangled_below_hz(
     marks nothing). The mirror of :func:`_graded_lo_hz` in spirit and its
     opposite in effect: that one MOVES an edge and changes what is graded,
     this one only marks.
+
+    A floor that is not ``None`` here is finite and positive already: it came
+    off a :class:`~jasper.audio_measurement.gating.EntanglementFloor`.
     """
-    if entanglement_floor_hz is None or not math.isfinite(entanglement_floor_hz):
+    if entanglement_floor_hz is None:
         return None
     if entanglement_floor_hz <= graded_lo_hz:
         return None
     return min(float(entanglement_floor_hz), float(graded_hi_hz))
-
-
-def _valid_entanglement_source(value: Any) -> bool:
-    return isinstance(value, str) and value in gating.ENTANGLEMENT_SOURCES
 
 
 def evaluate_flat_spec(
@@ -575,8 +563,9 @@ def evaluate_flat_spec(
             :data:`jasper.audio_measurement.gating.ENTANGLEMENT_SOURCES` the
             floor came from, echoed onto the report verbatim. Any other value
             -- and any floor/source pair that disagrees about whether a floor
-            is known -- raises ``ValueError``: this is the caller's own
-            vocabulary, not data read off a document.
+            is known -- raises ``ValueError`` from
+            :class:`~jasper.audio_measurement.gating.EntanglementFloor`: this
+            is the caller's own vocabulary, not data read off a document.
 
     Reference level: the power mean (:func:`_power_mean_db`) over
     non-excluded bins inside :data:`REFERENCE_BAND_HZ`, its lower edge raised
@@ -633,27 +622,16 @@ def evaluate_flat_spec(
             ascending, :data:`REFERENCE_BAND_HZ` left with zero
             non-excluded bins (no reference level is computable), or any
             non-finite (NaN/Inf) value in ``freqs_hz`` or
-            ``spec_smoothed_db``; and for an ``entanglement_floor_source``
-            outside the vocabulary or disagreeing with the floor beside it.
+            ``spec_smoothed_db``; and for any floor/source pair
+            :class:`~jasper.audio_measurement.gating.EntanglementFloor`
+            refuses.
     """
-    if not _valid_entanglement_source(entanglement_floor_source):
-        raise ValueError(
-            "entanglement_floor_source must be one of "
-            f"{sorted(gating.ENTANGLEMENT_SOURCES)} "
-            f"(got {entanglement_floor_source!r})"
-        )
-    floor_known = entanglement_floor_hz is not None and math.isfinite(
-        float(entanglement_floor_hz)
+    # THE validation of the pair, and deliberately not a local one: the rule
+    # binding a floor to its provenance lives in the type, so this seam gets
+    # it by constructing one and letting its ValueError through (#3522).
+    entanglement = gating.EntanglementFloor(
+        entanglement_floor_hz, entanglement_floor_source
     )
-    if floor_known == (
-        entanglement_floor_source == gating.ENTANGLEMENT_SOURCE_UNKNOWN
-    ):
-        raise ValueError(
-            "entanglement_floor_hz and entanglement_floor_source disagree "
-            f"(got {entanglement_floor_hz!r} and {entanglement_floor_source!r}): "
-            "a known floor names where it came from, and an unknown one "
-            "carries no number"
-        )
 
     freqs_hz = np.asarray(freqs_hz, dtype=np.float64)
     spec_smoothed_db = np.asarray(spec_smoothed_db, dtype=np.float64)
@@ -730,7 +708,7 @@ def evaluate_flat_spec(
         n_bins = int(band_mask.sum())
         n_excluded = int((band_mask & resolved_exclusion_mask).sum())
         room_entangled_below_hz = _room_entangled_below_hz(
-            f_lo_hz, f_hi_hz, entanglement_floor_hz
+            f_lo_hz, f_hi_hz, entanglement.hz
         )
         if not included_band_mask.any():
             band_results.append(
@@ -821,13 +799,8 @@ def evaluate_flat_spec(
         graded_band_hz=(
             _graded_lo_hz(SPEC_BANDS[0][0], trusted_floor_hz), graded_top_hz,
         ),
-        entanglement_floor_hz=(
-            float(entanglement_floor_hz)
-            if entanglement_floor_hz is not None
-            and math.isfinite(entanglement_floor_hz)
-            else None
-        ),
-        entanglement_floor_source=entanglement_floor_source,
+        entanglement_floor_hz=entanglement.hz,
+        entanglement_floor_source=entanglement.source,
     )
 
 

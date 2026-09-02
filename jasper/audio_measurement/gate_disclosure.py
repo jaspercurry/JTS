@@ -286,6 +286,10 @@ class GateDisclosure:
     #: Which of :mod:`~jasper.audio_measurement.gating`'s three
     #: ``ENTANGLEMENT_SOURCE_*`` words the floor came from.
     #: A declared geometry never masquerades as a measurement (#3502).
+    #: The two fields are one
+    #: :class:`~jasper.audio_measurement.gating.EntanglementFloor`, flattened
+    #: for the readers that take a single field; that type holds the rule
+    #: binding them.
     entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN
 
     @property
@@ -325,28 +329,14 @@ def _finite(value: Any) -> float | None:
     return f if math.isfinite(f) else None
 
 
-def _floor_from_bounce_s(t_first_bounce_s: float | None) -> float | None:
-    """:func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`, or
-    ``None`` for a bounce time this module cannot use.
-
-    The formula stays gating's; what this adds is the reader's contract —
-    a missing or non-physical time is UNKNOWN here, not an exception, since
-    this runs on records written by builds that never wrote the field.
-    """
-    t = _finite(t_first_bounce_s)
-    if t is None or t <= 0.0:
-        return None
-    return gating.f_entanglement_floor_hz(t)
-
-
 def _entanglement_floor(
     source_of_bound: str | None,
     reflection_delay_ms: float | None,
     declared_first_bounce_s: float | None,
     *,
     schema_version: Any,
-) -> tuple[float | None, str]:
-    """``(floor_hz, source)`` — measured beats declared beats unknown.
+) -> gating.EntanglementFloor:
+    """The room's floor — measured beats declared beats unknown.
 
     A measured reflection is the only source that also proves the bounce it
     times exists; a declared geometry is the operator's tape measure. Neither
@@ -354,21 +344,40 @@ def _entanglement_floor(
     predates :data:`~jasper.audio_measurement.gating.ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION`
     reports no arrival and has nothing to time, so it falls through to
     declared however its window was bound.
+
+    The formula and the floor/provenance invariant are
+    :class:`~jasper.audio_measurement.gating.EntanglementFloor`'s; what this
+    adds is the reader's contract — a missing or non-physical bounce time is
+    UNKNOWN here, not an exception, since this runs on records written by
+    builds that never wrote the field.
     """
     version = _finite(schema_version)
     reports_arrival = (
         version is None or version >= gating.ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION
     )
-    if reports_arrival and source_of_bound == gating.FLOOR_MEASURED:
-        measured = _floor_from_bounce_s(
-            reflection_delay_ms / 1000.0 if reflection_delay_ms is not None else None
-        )
-        if measured is not None:
-            return measured, gating.ENTANGLEMENT_SOURCE_MEASURED
-    declared = _floor_from_bounce_s(declared_first_bounce_s)
-    if declared is not None:
-        return declared, gating.ENTANGLEMENT_SOURCE_DECLARED
-    return None, gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    measured_s = _finite(
+        reflection_delay_ms / 1000.0 if reflection_delay_ms is not None else None
+    )
+    if (
+        reports_arrival
+        and source_of_bound == gating.FLOOR_MEASURED
+        and measured_s is not None
+    ):
+        try:
+            return gating.EntanglementFloor.from_bounce_s(
+                measured_s, gating.ENTANGLEMENT_SOURCE_MEASURED
+            )
+        except (TypeError, ValueError):
+            pass
+    declared_s = _finite(declared_first_bounce_s)
+    if declared_s is not None:
+        try:
+            return gating.EntanglementFloor.from_bounce_s(
+                declared_s, gating.ENTANGLEMENT_SOURCE_DECLARED
+            )
+        except (TypeError, ValueError):
+            pass
+    return gating.EntanglementFloor.unknown()
 
 
 def build_gate_disclosure(
@@ -404,7 +413,7 @@ def build_gate_disclosure(
     floor_source = source if isinstance(source, str) else None
     direct_peak_ms = _finite(b.get("direct_peak_ms"))
     reflection_toa_ms = _finite(b.get("first_reflection_ms"))
-    entanglement_floor_hz, entanglement_floor_source = _entanglement_floor(
+    entanglement = _entanglement_floor(
         floor_source,
         _relative_delay_ms(reflection_toa_ms, direct_peak_ms),
         declared_first_bounce_s,
@@ -431,8 +440,8 @@ def build_gate_disclosure(
             1 for e in entries if e.get("classification") == gating.CLASS_DUT_INTERNAL
         ),
         ledger_count=len(entries),
-        entanglement_floor_hz=entanglement_floor_hz,
-        entanglement_floor_source=entanglement_floor_source,
+        entanglement_floor_hz=entanglement.hz,
+        entanglement_floor_source=entanglement.source,
     )
 
 
