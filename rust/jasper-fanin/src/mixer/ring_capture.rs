@@ -92,7 +92,7 @@
 
 use super::*;
 
-use jasper_ring::{Geometry, RingMetrics, RingReader, SlotRead};
+use jasper_ring::{Geometry, RingMetrics, RingReader, SlotRead, SAMPLE_FORMAT_S32LE};
 
 /// Render periods between reattach attempts while `Detached`, and between
 /// orphaned-inode probes while `Attached`.
@@ -646,7 +646,22 @@ pub(super) fn open_ring_input(
         }
     };
 
-    let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
+    ring_lane_input(label, path, geometry, ring, ring_attacher, resampler, obs)
+}
+
+/// The one place a ring lane's `Input` is assembled, for production and for the
+/// tests alike: the lane's period width follows the ring's own `sample_format`,
+/// so the slot geometry and the buffer it is consumed into cannot disagree.
+fn ring_lane_input(
+    label: &str,
+    path: String,
+    geometry: Geometry,
+    ring: RingCapture,
+    ring_attacher: Option<RingAttacher>,
+    resampler: Option<LaneResampler>,
+    obs: RingLaneObservability,
+) -> Input {
+    let period_samples = (geometry.period_frames as usize) * (CHANNELS as usize);
     Input {
         // A ring lane does NOT open its aloop substream — its only source is the
         // SHM ring, the same way the DIRECT lane's only source is the gadget.
@@ -661,7 +676,10 @@ pub(super) fn open_ring_input(
         // would tell an operator the opposite of the truth.
         pcm_name: path,
         read_buf: vec![0i16; period_samples],
-        read_buf_wide: super::spine_read_buf(config.program_wire_is_wide(), period_samples),
+        read_buf_wide: super::spine_read_buf(
+            geometry.sample_format == SAMPLE_FORMAT_S32LE,
+            period_samples,
+        ),
         xrun_count: Arc::new(AtomicU64::new(0)),
         frames_read: Arc::new(AtomicU64::new(0)),
         rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
@@ -672,7 +690,7 @@ pub(super) fn open_ring_input(
         muted: Arc::new(AtomicBool::new(false)),
         direct_obs: None,
         ring_obs: Some(obs),
-        lane_fade: super::LaneFade::for_lane(label, config.sample_rate),
+        lane_fade: super::LaneFade::for_lane(label, geometry.rate),
     }
 }
 
@@ -917,7 +935,7 @@ mod tests {
     //! likely to be wrong on hardware and least likely to be reachable there.
 
     use super::*;
-    use jasper_ring::{RingWriter, TestRingWriter, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE};
+    use jasper_ring::{RingWriter, TestRingWriter, SAMPLE_FORMAT_S16LE};
 
     /// A lane geometry small enough to keep the fixtures fast and legible, and
     /// still a legal ring (`n_slots` inside 2..=16, one slot per period).
@@ -948,8 +966,8 @@ mod tests {
     }
 
     /// Build a ring lane `Input` directly, bypassing `Config` so the test does
-    /// not have to mutate process env. Mirrors `open_ring_input`'s construction
-    /// exactly, so what the tests exercise is what production builds.
+    /// not have to mutate process env; the `Input` itself comes from the same
+    /// `ring_lane_input` production uses.
     fn ring_lane(path: &str) -> Input {
         ring_lane_at(path, test_geometry())
     }
@@ -972,37 +990,20 @@ mod tests {
                 }
             }
         };
-        let period_samples = (TEST_PERIOD as usize) * (CHANNELS as usize);
         // A REAL attacher thread, like production: the reattach path is what most
         // of this module's tests exercise, and stubbing the worker would test a
         // lane shape no box ever runs.
         let ring_attacher =
             Some(RingAttacher::spawn("spotify", Arc::clone(&obs.attach_pending)).unwrap());
-        Input {
-            pcm: None,
-            direct: None,
-            direct_opener: None,
-            ring: Some(ring),
+        ring_lane_input(
+            "spotify",
+            path.to_string(),
+            geometry,
+            ring,
             ring_attacher,
-            label: "spotify".to_string(),
-            pcm_name: path.to_string(),
-            read_buf: vec![0i16; period_samples],
-            read_buf_wide: super::spine_read_buf(
-                geometry.sample_format == SAMPLE_FORMAT_S32LE,
-                period_samples,
-            ),
-            xrun_count: Arc::new(AtomicU64::new(0)),
-            frames_read: Arc::new(AtomicU64::new(0)),
-            rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
-            catchup_resync_frames: Arc::new(AtomicU64::new(0)),
-            catchup_events: Arc::new(AtomicU64::new(0)),
-            resampler: None,
-            trim: TrimControl::new(),
-            muted: Arc::new(AtomicBool::new(false)),
-            direct_obs: None,
-            ring_obs: Some(obs),
-            lane_fade: super::LaneFade::for_lane("spotify", geometry.rate),
-        }
+            None,
+            obs,
+        )
     }
 
     fn cleanup(path: &str) {

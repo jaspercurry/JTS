@@ -117,9 +117,7 @@ impl TtsWireWidth {
     /// `S32_LE` on every box in the fleet, on a substream pair
     /// (`hw:Loopback,0/1,6`) on the same card. The claim is about the ROLE, not
     /// the device — that same pair also carries the bonded active-follower
-    /// round-trip, which opens it raw at `S16_LE`. The narrow half of this
-    /// conjunction is a JTS declaration, and
-    /// `tests/test_aloop_program_lane_width.py` pins both facts.
+    /// round-trip, which opens it raw at `S16_LE`.
     ///
     /// Callers pass their own already-parsed halves rather than tokens, because
     /// both ends have them typed by the time they ask: fan-in has `Coupling` and
