@@ -98,6 +98,10 @@ order — so this list is what exists, not a plan:
   reason codes, their copy and retry budgets, and the verdict that carries them.
 * :mod:`.operator_notes` — everything a human typed, gathered into one labelled
   artifact that no code path reads for a decision.
+* :mod:`.diagnostics` — the commissioning journal: the log fields a capture's
+  numbers reduce to, and the emitters that write one line per consumed
+  capture. Read-only, after the verdict, on the accepted path and every
+  rejection.
 
 The engine skeleton (``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1) — one
 session over three lifetimes and ruling S1's four verbs, which both front ends

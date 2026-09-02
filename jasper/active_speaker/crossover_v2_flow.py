@@ -181,6 +181,7 @@ from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
 from jasper.active_speaker.crossover_v2 import commanded as _commanded
+from jasper.active_speaker.crossover_v2 import diagnostics as _diagnostics
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
@@ -209,8 +210,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
 # imported here.
 from jasper.active_speaker.crossover_v2.intervention import (
     LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    driver_response_by_role as _driver_response_by_role,
-    measure_validity_floor_hz as _measure_validity_floor_hz,
     # A live read, not a door: ``_plan_linearization`` passes it into the
     # organ as a port so THIS name stays the one production resolves.
     plan_linearization,
@@ -233,23 +232,18 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.linearization_fit import worst_headroom_cost_db
 from jasper.audio_measurement.program import (
     STIMULUS_KINDS,
-    VERIFY_PILOT_ROLE,
     ExcitationProgram,
     RoleBand,
 )
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
-    CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB,
-    CHANNEL_MAP_MIN_ISOLATION_DB,
     INTEGRITY_CHECK_SWEEP_HEARD,
     MEASURE_PAIR_SINGLE_DRIVER,
     AppliedAlignment,
-    CaptureIntegrity,
     GainPlan,
     MeasurementGeometry,
     MeasurementPriors,
     ProgramAnalysis,
-    polarity_label,
 )
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
@@ -845,9 +839,8 @@ back_off_gain = _programs.back_off_gain
 
 #: Re-exported from :mod:`jasper.active_speaker.crossover_v2.planning`, which
 #: owns it beside the build that is its reason to exist (#2291 Phase 5a-v(c)).
-#: This module's own ``_log_measure_diag`` still calls it through this name, as
-#: does every existing ``flow.alignment_to_candidate_fields`` import — one
-#: definition either way.
+#: Every existing ``flow.alignment_to_candidate_fields`` import resolves to
+#: that one function.
 alignment_to_candidate_fields = _planning.alignment_to_candidate_fields
 
 
@@ -933,21 +926,6 @@ _stimulus_locate_ok = _dispatch._stimulus_locate_ok
 
 
 
-def _capture_integrity_log_field(integrity: CaptureIntegrity | None) -> str:
-    """One logfmt token for a VERIFY capture's integrity verdict (#1971).
-
-    Three values a reader must be able to tell apart, which is why this is not
-    a bool: ``unavailable`` (no record — a pre-#1971 analysis shape, never
-    produced by the live analyze seam), ``ok`` (every evaluated check passed),
-    or the comma-joined names of the checks that FAILED. The companion
-    ``integrity_not_evaluated`` field carries what could not be checked at
-    all, so "ok" never has to stand in for "nobody looked".
-    """
-    if integrity is None:
-        return "unavailable"
-    return ",".join(integrity.failed) if integrity.failed else "ok"
-
-
 def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
     return any(
         loc.clipped for loc in analysis.locations if loc.kind in STIMULUS_KINDS
@@ -955,53 +933,13 @@ def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
 
 
 #: Re-exported from :mod:`jasper.active_speaker.crossover_v2.verification`,
-#: which owns it beside the diag field that reads it.
+#: which owns it beside the spec report it reads a band out of.
 _band_edge = _verification._band_edge
 
-
-def _per_band_flatness_log_field(bands: Any) -> str:
-    """One compact token per graded spec band, its own worst deviation from
-    the SAME reference ``flatness_max_db`` above is stated against (issue
-    #1857) -- so a log reader is never limited to the single band the gauge
-    happened to flag as worst. A uniformly-off band drags the shared
-    reference toward itself and can make an unrelated band's ordinary
-    ripple read as the LARGER deviation; this is what let a #1857 corpus
-    session's worst-band pointer read the woofer while the tweeter sat
-    uniformly ~5 dB dark across its own passband, undetected by the single
-    logged point. Same disclosure, and the same "unevaluable is not a
-    fabricated verdict" skip rule, as
-    ``crossover_envelope_v2._per_band_flatness_lines`` (the household-facing
-    prose reading of the identical numbers) -- shaped for one logfmt token
-    (``lo-hiHz:+dev.ddB:pass|fail``, semicolon-joined, no bracket or space
-    for logfmt to quote) rather than a sentence. Disclosure only: every
-    figure is copied from the SAME :class:`~jasper.active_speaker.flat_spec.FlatSpecReport`
-    ``flatness_max_db`` reads, nothing is recomputed, and no verdict moves.
-    ``""`` (never a fabricated reading) when ``bands`` is absent or no band
-    survives to be measured.
-    """
-    if not isinstance(bands, list):
-        return ""
-    parts: list[str] = []
-    for band in bands:
-        if not isinstance(band, Mapping) or not band.get("evaluable"):
-            continue
-        lo, hi = band.get("f_lo_hz"), band.get("f_hi_hz")
-        deviation_db, passed = band.get("max_deviation_db"), band.get("passed")
-        if (
-            not isinstance(lo, (int, float)) or not isinstance(hi, (int, float))
-            or not isinstance(deviation_db, (int, float))
-            or isinstance(deviation_db, bool) or not isinstance(passed, bool)
-        ):
-            continue
-        parts.append(
-            f"{lo:.0f}-{hi:.0f}Hz:{deviation_db:+.2f}dB:{'pass' if passed else 'fail'}"
-        )
-    return ";".join(parts)
-
-
 #: Re-exported from :mod:`jasper.active_speaker.crossover_v2.verification`,
-#: which owns it.
+#: which owns both beside the spec report they read.
 _flatness_tilt_log_field = _verification._flatness_tilt_log_field
+_per_band_flatness_log_field = _verification._per_band_flatness_log_field
 
 
 def _capture_wav_sha256(result: Any) -> str | None:
@@ -1082,7 +1020,6 @@ CLAIM_NO_PER_BRANCH_CAPTURE = "no_per_branch_verify_capture"
 #: A crossover-region band exists but ``flat_spec.SPEC_BANDS`` sets no
 #: tolerance across it — see :func:`verify_absolute_tolerance_db`.
 ABSOLUTE_NO_SPEC_TOLERANCE = "no_spec_tolerance_for_region"
-CLAIM_NAMES = ("woofer_branch", "hf_branch", "integration", "absolute")
 
 
 def _verify_claims(
@@ -1143,28 +1080,9 @@ def _verify_claims(
     }
 
 
-def _claims_log_field(claims: Mapping[str, Any]) -> str:
-    """One logfmt token for the whole §7 claim record: ``name:state`` per
-    claim, comma-joined, a not-evaluated one carrying its reason. So a corpus
-    sweep can count what was actually judged instead of inferring it from a
-    bare ``accepted=true``. ``""`` for an early refusal that graded nothing.
-    """
-    return ",".join(
-        f"{name}:{claims[name].get('status')}"
-        f"{'(%s)' % claims[name]['reason'] if claims[name].get('reason') else ''}"
-        for name in CLAIM_NAMES
-        if isinstance(claims.get(name), Mapping)
-    )
-
-
-def _rounded(value: Any, digits: int) -> float | None:
-    """``round(value, digits)`` for a real number, ``None`` for anything else.
-
-    Keeps a diagnostic line's absent values as ``None`` rather than letting a
-    missing field become ``0.0`` — the same unknown-is-not-a-value rule every
-    other field on that line follows.
-    """
-    return round(float(value), digits) if isinstance(value, (int, float)) else None
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.diagnostics`,
+#: which owns it beside the diag lines that read it.
+_rounded = _diagnostics._rounded
 
 
 def _verify_frame_from_tracking(
@@ -1263,84 +1181,10 @@ def _verify_frame_from_tracking(
 # owner. See that function and ``flat_spec.spec_flatness_gauge``.)
 
 
-# --------------------------------------------------------------------------- #
-# diagnostic-logging helpers (Part 1 — additive; feed no verdict)
-# --------------------------------------------------------------------------- #
-#
-# Every CHECK/MEASURE/VERIFY capture logs its full numeric diagnostics on
-# PASS *and* FAIL via ``log_event`` — previously only ``program_analysis.
-# glitch`` carried a partial view (epsilon/residual/repeat-level, WARN-only,
-# glitch captures only) and the ``crossover_v2_result`` line carried just the
-# reason code, so a failed hardware run left no numbers to look at. These
-# helpers read what ``ProgramAnalysis`` already computed; none of them derive
-# a NEW number or influence any verdict.
-
-
-
-
-
-
-def _driver_snr_fields(
-    resp: Any | None,
-) -> tuple[float | None, str | None, str | None]:
-    """``(estimated_snr_db, verdict, band_id)`` from a driver's worst SNR band.
-
-    The band identity travels because the number and the verdict alone cannot
-    say WHICH band produced them (#2613): fourteen consecutive jts3 rounds
-    logged ``tweeter_snr_db=-1.2 tweeter_snr_verdict=insufficient`` and the
-    band that actually limited them — one the tweeter sweep never entered —
-    had to be re-derived from the crossover frequency and the declared driver
-    bands instead of read off the line. ``band_id`` stays ``None`` when
-    ``worst_band_verdict`` selected a band carrying no id (it filters on
-    overlap and verdict rank, never on identity), so a real band is never
-    confused with an absent one.
-    """
-    if resp is None or resp.snr is None:
-        return None, None, None
-    worst = resp.snr.get("worst_relevant") or {}
-    return (
-        worst.get("estimated_snr_db"), worst.get("verdict"), worst.get("band_id"),
-    )
-
-
-
-
-# The finite stand-in logged for `_pilot_in_band_snr_db`'s ``-inf`` — "this
-# pilot's measured power did not even exceed the ambient", i.e. the estimate
-# is unusable rather than merely low. JSON has no infinity, and DROPPING the
-# value is worse than substituting one: a two-role capture with one buried
-# pilot and one clean one would log the CLEAN pilot's SNR beside
-# ``pilot_snr_ok=False``, a diag row that contradicts itself and reproduces
-# the very "verdict beside absent evidence" shape #1810 was filed about.
-# -120 dB mirrors `program_analysis.DBFS_FLOOR`'s "off the scale" magnitude
-# and keeps the field monotone-comparable, so `min(...)` still selects the
-# worst pilot.
-PILOT_SNR_UNUSABLE_DB = -120.0
-
-
-def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
-    """The lowest quiet-pilot in-band SNR across this capture's pilots.
-
-    The number the ``pilot_snr_ok`` aggregate (an ``all(...)``) was
-    thresholded from, so the diag line says HOW low, not just that it was.
-    The two infinities `_pilot_in_band_snr_db` can return are treated
-    differently on purpose:
-
-    * ``+inf`` — "no ambient evidence to validate against". Not a
-      measurement, so it is EXCLUDED. A capture where every pilot reads
-      ``+inf`` (a legacy program with no room-listening window) logs
-      ``None``; one where some pilots read ``+inf`` and others a real number
-      logs the worst real number.
-    * ``-inf`` — "the pilot never exceeded the ambient". That IS a
-      measurement, and the most damning one, so it is substituted with
-      :data:`PILOT_SNR_UNUSABLE_DB` rather than dropped.
-    """
-    values = [
-        PILOT_SNR_UNUSABLE_DB if p.snr_db == -math.inf else p.snr_db
-        for p in analysis.pilots
-        if p.snr_db != math.inf
-    ]
-    return round(min(values), 2) if values else None
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.diagnostics`,
+#: which owns them beside the diag lines that read them.
+PILOT_SNR_UNUSABLE_DB = _diagnostics.PILOT_SNR_UNUSABLE_DB
+_worst_pilot_snr_db = _diagnostics._worst_pilot_snr_db
 
 
 # --------------------------------------------------------------------------- #
@@ -1844,22 +1688,6 @@ cloud_position_capture = _spatial.cloud_position_capture
 _geometry_verdict_from_combined = _spatial._geometry_verdict_from_combined
 
 
-def _emit_cloud_combine_diagnostics(diagnostics: Mapping[str, Any] | None) -> None:
-    """Journal what the side-effect-free combiner could only hand back as data.
-
-    :mod:`jasper.active_speaker.crossover_v2.spatial` owns the combine and is
-    side-effect-free by charter, so it returns its log fields rather than
-    writing them — the pattern :class:`~.crossover_v2.spatial.BoostExclusion`
-    already ships. The event NAME lives here, with the module that owns it.
-    """
-    if diagnostics is None:
-        return
-    log_event(
-        logger, "correction.crossover_v2_cloud_combine_failed",
-        level=logging.WARNING, **diagnostics,
-    )
-
-
 def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     """Combine a closed group, and journal a combiner failure.
 
@@ -1867,13 +1695,13 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     :func:`~jasper.active_speaker.crossover_v2.spatial.combine_cloud_positions`,
     which owns the seam and its whole contract — one combine per group close,
     never raising, ``None`` for an unusable cloud. Kept as a function rather
-    than a bare re-export for two reasons: this is where the journal event
-    lives, and ``_close_cloud_group`` reaches it as a module global, which is
+    than a bare re-export for two reasons: this is where the journal call is
+    made, and ``_close_cloud_group`` reaches it as a module global, which is
     what lets ``test_close_cloud_group_calls_the_combiner_exactly_once`` count
     the calls.
     """
     result = _spatial.combine_cloud_positions(positions)
-    _emit_cloud_combine_diagnostics(result.diagnostics)
+    _diagnostics._emit_cloud_combine_diagnostics(logger, result.diagnostics)
     return result.combined
 
 
@@ -1885,7 +1713,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
     which owns the verdict shape and the reason-string divergence it discloses.
     """
     result = _spatial.cloud_geometry_verdict(positions)
-    _emit_cloud_combine_diagnostics(result.diagnostics)
+    _diagnostics._emit_cloud_combine_diagnostics(logger, result.diagnostics)
     return result.verdict
 
 
@@ -4428,7 +4256,10 @@ class CrossoverV2Session:
             # names the one action that helps, and the exhaustion sentence
             # ("JTS measured this spot N times") would be false about a
             # position that was rejected on its first take.
-            self._log_condition_settled(phase, index, observed, kind, diagnosis)
+            _diagnostics._log_condition_settled(
+                logger, phase, index, observed, kind, diagnosis,
+                session_id=self.session_id,
+            )
             return replace(
                 verdict,
                 payload={
@@ -4459,8 +4290,9 @@ class CrossoverV2Session:
                     phase=phase, index=index, kind=str(kind),
                 )
                 kind = _admission.SETTLE_PHASE_CANNOT_PROCEED
-            self._log_slot_spent(
-                phase, index, observed, kind,
+            _diagnostics._log_slot_spent(
+                logger, phase, index, observed, kind,
+                session_id=self.session_id,
                 diagnosis=diagnosis,
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
@@ -4481,8 +4313,9 @@ class CrossoverV2Session:
                 ),
             )
             if kind == _admission.SETTLE_KEPT_EARLIER_TAKE:
-                self._log_slot_spent(
-                    phase, index, observed, kind,
+                _diagnostics._log_slot_spent(
+                    logger, phase, index, observed, kind,
+                    session_id=self.session_id,
                     diagnosis=diagnosis,
                     pilot_heard=verdict.pilot_heard,
                     reflection_measured=verdict.reflection_measured,
@@ -4492,8 +4325,9 @@ class CrossoverV2Session:
                 )
             if kind == _admission.SETTLE_POSITION_UNRESOLVED:
                 self._group_unresolved[phase][index] = observed
-                self._log_slot_spent(
-                    phase, index, observed, kind,
+                _diagnostics._log_slot_spent(
+                    logger, phase, index, observed, kind,
+                    session_id=self.session_id,
                     diagnosis=diagnosis,
                     pilot_heard=verdict.pilot_heard,
                     reflection_measured=verdict.reflection_measured,
@@ -4520,8 +4354,9 @@ class CrossoverV2Session:
                     phase=phase, index=index, kind=str(kind),
                 )
                 kind = _admission.SETTLE_BELOW_POSITION_FLOOR
-            self._log_slot_spent(
-                phase, index, observed, kind,
+            _diagnostics._log_slot_spent(
+                logger, phase, index, observed, kind,
+                session_id=self.session_id,
                 diagnosis=diagnosis,
                 pilot_heard=verdict.pilot_heard,
                 reflection_measured=verdict.reflection_measured,
@@ -4611,48 +4446,6 @@ class CrossoverV2Session:
             return replace(closing, payload=closing_payload)
         return PhaseVerdict(True, payload=payload)
 
-    def _log_slot_spent(
-        self,
-        phase: str,
-        index: int,
-        observed: str,
-        outcome: str,
-        *,
-        diagnosis: str,
-        pilot_heard: bool | None,
-        reflection_measured: bool | None,
-    ) -> None:
-        log_event(
-            logger, "correction.crossover_v2_position_attempts_spent",
-            level=logging.WARNING,
-            session_id=self.session_id, phase=phase, index=index,
-            observed=observed, outcome=outcome,
-            # A settled accepted result has ``code=None`` by protocol. Preserve
-            # the final rejected capture's exact observation/evidence pairing
-            # here so support does not have to infer it from earlier logs.
-            diagnosis=diagnosis,
-            pilot_heard=pilot_heard,
-            reflection_measured=reflection_measured,
-            extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
-        )
-
-    def _log_condition_settled(
-        self, phase: str, index: int, observed: str, outcome: str, diagnosis: str,
-    ) -> None:
-        """The journal line for a slot closed by its CONDITION, not its meter.
-
-        Its own event rather than ``_log_slot_spent``: that line is named
-        ``position_attempts_spent`` and carries ``extra_allowed``, and a
-        rejection settled on the first take spent nothing — a support read that
-        found it there would count a session's exhausted positions wrong.
-        """
-        log_event(
-            logger, "correction.crossover_v2_position_not_retriable",
-            level=logging.WARNING,
-            session_id=self.session_id, phase=phase, index=index,
-            observed=observed, outcome=outcome, diagnosis=diagnosis,
-        )
-
     def _note_accepted(self, phase: str, index: int) -> None:
         # The journey's group-close rule: a position the flow gave up on
         # (``_group_unresolved``) counts as resolved too, because the relay
@@ -4692,7 +4485,9 @@ class CrossoverV2Session:
         """
         if verdict.accepted:
             self._bank_phase_capture(phase, index, attempt, analysis, result)
-        self._safe_log_diag(log_diag, analysis, verdict)
+        _diagnostics._safe_log_diag(
+            logger, log_diag, analysis, verdict, session_id=self.session_id,
+        )
         return verdict
 
     def _consume_check(
@@ -5346,8 +5141,14 @@ class CrossoverV2Session:
         verdict = self._cloud_position_verdict(
             phase, index, attempt, analysis, result
         )
-        self._safe_log_diag(
-            lambda a, v: self._log_cloud_diag(phase, index, a, v), analysis, verdict
+        _diagnostics._safe_log_diag(
+            logger,
+            lambda a, v: _diagnostics._log_cloud_diag(
+                logger, phase, index, a, v,
+                session_id=self.session_id,
+                positions_in=len(self._group_positions.get(phase, ())),
+            ),
+            analysis, verdict, session_id=self.session_id,
         )
         return verdict
 
@@ -7101,30 +6902,6 @@ class CrossoverV2Session:
             else:
                 self._group_cloud_published.add(phase)
 
-    def _log_cloud_diag(
-        self,
-        phase: str,
-        index: int,
-        analysis: ProgramAnalysis,
-        verdict: PhaseVerdict,
-    ) -> None:
-        response = analysis.summed_response
-        log_event(
-            logger, "correction.crossover_v2_cloud_diag",
-            session_id=self.session_id, phase=phase, index=index,
-            accepted=verdict.accepted, code=verdict.code or "",
-            positions_in=len(self._group_positions.get(phase, ())),
-            gate_window_ms=_gate_window_ms(response),
-            gate_floor_source=_gate_floor_source(response),
-            validity_floor_hz=getattr(response, "validity_floor_hz", None),
-            summed_ripple_db=analysis.summed_ripple_db,
-            linearity_ok=analysis.linearity_ok,
-            # Issue #1810 — see ``_log_measure_diag``'s note.
-            pilot_snr_ok=analysis.pilot_snr_ok,
-            pilot_snr_db=_worst_pilot_snr_db(analysis),
-            glitch=analysis.glitch_detected,
-        )
-
     def _consume_entry_baseline(
         self,
         index: int,
@@ -7148,8 +6925,14 @@ class CrossoverV2Session:
         verdict, measured = self._entry_baseline_verdict(analysis)
         if verdict.accepted and measured is not None:
             self._retain_entry_baseline(index, attempt, measured, analysis, result)
-        self._safe_log_diag(
-            lambda a, v: self._log_entry_baseline_diag(index, a, v), analysis, verdict
+        _diagnostics._safe_log_diag(
+            logger,
+            lambda a, v: _diagnostics._log_entry_baseline_diag(
+                logger, index, a, v,
+                session_id=self.session_id,
+                baseline=self._measure_entry_baseline,
+            ),
+            analysis, verdict, session_id=self.session_id,
         )
         return verdict
 
@@ -7497,29 +7280,6 @@ class CrossoverV2Session:
         self._last_failure_pilot_heard = None
         self._last_failure_rollback_anchor = rollback_anchor_available
         return PhaseVerdict(False, code)
-
-    def _log_entry_baseline_diag(
-        self, index: int, analysis: ProgramAnalysis, verdict: PhaseVerdict,
-    ) -> None:
-        response = analysis.summed_response
-        baseline = self._measure_entry_baseline
-        log_event(
-            logger, "correction.crossover_v2_entry_baseline_diag",
-            session_id=self.session_id, index=index,
-            accepted=verdict.accepted, code=verdict.code or "",
-            program_id=(baseline.program_id if baseline is not None else ""),
-            reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
-            graph_fingerprint=(
-                baseline.graph_fingerprint if baseline is not None else ""
-            ),
-            artifact_ref=(baseline.artifact_ref if baseline is not None else ""),
-            gate_window_ms=_gate_window_ms(response),
-            validity_floor_hz=getattr(response, "validity_floor_hz", None),
-            summed_ripple_db=analysis.summed_ripple_db,
-            linearity_ok=analysis.linearity_ok,
-            pilot_snr_ok=analysis.pilot_snr_ok,
-            glitch=analysis.glitch_detected,
-        )
 
     def _consume_verify(
         self,
@@ -8557,380 +8317,40 @@ class CrossoverV2Session:
 
     # --- diagnostic logging (Part 1) ------------------------------------------
     #
-    # One ``log_event`` per consumed capture, on the accepted path AND every
-    # rejection — pure observability, read-only against ``analysis``/the
-    # session's own state. None of these calls choose a verdict or a retry;
-    # they run AFTER the verdict already exists.
-
-    def _safe_log_diag(
-        self,
-        log_fn: Callable[[ProgramAnalysis, PhaseVerdict], None],
-        analysis: ProgramAnalysis,
-        verdict: PhaseVerdict,
-    ) -> None:
-        """Best-effort wrapper around one ``_log_*_diag`` call.
-
-        Symmetric with the capture-retention path's own best-effort
-        guarantee (Part 2): a bug in diagnostic-field extraction (a malformed
-        ``analysis``, an unexpected ``None``) must never crash the capture or
-        change the verdict already decided by ``_<phase>_verdict`` above —
-        it degrades to a WARN instead. The caught set matches the realistic
-        failure modes of these read-only field-extraction calls (attribute/
-        key/index access and numeric conversion on ``analysis``'s own
-        fields) — never a bare ``except Exception``.
-        """
-        try:
-            log_fn(analysis, verdict)
-        except (AttributeError, TypeError, ValueError, KeyError, IndexError):
-            log_event(
-                logger, "correction.crossover_v2_diag_log_failed",
-                level=logging.WARNING, session_id=self.session_id,
-                phase=analysis.phase, exc_info=True,
-            )
+    # The fields and the emitters belong to
+    # :mod:`jasper.active_speaker.crossover_v2.diagnostics`; what stays here is
+    # the session state each line reads. These three keep their method form
+    # because they ARE the seam: ``_consume_unprompted`` takes the bound method
+    # as its ``log_diag`` argument, so an instance-level patch is what the
+    # wrapped call resolves.
 
     def _log_check_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
-        woofer = _pilot_diag_fields(_pilot_by_role(analysis, self._woofer.role))
-        # A 1-way main declares no upper driver: ``tweeter_*`` publishes absent.
-        tweeter_role = self._tweeter_role
-        tweeter = _pilot_diag_fields(
-            _pilot_by_role(analysis, tweeter_role) if tweeter_role else None
+        _diagnostics._log_check_diag(
+            logger, analysis, verdict,
+            session_id=self.session_id,
+            woofer_role=self._woofer.role,
+            tweeter_role=self._tweeter_role,
         )
-        log_event(
-            logger, "correction.crossover_v2_check_diag",
-            session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
-            pilot_snr_ok=analysis.pilot_snr_ok,
-            woofer_snr_db=woofer["snr_db"],
-            woofer_captured_delta_db=woofer["captured_delta_db"],
-            woofer_programmed_delta_db=woofer["programmed_delta_db"],
-            woofer_channel_map_target_rise_db=woofer["channel_map_target_rise_db"],
-            woofer_channel_map_cross_rise_db=woofer["channel_map_cross_rise_db"],
-            woofer_channel_map_isolation_db=woofer["channel_map_isolation_db"],
-            tweeter_snr_db=tweeter["snr_db"],
-            tweeter_captured_delta_db=tweeter["captured_delta_db"],
-            tweeter_programmed_delta_db=tweeter["programmed_delta_db"],
-            tweeter_channel_map_target_rise_db=tweeter["channel_map_target_rise_db"],
-            tweeter_channel_map_cross_rise_db=tweeter["channel_map_cross_rise_db"],
-            tweeter_channel_map_isolation_db=tweeter["channel_map_isolation_db"],
-            # The two constants the isolation figures above are GRADED against,
-            # on the same line as the numbers. The bound is what the ratio had
-            # to clear; the threshold is the target rise ABOVE WHICH the ratio
-            # was judged at all. Both are needed to read a line honestly: below
-            # the threshold an isolation figure is published but decided
-            # nothing, so the bound alone would let a sub-bound number read as
-            # the cause of a refusal that never happened. A future retune of
-            # either constant must not silently reinterpret a journal of old
-            # lines, which is the other reason they are printed and not implied.
-            channel_map_min_isolation_db=CHANNEL_MAP_MIN_ISOLATION_DB,
-            channel_map_isolation_judged_above_db=(
-                CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
-            ),
-        )
-        self._log_measure_level_solve(analysis)
-
-    def _log_measure_level_solve(self, analysis: ProgramAnalysis) -> None:
-        """One event per driver disclosing its solved MEASURE level (#1825).
-
-        A separate event rather than more fields on the CHECK diag above:
-        this is a per-ROLE record with its own evidence (the ambient band it
-        was solved against and the SNR it demanded there), and flattening two
-        roles × six fields into the already-wide diag line would bury it.
-        Emitted from the diagnostic path, so it lands on a REJECTED check too
-        — knowing what level the solve WOULD have chosen is exactly what a
-        `snr_floor` refusal needs read beside it.
-        """
-        gain_plan = analysis.gain_plan
-        if gain_plan is None:
-            return
-        for role, solve in (gain_plan.role_solves or {}).items():
-            band = solve.band_hz
-            log_event(
-                logger, "correction.crossover_v2_measure_level_solve",
-                session_id=self.session_id,
-                role=role,
-                solved_gain_db=round(float(solve.gain_db), 3),
-                flat_target_gain_db=round(float(solve.flat_target_gain_db), 3),
-                reduction_db=round(float(solve.reduction_db), 3),
-                bound_by=solve.bound_by,
-                band_lo_hz=round(band[0], 1) if band else None,
-                band_hi_hz=round(band[1], 1) if band else None,
-                ambient_dbfs=(
-                    round(float(solve.ambient_dbfs), 2)
-                    if solve.ambient_dbfs is not None else None
-                ),
-                required_snr_db=(
-                    round(float(solve.required_snr_db), 2)
-                    if solve.required_snr_db is not None else None
-                ),
-                required_capture_dbfs=(
-                    round(float(solve.required_capture_dbfs), 2)
-                    if solve.required_capture_dbfs is not None else None
-                ),
-                # #1838: without this the disclosed triple no longer adds up —
-                # `required_capture_dbfs` is `ambient + required_snr + crest`.
-                crest_factor_db=(
-                    round(float(solve.crest_factor_db), 2)
-                    if solve.crest_factor_db is not None else None
-                ),
-            )
 
     def _log_measure_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
-        drift = analysis.drift
-        align = analysis.alignment
-        cand = analysis.candidate
-        tweeter_role = self._tweeter_role
-        delay_us, delay_role, polarity = alignment_to_candidate_fields(
-            analysis, roles=self._role_names,
-        )
-        woofer_snr_db, woofer_snr_verdict, woofer_snr_band = _driver_snr_fields(
-            _driver_response_by_role(analysis, self._woofer.role)
-        )
-        tweeter_snr_db, tweeter_snr_verdict, tweeter_snr_band = _driver_snr_fields(
-            _driver_response_by_role(analysis, tweeter_role) if tweeter_role else None
-        )
-        sweep_residual_ms_worst, sweep_locate_confidence_min = _sweep_schedule_diag_fields(
-            analysis, self.program_for_phase(PHASE_MEASURE).sample_rate_hz
-        )
-        # First-vs-last per-role epsilon (sweep-composition PR-A, #1668) —
-        # diagnostic only, never gated (DriftEstimate.per_role_epsilon_ppm's
-        # own docstring). None-safe for a legacy construction site that
-        # predates the field (empty mapping) or a role absent from it (<2
-        # located occurrences that role).
-        woofer_repeat_epsilon_ppm = (
-            drift.per_role_epsilon_ppm.get(self._woofer.role) if drift else None
-        )
-        tweeter_repeat_epsilon_ppm = (
-            drift.per_role_epsilon_ppm.get(tweeter_role) if drift and tweeter_role else None
-        )
-        log_event(
-            logger, "correction.crossover_v2_measure_diag",
-            session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
-            alignment_confidence=round(float(align.confidence), 4) if align else None,
-            alignment_confidence_source=(align.confidence_source if align else None),
-            alignment_seed_delay_us=(
-                round(float(align.seed_delay_us), 3)
-                if align and align.seed_delay_us is not None else None
-            ),
-            alignment_refinement_delta_us=(
-                round(float(align.delay_us - align.seed_delay_us), 3)
-                if align and align.seed_delay_us is not None else None
-            ),
+        _diagnostics._log_measure_diag(
+            logger, analysis, verdict,
+            session_id=self.session_id,
+            roles=self._role_names,
+            sample_rate_hz=self.program_for_phase(PHASE_MEASURE).sample_rate_hz,
             gate_window_ms=self._measure_gate(analysis),
             gate_floor_source=self._measure_gate_floor_source(analysis),
-            validity_floor_hz=_measure_validity_floor_hz(analysis),
-            epsilon_ppm=round(float(drift.epsilon_ppm), 3) if drift else None,
-            max_residual_samples=round(float(drift.max_residual_samples), 3) if drift else None,
-            repeat_level_delta_db=(
-                round(float(drift.repeat_level_delta_db), 3) if drift else None
-            ),
-            woofer_repeat_epsilon_ppm=(
-                round(float(woofer_repeat_epsilon_ppm), 3)
-                if woofer_repeat_epsilon_ppm is not None else None
-            ),
-            tweeter_repeat_epsilon_ppm=(
-                round(float(tweeter_repeat_epsilon_ppm), 3)
-                if tweeter_repeat_epsilon_ppm is not None else None
-            ),
-            delay_us=round(delay_us, 3) if delay_us is not None else None,
-            delay_role=delay_role,
-            polarity=polarity,
-            # The (polarity, delay) pair is one selection on one objective
-            # (#2598). ``polarity`` above is what shipped; these three say who
-            # chose it, what the GCC correlation answered, and whether the two
-            # agreed. A disagreement is ordinary operation — the flat-sum
-            # objective outranking a correlation sign is the fix — so this line
-            # is where it is legible rather than a refusal.
-            alignment_objective=(cand.alignment_objective if cand else None),
-            seed_polarity=(
-                None if cand is None or cand.seed_polarity_sign is None
-                else polarity_label(int(cand.seed_polarity_sign))
-            ),
-            polarity_agrees_with_sum=(
-                align.polarity_agrees_with_sum if align else None
-            ),
-            left_anchor_lobe=(bool(cand.left_anchor_lobe) if cand else None),
-            predicted_ripple_db=(
-                round(float(cand.predicted_ripple_db), 4) if cand else None
-            ),
-            # #1667: how far the RAW candidate's (ripple-optimal-where-
-            # trusted) tweeter trim moved from solve_branch_trims's
-            # band-average seed — this always reports the RAW candidate's
-            # own recovery, even on a linearization-eligible attempt (the
-            # linearized path's own recovery travels separately in the
-            # evidence JSON). The sanity-guard fallback path reads as
-            # exactly 0.0 (raw == seed); ``None`` only when this candidate
-            # predates trim_band_average_db.
-            trim_ripple_gain_db=(
-                round(
-                    float(
-                        cand.trim_db[tweeter_role]
-                        - cand.trim_band_average_db[tweeter_role]
-                    ),
-                    4,
-                )
-                if cand and tweeter_role and cand.trim_band_average_db is not None else None
-            ),
-            # Disambiguates the 0.0 above, which is otherwise three rounds
-            # wearing one face; see the field's own docstring.
-            ripple_polish_rejected_delta_db=(
-                round(float(cand.ripple_polish_rejected_delta_db), 4)
-                if cand and cand.ripple_polish_rejected_delta_db is not None else None
-            ),
-            alignment_seed_ripple_db=(
-                round(float(cand.alignment_seed_ripple_db), 4)
-                if cand and cand.alignment_seed_ripple_db is not None else None
-            ),
-            flatness_improvement_db=(
-                round(float(cand.flatness_improvement_db), 4)
-                if cand and cand.flatness_improvement_db is not None else None
-            ),
-            anchor_delay_us=(
-                round(float(cand.anchor_delay_us), 3)
-                if cand and cand.anchor_delay_us is not None else None
-            ),
-            snap_delta_us=(
-                round(float(cand.snap_delta_us), 3)
-                if cand and cand.snap_delta_us is not None else None
-            ),
-            snap_found=(bool(cand.snap_found) if cand else None),
-            woofer_snr_db=woofer_snr_db,
-            woofer_snr_verdict=woofer_snr_verdict,
-            woofer_snr_band=woofer_snr_band,
-            tweeter_snr_db=tweeter_snr_db,
-            tweeter_snr_verdict=tweeter_snr_verdict,
-            tweeter_snr_band=tweeter_snr_band,
-            sweep_residual_ms_worst=(
-                round(sweep_residual_ms_worst, 3)
-                if sweep_residual_ms_worst is not None else None
-            ),
-            sweep_locate_confidence_min=(
-                round(sweep_locate_confidence_min, 4)
-                if sweep_locate_confidence_min is not None else None
-            ),
-            # Which (if any) measurement-honesty gate fired this verdict —
-            # disambiguates a G1/G2 fire from the pre-existing check that
-            # shares its reused reason code (see __init__'s comment on
-            # ``_last_measure_guard``).
             guard=self._last_measure_guard,
-            # The pilot SNR guard's own evidence (issue #1810). Live on this
-            # phase only since the pre-pilot ambient window shipped; before
-            # that ``pilot_snr_ok`` was True and ``pilot_snr_db`` +inf (logged
-            # as None) by construction, so a REASON_PILOT_LEVEL_COLLAPSE line
-            # with numbers here is what distinguishes a real low-SNR capture
-            # from the structurally-dead guard it replaced.
-            pilot_snr_ok=analysis.pilot_snr_ok,
-            pilot_snr_db=_worst_pilot_snr_db(analysis),
-            # (A ``linearization`` field lived here until the 2026-07-27
-            # timing move. It reported which path the candidate build took,
-            # and the candidate build now happens eight captures later, at the
-            # cloud-measure group close — so this line could only ever have
-            # reported "". It moved to ``correction.crossover_v2_candidate_built``
-            # rather than being kept as a permanently-empty field, the same
-            # treatment PR-5 gave the per-capture ``flatness_*`` fields when
-            # their subject moved to the cloud.)
         )
 
     def _log_verify_diag(self, analysis: ProgramAnalysis, verdict: PhaseVerdict) -> None:
-        integrity = analysis.capture_integrity
-        tracking = analysis.verify_tracking or {}
-        band = tracking.get("tracking_band_hz")
-        tracking_band_lo_hz: float | None = None
-        tracking_band_hi_hz: float | None = None
-        if isinstance(band, (list, tuple)) and len(band) == 2:
-            tracking_band_lo_hz, tracking_band_hi_hz = band[0], band[1]
-        validity_floor_hz = (
-            analysis.summed_response.validity_floor_hz
-            if analysis.summed_response is not None else None
-        )
-        # (The ``flatness_*`` fields this line carried until PR-5 came from
-        # the retired per-capture construction. The spec verdict is logged
-        # on every close of the group instead — ``correction.
-        # crossover_v2_cloud_spec`` in ``_run_cloud_pipeline``, once per
-        # close rather than once per capture.)
-        # Measurement-honesty gate G3's own diagnostics: the current
-        # attempt's raw pilot transfer (re-derived fresh, read-only — never
-        # the mutated session state) and the step vs baseline
-        # ``_verify_verdict`` already computed and stashed transiently.
-        pilot_transfer_db = _pilot_transfer_by_role(analysis).get(VERIFY_PILOT_ROLE)
-        # Frame discipline (rung P1): the journal line an operator greps for
-        # "did apply do what we predicted" is also where the answer "84 % of
-        # that was the instrument" has to be readable. Lifted, never
-        # recomputed — ``_verify_frame_from_tracking`` already reduced it.
-        frame = self._verify_frame or {}
-        claims = self._verify_claims or {}
-        absolute = claims.get("absolute") or {}
-        log_event(
-            logger, "correction.crossover_v2_verify_diag",
-            session_id=self.session_id, accepted=verdict.accepted, code=verdict.code or "",
-            max_db_notch_excluded=tracking.get("max_db_notch_excluded"),
-            verify_tolerance_db=VERIFY_TOLERANCE_DB,
-            verify_gate_window_ms=_gate_window_ms(analysis.summed_response),
-            verify_gate_floor_source=_gate_floor_source(analysis.summed_response),
-            # (No ``measure_gate_floor_source`` beside ``measure_gate_window_ms``
-            # here on purpose: that window is RESTORED from persisted state on a
-            # resumed session, and the floor source is not persisted, so the
-            # pair could only be reported as a real window beside a null source.
-            # MEASURE's own source is disclosed where it is computed — the
-            # ``crossover_v2_measure_diag`` line and the retained sidecar.)
+        _diagnostics._log_verify_diag(
+            logger, analysis, verdict,
+            session_id=self.session_id,
+            verify_frame=self._verify_frame,
+            verify_claims=self._verify_claims,
+            verify_pilot_transfer_step_db=self._verify_pilot_transfer_step_db,
             measure_gate_window_ms=self._measure_gate_window_ms,
-            validity_floor_hz=validity_floor_hz,
-            tracking_band_lo_hz=tracking_band_lo_hz,
-            tracking_band_hi_hz=tracking_band_hi_hz,
-            rms_db=tracking.get("rms_db"),
-            # The frame those two numbers were measured ACROSS, and the same
-            # two numbers with its tilt removed — beside, never instead of.
-            frame_offset_db=_rounded(frame.get("offset_db"), 3),
-            frame_tilt_db_per_octave=_rounded(frame.get("tilt_db_per_octave"), 3),
-            rms_db_tilt_removed=_rounded(frame.get("rms_db_tilt_removed"), 4),
-            max_db_tilt_removed=_rounded(frame.get("max_db_tilt_removed"), 4),
-            # §7's claims, on the SAME line an operator already greps for a
-            # verify outcome (R18, #1868) — including the two that are
-            # structurally not-evaluated, so a corpus sweep counts what was
-            # judged instead of inferring it from a bare accepted=true. The
-            # absolute scalars ride beside it because a band and a verdict
-            # without the number are not a measurement. All lifted.
-            claims=_claims_log_field(claims),
-            absolute_worst_db=absolute.get("worst_db"),
-            absolute_worst_hz=absolute.get("worst_hz"),
-            absolute_max_db=absolute.get("max_db"),
-            absolute_tolerance_db=absolute.get("tolerance_db"),
-            absolute_band_lo_hz=_band_edge(absolute.get("band_hz"), 0),
-            absolute_band_hi_hz=_band_edge(absolute.get("band_hz"), 1),
-            pilot_transfer_db=(
-                round(pilot_transfer_db, 3) if pilot_transfer_db is not None else None
-            ),
-            pilot_transfer_step_db=(
-                round(self._verify_pilot_transfer_step_db, 3)
-                if self._verify_pilot_transfer_step_db is not None else None
-            ),
-            # Issue #1810 — see ``_log_measure_diag``'s note. Read alongside
-            # ``pilot_transfer_step_db``: the session that filed the issue
-            # showed a null step next to an agc_behavioral_fail, and these two
-            # fields together are what make that combination legible.
-            pilot_snr_ok=analysis.pilot_snr_ok,
-            pilot_snr_db=_worst_pilot_snr_db(analysis),
-            # Capture integrity (#1971), disclosed on EVERY verify — pass or
-            # fail. On a pass it is what makes "this capture was comparable" a
-            # measured statement rather than an unexamined one; on a refusal
-            # it names which check fired, which is what tells telemetry a
-            # ``locate_failed`` came from this gate rather than from
-            # ``_stimulus_locate_ok``, and a ``drift_baselines_disagree`` from
-            # a splice rather than a clip. The two scalars are the measured
-            # figures the verdict was drawn from, and are reported even where
-            # the check they feed was ``not_evaluated``.
-            integrity=_capture_integrity_log_field(integrity),
-            integrity_not_evaluated=(
-                ",".join(integrity.not_evaluated) if integrity is not None else ""
-            ),
-            integrity_locate_confidence_min=_rounded(
-                integrity.locate_confidence_min if integrity is not None else None, 4
-            ),
-            integrity_residual_ms_worst=_rounded(
-                integrity.schedule_residual_ms_worst if integrity is not None else None,
-                3,
-            ),
-            guard=(
-                "pilot_level_shift" if verdict.code == REASON_VERIFY_LEVEL_SHIFT else ""
-            ),
         )
 
     # --- helpers -------------------------------------------------------------
