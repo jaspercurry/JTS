@@ -741,12 +741,11 @@ def _boost_db(freqs_hz) -> np.ndarray:
 def test_a_way1_verify_capture_grades_through_the_shipped_path():
     """The whole chain, on a speaker with one branch.
 
-    A 1-way VERIFY used to build no tracking comparator at all — the analyzer
-    scoped it by the overlap band, which a speaker with no corner has none of —
-    so the probe had no measured side and every way-1 round reported
-    unavailable: no rollback, and no permission either. The comparator is now
-    scoped by the branch's own declared span, and the two axes come from the
-    lone branch's chain and from itself, so the round is graded.
+    The tracking comparator is scoped by the branch's OWN declared span, not by
+    an overlap band a speaker with no corner has none of, and the two axes come
+    from the lone branch's chain and from itself — so a way-1 round is graded
+    rather than reporting unavailable, which is neither a rollback nor a
+    permission.
     """
     conductor, analysis, verdict = _way1_round_through_verify()
 

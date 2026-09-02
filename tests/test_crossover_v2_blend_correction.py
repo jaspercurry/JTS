@@ -148,7 +148,7 @@ def test_the_round_reads_the_region_off_the_absolute_claim():
         verify_tracking={"band_hz": [1600.0, 3297.4]},
     )
 
-    assert round_evidence._crossover_region_band_hz(analysis) == SERIES1_BAND_HZ
+    assert round_evidence._crossover_region(analysis)[0] == SERIES1_BAND_HZ
 
 
 @pytest.mark.parametrize(
@@ -172,7 +172,7 @@ def test_every_unevaluated_absolute_claim_yields_no_region(absolute):
     """
 
     analysis = SimpleNamespace(verify_absolute=absolute)
-    assert round_evidence._crossover_region_band_hz(analysis) is None
+    assert round_evidence._crossover_region(analysis)[0] is None
 
 
 def test_no_band_prescribes_nothing_and_names_the_arm():

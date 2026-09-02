@@ -148,19 +148,22 @@ def _branches(mode: str) -> tuple[tuple[str, np.ndarray], ...]:
     )
 
 
-def _solo_curves(mode: str) -> list[dict[str, Any]]:
-    """This shape's per-driver solos, through the ONE banked-curve serializer."""
-    return [
-        spatial.pose_curve_record(
-            spatial.LateralPoseCurve(
-                role=role,
-                freqs_hz=SOLO_GRID_HZ,
-                complex_tf=tf,
-                band_hz=SOLO_BAND_HZ,
-            )
+def _pose_curves(mode: str) -> tuple[spatial.LateralPoseCurve, ...]:
+    """This shape's solos as the curve value both banked shapes carry."""
+    return tuple(
+        spatial.LateralPoseCurve(
+            role=role,
+            freqs_hz=SOLO_GRID_HZ,
+            complex_tf=tf,
+            band_hz=SOLO_BAND_HZ,
         )
         for role, tf in _branches(mode)
-    ]
+    )
+
+
+def _solo_curves(mode: str) -> list[dict[str, Any]]:
+    """This shape's per-driver solos, through the ONE banked-curve serializer."""
+    return [spatial.pose_curve_record(curve) for curve in _pose_curves(mode)]
 
 
 def _open_round(
@@ -279,15 +282,7 @@ def bank_measure_round(
             spatial.LateralPose(
                 pose_id="lateral_03", index=3, attempt=1, prompt="", role="",
                 offset_cm=0.0, at_mark=True,
-                curves=tuple(
-                    spatial.LateralPoseCurve(
-                        role=role,
-                        freqs_hz=SOLO_GRID_HZ,
-                        complex_tf=tf,
-                        band_hz=SOLO_BAND_HZ,
-                    )
-                    for role, tf in _branches(mode)
-                ),
+                curves=_pose_curves(mode),
             ),
             position_deg=7, lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
             **stamp,

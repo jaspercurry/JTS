@@ -3171,7 +3171,7 @@ def crossover_region_band_hz(
 
     Its one caller is ``_verify_absolute_result``, and that claim's ``band_hz``
     is ALSO the region the blend correction is solved and graded over
-    (``crossover_v2.round_evidence._crossover_region_band_hz`` reads it back).
+    (``crossover_v2.round_evidence._crossover_region`` reads it back).
     The correction consumes this function's output through that consumer rather
     than calling it again, so the band a household is shown and the band a
     filter is cut over are the same number by construction — and this stays a
@@ -5556,17 +5556,10 @@ def _analyze_measure(
             )
     else:
         # One branch radiates the whole band, so the model of what this capture
-        # sums to IS that branch — the statement
-        # ``intervention.compose_linearized_prediction`` already makes for a
-        # 1-way frame, at the fixed zero trim such a round ships. Without it the
-        # delta probe's STATE axis has no reference and a way-1 round grades
-        # nothing.
-        solo_freqs, solo_tf, _solo_gate = _aligned_branch_tf(
-            woofer_full_ir, sample_rate, n_fft, calibration=calibration,
-        )
-        predicted_sum = (
-            solo_freqs, 20.0 * np.log10(np.maximum(np.abs(solo_tf), 1e-12)),
-        )
+        # sums to IS that branch, at the fixed zero trim such a round ships.
+        # Without it the delta probe's STATE axis has no reference and a way-1
+        # round grades nothing.
+        predicted_sum = (responses[0].freqs_hz, responses[0].magnitude_db)
     # Per-capture behavioral-linearity evidence (design §5.2): a v2 MEASURE
     # program opens with a pre-pilot ambient window + a leading pilot pair; a
     # program carrying neither leaves the verdicts ``None``.
@@ -6162,14 +6155,24 @@ def _analyze_verify(
     tracking = None
     tracking_curve = None
     measured_db = None
-    band: tuple[float, float] | None = None
-    if fc_hz is not None:
-        lo, hi = overlap_band_hz(
+    # A 1-way main declares no corner, so there is no overlap band to scope the
+    # comparison by. Its band is the branch's OWN declared radiated span — the
+    # same span the verify program's no-crossover mode draws its pilots from —
+    # and a segment declaring none leaves the comparison absent rather than
+    # graded over a band nobody stated.
+    band: tuple[float, float] | None = (
+        overlap_band_hz(
             fc_hz,
             tweeter_sweep_lo_hz=priors.measure_tweeter_sweep_lo_hz,
             woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
         )
-        band = (lo, hi)
+        if fc_hz is not None
+        else _radiated_band_hz(seg)
+    )
+    # The ripple and the reverse null are statements about a handoff, so they
+    # stay behind the corner rather than behind the band.
+    if fc_hz is not None and band is not None:
+        lo, hi = band
         ripple = _ripple_db(summed.freqs_hz, summed.complex_tf, lo, hi)
         # The one null-depth definition in the tree. It lives in
         # `audio_measurement.analysis` rather than beside its consumers because
@@ -6193,15 +6196,6 @@ def _analyze_verify(
             reverse_null_depth = crossover_null_depth_db(
                 summed.freqs_hz, summed.magnitude_db, fc_hz,
             )
-    else:
-        # A 1-way main declares no corner, so there is no overlap band to
-        # scope the comparison by. Its band is the branch's OWN declared
-        # radiated span -- the same span the verify program's no-crossover
-        # mode draws its pilots from -- and a segment declaring none leaves
-        # the comparison absent rather than graded over a band nobody
-        # stated. The ripple and the reverse null stay above: both are
-        # statements about a handoff this speaker has no second branch for.
-        band = _radiated_band_hz(seg)
     if band is not None and priors.predicted_sum is not None:
         lo, hi = band
         pred_freqs, pred_db = priors.predicted_sum

@@ -790,11 +790,11 @@ def evaluate_round(
         # the done screen, and every ``not_evaluated`` arm of that claim
         # (no Fc, no crossover target, no trusted region) becomes "no band"
         # for free instead of needing its own translation.
-        band_hz = _crossover_region_band_hz(post_analysis)
-        # …and, when there is no band, whether the speaker HAS no region or this
-        # round failed to establish the one it has. Both blocks below report
-        # absent either way; only this tells their two readers apart.
-        no_crossover = _no_crossover_topology(post_analysis)
+        # The second half says, when there is no band, whether the speaker HAS
+        # no region or this round failed to establish the one it has. Both
+        # blocks below report absent either way; only that tells their two
+        # readers apart.
+        band_hz, no_crossover = _crossover_region(post_analysis)
         blend = solve_blend_correction(
             graded=graded_spec,
             band_hz=band_hz,
@@ -861,10 +861,10 @@ def evaluate_round(
     )
 
 
-def _crossover_region_band_hz(
+def _crossover_region(
     post_analysis: "ProgramAnalysis | None",
-) -> tuple[float, float] | None:
-    """The blend region, read off the VERIFY absolute claim, or ``None``.
+) -> tuple[tuple[float, float] | None, str | None]:
+    """``(band_hz, no_crossover_reason)``, both read off the VERIFY absolute claim.
 
     **The band's owner is
     :func:`~jasper.audio_measurement.program_analysis.crossover_region_band_hz`,
@@ -885,41 +885,33 @@ def _crossover_region_band_hz(
     into it — so it holds no copy of the corner, and moves with it for free
     when the declared driver limits change.
 
-    ``None`` for every ``not_evaluated`` arm of that claim, which is the honest
-    "there is no region to grade" and the reason the solver's
-    ``no_trusted_band`` refusal needs no separate translation.
+    A ``None`` band for every ``not_evaluated`` arm of that claim, which is the
+    honest "there is no region to grade" and the reason the solver's
+    ``no_trusted_band`` refusal needs no separate translation. The reason is
+    :data:`ABSOLUTE_NO_CROSSOVER_TOPOLOGY` on that claim's ONE arm saying the
+    speaker HAS no region: every other arm describes a region a round could not
+    establish, a different fact with a different next action from a 1-way main
+    having none.
     """
 
     absolute = getattr(post_analysis, "verify_absolute", None)
     if not isinstance(absolute, Mapping):
-        return None
+        return (None, None)
+    reason = (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+        if absolute.get("not_evaluated") == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+        else None
+    )
     band = absolute.get("band_hz")
     if not isinstance(band, (list, tuple)) or len(band) != 2:
-        return None
+        return (None, reason)
     try:
         lo, hi = float(band[0]), float(band[1])
     except (TypeError, ValueError):
-        return None
+        return (None, reason)
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
-        return None
-    return (lo, hi)
-
-
-def _no_crossover_topology(post_analysis: "ProgramAnalysis | None") -> str | None:
-    """:data:`ABSOLUTE_NO_CROSSOVER_TOPOLOGY` when this speaker HAS no region.
-
-    Read off the same VERIFY absolute claim :func:`_crossover_region_band_hz`
-    reads, and only that one arm of it: every other ``not_evaluated`` reason
-    describes a region a round could not establish, which is a different fact
-    with a different next action from a 1-way main having none (#3480).
-    """
-
-    absolute = getattr(post_analysis, "verify_absolute", None)
-    if not isinstance(absolute, Mapping):
-        return None
-    if absolute.get("not_evaluated") != ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
-        return None
-    return ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+        return (None, reason)
+    return ((lo, hi), reason)
 
 
 def build_round_receipt(

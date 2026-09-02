@@ -6287,27 +6287,24 @@ class CrossoverV2Session:
         # closed with the corner hunt.) This check never counted doors: it
         # compares corners, so it covers whichever ones exist.
         applied_fc_hz = _commanded.profile_crossover_fc_hz(profile)
-        if capture_fc_hz is None:
-            # The 1-way arm of the SAME comparison: this capture ran no corner,
-            # so a profile that names one ran a shape these branches are not a
-            # model of, and the disagreement is the same defect under the same
-            # name.
-            if applied_fc_hz is not None:
-                return _absent(
-                    "crossover_corner_moved",
-                    applied_fc_hz=round(applied_fc_hz, 3),
-                    capture_fc_hz=None,
-                )
-        elif applied_fc_hz is None:
+        if applied_fc_hz is None and capture_fc_hz is not None:
             return _absent("applied_profile_names_no_corner")
-        # A relative tolerance, not equality: both numbers are floats that have
-        # been through a JSON round trip, and the case this refuses is 1500 vs
-        # 1800, never 1500 vs 1500.0000001.
-        elif not math.isclose(applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6):
+        # Both arms of one disagreement: a profile naming a DIFFERENT corner
+        # from this capture's, and a profile naming one at all when the capture
+        # ran none — each is a previous graph modelling a shape these branches
+        # are not. A relative tolerance, not equality: both numbers are floats
+        # that have been through a JSON round trip, and the case this refuses is
+        # 1500 vs 1800, never 1500 vs 1500.0000001.
+        if applied_fc_hz is not None and (
+            capture_fc_hz is None
+            or not math.isclose(applied_fc_hz, float(capture_fc_hz), rel_tol=1e-6)
+        ):
             return _absent(
                 "crossover_corner_moved",
                 applied_fc_hz=round(applied_fc_hz, 3),
-                capture_fc_hz=round(float(capture_fc_hz), 3),
+                capture_fc_hz=(
+                    None if capture_fc_hz is None else round(float(capture_fc_hz), 3)
+                ),
             )
         # The DRAFT's declared per-role polarity, which the measured branches
         # already carry (``program_analysis._compose_configured_path_ir``). The
@@ -6338,7 +6335,6 @@ class CrossoverV2Session:
             responses[roles[0]].freqs_hz,
             {role: response.complex_tf for role, response in responses.items()},
             graph,
-            roles=roles,
             # The SAME gate the applied side's residual is derived through
             # (``program_analysis._build_candidate``): an anchor the aligner
             # refused is no anchor, and both sides then model the frame the

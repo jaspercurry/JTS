@@ -119,6 +119,10 @@ class GraphSummation:
     consumes them cannot drift into two different opinions about which graph is
     being described.
 
+    ``trim_db`` is keyed by this speaker's branches LOWEST FIRST, and that order
+    is load-bearing: :func:`graph_predicted_sum` reads the graph's own roles off
+    it rather than taking a second copy that could disagree.
+
     ``delay_us`` is SIGNED in the analysis frame (design §5.6.5: positive means
     the tweeter branch is delayed), never the non-negative magnitude a profile
     stores beside a delayed role.
@@ -156,6 +160,8 @@ def profile_graph_summation(
     ``roles[0]`` and ``roles[-1]``, which on a lone branch are the same
     declaration: it is delayed against nothing and inverted relative to
     nothing, so the delay is zero and the sign is ``+1`` without a second arm.
+    More than two is refused: this summation states ONE delay and ONE relative
+    sign, so a third branch could only be dropped silently.
 
     ``None`` — "this profile does not say what the speaker is playing" — for an
     absent profile, for one whose authoritative ``corrections`` mapping does not
@@ -191,6 +197,8 @@ def profile_graph_summation(
         profile_linearization,
     )
 
+    if not 1 <= len(roles) <= 2:
+        return None
     corrections = profile_driver_corrections(profile)
     entries: list[Mapping[str, Any]] = [
         entry for role in roles
@@ -303,7 +311,6 @@ def graph_predicted_sum(
     branch_tf: Mapping[str, Any],
     graph: GraphSummation,
     *,
-    roles: Sequence[str],
     anchor_delay_us: float | None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """``(freqs_hz, magnitude_db)`` this graph would produce on these branches.
@@ -317,8 +324,9 @@ def graph_predicted_sum(
     summed_model_residual_delay_us`, which is the ONLY correct way to enter a
     delay here (its docstring carries the double-counting hazard).
 
-    ``roles`` is this speaker's branches lowest first, on
-    :func:`profile_graph_summation`'s terms.
+    The branches are the GRAPH's own, lowest first — the roles
+    :func:`profile_graph_summation` read the profile through — so this function
+    cannot be handed a role set the graph was not built for.
 
     **The anchor is this capture's, and it does NOT cancel** — that is why it
     has to be this capture's. It sets where the blend null sits, and a null is
@@ -340,7 +348,7 @@ def graph_predicted_sum(
                 freqs_hz=freqs,
                 branch_tf={
                     role: np.asarray(branch_tf[role], dtype=np.complex128)
-                    for role in roles
+                    for role in graph.trim_db
                 },
                 polarity_sign=int(graph.polarity_sign),
                 residual_delay_us=summed_model_residual_delay_us(
