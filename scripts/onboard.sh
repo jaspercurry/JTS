@@ -169,6 +169,49 @@ log_event() {
     fi
 }
 
+# True iff sudo works without a password prompt — shared by the reboot
+# phase and the final doctor phase below, both of which need to run a
+# privileged remote command non-interactively when they can, and fall
+# back to an interactive `ssh -tt` when they can't.
+pi_has_passwordless_sudo() {
+    local host="$1" user="$2"
+    ssh -o BatchMode=yes "${user}@${host}" 'sudo -n true' >/dev/null 2>&1
+}
+
+# Bounded wait for a reboot we just triggered (issue #2110). Two phases:
+# first the link visibly dropping (bounded — a reboot that never drops
+# the link, e.g. it was already down, must not block the second phase
+# forever), then SSH + jasper-control both answering again on the far
+# side of the reboot. ~30s + up to ~4min ceiling — comfortably above a
+# Pi 5's typical reboot but never open-ended.
+wait_for_pi_down() {
+    local host="$1" attempt
+    local attempts="${JTS_ONBOARD_REBOOT_DOWN_ATTEMPTS:-15}"
+    local sleep_s="${JTS_ONBOARD_REBOOT_DOWN_SLEEP:-2}"
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        ping -c 1 -W 2 "$host" >/dev/null 2>&1 || return 0
+        sleep "$sleep_s"
+    done
+    return 0
+}
+
+wait_for_pi_up() {
+    local host="$1" user="$2" attempt
+    local attempts="${JTS_ONBOARD_REBOOT_UP_ATTEMPTS:-48}"
+    local sleep_s="${JTS_ONBOARD_REBOOT_UP_SLEEP:-5}"
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if ping -c 1 -W 2 "$host" >/dev/null 2>&1 \
+                && ssh -o BatchMode=yes -o ConnectTimeout=5 \
+                    -o StrictHostKeyChecking=accept-new "${user}@${host}" \
+                    'curl -fsS -m 3 http://127.0.0.1:8780/healthz' \
+                    >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep "$sleep_s"
+    done
+    return 1
+}
+
 # ---- preflight: laptop has what we need --------------------------------
 
 echo "==> preflight"
@@ -419,6 +462,49 @@ if ! PI_HOST="$HOST" PI_USER="$PI_USER" JASPER_HOSTNAME="$SPEAKER_HOSTNAME" bash
 fi
 log_event install ok
 
+# ---- phase 4.5: reboot if a migration requires it ----------------------
+#
+# install.sh's memory-resilience migrations (memory-cgroup kernel args,
+# zram sizing) only take effect after a reboot. deploy/lib/install/
+# memory-resilience.sh persists that fact to a /run marker (cleared by
+# the reboot itself, since /run is tmpfs — no separate cleanup needed)
+# rather than leaving onboard to parse install.sh's log output (#2110).
+# Ordinary deploy-to-pi.sh redeploys read and print the same marker but
+# never reboot on their own — only this first-run onboarding path does.
+REBOOT_MARKER="$(
+    ssh -o BatchMode=yes "${PI_USER}@${HOST}" \
+        'cat /run/jasper-install/reboot_required 2>/dev/null' 2>/dev/null \
+        | tr -d '\r' || true
+)"
+
+if [[ -n "$REBOOT_MARKER" ]]; then
+    echo
+    echo "==> reboot required: ${REBOOT_MARKER}"
+    log_event reboot start "host=${HOST}"
+
+    if pi_has_passwordless_sudo "$HOST" "$PI_USER"; then
+        ssh -o BatchMode=yes "${PI_USER}@${HOST}" 'sudo -n reboot' >/dev/null 2>&1 || true
+    elif [[ -t 0 ]]; then
+        ssh -tt "${PI_USER}@${HOST}" 'sudo reboot' >/dev/null 2>&1 || true
+    else
+        echo "    cannot reboot automatically: sudo needs a password and this" >&2
+        echo "    is not an interactive terminal. Reboot ${HOST} manually, then" >&2
+        echo "    re-run: bash scripts/onboard.sh ${HOST} --no-install" >&2
+        log_event reboot fail "reason=sudo_requires_tty"
+        exit 1
+    fi
+
+    echo "    waiting for ${HOST} to go down and come back..."
+    wait_for_pi_down "$HOST"
+    if ! wait_for_pi_up "$HOST" "$PI_USER"; then
+        echo "    ${HOST} did not come back within the wait window" >&2
+        log_event reboot fail "reason=timeout host=${HOST}"
+        exit 1
+    fi
+    echo "    ${HOST} is back up"
+    log_event reboot ok "host=${HOST}"
+fi
+
 # Read the installer's persisted result instead of repeating its board-to-profile
 # policy here. This remains useful when a future image has already installed the
 # packages: the marker and reconciler state still describe what this box can do.
@@ -466,7 +552,7 @@ echo "==> validate with jasper-doctor"
 # configured yet) shouldn't fail onboarding. The user sees the output
 # and can decide what to address next.
 DOCTOR_CMD="sudo -n /opt/jasper/.venv/bin/jasper-doctor"
-if ssh -o BatchMode=yes "${PI_USER}@${HOST}" 'sudo -n true' >/dev/null 2>&1; then
+if pi_has_passwordless_sudo "$HOST" "$PI_USER"; then
     DOCTOR_SSH=(ssh "${PI_USER}@${HOST}")
 elif [[ -t 0 ]]; then
     DOCTOR_CMD="sudo /opt/jasper/.venv/bin/jasper-doctor"

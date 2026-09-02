@@ -66,6 +66,11 @@ DEPLOY_START_EPOCH=0
 # Set to 1 by report_oom_collateral when a live production daemon was
 # OOM-killed during the install window (problem #2/#5).
 OOM_PRODUCTION_HIT=0
+# Set by preflight_deploy_direction (same/forward/downgrade/diverged/
+# unknown_installed) so the post-install verification can call out a
+# same-SHA (no-op) redeploy distinctly (#2447) without a second
+# manifest read.
+DEPLOY_DIRECTION=""
 
 cd "$REPO_ROOT"
 
@@ -250,6 +255,7 @@ preflight_deploy_direction() {
         direction="$(classify_deploy_direction "$SHA_FULL" "$installed_sha")"
     fi
     installed_short="${installed_sha:0:8}"
+    DEPLOY_DIRECTION="$direction"
 
     case "$direction" in
         same)
@@ -502,6 +508,13 @@ verify_manifest_advanced() {
     expected="${SHA_FULL}${DIRTY}"
     if [[ "$installed_full" == "$expected" && "$installed_status" == "ok" ]]; then
         echo "  ✓ build manifest advanced to ${SHA}${DIRTY} (status=ok, verified install)"
+        if [[ "$DEPLOY_DIRECTION" == "same" ]]; then
+            # #2447: a fetch seconds after a merge can miss GitHub's ref
+            # advance, so this checkout's HEAD — and thus what just got
+            # verified above — can be a same-SHA no-op that looks like a
+            # successful deploy of a change that never actually landed.
+            echo "  ℹ same-SHA redeploy: ${SHA}${DIRTY} was already installed — no new commit landed"
+        fi
         return 0
     fi
     finish_airplay_health_maintenance
@@ -794,6 +807,15 @@ if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
     echo "  ⚠ a live production daemon was OOM-killed during install (above)." >&2
     echo "    Continuing through end-state checks so the failure has complete" >&2
     echo "    evidence, then the deploy verification will fail." >&2
+fi
+
+# Ordinary deploys keep the cautious no-surprise posture: read and print
+# install.sh's reboot-required marker (memory-cgroup/zram migrations that
+# only take effect after a reboot, #2110), but never reboot on our own —
+# only scripts/onboard.sh's first-run path does that.
+REBOOT_MARKER="$(ssh_remote 'cat /run/jasper-install/reboot_required 2>/dev/null' 2>/dev/null | tr -d '\r' || true)"
+if [[ -n "$REBOOT_MARKER" ]]; then
+    echo "==> reboot required (not applied by this deploy): ${REBOOT_MARKER}"
 fi
 
 echo "==> Build manifest now on Pi:"
