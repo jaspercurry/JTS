@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, TypedDict, cast
 
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
-from jasper.audio_hardware.dac import latency_floor_for
+from jasper.audio_hardware.dac import camilla_floor_for, latency_floor_for
 from jasper.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     RuntimeOverrideEntry,
@@ -1285,12 +1285,13 @@ def build_audio_runtime_plan(
     profile_id = (profile_id or "").strip()
     profile = dac_profile_by_id(profile_id) if profile_id else None
     floor = latency_floor_for(profile_id) if profile_id else None
+    camilla_floor = camilla_floor_for(profile_id) if profile_id else None
     route_profile = resolve_audio_route_profile(base_values)
 
     camilla_chunksize_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_CHUNKSIZE",
         default=DEFAULT_CHUNKSIZE,
-        floor_value=getattr(floor, "camilla_chunksize", None),
+        floor_value=camilla_floor.chunksize if camilla_floor else None,
         base_env=base_values,
         override_env=override_values,
         generated_env=outputd_values,
@@ -1314,7 +1315,7 @@ def build_audio_runtime_plan(
     camilla_target_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_TARGET_LEVEL",
         default=DEFAULT_TARGET_LEVEL,
-        floor_value=getattr(floor, "camilla_target_level", None),
+        floor_value=camilla_floor.target_level if camilla_floor else None,
         base_env=base_values,
         override_env=override_values,
         generated_env=outputd_values,

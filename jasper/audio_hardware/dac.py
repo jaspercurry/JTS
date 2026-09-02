@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from jasper.camilla_config_contract import CamillaFloor
+
 
 APPLE_USB_C_DONGLE_ID = "apple_usb_c_dongle"
 HIFIBERRY_DAC8X_ID = "hifiberry_dac8x"
@@ -58,44 +60,25 @@ class MixerControl:
 
 @dataclass(frozen=True)
 class LatencyFloor:
-    """A DAC's measured stable buffer floor — the per-DAC latency codification.
+    """A DAC's measured stable outputd buffer floor.
 
-    The lowest CamillaDSP + outputd buffering a given DAC tolerates xrun-free,
-    captured as DATA on the profile so a fresh box reproduces the tuned floor
-    with zero per-user config (the #27 codification). Before this, the only
-    per-DAC tuning was
-    a live ``jasper.env`` override on jts.local (the codify-don't-memorize
-    anti-pattern), so a fresh box silently got the conservative global default.
-
-    The CamillaDSP floor is a (chunksize, target_level) PAIR: ``target_level``
-    is the resampler's steady-state fill and must be >= 4x ``chunksize`` so the
-    adjuster has headroom (chunk 256 -> target 1024; 1024 -> 4096). A smaller
-    target relative to chunk starves the resampler and re-introduces dropouts,
-    so the pairing is validated, not just documented — the constructor rejects
-    a below-4x pair. Both worked examples above are that 4x MINIMUM, not a
-    recommendation: a profile may declare more cushion, and each declaring
-    profile's own comment carries the measurement that chose its pair.
+    The lowest jasper-outputd period / DAC-buffer pair a board runs xrun-free,
+    captured as DATA on the profile so a fresh box reproduces it with no
+    per-user config. CamillaDSP's own buffering is the separate
+    :class:`~jasper.camilla_config_contract.CamillaFloor`: it crosses the ring,
+    not the DAC.
     """
 
-    camilla_chunksize: int
-    camilla_target_level: int
     outputd_period_frames: int
     outputd_dac_buffer_frames: int
 
     def __post_init__(self) -> None:
         for name, value in (
-            ("camilla_chunksize", self.camilla_chunksize),
-            ("camilla_target_level", self.camilla_target_level),
             ("outputd_period_frames", self.outputd_period_frames),
             ("outputd_dac_buffer_frames", self.outputd_dac_buffer_frames),
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be > 0, got {value}")
-        if self.camilla_target_level < 4 * self.camilla_chunksize:
-            raise ValueError(
-                "camilla_target_level must be >= 4 x camilla_chunksize "
-                f"({4 * self.camilla_chunksize}), got {self.camilla_target_level}"
-            )
         # The DAC ring must hold at least two periods so the writer is never
         # one short read from an underrun (mirrors outputd's own min-buffer
         # guard in rust/jasper-outputd/src/config.rs).
@@ -199,6 +182,9 @@ class DacProfile:
     # wizard-owned env, so a fresh box reproduces the tuned floor with no
     # per-user config (#27).
     latency_floor: LatencyFloor | None = None
+    # CamillaDSP's floor, measured on a box fitted with this DAC. A board with
+    # no measurement declares none and takes the transport default.
+    camilla_floor: CamillaFloor | None = None
 
     def __post_init__(self) -> None:
         if not _ID_RE.match(self.id):
@@ -382,11 +368,10 @@ APPLE_USB_C_DONGLE = DacProfile(
     # usb_low_latency_48k path; outputd period 64 / dac_buffer 128 also produced
     # bridge xruns. Keep the Camilla cushion and the 128-frame outputd period.
     latency_floor=LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     ),
+    camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
     # Hardware evidence: on jts.local's Apple dongle,
     # `aplay -D hw:A --dump-hw-params` reports FORMAT `S16_LE S24_3LE` at
     # CHANNELS 2 / RATE 48000 — the device advertises exactly two widths and
@@ -476,11 +461,10 @@ HIFIBERRY_DAC8X = DacProfile(
     # has no alignment check, so its fixed JASPER_AEC_CORPUS_CHIP_SYS_DELAY
     # (picked at the old geometry) needs re-deriving. Tracked as #2327.
     latency_floor=LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     ),
+    camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
     # Hardware evidence: `aplay --dump-hw-params` on jts3's HiFiBerry DAC8x
     # reports FORMAT S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw
     # `hw:` S32_LE 2ch open succeeded with a clean recovery (banked
@@ -701,71 +685,15 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # The 128-frame PERIOD is what makes shm_ring reachable at all (it must equal
     # fan-in's compile-time RING_SLOT_FRAMES, which is 128).
     #
-    # UNMEASURED on this board: the CamillaDSP pair. It is chosen as the
-    # NON-TIGHTENING expressible pair, not transferred from the profiles that
-    # measured theirs, and the choice is a safety argument rather than a result.
-    #
-    # The dataclass has no optional half, so declaring the measured outputd floor
-    # requires supplying SOME CamillaDSP pair, and the shipped global default
-    # (1024, 2048) is not itself expressible (2048 < 4 x 1024 fails the pair
-    # invariant). That constrains the choice; it does not force one — (1024, 4096)
-    # and (512, 2048) both satisfy every invariant. Of those, (1024, 4096) is the
-    # only one that TIGHTENS nothing:
-    #   - chunksize EQUALS camilla_config_contract.DEFAULT_CHUNKSIZE, so a
-    #     floorless box and this one emit the same value on the loopback lane
-    #     (the floor becomes the fallback only when no operator env is set, and
-    #     it resolves to the same number the global default would have). The
-    #     EQUALITY is the property, not the literal 1024 — if the global default
-    #     ever moves, this must move with it, which
-    #     test_innomaker_unmeasured_camilla_half_tightens_nothing enforces;
-    #   - target_level 4096 moves UP from DEFAULT_TARGET_LEVEL's 2048, which is
-    #     the LOOSER direction — more resampler cushion, never less.
-    # Apple's/DAC8x's (256, 1536) was the first candidate and is rejected here: it
-    # is a 4x TIGHTER DSP cadence than the shipped default AND a SMALLER absolute
-    # target than 2048, so declaring it would have quietly tightened both axes on
-    # the one lane nobody has measured on this board — a Zero 2 W whose own
-    # outputd measurement above says it needs MORE slack, not less.
-    #
-    # Where it applies at all: NOT what this comment said until 2026-09-01. It
-    # claimed a shm_ring box always takes 128/128 from RING_CAMILLA_* because
-    # apply_capture_precedence merges them last, so the declared pair governed
-    # "the LOOPBACK lane only". Both halves were wrong, and the box that proved
-    # it was jts4. Only the callers that pass the ring set explicitly merge it;
-    # the ordinary sound emitters resolved chunk 1024 straight out of this
-    # floor and put it on jts_ring_playback, which CamillaDSP cannot open
-    # (avail_min 1024 > the ring's 256-frame buffer) — ten restarts, no audio.
-    # There is also no loopback lane to fall back to: ADR-0100 left shm_ring the
-    # only transport (VALID_COUPLINGS).
-    #
-    # What is true now: this pair reaches the ring like any other, and
-    # camilla_config_contract.resolve_camilla_latency_for_devices CLAMPS the
-    # chunk half to the ring's capacity there. So on the ring this board runs
-    # chunk 256, not the 1024 declared here; the declared pair governs in full
-    # only at a sink with its own buffer.
-    #
-    # TIGHTENS NOTHING IS NOT CHANGES NOTHING, and the difference is disclosed
-    # rather than left in the word. The target_level move (2048 -> 4096) BUYS
-    # cushion by SPENDING latency: at 48 kHz the resampler's steady-state fill
-    # goes 42.7 ms -> 85.3 ms, so a box on the loopback fallback carries about
-    # 42.7 ms more buffering than a floorless one. That is the trade, taken
-    # deliberately on the slowest board in the fleet. target_level is NOT
-    # clamped on the ring (the ring's capacity does not bound the resampler's
-    # steady-state fill), so unlike the chunk half this move does reach the ring
-    # lane — the correction to the paragraph above applies here too. The
-    # chip-AEC reference tap is downstream of this stage either way, so no
-    # alignment artifact moves with it.
-    #
-    # Because it tightens nothing, this half needs no soak to be safe to ship.
-    # What still needs one is any FUTURE TIGHTENING of it: moving chunksize below
-    # 1024 on this silicon is the change that requires a loopback-lane soak on
-    # this board showing no CamillaDSP xruns or clipped samples the shipped
-    # default did not produce.
+    # The pair jts4 runs: the ring clamp (#3542) brought this board's former
+    # 1024/4096 CamillaFloor down to 256, scaling the target with it to 1024.
+    # CamillaDSP validated that pair and the box plays on it — not a soak, so
+    # tightening below it needs one on this silicon.
     latency_floor=LatencyFloor(
-        camilla_chunksize=1024,
-        camilla_target_level=4096,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=512,
     ),
+    camilla_floor=CamillaFloor(chunksize=256, target_level=1024),
     chip_aec_detail=(
         "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"
     ),
@@ -838,11 +766,10 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # Item 6's on-box buffering-regime check owns confirming this on real
     # hardware.
     latency_floor=LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     ),
+    camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
     # Stays at the S16_LE default while its child profile
     # (APPLE_USB_C_DONGLE, same silicon) declares S24_3LE, and the divergence is
     # a TRANSPORT fact, not a hardware one. outputd's paired composite sink has
@@ -1027,6 +954,13 @@ def latency_floor_for(profile_id: str) -> LatencyFloor | None:
     return profile.latency_floor
 
 
+def camilla_floor_for(profile_id: str) -> CamillaFloor | None:
+    """The profile-declared CamillaDSP floor, or None (the transport default)."""
+
+    profile = by_id(profile_id)
+    return None if profile is None else profile.camilla_floor
+
+
 def mixer_control_groups_for(
     profile_id: str,
 ) -> tuple[tuple[MixerControl, ...], ...] | None:
@@ -1074,6 +1008,7 @@ __all__ = [
     "all_profiles",
     "active_outputd_lane_channels_for",
     "by_id",
+    "camilla_floor_for",
     "clock_domain_contract_for",
     "clock_domain_label_for",
     "final_edge_format_for",

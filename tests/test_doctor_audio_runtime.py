@@ -3165,8 +3165,6 @@ def _conf_text(period_frames):
 
 def _synthetic_floor(period_frames):
     return LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=period_frames,
         outputd_dac_buffer_frames=4 * period_frames,
     )

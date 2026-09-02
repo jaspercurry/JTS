@@ -11,6 +11,7 @@ import pytest
 
 import jasper.audio_hardware as audio_hardware
 from jasper.audio_hardware import dac
+from jasper.camilla_config_contract import CamillaFloor
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
@@ -657,133 +658,58 @@ def test_registry_children_reference_known_profiles() -> None:
 # --- #27 per-DAC latency floor ------------------------------------------------
 
 
-def test_latency_floor_pair_invariant_rejects_target_below_4x_chunk() -> None:
-    # The CamillaDSP floor is a (chunksize, target_level) PAIR: target must be
-    # >= 4x chunk so the resampler has fill headroom. 256/1023 is just shy.
-    with pytest.raises(ValueError, match="camilla_target_level must be >= 4 x"):
-        LatencyFloor(
-            camilla_chunksize=256,
-            camilla_target_level=1023,
-            outputd_period_frames=256,
-            outputd_dac_buffer_frames=512,
-        )
-
-
-def test_latency_floor_accepts_exactly_4x_chunk() -> None:
-    floor = LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1024,
-        outputd_period_frames=256,
-        outputd_dac_buffer_frames=512,
-    )
-    assert floor.camilla_target_level == 4 * floor.camilla_chunksize
-
-
 def test_latency_floor_rejects_dac_buffer_below_two_periods() -> None:
     with pytest.raises(ValueError, match="outputd_dac_buffer_frames must be >= 2 x"):
-        LatencyFloor(
-            camilla_chunksize=256,
-            camilla_target_level=1024,
-            outputd_period_frames=256,
-            outputd_dac_buffer_frames=511,
-        )
+        LatencyFloor(outputd_period_frames=256, outputd_dac_buffer_frames=511)
 
 
 def test_latency_floor_rejects_nonpositive_values() -> None:
     with pytest.raises(ValueError, match="must be > 0"):
-        LatencyFloor(
-            camilla_chunksize=0,
-            camilla_target_level=1024,
-            outputd_period_frames=256,
-            outputd_dac_buffer_frames=512,
-        )
+        LatencyFloor(outputd_period_frames=0, outputd_dac_buffer_frames=512)
 
 
-def test_apple_dongle_declares_the_measured_floor() -> None:
-    # The codified floor must match the measured Apple-dongle floor. The exact
+def test_apple_dongle_declares_the_measured_floors() -> None:
+    # The codified floors must match the measured Apple-dongle floors. The exact
     # 4x Camilla target (1024) and outputd 64/128 were too tight on jts.local.
     assert APPLE_USB_C_DONGLE.latency_floor == LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     )
+    assert APPLE_USB_C_DONGLE.camilla_floor == CamillaFloor(
+        chunksize=256, target_level=1536,
+    )
 
 
-def test_latency_floor_for_round_trips_for_bash() -> None:
+def test_floor_accessors_round_trip_by_profile_id() -> None:
     floor = dac.latency_floor_for(APPLE_USB_C_DONGLE_ID)
-    assert floor is not None
-    # The bash reconciler reads exactly these four ints, space-separated.
-    assert (
-        floor.camilla_chunksize,
-        floor.camilla_target_level,
-        floor.outputd_period_frames,
-        floor.outputd_dac_buffer_frames,
-    ) == (256, 1536, 128, 256)
+    camilla = dac.camilla_floor_for(APPLE_USB_C_DONGLE_ID)
+    assert floor is not None and camilla is not None
+    assert (floor.outputd_period_frames, floor.outputd_dac_buffer_frames) == (128, 256)
+    assert (camilla.chunksize, camilla.target_level) == (256, 1536)
 
 
-def test_latency_floor_for_is_none_for_undeclared_and_unknown() -> None:
-    # A DAC that declares no floor keeps the global default — None is the
-    # non-breaking signal the reconciler treats as "use shipped default".
-    # (Named the InnoMaker until it declared jts4's measured floor.)
+def test_floor_accessors_are_none_for_undeclared_and_unknown() -> None:
+    # A DAC that declares no floor keeps the shipped default — None is the
+    # non-breaking signal the reconciler and the emitters read as "use default".
     assert dac.latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
+    assert dac.camilla_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     assert dac.latency_floor_for("no_such_dac") is None
+    assert dac.camilla_floor_for("no_such_dac") is None
 
 
-def test_innomaker_declares_the_jts4_measured_floor() -> None:
-    # jts4 (Pi Zero 2 W + InnoMaker HiFi AMP Pro, 2026-08-14). The OUTPUTD pair
-    # is measured on that board: period 128 / dac_buffer 256 — the pair both
-    # other declaring profiles use — took 1 DAC xrun in 5 minutes here, and 512
-    # took zero in 5 minutes plus zero in a 3-minute run through the armed ring.
-    # The CAMILLA pair is NOT measured here: it is the non-tightening expressible
-    # pair (see the next test, which is what actually guards that property).
+def test_innomaker_declares_the_jts4_outputd_and_camilla_floors() -> None:
+    # jts4 (Pi Zero 2 W + InnoMaker HiFi AMP Pro): period 128 / dac_buffer 256 —
+    # the pair both other declaring profiles use — took 1 DAC xrun in 5 minutes
+    # here, and 512 took zero in 5 minutes plus zero in a 3-minute run through
+    # the armed ring. CamillaDSP's pair is the ring-clamped 256/1024 the ring
+    # clamp (#3542) scaled this board's former 1024/4096 down to; jts4 has run
+    # it since, CamillaDSP-validated.
     assert INNOMAKER_HIFI_AMP_PRO.latency_floor == LatencyFloor(
-        camilla_chunksize=1024,
-        camilla_target_level=4096,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=512,
     )
-
-
-def test_innomaker_unmeasured_camilla_half_tightens_nothing() -> None:
-    """The safety argument that lets an UNMEASURED half ship without a soak.
-
-    The dataclass has no optional half, so the measured outputd floor cannot be
-    declared without also declaring a CamillaDSP pair — and on this board that
-    pair governs the loopback FALLBACK lane, which no run here has measured. It
-    is therefore only safe while it tightens nothing relative to the shipped
-    global default:
-
-      - chunksize EQUAL to DEFAULT_CHUNKSIZE — so a floorless box and this one
-        emit the same value on that lane. The EQUALITY is the property, not the
-        literal: if the global default moves, this must move with it, which is
-        why the assertion below reads the constant rather than a number;
-      - target_level GREATER OR EQUAL to DEFAULT_TARGET_LEVEL — more resampler
-        cushion, never less.
-
-    Both directions are asserted because the first candidate, Apple's/DAC8x's
-    (256, 1536), violated BOTH: a 4x tighter cadence and a smaller absolute
-    target. An equality check on chunksize alone would have passed a pair that
-    still shrank the buffer.
-
-    Tightening either axis on this silicon is a real change that needs a
-    loopback-lane soak on this board first; this test is what makes that
-    deliberate instead of a one-character drift.
-    """
-    from jasper.camilla_config_contract import (
-        DEFAULT_CHUNKSIZE,
-        DEFAULT_TARGET_LEVEL,
-    )
-
-    floor = INNOMAKER_HIFI_AMP_PRO.latency_floor
-    assert floor is not None
-    assert floor.camilla_chunksize == DEFAULT_CHUNKSIZE, (
-        "the unmeasured camilla half must not move the loopback lane's chunk "
-        "cadence off the shipped default without a soak on this board"
-    )
-    assert floor.camilla_target_level >= DEFAULT_TARGET_LEVEL, (
-        "the unmeasured camilla half must not shrink the loopback lane's "
-        "resampler cushion below the shipped default"
+    assert INNOMAKER_HIFI_AMP_PRO.camilla_floor == CamillaFloor(
+        chunksize=256, target_level=1024,
     )
 
 
@@ -810,16 +736,17 @@ def test_innomaker_floor_period_is_what_makes_the_ring_reachable() -> None:
     )
 
 
-def test_dac8x_declares_the_soak_validated_floor() -> None:
-    # The R7a jts3 soak (2026-08-11) validated the Apple dongle's four values on
-    # I2S silicon: three 30-min windows, zero DAC xruns, DAC presentation
-    # latency 63.833 -> 5.167 ms. Same numbers as the dongle, independently
-    # measured — this pins the DECLARATION, not the transfer.
+def test_dac8x_declares_the_soak_validated_floors() -> None:
+    # The R7a jts3 soak validated the Apple dongle's four values on I2S
+    # silicon: three 30-min windows, zero DAC xruns, DAC presentation latency
+    # 63.833 -> 5.167 ms. Same numbers as the dongle, independently measured —
+    # this pins the DECLARATION, not the transfer.
     assert HIFIBERRY_DAC8X.latency_floor == LatencyFloor(
-        camilla_chunksize=256,
-        camilla_target_level=1536,
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
+    )
+    assert HIFIBERRY_DAC8X.camilla_floor == CamillaFloor(
+        chunksize=256, target_level=1536,
     )
 
 

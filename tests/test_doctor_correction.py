@@ -595,9 +595,13 @@ def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
 def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
     """A clamped box says so, so the running chunk is never unexplained.
 
-    An InnoMaker declares chunk 1024 and runs 256. Without this line the only
-    account of the difference is a source comment, which is how the bug this
-    check exists for stayed invisible.
+    A floorless HiFiBerry DAC8x Studio resolves the 1024 default and runs 256.
+    Without this line the only account of the difference is a source comment,
+    which is how the bug this check exists for stayed invisible.
+
+    Not the InnoMaker: since #3542 it declares the already-clamped 256/1024
+    outright, so it no longer takes this path (see
+    test_camilla_config_contract.py::test_a_floor_that_already_fits_the_ring_is_not_clamped).
     """
     from jasper.fanin_coupling import ring_capacity_frames
     from jasper.output_hardware import OutputHardwareState, write_state
@@ -606,11 +610,11 @@ def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
     write_state(
         OutputHardwareState(
-            profile_id="innomaker_hifi_amp_pro",
-            profile_label="InnoMaker HiFi AMP Pro",
+            profile_id="hifiberry_dac8x_studio",
+            profile_label="HiFiBerry DAC8x Studio",
             status="ready",
             physical_output_count=2,
-            selected_card_id="innomaker_hifi_amp_pro",
+            selected_card_id="hifiberry_dac8x_studio",
         ),
         state_path,
     )
