@@ -66,7 +66,7 @@ from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
-    DeferredReconnect,
+    Deferred,
     OutageTracker,
     is_transient,
     survive_terminal_initial_connect,
@@ -947,7 +947,7 @@ class OpenAIRealtimeConnection:
         # shared primitive is checked in `_on_turn_released` to fire the
         # deferred reconnect (provider-agnostic mechanism; OpenAI's
         # trigger is the proactive pre-cap watchdog — see _supervisor).
-        self._deferred_reconnect = DeferredReconnect()
+        self._deferred_reconnect = Deferred()
         self._server_vad_active: bool = False
 
         self._outage = OutageTracker()
@@ -1011,9 +1011,7 @@ class OpenAIRealtimeConnection:
         else:
             instruction = system_instruction or ""
             self._system_instruction_provider = lambda: instruction
-        # Already logged as event=openai.initial_connect.fatal.
-        if await survive_terminal_initial_connect(self._do_initial_connect()):
-            self._reconnect_event.set()
+        await self._do_initial_connect()
         self._supervisor_task = asyncio.create_task(self._supervisor_loop())
 
     async def stop(self) -> None:
@@ -1361,10 +1359,12 @@ class OpenAIRealtimeConnection:
             self._set_state(ConnectionState.CONNECTING)
         try:
             await self._open_session_with_retry(phase="initial-connect")
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            raise
+            # A terminal one is already logged as
+            # event=openai.initial_connect.fatal.
+            survive_terminal_initial_connect(e, self._reconnect_event.set)
 
     async def _open_session_with_retry(self, *, phase: str) -> None:
         """Initial-connect retry loop with a time budget.
