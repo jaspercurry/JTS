@@ -178,12 +178,6 @@ def fetch_feed(
     return data
 
 
-def clear_cache() -> None:
-    """Test helper. Drops every cached feed."""
-    with _FEED_LOCK:
-        _FEED_CACHE.clear()
-
-
 # --- Saved-stations env parsing ---------------------------------------
 
 def parse_saved_stations(raw: str) -> list[tuple[str, str]]:
@@ -222,12 +216,6 @@ def parse_saved_stations(raw: str) -> list[tuple[str, str]]:
             continue
         out.append((sid, label))
     return out
-
-
-def format_saved_stations(saved: list[tuple[str, str]]) -> str:
-    """Inverse of `parse_saved_stations` — used by the wizard's save
-    handler. Round-trip safe for well-formed inputs."""
-    return ",".join(f"{sid}|{label}" for sid, label in saved)
 
 
 # --- Speech-friendly station name normalization ----------------------

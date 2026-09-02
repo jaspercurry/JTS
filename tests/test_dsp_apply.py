@@ -913,3 +913,318 @@ def test_same_config_file_resolves_rather_than_string_compares(tmp_path: Path):
     assert same_config_file(link, real) is True
     assert same_config_file(tmp_path / "sub" / ".." / "config.yml", real) is True
     assert same_config_file(real, tmp_path / "other.yml") is False
+
+
+# ---------------------------------------------------------------------------
+# In-place applies: the candidate IS the graph already loaded. The reconcile's
+# re-anchor writes a refreshed graph back over the kept active-crossover
+# candidate the box is running (#2572), which takes the ordinary rollback away
+# — re-loading ``prior_config_path`` re-loads the file that was just
+# overwritten. These pin the byte-restore that replaces it, and the honesty of
+# the verdict it records: ``cli/doctor/audio`` grades a rollback that reports
+# itself failed as a FAIL row, so a box repaired by a working restore must not
+# be left claiming otherwise.
+# ---------------------------------------------------------------------------
+
+
+async def test_an_in_place_rollback_restores_the_bytes_not_the_path(tmp_path: Path):
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nrunning: true\n")
+    pristine = cfg.read_text()
+
+    def prepare() -> None:
+        cfg.write_text("---\nrejected: true\n")
+
+    async def load(path: str) -> bool:
+        if cfg.read_text() != pristine:
+            raise RuntimeError("CamillaDSP rejected the rewritten graph")
+        return True
+
+    with pytest.raises(DspApplyError) as excinfo:
+        await apply_dsp_config(
+            source="sound_reconcile",
+            candidate_path=cfg,
+            prior_config_path=cfg,
+            load_config=load,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    state = excinfo.value.state
+    assert cfg.read_text() == pristine
+    assert state.rollback_succeeded is True
+    assert state.result == "load_failed_rolled_back"
+
+
+async def test_a_failed_prepare_leaves_the_candidate_as_it_was_found(tmp_path: Path):
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nrunning: true\n")
+    pristine = cfg.read_text()
+    loaded: list[str] = []
+
+    def prepare() -> None:
+        cfg.write_text("---\nhalf-w")
+        raise RuntimeError("emit failed part way")
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        return True
+
+    with pytest.raises(DspApplyError) as excinfo:
+        await apply_dsp_config(
+            source="sound_reconcile",
+            candidate_path=cfg,
+            prior_config_path=cfg,
+            load_config=load,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    state = excinfo.value.state
+    assert state.result == "prepare_failed"
+    assert cfg.read_text() == pristine
+    assert loaded == []
+    # No graph was loaded, so no rollback was attempted — the field the doctor
+    # turns red must stay clear for a failure that never reached the box.
+    assert state.rollback_attempted is False
+
+
+def _never_valid(path: str | Path) -> CamillaConfigValidationResult:
+    return CamillaConfigValidationResult(
+        status=ValidationStatus.INVALID_CONFIG, path=str(path)
+    )
+
+
+@pytest.mark.parametrize(
+    ("validate", "expected_sha", "result"),
+    [
+        (_never_valid, None, "invalid_config"),
+        (_always_valid, "0" * 64, DSP_PROOF_CANDIDATE_CHANGED),
+    ],
+)
+async def test_a_candidate_refused_before_load_is_put_back_in_place(
+    tmp_path: Path, validate, expected_sha, result
+):
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nrunning: true\n")
+    pristine = cfg.read_text()
+    loaded: list[str] = []
+
+    def prepare() -> None:
+        cfg.write_text("---\nrejected: true\n")
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        return True
+
+    with pytest.raises(DspApplyError) as excinfo:
+        await apply_dsp_config(
+            source="sound_reconcile",
+            candidate_path=cfg,
+            prior_config_path=cfg,
+            load_config=load,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=validate,
+            expected_candidate_sha256=expected_sha,
+        )
+
+    state = excinfo.value.state
+    assert state.result == result
+    assert cfg.read_text() == pristine
+    assert loaded == []
+    assert state.rollback_attempted is False
+
+
+async def test_a_rejected_apply_keeps_the_graph_it_emitted_when_not_in_place(
+    tmp_path: Path,
+):
+    """A rejected candidate that is not the running graph stays on disk.
+
+    It is the evidence — the graph CamillaDSP refused. Reverting it would also
+    leave ``config_sha256`` describing bytes nobody can read any more.
+    """
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nstale: true\n")
+    running = tmp_path / "running.yml"
+    running.write_text("---\nrunning: true\n")
+    emitted = "---\nrejected: true\n"
+
+    def prepare() -> None:
+        cfg.write_text(emitted)
+
+    async def load(path: str) -> bool:
+        if path == str(cfg):
+            raise RuntimeError("CamillaDSP rejected the candidate")
+        return True
+
+    async def current() -> str:
+        return str(running)
+
+    with pytest.raises(DspApplyError) as excinfo:
+        await apply_dsp_config(
+            source="sound",
+            candidate_path=cfg,
+            load_config=load,
+            get_current_config_path=current,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    assert cfg.read_text() == emitted
+    assert excinfo.value.state.config_sha256 == config_file_sha256(cfg)
+
+
+async def test_a_cancelled_in_place_apply_puts_the_candidate_back(tmp_path: Path):
+    """The FILE goes back; the box is deliberately not reloaded onto it.
+
+    Reloading would re-enter the DSP writer lock, and the runner that survives a
+    cancellation does it from a spawned task — which the lock's re-entrancy gate
+    (keyed on the current task) refuses. So the durable half is repaired and the
+    recorded verdict declines to claim the box came back with it.
+    """
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nrunning: true\n")
+    pristine = cfg.read_text()
+    loaded: list[str] = []
+
+    def prepare() -> None:
+        cfg.write_text("---\nunproven: true\n")
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await apply_dsp_config(
+            source="sound_reconcile",
+            candidate_path=cfg,
+            prior_config_path=cfg,
+            load_config=load,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    assert cfg.read_text() == pristine
+    assert loaded == [str(cfg)]
+    state = last_dsp_apply_state(state_path=tmp_path / "dsp_apply_state.json")
+    assert state["rollback_attempted"] is True
+    assert state["rollback_succeeded"] is None
+
+
+async def test_a_cancelled_persist_keeps_the_graph_that_already_proved_itself(
+    tmp_path: Path,
+):
+    """Cancellation after confirm must not revert a live, proven graph."""
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nrunning: true\n")
+    applied = "---\nproven: true\n"
+
+    def prepare() -> None:
+        cfg.write_text(applied)
+
+    async def load(path: str) -> bool:
+        return True
+
+    async def current() -> str:
+        return str(cfg)
+
+    async def persist() -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await apply_dsp_config(
+            source="sound_reconcile",
+            candidate_path=cfg,
+            prior_config_path=cfg,
+            load_config=load,
+            get_current_config_path=current,
+            prepare=prepare,
+            persist=persist,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    assert cfg.read_text() == applied
+
+
+async def test_a_cancelled_apply_never_loads_a_candidate_it_was_not_running(
+    tmp_path: Path,
+):
+    """The recovery reload is in-place only.
+
+    A candidate that is NOT the loaded graph is a scratch name being abandoned.
+    Loading it during recovery would move the box ONTO the apply that just
+    failed — the opposite of a rollback.
+    """
+
+    cfg = tmp_path / "candidate.yml"
+    cfg.write_text("---\nstale: true\n")
+    loaded: list[str] = []
+
+    def prepare() -> None:
+        cfg.write_text("---\nunproven: true\n")
+
+    async def load(path: str) -> bool:
+        loaded.append(path)
+        raise asyncio.CancelledError
+
+    running = tmp_path / "running.yml"
+    running.write_text("---\nrunning: true\n")
+
+    async def current() -> str:
+        return str(running)
+
+    with pytest.raises(asyncio.CancelledError):
+        await apply_dsp_config(
+            source="sound",
+            candidate_path=cfg,
+            load_config=load,
+            get_current_config_path=current,
+            prepare=prepare,
+            state_path=tmp_path / "dsp_apply_state.json",
+            lock_path=tmp_path / "dsp_apply.lock",
+            validate=_always_valid,
+        )
+
+    assert loaded == [str(cfg)]
+
+
+async def test_confirm_accepts_another_spelling_of_the_loaded_file(tmp_path: Path):
+    real = tmp_path / "real.yml"
+    real.write_text("---\n")
+    link = tmp_path / "link.yml"
+    link.symlink_to(real)
+
+    async def load(path: str) -> bool:
+        return True
+
+    async def current() -> str:
+        return str(real)
+
+    state = await apply_dsp_config(
+        source="sound",
+        candidate_path=link,
+        prior_config_path="/etc/camilladsp/v1.yml",
+        load_config=load,
+        get_current_config_path=current,
+        state_path=tmp_path / "dsp_apply_state.json",
+        lock_path=tmp_path / "dsp_apply.lock",
+        validate=_always_valid,
+    )
+
+    assert state.result == "success"
+    assert state.rollback_attempted is False

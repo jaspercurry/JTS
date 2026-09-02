@@ -4,61 +4,13 @@
 
 """Bass-timing adapter for the shared timing-locked null walk.
 
-The adapter builds the spec and declares the bass-management scope. There is
-no shared runner: ``null_walk`` is decision content only, so any host that
-executes a walk owns its own DSP mutation, writer exclusion, exact restore, and
-lifecycle events. :mod:`jasper.audio_measurement.delay_graph` is what validates
-the declared scope today.
+The adapter declares the bass-management scope.
+:mod:`jasper.audio_measurement.delay_graph` is what validates the declared
+scope today.
 """
 
 from __future__ import annotations
 
-from jasper.audio_measurement.null_walk import (
-    DelayWalkScope,
-    MAX_STEP_US,
-    NullWalkError,
-    NullWalkSpec,
-    geometry_seed_us,
-)
-from jasper.bass_management import active_crossover_corner_hz
+from jasper.audio_measurement.null_walk import DelayWalkScope
 
 SUB_MAINS_DELAY_WALK_SCOPE: DelayWalkScope = "bass_management"
-
-
-def sub_mains_delay_walk_spec(
-    *,
-    sub_path_minus_mains_m: float,
-    transport_delay_ms: float = 0.0,
-    step_us: float = MAX_STEP_US,
-    corner_hz: float | None = None,
-) -> NullWalkSpec:
-    """Build the sub-to-mains walk around geometry plus known transport.
-
-    Positive relative delay targets the mains; negative relative delay targets
-    the subwoofer. ``sub_path_minus_mains_m`` and the sub's transport latency
-    therefore share the required ``negative target minus positive target``
-    sign. A lagging wireless sub correctly produces a positive mains delay.
-
-    The speaker-owned corner remains a read from :mod:`jasper.bass_management`;
-    active alignment policy lives here rather than widening that fail-soft,
-    display-facing resolver. ``corner_hz`` is injectable for orchestration and
-    hardware-free tests.
-    """
-
-    try:
-        fc = active_crossover_corner_hz() if corner_hz is None else float(corner_hz)
-        transport_us = float(transport_delay_ms) * 1000.0
-    except (TypeError, ValueError) as exc:
-        raise NullWalkError("bass delay-walk geometry must be numeric") from exc
-    if fc is None:
-        raise NullWalkError("bass management has no active crossover corner")
-    return NullWalkSpec(
-        crossover_fc_hz=fc,
-        geometry_seed_us=geometry_seed_us(
-            sub_path_minus_mains_m,
-            signed_transport_difference_us=transport_us,
-        ),
-        positive_delay_target="mains",
-        negative_delay_target="subwoofer",
-        step_us=step_us,
-    )

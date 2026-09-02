@@ -55,6 +55,7 @@ def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]
         "design_draft_path": tmp_path / "ssot" / "design_draft.json",
         "applied_profile_path": tmp_path / "ssot" / "applied_profile.json",
         "repeat_floor_path": tmp_path / "ssot" / "repeat_floor.json",
+        "declared_geometry_path": tmp_path / "ssot" / "declared_geometry.json",
     }
     if present:
         for key, path in paths.items():
@@ -72,18 +73,30 @@ def _ssot(tmp_path: Path, *, present: bool, absent: str = "") -> dict[str, Path]
         (
             False,
             "",
-            ["design-draft.json", "applied-profile.json", "repeat-floor.json"],
+            [
+                "design-draft.json",
+                "applied-profile.json",
+                "repeat-floor.json",
+                "declared-geometry.json",
+            ],
         ),
         (True, "repeat_floor_path", ["repeat-floor.json"]),
+        (True, "declared_geometry_path", ["declared-geometry.json"]),
     ],
-    ids=["ssot-present", "ssot-absent", "repeat-floor-absent"],
+    ids=[
+        "ssot-present",
+        "ssot-absent",
+        "repeat-floor-absent",
+        "declared-geometry-absent",
+    ],
 )
 def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, missing):
     """The assembled tree loads back through ``load_banked_round`` either way:
     an absent SSOT document is named in ``provenance.json``, never a refusal.
 
-    The repeat floor is one of the four the reader opens, so a round banked
-    without it says so rather than dropping it silently."""
+    The repeat floor and the declared geometry are two of the five the reader
+    opens, so a round banked without one says so rather than dropping it
+    silently."""
     session_dir, state_path = _live_session(tmp_path)
 
     banked = bank_round(
@@ -111,6 +124,7 @@ def test_banked_tree_is_the_one_round_views_reads(tmp_path, present, absent, mis
         "design-draft.json",
         "applied-profile.json",
         "repeat-floor.json",
+        "declared-geometry.json",
     ):
         assert (banked.path / name).is_file() is (name not in missing)
 

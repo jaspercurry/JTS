@@ -57,6 +57,7 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.branch_chain import radiating_band_hz
 from jasper.active_speaker.crossover_v2 import intervention as iv
+from jasper.active_speaker.crossover_v2 import plan_assembly as pa
 from jasper.active_speaker.crossover_v2.contracts import (
     CandidateAcousticContext,
     TrimStrategy,
@@ -155,8 +156,7 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
         analysis,
         analysis.candidate,
         context=CandidateAcousticContext.from_sections(sections),
-        woofer_role=conductor._woofer.role,
-        tweeter_role=conductor._tweeter.role,
+        roles=(conductor._woofer.role, conductor._tweeter.role),
         excited_band_hz={
             conductor._woofer.role: (seg_w.f1_hz, seg_w.f2_hz),
             conductor._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
@@ -168,13 +168,13 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
     )
 
 
-def _pure(sections: dict[str, Any]) -> iv.LinearizationPlan:
+def _pure(sections: dict[str, Any]) -> pa.LinearizationPlan:
     """:func:`~...intervention.plan_linearization` over the same inputs."""
 
     return iv.plan_linearization(_planner_request(sections))
 
 
-def _giveback_record(plan: iv.LinearizationPlan) -> dict[str, Any]:
+def _giveback_record(plan: pa.LinearizationPlan) -> dict[str, Any]:
     """The anchor's own journal line, as fields."""
     for record in plan.journal:
         if record.event == "correction.crossover_v2_linearization_giveback":
@@ -237,7 +237,7 @@ def test_the_journal_reports_the_polish_delta_it_measured(
     to zero and fails.
     """
     request = _planner_request(_sections_at(SELECTED_FC_HZ))
-    tweeter = request.tweeter.role
+    tweeter = request.roles[1]
 
     baseline = _giveback_record(iv.plan_linearization(request))
     polished_trims = dict(request.raw_trim_db)
@@ -248,7 +248,7 @@ def test_the_journal_reports_the_polish_delta_it_measured(
 
     # The field tracks the base it was handed, per role, in BOTH runs.
     for fields in (baseline, polished):
-        for role in (request.woofer.role, tweeter):
+        for role in request.roles:
             assert fields["polish_delta_db"][role] == pytest.approx(
                 fields["raw_trim_db"][role] - fields["band_average_trim_db"][role],
                 abs=1e-3,
@@ -259,8 +259,8 @@ def test_the_journal_reports_the_polish_delta_it_measured(
     shift = polished["polish_delta_db"][tweeter] - baseline["polish_delta_db"][tweeter]
     assert shift == pytest.approx(injected_delta_db, abs=1e-3)
     # The untouched role does not move with it.
-    assert polished["polish_delta_db"][request.woofer.role] == pytest.approx(
-        baseline["polish_delta_db"][request.woofer.role], abs=1e-9
+    assert polished["polish_delta_db"][request.roles[0]] == pytest.approx(
+        baseline["polish_delta_db"][request.roles[0]], abs=1e-9
     )
 
 
@@ -324,8 +324,7 @@ def test_planning_twice_over_one_request_returns_equal_output(monkeypatch):
         analysis,
         analysis.candidate,
         context=CandidateAcousticContext.from_sections(sections),
-        woofer_role="woofer",
-        tweeter_role="tweeter",
+        roles=("woofer", "tweeter"),
         excited_band_hz={
             "woofer": (seg_w.f1_hz, seg_w.f2_hz),
             "tweeter": (seg_t.f1_hz, seg_t.f2_hz),
@@ -365,8 +364,7 @@ def test_the_request_snapshots_the_trim_mappings_it_was_handed():
     )
     request = iv.LinearizationRequest(
         context=CandidateAcousticContext.from_sections(_sections_at(SELECTED_FC_HZ)),
-        woofer=evidence,
-        tweeter=replace(evidence, role="tweeter"),
+        drivers=(evidence, replace(evidence, role="tweeter")),
         raw_trim_db=raw,
         trim_band_average_db=average,
         predicted_ripple_db=0.0,
@@ -402,8 +400,7 @@ def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
         analysis,
         analysis.candidate,
         context=CandidateAcousticContext.from_sections(_sections_at(SELECTED_FC_HZ)),
-        woofer_role="woofer",
-        tweeter_role="tweeter",
+        roles=("woofer", "tweeter"),
         excited_band_hz={
             "woofer": (seg_w.f1_hz, seg_w.f2_hz),
             "tweeter": (seg_t.f1_hz, seg_t.f2_hz),
@@ -559,8 +556,7 @@ def _request(**overrides):
     )
     kwargs = dict(
         context=CandidateAcousticContext.from_sections(_sections_at(SELECTED_FC_HZ)),
-        woofer=evidence,
-        tweeter=replace(evidence, role="tweeter"),
+        drivers=(evidence, replace(evidence, role="tweeter")),
         raw_trim_db={},
         trim_band_average_db={},
         predicted_ripple_db=0.0,
@@ -1071,18 +1067,17 @@ def test_the_request_refuses_inputs_the_eligibility_gate_should_have_caught():
     )
     with pytest.raises(iv.PlannerInputError):
         iv.LinearizationRequest(
-            woofer=evidence, tweeter=replace(evidence, role="woofer"), **common
+            drivers=(evidence, replace(evidence, role="woofer")), **common
         )
     with pytest.raises(iv.PlannerInputError):
         iv.LinearizationRequest(
-            woofer=evidence,
-            tweeter=replace(evidence, role="tweeter"),
+            drivers=(evidence, replace(evidence, role="tweeter")),
             **{**common, "polarity_sign": 0},
         )
     with pytest.raises(iv.PlannerInputError):
         iv.LinearizationRequest(
-            woofer=replace(evidence, response=None),
-            tweeter=replace(evidence, role="tweeter"),
+            drivers=(replace(evidence, response=None),
+                     replace(evidence, role="tweeter")),
             **common,
         )
 

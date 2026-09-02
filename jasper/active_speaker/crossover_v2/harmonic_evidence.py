@@ -102,6 +102,7 @@ from typing import Any
 
 import numpy as np
 
+from ..profile import DRIVER_ROLES_BY_WAY
 from .evidence_packet import (
     HARMONICS_ARTIFACT,
     RING_SIDECAR_GLOB,
@@ -123,6 +124,7 @@ __all__ = [
     "RING_NOT_SCOPED_TO_ONE_SESSION",
     "STATE_UNREADABLE",
     "HarmonicEvidenceRefused",
+    "banked_roles",
     "read_round_harmonics",
     "rebuild_measure_program",
 ]
@@ -331,7 +333,7 @@ def _banked_sweep_durations_s(
     from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 
     durations: dict[str, float] = {}
-    for role in ("woofer", "tweeter"):
+    for role in bands:
         value = raw.get(role)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
@@ -358,6 +360,19 @@ def _banked_sweep_durations_s(
             return None
         durations[role] = float(value)
     return durations
+
+
+def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
+    """WHICH branches this round swept, read off its own banked gain plan.
+
+    ``DRIVER_ROLES_BY_WAY`` resolved against the roles the plan names. Empty
+    when the bank names no roles, or a set no speaker shape declares; every
+    caller turns that into a refusal by name.
+    """
+    gains = state.get("gain_plan_db")
+    banked = set(gains) if isinstance(gains, Mapping) else set()
+    roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())
+    return roles if set(roles) == banked else ()
 
 
 def rebuild_measure_program(
@@ -403,9 +418,15 @@ def rebuild_measure_program(
         build_measure_program,
     )
 
-    from .programs import PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase
+    from .programs import (
+        courtesy_prelude_for_phase,
+        leading_pilot_role,
+        pilot_gains,
+    )
 
-    gains = state.get("gain_plan_db") or {}
+    roles = banked_roles(state)
+    raw_gains = state.get("gain_plan_db")
+    gains = raw_gains if isinstance(raw_gains, Mapping) else {}
     candidate = state.get("candidate") or {}
     want = candidate.get("program_id") if isinstance(candidate, Mapping) else None
     if not isinstance(want, str) or not want:
@@ -420,14 +441,19 @@ def rebuild_measure_program(
                 ),
             },
         )
-    if not isinstance(gains, Mapping) or not {"woofer", "tweeter"} <= set(gains):
+    if not roles or set(bands) != set(roles):
         raise HarmonicEvidenceRefused(
             STATE_UNREADABLE,
-            {"missing": "gain_plan_db.woofer/tweeter", "program_id": want[:12]},
+            {
+                "missing": "a gain plan naming one shape's roles, and a band each",
+                "gain_plan_roles": sorted(gains),
+                "bands_supplied": sorted(bands),
+                "program_id": want[:12],
+            },
         )
-    roles = (
-        RoleBand("woofer", 0, FrequencyBand(*bands["woofer"])),
-        RoleBand("tweeter", 1, FrequencyBand(*bands["tweeter"])),
+    roles_bands = tuple(
+        RoleBand(role, index, FrequencyBand(*bands[role]))
+        for index, role in enumerate(roles)
     )
     # WHETHER the state carries a banking attempt at all, independent of
     # whether that attempt turned out usable (:func:`_banked_sweep_durations_s`
@@ -440,18 +466,17 @@ def rebuild_measure_program(
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
+    # Both pilot rules asked of the composer, never restated here.
+    pilot_role = leading_pilot_role(roles_bands)
     for prelude in (shipped, not shipped):
         for downstream in _DOWNSTREAM_GRID_DB:
             program = build_measure_program(
-                {role: float(gains[role]) for role in ("woofer", "tweeter")},
-                roles,
+                {role: float(gains[role]) for role in roles},
+                roles_bands,
                 sweep_durations=banked_durations,
                 downstream_gain_db=float(downstream),
-                leading_pilot_gains_db=(
-                    float(gains["woofer"]) - PILOT_LEVEL_DELTA_DB,
-                    float(gains["woofer"]),
-                ),
-                leading_pilot_role="woofer",
+                leading_pilot_gains_db=pilot_gains(float(gains[pilot_role])),
+                leading_pilot_role=pilot_role,
                 courtesy_prelude=prelude,
             )
             if program.program_id == want:

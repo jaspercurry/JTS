@@ -81,6 +81,7 @@ __all__ = [
     "EvidenceTrust",
     "InterventionProposal",
     "IterationHeadroom",
+    "LINEARIZATION_OUTCOME_SINGLE_BRANCH",
     "MEASURE_KINDS",
     "MEASURE_KIND_BASELINE",
     "MEASURE_KIND_CANDIDATE",
@@ -428,6 +429,25 @@ class CandidateAcousticContext:
             )
         return cls(fc_hz=corners.pop(), sections_by_role=sections_by_role)
 
+    @classmethod
+    def for_candidate(
+        cls,
+        sections_by_role: Mapping[str, Sequence[CrossoverSection]],
+        *,
+        roles: Sequence[str],
+    ) -> "CandidateAcousticContext | None":
+        """The context a candidate of this SHAPE is planned and proposed at.
+
+        ``None`` for the one shape that legitimately has no corner: a 1-way
+        main. Every other shape still fails closed on an empty section set, as
+        :meth:`from_sections` refuses. THE one derivation, asked by both the
+        planner and the proposal assembler.
+        """
+
+        if len(roles) == 1 and not any(sections_by_role.values()):
+            return None
+        return cls.from_sections(sections_by_role)
+
     @property
     def sections_by_role(self) -> dict[str, tuple[CrossoverSection, ...]]:
         """A fresh mapping each call — the stored value stays immutable."""
@@ -499,8 +519,8 @@ class TrimStrategy(str, Enum):
     It had a second, drift-qualified sibling until #2392 — the issue #2291
     Phase 5c-iii left the question to — and that member is deleted rather than
     restored, because the drift case turned out not to need one:
-    :attr:`~.intervention.TrimDecision.outcome` is ``"trim_rejected"`` if and
-    only if :attr:`~.intervention.TrimDecision.beyond_sanity_margin`, and
+    :attr:`~.plan_assembly.TrimDecision.outcome` is ``"trim_rejected"`` if and
+    only if :attr:`~.plan_assembly.TrimDecision.beyond_sanity_margin`, and
     :func:`~.intervention.decide_trim` commits the anchor on exactly that
     branch, so the string determines
     :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely.  An "unrecorded"
@@ -545,6 +565,20 @@ class TrimStrategy(str, Enum):
     COMMITTED_PAIR_UNRECORDED = "committed_pair_unrecorded"
     """A trim pair was committed, in margin; the artifact does not say which."""
 
+    NO_PAIR_TO_TRIM = "no_pair_to_trim"
+    """The speaker has ONE branch, so no inter-driver trim exists to commit.
+
+    Distinct from :attr:`NOT_FITTED`: a 1-way main's branch IS fitted and ships
+    at a fixed 0 dB. Reached from :data:`LINEARIZATION_OUTCOME_SINGLE_BRANCH`.
+    """
+
+
+#: :attr:`~.plan_assembly.LinearizationPlan.outcome` for a round whose speaker
+#: has ONE branch. A sibling of ``"fitted"`` rather than that value, which maps
+#: to :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` and would claim a
+#: committed trim pair for a speaker that solved none.
+LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
+
 
 # --------------------------------------------------------------------------
 # the proposal
@@ -571,8 +605,11 @@ class InterventionProposal:
     candidate: Any
     """The complete ``MeasuredCrossoverCandidate`` this proposal would apply."""
 
-    context: CandidateAcousticContext
-    """The one Fc owner: candidate corner and sections, agreeing by construction."""
+    context: CandidateAcousticContext | None
+    """The one Fc owner: candidate corner and sections, agreeing by construction.
+
+    ``None`` on a 1-way main, which declares no crossover for a context to own.
+    """
 
     evidence_identities: Mapping[str, Any]
     """Source evidence identities (session, program, candidate fingerprint, …)."""
@@ -607,7 +644,7 @@ class InterventionProposal:
         self,
         *,
         candidate: Any,
-        context: CandidateAcousticContext,
+        context: CandidateAcousticContext | None,
         evidence_identities: Mapping[str, Any] | None = None,
         predicted_response_before: Any = None,
         predicted_response_after: Any = None,
@@ -626,7 +663,7 @@ class InterventionProposal:
     ) -> None:
         if candidate is None:
             raise CrossoverV2ContractError("a proposal needs a measured candidate")
-        if not isinstance(context, CandidateAcousticContext):
+        if context is not None and not isinstance(context, CandidateAcousticContext):
             raise CrossoverV2ContractError(
                 "context must be a CandidateAcousticContext"
             )
@@ -710,10 +747,13 @@ class InterventionProposal:
         object.__setattr__(self, "fingerprint", json_fingerprint(self._core()))
 
     @property
-    def fc_hz(self) -> float:
-        """The candidate corner — read from the context, never from a session."""
+    def fc_hz(self) -> float | None:
+        """The candidate corner — read from the context, never from a session.
 
-        return self.context.fc_hz
+        ``None`` is a 1-way main declaring no corner, never an unreadable one.
+        """
+
+        return None if self.context is None else self.context.fc_hz
 
     @property
     def candidate_fingerprint(self) -> str:
@@ -724,7 +764,7 @@ class InterventionProposal:
             "schema_version": SCHEMA_VERSION,
             "kind": "jts_crossover_v2_intervention_proposal",
             "candidate_fingerprint": self.candidate_fingerprint,
-            "context": self.context.to_dict(),
+            "context": None if self.context is None else self.context.to_dict(),
             "evidence_identities": dict(self.evidence_identities),
             "predicted_response_before": _curve_json(self.predicted_response_before),
             "predicted_response_after": _curve_json(self.predicted_response_after),
@@ -1519,9 +1559,9 @@ POLARITY_INVERTED = "inverted"
 POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)
 
 #: The driver branches a `polarity=inverted` measurement may flip. Owner:
-#: `profile.DRIVER_ROLES_BY_WAY[2]` — the program graph is scoped to a 2-way
-#: preset (`camilla_yaml.emit_active_speaker_program_config` refuses any other
-#: `way_count`), so these two roles are the whole set a measurement can name.
+#: `profile.DRIVER_ROLES_BY_WAY[2]`. A polarity flip is a statement about two
+#: branches summing, so a 1-way's MeasureSpec names no inverted role and the
+#: 2-way pair stays the whole set a measurement can name.
 DRIVER_ROLE_WOOFER = "woofer"
 DRIVER_ROLE_TWEETER = "tweeter"
 DRIVER_ROLES = (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER)
@@ -1536,3 +1576,32 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 #: `spatial._DESIGN_AXIS_GEOMETRY` declares. `None` is a different fact — "no
 #: side was declared" — and must never be minted here as a synonym for this.
 DESIGN_AXIS_DEG = 0
+
+#: The three states a plan §7 claim can be in; ``not_evaluated`` is first-class
+#: and never collapses into the other two (R18).
+CLAIM_PASS = "pass"
+CLAIM_FAIL = "fail"
+CLAIM_NOT_EVALUATED = "not_evaluated"
+
+
+def measure_pair_claim(reason: str) -> dict[str, Any]:
+    """The MEASURE verdict's pair claim when there was no pair to evaluate.
+
+    The inter-driver axes — corner, delay, polarity, trim — are statements
+    about two branches, so a solo round names their absence.
+    """
+    return {"pair": {"status": CLAIM_NOT_EVALUATED, "reason": reason}}
+
+
+def realized_branch_level(
+    verdict: Mapping[str, Any] | None, *, pair_reason: str | None,
+) -> Mapping[str, Any] | None:
+    """The committed pair's realized level, or the named absence of a pair.
+
+    ``None`` still means a pair existed and nothing graded it; ``pair_reason``
+    names the case where there was no pair, in the MEASURE verdict's own
+    ``not_evaluated`` vocabulary.
+    """
+    if verdict is not None or pair_reason is None:
+        return verdict
+    return {"status": CLAIM_NOT_EVALUATED, "reason": pair_reason}

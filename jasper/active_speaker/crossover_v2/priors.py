@@ -40,14 +40,14 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
 from ..camilla_yaml import role_polarity
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     AppliedAlignment,
     MeasurementPriors,
-    overlap_band_hz,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from jasper.audio_measurement.program import ExcitationProgram
+    from jasper.audio_measurement.program import ExcitationProgram, ProgramSegment
 
 __all__ = [
     "role_transfers",
@@ -127,26 +127,48 @@ def candidate_required_band_hz(
     }
 
 
+def _sweep_branches(
+    measure_program: "ExcitationProgram | None",
+) -> tuple["ProgramSegment", ...]:
+    """The first-occurrence sweep of every branch the program carries, lowest
+    first.
+
+    ``build_measure_program`` pins ``sweep_w`` for the lower driver and
+    ``sweep_t`` for the upper one, and a 1-way main's solo keeps the ``sweep_w``
+    spelling, so a missing ``sweep_t`` is a one-branch program, not a broken one.
+    """
+    if measure_program is None:
+        return ()
+    branches: list["ProgramSegment"] = []
+    for segment_id in ("sweep_w", "sweep_t"):
+        try:
+            branches.append(measure_program.segment(segment_id))
+        except KeyError:
+            break
+    return tuple(branches)
+
+
 def measure_sweep_bounds(
     measure_program: "ExcitationProgram | None",
-) -> tuple[float | None, float | None]:
-    """MEASURE's ACTUAL ``(tweeter sweep lo, woofer sweep hi)``, or ``None``s.
+) -> tuple[float, float] | None:
+    """The band EVERY MEASURE branch was excited over, or ``None``.
 
     Read off the COMPOSED MEASURE program rather than derived from Fc, so every
     consumer of :func:`overlap_band_hz`'s clamp — VERIFY's tracking comparison
-    and R17's per-candidate scoring band — bounds itself by the frequencies both
+    and R17's per-candidate scoring band — bounds itself by the frequencies the
     branches were actually excited at (§5.6). One reader, because a second would
     be a second answer to "what did this session sweep".
+
+    On a pair that is the upper branch's sweep floor and the lower branch's
+    sweep ceiling; on a 1-way main, the solo sweep's own band.
     """
-    if measure_program is None:
-        return None, None
-    try:
-        return (
-            measure_program.segment("sweep_t").f1_hz,
-            measure_program.segment("sweep_w").f2_hz,
-        )
-    except KeyError:
-        return None, None
+    branches = _sweep_branches(measure_program)
+    if not branches:
+        return None
+    lo, hi = branches[-1].f1_hz, branches[0].f2_hz
+    if lo is None or hi is None:
+        return None
+    return float(lo), float(hi)
 
 
 def measure_sweep_durations_s(
@@ -154,32 +176,25 @@ def measure_sweep_durations_s(
 ) -> dict[str, float] | None:
     """MEASURE's ACTUAL per-role sweep length, realized — possibly fitted.
 
-    Read off the SAME first-occurrence segments :func:`measure_sweep_bounds`
-    reads its band edges from (``sweep_w`` / ``sweep_t``), so the two stay one
-    source of what the session actually played. #2921's duration fit can
-    shorten either role's sweep to the longest phase-closing length at or
-    below its admitted limit; this is the length that was REALIZED, not the
-    nominal request, which is what a caller banking it (round state, #2923)
-    needs — the fit is a continuous float no search grid can reach, so an
-    offline rebuild can only reproduce a fitted program by reading this back.
-    ``None`` when there is no MEASURE program yet, mirroring
-    :func:`measure_sweep_bounds`.
+    One entry per branch :func:`_sweep_branches` finds — the SAME segments
+    :func:`measure_sweep_bounds` reads its band edges from, so the two stay one
+    source of what the session actually played, and a 1-way main banks its solo
+    rather than nothing. #2921's duration fit can shorten any role's sweep to
+    the longest phase-closing length at or below its admitted limit; this is
+    the length that was REALIZED, not the nominal request, which is what a
+    caller banking it (round state, #2923) needs — the fit is a continuous
+    float no search grid can reach, so an offline rebuild can only reproduce a
+    fitted program by reading this back. ``None`` when there is no MEASURE
+    program yet, mirroring :func:`measure_sweep_bounds`.
     """
-    if measure_program is None:
-        return None
-    try:
-        woofer = measure_program.segment("sweep_w")
-        tweeter = measure_program.segment("sweep_t")
-    except KeyError:
+    branches = _sweep_branches(measure_program)
+    if measure_program is None or not branches:
         return None
     rate = measure_program.sample_rate_hz
-    return {
-        str(woofer.role): woofer.n_samples / rate,
-        str(tweeter.role): tweeter.n_samples / rate,
-    }
+    return {str(seg.role): seg.n_samples / rate for seg in branches}
 
 
-def check_priors(*, fc_hz: float) -> MeasurementPriors:
+def check_priors(*, fc_hz: float | None) -> MeasurementPriors:
     """CHECK's priors — Fc only, for the MEASURE level solve (#1825).
 
     CHECK used to run on bare defaults. Its gain solve now scopes each band's
@@ -196,7 +211,7 @@ def check_priors(*, fc_hz: float) -> MeasurementPriors:
 
 def measure_priors(
     *,
-    fc_hz: float,
+    fc_hz: float | None,
     source_preset: Any,
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None,
     ambient_report: Any,
@@ -285,9 +300,10 @@ def measure_priors(
         ),
         # §4.2's candidate-required bins, from their single owner above. Gated
         # with the other configured-path fields for the partial-set reason in
-        # this docstring, never re-derived here.
+        # this docstring, never re-derived here. Also absent with no corner: the
+        # union is half an overlap band, and a 1-way declares neither.
         candidate_required_band_hz_by_role=(
-            None if protection_sections_by_role is None
+            None if protection_sections_by_role is None or fc_hz is None
             else candidate_required_band_hz(
                 sections_by_role(source_preset.crossover_regions), fc_hz=fc_hz,
             )
@@ -338,7 +354,7 @@ def candidate_priors(
     )
 
 
-def lateral_priors(*, fc_hz: float, ambient_report: Any) -> MeasurementPriors:
+def lateral_priors(*, fc_hz: float | None, ambient_report: Any) -> MeasurementPriors:
     """Priors for one lateral pose — MEASURE-shaped, deliberately NEUTRAL.
 
     Everything the anchor gets EXCEPT the configured-path composition maps. That
@@ -364,10 +380,10 @@ def lateral_priors(*, fc_hz: float, ambient_report: Any) -> MeasurementPriors:
 
 def verify_priors(
     *,
-    fc_hz: float,
+    fc_hz: float | None,
     source_preset: Any,
     predicted_sum: Any,
-    sweep_bounds: tuple[float | None, float | None],
+    sweep_bounds: tuple[float, float] | None,
 ) -> MeasurementPriors:
     """VERIFY's priors — the tracking comparison, and the absolute claim.
 
@@ -379,21 +395,19 @@ def verify_priors(
     RAISES on a partial prior set) is reachable only from ``_analyze_measure``;
     keep it that way.
     """
-    tweeter_sweep_lo_hz, woofer_sweep_hi_hz = sweep_bounds
     configured_response, configured_polarity = configured_crossover_transfers(
         source_preset
     )
     return MeasurementPriors(
         crossover_fc_hz=fc_hz,
         predicted_sum=predicted_sum,
-        measure_tweeter_sweep_lo_hz=tweeter_sweep_lo_hz,
-        measure_woofer_sweep_hi_hz=woofer_sweep_hi_hz,
+        measure_excited_band_hz=sweep_bounds,
         configured_crossover_response_by_role=configured_response,
         configured_polarity_sign_by_role=configured_polarity,
     )
 
 
-def cloud_priors(*, fc_hz: float) -> MeasurementPriors:
+def cloud_priors(*, fc_hz: float | None) -> MeasurementPriors:
     """Priors for a position-group capture — deliberately WITHOUT ``predicted_sum``.
 
     VERIFY's priors carry the MEASURE-derived prediction so ``_analyze_verify``
@@ -418,7 +432,7 @@ def cloud_priors(*, fc_hz: float) -> MeasurementPriors:
     return MeasurementPriors(crossover_fc_hz=fc_hz)
 
 
-def entry_baseline_priors(*, fc_hz: float) -> MeasurementPriors:
+def entry_baseline_priors(*, fc_hz: float | None) -> MeasurementPriors:
     """Priors for #2291's pre-apply capture — the SAME two withholdings
     :func:`cloud_priors` makes, for a different reason.
 
@@ -438,9 +452,9 @@ def entry_baseline_priors(*, fc_hz: float) -> MeasurementPriors:
       ``analysis.verify_tracking`` ``None``, which is what
       :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_realization`
       already reads as UNAVAILABLE rather than as a pass.
-    * ``measure_tweeter_sweep_lo_hz`` / ``measure_woofer_sweep_hi_hz`` —
-      **dropped**. They exist only to clamp the tracking comparison's graded
-      band, and there is no tracking comparison here.
+    * ``measure_excited_band_hz`` — **dropped**. It exists only to clamp the
+      tracking comparison's graded band, and there is no tracking comparison
+      here.
     * ``configured_crossover_response_by_role`` /
       ``configured_polarity_sign_by_role`` — **dropped** (R18, #1868). They let
       ``_analyze_verify`` make the crossover-region ABSOLUTE claim against the

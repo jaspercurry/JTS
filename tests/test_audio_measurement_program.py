@@ -230,9 +230,15 @@ def test_measure_composer_raises_clear_error_if_ceiling_ever_exceeded_nyquist(mo
         build_measure_program(_gain_plan(), roles)
 
 
-def test_measure_requires_two_drivers_and_all_gains():
+def test_measure_takes_one_or_two_drivers_and_needs_every_gain():
+    # One declared driver is a 1-way passive main, not a malformed 2-way: it
+    # composes, with the single role keeping the ``sweep_w`` spelling the drift
+    # anchor resolves on.
+    one_way = build_measure_program(_gain_plan(), _roles()[:1])
+    assert one_way.segment("sweep_w").role == "woofer"
+    assert "sweep_t" not in {seg.segment_id for seg in one_way.segments}
     with pytest.raises(ValueError):
-        build_measure_program(_gain_plan(), _roles()[:1])
+        build_measure_program(_gain_plan(), _roles() + _roles()[:1])
     with pytest.raises(ValueError):
         build_measure_program({"woofer": -11.0}, _roles())
 
@@ -303,6 +309,33 @@ def test_verify_pilot_falls_back_below_the_crossover_for_degenerate_low_fc():
     assert pilot.f1_hz == pytest.approx(400.0 / 8.0)  # 50
     assert pilot.f2_hz == pytest.approx(400.0 / 4.0)  # 100
     assert pilot.f2_hz < 400.0 / 2.0
+
+
+@pytest.mark.parametrize(
+    ("band_hz", "expected_pilot"),
+    [
+        ((45.0, 18000.0), (VERIFY_PILOT_F_LO_HZ, VERIFY_PILOT_F_HI_HZ)),
+        ((2000.0, 12000.0), (2000.0, 12000.0)),
+    ],
+    ids=["clamped_into_the_declaration", "the_declaration_is_its_own_hull"],
+)
+def test_a_no_crossover_verify_rides_the_declaration_instead_of_a_corner(
+    band_hz, expected_pilot,
+):
+    """A speaker with no corner clamps the fixed pilot window INTO its declared
+    band, and falls back to that band rather than to ``[fc/8, fc/4]``."""
+    prog = build_verify_program(
+        None, measurement_band_hz=band_hz, leading_pilot_gains_db=(-30.0, -20.0),
+    )
+    pilots = [s for s in prog.segments if s.segment_id.startswith("pilot_summed_")]
+
+    assert pilots
+    assert {(s.f1_hz, s.f2_hz) for s in pilots} == {expected_pilot}
+    # The sweep's low edge widens off the declaration the way a corner widens it.
+    assert prog.segment("sweep_verify").f1_hz == pytest.approx(min(150.0, band_hz[0]))
+    # …and the declaration is required: there is nothing else to derive from.
+    with pytest.raises(ValueError):
+        build_verify_program(None)
 
 
 # --------------------------------------------------------------------------- #

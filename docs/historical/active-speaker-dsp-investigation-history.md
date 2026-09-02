@@ -485,9 +485,7 @@
 > generator/persistence functions
 > (never hand-edited JSON) and is safe-by-construction: it never produces the
 > dangerous roleful-topology + flat-graph combination. Web reset requests are
-> stale-page fenced; the canonical request preconditions and conflict behavior
-> live in the
-> [speaker-output reference](../HANDOFF-speaker-output-reference.md#current-outputd-state).
+> stale-page fenced.
 > Implementation:
 > `jasper/cli/output_topology_reset.py`.
 > `jasper.active_speaker.bringup` and
@@ -634,9 +632,7 @@
 > Commissioning serializes against room correction / balance / sync cooperatively
 > via [`jasper/web/active_speaker_flow.py`](../../jasper/web/active_speaker_flow.py)'s
 > self-expiring `active_phase()` (it can't hold `measurement_window` across its
-> per-request flow). Canonical home for the L1 product tier:
-> [HANDOFF-audio-measurement-core.md](../HANDOFF-audio-measurement-core.md)
-> "L1 measured level match". On-Pi (jts3) audible pass still owed.
+> per-request flow). On-Pi (jts3) audible pass still owed.
 > **Phone measurement is optional for safe normal playback.** A household can
 > commission and apply an active baseline with zero phone use: each driver is
 > confirmed by ear (yielding a provisional estimate), and the combined crossover check offers a by-ear
@@ -1095,9 +1091,7 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    DAC8x/DAC8x Studio (8ch), and the dual-Apple 4-channel composite. The
    transport dispatches on clock-domain *shape* (coherent single / paired
    composite) with width + channel map as data, so future coherent DACs ride it
-   without per-DAC code. Full design + change set:
-   [HANDOFF-speaker-output-reference.md](../HANDOFF-speaker-output-reference.md)
-   "DAC-agnostic active-output transport (design-of-record)".
+   without per-DAC code.
 
 2. **Commissioning orchestration** (browser/API capture submission wired;
    live sweep playback/capture validation pending). The target live sequence is:
@@ -1546,15 +1540,10 @@ tweeter high-pass. Preference boosts ride at unity, matching the ordinary
 fold into the single `active_baseline_headroom` gain. The recomposed graph
 re-proves as
 `GRAPH_APPROVED_ACTIVE_RUNTIME` (the protection contract is independently
-re-verified — see
-[HANDOFF-dsp-graph-carrier.md](../HANDOFF-dsp-graph-carrier.md)). During
+re-verified). During
 measurement, `/correction/start` uses the same carrier with `room_peqs=[]` and
 preference EQ disabled, so the sweep hears the raw room through the protected
-speaker baseline. Active×grouping
-runtime behavior is now owned by
-[HANDOFF-distributed-active.md](../HANDOFF-distributed-active.md): solo active
-graphs keep this contract, while bonded active members use the driver-domain
-Layer-A re-entry path described there.
+speaker baseline.
 
 The speaker baseline is the thing that makes the box a coherent
 speaker. It should be commissioned once per hardware build and changed
@@ -1804,9 +1793,7 @@ Delay alignment is measured, not guessed.
 > [`jasper/active_speaker/crossover_alignment.py`](../../jasper/active_speaker/crossover_alignment.py)
 > (the `phase_aware` gate + the reverse-vs-in-phase null-margin polarity call) and
 > `driver_acoustics`'s calibrated capture (`analyze_summed_crossover(expect_null=…)`).
-> The operational write-up + the `/active-speaker/crossover-alignment` preview route
-> are in [HANDOFF-audio-measurement-core.md](../HANDOFF-audio-measurement-core.md) "L2
-> calibrated crossover alignment". **The delay VALUE is deliberately NOT proposed
+> **The delay VALUE is deliberately NOT proposed
 > from per-driver IR arrivals** — JTS's near-field captures are browser-recorded
 > with no sample-sync to playback, so an arrival delta is capture jitter, not
 > time-of-flight (consistent with "impulse response … [is] not [a] substitute for

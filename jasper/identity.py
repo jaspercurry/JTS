@@ -134,7 +134,7 @@ def _resolve_hostname() -> str:
     return recorded or DEFAULT_HOSTNAME
 
 
-#: Where a human goes to run, apply, or undo a crossover round.
+#: Where a human goes to run or apply a crossover round.
 CROSSOVER_PAGE_PATH = "/sound/crossover/"
 
 #: Where a human DECLARES the speaker — drivers, their safety profile, the

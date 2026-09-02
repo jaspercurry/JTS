@@ -34,8 +34,6 @@ architecture, or campaign state, all of which have owners:
 - **Room tiers, the room-boundary ceiling, the two-instrument boundary** —
   [`room-correction-regime-plan.md`](../room-correction-regime-plan.md)
   (issue #1791)
-- **Campaign state, owed hardware slices, CURRENT POSITION** —
-  [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)
 - **Commission flow grading** —
   [`tuning-operator-runbook.md`](../tuning-operator-runbook.md); **architecture
   and file map** —
@@ -273,12 +271,6 @@ against a crossover-region dip that a scalar trim cannot address.
 ---
 
 ## The DoD hardware run
-
-The owed slices live in
-[`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)'s
-CURRENT POSITION block. **Read it live rather than any summary** — it is the
-campaign's fastest-moving fact, it carries its own date marker, and a copy
-of it here would be stale within the week.
 
 What this roadmap adds is only the framing: there are five owed slices,
 every one of them is evidence debt rather than implementation debt, and no

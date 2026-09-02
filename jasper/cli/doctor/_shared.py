@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 from ...env_load import parse_env_file as _shared_parse_env_file
+from ...secret_redaction import redact_secrets
 
 GREEN = "\033[32m"
 
@@ -91,30 +92,8 @@ DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
 
 _EXCEPTION_DETAIL_LIMIT = 240
 
-_BEARER_SECRET_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-
-_KEY_VALUE_SECRET_RE = re.compile(
-    r"(?i)\b"
-    r"(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
-    r"password|psk|token)"
-    r"\s*([=:])\s*(['\"]?)([^'\"\s,;]+)"
-)
-
-_SECRET_PREFIX_RE = re.compile(r"\b(?:AIza|sk-|xai-)[A-Za-z0-9_-]{8,}")
-
-def _redact_exception_message(message: str) -> str:
-    message = _BEARER_SECRET_RE.sub("Bearer <redacted>", message)
-    message = _KEY_VALUE_SECRET_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}<redacted>",
-        message,
-    )
-    return _SECRET_PREFIX_RE.sub(
-        lambda m: f"{m.group(0)[:4]}...{m.group(0)[-4:]}",
-        message,
-    )
-
 def _exception_detail(exc: BaseException) -> str:
-    message = _redact_exception_message(str(exc))
+    message = redact_secrets(str(exc))
     if len(message) > _EXCEPTION_DETAIL_LIMIT:
         message = message[: _EXCEPTION_DETAIL_LIMIT - 3] + "..."
     if not message:

@@ -406,6 +406,14 @@ class LiveConnection(Protocol):
         during a known-down period are a clean no-op)."""
         ...
 
+    def last_failure_detail(self) -> str | None:
+        """Why the last reconnect failed, or None while healthy.
+
+        Provider-agnostic and already redacted — see
+        ``_supervisor.failure_detail``. Surfaced at
+        ``/state.voice.connection_error``."""
+        ...
+
     def supports_server_vad(self) -> bool:
         """Whether this provider supports mid-session switching to
         server-side VAD via set_turn_detection(). Default False —

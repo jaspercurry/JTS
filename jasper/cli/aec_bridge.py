@@ -461,9 +461,7 @@ class BridgeConfig:
                 REF_SOURCE,
             ).strip().lower(),
             out_port_aec3_sweep={
-                variant.leg: int(
-                    os.environ.get(variant.port_env, str(variant.default_port))
-                )
+                variant.leg: variant.default_port
                 for variant in sweep_config.variants
             },
             usb_mic_device=os.environ.get(

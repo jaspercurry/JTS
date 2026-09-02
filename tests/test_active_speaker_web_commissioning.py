@@ -1534,7 +1534,7 @@ def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
     matched = _staged_anchor_for(topology, staged_path)
 
     # THE GATE ITSELF IS DRIVEN, not its two predicates. An earlier version of
-    # this pin asserted `_config_paths_match(p, p)` (a string against itself)
+    # this pin asserted `same_config_file(p, p)` (a string against itself)
     # and `staged_topology_match_status(...)` — a helper this change does not
     # touch — and never called `_ensure_commission_startup_anchor` at all, so
     # reverting the port left it green. Composition is the subject; the

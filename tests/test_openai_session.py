@@ -2008,6 +2008,51 @@ async def test_initial_connect_non_transient_error_raises_immediately():
     assert conn._state is ConnectionState.FAILED
 
 
+async def test_initial_connect_records_the_provider_reason():
+    """A restart mid-outage must not repeat the 2026-09-01 blind spot.
+
+    websockets renders a refused handshake as a bare "HTTP 403"; the
+    reason the household can act on is in the response body. Pin that
+    the body reaches `last_failure_detail` (and so the journal and
+    /state.voice.connection_error), not just the status line.
+    """
+    class _Rejected(Exception):
+        def __init__(self) -> None:
+            super().__init__(
+                "server rejected WebSocket connection: HTTP 403"
+            )
+            self.response = _RejectedResponse()
+
+    class _RejectedResponse:
+        status_code = 403
+        body = b'{"error":"Your team has used all available credits."}'
+
+    conn, _factory, _clock = _make_conn_with_clock(
+        budget_sec=600.0, fail_count=1, fail_exc=_Rejected(),
+    )
+    with pytest.raises(_Rejected):
+        await conn.start(ToolRegistry(), "")
+
+    detail = conn.last_failure_detail()
+    assert detail is not None
+    assert "used all available credits" in detail
+
+
+async def test_successful_connect_clears_the_failure_detail():
+    """`last_failure_detail` promises None while healthy, so a recovery
+    on ANY open path must clear it — otherwise /state reports a stale
+    outage on a working connection."""
+    conn, _factory, _clock = _make_conn_with_clock(
+        budget_sec=600.0, fail_count=2,
+    )
+    await conn.start(ToolRegistry(), "")
+    try:
+        assert conn._state is ConnectionState.CONNECTED
+        assert conn.last_failure_detail() is None
+    finally:
+        await conn.stop()
+
+
 async def test_initial_connect_zero_budget_is_single_attempt():
     """budget=0 means "single attempt, no retries" — a transient
     failure on the first attempt exhausts immediately. Useful for

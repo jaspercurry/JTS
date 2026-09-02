@@ -901,7 +901,7 @@ def test_chip_aec_readiness_unknown_runtime_recommends_observability_fix():
     )
 
 
-def test_chip_aec_hardware_validation_passive_evidence_warns_until_drift_probe():
+def test_chip_aec_hardware_validation_clean_passive_evidence_still_recommends_drift_probe():
     inputs = _active_chip_inputs()
     artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
         **inputs,
@@ -921,12 +921,14 @@ def test_chip_aec_hardware_validation_passive_evidence_warns_until_drift_probe()
         duration_seconds=10,
     )
 
-    assert artifact.status == "warn"
+    assert artifact.status == "pass"
     assert artifact.checks["outputd_reference_health"]["status"] == "pass"
     assert artifact.checks["bridge_counter_window"]["status"] == "pass"
     assert artifact.checks["chip_profile_readback"]["status"] == "pass"
     assert artifact.checks["chip_convergence"]["status"] == "pass"
-    assert artifact.checks["measured_drift_delay"]["status"] == "not_run"
+    assert "measured_drift_delay" not in artifact.checks
+    # The hardware recommendation stays gated behind an explicit drift/delay
+    # probe even though every sampled check passes.
     assert artifact.recommendation == "run_drift_delay_validation"
     assert "No playback stimulus was generated." in artifact.notes
     assert "No XVF chip settings were written or persisted." in artifact.notes

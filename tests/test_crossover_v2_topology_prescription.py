@@ -43,6 +43,7 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_AUTHORITY_OPERATOR_PINNED,
     TOPOLOGY_FC_INVALID,
     TOPOLOGY_MALFORMED,
+    TOPOLOGY_NO_CROSSOVER_REGION,
     TOPOLOGY_ORDER_INVALID,
     TOPOLOGY_ORDER_UNSUPPORTED,
     TOPOLOGY_PRESCRIPTION_KEY,
@@ -686,6 +687,19 @@ def test_every_refusal_carries_a_reason_from_the_closed_set(raw):
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(raw)
     assert excinfo.value.reason in TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS
+
+
+def test_a_way_one_speaker_refuses_the_door_rather_than_blaming_its_corner():
+    """``full_range_passive`` has no crossover region to re-topologize, and
+    saying THAT is a different answer from an inadmissible corner — which sends
+    a prescriber to re-choose a number that can never exist."""
+    with pytest.raises(TopologyPrescriptionRefused) as excinfo:
+        _read(_pin(2400.0), way_count=1)
+    assert excinfo.value.reason == TOPOLOGY_NO_CROSSOVER_REGION
+    # Two remedies, so two slugs — they may never be collapsed into one.
+    assert TOPOLOGY_NO_CROSSOVER_REGION != TOPOLOGY_FC_INVALID
+    # A real two-way is untouched: the fact is the topology's, not the pin's.
+    assert _read(_pin(2400.0), way_count=2) is not None
 
 
 def test_the_response_format_advertises_exactly_the_refusals_that_exist():

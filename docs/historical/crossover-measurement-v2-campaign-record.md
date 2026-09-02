@@ -268,9 +268,7 @@ another tune. A conflicting recovery capture does not bank a second journey
 record or decision under the store-owned identity. Journey-scoped attempt
 history
 survives the relay-session rebind between apply and VERIFY; capture-phase
-evidence remains session-scoped as before. This is rung P4's live seam; see the
-[correction revision spine](HANDOFF-correction-revision-plan.md#rung-p4--wire-the-learning-loop)
-for program context.
+evidence remains session-scoped as before. This is rung P4's live seam.
 
 That history survives further than the rebind, and stating only the rebind
 understated it: `reset_v2_journey_state` — "Start over", the household's route
@@ -448,9 +446,7 @@ calibration now refuses a device whose label matches a *different* registered
 model (#1660 threaded `device` into the room-relay guard, landed #2036). The
 **surviving, narrower** fact is that identity binds by **model family**, not by
 physical device — two same-model mics with different serials still cross-bind,
-and per-serial entry is unbuilt. This matches
-[`HANDOFF-correction.md`](../HANDOFF-correction.md)'s statement of the same
-boundary; the serial-entry remainder is #2053).
+and per-serial entry is unbuilt (the serial-entry remainder is #2053).
 
 **A glitch verdict is a timeline SPLICE, not clock drift (2026-07-27,
 issue #1765).** Across the whole 2026-07-22…27 JTS3 journal (57 MEASURE
@@ -911,9 +907,7 @@ a per-driver linearization (a rising-slope Highshelf + Peaking cuts, plus the
 CD-horn top-octave give-back stage — a Lowshelf backbone + optional trailing
 Highshelf taper, #1668 — honoring the correction envelope's per-bin depth
 ceiling). It is **cut-only unless the evidence gate grants a lift vocabulary**
-— see `allow_boost` in `crossover_v2.intervention.plan_linearization` and the boost
-rationale in
-[HANDOFF-audio-measurement-core.md](../HANDOFF-audio-measurement-core.md); the
+— see `allow_boost` in `crossover_v2.intervention.plan_linearization`; the
 same envelope ceiling bounds a boost as bounds a cut. Fitted whenever the mic
 resolved to the "reference" trust tier AND both
 drivers cleared a paired ≥3-occurrence gate — otherwise the candidate is
@@ -5041,9 +5035,7 @@ no retries-as-bodge). Treat these as regression fences.
 
     **The confirm ceremony this entry is about no longer exists.** Saving
     the declaration IS declaring it, so a fingerprint rotation no longer
-    strands a household — see the refusal table above and
-    [`HANDOFF-sound-preferences.md`](../HANDOFF-sound-preferences.md) for the
-    current shape. Everything above stays true of the incident and of the
+    strands a household — see the refusal table above. Everything above stays true of the incident and of the
     session-open gate, which still runs and still fails closed on
     `missing` / `incomplete` / `stale` / `malformed`.
 
@@ -5213,9 +5205,7 @@ Tracked in the post-W6 follow-ups GitHub issue (filed 2026-07-19):
   the PR #1009 stale-bake recovery), `jasper-doctor` uses it as a
   last-resort fallback and recognizes source-fingerprinted active-baseline
   names, and `multiroom.leader_config` stashes/restores whatever CamillaDSP
-  reports live rather than opening a fixed name. See
-  [`HANDOFF-sound-preferences.md`](../HANDOFF-sound-preferences.md) for the
-  `sound_current.yml` lifecycle. (Deferred cleanups, not required by this
+  reports live rather than opening a fixed name. (Deferred cleanups, not required by this
   decision: drop the doctor's fixed-file fallback in favor of an explicit
   active-path-unavailable report, and a name migration to
   `sound_preferences_current.yml` — both owner-gated.)

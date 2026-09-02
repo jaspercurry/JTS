@@ -5,8 +5,7 @@
 > outputd-centered final-reference architecture. Preserved for
 > primary-source archaeology — specific facts (installed build IDs,
 > live-device state, "what's working" lists) will drift over time.
-> Read this for the narrative, not for current state. Current
-> operational truth lives in [HANDOFF-aec.md](HANDOFF-aec.md).
+> Read this for the narrative, not for current state.
 
 Date: 2026-06-18
 Scope: diagnostic baseline for the suspected chip-AEC regression after moving toward an outputd-centered final-reference architecture.

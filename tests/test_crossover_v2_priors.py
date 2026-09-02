@@ -25,7 +25,7 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection, radiating_band_hz, sections_by_role,
 )
 from jasper.active_speaker.crossover_v2 import priors
-from jasper.audio_measurement.program_analysis import overlap_band_hz
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
 
 from tests.crossover_v2_fixtures import FC_HZ, _preset
 
@@ -75,9 +75,8 @@ def test_the_captures_that_cannot_support_a_tracking_claim_are_told_nothing(
     # …and the R18 absolute-claim pair, dropped for the same shape of reason.
     assert got.configured_crossover_response_by_role is None
     assert got.configured_polarity_sign_by_role is None
-    # The band clamps exist only for a tracking comparison there is none of.
-    assert got.measure_tweeter_sweep_lo_hz is None
-    assert got.measure_woofer_sweep_hi_hz is None
+    # The band clamp exists only for a tracking comparison there is none of.
+    assert got.measure_excited_band_hz is None
     # Fc is KEPT: it is the session's declaration, not a claim about this
     # capture, and the analyzer places its bands with it.
     assert got.crossover_fc_hz == FC_HZ
@@ -223,7 +222,7 @@ def test_verify_carries_the_design_target_unguarded_by_protection():
     """
     got = priors.verify_priors(
         fc_hz=FC_HZ, source_preset=PRESET, predicted_sum=None,
-        sweep_bounds=(None, None),
+        sweep_bounds=None,
     )
 
     assert got.configured_crossover_response_by_role is not None
@@ -315,17 +314,18 @@ def test_the_sweep_bounds_come_off_the_composed_program():
         sweep_duration_limits_s={},
     ).measure_program({"woofer": -32.0, "tweeter": -38.0})
 
-    lo, hi = priors.measure_sweep_bounds(program)
+    bounds = priors.measure_sweep_bounds(program)
+    assert bounds is not None
+    lo, hi = bounds
 
     assert lo == program.segment("sweep_t").f1_hz
     assert hi == program.segment("sweep_w").f2_hz
-    assert lo is not None and hi is not None
     # Not the corner, and not a derivation from it.
     assert lo != FC_HZ and hi != FC_HZ
 
 
 def test_no_composed_program_means_no_bounds_rather_than_a_guess():
-    assert priors.measure_sweep_bounds(None) == (None, None)
+    assert priors.measure_sweep_bounds(None) is None
 
 
 def test_the_sweep_durations_come_off_the_composed_program_and_reflect_a_fit():

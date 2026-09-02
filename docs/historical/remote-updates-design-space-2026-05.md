@@ -8,9 +8,7 @@
 > path — GitHub Actions CI — did ship (`.github/workflows/tests.yml`,
 > 2026-05-23); CONTRIBUTING.md is authoritative for what CI runs today, not
 > the Stage 1 description below. Nothing here is current operational truth:
-> the deploy path is `bash scripts/deploy-to-pi.sh` per AGENTS.md, and the
-> install transaction is
-> [HANDOFF-install-update-transaction.md](../HANDOFF-install-update-transaction.md).
+> the deploy path is `bash scripts/deploy-to-pi.sh` per AGENTS.md.
 
 This document captures the option space, the recommended staged build-out, the
 integration points present in the codebase at the time, and the open questions,
@@ -97,9 +95,7 @@ engineering with real risks.
   developer.
 - Failure modes are scary: mid-update power cut, bad release breaks
   wake-word path, system-package install hangs on a stale apt
-  mirror. The [resilience ladder](../HANDOFF-resilience.md) exists
-  precisely because the speaker must keep responding to wake under
-  reasonable abuse.
+  mirror.
 - A "production speaker must be resilient and plug-and-play" rule
   is already enforced for hardware events (per the memory note of
   the same name); a remote-update flow that can wedge the speaker
@@ -370,9 +366,7 @@ to a new `jasper-control` endpoint.
   must play an audio cue. Add a new entry to
   [`jasper/cues/registry.py`](../../jasper/cues/registry.py)
   (`update_failed_rolled_back`, "Update failed; the speaker rolled
-  back to the previous version.") — see
-  [HANDOFF-audible-feedback.md](../HANDOFF-audible-feedback.md) for
-  the pattern.
+  back to the previous version.").
 
 **Dependency / system-package updates.** `install.sh` handles these
 idempotently. The button doesn't need separate logic per layer — it
@@ -391,8 +385,7 @@ the next implementer from re-discovering it):
   `write_build_manifest` with `JASPER_GIT_SHA`, `JASPER_GIT_SHA_FULL`,
   `JASPER_GIT_BRANCH`, `JASPER_INSTALL_AT`. Written **last**, only on
   a fully-successful install, so the manifest never claims a SHA the
-  box isn't cleanly running (see
-  [HANDOFF-install-update-transaction.md](../HANDOFF-install-update-transaction.md)).
+  box isn't cleanly running.
   Already the source of truth for "current version".
 - **`jasper/web/system_setup.py`** — serves
   `http://jts.local/system/`. Software card shows Version (short
@@ -421,9 +414,6 @@ the next implementer from re-discovering it):
   Pi-side updater plays the laptop-side role here: read the SHA from
   the checked-out tag, set the same env vars before invoking
   `install.sh`.
-- **The cue pattern** (per
-  [HANDOFF-audible-feedback.md](../HANDOFF-audible-feedback.md))
-  for audible failure feedback.
 - **`pyproject.toml`** — pip-editable install at `/opt/jasper`. Deps
   pinned (e.g. `google-genai`, `openai`, `scipy`). `[project.scripts]`
   block defines CLI entry points like `jasper-doctor`.
@@ -475,8 +465,7 @@ The actually-hard part. The five failure modes worth designing for:
 **Healthcheck signal.** Primary: `jasper-doctor --json` returning
 all checks `ok` or `warn` (not `fail`). Secondary candidates worth
 considering: `sd_notify` watchdog READY signal from `jasper-voice`
-within N seconds (Tier 1 of the
-[resilience ladder](../HANDOFF-resilience.md)); a deliberate "ping"
+within N seconds; a deliberate "ping"
 endpoint that the updater can curl. Probably want some combination.
 
 **Audio cue on failure.** Per AGENTS.md, every wake-blocking failure

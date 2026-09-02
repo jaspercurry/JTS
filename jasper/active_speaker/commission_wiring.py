@@ -108,9 +108,42 @@ def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] |
     return None, None
 
 
-def resolve_capture_preset(topology: Any) -> Any:
-    """Resolve the protected preset used by every capture-analysis surface."""
+def _is_passive_mains(topology: Any) -> bool:
+    """Whether this topology's mains carry no inter-driver crossover.
 
+    ``isinstance`` because every caller's parameter is typed ``Any``.
+    """
+    from jasper.output_topology import OutputTopology, topology_is_passive_mains
+
+    return isinstance(topology, OutputTopology) and topology_is_passive_mains(
+        topology
+    )
+
+
+def _passive_mains_preset(topology: Any) -> Any:
+    """The passive box's own preset, compiled from its saved topology.
+
+    Never the bundled 2-way JSON, which names drivers this box does not have.
+    """
+    from jasper.active_speaker.staging import build_passive_mains_preset
+
+    compiled, raw_issues, _gates = build_passive_mains_preset(topology)
+    if compiled is not None:
+        return compiled
+    raise CommissionPresetResolutionError(
+        [issue for issue in raw_issues if isinstance(issue, dict)]
+    )
+
+
+def resolve_capture_preset(topology: Any) -> Any:
+    """Resolve the protected preset used by every capture-analysis surface.
+
+    The passive arm is answered BEFORE ``resolve_commission_inputs``: a passive
+    box compiles no crossover preview for those reads to reach.
+    """
+
+    if _is_passive_mains(topology):
+        return _passive_mains_preset(topology)
     preset, crossover_preview = resolve_commission_inputs()
     return resolve_commission_preset(
         topology,
@@ -142,10 +175,16 @@ def resolve_commission_preset(
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
 ) -> Any:
-    """Resolve explicit, preview-compiled, or configured fallback preset."""
+    """Resolve explicit, passive-topology, preview-compiled, or fallback preset.
+
+    The passive arm sits before the preview and the bundled fallback here too:
+    this function has its own callers, which arrive with inputs in hand.
+    """
 
     if preset is not None:
         return preset
+    if _is_passive_mains(topology):
+        return _passive_mains_preset(topology)
     if crossover_preview is not None:
         from jasper.active_speaker.staging import compile_preset_from_crossover_preview
 

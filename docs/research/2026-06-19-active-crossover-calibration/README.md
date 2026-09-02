@@ -163,13 +163,7 @@ the workflow transcripts under the session's `subagents/workflows/`.)
 
 ## Where the canonical truth lives
 
-The shipped/operational design (target shared-core architecture, layered
-product spec, multi-volume verdict, safe refactor roadmap, decision
-points) is the **canonical handoff**:
-[HANDOFF-audio-measurement-core.md](../../HANDOFF-audio-measurement-core.md).
 Backing safety/DSP contracts remain canonical
-in [HANDOFF-active-speaker-dsp.md](../../HANDOFF-active-speaker-dsp.md),
-[HANDOFF-correction.md](../../HANDOFF-correction.md), and
-[active-crossover-information-design.md](../../active-crossover-information-design.md).
+in [active-crossover-information-design.md](../../active-crossover-information-design.md).
 
 Last researched: 2026-06-19

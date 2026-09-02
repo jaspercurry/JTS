@@ -170,6 +170,7 @@ from .fc_sweep import (
 
 __all__ = [
     "TOPOLOGY_AUTHORITY_OPERATOR_PINNED",
+    "TOPOLOGY_NO_CROSSOVER_REGION",
     "TOPOLOGY_PRESCRIPTION_KEY",
     "TOPOLOGY_PRESCRIPTION_KIND",
     "TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS",
@@ -219,6 +220,10 @@ TOPOLOGY_AUTHORITY_OPERATOR_PINNED = "operator_pinned_no_measured_ranking"
 #: type and code, never by prose.
 TOPOLOGY_MALFORMED = "topology_malformed"
 TOPOLOGY_FC_INVALID = "topology_fc_invalid"
+#: The speaker has ONE way, so there is no corner to re-topologize. Its own
+#: reason rather than :data:`TOPOLOGY_FC_INVALID`, on
+#: :data:`~.alignment_prescription.ALIGNMENT_NO_CROSSOVER_REGION`'s rule.
+TOPOLOGY_NO_CROSSOVER_REGION = "topology_no_crossover_region"
 TOPOLOGY_ORDER_INVALID = "topology_order_invalid"
 #: An order the graph cannot emit.  Its own reason rather than
 #: :data:`TOPOLOGY_ORDER_INVALID`, because "6" is a well-formed integer and a
@@ -239,6 +244,7 @@ TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED = "topology_prescription_schema_unsuppo
 TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     TOPOLOGY_MALFORMED,
     TOPOLOGY_FC_INVALID,
+    TOPOLOGY_NO_CROSSOVER_REGION,
     TOPOLOGY_ORDER_INVALID,
     TOPOLOGY_ORDER_UNSUPPORTED,
     TOPOLOGY_PROVENANCE_MISSING,
@@ -626,10 +632,11 @@ def _parse_prescription(
 def read_topology_prescription(
     raw: Mapping[str, Any] | None,
     *,
-    declared_floor_hz: float,
-    lower_driver_ceiling_hz: float,
+    declared_floor_hz: float | None,
+    lower_driver_ceiling_hz: float | None,
     minimum_slope_db_per_octave: float | None,
     beaming_ceiling_hz: float | None,
+    way_count: int | None = None,
 ) -> TopologyPrescription | None:
     """THE request gate.  One point, and the one place a bound is applied.
 
@@ -661,7 +668,8 @@ def read_topology_prescription(
     never-nanny rule.
 
     ``declared_floor_hz`` and ``lower_driver_ceiling_hz`` are the two role
-    bands a corner is admissible within — :func:`~.fc_sweep._fc_rejection`'s own
+    bands a corner is admissible within (``None`` only from a caller with no
+    second role to read them off) — :func:`~.fc_sweep._fc_rejection`'s own
     ``hf_hard_floor_hz`` / ``lower_driver_hard_ceiling_hz``.  They are the WHOLE
     frequency gate: a corner both drivers' declared hard bands admit is
     admitted, and the invented crossover search band that used to narrow them
@@ -687,9 +695,28 @@ def read_topology_prescription(
     here, and the same ruling's reasoning: exactness is legal in this
     repository's gates, and a strict comparison would make the legality of a
     round depend on floating-point noise.
+
+    ``way_count`` follows
+    :func:`~.alignment_prescription.read_alignment_prescription`'s rule: ``1``
+    has no corner to pin, ``None`` is "the caller did not state it".
     """
     if raw is None:
         return None
+    # Before the parse and the two declared bands: a way-1 main declares no
+    # crossover, so the pinned frequency is not what is wrong.
+    if way_count == 1:
+        raise TopologyPrescriptionRefused(
+            TOPOLOGY_NO_CROSSOVER_REGION,
+            "this speaker is full_range_passive (way-1): it has no crossover "
+            "region, so there is no corner or order to re-topologize",
+        )
+    if declared_floor_hz is None or lower_driver_ceiling_hz is None:
+        # The gate above already refused the shape with no second role, so
+        # reaching here would admit a pin against bounds nobody supplied.
+        raise TopologyPrescriptionRefused(
+            TOPOLOGY_MALFORMED,
+            "the role bands a corner must sit between were not declared",
+        )
     prescription = _parse_prescription(raw)
     # Frequency before slope. The two send a prescriber to different places —
     # re-declare the band vs re-choose the order — and a corner that is outside
@@ -806,11 +833,13 @@ def topology_prescription_from_mapping(raw: Any) -> TopologyPrescription | None:
 
 
 def apply_topology_pin(
-    prescription: TopologyPrescription | None, *, preset: Any, fc_hz: float,
-) -> tuple[Any, float]:
+    prescription: TopologyPrescription | None, *, preset: Any, fc_hz: float | None,
+) -> tuple[Any, float | None]:
     """What a pin DOES to a session's topology: ``(preset, fc_hz)``.
 
     ``(preset, fc_hz)`` unchanged when there is no pin — the automatic path.
+    ``fc_hz`` is ``None`` on a speaker that declares no corner, which no pin can
+    reach: the request boundary refuses one for a speaker with no crossover.
     Otherwise the same preset re-cornered at the pinned corner and order
     (:func:`~.fc_sweep.recornered_preset`) and the pinned corner itself.
 
@@ -827,7 +856,7 @@ def apply_topology_pin(
     context is the web host's shape and this module may not know it.
     """
     if prescription is None:
-        return preset, float(fc_hz)
+        return preset, None if fc_hz is None else float(fc_hz)
     return (
         recornered_preset(
             preset, fc_hz=prescription.fc_hz, order=prescription.order,

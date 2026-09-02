@@ -141,8 +141,7 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
     audio frames carry a track title from the sender. Genuine sessions
     populate xesam:title with the sender's current track.
 
-    Transport failures are unknown rather than inactive. The public bool wrapper
-    below retains the historical fail-soft behavior for non-mux callers.
+    Transport failures are unknown rather than inactive.
     """
     result = await run_busctl(
         "call",
@@ -157,11 +156,6 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
     if result.returncode != 0:
         return _airplay_nonzero_observation(result.stderr)
     return _AIRPLAY_TITLE_RE.search(result.stdout) is not None
-
-
-async def _airplay_has_metadata_title() -> bool:
-    """Historical bool wrapper used by tests and non-arbiter callers."""
-    return await _airplay_has_metadata_title_observed() is True
 
 
 async def airplay_playing_observed() -> bool | None:

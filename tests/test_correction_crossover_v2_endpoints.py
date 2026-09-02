@@ -12226,10 +12226,11 @@ def _stage_1_prescription_taps(monkeypatch, body: Any) -> dict[str, Any]:
         seen["topology"] = real_topology_gate(raw, **kwargs)
         return seen["topology"]
 
-    def _alignment(raw, *, fc_hz, declared_bounds_us):
+    def _alignment(raw, *, fc_hz, declared_bounds_us, way_count=None):
         seen["alignment_raw"] = raw
         seen["alignment_fc_hz"] = fc_hz
         seen["alignment_bounds_us"] = declared_bounds_us
+        seen["alignment_way_count"] = way_count
         raise _StoppedAtTheTap("the delay gate was reached")
 
     monkeypatch.setattr(plan_mod, "resolve_plan_shape", _shape)

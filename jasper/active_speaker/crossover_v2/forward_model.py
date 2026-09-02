@@ -17,7 +17,7 @@ exactly from JSON that is already on disk. The one parse is
 :func:`~.position_cycle.parse_curve_complex`, shared with the delay landscape.
 
 **Same arithmetic as the shipped path, not a second one.** The composition is
-:func:`~.intervention.compose_linearized_prediction` — the ONE composition, a
+:func:`~.plan_assembly.compose_linearized_prediction` — the ONE composition, a
 caller of :func:`~jasper.active_speaker.branch_chain.chain_response` (the
 single RBJ biquad evaluator) and of
 :func:`~jasper.audio_measurement.program_analysis.predicted_branch_sum`. There
@@ -53,7 +53,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .contracts import DRIVER_ROLE_TWEETER, DRIVER_ROLE_WOOFER
-from .intervention import SummationFrame, compose_linearized_prediction
+from .plan_assembly import SummationFrame, compose_linearized_prediction
 from .position_cycle import parse_curve_complex, read_pose_curve_pair
 
 PREDICTION_KIND = "jts_forward_model_prediction"
@@ -285,7 +285,7 @@ def predict_sum(
 ) -> PredictedSum:
     """This candidate's predicted summed magnitude, from the banked solos.
 
-    The composition is :func:`~.intervention.compose_linearized_prediction` —
+    The composition is :func:`~.plan_assembly.compose_linearized_prediction` —
     the one this codebase has — so a prediction from the bank and a prediction
     of the emitted graph are the same arithmetic rather than two that agree
     until they do not.
@@ -296,10 +296,14 @@ def predict_sum(
     """
     frame = SummationFrame(
         freqs_hz=pair.freqs_hz,
-        woofer_role=pair.woofer_role,
-        tweeter_role=pair.tweeter_role,
-        woofer_tf=np.where(pair.driven(pair.woofer_role), pair.woofer_tf, 0.0),
-        tweeter_tf=np.where(pair.driven(pair.tweeter_role), pair.tweeter_tf, 0.0),
+        branch_tf={
+            pair.woofer_role: np.where(
+                pair.driven(pair.woofer_role), pair.woofer_tf, 0.0
+            ),
+            pair.tweeter_role: np.where(
+                pair.driven(pair.tweeter_role), pair.tweeter_tf, 0.0
+            ),
+        },
         polarity_sign=int(candidate.polarity_sign),
         residual_delay_us=float(candidate.residual_delay_us),
     )

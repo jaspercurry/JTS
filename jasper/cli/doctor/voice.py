@@ -25,10 +25,10 @@ from ...voice.provider_state import (
     read_active_provider_state,
 )
 from ._registry import doctor_check
+from ...secret_redaction import redact_secrets
 from ._shared import (
     _EXCEPTION_DETAIL_LIMIT,
     CheckResult,
-    _redact_exception_message,
     _run,
 )
 
@@ -252,7 +252,7 @@ def check_provider_importable() -> CheckResult:
         failure = crash[-1] if crash else "unknown import failure"
     # Arbitrary text from a child's traceback goes through the doctor's own
     # redaction + length policy, not straight into the report.
-    failure = _redact_exception_message(failure)
+    failure = redact_secrets(failure)
     if len(failure) > _EXCEPTION_DETAIL_LIMIT:
         failure = failure[:_EXCEPTION_DETAIL_LIMIT - 3] + "..."
     return CheckResult(

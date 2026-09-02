@@ -19,6 +19,7 @@ reads::
       design-draft.json          active-speaker design draft (optional)
       applied-profile.json       applied baseline profile SSOT (optional)
       repeat-floor.json          measured repeat floor SSOT (optional)
+      declared-geometry.json     declared rig geometry SSOT (optional)
       provenance.json            when it was banked, off which build
 
 ``provenance.json``'s key set is owned here, and the two banking paths agree
@@ -95,8 +96,9 @@ def _ssot_documents(
     design_draft_path: Path | None,
     applied_profile_path: Path | None,
     repeat_floor_path: Path | None,
+    declared_geometry_path: Path | None,
 ) -> tuple[tuple[str, Path], ...]:
-    """``(banked filename, source path)`` for the four documents beside the
+    """``(banked filename, source path)`` for the five documents beside the
     bundle, defaulting to each document's own on-box SSOT constant.
 
     Both halves are taken from ``round_inputs``, the reader that opens them, so
@@ -118,6 +120,10 @@ def _ssot_documents(
         (
             reader.REPEAT_FLOOR_FILENAME,
             repeat_floor_path or reader.REPEAT_FLOOR_DEFAULT_PATH,
+        ),
+        (
+            reader.DECLARED_GEOMETRY_FILENAME,
+            declared_geometry_path or reader.DECLARED_GEOMETRY_DEFAULT_PATH,
         ),
     )
 
@@ -178,6 +184,7 @@ def bank_round(
     design_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
     repeat_floor_path: Path | None = None,
+    declared_geometry_path: Path | None = None,
 ) -> BankedRound:
     """Bank one live session bundle and its SSOT documents into the campaign home.
 
@@ -229,7 +236,11 @@ def bank_round(
         raise RoundBankError(REASON_ALREADY_BANKED, f"{target} is already banked")
 
     documents = _ssot_documents(
-        state_path, design_draft_path, applied_profile_path, repeat_floor_path
+        state_path,
+        design_draft_path,
+        applied_profile_path,
+        repeat_floor_path,
+        declared_geometry_path,
     )
     target.mkdir(parents=True)
     try:

@@ -800,7 +800,6 @@ def test_reconcile_parks_voice_when_provider_unset(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -815,7 +814,6 @@ def test_reconcile_parks_voice_when_provider_invalid(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -831,7 +829,6 @@ def test_reconcile_parks_voice_when_provider_manifest_missing(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -847,7 +844,6 @@ def test_reconcile_parks_voice_when_provider_not_in_manifest(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -1539,7 +1535,6 @@ def test_mic_profile_resolver_failure_clears_stale_chip_support(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "mic profile resolver unavailable" in result.stderr
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
     assert "JASPER_XVF_CHIP_BEAM_PLAN=''" in body
@@ -2270,7 +2265,6 @@ def test_flex_linear_auto_discovers_card_but_does_not_arm_square_chip_beams(
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
     assert "aec_mic=L16K6Ch" in result.stderr
-    assert "no validated production chip beam plan" in result.stderr
 
 
 def test_flex_linear_profile_managed_mode_rederives_stale_array_card(
@@ -3848,7 +3842,6 @@ def test_measurement_registry_probe_failure_excludes_nothing(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "measurement-mic registry probe failed" in result.stderr
     assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
 
 

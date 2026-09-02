@@ -1168,6 +1168,65 @@ def test_the_artifact_name_has_one_owner():
     assert read_distortion.HARMONICS_ARTIFACT is HARMONICS_ARTIFACT
 
 
+def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
+    """Both directions, because a derivation that answered ``full_range`` for
+    every round would break every 2-way one — and the 1-way arm is then driven
+    all the way through the rebuild, which proves itself against the banked
+    ``program_id`` and so could only refuse a two-role composition."""
+    from jasper.audio_measurement.program import (
+        FrequencyBand,
+        RoleBand,
+        build_measure_program,
+    )
+    from jasper.active_speaker.crossover_v2.programs import (
+        PILOT_LEVEL_DELTA_DB,
+        courtesy_prelude_for_phase,
+    )
+    from jasper.cli import read_distortion
+
+    band = read_distortion.DEFAULT_FULL_RANGE_BAND_HZ
+    overrides = {
+        "woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0), "full_range": band,
+    }
+
+    assert read_distortion.round_bands_hz(
+        {"gain_plan_db": {"woofer": -6.0, "tweeter": -31.2}}, overrides,
+    ) == {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
+    # A state that names no roles, or roles that are not a shape any speaker
+    # declares, is REFUSED by name — never composed as a pair nobody measured,
+    # and never quietly reduced to the roles that happen to match.
+    for state in ({}, {"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}):
+        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+            read_distortion.round_bands_hz(state, overrides)
+        assert excinfo.value.reason == he.STATE_UNREADABLE
+
+    program = build_measure_program(
+        {"full_range": -11.0},
+        (RoleBand("full_range", 0, FrequencyBand(*band)),),
+        downstream_gain_db=-20.0,
+        leading_pilot_gains_db=(-11.0 - PILOT_LEVEL_DELTA_DB, -11.0),
+        leading_pilot_role="full_range",
+        courtesy_prelude=courtesy_prelude_for_phase("measure"),
+    )
+    state = {
+        "gain_plan_db": {"full_range": -11.0},
+        "candidate": {"program_id": program.program_id},
+    }
+    bands = read_distortion.round_bands_hz(state, overrides)
+
+    assert bands == {"full_range": band}
+    rebuilt, downstream, _prelude = he.rebuild_measure_program(state, bands)
+    assert rebuilt.program_id == program.program_id
+    assert downstream == pytest.approx(-20.0)
+
+    # A 1-way round measured on a non-default band gets an operator remedy,
+    # same as the pair's --woofer-band / --tweeter-band.
+    args = read_distortion.build_parser().parse_args(
+        ["bundle", "--dumps", "d", "--state", "s", "--full-range-band", "45:18000"],
+    )
+    assert args.full_range_band == (45.0, 18000.0)
+
+
 def test_the_orders_the_product_publishes_are_not_the_kernels_ceiling():
     """A kernel that learned a 4th order must not widen a banked schema."""
     from jasper.audio_measurement import distortion

@@ -88,12 +88,20 @@ from tests.active_speaker_fixtures import mono_output_topology
 
 __all__ = [
     "ENTRY_GRID_HZ",
+    "MODE_TWO_WAY",
+    "MODE_WAY1",
     "SOLO_BAND_HZ",
     "SOLO_GRID_HZ",
     "VERIFY_GRID_HZ",
     "bank_measure_round",
     "bank_verify_round",
 ]
+
+#: The two SHAPES ``bank_measure_round`` can bank, spelled as the topology
+#: fixture's own group modes so a round's bundle and its solos cannot disagree
+#: about how many branches the speaker has.
+MODE_TWO_WAY = "active_2_way"
+MODE_WAY1 = "full_range_passive"
 
 #: The per-driver solos' grid and each driver's own swept band. One band for
 #: both roles keeps ``BranchPair.sum_band_hz`` equal to it, so a pin can state
@@ -125,24 +133,35 @@ def _lr4(freqs_hz: np.ndarray, *, highpass: bool) -> np.ndarray:
     return butter2**2
 
 
-def _solo_curves() -> list[dict[str, Any]]:
-    """The two per-driver solos, through the ONE banked-curve serializer."""
-    return [
-        spatial.pose_curve_record(
-            spatial.LateralPoseCurve(
-                role=role,
-                freqs_hz=SOLO_GRID_HZ,
-                complex_tf=_lr4(SOLO_GRID_HZ, highpass=highpass),
-                band_hz=SOLO_BAND_HZ,
-            )
+def _pose_curves(mode: str) -> tuple[spatial.LateralPoseCurve, ...]:
+    """This shape's solos as the curve value both banked shapes carry.
+
+    A 1-way main walks ONE routed solo and declares no corner, so its branch is
+    unity across the band rather than half of an LR4 pair.
+    """
+    branches = (
+        (("full_range", np.ones_like(SOLO_GRID_HZ, dtype=complex)),)
+        if mode == MODE_WAY1 else (
+            (DRIVER_ROLE_WOOFER, _lr4(SOLO_GRID_HZ, highpass=False)),
+            (DRIVER_ROLE_TWEETER, _lr4(SOLO_GRID_HZ, highpass=True)),
         )
-        for role, highpass in (
-            (DRIVER_ROLE_WOOFER, False), (DRIVER_ROLE_TWEETER, True),
+    )
+    return tuple(
+        spatial.LateralPoseCurve(
+            role=role, freqs_hz=SOLO_GRID_HZ, complex_tf=tf, band_hz=SOLO_BAND_HZ,
         )
-    ]
+        for role, tf in branches
+    )
 
 
-def _open_round(root: Path, name: str) -> tuple[Path, BankedRecordStore, str]:
+def _solo_curves(mode: str) -> list[dict[str, Any]]:
+    """This shape's per-driver solos, through the ONE banked-curve serializer."""
+    return [spatial.pose_curve_record(curve) for curve in _pose_curves(mode)]
+
+
+def _open_round(
+    root: Path, name: str, mode: str,
+) -> tuple[Path, BankedRecordStore, str]:
     """``<round-dir>/bundle/<session-id>/`` with a real evidence store on it.
 
     The directory layout is ``bank-crossover-round.sh``'s: the whole session
@@ -151,7 +170,7 @@ def _open_round(root: Path, name: str) -> tuple[Path, BankedRecordStore, str]:
     """
     round_dir = Path(root) / name
     info = open_bundle(
-        mono_output_topology(mode="active_2_way"),
+        mono_output_topology(mode=mode),
         calibration_id="calibration-test",
         sessions_dir=round_dir / "bundle",
     )
@@ -210,6 +229,7 @@ def bank_measure_round(
     entry_baseline_db: np.ndarray | None = None,
     entry_excluded: Sequence[bool] | None = None,
     round_ordinal: int = 1,
+    mode: str = MODE_TWO_WAY,
 ) -> Path:
     """One STAGE-1 round directory, as the flow banks it.
 
@@ -220,9 +240,10 @@ def bank_measure_round(
     forward model's own worked example points at.
 
     ``entry_baseline_db`` defaults to a flat -20 dB curve on
-    :data:`ENTRY_GRID_HZ`.
+    :data:`ENTRY_GRID_HZ`. ``mode`` picks the SHAPE: :data:`MODE_TWO_WAY` walks
+    both solos, :data:`MODE_WAY1` the one a subless passive main has.
     """
-    round_dir, store, session_id = _open_round(root, name)
+    round_dir, store, session_id = _open_round(root, name, mode)
     magnitude_db = (
         np.full(ENTRY_GRID_HZ.shape, -20.0)
         if entry_baseline_db is None else np.asarray(entry_baseline_db, dtype=float)
@@ -245,7 +266,7 @@ def bank_measure_round(
             phase=PHASE_CHECK, index=1, attempt=1, curves=(), **stamp,
         ),
         spatial.phase_capture_record(
-            phase=PHASE_MEASURE, index=2, attempt=1, curves=_solo_curves(),
+            phase=PHASE_MEASURE, index=2, attempt=1, curves=_solo_curves(mode),
             **stamp,
         ),
         # One lateral pose, so a reader selecting the MEASURE take has a
@@ -254,17 +275,7 @@ def bank_measure_round(
             spatial.LateralPose(
                 pose_id="lateral_03", index=3, attempt=1, prompt="", role="",
                 offset_cm=0.0, at_mark=True,
-                curves=tuple(
-                    spatial.LateralPoseCurve(
-                        role=role,
-                        freqs_hz=SOLO_GRID_HZ,
-                        complex_tf=_lr4(SOLO_GRID_HZ, highpass=highpass),
-                        band_hz=SOLO_BAND_HZ,
-                    )
-                    for role, highpass in (
-                        (DRIVER_ROLE_WOOFER, False), (DRIVER_ROLE_TWEETER, True),
-                    )
-                ),
+                curves=_pose_curves(mode),
             ),
             position_deg=7, lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
             **stamp,
@@ -303,7 +314,7 @@ def bank_verify_round(
 
     ``measured_db`` defaults to a flat -30 dB curve on :data:`VERIFY_GRID_HZ`.
     """
-    round_dir, store, session_id = _open_round(root, name)
+    round_dir, store, session_id = _open_round(root, name, MODE_TWO_WAY)
     measured = (
         np.full(VERIFY_GRID_HZ.shape, -30.0)
         if measured_db is None else np.asarray(measured_db, dtype=float)

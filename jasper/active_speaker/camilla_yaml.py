@@ -3705,15 +3705,15 @@ def emit_active_speaker_program_config(
     """
 
     preset.validate()
-    # W2 scope gate: the session's program topology (2 program channels,
-    # woofer/tweeter role routing, the repeat-pair drift estimator) is designed
-    # for a 2-way crossover. A 3-way needs a designed reshape (program channel
-    # count, mid-band MESM schedule, per-region alignment), not a silent
-    # generalization of this emitter.
-    if preset.way_count != 2:
+    # Scope gate: this emitter routes ONE program channel per declared driver
+    # role — a 1-way passive main (one routed solo of the whole speaker) or a
+    # 2-way. A 3-way needs a designed reshape (mid-band MESM schedule,
+    # per-region alignment), not a silent generalization of this emitter.
+    if preset.way_count not in (1, 2):
         raise ActiveSpeakerConfigError(
-            "the crossover-measurement program graph is scoped to 2-way presets; "
-            f"way_count={preset.way_count} requires a designed program reshape"
+            "the crossover-measurement program graph is scoped to 1- and 2-way "
+            f"presets; way_count={preset.way_count} requires a designed "
+            "program reshape"
         )
     role_channels = _validate_program_role_channels(preset, role_channels)
     playback_device = _yaml_string(playback_device, "playback_device")
@@ -3762,26 +3762,30 @@ def emit_active_speaker_program_config(
         required_roles = set(required_driver_roles(preset.way_count))
         if set(protection_sections_by_role) != required_roles:
             raise ActiveSpeakerConfigError("program protection must cover every driver role")
-        tweeter_hps = [
-            (index, section)
-            for index, section in enumerate(protection_sections_by_role["tweeter"])
-            if section.highpass
-        ]
-        if len(tweeter_hps) != 1:
-            raise ActiveSpeakerConfigError("program graph requires one tweeter protection high-pass")
-        hp_index, hp_section = tweeter_hps[0]
-        if hp_section.fc_hz < protective_hp_min_corner_hz or (
-            hp_section.order * 6.0 < protective_hp_min_slope_db_per_octave
-        ):
-            # SOLE slope-floor enforcement on this path: it reaches the
-            # journal exactly as its predecessor's refusal does.
-            log_event(
-                logger, "active_speaker.program_emit_gate", level=logging.ERROR,
-                result="blocked_tweeter_protection_below_floor",
-                preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
-                order=hp_section.order)
-            raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
-        tweeter_hp_name = _program_protection_name("tweeter", hp_index)
+        # Asked of the role that DECLARES one: a 1-way main has no tweeter for
+        # a high-pass to protect, so the gate is absent, not waived
+        # (``_assert_program_graph_proven`` agrees from the emitted text).
+        if "tweeter" in required_roles:
+            tweeter_hps = [
+                (index, section)
+                for index, section in enumerate(protection_sections_by_role["tweeter"])
+                if section.highpass
+            ]
+            if len(tweeter_hps) != 1:
+                raise ActiveSpeakerConfigError("program graph requires one tweeter protection high-pass")
+            hp_index, hp_section = tweeter_hps[0]
+            if hp_section.fc_hz < protective_hp_min_corner_hz or (
+                hp_section.order * 6.0 < protective_hp_min_slope_db_per_octave
+            ):
+                # SOLE slope-floor enforcement on this path: it reaches the
+                # journal exactly as its predecessor's refusal does.
+                log_event(
+                    logger, "active_speaker.program_emit_gate", level=logging.ERROR,
+                    result="blocked_tweeter_protection_below_floor",
+                    preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
+                    order=hp_section.order)
+                raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
+            tweeter_hp_name = _program_protection_name("tweeter", hp_index)
 
     # queuelimit rides the same coercion as every other integer knob here.
     # It reaches the YAML through an f-string, so an unvalidated value is the

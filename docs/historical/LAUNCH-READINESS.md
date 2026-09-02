@@ -26,8 +26,7 @@ has shipped (see the archiving note at the bottom).
   (#763 control, #768/#773 web, + voice/mux/input), and secret
   compartmentalization (#776 `jasper-secrets` for LLM/Google keys, `jasper-intsecrets`
   for HA/Spotify). The group-perm-clobber the drop introduces is fixed (#827/#834)
-  and guard-tested (`test_systemd_hardening.py`, `test_aec_reconcile.py`). Design
-  of record: [HANDOFF-privilege-separation.md](../HANDOFF-privilege-separation.md).
+  and guard-tested (`test_systemd_hardening.py`, `test_aec_reconcile.py`).
 - **CI / type-safety hardening** — landed across the 2026-06-18→19 cleanup pass:
   a lenient mypy baseline in CI (the "Type check (mypy; lenient baseline)" step +
   `jasper/py.typed` + `[tool.mypy]` config); a Python **3.11 / 3.12 / 3.13

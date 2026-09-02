@@ -190,9 +190,9 @@ def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
     geometry fan-in never builds — a hard ``RING_ATTACH_FATAL`` that CRASHES
     shm_ring at arm instead of refusing it. So a non-matching floor is REFUSED
     here, with its own reason token so the reconcile journal names why. Such a
-    DAC keeps loopback coupling and still gets the floor's outputd
-    period/buffer geometry through ``outputd.env``, which is where most of the
-    floor's value lives; teaching the ring slot to follow the floor across
+    DAC still gets the floor's outputd period/buffer geometry through
+    ``outputd.env``, which is where most of the floor's value lives; teaching
+    the ring slot to follow the floor across
     fan-in, the ioplug, the CamillaDSP emitter, and the negotiation model is
     issue #2147.
 

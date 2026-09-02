@@ -182,13 +182,15 @@ function renderNudges(nudges, expertDetails, findings) {
 
 // Gauge fix (2026-07-24): plain-language text for
 // crossover_envelope_v2._candidate_review_payload's "linearization_outcome"
-// enum (jasper.active_speaker.crossover_v2_flow's
-// _last_linearization_outcome — the SAME six values that enum can hold).
-// Mirrors the existing polarity enum-to-text mapping just above in this
-// file; an unrecognized/empty value renders nothing (e.g. "" means
-// linearization was never evaluated this attempt).
+// enum (the values LinearizationState.outcome can hold). Mirrors the existing
+// polarity enum-to-text mapping just above in this file; an
+// unrecognized/empty value renders nothing (e.g. "" means linearization was
+// never evaluated this attempt) — which is why a new Python outcome has to be
+// added here too, or the round goes quiet on this screen.
 const LINEARIZATION_OUTCOME_TEXT = {
   fitted: 'driver linearization: fitted',
+  fitted_single_branch:
+    'driver linearization: fitted (one full-range branch, no inter-driver trim)',
   trim_rejected:
     'driver linearization: filters fitted, re-solved trim rejected (used the measured trim)',
   ineligible_mic_tier: 'driver linearization: skipped — needs a reference-tier mic',
@@ -507,7 +509,7 @@ function renderCandidateReview(review) {
 // `description` — a one-line claim, so far only the microphone_check
 // screen's tier chooser (flow-simplification PR-U3, crossover_envelope_v2.py's
 // `_tier_choice_actions`). Every other action on every other screen (Try
-// again, Undo, Re-measure, Continue, ...) has no `description` and this
+// again, Re-measure, Continue, ...) has no `description` and this
 // returns `control` untouched — no other screen's markup changes.
 //
 // S2 fix (adversarial review of PR #1780): the row's own title already
@@ -836,8 +838,9 @@ function renderActionRow(env) {
     || (env.next_action && env.next_action.show_during_relay);
   const alternates = Array.isArray(env.alternate_actions) ? env.alternate_actions : [];
   // Only alternates the envelope explicitly marks show_during_relay survive
-  // the gate — e.g. the verify_fail screen's Undo / Re-measure "get me out
-  // of this" affordances must stay visible even while a relay link is live.
+  // the gate — e.g. the verify_fail screen's "Go back to the previous
+  // tuning" / Re-measure "get me out of this" affordances must stay visible
+  // even while a relay link is live.
   // Every other alternate stays hidden while a relay is in flight.
   const shownAlternates = relayActive
     ? alternates.filter((action) => action && action.show_during_relay)

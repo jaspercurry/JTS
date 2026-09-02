@@ -1714,7 +1714,8 @@ bank jts3 even when `.env.local` points somewhere else.
 
 It then pulls the newest session bundle, the crossover-v2 flow state, the
 design draft, the applied baseline profile (`applied-profile.json` — what the
-speaker is PLAYING, which the flow state cannot say), a bounded
+speaker is PLAYING, which the flow state cannot say), the repeat floor, the
+household's declared rig geometry (`declared-geometry.json`), a bounded
 journal window (the four units a round speaks through:
 `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
 `jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
@@ -2201,9 +2202,10 @@ comes in, told apart by
 <dest-dir>` produces (see
 ["Crossover-v2 round banking"](#crossover-v2-round-banking) above) — a
 `bundle/<session>/` evidence bundle and optional `state.json` /
-`design-draft.json` / `applied-profile.json` — or a *live session bundle*
+`design-draft.json` / `applied-profile.json` / `repeat-floor.json` /
+`declared-geometry.json` — or a *live session bundle*
 still on the speaker (`/var/lib/jasper/active_speaker/sessions/<id>`), whose
-three non-bundle inputs come from their on-Pi SSOT paths instead, so a round
+five non-bundle inputs come from their on-Pi SSOT paths instead, so a round
 can be graded before it is banked. `per-seat` and `agreement` say which shape
 was read in their `banked` field. A live bundle borrows the speaker's one flow
 state only when that state names the same session the bundle filed its round
@@ -2383,11 +2385,6 @@ jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
 # capture riding the tweeter branch sign-flipped
 jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
 
-# THE ROOM the household measured, asked once and banked with the session
-jasper-angle-capture stage --program baseline --size express \
-  --speaker-height-m 0.92 --mic-height-m 1.0 --distance-m 1.0 \
-  --ceiling-height-m 2.44
-
 # withdraw the staged walk
 jasper-angle-capture withdraw
 ```
@@ -2427,19 +2424,18 @@ is no second validator in the CLI or the mailbox — bounds, whole-degree-ness,
 the regime vocabulary and the mover vocabulary are all
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py)'s.
 
-`--speaker-height-m` / `--mic-height-m` / `--distance-m` are the
-household's own tape measure in **metres** (`--ceiling-height-m` optional), and
-are stated together or not at all; omit all three and `stage` falls back to
-whatever `jasper-declare-geometry set` stored on the box, which is the same
-[`DeclaredGeometry`](../jasper/audio_measurement/measurement_geometry.py) the
-flags build. The driving LLM asks once, in-session; the
-walk carries them to the session, which banks them as
-`crossover_v2/<relay_session_id>/declared_geometry.json` and reports them at
-`session.declared_geometry` in the evidence packet — an absence block naming
-its reason when there is no room to report, so "nobody was asked" and "the
-banked file could not be read" never read alike. The declaration rides the
-durable state into the grading stage, which re-banks it in its own bundle.
-Nothing in the session computes from them — the room's entanglement floor
+**The household's tape measure has one writer and no walk flags.**
+`jasper-declare-geometry set` stores the rig's
+[`DeclaredGeometry`](../jasper/audio_measurement/measurement_geometry.py) at
+`/var/lib/jasper/measurement_geometry.json`; `stage` merely echoes what is
+stored so the operator can see what a round will bank. The declaration is
+**banked beside the bundle like the other SSOT documents**, as
+`declared-geometry.json`, and the packet reports whatever the round's own copy
+says at `session.declared_geometry` — an absence block naming its reason when
+there is none, so "nobody declared one" and "the file could not be read" never
+read alike. The packet is rebuilt by every reader, so freezing the sibling is
+what keeps a banked round's room from drifting to the reading machine's.
+Nothing in the session computes from it — the room's entanglement floor
 (`2.5 / t_first_bounce`) is an offline toolbox step, and this human answer is
 its only viable source because the reflection finder is structurally blind on
 this rig class.

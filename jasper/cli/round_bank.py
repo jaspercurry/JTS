@@ -6,8 +6,8 @@
 
 The operator's door onto :func:`jasper.active_speaker.round_bank.bank_round`.
 Session storage is retention-capped and a round's evidence outlives the session
-that produced it, so this copies one bundle plus the four SSOT documents a
-banked round carries into ``/var/lib/jasper/active_speaker/campaigns/<round>/``
+that produced it, so this copies one bundle plus the SSOT documents
+:mod:`jasper.active_speaker.crossover_v2.round_inputs` names into ``/var/lib/jasper/active_speaker/campaigns/<round>/``
 — the same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, and
 the one ``jasper-round-views`` reads.
 

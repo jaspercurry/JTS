@@ -3,8 +3,7 @@
 > **Status: historical.** Snapshot from 2026-05-29 through 2026-06-04,
 > when the external-DAC chip-AEC path was still being proved and promoted.
 > Preserved for primary-source archaeology; its profile, fallback, transport,
-> and validation claims will drift. Current managed-XVF operational truth
-> lives in [HANDOFF-aec.md](HANDOFF-aec.md).
+> and validation claims will drift.
 
 **Status: 2026-05-29 positive lab result; production profile shipped
 and deployed on 2026-06-04.**
@@ -20,9 +19,7 @@ reference PCM for chip AEC. The production speaker is now
 **profile-first**: fresh installs seed `JASPER_AUDIO_INPUT_PROFILE=auto`,
 which resolves to the XVF chip-AEC profile only when the detected mic
 profile has a validated chip beam plan and falls back to software
-AEC3/direct mic when that path is unavailable (see
-[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
-§2.4). The `chip_aec_150` / `chip_aec_210` beams remain
+AEC3/direct mic when that path is unavailable. The `chip_aec_150` / `chip_aec_210` beams remain
 hardware-conditional, square-board beam-plan wake legs inside that
 profile.
 
@@ -352,9 +349,7 @@ continue, and exiting corpus mode explicitly restores the production
 mode-transition failure, not a best-effort warning, because mislabeled
 corpus audio is worse than no corpus audio.
 The chip-AEC beams have been promoted from corpus-only to the
-hardware-conditional XVF chip-AEC production profile (see
-[HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
-§2.4). The remaining validation question is not whether the beam
+hardware-conditional XVF chip-AEC production profile. The remaining validation question is not whether the beam
 infrastructure is enabled, but whether each fixed beam's recall /
 false-accept contribution warrants per-leg threshold or fusion changes
 against a fresh corpus window (`scripts/analyze-three-leg.sh`).
@@ -392,12 +387,9 @@ columns, and explicit per-beam WAV paths.
 > input profile and reconciler" says *"Architecture is fixed; swap the
 > engine/profile, not the topology"* and names "dual-USB-sink hardware-AEC retry"
 > and "custom XVF firmware" as paths agents must not propose.
-> [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Hardware AEC, revisited"
-> repeats this as `Policy status: rejected by name`. **This doc and
+> **This doc and
 > the five `scripts/chip-aec-*.sh` scripts are the user-authorized
-> exception** — narrow, scoped to empirical resolution of
-> [HANDOFF-aec.md](HANDOFF-aec.md) Option D ("Chip-AEC with USB-in
-> reference topology"). The carve-out does not re-open the rejected
+> exception.** The carve-out does not re-open the rejected
 > paths elsewhere (PipeWire `module-echo-cancel`, dual-USB-sink,
 > custom firmware) and does not license re-derivation of the
 > question outside this infrastructure. Agents working on AEC
@@ -414,8 +406,7 @@ The 2025 investigation that concluded "≤2 dB attenuation, won't
 converge" was done in the dongle topology with no USB-IN reference at
 all — the chip was running blind. The 2026-05-19 `SHF_BYPASS=0`
 wake-rate test (15%) also ran without USB-IN reference. **Neither
-result applies to the topology that succeeded here.** See
-[HANDOFF-aec.md option D](HANDOFF-aec.md) for the deeper rationale.
+result applies to the topology that succeeded here.**
 
 **Decisive signals:** no single chip flag was enough. The
 `AEC_AECCONVERGED` flag did flip to `[1]` in later lab state checks, but
@@ -592,7 +583,7 @@ Key differences from production:
     music tap), mixes L+R to mono, duplicates to stereo, writes to
     `hw:CARD=Array,DEV=0` at 16 kHz S16_LE (the only rate/format the
     chip's USB-IN endpoint advertises — verified empirically and via
-    XMOS docs, see [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §1)
+    XMOS docs)
   - **UDP mic pump**: reads chip's 6-ch mic capture, extracts the
     selected processed channel (default `ch0` for this chip-AEC
     experiment; override with `MIC_CHANNEL` /
@@ -1151,9 +1142,6 @@ Practical path for JTS:
   may well pass). If it shows real slip, add SRO compensation
   (Step 4.2) or move to an XVF-master topology (Step 4.3).
 
-See [HANDOFF-aec.md](HANDOFF-aec.md) "DAC clock-domain dependency" for
-the condensed version.
-
 ## ERLE calibration — reading the 14.5 dB correctly (banked 2026-06-11)
 
 External research (two deep-research passes, cross-checked here) recalibrated
@@ -1191,9 +1179,7 @@ how to judge this doc's measured **`14.5 dB` far-end reduction**:
   *upstream* of outputd's reference tap, so a snapclient sample-stuff edit
   appears identically in reference and emitted audio and self-cancels; events
   are rare (order once per tens of seconds — the rate is governed by the
-  system-vs-DAC clock pair; verify empirically). The bonded-leader gate —
-  DELTA vs the solo baseline + product-level wake FRR, not an absolute dB —
-  lives in [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2 inv-A.
+  system-vs-DAC clock pair; verify empirically).
 
 ## Beamformed-reference (ARA) fallback — software, Pi-side (DESIGN ONLY)
 
@@ -1246,21 +1232,6 @@ References are by section header / identifier, not line number, so
 they survive future doc edits (per [AGENTS.md](../AGENTS.md)
 "Documentation paradigm" rule 5).
 
-- [HANDOFF-aec.md](HANDOFF-aec.md) "D — Chip-AEC with USB-in reference
-  topology" — the 2026-05-21 docs-review writeup. *Note:* the
-  pre-correction rate claim ("48 kHz to USB-in is fine") was wrong;
-  this branch's commit corrected it in-place.
-- [HANDOFF-aec.md](HANDOFF-aec.md) "What we found about chip-side
-  AEC in our topology" — original 2025 investigation, dongle
-  topology, no USB-IN reference. Conclusion does not apply here.
-- [HANDOFF-aec.md](HANDOFF-aec.md) "Chip-pipeline-only alternative
-  considered + rejected" — May 2026 wake-rate test, no USB-IN
-  reference. Conclusion does not apply here.
-- [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §1 "Hardware identity"
-  — canonical USB endpoint table (16 kHz S16_LE fixed at build time).
-- [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §5.2 "No 48 kHz USB
-  capture rate" — explicit confirmation no shipped firmware
-  exposes 48 kHz USB.
 - [`jasper/mics/xvf3800.py`](../jasper/mics/xvf3800.py) —
   `VARIANT_2CH`, `VARIANT_6CH`, `RECOMMENDED_FIRMWARE` constants
   carrying the firmware variant table.

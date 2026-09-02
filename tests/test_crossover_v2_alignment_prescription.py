@@ -28,6 +28,7 @@ import pytest
 from jasper.active_speaker.crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
+    ALIGNMENT_NO_CROSSOVER_REGION,
     ALIGNMENT_PRESCRIPTION_KEY,
     ALIGNMENT_PRESCRIPTION_KIND,
     ALIGNMENT_PRESCRIPTION_MALFORMED,
@@ -117,11 +118,18 @@ HORN_WINDOW_US = (0.0, 400.0)
 
 
 def _read(
-    body: object, *, fc_hz: float = FC_HZ, declared_bounds_us=TONIGHT_WINDOW_US,
+    body: object,
+    *,
+    fc_hz: float = FC_HZ,
+    declared_bounds_us=TONIGHT_WINDOW_US,
+    way_count: int | None = None,
 ):
     """The gate as the request boundary calls it, on tonight's rig."""
     return read_alignment_prescription(
-        body, fc_hz=fc_hz, declared_bounds_us=declared_bounds_us,
+        body,
+        fc_hz=fc_hz,
+        declared_bounds_us=declared_bounds_us,
+        way_count=way_count,
     )
 
 
@@ -290,6 +298,19 @@ def test_an_unusable_corner_is_its_own_refusal(fc_hz):
     assert excinfo.value.reason == PRESCRIPTION_FC_UNKNOWN
 
 
+def test_a_way_one_speaker_refuses_the_door_rather_than_blaming_its_corner():
+    """``full_range_passive`` has no crossover region at all, so this door does
+    not apply to it — and saying so is a different answer from "the corner is
+    unusable", which sends a prescriber to re-derive an impossible number."""
+    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
+        _read(_arm(-450.0), way_count=1)
+    assert excinfo.value.reason == ALIGNMENT_NO_CROSSOVER_REGION
+    # Two remedies, so two slugs — they may never be collapsed into one.
+    assert ALIGNMENT_NO_CROSSOVER_REGION != PRESCRIPTION_FC_UNKNOWN
+    # A real two-way is untouched: the fact is the topology's, not the request's.
+    assert _read(_arm(-450.0), way_count=2) is not None
+
+
 # --------------------------------------------------------------------------- #
 # 2. Provenance is required, and the shape is strict
 # --------------------------------------------------------------------------- #
@@ -410,6 +431,10 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
     # operator-supplied basis cannot talk its way past.
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(_arm(-450.0), declared_bounds_us=HORN_WINDOW_US)
+    raised.add(excinfo.value.reason)
+    # The way-1 refusal is the other bound no request body can reach.
+    with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
+        _read(_arm(-450.0), way_count=1)
     raised.add(excinfo.value.reason)
     assert raised <= ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS
     assert raised == ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS
@@ -1258,7 +1283,7 @@ def test_a_pinned_basin_reaches_the_candidate_as_the_graphs_polarity_field(
     assert analysis.alignment.polarity_agrees_with_sum is None
 
     _magnitude, _role, polarity = alignment_to_candidate_fields(
-        analysis, woofer_role="woofer", tweeter_role="tweeter",
+        analysis, roles=("woofer", "tweeter"),
     )
     assert polarity == word
 
@@ -1590,7 +1615,7 @@ def _candidate_for(delay_us: float) -> MeasuredCrossoverCandidate:
     )
     analysis = type("_A", (), {"alignment": estimate})()
     magnitude, role, polarity = alignment_to_candidate_fields(
-        analysis, woofer_role="woofer", tweeter_role="tweeter",
+        analysis, roles=("woofer", "tweeter"),
     )
     return MeasuredCrossoverCandidate(
         program_id="prog-abc123",

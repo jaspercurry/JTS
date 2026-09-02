@@ -10,13 +10,16 @@ from typing import Any
 
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
+    FULL_RANGE_ROLES,
     LOW_FREQUENCY_ROLES,
     driver_protection_payload,
     normalise_driver_role,
 )
 
 AUDIBLE_TEST_POLICY_VERSION = DRIVER_PROTECTION_POLICY_VERSION
-AUDIBLE_TEST_ALLOWED_ROLES = LOW_FREQUENCY_ROLES
+#: The role classes ``driver_protection_payload`` admits with nothing staged; a
+#: tweeter is absent because it is admitted only against a protection status.
+AUDIBLE_TEST_ALLOWED_ROLES = LOW_FREQUENCY_ROLES | FULL_RANGE_ROLES
 
 
 def audible_role_allowed(
@@ -24,12 +27,17 @@ def audible_role_allowed(
     *,
     driver_protection: dict[str, Any] | None = None,
 ) -> bool:
-    target_role = normalise_driver_role(role)
-    if target_role in AUDIBLE_TEST_ALLOWED_ROLES:
-        return True
-    if isinstance(driver_protection, dict):
-        return bool(driver_protection.get("audio_allowed"))
-    return False
+    """Whether an audible test may target this driver at all.
+
+    Answered by ``driver_protection_payload``'s ``audio_allowed`` and nothing
+    else: the caller's envelope when it built one, else the bare role's.
+    """
+    protection = (
+        driver_protection
+        if isinstance(driver_protection, dict)
+        else driver_protection_payload(normalise_driver_role(role))
+    )
+    return bool(protection.get("audio_allowed"))
 
 
 def audible_role_block_code(role: Any) -> str:
@@ -41,7 +49,10 @@ def audible_role_block_code(role: Any) -> str:
 def audible_role_block_message(role: Any) -> str:
     if normalise_driver_role(role) == "tweeter":
         return "high-frequency driver playback requires a valid protection profile"
-    return "audible tests are limited to woofer, mid, and subwoofer targets"
+    return (
+        "audible tests are limited to "
+        f"{', '.join(sorted(AUDIBLE_TEST_ALLOWED_ROLES))} targets"
+    )
 
 
 def audible_policy_payload(

@@ -11,8 +11,7 @@
 > [ADR-0176](../adr/0176-the-airplay-sender-slider-is-not-a-control-surface.md);
 > the carrier policy it argued against is
 > [ADR-0151](../adr/0151-a-new-source-is-camilla-master-until-it-proves-an-observable-volume-surface.md).
-> **Nothing below is current operational truth** — the shipped volume
-> architecture is [`docs/HANDOFF-volume.md`](../HANDOFF-volume.md), and the
+> **Nothing below is current operational truth** — the
 > "current state" sections here describe a 2026-05 tree that predates mux
 > source arbitration, the USB sink source, and fan-in TTS.
 

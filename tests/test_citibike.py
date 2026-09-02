@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
+import jasper.citibike as citibike_mod
 from jasper.citibike import (
     INFO_TTL_SECONDS,
     STATION_INFO_URL,
@@ -23,9 +24,7 @@ from jasper.citibike import (
     STATUS_TTL_SECONDS,
     CitiBikeClient,
     StationStatus,
-    clear_cache,
     fetch_feed,
-    format_saved_stations,
     normalize_station_name,
     parse_saved_stations,
 )
@@ -35,9 +34,9 @@ from jasper.transit.providers.citibike import CITIBIKE_BBOX, PROVIDER
 
 @pytest.fixture(autouse=True)
 def _clear_gbfs_cache():
-    clear_cache()
+    citibike_mod._FEED_CACHE.clear()
     yield
-    clear_cache()
+    citibike_mod._FEED_CACHE.clear()
 
 
 # --- Test helpers -----------------------------------------------------
@@ -94,7 +93,7 @@ def _mock_client(responses: dict[str, dict | int]) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-# --- parse_saved_stations / format_saved_stations ---------------------
+# --- parse_saved_stations ----------------------------------------------
 
 
 def test_parse_empty_returns_empty():
@@ -125,11 +124,6 @@ def test_parse_skips_empty_id():
 def test_parse_empty_label_falls_back_to_id():
     got = parse_saved_stations("abc|")
     assert got == [("abc", "abc")]
-
-
-def test_format_round_trip():
-    saved = [("abc", "9 Av"), ("def", "Atlantic & Smith")]
-    assert parse_saved_stations(format_saved_stations(saved)) == saved
 
 
 # --- normalize_station_name: speech-friendly label expansion ----------

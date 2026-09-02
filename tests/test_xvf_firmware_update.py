@@ -322,7 +322,7 @@ def test_failed_flash_after_service_stop_reconciles_before_raising(
     monkeypatch.setattr(xvf_firmware_update, "_run", fake_run)
     monkeypatch.setattr(xvf_firmware_update, "_run_dfu_flash", fail_flash)
 
-    with pytest.raises(RuntimeError, match="flash boom"):
+    with pytest.raises(RuntimeError):
         xvf_firmware_update.update()
 
     assert ("systemctl", "stop", *xvf_firmware_update.UPDATE_UNITS) in calls

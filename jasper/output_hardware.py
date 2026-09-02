@@ -759,10 +759,6 @@ def probe_system_cards(
     return tuple(cards)
 
 
-def classify_aplay_listing(listing: str) -> OutputHardwareState:
-    return classify_output_cards(parse_aplay_listing(listing))
-
-
 def load_state(path: str | Path | None = None) -> OutputHardwareState | None:
     try:
         raw = json.loads(state_path(path).read_text(encoding="utf-8"))

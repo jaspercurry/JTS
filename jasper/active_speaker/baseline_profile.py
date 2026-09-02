@@ -70,6 +70,7 @@ from .driver_base_trim import (
     BANK_UNMEASURED,
     BANK_WRITE_FAILED,
     BANK_WRITE_REFUSED,
+    REFUSE_NO_FRAME,
     REFUSED_STATUSES as BASE_TRIM_REFUSED_STATUSES,
     STATUS_SUPERSEDED as BASE_TRIM_STATUS_SUPERSEDED,
     DriverBaseTrimError,
@@ -90,13 +91,11 @@ from .playback_route import (
     resolve_active_playback_device,
 )
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
+from .profile import snapshot_declares_single_branch
+from . import passive_profile as _passive
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .startup_hold import release_staged_startup_hold
-from .staging import (
-    build_passive_mains_with_sub_preset,
-    compile_preset_from_crossover_preview,
-    topology_is_passive_mains_with_sub,
-)
+from .staging import build_passive_mains_preset, compile_preset_from_crossover_preview
 
 if TYPE_CHECKING:
     from .measured_candidate import MeasuredElectricalCandidate
@@ -2352,19 +2351,17 @@ def build_baseline_profile_candidate(
         if candidate_evidence["summed"]
         else ("measurements" if summed_validation_complete else "missing")
     )
-    # A passive-mains + local-subwoofer topology has NO inter-driver crossover, so
-    # it never produces an active crossover preview and has no per-driver / summed
-    # active-crossover measurements to complete. It is still roleful (bass
-    # management splits the program), so it rides the SAME multi-output emitter as
-    # the active path — but via a degenerate 1-way preset built directly from the
-    # topology, skipping the preview-readiness and active-measurement gates that
-    # only apply to a real active crossover. A SUBLESS passive speaker never
-    # reaches here (it takes the flat emit_sound_config lane).
-    passive_sub = topology_is_passive_mains_with_sub(topology)
+    # Passive mains ride the SAME multi-output emitter as the active path, via a
+    # degenerate 1-way preset built from the topology — the preset
+    # ``commission_wiring`` answers a passive capture with, so the compiled
+    # graph and the measured plant are ONE.
+    passive_mains = _passive.passive_mains_compiles_roleful(
+        topology, measured_candidate, applied_anchor
+    )
 
     preset: ActiveSpeakerPreset | None = None
     preset_gates: list[dict[str, Any]] = []
-    if passive_sub:
+    if passive_mains:
         if not resolved_playback_device:
             issues.append(_issue(
                 "blocker",
@@ -2374,9 +2371,7 @@ def build_baseline_profile_candidate(
         for issue in route_capability.issues:
             if issue.get("code") == "active_playback_route_too_narrow":
                 issues.append(issue)
-        preset, preset_issues, preset_gates = build_passive_mains_with_sub_preset(
-            topology
-        )
+        preset, preset_issues, preset_gates = build_passive_mains_preset(topology)
         issues.extend(preset_issues)
     else:
         preview_ready = _crossover_preview_ready(crossover_preview)
@@ -3424,6 +3419,11 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     if isinstance(snapshot, Mapping) and snapshot.get("domain") == "driver":
         return
 
+    # A base trim is a FRAME — one role's level relative to the others.
+    if snapshot_declares_single_branch(snapshot):
+        left_standing(REFUSE_NO_FRAME, "one driver declared, so no roles to level")
+        return
+
     corrections = candidate.get("corrections")
     sources = candidate.get("corrections_source")
     level_match = candidate.get("level_match")
@@ -3535,7 +3535,7 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
             # exists at fit time and no later reader can reconstruct it. A
             # profile levelled by the guided captures names none, which banks
             # as "frame unknown" rather than as the bare frame.
-            chain_fingerprint=source.get("measured_candidate_fingerprint"),
+            chain_fingerprint=_passive.measured_candidate_fingerprint(source) or None,
             measured_at=evidence_at,
         )
     except (OSError, DriverBaseTrimError) as exc:

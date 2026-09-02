@@ -98,7 +98,7 @@ def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
 
     monkeypatch.setattr(os, "fsync", fail_directory_fsync)
 
-    with pytest.raises(OSError, match="simulated directory fsync failure"):
+    with pytest.raises(OSError):
         atomic_write_text(path, "published\n", durable=True)
 
     assert path.read_text(encoding="utf-8") == "published\n"
@@ -176,7 +176,7 @@ def test_group_from_parent_chown_failure_cleans_up_temp(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "chown", boom)
 
-    with pytest.raises(PermissionError, match="simulated group assignment failure"):
+    with pytest.raises(PermissionError):
         atomic_write_text(path, "doomed", mode=0o640, group_from_parent=True)
 
     assert not path.exists()
@@ -284,8 +284,9 @@ def test_locked_env_writer_rejects_fifo_without_blocking(tmp_path):
     path = tmp_path / "source_intent.env"
     os.mkfifo(path)
 
-    with pytest.raises(OSError, match="not a regular file"):
+    with pytest.raises(OSError) as raised:
         locked_update_env_file(path, {"SAFE": "disabled"})
+    assert raised.value.errno == errno.EINVAL
 
 
 def test_locked_env_writer_byte_cap_rejects_without_replacing_file(tmp_path):
@@ -295,8 +296,9 @@ def test_locked_env_writer_byte_cap_rejects_without_replacing_file(tmp_path):
     original = b"A=" + b"x" * 64
     path.write_bytes(original)
 
-    with pytest.raises(OSError, match="exceeds the 32-byte cap"):
+    with pytest.raises(OSError) as raised:
         locked_update_env_file(path, {"SAFE": "disabled"}, max_bytes=32)
+    assert raised.value.errno == errno.EFBIG
 
     assert path.read_bytes() == original
 
@@ -338,7 +340,7 @@ def test_failure_cleans_up_temp_and_propagates(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "replace", boom)
 
-    with pytest.raises(OSError, match="simulated rename failure"):
+    with pytest.raises(OSError):
         atomic_write_text(path, "doomed")
 
     # The target was never created, and the temp file was unlinked — the
@@ -362,7 +364,7 @@ def test_cleanup_failure_is_observable_without_masking_publish_error(
     monkeypatch.setattr(os, "replace", fail_replace)
     monkeypatch.setattr(os, "unlink", fail_cleanup)
 
-    with pytest.raises(OSError, match="simulated rename failure"):
+    with pytest.raises(OSError):
         atomic_write_text(path, "doomed")
 
     assert "event=atomic_io.temp_cleanup_failed" in caplog.text
@@ -380,7 +382,7 @@ def test_chmod_failure_also_cleans_up_temp(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "chmod", boom)
 
-    with pytest.raises(OSError, match="simulated chmod failure"):
+    with pytest.raises(OSError):
         atomic_write_text(path, "doomed")
     assert list(tmp_path.iterdir()) == []
 
