@@ -104,6 +104,20 @@ jts_lib_identity_hostname() {
     printf '%s\n' "${avahi:-$configured}"
 }
 
+# The refusal, as a function so a script whose --help / usage path runs
+# AFTER the source can defer it: source with JTS_LIB_TARGET_OPTIONAL=1 and
+# call this once arg parsing has decided the run really needs a speaker.
+# No-op when a target was resolved.
+jts_lib_require_target() {
+    if [[ -n "${PI_HOST:-}" ]]; then
+        return 0
+    fi
+    printf '%s%s\n' \
+        "_lib.sh: no target speaker — set PI_HOST=<host> or JASPER_HOSTNAME=<name>, " \
+        "or run scripts/onboard.sh <host> / scripts/use <host> for this checkout" >&2
+    exit 78
+}
+
 # The temporaries are prefixed because this file is sourced INTO other
 # scripts, whose own variables must survive it.
 _jts_lib_caller_host="${PI_HOST:-}"
@@ -150,10 +164,7 @@ else
             "name it was configured with resolves to another speaker; set PI_HOST=<host>" >&2
         exit 78
     else
-        printf '%s%s\n' \
-            "_lib.sh: no target speaker — set PI_HOST=<host> or JASPER_HOSTNAME=<name>, " \
-            "or run scripts/onboard.sh <host> / scripts/use <host> for this checkout" >&2
-        exit 78
+        jts_lib_require_target
     fi
 fi
 if [[ -n "$_jts_lib_caller_user" ]]; then

@@ -395,6 +395,48 @@ def test_explicit_target_outranks_the_on_box_identity_file(
     assert "jts7.local" not in calls
 
 
+# Scripts whose --help / usage path runs AFTER they source _lib.sh, with the
+# argv that reaches the speaker. They defer the refusal instead of taking it
+# at source time, so help stays readable on a checkout with no target set.
+_HELP_BEFORE_TARGET = (
+    ("multiroom-spike.sh", ["--help"], ["--teardown"]),
+    ("pi-run-diagnostic.sh", ["--help"], ["--", "true"]),
+)
+
+
+@pytest.mark.parametrize(
+    ("script", "help_args", "action_args"),
+    _HELP_BEFORE_TARGET,
+    ids=[case[0] for case in _HELP_BEFORE_TARGET],
+)
+def test_help_needs_no_target_but_the_action_still_refuses(
+    tmp_path: Path,
+    script: str,
+    help_args: list[str],
+    action_args: list[str],
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    for name in ("_lib.sh", script):
+        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
+    env = os.environ.copy()
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        env.pop(key, None)
+    env["JASPER_IDENTITY_FILE"] = str(repo / "absent-identity.env")
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(repo / "scripts" / script), *args],
+            env=env, capture_output=True, text=True, timeout=15,
+        )
+
+    helped = _run(help_args)
+    assert helped.returncode == 0, helped.stdout + helped.stderr
+    assert (helped.stdout + helped.stderr).strip()
+
+    assert _run(action_args).returncode == NO_TARGET_EXIT
+
+
 def test_gemini_unknown_alias_exits_without_network(
     script_repo: tuple[Path, Path, Path],
 ) -> None:

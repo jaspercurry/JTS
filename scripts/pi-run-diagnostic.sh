@@ -30,7 +30,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC1091
-. "$(dirname "$0")/_lib.sh"
+JTS_LIB_TARGET_OPTIONAL=1 . "$(dirname "$0")/_lib.sh"  # --help must not need a target
 
 usage() {
     # Drop the SPDX license header (reuse inserts it at lines 2-6) so the
@@ -49,6 +49,7 @@ if [[ $# -eq 0 ]]; then
     usage
     exit 2
 fi
+jts_lib_require_target
 
 MEMORY_HIGH="${JTS_DIAG_MEMORY_HIGH:-256M}"
 MEMORY_MAX="${JTS_DIAG_MEMORY_MAX:-384M}"
