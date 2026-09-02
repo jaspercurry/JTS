@@ -11,6 +11,10 @@ that looks absolute and was guessed is worse than no number.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from jasper.active_speaker import seat_level_reference as slr
@@ -28,6 +32,11 @@ CAL_WITH_SENS = '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.
 CAL_RECALIBRATED = '"Sens Factor =-9.0dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 CAL_REQUOTED = '"Sens Factor =-12.03dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 CAL_CURVE_ONLY = "10.0\t-6.6\n10.2\t-6.5\n"
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+# The mic lookup is resolved through its own module so a test can replace it
+# without importing it at seat-reference import time (see the numpy pin below).
+MIC_LOOKUP = "jasper.audio_measurement.calibration.resolve_mic_sensitivity"
 
 
 @pytest.fixture
@@ -122,7 +131,7 @@ def test_the_mic_looked_up_is_the_one_the_anchor_was_banked_with(anchor, monkeyp
         seen.update(kwargs)
         return None
 
-    monkeypatch.setattr(slr, "resolve_mic_sensitivity", _capture)
+    monkeypatch.setattr(MIC_LOOKUP, _capture)
 
     with pytest.raises(slr.LevelUnresolved) as excinfo:
         slr.resolve_anchor_level(ceiling_db_spl=CEILING_DB_SPL)
@@ -163,3 +172,28 @@ def test_the_ceiling_comes_from_the_presets_own_declaration(
     with pytest.raises(slr.LevelUnresolved) as excinfo:
         slr.resolve_anchor_level(calibration_file=str(cal))
     assert excinfo.value.reason == slr.PRESET_UNAVAILABLE
+
+
+def test_the_seat_reference_imports_without_numpy() -> None:
+    """jasper-doctor and ``session_volume_plan`` read this module on a 1 GB Pi.
+
+    Only :func:`resolve_anchor_level` needs the mic lookup, and reaching it
+    costs ``jasper.audio_measurement`` — and therefore numpy — so that import
+    is function-local. A subprocess, because the suite has numpy loaded long
+    before this file runs.
+    """
+    probe = (
+        "import sys, jasper.active_speaker.seat_level_reference; "
+        "sys.exit('numpy' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True, timeout=60, cwd=str(REPO_ROOT),
+    )
+
+    assert result.returncode == 0, (
+        "importing jasper.active_speaker.seat_level_reference now pulls numpy "
+        "— something in its import chain grew a top-level import of "
+        "jasper.audio_measurement (or another heavy sibling). Make it "
+        "function-local at the point of use.\n\n" + result.stderr
+    )

@@ -38,7 +38,6 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
-from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 
 from ._common import finite_float
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
@@ -324,6 +323,11 @@ def resolve_anchor_level(
     inputs; with neither, the mic banked with the anchor is looked up.
     """
 
+    # Function-local: importing ``jasper.audio_measurement`` costs numpy, and
+    # this module's other readers (jasper-doctor, session_volume_plan) never
+    # reach here. Pinned by ``test_seat_level_anchor.py``.
+    from jasper.audio_measurement.calibration import resolve_mic_sensitivity
+
     record = load_seat_level_reference(state_path=state_path) or {}
     anchor = finite_float(record.get("measured_db_spl"))
     reference_volume_db = finite_float(record.get("reference_volume_db"))
@@ -347,16 +351,14 @@ def resolve_anchor_level(
     if sensitivity is None:
         raise LevelUnresolved(
             ANCHOR_UNUSABLE,
-            (
-                "the seat-level reference banks no mic serial, so no stored "
-                "calibration can be looked up for it"
-                if not serial
-                else f"the anchor was measured with mic serial {serial} and no "
-                "stored calibration resolves for it — store its vendor file "
-                "through the calibration wizard (/correction/calibration/fetch)"
-            )
-            + " — or re-run jasper-seat-level with the mic you will measure "
-            "with",
+            "the seat-level reference banks no mic serial, so no stored "
+            "calibration can be looked up for it — re-run jasper-seat-level "
+            "with the mic you will measure with"
+            if not serial
+            else f"the anchor was measured with mic serial {serial} and no "
+            "stored calibration resolves for it — store its vendor file "
+            "through the calibration wizard (/correction/calibration/fetch), "
+            "or re-run jasper-seat-level with the mic you will measure with",
         )
     banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
     if (

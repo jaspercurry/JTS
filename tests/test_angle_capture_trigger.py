@@ -109,9 +109,13 @@ def _bank_an_anchor(tmp_path, monkeypatch):
     )
     cal = tmp_path / "umik2.txt"
     cal.write_text(CAL_WITH_SENS)
-    real = slr.resolve_mic_sensitivity
+    from jasper.audio_measurement import calibration
+
+    real = calibration.resolve_mic_sensitivity
     monkeypatch.setattr(
-        slr, "resolve_mic_sensitivity", lambda **_kw: real(calibration_file=str(cal))
+        calibration,
+        "resolve_mic_sensitivity",
+        lambda **_kw: real(calibration_file=str(cal)),
     )
     monkeypatch.setattr(slr, "_ceiling_db_spl", lambda: CEILING_DB_SPL)
 
@@ -1073,8 +1077,9 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
     import jasper.active_speaker.session_volume_plan as svp
     svp.DEFAULT_SESSION_VOLUME_STATE_PATH = Path(volume_state)
     import jasper.active_speaker.seat_level_reference as slr
-    _real = slr.resolve_mic_sensitivity
-    slr.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
+    from jasper.audio_measurement import calibration
+    _real = calibration.resolve_mic_sensitivity
+    calibration.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
     slr._ceiling_db_spl = lambda: 90.0
     raise SystemExit(
         cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
