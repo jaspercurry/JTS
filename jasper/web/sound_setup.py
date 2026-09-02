@@ -106,6 +106,7 @@ from jasper.audio_hardware.usb_port_role import (
     read_i2s_hat_intent,
     write_i2s_hat_intent,
 )
+from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 from jasper.output_topology import (
@@ -173,7 +174,6 @@ from jasper.active_speaker.web_commissioning import (
     _commission_tone_signal_plan,
     _commission_tone_target_key,
     _commission_tone_wav_path,
-    _config_paths_match,
     _summed_playback_with_issue,
     commission_startup_anchor_load_failed_issue,
     commission_startup_anchor_not_staged_issue,
@@ -4094,9 +4094,9 @@ async def _active_speaker_ensure_commission_startup_anchor(
         require_physical_identity=require_physical_identity,
     )
     staged_matches = bool(staged_topology.get("matched"))
-    if _config_paths_match(current_config_path, staged_path) and staged_matches:
+    if same_config_file(current_config_path, staged_path) and staged_matches:
         return {"status": "already_loaded", "staged_config_path": staged_path}
-    if _config_paths_match(current_config_path, staged_path):
+    if same_config_file(current_config_path, staged_path):
         log_event(
             logger,
             "sound.active_speaker_commission",

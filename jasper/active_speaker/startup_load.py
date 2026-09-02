@@ -37,6 +37,7 @@ from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     apply_dsp_config,
+    same_config_file,
     validate_camilla_config,
 )
 from jasper.log_event import log_event
@@ -1450,24 +1451,6 @@ def _read_statefile_config_path(statefile_path: str | Path | None) -> str | None
     return read_camilla_statefile_config_path(statefile_path)
 
 
-def _paths_equal(a: str | Path | None, b: str | Path | None) -> bool:
-    """Compare two config paths, dereferencing symlinks where possible.
-
-    Config paths reach us from heterogeneous sources — a staged metadata dict, a
-    `staged_config_path()` default, and a CamillaDSP statefile's raw YAML — that
-    may spell the same file differently (symlink vs real path). Resolve both so a
-    safety equality check (active-graph-is-staged, statefile-still-staged) does
-    not spuriously fail on a benign spelling difference.
-    """
-
-    if not a or not b:
-        return False
-    try:
-        return Path(str(a)).resolve() == Path(str(b)).resolve()
-    except (OSError, RuntimeError):
-        return Path(str(a)) == Path(str(b))
-
-
 def build_driver_commission_load_preflight(
     topology: OutputTopology,
     *,
@@ -1940,7 +1923,7 @@ async def load_driver_commissioning_config(
     # at the same width and rolls back to this anchor; running it when the boot
     # config is an unrelated graph (a stereo/correction config) is not a safe
     # transition. Fail closed rather than swap blindly.
-    if not _paths_equal(prior_config_path, staged_path):
+    if not same_config_file(prior_config_path, staged_path):
         issue = _issue(
             "blocker",
             "commission_active_graph_not_staged",
@@ -2094,7 +2077,7 @@ async def load_driver_commissioning_config(
         durable_target = _read_statefile_config_path(statefile_path)
         captured["durable_target"] = durable_target
         captured["durable_intact"] = (
-            None if durable_target is None else _paths_equal(durable_target, staged_path)
+            None if durable_target is None else same_config_file(durable_target, staged_path)
         )
         if durable_target is not None and not captured["durable_intact"]:
             raise RuntimeError(

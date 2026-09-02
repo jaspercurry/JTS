@@ -45,7 +45,6 @@ SHARED_COMMISSION_TONE_HELPERS = (
     "_commission_tone_signal_plan",
     "_commission_tone_target_key",
     "_commission_tone_wav_path",
-    "_config_paths_match",
     "_summed_playback_with_issue",
 )
 

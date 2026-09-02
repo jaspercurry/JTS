@@ -81,6 +81,7 @@ from jasper.audio_measurement.correction_lane import (
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 from jasper.output_topology import (
@@ -227,15 +228,6 @@ def _dict_items(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
-
-
-def _config_paths_match(a: str | Path | None, b: str | Path | None) -> bool:
-    if not a or not b:
-        return False
-    try:
-        return Path(str(a)).resolve() == Path(str(b)).resolve()
-    except (OSError, RuntimeError):
-        return Path(str(a)) == Path(str(b))
 
 
 def request_missing_software_guards(
@@ -510,7 +502,7 @@ async def _ensure_commission_startup_anchor(
     # line is what makes the re-stage attributable rather than silent.
     topology = load_output_topology()
     staged_topology = staged_topology_match_status(topology, staged_config)
-    paths_match = _config_paths_match(current_config_path, staged_path)
+    paths_match = same_config_file(current_config_path, staged_path)
     if paths_match and bool(staged_topology.get("matched")):
         return {"status": "already_loaded", "staged_config_path": staged_path}
     if paths_match:
@@ -1710,7 +1702,7 @@ async def _load_driver_commissioning_config_for_level(
         # later loads in the same sequence the entry path IS the anchor, this
         # writer is skipped, and the stash keeps the original production path.
         staged_anchor_path = (staged.get("config") or {}).get("path")
-        if not staged_anchor_path or not _config_paths_match(
+        if not staged_anchor_path or not same_config_file(
             entry_config_path, staged_anchor_path
         ):
             capture_entry_anchor.record_entry(entry_config_path)
@@ -1987,7 +1979,7 @@ async def restore_pending_capture_entry_config(
         }
     staged = load_staged_startup_config()
     staged_anchor_path = (staged.get("config") or {}).get("path")
-    if not staged_anchor_path or not _config_paths_match(current, staged_anchor_path):
+    if not staged_anchor_path or not same_config_file(current, staged_anchor_path):
         capture_entry_anchor.clear()
         log_event(
             logger,
