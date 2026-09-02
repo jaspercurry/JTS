@@ -6,13 +6,21 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 # playback working through a 2 s camilla outage (camilla calls go
 # through best_effort=True paths in jasper/camilla.py). After= still
 # orders us behind camilla on cold boot.
-# jasper-aec-bridge is also a soft dependency: on the reconciler-managed
-# `udp:9876` mic path it is the UDP producer. If it was clean-stopped by a
-# Camilla/outputd restart, starting voice without also starting the bridge makes
-# UdpMicCapture bind an unfed socket; the wake loop then stops advancing and
-# systemd watchdog-kills voice in a visible restart loop. Keep this as `Wants=`
-# (not `Requires=`) so a bridge restart blip does not cascade-stop voice.
-Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-bridge.service jasper-accessory-reconcile.service
+# jasper-aec-bridge is a soft dependency ONLY on the reconciler-managed
+# `udp:9876` local-mic path, where it is the UDP producer: if it was
+# clean-stopped by a Camilla/outputd restart, starting voice without it makes
+# UdpMicCapture bind an unfed socket, the wake loop stops advancing, and the
+# systemd watchdog kills voice in a visible restart loop.
+#
+# That want is therefore NOT static here. `Wants=` starts a unit even when it
+# is disabled, so a static one re-pulls the bridge onto a box that has no
+# local mic at all -- a streambox answering through a paired Bluetooth remote
+# reads its audio from the accessory path (udp:9892, owned by
+# jasper-accessory-reconcile) and must never start the AEC stack.
+# jasper-aec-reconcile already owns whether the bridge runs; it writes and
+# removes the matching drop-in beside those calls. After= stays: it is pure
+# ordering and costs nothing when the bridge is absent.
+Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service
 
 # Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
 # accumulated silently because the daemon kept hitting transient
