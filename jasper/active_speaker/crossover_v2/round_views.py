@@ -330,6 +330,7 @@ def load_banked_round(round_dir: Path) -> BankedRound:
             driver_draft_path=inputs.design_draft_path,
             applied_profile_path=inputs.applied_profile_path,
             repeat_floor_path=inputs.repeat_floor_path,
+            declared_geometry_path=inputs.declared_geometry_path,
         )
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc

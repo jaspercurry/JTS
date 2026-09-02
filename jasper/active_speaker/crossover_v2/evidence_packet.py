@@ -573,25 +573,25 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _declared_geometry_block() -> dict[str, Any]:
+def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
     """The household's own tape measure, in metres, or WHICH absence this is.
 
-    Read where it lives -- the file ``jasper-declare-geometry set`` writes,
-    the same one every gate disclosure asks -- rather than from an artifact
-    some earlier stage copied into the round. A packet is built on the box,
-    so the banked packet IS the frozen copy of what the household had
-    declared when the round was banked.
+    Read from the path the CALLER resolved -- a banked round's frozen sibling,
+    or the live speaker's own SSOT file -- on the same terms as the four
+    documents beside it. ``None`` is a round that banked no declaration.
 
     A household that never declared one (most of them) and a declaration this
     install could not read are two different facts about the round, kept apart
     on exactly the terms the sibling blocks state them.
     """
-    from jasper.audio_measurement import measurement_geometry
+    from jasper.audio_measurement.measurement_geometry import (
+        load_declared_geometry,
+    )
 
+    if path is None:
+        return _absence("source_absent", False, "declared_geometry")
     try:
-        geometry = measurement_geometry.load_declared_geometry(
-            measurement_geometry.DEFAULT_PATH
-        )
+        geometry = load_declared_geometry(path)
     except (OSError, ValueError) as exc:
         return _absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry")
     if geometry is None:
@@ -3236,6 +3236,7 @@ def build_crossover_evidence_packet(
     driver_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
     repeat_floor_path: Path | None = None,
+    declared_geometry_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -3272,6 +3273,16 @@ def build_crossover_evidence_packet(
     stopping plateau/benefit margin from. Same posture, same reason: OPTIONAL,
     absence reported. A packet without it says the floor is unmeasured and
     falls back to the two codified assumptions, naming which it used.
+
+    ``declared_geometry_path`` is the household's declared rig geometry
+    (``measurement_geometry.json``), the only viable source for the room's
+    entanglement floor. Same posture, same reason: OPTIONAL, absence reported.
+    It is INJECTED rather than defaulted to the on-box SSOT path for the
+    reason ``state_path`` is: this packet is rebuilt by every reader, and a
+    path resolved here would make a banked round's room — and its
+    ``packet_fingerprint`` — depend on whatever the READING machine happens to
+    have declared. ``None`` is "this round banked none", which is the
+    ``source_absent`` absence.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
@@ -3372,7 +3383,7 @@ def build_crossover_evidence_packet(
             "state": info_raw.get("state"),
             "started_at": info_raw.get("started_at"),
             "round_id": receipt.get("round_id"),
-            "declared_geometry": _declared_geometry_block(),
+            "declared_geometry": _declared_geometry_block(declared_geometry_path),
             "note": (
                 "bundle_session_id and relay_session_id are different id "
                 "namespaces; the round artifacts are filed under the relay id"

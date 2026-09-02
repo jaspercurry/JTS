@@ -518,7 +518,7 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# session.declared_geometry (#3498) — read where the declaration lives
+# session.declared_geometry (#3498) — the fifth banked SSOT sibling
 # --------------------------------------------------------------------------- #
 
 
@@ -538,30 +538,48 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
         (None, None),
         ("{ not a document", None),
     ],
+    ids=["declared", "absent", "unreadable"],
 )
-def test_the_session_block_reflects_the_declaration_file(
-    tmp_path, monkeypatch, stored, room,
+def test_the_session_block_reads_the_declaration_the_caller_resolved(
+    tmp_path, stored, room,
 ):
-    """The room comes from the file ``jasper-declare-geometry set`` writes.
+    """The room comes from the path the CALLER hands in, never an on-box read.
 
-    The packet is built on the box while the round banks, so what it reads is
-    what the household had declared then — no stage copies it forward. Never
-    declared (most households) and declared-but-unreadable are two different
-    facts about the round, kept apart because an offline reader must not
-    derive an entanglement floor from a room nobody stated.
+    A banked round freezes its declaration beside the bundle like the other
+    SSOT documents, so a round read on another machine reports the room the
+    SPEAKER declared rather than that machine's. Never declared (most
+    households) and declared-but-unreadable are two different facts about the
+    round, kept apart because an offline reader must not derive an
+    entanglement floor from a room nobody stated.
     """
-    from jasper.audio_measurement import measurement_geometry
-
     session, _ = _bundle(tmp_path)
-    declared = tmp_path / "measurement_geometry.json"
+    declared = tmp_path / "declared-geometry.json"
     if stored is not None:
         declared.write_text(stored, encoding="utf-8")
-    monkeypatch.setattr(measurement_geometry, "DEFAULT_PATH", declared)
 
-    block = build_crossover_evidence_packet(session)["session"]["declared_geometry"]
+    block = build_crossover_evidence_packet(
+        session, declared_geometry_path=declared
+    )["session"]["declared_geometry"]
     if room is not None:
         assert block == room
         return
     assert block["status"] == "not_evaluated"
     assert block["field"] == "declared_geometry"
     assert (block["reason"] == "source_absent") is (stored is None)
+
+
+def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
+    tmp_path,
+):
+    """No path handed in means NO ROOM — not whatever this machine declares.
+
+    The packet is rebuilt by every reader, so a builder that fell back to the
+    on-box SSOT would make a banked round's room, and its
+    ``packet_fingerprint``, drift to the reading speaker's own declaration.
+    """
+    session, _ = _bundle(tmp_path)
+
+    block = build_crossover_evidence_packet(session)["session"]["declared_geometry"]
+
+    assert block["status"] == "not_evaluated"
+    assert block["reason"] == "source_absent"
