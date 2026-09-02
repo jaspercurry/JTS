@@ -32,7 +32,6 @@ from jasper.audio_runtime_plan import (
 from jasper.env_file import read_value
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
-    COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     resolve_coupling,
 )
@@ -1469,14 +1468,17 @@ def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolut
         )
 
 
-def read_persisted_coupling(env_path: str | os.PathLike = FANIN_ENV_PATH) -> str:
-    """The coupling the daemons will read on their next start — resolved through
-    :func:`resolve_coupling`, whose own note applies here too: the ``loopback``
-    answer is a legacy label for an absent/invalid value, never a live daemon
-    state. Doctor + observability use this to compare the persisted intent
-    against the live fan-in transport."""
+def read_persisted_coupling(
+    env_path: str | os.PathLike = FANIN_ENV_PATH,
+) -> str | None:
+    """The transport ``fanin.env`` NAMES, through :func:`resolve_coupling`.
+
+    ``None`` when the file is unreadable or names nothing this repo recognizes.
+    That resolver's note applies here too: this is a statement about the FILE,
+    never a live daemon state. Doctor + observability use it to compare the
+    persisted intent against the live fan-in transport."""
     try:
         text = Path(env_path).read_text(encoding="utf-8")
     except OSError:
-        return COUPLING_LOOPBACK
+        return None
     return resolve_coupling(read_value(text, COUPLING_ENV_VAR))

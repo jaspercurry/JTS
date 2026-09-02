@@ -68,15 +68,18 @@ RuntimeDirectoryMode=0750
 EnvironmentFile=/etc/jasper/jasper.env
 Environment="JASPER_OUTPUTD_BACKEND=alsa"
 Environment="JASPER_OUTPUTD_DAC_PCM=outputd_dac"
-Environment="JASPER_OUTPUTD_PERIOD_FRAMES=1024"
-Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"
+# NO Environment= FOR JASPER_OUTPUTD_PERIOD_FRAMES / _DAC_BUFFER_FRAMES: a
+# literal here wins over /etc/jasper/jasper.env above it (later line wins),
+# shadowing the documented operator seam. Absent, outputd resolves both against
+# its own compile-time defaults (rust/jasper-outputd/src/config.rs), which is
+# the bottom layer jasper.audio_runtime_plan models.
 # JASPER_OUTPUTD_CONTENT_BRIDGE is deliberately UNSET here: undeclared IS the
 # one transport (ADR-0100), and a baseline that named the retired route would
 # park every box that has not been reconciled since.
 Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"
-# Optional operator retune file. Keep this after the packaged defaults so
-# outputd and jasper-apply-airplay-mode agree when DAC buffer sizing is
-# intentionally changed for lab validation.
+# Optional operator retune file, written by the audio-hardware reconciler. Keep
+# this after /etc/jasper/jasper.env so a reconciler-derived DAC floor wins over
+# a hand-set one, which is the precedence jasper.audio_runtime_plan models.
 EnvironmentFile=-/var/lib/jasper/outputd.env
 # Wake-corpus test mode can temporarily enable the XVF USB-IN
 # reference fanout and outputd's UDP reference tap. Keep this after

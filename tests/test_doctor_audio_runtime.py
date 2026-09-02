@@ -3047,28 +3047,19 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
     out of `jasper-doctor` without knowing which module printed it, so the class
     is only closed when the whole package is judged.
 
-    DERIVED FROM BOTH VOCABULARIES, never from a list here. The tokens to judge
-    are the coupling names `jasper.fanin_coupling` still spells (so the RETIRED
-    one is judged, which is the whole point, and a future token is judged the
-    day it is added); the verdict is the reconciler's OWN argparse. English that
-    merely names the command in a sentence carries no coupling token and is not
-    judged.
+    DERIVED FROM THE PRINTED TEXT, never from a list here: every word the doctor
+    prints after this command name is judged, and the verdict is the
+    reconciler's OWN argparse. Deriving the candidates from a coupling
+    vocabulary instead stopped judging the retired token the day that token was
+    deleted — exactly when a stale remedy naming it would be hardest to see. The
+    rule that makes this safe is one the doctor already keeps: the word after
+    this command name is always its ARGUMENT, never English prose.
     """
     import re
     from pathlib import Path
 
-    import jasper.fanin_coupling as fc
     import jasper.fanin.coupling_reconcile as cr
     from jasper.cli import doctor as doctor_pkg
-
-    couplings = {
-        value
-        for name, value in vars(fc).items()
-        if name.startswith("COUPLING_") and isinstance(value, str)
-    }
-    assert "loopback" in couplings, (
-        "the retired token stopped being spelled — this pin no longer judges it"
-    )
 
     modules = sorted(Path(doctor_pkg.__file__).parent.glob("*.py"))
     assert len(modules) > 1, "the doctor package glob found nothing to judge"
@@ -3080,7 +3071,8 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
         for m in re.finditer(
             r"jasper-fanin-coupling-reconcile[^\S\n]+([A-Za-z_][\w-]*)", source
         )
-    } & couplings
+    }
+    assert named, "the doctor stopped printing this remedy at all"
 
     for token in sorted(named):
         accepted = True

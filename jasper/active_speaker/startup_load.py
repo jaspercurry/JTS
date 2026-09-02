@@ -1602,7 +1602,7 @@ def build_driver_commission_load_preflight(
         # A CORRUPTED FILE IS AN UNARMED TRANSPORT, NOT A TRACEBACK. Both
         # readers fail-safe on `OSError` (missing, unreadable) and both
         # normalise every malformed VALUE — an empty file, a typo, garbage keys
-        # all resolve to loopback / marker-false. One input class escapes both:
+        # all resolve to no transport / marker-false. One input class escapes both:
         # a non-UTF-8 byte makes `read_text` / `fh.read()` raise
         # `UnicodeDecodeError`, which is a `ValueError` and not an `OSError`, so
         # it would leave this function by exception. On a Pi that is the
