@@ -60,10 +60,10 @@ def arm_ring_transport(monkeypatch: Any) -> None:
 
     Patched at the two owning modules rather than at the reader, because the
     preflight imports both names INSIDE the call (`jasper.fanin_coupling` at the
-    top of the gate, `jasper.fanin.coupling_reconcile` inside the ring branch),
-    so the attribute is looked up per call and the patch is what the gate sees.
-    The same shape the shipped ring-commissioning tests already use for the
-    marker half.
+    top of the gate, `jasper.fanin.ring_health` inside the ring branch), so the
+    attribute is looked up per call and the patch is what the gate sees. The
+    same shape the shipped ring-commissioning tests already use for the marker
+    half.
 
     Deliberately NOT a pytest fixture: its call sites are plain helper functions
     rather than tests, and a fixture would have to be requested by every test
@@ -71,7 +71,7 @@ def arm_ring_transport(monkeypatch: Any) -> None:
     avoid.
     """
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda path=None: COUPLING_SHM_RING,
     )
     monkeypatch.setattr(

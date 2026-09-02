@@ -3530,7 +3530,7 @@ def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
 def _arm_ring_for_reconcile(monkeypatch):
     """Make main()'s read_persisted_coupling report shm_ring (ring-armed box)."""
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
 
@@ -3789,7 +3789,7 @@ def test_loopback_box_still_bonds_normally(tmp_path, monkeypatch):
     # Control: a non-ring (loopback) box bonds as before — the gate is ring-only.
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
     rc = main([])

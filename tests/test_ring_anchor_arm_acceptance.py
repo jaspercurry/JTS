@@ -34,8 +34,8 @@ import pytest
 from jasper.fanin.coupling_reconcile import (
     CAMILLA_ANCHOR_CONVERGED_DETAIL,
     CARRIER_TRANSIENT_ACTIVE_REFUSAL,
-    ring_endpoint_anchor_converged,
 )
+from jasper.fanin.ring_health import ring_endpoint_anchor_converged
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
