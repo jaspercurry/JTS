@@ -917,7 +917,6 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
 
     assert json.loads(capsys.readouterr().out)["level"] == {
         "resolved": True,
-        "target_db_spl": ANCHOR_DB_SPL,
         "anchor_db_spl": ANCHOR_DB_SPL,
         "reference_volume_db": REFERENCE_VOLUME_DB,
         "mic_serial": "8108494",

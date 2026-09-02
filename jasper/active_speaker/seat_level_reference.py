@@ -280,9 +280,13 @@ class LevelUnresolved(Exception):
 
 @dataclass(frozen=True)
 class ResolvedLevel:
-    """The banked anchor's drive level, absolute, with the terms behind it."""
+    """The banked anchor's drive level, absolute, with the terms behind it.
 
-    target_db_spl: float
+    One level, not a target and an anchor: a walk drives AT the anchor, so a
+    second field would be the same number under a name inviting the two to
+    differ.
+    """
+
     anchor_db_spl: float
     reference_volume_db: float
     mic_serial: str | None
@@ -384,7 +388,6 @@ def resolve_anchor_level(
             f"commissioning ceiling of {ceiling:g} dB SPL",
         )
     return ResolvedLevel(
-        target_db_spl=anchor,
         anchor_db_spl=anchor,
         reference_volume_db=reference_volume_db,
         mic_serial=sensitivity.serial,

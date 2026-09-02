@@ -202,7 +202,7 @@ def test_the_width_gate_does_not_refuse_the_graph_it_has_not_moved_yet():
     its docstring, because "the gate probably passes" is how a feature ships
     dead.
     """
-    from jasper.fanin.coupling_reconcile import (
+    from jasper.fanin.ring_health import (
         LoadedCamillaGraph,
         ring_edge_width_ready,
     )

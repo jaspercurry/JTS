@@ -5,8 +5,8 @@
 """Regression: a transient jasper-outputd readiness miss must not abort the
 whole install.
 
-Bug (REVIEW-2026-06-04-small-wins.md → "require_outputd_ready aborts the whole
-install on a transient failure"): `require_outputd_ready` was a *bare* call
+Bug ("require_outputd_ready aborts the whole install on a transient
+failure"): `require_outputd_ready` was a *bare* call
 under `set -euo pipefail` inside `install_systemd_units`, which runs BEFORE
 `provision_correction_tls` / `install_nginx_site` / `regenerate_audio_cues` /
 `run_doctor_summary` in `main()`. The helper restarts jasper-outputd and then

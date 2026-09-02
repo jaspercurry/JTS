@@ -116,7 +116,6 @@ def test_a_level_resolves_or_names_the_input_it_is_missing(
         return
 
     assert _resolve() == slr.ResolvedLevel(
-        target_db_spl=ANCHOR_DB_SPL,
         anchor_db_spl=ANCHOR_DB_SPL,
         reference_volume_db=REFERENCE_VOLUME_DB,
         mic_serial="8108494",
@@ -160,7 +159,7 @@ def test_the_ceiling_comes_from_the_presets_own_declaration(
     )
 
     resolved = slr.resolve_anchor_level(calibration_file=str(cal))
-    assert resolved.target_db_spl == ANCHOR_DB_SPL
+    assert resolved.anchor_db_spl == ANCHOR_DB_SPL
 
     def _unresolvable(*_a, **_k):
         raise ValueError("no preset on this box")

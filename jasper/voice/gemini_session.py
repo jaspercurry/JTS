@@ -22,6 +22,7 @@ from ._supervisor import (
     ESCALATION_REPEAT_THRESHOLD,
     DeferredReconnect,
     FailureFingerprint,
+    failure_detail,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -628,6 +629,9 @@ class GeminiLiveConnection:
         # rate-limit (1 hour) — which is the entire common case on a
         # freshly-started daemon.
         self._last_escalation_at: float = float("-inf")
+        # Cause of the most recent reconnect failure, for /state. Cleared
+        # on a successful reconnect so it never outlives the outage.
+        self._last_failure_detail: str | None = None
         # Async callback invoked when the supervisor detects a tight
         # retry loop. Wired by the daemon to WakeLoop.play_supervisor_cue
         # after both the connection and wake loop are constructed.
@@ -828,6 +832,9 @@ class GeminiLiveConnection:
             ConnectionState.PAUSED_FOR_BACKOFF,
             ConnectionState.FAILED,
         )
+
+    def last_failure_detail(self) -> str | None:
+        return self._last_failure_detail
 
     def supports_server_vad(self) -> bool:
         return False
@@ -1117,7 +1124,7 @@ class GeminiLiveConnection:
                     "live connection: %s retry %d after %.1fs (last: %s: %s)",
                     phase, attempt, delay,
                     type(last_exc).__name__ if last_exc else "?",
-                    last_exc,
+                    self._last_failure_detail if last_exc else "?",
                 )
                 await asyncio.sleep(delay)
             try:
@@ -1170,6 +1177,20 @@ class GeminiLiveConnection:
         )
 
     async def _open_session(self) -> None:
+        """Open a session, recording the cause when it fails.
+
+        Every retry loop funnels through here, so `_last_failure_detail`
+        tracks the live connection by construction — a later caller
+        cannot forget the bookkeeping and leave /state reporting a
+        stale outage."""
+        try:
+            await self._open_session_attempt()
+        except Exception as e:  # noqa: BLE001
+            self._last_failure_detail = failure_detail(e)
+            raise
+        self._last_failure_detail = None
+
+    async def _open_session_attempt(self) -> None:
         """Open a fresh SDK session against the current config and start
         the receive loop. Raises if the connect fails."""
         # Reset the stale-response counter — server-side state is fresh
@@ -1346,7 +1367,8 @@ class GeminiLiveConnection:
                     logger.warning(
                         "live connection: reconnect attempt %d failed "
                         "(%s: %s, handle=%s)",
-                        attempt, type(e).__name__, e, handle_short,
+                        attempt, type(e).__name__,
+                        self._last_failure_detail, handle_short,
                     )
                 # Tight-retry-loop detection: append the failure shape
                 # to the ring buffer and check for sustained identical

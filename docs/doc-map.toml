@@ -764,7 +764,6 @@ docs = [
   # Planning authority for the tuning-engine refactor (waves 0-8) and the
   # coordination boundary it shares with docs/REFACTOR-2026-08.md's program.
   "docs/REFACTOR-TUNING-2026-08.md",
-  "docs/REFACTOR-COORDINATION-2026-08.md",
   # Chunk 2 of that refactor: the cutover, where the engine takes the calls and
   # the two god files dissolve. Scan it when a seam binding, the record store,
   # the analyze registry, or either god file's dissolution order changes.
@@ -779,23 +778,11 @@ docs = [
   # goes. Scan it before cutting anything out of that file. EXPIRES when tier 7
   # completes — the file it maps will not exist, and this doc is deleted with it.
   "docs/cutover-map-web.md",
-  # Implementation-grade brief for that cutover's front-end wiring items (W5-a
-  # through W5-d, plus the W4 seam-colour decision they depend on). Scan it
-  # while those items are open; it is superseded-and-deleted when they land.
-  "docs/cutover-briefs-w5.md",
   # Chunk 3 of that refactor: the acceptance readiness brief — acceptance rows 9
   # and 10, the instrument roster's status, and the S11 amendment the producer
   # build needs. Dies when acceptance passes. Scan it when the baseline
   # reproduction bar, the roster, or S11's sanctioned-act list changes.
   "docs/cutover-briefs-acceptance.md",
-  # Implementation-grade brief for that cutover's §2 (the analyze registry):
-  # the analysis-unit enumeration, the registry table shape, the caller flip
-  # sites, and the PR slicing. Dies when W2 lands.
-  "docs/cutover-briefs-w2.md",
-  # Implementation-grade briefs for the cutover DAG's entry items (W1-a..d):
-  # the production RecordStore and the retention lift. Scan it when the record
-  # store's shape, the retention call sites, or the sidecar's readers change.
-  "docs/cutover-briefs-w1.md",
   # The one operational map for the v2 commission session and the tuning loop
   # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
   # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
@@ -1032,13 +1019,6 @@ code = [
   "LICENSE",
   "NOTICE",
   "LICENSE-third-party.md",
-  "docs/OSS-READINESS-TOP-FIVE.md",
-  "docs/REVIEW-google-oss-readiness.md",
-  "docs/REVIEW-2026-06-04-deep-dive.md",
-  "docs/REVIEW-2026-06-04-big-rocks.md",
-  "docs/REVIEW-2026-06-04-small-wins.md",
-  "docs/REVIEW-2026-06-12-oss-due-diligence.md",
-  "docs/REVIEW-deep-audit-2026-07-11.md",
   "docs/DEEP-AUDIT-2026-08-25.md",
   "docs/REVIEW-deep-audit-ledger.md",
   "docs/audit-pending-followups.md",
@@ -1057,13 +1037,6 @@ docs = [
   "CODE_OF_CONDUCT.md",
   "CHANGELOG.md",
   "LICENSE-third-party.md",
-  "docs/OSS-READINESS-TOP-FIVE.md",
-  "docs/REVIEW-google-oss-readiness.md",
-  "docs/REVIEW-2026-06-04-deep-dive.md",
-  "docs/REVIEW-2026-06-04-big-rocks.md",
-  "docs/REVIEW-2026-06-04-small-wins.md",
-  "docs/REVIEW-2026-06-12-oss-due-diligence.md",
-  "docs/REVIEW-deep-audit-2026-07-11.md",
   "docs/DEEP-AUDIT-2026-08-25.md",
   "docs/REVIEW-deep-audit-ledger.md",
   "docs/audit-pending-followups.md",
