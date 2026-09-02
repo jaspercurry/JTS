@@ -2584,19 +2584,16 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
 def _active_speaker_tuning_handoff_payload() -> dict[str, Any]:
     """Mint the AI-operator handoff prompt and the binding it was minted for.
 
-    Read-only and audio-free. Readiness is the applied-baseline SSOT — the
-    same "a baseline is playing" fact the page already renders the active
-    profile card from — rather than a second notion of ready.
+    Read-only and audio-free. Readiness comes from the baseline-profile
+    payload the page renders its active-profile card from, so the route can
+    never offer a handoff the card beside it hides.
     """
 
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-    )
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 
     payload = build_tuning_handoff(
-        applied_baseline=load_applied_baseline_profile_state(),
+        baseline_profile=_active_speaker_baseline_profile_payload(),
         design_draft=load_design_draft(),
     )
     log_event(

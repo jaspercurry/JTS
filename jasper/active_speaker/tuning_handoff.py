@@ -4,22 +4,12 @@
 
 """The tuning handoff card's prompt: a POINTER, not a manual (#2883).
 
-One box-minted prompt for a fresh cloud LLM session that has only an SSH
-connection to this speaker.
-
 **Pull, not dump.** The prompt names the orientation verb, the runbook's tool
 menu and the program door; it never restates what any of them serve. Copying
 the tool menu in would freeze a second copy of a document that changes with
 every deploy — so the only thing here that CAN go stale is the binding, which
 is why the binding is stamped.
-
-Two shipped patterns, cloned rather than re-spelled: the generation shape of
-:func:`jasper.active_speaker.driver_safety.build_driver_research_prompt`, and
-the hostname derivation of :func:`jasper.identity.speaker_url` — never an
-``os.environ`` read and never a hard-coded ``jts.local``, which resolves to *a*
-box and so sends its reader to the wrong one silently.
 """
-
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -40,6 +30,9 @@ HANDOFF_NOT_READY = "not_ready"
 #: USING the speaker, so the handoff appears only once the executor chain has
 #: produced a playing baseline — never earlier, and never as a gate on sound.
 NO_APPLIED_BASELINE = "no_applied_baseline"
+#: An applied record exists but its inputs moved under it, so the page is
+#: asking for a fresh profile rather than offering this one (ADR-0195).
+REVALIDATION_PENDING = "revalidation_pending"
 
 #: Installed console-script paths, not bare names: an SSH session gets no
 #: ``EnvironmentFile=`` and /opt/jasper/.venv is not on the default PATH.
@@ -123,21 +116,33 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any]) -> str:
 
 def build_tuning_handoff(
     *,
-    applied_baseline: Mapping[str, Any] | None,
+    baseline_profile: Mapping[str, Any],
     design_draft: Mapping[str, Any],
 ) -> dict[str, Any]:
     """``{prompt, binding}`` for the /sound/setup/ handoff card.
 
+    Readiness is ``applied_profile_stands`` — THE applied verdict, read from
+    the same baseline-profile payload the page renders its active-profile card
+    from (ADR-0195). A second reading of the applied-profile SSOT would answer
+    a slightly looser question and hand out a prompt the page itself hides.
+
     The binding is minted either way so the card can name the speaker while it
     is still holding the prompt back; ``prompt`` is empty until there is a
-    playing baseline to hand over.
+    baseline to hand over.
     """
     binding = build_tuning_handoff_binding(design_draft)
-    ready = applied_baseline is not None
+    ready = baseline_profile.get("applied_profile_stands") is True
+    revalidation = baseline_profile.get("revalidation")
+    if ready:
+        reason = None
+    elif isinstance(revalidation, Mapping) and revalidation.get("required") is True:
+        reason = REVALIDATION_PENDING
+    else:
+        reason = NO_APPLIED_BASELINE
     return {
         "kind": TUNING_HANDOFF_KIND,
         "status": HANDOFF_READY if ready else HANDOFF_NOT_READY,
-        "reason": None if ready else NO_APPLIED_BASELINE,
+        "reason": reason,
         "binding": binding,
         "prompt": build_tuning_handoff_prompt(binding) if ready else "",
     }

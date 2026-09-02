@@ -8277,10 +8277,18 @@ async function testTuningHandoffCardMintsAndGoesStale() {
     fail("a copy minted against the live revision is not stale", { freshHtml });
   }
 
+  // The mint re-reads the draft, so it can be AHEAD of the page's cached copy.
+  // That is a lagging cache, not a declaration the operator changed.
+  const behind = await run(2, 3);
+  const behindHtml = behind.harness.elements.get("view-body").innerHTML;
+  if (behindHtml.includes("data-tuning-handoff-stale")) {
+    fail("a page cache behind the mint must not read as a stale copy", { behindHtml });
+  }
+
   const drifted = await run(4, 3);
   const driftedHtml = drifted.harness.elements.get("view-body").innerHTML;
   if (!driftedHtml.includes("data-tuning-handoff-stale")) {
-    fail("a copy minted against an older revision must be disclosed as stale", { driftedHtml });
+    fail("a declaration edit after the copy must be disclosed as stale", { driftedHtml });
   }
 
   const noBaseline = setupHarness(baseFetch({

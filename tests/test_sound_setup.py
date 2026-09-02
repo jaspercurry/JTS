@@ -6308,6 +6308,9 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
     assert {
         "driverResearchImportPreservesOperatorInstalledConfiguration": True
     } in out["results"]
+    # #2883: the handoff card renders only once a baseline plays, mints its
+    # prompt server-side, and discloses a copy the declarations moved past.
+    assert {"tuningHandoffCardMintsAndGoesStale": True} in out["results"]
 
 
 def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
@@ -8682,25 +8685,36 @@ def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
 
 
 @pytest.mark.parametrize(
-    "applied, expected_status, expected_reason, has_prompt",
+    "baseline_profile, expected_status, expected_reason, has_prompt",
     [
-        ({"status": "applied"}, "ready", None, True),
-        (None, "not_ready", "no_applied_baseline", False),
+        ({"applied_profile_stands": True}, "ready", None, True),
+        ({"applied_profile_stands": False}, "not_ready", "no_applied_baseline", False),
+        (
+            {
+                "applied_profile_stands": False,
+                "revalidation": {"required": True, "status": "required"},
+            },
+            "not_ready",
+            "revalidation_pending",
+            False,
+        ),
     ],
 )
-def test_tuning_handoff_is_gated_on_a_playing_baseline(
-    monkeypatch, applied, expected_status, expected_reason, has_prompt
+def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
+    monkeypatch, baseline_profile, expected_status, expected_reason, has_prompt
 ):
-    """The card mints only once the executor chain produced a playing baseline.
+    """One verdict, read where the page reads it (ADR-0195).
 
-    No tuning flow may be a prerequisite for USING the speaker (#2883), so the
-    absence of an applied profile is a named not-ready, never a failure.
+    No tuning flow may be a prerequisite for USING the speaker (#2883), so a
+    speaker with nothing to hand over is a named not-ready, never a failure —
+    and a profile awaiting revalidation says so rather than borrowing the
+    "never applied" slug.
     """
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     payload = tuning_handoff.build_tuning_handoff(
-        applied_baseline=applied, design_draft={"revision": 5}
+        baseline_profile=baseline_profile, design_draft={"revision": 5}
     )
 
     assert payload["kind"] == tuning_handoff.TUNING_HANDOFF_KIND
@@ -8717,35 +8731,39 @@ def test_tuning_handoff_is_gated_on_a_playing_baseline(
 def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     monkeypatch,
 ):
-    """Hostname-derived, revision-stamped, and free of anything secret.
+    """Hostname-derived, revision-stamped, and closed against credentials.
 
     A prompt is minted to be pasted into a third-party chat session, so every
-    field in it is disclosed by construction (non-negotiable 3). The default
-    ``jts.local`` must never leak in either: it resolves to *a* box, so a
-    printed one sends its reader to the wrong speaker silently.
+    field in it is disclosed by construction (non-negotiable 3) — hence a
+    closed key set, not a scan for words. The default ``jts.local`` must never
+    leak either: it resolves to *a* box, so a printed one sends its reader to
+    the wrong speaker silently.
     """
     from jasper.active_speaker import tuning_handoff
     from jasper.identity import DEFAULT_HOSTNAME
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     payload = tuning_handoff.build_tuning_handoff(
-        applied_baseline={"status": "applied"}, design_draft={"revision": 5}
+        baseline_profile={"applied_profile_stands": True},
+        design_draft={"revision": 5},
     )
     prompt = payload["prompt"]
-    binding = payload["binding"]
 
+    assert set(payload["binding"]) == {
+        "speaker_name",
+        "hostname",
+        "declaration_url",
+        "crossover_url",
+        "design_draft_revision",
+    }
     assert "jts7.local" in prompt
     assert DEFAULT_HOSTNAME not in prompt
-    assert str(binding["design_draft_revision"]) in prompt
+    assert str(payload["binding"]["design_draft_revision"]) in prompt
     # The pointer targets: the orientation verb and the program door, by their
     # installed paths. Their behaviour is theirs to own; the prompt only names
     # them, and must keep naming ones that exist.
     assert tuning_handoff.ORIENTATION_COMMAND in prompt
     assert tuning_handoff.PROGRAM_DOOR_COMMAND in prompt
-
-    assert "peer_id" not in binding
-    for field in ("token", "secret", "psk", "password", "key="):
-        assert field not in prompt.lower()
 
 
 def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
@@ -8753,8 +8771,9 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        lambda *a, **k: {"status": "applied"},
+        sound_setup,
+        "_active_speaker_baseline_profile_payload",
+        lambda *a, **k: {"applied_profile_stands": True},
     )
     monkeypatch.setattr(
         "jasper.active_speaker.design_draft.load_design_draft",
@@ -8775,19 +8794,3 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
     assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
         payload["binding"]
     )
-
-
-def test_sound_module_hands_off_to_an_ai_operator_only_once_a_baseline_plays():
-    if _NODE is None:
-        pytest.skip("node not on PATH")
-
-    proc = subprocess.run(
-        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-
-    assert {"tuningHandoffCardMintsAndGoesStale": True} in out["results"]
