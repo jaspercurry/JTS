@@ -8,10 +8,8 @@ A program is a menu item the household or the LLM operator picks by name.
 Free-form geometry is not a program: the only caller-supplied bearing is
 :func:`spot_program`'s single pose.
 
-This module is the code derivation of ``docs/tuning-master-plan.md``, section
-"Measurement program constants (owner research, 2026-08-21)";
-``tests/test_measurement_programs.py`` pins the two against each other so the
-numbers cannot drift apart silently.
+The numbers come from ``docs/tuning-master-plan.md``, section "Measurement
+program constants"; this table is where they live.
 
 Poses are ABSOLUTE bearings at the mark in whole degrees — azimuth and
 elevation from the on-axis anchor. Mover reach is the staging layer's to

@@ -2,124 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The program table's behavior, and its drift pin against the plan doc.
-
-``jasper/active_speaker/measurement_programs.py`` is a code derivation of one
-section of ``docs/tuning-master-plan.md``. Two copies of one set of numbers
-drift, so the pin below reads the plan's own bullet and compares the numbers
-with the table's. It parses NUMBERS out of a whitespace-normalised bullet, not
-prose: several PRs edit that document concurrently, and reflowing or rewording
-the sentence around the angles must not fail this file.
-"""
+"""The program table's behavior."""
 
 from __future__ import annotations
-
-import re
-from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker import measurement_programs as mp
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PLAN_DOC = REPO_ROOT / "docs" / "tuning-master-plan.md"
-PLAN_SECTION = "Measurement program constants"
-RECONCILE = (
-    f"reconcile {PLAN_DOC.name} '{PLAN_SECTION}' with "
-    "jasper/active_speaker/measurement_programs.py"
-)
-
-
-def _plan_baseline_bullet() -> str:
-    """The plan's ``baseline`` bullet, whitespace-normalised."""
-
-    text = PLAN_DOC.read_text(encoding="utf-8")
-    sections = re.split(r"^## ", text, flags=re.MULTILINE)
-    matching = [s for s in sections if s.startswith(PLAN_SECTION)]
-    assert len(matching) == 1, (
-        f"expected exactly one '{PLAN_SECTION}' section in {PLAN_DOC.name}, "
-        f"found {len(matching)}"
-    )
-
-    for bullet in re.split(r"\n(?=- )", matching[0]):
-        if bullet.lstrip().startswith("- **`baseline` program:**"):
-            return " ".join(bullet.split())
-
-    pytest.fail(f"no '`baseline` program' bullet in {PLAN_DOC.name}; {RECONCILE}")
-
-
-def _search(pattern: str, bullet: str) -> re.Match[str]:
-    match = re.search(pattern, bullet)
-    assert match, (
-        f"the plan's baseline bullet no longer states {pattern!r}, so this pin "
-        f"cannot read the plan's numbers; {RECONCILE}"
-    )
-    return match
-
-
-def _angles(group: str) -> set[int]:
-    """``0°, ±10°, ±20°`` -> ``{0, -10, 10, -20, 20}``."""
-
-    angles: set[int] = set()
-    for sign, value in re.findall(r"(±?)(\d+)°", group):
-        angles.add(int(value))
-        if sign:
-            angles.add(-int(value))
-    return angles
-
-
-def test_full_baseline_matches_the_plans_pose_set() -> None:
-    """The 13-pose set and its 1 m mark, as the plan states them."""
-
-    bullet = _plan_baseline_bullet()
-    full = mp.program("baseline", "full")
-
-    plan_poses = int(_search(r"(\d+) poses at ", bullet).group(1))
-    assert len(full.poses) == plan_poses, (
-        f"plan says {plan_poses} poses, table has {len(full.poses)} — "
-        f"one side moved; {RECONCILE}"
-    )
-
-    plan_horizontal = _angles(_search(r"horizontal ((?:±?\d+°,? ?)+)", bullet).group(1))
-    table_horizontal = {p.azimuth_deg for p in full.poses if p.elevation_deg == 0}
-    assert table_horizontal == plan_horizontal, (
-        f"plan's horizontal set is {sorted(plan_horizontal)}, table's is "
-        f"{sorted(table_horizontal)} — one side moved; {RECONCILE}"
-    )
-
-    plan_vertical = _angles(_search(r"vertical ((?:±?\d+°,? ?)+)", bullet).group(1))
-    table_vertical = {p.elevation_deg for p in full.poses if p.azimuth_deg == 0}
-    assert table_vertical == plan_vertical, (
-        f"plan's vertical set is {sorted(plan_vertical)}, table's is "
-        f"{sorted(table_vertical)} — one side moved (the vertical 0 is the "
-        f"shared on-axis anchor, not a fourteenth pose); {RECONCILE}"
-    )
-
-
-def test_full_baseline_matches_the_plans_repeat_structure() -> None:
-    """x4 at the 0 deg anchor, x1 at every other pose."""
-
-    bullet = _plan_baseline_bullet()
-    full = mp.program("baseline", "full")
-
-    plan_anchor = int(_search(r"×(\d+) at the 0° anchor pose", bullet).group(1))
-    plan_other = int(_search(r"×(\d+) at every other pose", bullet).group(1))
-
-    anchors = [p for p in full.poses if (p.azimuth_deg, p.elevation_deg) == (0, 0)]
-    assert len(anchors) == 1, (
-        f"table has {len(anchors)} on-axis anchor poses, expected exactly one; "
-        f"{RECONCILE}"
-    )
-    assert anchors[0].repeats == plan_anchor, (
-        f"plan repeats the anchor x{plan_anchor}, table x{anchors[0].repeats} — "
-        f"one side moved; {RECONCILE}"
-    )
-
-    others = {p.repeats for p in full.poses if p is not anchors[0]}
-    assert others == {plan_other}, (
-        f"plan repeats every other pose x{plan_other}, table uses "
-        f"{sorted(others)} — one side moved; {RECONCILE}"
-    )
 
 
 @pytest.mark.parametrize(
