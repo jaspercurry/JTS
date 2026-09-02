@@ -843,15 +843,10 @@ def test_resolve_driver_measurement_band_hz_raises_on_unknown_target():
 
 
 def test_a_full_range_sweep_never_reaches_below_its_declared_low_limit():
-    """The way-1 protection question, asked of the resolver that answers it.
-
-    A ``full_range`` driver has no crossover high-pass under it, so its declared
-    minimum recommended crossover frequency is the ONLY thing between a sweep
-    and the driver's own suspension. ``apply_driver_low_limit`` projects that
-    declaration onto both bands and the resolver's lower edge takes the maximum
-    of them, but the two facts sit in different modules -- so the composition is
-    pinned here rather than assumed.
-    """
+    """A ``full_range`` driver has no crossover high-pass under it, so its
+    declared minimum recommended crossover frequency is the only thing between
+    a sweep and the suspension. The projection and the resolver sit in
+    different modules, so their composition is pinned rather than assumed."""
     declared_floor_hz = 80.0
     target = apply_driver_low_limit(
         {

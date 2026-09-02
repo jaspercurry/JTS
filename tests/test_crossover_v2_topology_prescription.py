@@ -692,8 +692,7 @@ def test_every_refusal_carries_a_reason_from_the_closed_set(raw):
 def test_a_way_one_speaker_refuses_the_door_rather_than_blaming_its_corner():
     """``full_range_passive`` has no crossover region to re-topologize, and
     saying THAT is a different answer from an inadmissible corner — which sends
-    a prescriber to re-choose a number that can never exist. Mirrors
-    ``test_crossover_v2_alignment_prescription.py``'s test of the same name."""
+    a prescriber to re-choose a number that can never exist."""
     with pytest.raises(TopologyPrescriptionRefused) as excinfo:
         _read(_pin(2400.0), way_count=1)
     assert excinfo.value.reason == TOPOLOGY_NO_CROSSOVER_REGION

@@ -57,6 +57,7 @@ from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import (
+    MODE_TWO_WAY,
     MODE_WAY1,
     SOLO_BAND_HZ,
     bank_measure_round,
@@ -506,23 +507,31 @@ def test_forward_model_verify_delta_joins_the_two_rounds_the_flow_banks(
 
 
 @pytest.mark.parametrize(
-    ("bank_measured", "bank_basis"),
+    ("bank_measured", "bank_basis", "basis_mode"),
     [
-        pytest.param(False, True, id="no_measured_verify_sum"),
-        pytest.param(True, False, id="no_prediction_basis"),
+        pytest.param(False, True, MODE_TWO_WAY, id="no_measured_verify_sum"),
+        pytest.param(True, False, MODE_TWO_WAY, id="no_prediction_basis"),
+        # A subless passive main banks ONE solo: the forward model is the one
+        # view here that is about a pair, and a legal speaker shape must reach
+        # the same named refusal rather than raising or inventing a branch.
+        pytest.param(True, True, MODE_WAY1, id="a_way1_basis_has_no_pair"),
     ],
 )
 def test_forward_model_verify_delta_names_the_half_it_was_not_given(
-    tmp_path, bank_measured, bank_basis,
+    tmp_path, bank_measured, bank_basis, basis_mode,
 ):
     """Either half absent answers the same shape as every other view here: no
     delta, WITH a reason, and never a raise.
 
     The absent half is a REAL absence in each case — a stage-1 round banks no
-    VERIFY curve and a stage-2 round banks no solos — so each parameter is the
-    refusal an operator actually meets rather than a mutilated fixture.
+    VERIFY curve, a stage-2 round banks no solos, a 1-way round banks no pair —
+    so each parameter is the refusal an operator actually meets rather than a
+    mutilated fixture.
     """
-    basis = bank_measure_round(tmp_path) if bank_basis else bank_verify_round(tmp_path)
+    basis = (
+        bank_measure_round(tmp_path, mode=basis_mode)
+        if bank_basis else bank_verify_round(tmp_path)
+    )
     measured = (
         bank_verify_round(tmp_path, name="measured")
         if bank_measured else bank_measure_round(tmp_path, name="measured")
@@ -537,30 +546,6 @@ def test_forward_model_verify_delta_names_the_half_it_was_not_given(
     assert result.reason
     # A result with no delta was judged by no measurement, and says so rather
     # than leaving the acceptance question to whoever reads it later (#3481).
-    assert result.acceptance["status"] == ACCEPTANCE_NOT_RUN
-    assert result.acceptance["judged_against"] is None
-
-
-def test_a_way1_round_loads_with_one_role_and_declines_the_pair_comparison(
-    tmp_path,
-):
-    """A subless passive main banks ONE solo, and the round still loads.
-
-    Most views here grade POSITIONS and so are blind to how many branches a
-    speaker has. The forward model is the one that is about a pair, and its
-    answer on this shape must be the ordinary named refusal: raising on a legal
-    speaker shape is the #3487 defect, and inventing a second branch is worse.
-    """
-    basis = bank_measure_round(tmp_path, mode=MODE_WAY1)
-    measured = bank_verify_round(tmp_path)
-
-    result = forward_model_verify_delta(
-        load_banked_round(basis), SummationCandidate(),
-        measured=load_banked_round(measured),
-    )
-
-    assert result.delta is None
-    assert result.reason
     assert result.acceptance["status"] == ACCEPTANCE_NOT_RUN
     assert result.acceptance["judged_against"] is None
 

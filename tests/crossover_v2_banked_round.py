@@ -133,31 +133,24 @@ def _lr4(freqs_hz: np.ndarray, *, highpass: bool) -> np.ndarray:
     return butter2**2
 
 
-def _branches(mode: str) -> tuple[tuple[str, np.ndarray], ...]:
-    """This shape's solos as ``(role, complex_tf)`` on :data:`SOLO_GRID_HZ`.
-
-    A 1-way main walks ONE routed solo of the whole speaker and declares no
-    corner, so its branch is unity across the band rather than half of an LR4
-    pair — there is nothing for :data:`_CROSSOVER_HZ` to be the corner of.
-    """
-    if mode == MODE_WAY1:
-        return (("full_range", np.ones_like(SOLO_GRID_HZ, dtype=complex)),)
-    return (
-        (DRIVER_ROLE_WOOFER, _lr4(SOLO_GRID_HZ, highpass=False)),
-        (DRIVER_ROLE_TWEETER, _lr4(SOLO_GRID_HZ, highpass=True)),
-    )
-
-
 def _pose_curves(mode: str) -> tuple[spatial.LateralPoseCurve, ...]:
-    """This shape's solos as the curve value both banked shapes carry."""
+    """This shape's solos as the curve value both banked shapes carry.
+
+    A 1-way main walks ONE routed solo and declares no corner, so its branch is
+    unity across the band rather than half of an LR4 pair.
+    """
+    branches = (
+        (("full_range", np.ones_like(SOLO_GRID_HZ, dtype=complex)),)
+        if mode == MODE_WAY1 else (
+            (DRIVER_ROLE_WOOFER, _lr4(SOLO_GRID_HZ, highpass=False)),
+            (DRIVER_ROLE_TWEETER, _lr4(SOLO_GRID_HZ, highpass=True)),
+        )
+    )
     return tuple(
         spatial.LateralPoseCurve(
-            role=role,
-            freqs_hz=SOLO_GRID_HZ,
-            complex_tf=tf,
-            band_hz=SOLO_BAND_HZ,
+            role=role, freqs_hz=SOLO_GRID_HZ, complex_tf=tf, band_hz=SOLO_BAND_HZ,
         )
-        for role, tf in _branches(mode)
+        for role, tf in branches
     )
 
 

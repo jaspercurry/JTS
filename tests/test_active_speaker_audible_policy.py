@@ -68,14 +68,9 @@ def test_unknown_role_uses_generic_block_reason() -> None:
     sorted({role for roles in DRIVER_ROLES_BY_WAY.values() for role in roles}),
 )
 def test_the_audible_gate_and_the_protection_envelope_answer_together(role) -> None:
-    """ONE owner for "may this driver be driven": ``audio_allowed``.
-
-    The two were separate answers, and they disagreed — the envelope admitted a
-    ``full_range`` driver the role set had never heard of, so a way-1 speaker
-    was refused at the audible gate by a policy that had already admitted it.
-    Every role any speaker shape declares is checked, so a class added to one
-    side and not the other fails here.
-    """
+    """ONE owner for "may this driver be driven": ``audio_allowed``. Every role
+    any speaker shape declares is checked, so a class added to one side and not
+    the other fails here."""
     assert audible_role_allowed(role) is driver_protection_payload(role)[
         "audio_allowed"
     ]

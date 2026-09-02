@@ -1168,42 +1168,11 @@ def test_the_artifact_name_has_one_owner():
     assert read_distortion.HARMONICS_ARTIFACT is HARMONICS_ARTIFACT
 
 
-def test_the_cli_reads_its_roles_off_the_round_it_was_handed():
-    """The distortion door composes the shape the round actually swept.
-
-    The 1-way arm of ``rebuild_measure_program`` is only reachable if the CLI
-    stops asserting a pair. Both directions are pinned, because a derivation
-    that answered ``full_range`` for every round would break every 2-way one.
-    """
-    from jasper.cli import read_distortion
-
-    overrides = {
-        "woofer": (150.0, 4000.0),
-        "tweeter": (1600.0, 20000.0),
-        "full_range": (150.0, 20000.0),
-    }
-
-    assert read_distortion.round_bands_hz(
-        {"gain_plan_db": {"woofer": -6.0, "tweeter": -31.2}}, overrides,
-    ) == {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
-    assert read_distortion.round_bands_hz(
-        {"gain_plan_db": {"full_range": -11.0}}, overrides,
-    ) == {"full_range": (150.0, 20000.0)}
-    # A state that names no roles, or one whose roles are not a shape any
-    # speaker declares, is REFUSED by name — never composed as a pair nobody
-    # measured, and never quietly reduced to the roles that happen to match.
-    for state in ({}, {"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}):
-        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-            read_distortion.round_bands_hz(state, overrides)
-        assert excinfo.value.reason == he.STATE_UNREADABLE
-
-
-def test_a_one_role_round_rebuilds_through_the_bands_the_cli_derives():
-    """The 1-way arm, driven by the CLI's own derivation rather than a literal.
-
-    The program is real and the rebuild proves itself against its banked
-    ``program_id``, so a two-role composition here could only refuse.
-    """
+def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
+    """Both directions, because a derivation that answered ``full_range`` for
+    every round would break every 2-way one — and the 1-way arm is then driven
+    all the way through the rebuild, which proves itself against the banked
+    ``program_id`` and so could only refuse a two-role composition."""
     from jasper.audio_measurement.program import (
         FrequencyBand,
         RoleBand,
@@ -1216,6 +1185,21 @@ def test_a_one_role_round_rebuilds_through_the_bands_the_cli_derives():
     from jasper.cli import read_distortion
 
     band = read_distortion.DEFAULT_FULL_RANGE_BAND_HZ
+    overrides = {
+        "woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0), "full_range": band,
+    }
+
+    assert read_distortion.round_bands_hz(
+        {"gain_plan_db": {"woofer": -6.0, "tweeter": -31.2}}, overrides,
+    ) == {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
+    # A state that names no roles, or roles that are not a shape any speaker
+    # declares, is REFUSED by name — never composed as a pair nobody measured,
+    # and never quietly reduced to the roles that happen to match.
+    for state in ({}, {"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}):
+        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+            read_distortion.round_bands_hz(state, overrides)
+        assert excinfo.value.reason == he.STATE_UNREADABLE
+
     program = build_measure_program(
         {"full_range": -11.0},
         (RoleBand("full_range", 0, FrequencyBand(*band)),),
@@ -1228,14 +1212,10 @@ def test_a_one_role_round_rebuilds_through_the_bands_the_cli_derives():
         "gain_plan_db": {"full_range": -11.0},
         "candidate": {"program_id": program.program_id},
     }
+    bands = read_distortion.round_bands_hz(state, overrides)
 
-    rebuilt, downstream, _prelude = he.rebuild_measure_program(
-        state,
-        read_distortion.round_bands_hz(
-            state, {"full_range": read_distortion.DEFAULT_FULL_RANGE_BAND_HZ},
-        ),
-    )
-
+    assert bands == {"full_range": band}
+    rebuilt, downstream, _prelude = he.rebuild_measure_program(state, bands)
     assert rebuilt.program_id == program.program_id
     assert downstream == pytest.approx(-20.0)
 

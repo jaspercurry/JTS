@@ -851,20 +851,12 @@ def test_passive_mains_sub_builds_and_reproves_at_topology_fc(tmp_path) -> None:
 def test_subless_passive_with_nothing_measured_does_not_compile_an_active_preset(
     tmp_path,
 ) -> None:
-    """The flat lane is still the default, and only a MEASURED round moves it.
+    """The flat lane is the default, and only a MEASURED round moves it.
 
-    A subless passive topology with nothing measured for it must NOT route
-    through the active emitter: it has no bass-management split and no
-    inter-driver crossover, so at runtime it takes the flat emit_sound_config
-    lane and this asserts the build path does not hijack it.
-
-    There IS one thing that moves it — a recommissioning round that measured
-    its one full-range branch and fitted a linearization, which is a Layer-A
-    graph and compiles as one
-    (``tests/test_crossover_v2_way1_session.py``'s
-    ``test_a_way1_round_compiles_and_writes_a_single_branch_baseline``). This
-    call brings neither a candidate nor an applied profile naming one, so the
-    default stands.
+    A subless passive topology with nothing measured for it has no
+    bass-management split and no inter-driver crossover, so it takes the flat
+    ``emit_sound_config`` lane; this call brings neither a candidate nor an
+    applied profile naming one, so the build path must not hijack it.
     """
     from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
 

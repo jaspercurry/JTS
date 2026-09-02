@@ -2183,13 +2183,9 @@ def test_the_browser_and_python_agree_on_the_out_of_band_octave_code():
 
 
 def test_the_browser_and_python_agree_on_every_linearization_outcome():
-    """Same guard shape as the two octave-code tests below, one layer up.
-
-    The renderer maps this enum to plain language and renders NOTHING for a
+    """The renderer maps this enum to plain language and renders NOTHING for a
     value it does not know, so a Python outcome the browser has never heard of
-    makes the round go silent about whether linearization ran — the exact
-    failure the line was added to kill.
-    """
+    makes the round go silent about whether linearization ran."""
     import re
     from pathlib import Path
 

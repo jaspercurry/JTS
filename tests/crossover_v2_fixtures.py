@@ -109,13 +109,10 @@ def _preset() -> ActiveSpeakerPreset:
 
 # --- the 1-way (subless passive main) shape ------------------------------------
 #
-# One amp channel, one declaration, no crossover region and no local sub. Its
-# MEASURE is ONE routed solo of the whole speaker, so there is no upper role and
-# no corner anywhere in this block.
+# One amp channel, one declaration, no crossover region and no local sub: its
+# MEASURE is ONE routed solo, so no upper role and no corner exist anywhere.
 
 WAY1_BAND = FrequencyBand(45.0, 18000.0)
-
-CAPS_WAY1 = {"full_range": 0.0}
 
 
 def _roles_way1() -> list[RoleBand]:
@@ -123,27 +120,13 @@ def _roles_way1() -> list[RoleBand]:
 
 
 def _one_way_preset() -> ActiveSpeakerPreset:
-    return ActiveSpeakerPreset.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": "jts_active_speaker_preset",
-        "preset_id": "passive-full-range-v1",
-        "name": "Passive full-range test preset",
-        "way_count": 1,
-        "channel_map": {
-            "layout": "mono",
-            "outputs": [{
-                "index": 0,
-                "side": "mono",
-                "driver_role": "full_range",
-                "label": "mono full_range",
-                "startup_muted": True,
-            }],
-        },
-        "drivers": {
-            "full_range": {"manufacturer": "Example", "model": "FR-1"},
-        },
-        "crossover_regions": [],
-    })
+    """The preset the PRODUCTION resolver answers for a subless passive box."""
+    from jasper.active_speaker import commission_wiring
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return commission_wiring.resolve_capture_preset(
+        mono_output_topology(mode="full_range_passive")
+    )
 
 
 # --- fake analyses -------------------------------------------------------------
@@ -709,19 +692,14 @@ def _conductor(
 
 
 def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
-    """:func:`_conductor`'s 1-way twin — one declaration, and ``fc_hz=None``.
-
-    ``None`` rather than a stand-in corner: a passive main has none, and every
-    consumer reads the absence rather than a number (see
-    ``build_verify_program``'s no-crossover mode). ``driver_spacing_m`` is 0.0
-    for the matching reason and stated rather than omitted: parallax is a
-    woofer-to-tweeter geometry, and one driver has no gap to correct for.
-    """
+    """:func:`_conductor`'s 1-way twin. ``fc_hz`` is None rather than a stand-in
+    corner and ``driver_spacing_m`` 0.0 rather than omitted: a passive main has
+    no corner, and parallax is a woofer-to-tweeter geometry."""
     return _conductor(
         fakes,
         roles_bands=_roles_way1(),
         fc_hz=None,
-        driver_caps_dbfs=CAPS_WAY1,
+        driver_caps_dbfs={"full_range": 0.0},
         driver_spacing_m=0.0,
         source_preset=kwargs.pop("source_preset", _one_way_preset()),
         **kwargs,
@@ -1799,44 +1777,24 @@ def _eligible_measure_analysis(
     )
 
 
-def _way1_branch_db() -> np.ndarray:
-    """The 1-way fixture's ONE measured branch magnitude.
+def _way1_measure_analysis(program) -> ProgramAnalysis:
+    """:func:`_eligible_measure_analysis`'s 1-way twin: every inter-driver field
+    absent with a name, as ``_analyze_measure`` returns for a one-role program.
+    ``predicted_sum`` is not one of them — one branch sums to itself.
 
-    :func:`_fixture_branch_db`'s sibling, and deliberately NOT one of its two
-    curves: a full-range branch carries no crossover, so folding a section in
-    would model a graph this speaker never emits.
-
-    One dip a lift would target and one bump a cut would remove, on a flat
-    baseline. Flat rather than the pair fixture's tilt because the tilt is
-    there for the ripple-optimal trim solve, which a lone branch never runs —
-    and a broadband tilt makes the fit's whole lift budget an HF-tail request
-    the envelope refuses, which would leave a cut-only round looking like a
-    decision when it was an absence of material. It lands the boost at
-    +4.94 dB / 400 Hz, beside the real JTS3 profile's
-    +4.8807 dB / 377.4 Hz.
+    The branch carries one dip a lift would target and one bump a cut would
+    remove, on a FLAT baseline rather than :func:`_fixture_branch_db`'s tilt:
+    the tilt exists for the ripple-optimal trim solve a lone branch never runs,
+    and broadband it would spend the whole lift budget on an HF-tail request
+    the envelope refuses, leaving a cut-only round looking like a decision
+    rather than an absence of material.
     """
     freqs = _LINEARIZABLE_FREQS_HZ
-    dip = -5.0 * np.exp(-0.5 * ((np.log2(freqs / 400.0) / 0.3) ** 2))
-    bump = 3.0 * np.exp(-0.5 * ((np.log2(freqs / 4000.0) / 0.25) ** 2))
-    return dip + bump
-
-
-def _way1_measure_analysis(
-    program, *, mic_tier="reference", repeats=2, magnitude_db=None,
-) -> ProgramAnalysis:
-    """:func:`_eligible_measure_analysis`'s 1-way twin.
-
-    Every INTER-DRIVER field is ABSENT WITH A NAME rather than defaulted — no
-    alignment, no measured pair candidate — which is exactly what
-    ``_analyze_measure`` returns for a one-role program. ``predicted_sum`` is
-    NOT one of them: one branch sums to itself, and the delta probe's state
-    axis references it.
-    """
-    solo = _linearizable_response(
-        "full_range",
-        _way1_branch_db() if magnitude_db is None else magnitude_db,
-        n_repeats=repeats,
+    magnitude_db = (
+        -5.0 * np.exp(-0.5 * ((np.log2(freqs / 400.0) / 0.3) ** 2))
+        + 3.0 * np.exp(-0.5 * ((np.log2(freqs / 4000.0) / 0.25) ** 2))
     )
+    solo = _linearizable_response("full_range", magnitude_db, n_repeats=2)
     return ProgramAnalysis(
         phase="measure",
         program_id=program.program_id,
@@ -1844,7 +1802,7 @@ def _way1_measure_analysis(
         drift=DriftEstimate(
             epsilon_ppm=5.0, max_residual_samples=0.1, glitch_detected=False,
         ),
-        mic_tier=mic_tier,
+        mic_tier="reference",
         driver_responses=(solo,),
         alignment=None,
         candidate=None,

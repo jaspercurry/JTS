@@ -1167,33 +1167,24 @@ def test_the_margin_is_positive_and_the_evaluator_accepts_it():
 
 
 @pytest.mark.parametrize(
-    ("absolute", "blend_reason", "benefit_reason"),
+    ("reason", "blend_reason", "benefit_reason"),
     [
-        (
-            {"not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY},
-            ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-            ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-        ),
-        (
-            {"not_evaluated": ABSOLUTE_NO_TRUSTED_BAND},
-            BLEND_NO_INCUMBENT,
-            BENEFIT_NO_REGION_BAND,
-        ),
+        (ABSOLUTE_NO_CROSSOVER_TOPOLOGY, ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+         ABSOLUTE_NO_CROSSOVER_TOPOLOGY),
+        (ABSOLUTE_NO_TRUSTED_BAND, BLEND_NO_INCUMBENT, BENEFIT_NO_REGION_BAND),
     ],
     ids=["no_crossover_at_all", "region_not_established"],
 )
 def test_the_two_bandless_rounds_are_told_apart_by_both_region_blocks(
-    absolute, blend_reason, benefit_reason,
+    reason, blend_reason, benefit_reason,
 ):
     """A 1-way main HAS no crossover; a 2-way round can fail to establish one.
 
-    Both leave the band absent and both blocks then report absent, and #3480's
-    rule is that one slug may not cover them: one remedy is to re-measure, the
-    other is that nothing is wrong and nothing ever will be. The second row is
-    here so a change that widened the new reason over it fails.
+    Both leave the band absent, and one slug may not cover both: one remedy is
+    to re-measure, the other is that nothing is wrong and never will be.
     """
     post = _post()
-    post.verify_absolute = absolute
+    post.verify_absolute = {"not_evaluated": reason}
 
     evaluation = _round(post, _baseline_from(_post()))
 

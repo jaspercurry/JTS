@@ -34,6 +34,11 @@ import pytest
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker.crossover_v2.capture_source import SOURCE_RELAY
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_MEASUREMENT_TARGETS_MISSING,
+    REASON_REGISTRY,
+    REASON_SPEAKER_SHAPE_UNSUPPORTED,
+)
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
@@ -102,6 +107,7 @@ def _status() -> dict[str, Any]:
 # The REAL derivation functions, stashed at import time BEFORE the autouse
 # stub below replaces the module attributes — the W6.5 context-caps test
 # restores them so the true resolver runs against a real profile.
+_REAL_RESOLVE_PRESET = commission_wiring.resolve_capture_preset
 _REAL_RESOLVE_CEILINGS = excitation_safety_plan_mod.resolve_driver_excitation_ceilings
 _REAL_SWEEP_DURATION_LIMIT = excitation_safety_plan_mod.effective_sweep_duration_limit_s
 _REAL_DERIVE_SESSION_VOLUME = crossover_v2_flow.derive_session_volume_db
@@ -197,6 +203,89 @@ def _patch_topology(monkeypatch, topology: OutputTopology) -> None:
 # --------------------------------------------------------------------------- #
 # resolve_conductor_context — unit tests
 # --------------------------------------------------------------------------- #
+
+
+def _passive_status(topology: OutputTopology) -> dict[str, Any]:
+    """A subless passive box's status, from the PRODUCTION derivation.
+
+    A summed target is a claim about two branches, so ``active`` is honestly
+    False and there is no ``setup`` block — both are questions about an active
+    crossover this speaker does not have.
+    """
+    from jasper.active_speaker import measurement
+
+    summed = measurement.active_summed_targets(topology)
+    return {
+        "active": bool(summed),
+        "targets": {
+            "drivers": measurement.active_driver_targets(topology), "summed": summed,
+        },
+    }
+
+
+@pytest.fixture
+def _passive_topology(monkeypatch) -> OutputTopology:
+    """The autouse stubs, re-pointed at a ``full_range_passive`` box."""
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    topology = mono_output_topology(mode="full_range_passive")
+    _patch_topology(monkeypatch, topology)
+    # The REAL resolver over the real topology: never the bundled 2-way preset
+    # the autouse stub hands every other case here.
+    monkeypatch.setattr(commission_wiring, "resolve_capture_preset", _REAL_RESOLVE_PRESET)
+    monkeypatch.setenv(ACTIVE_PLAYBACK_DEVICE_ENV, "hw:Lab")
+    return topology
+
+
+def test_a_subless_passive_speaker_opens_a_session(monkeypatch, _passive_topology):
+    """The gates that refused a passive box are answered by its shape."""
+    # A passive box compiles no crossover preview; asking for one would refuse a
+    # session it can serve.
+    monkeypatch.setattr(
+        v2host, "ensure_crossover_preview_ready",
+        lambda: pytest.fail("a passive topology must not need a crossover preview"),
+    )
+
+    context = v2host.resolve_conductor_context(_passive_status(_passive_topology))
+
+    assert context.preset.way_count == 1
+    assert context.preset.crossover_regions == ()
+    assert context.fc_hz is None
+    assert [rb.role for rb in context.roles_bands] == ["full_range"]
+    assert context.role_channels == {"full_range": 0}
+    assert set(context.driver_caps_dbfs) == {"full_range"}
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_code"),
+    [
+        pytest.param("preset", REASON_SPEAKER_SHAPE_UNSUPPORTED, id="no_walk"),
+        pytest.param(
+            "targets", REASON_MEASUREMENT_TARGETS_MISSING, id="nothing_to_measure",
+        ),
+    ],
+)
+def test_the_session_refuses_by_a_registered_code(
+    monkeypatch, _passive_topology, mutate, expected_code,
+):
+    status = _passive_status(_passive_topology)
+    if mutate == "preset":
+        from jasper.active_speaker.profile import ActiveSpeakerPreset
+        from tests.test_active_speaker_profile import _three_way_preset
+
+        monkeypatch.setattr(
+            commission_wiring, "resolve_capture_preset",
+            lambda topo: ActiveSpeakerPreset.from_mapping(_three_way_preset("mono")),
+        )
+    else:
+        status["targets"] = {"drivers": [], "summed": []}
+
+    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
+        v2host.resolve_conductor_context(status)
+
+    assert excinfo.value.code == expected_code
+    assert expected_code in REASON_REGISTRY
+
 
 
 def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):

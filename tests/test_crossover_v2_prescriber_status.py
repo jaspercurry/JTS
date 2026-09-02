@@ -833,6 +833,7 @@ def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
     )
 
 
+
 def _full_range_draft() -> dict[str, Any]:
     """A 1-way main's design draft: one declaration, no protective corner."""
     return {
@@ -852,52 +853,72 @@ def _full_range_draft() -> dict[str, Any]:
     }
 
 
+def _rebank_round_as_no_crossover(session: Path) -> None:
+    """Re-bank one bundle's round as the round a 1-way main banks — through the
+    production solver, so it cannot state a shape no round produces."""
+    from jasper.active_speaker.crossover_v2.blend_correction import (
+        solve_blend_correction,
+    )
+    from jasper.active_speaker.crossover_v2.evidence_packet import (
+        round_artifact_dir,
+    )
+    from jasper.audio_measurement.program_analysis import (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    )
+
+    round_dir, _reason = round_artifact_dir(session)
+    assert round_dir is not None
+    path = round_dir / "round_receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt["round_measurements"]["blend"] = solve_blend_correction(
+        graded=None, band_hz=None, incumbent=(),
+        no_crossover_reason=ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    ).to_dict()
+    path.write_text(json.dumps(receipt))
+
+
 def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     tmp_path, capsys
 ):
     """Not "not yet" — "not ever", and the three shut doors say so by name.
 
     A 1-way main's blend, alignment and topology doors all describe a handoff
-    between two branches, so all three refuse for good. Telling an operator no
-    region "is banked" would send them back to a measurement for a band that
-    cannot exist (#3480). The per-driver door is the whole loop, and it
-    is offered for the one role the draft declares.
+    between two branches; telling an operator no region "is banked" would send
+    them back to a measurement for a band that cannot exist.
     """
     from jasper.audio_measurement.program_analysis import (
         ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
     )
 
-    from tests.test_crossover_v2_evidence_packet import (
-        rebank_round_as_no_crossover,
-    )
-
     session, draft = _speaker_dirs(
         tmp_path, draft=_full_range_draft(), classification=_classification()
     )
-    rebank_round_as_no_crossover(session)
+    _rebank_round_as_no_crossover(session)
 
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
 
     assert payload["declared"]["roles"] == ["full_range"]
     # The SHAPE, not a measurement that has not happened yet.
-    assert payload["banked"]["region"]["available"] is False
-    assert payload["banked"]["region"]["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
-    assert payload["banked"]["region"]["band_hz"] is None
+    assert payload["banked"]["region"] == {
+        **payload["banked"]["region"],
+        "available": False,
+        "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+        "band_hz": None,
+    }
     # …and the per-driver door, the only one this speaker has, is open.
     assert payload["declared"]["available"] is True
     assert payload["banked"]["classification"]["available"] is True
-    # Exactly one next action carries all three refusal codes, so an operator
-    # is told once which doors are shut and by what name.
+    # Exactly one next action carries all three refusal codes, so an operator is
+    # told once which doors are shut and by what name.
     refusals = (
         cli.REGION_UNAVAILABLE,
         cli.ALIGNMENT_NO_CROSSOVER_REGION,
         cli.TOPOLOGY_NO_CROSSOVER_REGION,
     )
-    shut = [
+    assert len([
         action for action in payload["next_actions"]
         if all(refusal in action for refusal in refusals)
-    ]
-    assert len(shut) == 1
+    ]) == 1
 
 
 def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, capsys):

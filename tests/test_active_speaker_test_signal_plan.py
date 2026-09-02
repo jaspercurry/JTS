@@ -247,15 +247,9 @@ def test_driver_test_signal_plan_subwoofer_stays_above_floor_and_below_lowpass()
 
 
 def test_a_declared_full_range_driver_gets_a_tone_instead_of_a_refusal() -> None:
-    """The way-1 driver's floor lives ONLY in its declaration.
-
-    ``full_range`` has no class figure to stand in for a crossover edge, so a
-    plan built without the declared excitation floor blocks every tone with
-    ``full_range_low_edge_undeclared`` — a speaker with one driver could then
-    never be commissioned. The floor reaches BOTH halves of the plan — the
-    profile that picks the tone and the protection envelope that admits it — so
-    the two cannot answer differently about the same driver.
-    """
+    """``full_range`` has no class figure standing in for a crossover edge, so
+    its floor lives only in the declaration — and reaches BOTH halves of the
+    plan, the profile that picks the tone and the envelope that admits it."""
     declared = driver_test_signal_plan_from_edges(
         "full_range",
         declared_low_limit_hz=80.0,

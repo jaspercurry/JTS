@@ -106,10 +106,9 @@ def test_load_is_absent_tolerant_and_never_raises(tmp_path: Path, write, why):
             dbt.REFUSE_ROLES_INCOMPLETE, id="a_role_extra",
         ),
         pytest.param(
-            # way-1: a base trim is a FRAME, and one role has nothing to be
-            # relative to. Refused by name rather than banked as a vacuous
-            # {"full_range": 0.0}, which every reader would take for a
-            # measured level match.
+            # A base trim is a FRAME: one role has nothing to be relative to,
+            # so it is refused rather than banked as a vacuous 0.0 a reader
+            # would take for a measured level match.
             {"trims_db": {"full_range": 0.0}, "roles": ("full_range",)},
             dbt.REFUSE_NO_FRAME, id="a_single_role_is_not_a_frame",
         ),

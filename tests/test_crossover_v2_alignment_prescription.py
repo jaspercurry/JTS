@@ -301,8 +301,7 @@ def test_an_unusable_corner_is_its_own_refusal(fc_hz):
 def test_a_way_one_speaker_refuses_the_door_rather_than_blaming_its_corner():
     """``full_range_passive`` has no crossover region at all, so this door does
     not apply to it — and saying so is a different answer from "the corner is
-    unusable", which sends a prescriber to re-derive a number that can never
-    exist (the #3480 one-slug-two-remedies lesson)."""
+    unusable", which sends a prescriber to re-derive an impossible number."""
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(_arm(-450.0), way_count=1)
     assert excinfo.value.reason == ALIGNMENT_NO_CROSSOVER_REGION
@@ -433,9 +432,7 @@ def test_every_refusal_reason_is_in_the_closed_vocabulary():
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(_arm(-450.0), declared_bounds_us=HORN_WINDOW_US)
     raised.add(excinfo.value.reason)
-    # The way-1 refusal is the other bound no request body can reach: it is a
-    # fact about the SPEAKER, so it needs a different topology rather than a
-    # different document.
+    # The way-1 refusal is the other bound no request body can reach.
     with pytest.raises(AlignmentPrescriptionRefused) as excinfo:
         _read(_arm(-450.0), way_count=1)
     raised.add(excinfo.value.reason)
