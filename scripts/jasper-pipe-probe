@@ -39,9 +39,12 @@ capture SECONDS OUT.raw
     consecutive records (record[2i] must byte-match record[2i+1]) and
     keeps the even one; a pairing violation -- an odd record count, or a
     pair that does not match -- is never silently guessed at: it prints a
-    loud warning with counts and keeps every record unmerged. OUT.raw is
-    the reassembled pure-PCM stream either way, so `analyze`'s input
-    format is unchanged.
+    loud warning with counts and keeps every record unmerged. A collapsed
+    record whose length is not the capture's modal period is excised and
+    reported (splicing a partial period shifts every sample after it), and
+    an all-zero capture fails the command outright. OUT.raw is the
+    reassembled pure-PCM stream either way, so `analyze`'s input format is
+    unchanged.
 
 analyze IN.raw [--json]
     Per-second table of dominant frequency (4x zero-padded, Hann-windowed
@@ -127,6 +130,7 @@ See resolve_target().
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import math
 import os
@@ -562,6 +566,17 @@ class ReassemblyResult:
     payloads: list[bytes]
     pairing_ok: bool
     detail: str
+    period_bytes: int | None = None
+    excised: int = 0
+
+    @property
+    def clean_timeline(self) -> bool:
+        """True when `payloads` concatenate to a faithful period timeline.
+
+        Either defect breaks the sample-count-to-wall-clock math `latency`
+        does: unmerged duplicates double the span, an excised record takes a
+        period out of it."""
+        return self.pairing_ok and not self.excised
 
 
 def reassemble_records(raw: bytes) -> ReassemblyResult:
@@ -572,8 +587,15 @@ def reassemble_records(raw: bytes) -> ReassemblyResult:
     an odd record count, or a pair that does not match -- this refuses to
     guess: it reports the violation and returns every record UNMERGED,
     rather than silently keeping a stream that might not be what it looks
-    like. Accepts any payload length; the only length validation is the
-    multiple-of-4 truncation in deinterleave_s16le_stereo()."""
+    like.
+
+    The tap emits one DAC period per datagram, so every collapsed record
+    must be the same length. A record that is not is EXCISED and counted:
+    concatenating it would splice a partial period into the stream and, at
+    an odd byte count, swap the channels of everything after it -- a defect
+    the analyzer reads as real audio (#3509). The modal length is taken as
+    the period rather than a declared constant, so the probe follows
+    whatever period the box is running."""
     records = parse_records(raw)
     if len(records) % 2 != 0:
         return ReassemblyResult(
@@ -590,8 +612,18 @@ def reassemble_records(raw: bytes) -> ReassemblyResult:
             f"byte-match (first at pair {mismatches[0]}) -- keeping all "
             "records unmerged rather than guessing which half to drop",
         )
-    kept = records[0::2]
-    return ReassemblyResult(kept, True, f"{len(kept)} pairs verified and collapsed")
+    paired = records[0::2]
+    period = collections.Counter(len(p) for p in paired).most_common(1)
+    period_bytes = period[0][0] if period else None
+    kept = [p for p in paired if len(p) == period_bytes]
+    excised = len(paired) - len(kept)
+    detail = f"{len(kept)} pairs verified and collapsed at {period_bytes} B/record"
+    if excised:
+        detail += (
+            f"; {excised} record(s) excised -- length != the {period_bytes} B "
+            "tap period, and splicing a partial period shifts everything after it"
+        )
+    return ReassemblyResult(kept, True, detail, period_bytes, excised)
 
 
 def fetch_and_reassemble(host: str, user: str, remote_path: str) -> ReassemblyResult:
@@ -600,6 +632,15 @@ def fetch_and_reassemble(host: str, user: str, remote_path: str) -> ReassemblyRe
         scp_pull(host, user, remote_path, local_raw)
         raw = local_raw.read_bytes()
     return reassemble_records(raw)
+
+
+def is_all_zero(raw: bytes) -> bool:
+    """True when the capture carries no nonzero sample at all. An empty
+    capture counts as all-zero: neither one can be analyzed.
+
+    Over a numpy VIEW of the buffer -- a 150 s capture is tens of MB, and
+    every bytes-level idiom for this copies it."""
+    return not np.any(np.frombuffer(raw, dtype=np.uint8))
 
 
 def deinterleave_s16le_stereo(raw: bytes) -> tuple[np.ndarray, np.ndarray]:
@@ -831,7 +872,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         result = fetch_and_reassemble(host, user, remote_capture_path(session))
     finally:
         cleanup_session(host, user, session)
-    if not result.pairing_ok:
+    if not result.clean_timeline:
         print(f"WARNING: {result.detail}", file=sys.stderr)
     raw_out = b"".join(result.payloads)
     args.out.write_bytes(raw_out)
@@ -839,6 +880,16 @@ def cmd_capture(args: argparse.Namespace) -> int:
         f"{args.out}: {len(raw_out)} bytes ({len(result.payloads)} payload records"
         f"{'' if result.pairing_ok else ', UNPAIRED -- see warning above'}) from {host}"
     )
+    # The bytes are still written -- they are the evidence -- but an all-zero
+    # capture taken while something was playing is a broken tap, not a quiet
+    # room, and every downstream reading of it looks merely silent (#3509).
+    if is_all_zero(raw_out):
+        print(
+            f"ERROR: capture is all zeros ({len(raw_out)} bytes) -- the tap "
+            "carried no audio at all; do not analyze it",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -1035,7 +1086,7 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
         return None
 
     result = fetch_and_reassemble(host, user, remote_capture_path(session))
-    if not result.pairing_ok:
+    if not result.clean_timeline:
         print(f"repeat {index + 1}: WARNING: {result.detail}", file=sys.stderr)
     raw = b"".join(result.payloads)
     ch0, ch1 = deinterleave_s16le_stereo(raw)
@@ -1062,12 +1113,17 @@ def _run_one_latency_repeat(host: str, user: str, lane_pcm: str, session: str, i
             file=sys.stderr,
         )
         return None
-    if not result.pairing_ok:
+    if not result.clean_timeline:
         # Un-collapsed duplicate records double the apparent sample count for
         # the same wall-clock span, so the sample-rate-based arrival math
-        # below would read ~2x too late -- refuse rather than report a
-        # silently-wrong number.
-        print(f"repeat {index + 1}: skipping latency math -- pairing failed (see warning above)", file=sys.stderr)
+        # below would read ~2x too late; an excised record takes a period OUT
+        # of the timeline, which makes the same math read early. Refuse rather
+        # than report a silently-wrong number.
+        print(
+            f"repeat {index + 1}: skipping latency math -- capture not a clean "
+            "period timeline (see warning above)",
+            file=sys.stderr,
+        )
         return None
 
     arrival_ns = start_ns + int(location.sample_index / TAP_RATE_HZ * 1e9)

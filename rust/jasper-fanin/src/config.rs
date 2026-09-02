@@ -467,7 +467,7 @@ impl Config {
     /// A one-line predicate on purpose: it is read at construction (which lane
     /// source to build), and making it a named method keeps the ring lane's
     /// selection testable without an ALSA device, the same way
-    /// `lane_wants_spine_buffer` isolates the width decision.
+    /// `spine_read_buf` isolates the width decision.
     pub fn lane_is_renderer_ring(&self, label: &str) -> bool {
         self.renderer_ring_lanes.iter().any(|l| l == label)
     }

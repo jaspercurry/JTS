@@ -1079,6 +1079,10 @@ class WakeLoop:
         self._ducker = ducker
         self._output_gate = AssistantOutputGate()
         self._turn_output_episode: AssistantOutputEpisode | None = None
+        # One admission authority for assistant audio, asked twice: the gate
+        # refuses an episode that has not started yet, this hook refuses the
+        # bytes of one that already had (issue #1913).
+        tts.set_emission_admission(self._output_admission_refusal)
         # Direct camilla handle for `CueDuck` (snapshot-based duck
         # around dynamic-text cues). Optional for back-compat with
         # tests / out-of-tree callers; without it, dynamic-text cues
@@ -1365,7 +1369,7 @@ class WakeLoop:
         self._peering_current_epoch: str = ""
 
     @classmethod
-    def for_tests(cls, *, legs=_UNSET, manual_mics=None, **overrides):
+    def for_tests(cls, *, legs=_UNSET, manual_mics=None, tts=None, **overrides):
         """Build a fully-shaped WakeLoop without opening hardware.
 
         This is the supported seam for unit tests that exercise individual
@@ -1374,12 +1378,12 @@ class WakeLoop:
 
         ``**overrides`` are applied by ``setattr`` AFTER construction, so
         they cannot reach a decision ``__init__`` makes from its arguments.
-        ``legs`` and ``manual_mics`` are constructor-time knobs, added so a
-        test can build the shape a push-to-talk-only speaker actually has —
-        no wake legs plus a manual mic source — and exercise the real
-        derivation rather than a value poked in afterwards. Pass
-        ``legs=[]`` to mean "none"; omitting it keeps the default primary
-        leg.
+        ``legs``, ``manual_mics`` and ``tts`` are constructor-time knobs,
+        added so a test can build the shape a push-to-talk-only speaker
+        actually has — no wake legs plus a manual mic source — and exercise
+        the real derivation (and the real emission-admission wiring) rather
+        than a value poked in afterwards. Pass ``legs=[]`` to mean "none";
+        omitting it keeps the default primary leg.
         """
 
         class _TestMic:
@@ -1397,6 +1401,9 @@ class WakeLoop:
                 return None
 
         class _TestTts:
+            def set_emission_admission(self, _admission) -> None:
+                return None
+
             async def write_segment(self, *_args, **_kwargs) -> None:
                 return None
 
@@ -1506,7 +1513,7 @@ class WakeLoop:
         on_ring = deque(maxlen=CAPTURE_RING_FRAMES)
         self = cls(
             cfg=cfg,
-            tts=_TestTts(),
+            tts=_TestTts() if tts is None else tts,
             connection=_TestConnection(),
             ducker=_TestDucker(),
             content_activity=_TestContentActivity(),
@@ -1601,9 +1608,10 @@ class WakeLoop:
         `jasper-cues play` CLI) can play cues through the daemon's
         fan-in-backed TtsPlayout.
 
-        Refuses (returns `measurement_active`) while a room-correction
-        measurement window is open — assistant audio would corrupt
-        the in-progress capture (issue #1786)."""
+        Answers `measurement_active` while a room-correction measurement
+        window is open. Refusal is structural either way — the episode
+        below cannot be admitted — so this early read exists only to keep
+        that distinct code on the wire, which a plain `busy` would hide."""
         if not slug:
             return "missing_slug"
         if self._cues is None:
@@ -1611,14 +1619,10 @@ class WakeLoop:
         from .cues.registry import find as _find
         if _find(slug) is None:
             return "unknown_slug"
-        if self._measurement_active.is_set():
-            log_event(
-                logger,
-                "cue.skipped",
-                reason="measurement_active",
-                slug=slug,
-            )
-            return "measurement_active"
+        refusal = self._output_admission_refusal()
+        if refusal is not None:
+            log_event(logger, "cue.skipped", reason=refusal, slug=slug)
+            return refusal
         if self._output_gate.is_active:
             log_event(
                 logger,
@@ -1652,35 +1656,13 @@ class WakeLoop:
         default — if the connection is wedged, the next wake event
         will fire `cant_connect` reactively anyway.
 
-        Same safe-default suppression applies to an open room-
-        correction measurement window (issue #1786): the next wake
-        event (or reactive `cant_connect`) still handles a genuinely
-        wedged connection once the window closes.
-
-        Measurement is checked before output-active (unlike the
-        session check above it, the two CAN be true at once —
-        `measurement_pause()` only refuses on an active session, not
-        on output) so the skip reason names the more fundamental cause
-        when both hold: a household reading the journal should see
-        "we're respecting the measurement window", not "output
-        happened to be busy". The fall-through to `play_cue()` below
-        double-checks measurement there too (its own independent gate
-        for direct CUE_PLAY callers) — harmless, since this function's
-        own check above already covers the supervisor-escalation path
-        and short-circuits before ever reaching it."""
+        A measurement window needs no check of its own here: the shared
+        admission answer names it even when output happens to be busy too,
+        and `play_cue` below refuses on it otherwise."""
         if self._state is State.SESSION:
             return "skipped_session_active"
-        if self._measurement_active.is_set():
-            log_event(
-                logger,
-                "cue.skipped",
-                reason="measurement_active",
-                slug=slug,
-                mode="supervisor",
-            )
-            return "skipped_measurement_active"
         if self._output_gate.is_active:
-            return "skipped_output_active"
+            return self._output_admission_refusal() or "skipped_output_active"
         return await self.play_cue(slug)
 
     def set_research_scheduler(
@@ -1706,29 +1688,12 @@ class WakeLoop:
         chime would be more confusing than a missed one. The user
         can `list_timers` to recover state in either case.
 
-        Dropped immediately, with no grace wait, while a room-
-        correction measurement window is open: those windows commonly
-        outlast the 5 s grace period, and any assistant audio would
-        corrupt the in-progress capture (issue #1786). Re-checked once
-        more after the grace wait too, in case a measurement window
-        opens while the loop is waiting out a session/output-busy
-        condition.
+        A room-correction measurement window drops the announcement
+        wherever the loop below happens to be: output admission is closed
+        for the whole window, so `_play_dynamic_text` refuses the episode
+        and the emission seam refuses any byte that got past it.
         """
         text = announcement_text(timer)
-
-        def _measurement_suppressed() -> bool:
-            if not self._measurement_active.is_set():
-                return False
-            log_event(
-                logger,
-                "timer.announce_suppressed",
-                timer_id=timer.id,
-                reason="measurement_active",
-            )
-            return True
-
-        if _measurement_suppressed():
-            return
         deadline = asyncio.get_event_loop().time() + 5.0
         while self._state is State.SESSION or self._output_gate.is_active:
             if asyncio.get_event_loop().time() >= deadline:
@@ -1739,8 +1704,6 @@ class WakeLoop:
                 )
                 return
             await asyncio.sleep(0.5)
-        if _measurement_suppressed():
-            return
         logger.info(
             "timer announce: id=%s label=%r text=%r",
             timer.id, timer.label, text,
@@ -2234,6 +2197,12 @@ class WakeLoop:
         if self._cues is None:
             logger.warning("dynamic text play skipped: cues unavailable")
             return False
+        # Ahead of prerender, which is a paid synthesis plus a disk write:
+        # a closed window cannot admit the episode that would speak it.
+        refusal = self._output_admission_refusal()
+        if refusal is not None:
+            log_event(logger, "dynamic_text.skipped", reason=refusal)
+            return False
         prerender_text = getattr(self._cues, "prerender_text", None)
         if callable(prerender_text):
             try:
@@ -2248,7 +2217,7 @@ class WakeLoop:
             log_event(
                 logger,
                 "dynamic_text.skipped",
-                reason="output_active",
+                reason=self._output_admission_refusal() or "output_active",
                 active_kind=self._output_gate.active_kind,
             )
             return False
@@ -2363,7 +2332,7 @@ class WakeLoop:
             log_event(
                 logger,
                 "cue.skipped",
-                reason="output_active",
+                reason=self._output_admission_refusal() or "output_active",
                 slug=slug,
                 active_kind=self._output_gate.active_kind,
             )
@@ -2768,22 +2737,19 @@ class WakeLoop:
         is atomically closed first, then the measurement event is set and the
         safety timer armed BEFORE the in-flight drain, so that:
 
-        * no NEW cue, timer, or announcement can start during the drain.
-          Two mechanisms, not one: the four #1786 entry points
-          (`play_cue`, `play_supervisor_cue`, `announce_timer`,
-          `announce_research_ready`) refuse by reading this flag, while
-          the internal `_play_cue` is blocked structurally — the episode
-          we are draining still owns the gate, so `begin_if_idle` returns
-          None to any caller that reaches it;
+        * no NEW episode can start during the drain — closed admission
+          refuses `begin_if_idle` and holds `begin_turn`;
         * mic frames stop immediately, so a wake cannot fire into the
           drain window and open a reactive cue behind our back;
         * a crash mid-drain still auto-clears (MEASUREMENT_AUTOCLEAR_SEC).
 
         The drain therefore only ever waits out audio that already owned the
         gate when PAUSE landed. It defers to that audio; it never cancels it,
-        so no wake-blocking cue is cut short or dropped. Pre-render work that
-        passed an earlier measurement check cannot acquire output afterward:
-        admission, not scattered checks, is the authority.
+        so no wake-blocking cue is cut short or dropped. What the drain cannot
+        bound — a turn acquired a moment earlier that outlives the timeout —
+        is refused byte by byte at the emission seam instead (issue #1913,
+        `_output_admission_refusal`). Admission, not scattered checks, is the
+        authority.
 
         Idempotent — calling twice is harmless. The drain runs only on
         the opening transition: the coordinator's lease refresh
@@ -3138,6 +3104,19 @@ class WakeLoop:
             raise error
         return deferred_cancel
 
+    def _output_admission_refusal(self) -> str | None:
+        """The one answer to "may assistant audio be heard right now?".
+
+        Wired into `TtsPlayout.set_emission_admission` so every emitter is
+        asked when its bytes would leave, not when its task started (issue
+        #1913); also names the reason when an episode is refused outright.
+        `measurement_pause` is the only caller that closes admission, so a
+        closed boundary means exactly one thing.
+        """
+        if self._output_gate.admission_paused:
+            return "measurement_active"
+        return None
+
     async def _drain_inflight_output(
         self,
         *,
@@ -3196,11 +3175,7 @@ class WakeLoop:
             log_event(
                 logger,
                 "mute_click.skipped",
-                reason=(
-                    "output_admission_paused"
-                    if self._output_gate.admission_paused
-                    else "output_active"
-                ),
+                reason=self._output_admission_refusal() or "output_active",
                 active_kind=self._output_gate.active_kind,
             )
             return
@@ -3408,11 +3383,12 @@ class WakeLoop:
     ) -> None:
         """Restore local output first; deadline-bound observers are best-effort."""
 
+        # Output admission reopens before the mic ungates so no ordering of
+        # awaits can leave a wake heard but its chirp refused (non-negotiable 6),
+        # and before meter IPC, whose adapter may be recovering from a stuck send.
+        await self._output_gate.resume_admission()
         self._set_measurement_active_local(False, trigger=trigger)
         self._content_activity.resume()
-        # Admission is the household-facing availability boundary. Reopen it
-        # before meter IPC, whose adapter may be recovering from a stuck send.
-        await self._output_gate.resume_admission()
 
         if deadline_monotonic is not None:
             # The final quarter-second is rollback reserve. Clear the volume

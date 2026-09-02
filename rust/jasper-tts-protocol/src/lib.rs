@@ -103,10 +103,10 @@ impl TtsWireWidth {
     ///
     /// A wide wire needs the declared `S32_LE` ring wire format **and** the
     /// `shm_ring` coupling. The format alone is not enough and the omission is
-    /// not academic: fan-in's snd-aloop write is pinned narrow by
-    /// `jasper_fanin::mixer::FORMAT`, so a loopback-coupled box mixes and emits
-    /// S16 however it spelled its format, and a wide assistant payload entering
-    /// that mix would be narrowed right back. That is exactly the conjunction
+    /// not academic: the coupling half is what says the wide payload has
+    /// anywhere to go, since fan-in publishes through the ring and nothing
+    /// else (ADR-0100), so a box that spelled `S32_LE` without the ring is
+    /// narrow. That is exactly the conjunction
     /// `jasper_fanin::Config::program_wire_is_wide` has always applied; this is
     /// that function's body, lifted here so the Python control plane can mirror
     /// ONE rule instead of re-deriving it.
@@ -117,9 +117,7 @@ impl TtsWireWidth {
     /// `S32_LE` on every box in the fleet, on a substream pair
     /// (`hw:Loopback,0/1,6`) on the same card. The claim is about the ROLE, not
     /// the device — that same pair also carries the bonded active-follower
-    /// round-trip, which opens it raw at `S16_LE`. The narrow half of this
-    /// conjunction is a JTS declaration, and
-    /// `tests/test_aloop_program_lane_width.py` pins both facts.
+    /// round-trip, which opens it raw at `S16_LE`.
     ///
     /// Callers pass their own already-parsed halves rather than tokens, because
     /// both ends have them typed by the time they ask: fan-in has `Coupling` and

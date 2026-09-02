@@ -445,8 +445,7 @@ impl LaneResampler {
 
     /// Push `samples` (interleaved **spine-scale `i32`**) into the input ring —
     /// the wide sibling of [`Self::push_input`], for a lane whose capture is
-    /// already S32 and must not be narrowed at ingest (the USB DIRECT lane on a
-    /// wide wire, U2 / #2223).
+    /// already S32 and must not be narrowed at ingest.
     ///
     /// Identical bookkeeping; the only difference is that nothing is discarded
     /// on the way in. Pair it with [`Self::render_period_wide`] — a lane mixes
@@ -506,13 +505,12 @@ impl LaneResampler {
     }
 
     /// Render exactly one period into `out` (interleaved **spine-scale `i32`**)
-    /// — the wide sibling of [`Self::render_period`], for the USB DIRECT lane on
-    /// a wide wire (U2 / #2223).
+    /// — the wide sibling of [`Self::render_period`], for a lane on a wide wire.
     ///
     /// Same state machine, same cursor, same startup ramp; the only difference
     /// is that the interpolator's accumulator is rounded at the i32 rails
     /// ([`clamp_i32`]) instead of being divided down to i16 first. There is no
-    /// `>> 16` anywhere on this route, so a hi-res host's low bits reach the
+    /// `>> 16` anywhere on this route, so a hi-res source's low bits reach the
     /// mixer's sum intact.
     pub fn render_period_wide(&mut self, out: &mut [i32]) -> usize {
         debug_assert_eq!(out.len(), self.period_frames * self.channels);

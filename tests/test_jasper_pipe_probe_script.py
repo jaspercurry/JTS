@@ -215,6 +215,32 @@ def test_pairing_preserves_count_and_flags_violations() -> None:
     assert len(odd_result.payloads) == 3
 
 
+def test_an_off_period_record_is_excised_and_counted() -> None:
+    """#3509: the tap emits one DAC period per datagram, so a collapsed
+    record of any other length cannot be concatenated into the stream --
+    an odd byte count swaps the channels of everything after it."""
+
+    def pair(payload: bytes) -> bytes:
+        rec = struct.pack("<I", len(payload)) + payload
+        return rec + rec
+
+    period = b"\x01\x02" * 256  # 512 B, the modal length below
+    stream = pair(period) * 3 + pair(period[:-1]) + pair(period)
+    result = jasper_pipe_probe.reassemble_records(stream)
+
+    assert result.pairing_ok is True
+    assert result.period_bytes == 512
+    assert result.excised == 1
+    assert len(result.payloads) == 4
+    assert all(len(p) == 512 for p in result.payloads)
+
+
+def test_an_all_zero_capture_is_distinguishable_from_a_quiet_one() -> None:
+    assert jasper_pipe_probe.is_all_zero(b"\x00" * 4096) is True
+    assert jasper_pipe_probe.is_all_zero(b"") is True
+    assert jasper_pipe_probe.is_all_zero(b"\x00" * 4095 + b"\x01") is False
+
+
 def test_locate_click_sample_finds_prominent_click_over_near_silence() -> None:
     """The tap sits after master volume (commonly ~-15 dB) and the
     crossover, so a healthy click can arrive at only a few hundred LSB out

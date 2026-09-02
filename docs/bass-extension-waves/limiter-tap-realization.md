@@ -309,8 +309,7 @@ cancellation and refuses.
 lane's configured rate and channel count; a wider or differently-clocked
 artifact refuses. **The requirement stands; its stated reason has narrowed
 since this amendment was accepted.** "Fan-in narrows every input to S16 at the
-mix" is no longer true of the box: `mixer::FORMAT` is fan-in's snd-aloop WRITE,
-not a fleet-wide mix width, and a box whose program wire resolves wide sums at
+mix" is no longer true of the box: a box whose program wire resolves wide sums at
 the i32 spine scale — which is every ring-armed box since the ring wire's
 default went wide on 2026-08-15
 ([`60-jts-ring.conf`](../../deploy/alsa/conf.d/60-jts-ring.conf) declares that

@@ -195,6 +195,12 @@ pub struct OutputdState {
     reference_udp_target: Option<String>,
     reference_udp_active: AtomicBool,
     reference_udp_error_count: AtomicU64,
+    // Datagrams the socket refused with `WouldBlock` — the tap is
+    // nonblocking BECAUSE it must never stall the DAC, so a full send
+    // buffer drops the period. Counted, not recovered: the count is the
+    // whole difference between a reference stream with holes in it and
+    // one that looks complete (#3509).
+    reference_udp_dropped_count: AtomicU64,
     sample_rate: AtomicU64,
     content_period_frames: AtomicU64,
     dac_period_frames: AtomicU64,
@@ -332,6 +338,12 @@ pub struct OutputdState {
     dac_clock: Mutex<DacClockObserver>,
     content_frames_read: AtomicU64,
     content_empty_period_count: AtomicU64,
+    // The live content source's CURRENT run of zero-filled periods and the
+    // verdict `ContentFill` draws from it. The cumulative counters above and
+    // in `shm_ring`/`dac_content` cannot say "right now", which is what a
+    // deaf chain needs a surface to read (#3458).
+    content_consecutive_empty_periods: AtomicU64,
+    content_deaf: AtomicBool,
     content_partial_period_count: AtomicU64,
     content_eagain_count: AtomicU64,
     dac_frames_written: AtomicU64,
@@ -407,6 +419,7 @@ impl OutputdState {
             reference_udp_target: config.reference_udp_target.clone(),
             reference_udp_active: AtomicBool::new(false),
             reference_udp_error_count: AtomicU64::new(0),
+            reference_udp_dropped_count: AtomicU64::new(0),
             sample_rate: AtomicU64::new(config.sample_rate as u64),
             content_period_frames: AtomicU64::new(config.period_frames as u64),
             dac_period_frames: AtomicU64::new(config.period_frames as u64),
@@ -500,6 +513,8 @@ impl OutputdState {
             )),
             content_frames_read: AtomicU64::new(0),
             content_empty_period_count: AtomicU64::new(0),
+            content_consecutive_empty_periods: AtomicU64::new(0),
+            content_deaf: AtomicBool::new(false),
             content_partial_period_count: AtomicU64::new(0),
             content_eagain_count: AtomicU64::new(0),
             dac_frames_written: AtomicU64::new(0),
@@ -597,6 +612,15 @@ impl OutputdState {
         self.last_progress_ms.store(uptime_ms, Ordering::Relaxed);
     }
 
+    /// Publish the live content source's zero-fill run (see
+    /// [`crate::content_fill::ContentFill`]). Separate from `mark_period`
+    /// because the sink's `IoCounters` cannot see the content source at all.
+    pub fn mark_content_fill(&self, consecutive_empty_periods: u64, deaf: bool) {
+        self.content_consecutive_empty_periods
+            .store(consecutive_empty_periods, Ordering::Relaxed);
+        self.content_deaf.store(deaf, Ordering::Relaxed);
+    }
+
     pub fn mark_watchdog_ping(&self) {
         self.watchdog_pings_sent.fetch_add(1, Ordering::Relaxed);
     }
@@ -678,6 +702,14 @@ impl OutputdState {
 
     pub fn mark_reference_udp_active(&self, active: bool) {
         self.reference_udp_active.store(active, Ordering::Relaxed);
+    }
+
+    /// One datagram dropped by a full send buffer. The tap stays ACTIVE: it is
+    /// still publishing, just with a hole, and reporting it as inactive would
+    /// point an operator at a socket that is working.
+    pub fn mark_reference_udp_dropped(&self) {
+        self.reference_udp_dropped_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn mark_reference_udp_error(&self) {
@@ -957,6 +989,15 @@ impl OutputdState {
             "empty_periods",
             self.content_empty_period_count.load(Ordering::Relaxed),
         );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "consecutive_empty_periods",
+            self.content_consecutive_empty_periods
+                .load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_bool(&mut buf, "deaf", self.content_deaf.load(Ordering::Relaxed));
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -1728,6 +1769,12 @@ impl OutputdState {
             &mut buf,
             "udp_error_count",
             self.reference_udp_error_count.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            &mut buf,
+            "udp_dropped_count",
+            self.reference_udp_dropped_count.load(Ordering::Relaxed),
         );
         buf.push(',');
 
@@ -2516,6 +2563,26 @@ mod tests {
             !j.contains(r#""assistant_loudness":"#),
             "duplicate outputd loudness state present in {j}"
         );
+    }
+
+    #[test]
+    fn snapshot_json_reports_the_content_deaf_verdict_and_the_taps_drops() {
+        let cfg = Config {
+            reference_udp_target: Some("127.0.0.1:9891".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        let idle = parse_snapshot_json(&state.snapshot_json());
+        assert_eq!(idle["content"]["consecutive_empty_periods"], 0);
+        assert_eq!(idle["content"]["deaf"], false);
+        assert_eq!(idle["reference_outputs"]["udp_dropped_count"], 0);
+
+        state.mark_content_fill(94, true);
+        state.mark_reference_udp_dropped();
+        let deaf = parse_snapshot_json(&state.snapshot_json());
+        assert_eq!(deaf["content"]["consecutive_empty_periods"], 94);
+        assert_eq!(deaf["content"]["deaf"], true);
+        assert_eq!(deaf["reference_outputs"]["udp_dropped_count"], 1);
     }
 
     /// Every JSON key the STATUS payload exposes, at any nesting depth.

@@ -148,12 +148,20 @@ CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 # ignored (covers camilla's <0.1 dB jitter with safe margin). Below
 # human-noticeable, well above any normal jitter.
 #
-# `RECONCILE_DUCK_SKIP_DB` is directional. CueDuck plays proactive cues
-# without setting `_voice_session_active`, so the reconciler can race a
-# CueDuck (which lowers camilla by JASPER_DUCK_DB, typically 25 dB).
-# If Camilla is much QUIETER than expected, skip to avoid un-ducking.
-# If Camilla is much LOUDER than expected, always correct it; that is
-# exactly the safety case the reconciler exists to catch.
+# `RECONCILE_DUCK_SKIP_DB` is directional. If Camilla is much QUIETER than
+# expected, skip to avoid un-ducking; if it is much LOUDER, always correct —
+# that is exactly the safety case the reconciler exists to catch.
+#
+# It is an inference from a dB gap, which ADR-0177 forbids as evidence of
+# ownership, and neither in-process duck needs it: this reconciler writes by
+# declaring the HOUSEHOLD claim, which a held `TRANSIENT_DUCK` outranks. The
+# graph-swap bracket takes no claim and is asked through the DSP writer lock
+# instead (ADR-0213). What is left is the fader claim taken by the
+# volume-floor audition in `jasper-web`, a process whose owner this one cannot
+# reach and whose claim does not survive its own exit (#3038). REMOVE THIS
+# THRESHOLD when that audition announces itself — a writer-lock hold or a
+# MEASURE_PAUSE would both do it — because until then a duck stranded by a
+# killed swap stays stranded.
 RECONCILE_DRIFT_DB = 1.0
 RECONCILE_DUCK_SKIP_DB = 10.0
 MUTE_DB_EPSILON = 1e-6
@@ -1799,11 +1807,17 @@ class VolumeCoordinator:
         3. `|main_volume_db − expected| > RECONCILE_DRIFT_DB` — dead
            band around camilla's normal jitter so we don't write on
            every tick.
-        4. Deep QUIET drift is skipped (`expected - current >=
-           RECONCILE_DUCK_SKIP_DB`) because CueDuck can lower camilla
-           without `_voice_session_active`. Deep LOUD drift is always
-           corrected; a writer that left camilla far above the
-           canonical level is unsafe, not a duck.
+        4. No DSP writer holds the graph-mutation lock. The graph-swap
+           bracket takes no `VolumeOwner` claim and runs in whichever process
+           is applying, so the lock is what it publishes and this is the tick
+           asking it (ADR-0213). The gate precedes the drift directions
+           below, so it also defers a mute correction: an unmute mid-swap is
+           the loud write the bracket exists to prevent.
+        5. Deep QUIET drift is skipped (`expected - current >=
+           RECONCILE_DUCK_SKIP_DB`) — see the constant for its one remaining
+           client and its removal condition. Deep LOUD drift is always
+           corrected; a writer that left camilla far above the canonical
+           level is unsafe, not a duck.
 
         Emits `event=volume.reconciled` on every write so drift
         is visible in journalctl. Failures are logged at WARN and
@@ -1840,10 +1854,11 @@ class VolumeCoordinator:
         )
         if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:
             return
+        if self._graph_mutation_in_progress():
+            return
         if drift >= RECONCILE_DUCK_SKIP_DB and not mute_drift:
-            # Looks like a duck (CueDuck without _voice_session_active,
-            # or some other deep attenuation we don't own). Leave it.
-            # The loud direction intentionally does not skip.
+            # Some deep attenuation we don't own. Leave it. The loud
+            # direction intentionally does not skip.
             return
         # The preflight above avoids taking the cross-daemon lease on every
         # healthy 1 Hz tick. A candidate write must then join the same ordered
@@ -1881,6 +1896,8 @@ class VolumeCoordinator:
                 )
                 if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:
                     return
+                if self._graph_mutation_in_progress():
+                    return
                 if drift >= RECONCILE_DUCK_SKIP_DB and not mute_drift:
                     return
                 log_event(
@@ -1910,6 +1927,31 @@ class VolumeCoordinator:
                         self._persistence.save_now(expected_db)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("reconcile write failed (will retry): %s", e)
+
+    def _graph_mutation_in_progress(self) -> bool:
+        """Stand this tick down while a DSP writer owns CamillaDSP's graph.
+
+        The graph-swap bracket takes no `VolumeOwner` claim for the fader it
+        ducks, and runs in whichever process is applying — so the answer has
+        to cross processes, and the writer lock is the fact that already does
+        (ADR-0213). Asked only once drift is real, so a healthy 1 Hz tick
+        pays nothing; synchronous by contract, like the owner's own readers.
+
+        Fails open — no probe, an unreadable lock, a raising controller —
+        because the loud-direction correction is a safety backstop and must
+        not go inert on an infrastructure problem (ADR-0177).
+        """
+        try:
+            held = self._camilla.graph_mutation_in_progress()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "graph_mutation_in_progress raised %s; treating as unknown", e,
+            )
+            return False
+        if held is not True:
+            return False
+        log_event(logger, "volume.reconcile_deferred", reason="dsp_writer_lock")
+        return True
 
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
