@@ -41,19 +41,6 @@ INVOCATIONS = {
 NO_TARGET_EXIT = 78
 
 
-def _identity_file(tmp_path: Path, extra: str = "") -> Path:
-    """A reconciler-shaped identity.env, as jasper-identity-reconcile writes
-    it (key names owned by jasper/identity_state.py)."""
-    path = tmp_path / "identity.env"
-    path.write_text(
-        "JASPER_IDENTITY_OS_HOSTNAME=jts7\n"
-        "JASPER_IDENTITY_AVAHI_HOSTNAME=jts7.local\n"
-        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts7.local\n" + extra,
-        encoding="utf-8",
-    )
-    return path
-
-
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -133,9 +120,6 @@ def _run_script(
     env = os.environ.copy()
     for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
         env.pop(key, None)
-    # Hermetic against a real box: point the on-box identity lookup at a
-    # path that does not exist unless a test names one.
-    env["JASPER_IDENTITY_FILE"] = str(repo / "absent-identity.env")
     env.update(inherited)
     env.update(
         {
@@ -289,72 +273,6 @@ def test_unnamed_target_refuses_instead_of_guessing_a_speaker(
     assert calls == ""
 
 
-def test_on_box_identity_file_supplies_the_target(
-    script_repo: tuple[Path, Path, Path],
-    tmp_path: Path,
-) -> None:
-    """Run ON a speaker there IS a right answer: the hostname the
-    reconciler recorded for this box (jasper/identity_state.py's file)."""
-    result, calls = _run_script(
-        script_repo,
-        "tail-pi-logs.sh",
-        env_local=None,
-        inherited={"JASPER_IDENTITY_FILE": str(_identity_file(tmp_path))},
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "pi@jts7.local" in calls
-
-
-@pytest.mark.parametrize(
-    "flag", ["JASPER_IDENTITY_COLLISION", "JASPER_IDENTITY_DRIFT"]
-)
-def test_a_disagreeing_on_box_identity_refuses_instead_of_naming_a_speaker(
-    script_repo: tuple[Path, Path, Path],
-    tmp_path: Path,
-    flag: str,
-) -> None:
-    """The reconciler flags the recorded names as disagreeing exactly when
-    the configured one resolves to a DIFFERENT box on the LAN, so there is
-    no name left to hand out (#3498)."""
-    result, calls = _run_script(
-        script_repo,
-        "tail-pi-logs.sh",
-        env_local=None,
-        inherited={
-            "JASPER_IDENTITY_FILE": str(_identity_file(tmp_path, f"{flag}=1\n")),
-        },
-    )
-
-    assert result.returncode == NO_TARGET_EXIT, result.stdout + result.stderr
-    assert calls == ""
-
-
-def test_the_effective_mdns_name_outranks_the_configured_one(
-    script_repo: tuple[Path, Path, Path],
-    tmp_path: Path,
-) -> None:
-    """What the LAN answers to is what reaches this box. A file recording
-    the two without a collision/drift flag predates them; the effective
-    name is still the one that resolves."""
-    path = tmp_path / "identity.env"
-    path.write_text(
-        "JASPER_IDENTITY_AVAHI_HOSTNAME=jts7-2.local\n"
-        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts7.local\n",
-        encoding="utf-8",
-    )
-
-    result, calls = _run_script(
-        script_repo,
-        "tail-pi-logs.sh",
-        env_local=None,
-        inherited={"JASPER_IDENTITY_FILE": str(path)},
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "pi@jts7-2.local" in calls
-
-
 def test_an_explicit_host_override_resolves_when_nothing_else_names_a_target(
     script_repo: tuple[Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -366,7 +284,6 @@ def test_an_explicit_host_override_resolves_when_nothing_else_names_a_target(
     monkeypatch.setattr(_pi_target, "LIB_SH", repo / "scripts" / "_lib.sh")
     for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(repo / "absent-identity.env"))
 
     assert _pi_target.resolve_pi_target(host_override="192.168.1.5") == (
         "192.168.1.5", "pi")
@@ -374,25 +291,6 @@ def test_an_explicit_host_override_resolves_when_nothing_else_names_a_target(
     (repo / ".env.local").write_text("PI_USER=checkout-user\n", encoding="utf-8")
     assert _pi_target.resolve_pi_target(host_override="192.168.1.5") == (
         "192.168.1.5", "checkout-user")
-
-
-def test_explicit_target_outranks_the_on_box_identity_file(
-    script_repo: tuple[Path, Path, Path],
-    tmp_path: Path,
-) -> None:
-    result, calls = _run_script(
-        script_repo,
-        "tail-pi-logs.sh",
-        env_local=None,
-        inherited={
-            "JASPER_IDENTITY_FILE": str(_identity_file(tmp_path)),
-            "PI_HOST": "explicit.invalid",
-        },
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "pi@explicit.invalid" in calls
-    assert "jts7.local" not in calls
 
 
 # Scripts whose --help / usage path runs AFTER they source _lib.sh, with the
@@ -422,7 +320,6 @@ def test_help_needs_no_target_but_the_action_still_refuses(
     env = os.environ.copy()
     for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
         env.pop(key, None)
-    env["JASPER_IDENTITY_FILE"] = str(repo / "absent-identity.env")
 
     def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
