@@ -35,8 +35,11 @@ needs no flag to be split correctly.
 
 **Exit codes are the contract**, because the caller is often a script: ``0``
 classified and filed, ``1`` the round could not be read, ``2`` the instrument
-refused (its controls failed, the captures are the wrong shape, or nothing
-stood above the round's own scatter), ``3`` the verdict could not be written.
+refused (the captures are the wrong shape, or nothing stood above the round's
+own scatter), ``3`` the verdict could not be written. A round whose
+known-answer controls failed exits ``0`` with an artifact: it costs the phase
+class, not the round, so every row reads ``egd=ambiguous`` and the summary
+carries the artifact's own ``controls_disclosure`` line.
 ``2`` and ``3`` are separate because they send an operator to different places:
 ``2`` means fix the round, ``3`` means fix the filesystem. A refusal is the
 instrument working — ``--json`` prints its named ``reason`` and the evidence
@@ -293,6 +296,9 @@ def main(argv: list[str] | None = None) -> int:
         f"-> {destination}",
         file=sys.stderr,
     )
+    # An exit-0 round whose controls failed must not read as a clean one.
+    if artifact["controls_disclosure"] is not None:
+        print(f"  controls: {artifact['controls_disclosure']}", file=sys.stderr)
     for row in rows:
         print(
             f"  {row['hz']:8.0f} Hz  {row['classification']:<34} "

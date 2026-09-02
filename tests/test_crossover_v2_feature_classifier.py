@@ -650,25 +650,45 @@ def test_the_bias_removal_is_defined_only_where_the_injection_is_minimum_phase()
         )
 
 
-def test_failing_controls_withholds_every_verdict(tmp_path, monkeypatch):
-    """The gate is live: tighten a control bar past reach and nothing reports.
+def test_failing_controls_withhold_the_phase_class_and_nothing_else(
+    tmp_path, monkeypatch
+):
+    """The gate is live, and it costs the PHASE test only.
 
-    Mutating the bar rather than corrupting a capture is deliberate — it proves
-    the refusal is driven by the CONTROL VERDICT and not by some other property
-    of a degraded signal.
+    All four controls calibrate the excess-group-delay scale; none of them
+    touches the magnitude ladder, whose verdict has a null model of its own. So
+    a failed suite withholds ``egd_verdict`` (and with it every ``defect-*``
+    verdict a filter could be vouched by) and publishes the window evidence it
+    never invalidated. Mutating the bar rather than corrupting a capture is
+    deliberate — it proves the withholding is driven by the CONTROL VERDICT and
+    not by some other property of a degraded signal.
     """
     monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
-        _classify(tmp_path, _resonant_ir(+3.0))
-    assert caught.value.reason == fx.CONTROLS_FAILED
-    verdict = caught.value.detail["verdict"]
+    artifact = _classify(tmp_path, _resonant_ir(+3.0))
+
+    verdict = artifact["controls"]["verdict"]
     assert verdict["passes"] is False
     # WHICH control missed, and against which bar (#3480's addendum: the same
     # suite passed on one verify round of this rig and failed on another, with
-    # nothing in the refusal saying which of the four terms moved).
+    # nothing in the disclosure saying which of the four terms moved).
     assert verdict["failed"] == ["C1_min_phase_peaking"]
     assert verdict["C1_limit_us"] == 0.0
     assert verdict["C1_max_false_positive_us"] > verdict["C1_limit_us"]
+    assert artifact["controls_ok"] is False
+    assert artifact["controls_disclosure"] == fx.CONTROLS_FAILED_DISCLOSURE
+
+    for row in artifact["rows"]:
+        assert row["controls_ok"] is False
+        assert row["egd_verdict"] == EGD_AMBIGUOUS
+        # The raw reading is kept, so the withholding is auditable rather than
+        # a number that was never taken.
+        assert row["egd_verdict_raw"] == EGD_MIN_PHASE
+        # The gate verdict is REAL — it is the sweep's, and no control of the
+        # phase chain speaks to it.
+        assert row["gate_verdict"] in {GATE_STABLE, fx.GATE_MOVED}
+        # ...and a defect verdict, the one a filter is vouched by, is
+        # structurally out of reach: it requires a MIN-PHASE egd verdict.
+        assert row["classification"] not in {DEFECT_CUTTABLE, DEFECT_BOOSTABLE}
 
 
 # --------------------------------------------------------------------------- #
@@ -1549,18 +1569,41 @@ def test_a_program_missing_refusal_names_the_directory_it_actually_read(
     assert payload["programs_dir"] == "crossover_v2/wired-TEST"
 
 
-def test_a_refusal_exits_two_and_banks_nothing(tmp_path, monkeypatch, capsys):
+def test_a_refusal_exits_two_and_banks_nothing(tmp_path, capsys):
     """A refusal must not leave a file a later reader would act on."""
-    monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    bundle, dumps = _bundle(tmp_path, _flat_ir())
     code = cli.main([str(bundle), "--dumps", str(dumps), "--json"])
     assert code == cli.EXIT_REFUSED
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
     assert not (round_dir / CLASSIFICATION_ARTIFACT).exists()
     payload = json.loads(capsys.readouterr().out)
-    assert payload["reason"] == fx.CONTROLS_FAILED
+    assert payload["reason"] == fx.NO_FEATURES_DETECTED
     assert payload["reason"] in fx.CLASSIFICATION_REFUSAL_REASONS
+
+
+def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
+    tmp_path, monkeypatch, capsys
+):
+    """The round is not the casualty of its own known-answer check.
+
+    A failed suite is a fact about the PHASE test; withholding the artifact
+    withheld the window evidence too. The verdict is filed, the summary says
+    what was lost, and a scripted caller sees exit 0 rather than a refusal it
+    cannot distinguish from a broken round.
+    """
+    monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
+    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    code = cli.main([str(bundle), "--dumps", str(dumps)])
+    assert code == cli.EXIT_OK
+    round_dir, _ = round_artifact_dir(bundle)
+    assert round_dir is not None
+    banked = json.loads((round_dir / CLASSIFICATION_ARTIFACT).read_text())
+    assert banked["controls_ok"] is False
+    assert banked["controls_disclosure"] == fx.CONTROLS_FAILED_DISCLOSURE
+    assert all(row["egd_verdict"] == EGD_AMBIGUOUS for row in banked["rows"])
+    # Not silent: an exit-0 round whose controls failed says so on stderr.
+    assert "controls:" in capsys.readouterr().err
 
 
 def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, capsys):

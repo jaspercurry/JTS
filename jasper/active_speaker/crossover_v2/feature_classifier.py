@@ -25,14 +25,19 @@ reader cannot drift.
   repeated angle to run, says so when it has none, and never reads its own
   absence as evidence of tight timing.
 
-**Nothing is reported until the controls pass.** Known answers are pushed
+**The controls certify the PHASE test, and only it.** Known answers are pushed
 through the identical pipeline on the round's own measured IR — a minimum-phase
 peaking filter that must read flat, an all-pass that must recover its own group
 delay, a quiet delayed copy that must ALSO read flat (``|g| < 1`` puts every
 zero inside the unit circle, so it is minimum phase), and a loud one that must
-not. A run whose controls fail raises :data:`CONTROLS_FAILED` and writes no
-artifact: a verdict from an instrument that just failed its own known-answer
-check is a number, not evidence.
+not. All four calibrate the excess-group-delay scale, and none of them touches
+the magnitude ladder. So a run whose controls fail still writes its artifact and
+still publishes a real ``gate_verdict``; what it loses is the phase class, which
+every row reports as ``ambiguous`` beside ``controls_ok: false`` and the raw
+reading the numbers said in ``egd_verdict_raw``. ``defect-*`` is unreachable
+there — it requires a MIN-PHASE egd verdict — so no filter can be vouched for by
+an instrument that failed its own known-answer check, which is the property the
+old whole-artifact refusal was protecting at the cost of the window evidence.
 
 **Only the summed post-apply capture shapes are admissible.** ``verify`` and
 ``cloud_verify`` play the mono summed sweep through the live production graph
@@ -115,7 +120,6 @@ __all__ = [
     "classifiable_band_hz",
     "CLASSIFICATION_REFUSAL_REASONS",
     "CLASSIFICATION_SCHEMA_VERSION",
-    "CONTROLS_FAILED",
     "LATERAL_CAPTURE_SHAPE",
     "NO_ADMISSIBLE_CAPTURES",
     "NO_FEATURES_DETECTED",
@@ -133,12 +137,6 @@ __all__ = [
 # --------------------------------------------------------------------------- #
 # refusals — a name for every way this instrument declines to report
 # --------------------------------------------------------------------------- #
-
-#: The known-answer controls did not pass on this round's own capture. Every
-#: verdict is withheld, not merely annotated: the register's readers act on
-#: ``classification`` and do not consult ``confidence``, so a ``defect-*``
-#: string emitted beside a failed control would be acted on.
-CONTROLS_FAILED = "classification_controls_failed"
 
 #: A ``lateral`` capture was bound to this round. See the module docstring.
 LATERAL_CAPTURE_SHAPE = "classification_lateral_capture_shape"
@@ -177,7 +175,6 @@ PROGRAM_MISSING = "classification_program_missing"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
 
 CLASSIFICATION_REFUSAL_REASONS = frozenset({
-    CONTROLS_FAILED,
     LATERAL_CAPTURE_SHAPE,
     ROUND_SHAPE_INADMISSIBLE,
     NO_ADMISSIBLE_CAPTURES,
@@ -474,6 +471,18 @@ CONTROL_MAX_ECHO_FALSE_POSITIVE_US = 10.0
 #: rather than against the raw 4Q/w0 peak — a 2nd-order all-pass sits on a
 #: plateau below f0, so the raw peak marks a correct instrument wrong.
 CONTROL_ALLPASS_RATIO_BAND = (0.85, 1.15)
+
+#: What a failed control suite costs, published at the top of the artifact.
+#: All four controls calibrate the EGD scale, so a failure disables the PHASE
+#: discriminator and leaves the magnitude ladder — whose verdict is the gate
+#: sweep's, calibrated by its own null model — untouched.
+CONTROLS_FAILED_DISCLOSURE = (
+    "the known-answer controls did not pass on this round's own capture, so "
+    "every row's egd_verdict is withheld as ambiguous (the raw reading is kept "
+    "in egd_verdict_raw) and no row can classify as a defect; gate_verdict and "
+    "every magnitude fact are unaffected, the controls calibrate the "
+    "excess-group-delay scale alone"
+)
 
 #: A genuine cancellation must separate from its minimum-phase twin by this
 #: multiple of the worst false positive above. Without it the two verdicts
@@ -2335,10 +2344,16 @@ def classify_round(
     a caller with none still gets every EGD/gate/timing fact, plus a
     ``pose_bank``/``pose_persistence`` NOT-RUN pair rather than a refusal.
 
-    Raises :class:`FeatureClassificationRefused` — with
-    :data:`CONTROLS_FAILED` when the known-answer controls did not pass, and
-    with :data:`NO_FEATURES_DETECTED` when nothing stood above the round's own
-    scatter. Neither case returns a partial artifact.
+    A round whose known-answer controls did not pass is REPORTED, not refused:
+    the controls calibrate the excess-group-delay scale and nothing else, so
+    every row keeps its real ``gate_verdict`` and gives up only its phase
+    class (``egd_verdict`` reads ``ambiguous``, and ``defect-*`` becomes
+    unreachable). ``controls_disclosure`` at the top of the artifact says so
+    in words.
+
+    Raises :class:`FeatureClassificationRefused` with
+    :data:`NO_FEATURES_DETECTED` when nothing stood above the round's own
+    scatter, which does not return a partial artifact.
     """
     if not captures:
         raise FeatureClassificationRefused(NO_ADMISSIBLE_CAPTURES, {"n_captures": 0})
@@ -2415,18 +2430,6 @@ def classify_round(
         trusted_band_hz=trusted_band_hz,
     )
     controls_ok = bool(controls["verdict"]["passes"])
-    if not controls_ok:
-        raise FeatureClassificationRefused(
-            CONTROLS_FAILED,
-            {
-                "verdict": controls["verdict"],
-                "host_capture": captures[host_index].wav.name,
-                "note": (
-                    "no verdict is reportable from an instrument that failed "
-                    "its own known-answer check on this round's capture"
-                ),
-            },
-        )
 
     # TEST 1. Two transforms per CAPTURE — the phase gate's lead, and the
     # zero-lead window whose disagreement is reported as `lead_sensitivity_us`
@@ -2559,6 +2562,7 @@ def classify_round(
             "features_requested": list(at) if at is not None else None,
         },
         "controls_ok": controls_ok,
+        "controls_disclosure": None if controls_ok else CONTROLS_FAILED_DISCLOSURE,
         "controls": controls,
         "gate_invariance_null_model": null_model,
         "timing_scatter": timing,

@@ -2145,16 +2145,18 @@ receipts, and the shape the tar above actually produces banks them in a
 sibling `crossover_v2/<relay>/` directory instead — so the composition above
 just works.
 
+Known answers are pushed through the identical pipeline on the round's own IR
+before anything is reported: a minimum-phase peaking filter that must read
+flat, an all-pass that must recover its own group delay, a quiet delayed copy
+that must ALSO read flat (`|g| < 1` puts every zero inside the unit circle, so
+it is minimum phase), and a loud one that must not. All four calibrate the
+excess-group-delay scale, so failing one costs the PHASE class and nothing
+else: the round still classifies, every row reads `egd_verdict: ambiguous`
+beside `controls_ok: false`, no row can reach a `defect-*` verdict, and
+`controls_disclosure` at the top of the artifact says all of that in words.
+
 **It refuses more often than it reports, and each refusal has a name.**
 
-- `classification_controls_failed` — known answers are pushed through the
-  identical pipeline on the round's own IR before anything is reported: a
-  minimum-phase peaking filter that must read flat, an all-pass that must
-  recover its own group delay, a quiet delayed copy that must ALSO read flat
-  (`|g| < 1` puts every zero inside the unit circle, so it is minimum phase),
-  and a loud one that must not. Fail any of them and no verdict is written at
-  all — a reading from an instrument that just failed its own check is a
-  number, not evidence.
 - `classification_lateral_capture_shape` — a `lateral` capture replays the
   per-driver MEASURE program one driver at a time, so it carries no
   summed-system response for a feature verdict to be about. A hard refusal
