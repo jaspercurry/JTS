@@ -13,6 +13,7 @@ frame.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import uuid
@@ -25,13 +26,20 @@ from scipy.signal import fftconvolve
 
 from jasper.active_speaker.crossover_v2.close_reference import (
     GATE_SOURCE_DECLARED,
+    REFUSE_GATE_NOT_POSITIVE,
     REFUSE_NO_CAPTURE,
     VERDICT_UNRESOLVED,
 )
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_PROGRAM_UNMATCHED
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.sweep import synchronized_swept_sine
-from jasper.cli.close_reference import AUTHORITY_TIER, build_parser, main
+from jasper.cli.close_reference import (
+    AUTHORITY_TIER,
+    REFUSE_NO_DRIVER_DIAMETER,
+    _cmd_distance,
+    build_parser,
+    main,
+)
 
 SAMPLE_RATE = 48000
 EXIT_OK = 0
@@ -211,6 +219,18 @@ def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
     assert payload["reason"] == reason
 
 
+def test_a_non_positive_gate_refuses_by_name_before_the_strict_writer_sees_it(
+    rounds, tmp_path, capsys
+):
+    """A 0 or negative ``--far-gate-ms`` used to reach ``f_trusted_floor_hz``
+    as ``+inf`` and crash the strict JSON write; it must refuse first."""
+    argv = _compare_argv(rounds, tmp_path / "report.json") + ["--far-gate-ms", "0"]
+    assert main(argv) == EXIT_REFUSED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["reason"] == REFUSE_GATE_NOT_POSITIVE
+
+
 def test_a_declared_geometry_sets_each_windows_gate(rounds, tmp_path, capsys):
     """The close capture's own clean window is longer, and says where it came
     from: the first bounce's excess path grows as the mic nears the woofer."""
@@ -238,6 +258,19 @@ def test_distance_verb_prints_both_terms(capsys):
     assert record["distance_in"] == pytest.approx(12.4, abs=0.1)
     assert record["margin_term_m"] > record["far_field_term_m"]
     assert record["placement_tolerance_db"] > 0.0
+
+
+def test_distance_refuses_by_name_when_a_namespace_omits_the_diameter(capsys):
+    """Argparse's required group protects the ordinary CLI call; this is the
+    fallback for a hand-built ``Namespace`` (or an ``-O``-stripped assert)
+    that reaches ``_cmd_distance`` without going through it."""
+    args = argparse.Namespace(
+        driver_diameter_in=None, driver_diameter_mm=None, fc_hz=2500.0
+    )
+    assert _cmd_distance(args) == EXIT_REFUSED
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["reason"] == REFUSE_NO_DRIVER_DIAMETER
 
 
 def test_the_tool_menu_can_render_this_tool():

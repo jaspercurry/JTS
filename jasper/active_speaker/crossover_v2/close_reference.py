@@ -99,6 +99,7 @@ __all__ = [
     "CLOSE_REFERENCE_SCHEMA_VERSION",
     "DEFAULT_GATE_MS",
     "MIN_BAND_POINTS",
+    "RESIDUAL_FLOOR_DB",
     "RESIDUAL_N_FFT",
     "ROOM_RESIDUAL_FLOOR_DB",
     "VERDICT_AGREEMENT",
@@ -138,6 +139,11 @@ ALIGNMENT_CONFIDENCE_FLOOR = 0.25
 #: never a re-reading of the tool's own timing error.
 ROOM_RESIDUAL_FLOOR_DB = -12.0
 
+#: What a residual power at or below zero reads as: the best a subtraction
+#: can promise, not an absent measurement -- a perfectly cancelled band is
+#: the goal, not a hole in the data.
+RESIDUAL_FLOOR_DB = -120.0
+
 #: Fewest analysis-grid points a band must keep after the validity
 #: intersection before it is graded rather than left unresolved.
 MIN_BAND_POINTS = 16
@@ -155,22 +161,30 @@ UNRESOLVED_NO_CANCELLATION = "agreement_without_cancellation"
 WINDOW_FAR = "far_window"
 WINDOW_CLOSE = "close_window"
 
+#: Refused before any computation: a non-finite or non-positive explicit gate
+#: makes :func:`~jasper.audio_measurement.gating.f_trusted_floor_hz` return
+#: ``+inf``, which the strict JSON writer cannot carry.
+REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
+
 
 # --------------------------------------------------------------------------- #
 # what a subtraction can promise
 # --------------------------------------------------------------------------- #
 
 
-def cancellation_depth_db(f_hz: float, lag_s: float) -> float:
-    """How deep a subtraction can go at ``f_hz`` given a timing error ``lag_s``.
+def cancellation_depth_db(f_hz: float, lag_s: float) -> float | None:
+    """How deep a subtraction can go at ``f_hz`` given a timing error ``lag_s``,
+    or ``None`` when the ratio is zero and the depth is unbounded.
 
     ``residual/direct = |1 - exp(-j*2*pi*f*dt)| = 2*|sin(pi*f*dt)|`` --
     gate-research-results.md document 2, section B3 (derived there from first
-    principles, not cited to a paper).
+    principles, not cited to a paper). ``-Infinity`` is not a number JSON can
+    carry, so an unbounded depth publishes ``null`` rather than a token a
+    strict parser rejects.
     """
     ratio = 2.0 * abs(math.sin(math.pi * float(f_hz) * float(lag_s)))
     if ratio <= 0.0:
-        return -math.inf
+        return None
     return 20.0 * math.log10(ratio)
 
 
@@ -249,18 +263,23 @@ def _band_spectra(
 def _power_ratio_db(
     numerator: np.ndarray, denominator: np.ndarray, mask: np.ndarray
 ) -> float | None:
-    """The band's power ratio in dB, or ``None`` when there is none to read.
+    """The band's power ratio in dB, or ``None`` when there is no data to read.
 
-    A band with no bins, or with no power on either side of the ratio, has no
+    A band with no bins, or with no reference power to divide by, has no
     answer -- and ``-Infinity`` is not a number JSON can carry, so the report
-    publishes ``null`` rather than a token a strict parser rejects.
+    publishes ``null`` rather than a token a strict parser rejects. A
+    numerator at or below zero is not the same absence: a perfectly
+    cancelled residual is the best possible read, so it floors at
+    :data:`RESIDUAL_FLOOR_DB` rather than reading as no data.
     """
     if not mask.any():
         return None
     num = float(np.mean(numerator[mask]))
     den = float(np.mean(denominator[mask]))
-    if den <= 0.0 or num <= 0.0:
+    if den <= 0.0:
         return None
+    if num <= 0.0:
+        return RESIDUAL_FLOOR_DB
     return 10.0 * math.log10(num / den)
 
 
@@ -386,6 +405,14 @@ def compare_impulse_responses(
     lag aligned over a far segment that reached into room arrivals is then
     inherited by every band of the corrected close IR.
     """
+    for window_name, gate_ms in (
+        (WINDOW_FAR, far_gate_ms), (WINDOW_CLOSE, close_gate_ms)
+    ):
+        if gate_ms is not None and not (math.isfinite(gate_ms) and gate_ms > 0.0):
+            raise RoundCapturesRefused(
+                REFUSE_GATE_NOT_POSITIVE,
+                {"window": window_name, "gate_ms": gate_ms},
+            )
     far = np.asarray(far_ir, dtype=np.float64)
     close = np.asarray(close_ir, dtype=np.float64)
     if far.ndim != 1 or close.ndim != 1:
@@ -559,8 +586,12 @@ def compare_impulse_responses(
             "fc_hz": float(fc_hz) if fc_hz else None,
             "band_top_hz": None if math.isinf(band_top_hz) else band_top_hz,
             "far_field_ceiling_hz": None if math.isinf(ceiling_hz) else ceiling_hz,
-            "trusted_floor_far_hz": trusted_far_hz,
-            "trusted_floor_close_hz": trusted_close_hz,
+            "trusted_floor_far_hz": (
+                None if math.isinf(trusted_far_hz) else trusted_far_hz
+            ),
+            "trusted_floor_close_hz": (
+                None if math.isinf(trusted_close_hz) else trusted_close_hz
+            ),
             # The FAR window's band, which is also the alignment band. Each
             # window entry publishes its own.
             "comparison_band_hz": list(comparison_band_hz),

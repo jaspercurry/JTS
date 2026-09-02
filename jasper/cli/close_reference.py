@@ -65,6 +65,11 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_INPUT = 2
 
+#: `_cmd_distance` owns this refusal: the required argparse group refuses an
+#: ordinary call naming neither unit, but a hand-built Namespace (or `-O`
+#: stripping an assert) must not be able to feed `None` past it.
+REFUSE_NO_DRIVER_DIAMETER = "close_reference_no_driver_diameter"
+
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "advisory (plays nothing)"
@@ -88,9 +93,14 @@ def _diameter_m(args: argparse.Namespace) -> float | None:
 
 def _cmd_distance(args: argparse.Namespace) -> int:
     # The diameter's mutually-exclusive argparse group is required=True here,
-    # so argparse itself refuses a call that names neither unit.
+    # so an ordinary CLI call already refuses naming neither unit; this catches
+    # what argparse cannot -- a hand-built Namespace or an `-O`-stripped assert.
     diameter = _diameter_m(args)
-    assert diameter is not None
+    if diameter is None:
+        return _refused(
+            REFUSE_NO_DRIVER_DIAMETER,
+            {"missing": "--driver-diameter-in or --driver-diameter-mm"},
+        )
     record = recommended_distance(diameter, args.fc_hz)
     print(json.dumps({"status": "recommended", "distance": record},
                      indent=2, sort_keys=True))
