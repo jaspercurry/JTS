@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What a measurement program drives at, in dB SPL at the microphone.
+"""What a measurement walk drives at, in dB SPL at the microphone.
 
-A program states its level RELATIVE to the anchor (``level_re_anchor_db``),
-never as an absolute constant. This module turns that relative statement into
-one absolute number, from the three facts that make it absolute:
+A walk drives at the banked anchor's own level. This module answers whether
+that level is still knowable and still allowed, from the three facts behind
+it:
 
 * the **anchor** — the seat-level reference's ``measured_db_spl``, the
   calibrated SPL a closed-loop ramp converged to at the banked volume. The
@@ -39,7 +39,6 @@ from jasper.audio_measurement.calibration import (
 )
 
 from ._common import finite_float
-from .measurement_programs import MeasurementProgram
 from .seat_level_reference import load_seat_level_reference
 
 SEAT_REFERENCE_MISSING = "seat_reference_missing"
@@ -76,11 +75,10 @@ class LevelUnresolved(Exception):
 
 @dataclass(frozen=True)
 class ResolvedLevel:
-    """One program's drive level, absolute, with the terms it was built from."""
+    """The walk's drive level, absolute, with the terms it was built from."""
 
     target_db_spl: float
     anchor_db_spl: float
-    level_re_anchor_db: float
     reference_volume_db: float
     mic_serial: str | None
 
@@ -122,22 +120,18 @@ def _preset_ceiling_db_spl() -> float:
 
 
 def resolve_program_level(
-    program: MeasurementProgram | None,
     *,
     state_path: str | Path | None = None,
     ceiling_db_spl: float | None = None,
     calibration_file: str | Path | None = None,
     mic_serial: str | None = None,
 ) -> ResolvedLevel:
-    """This program's absolute drive level, or :class:`LevelUnresolved`.
+    """This walk's absolute drive level, or :class:`LevelUnresolved`.
 
-    ``program`` is ``None`` for a walk no program named: that walk drives at
-    the anchor itself, so its level is anchor-relative zero like every shipped
-    row. ``calibration_file``/``mic_serial`` mirror ``jasper-seat-level``'s own
-    mic inputs; with neither, the mic banked with the anchor is looked up.
+    ``calibration_file``/``mic_serial`` mirror ``jasper-seat-level``'s own mic
+    inputs; with neither, the mic banked with the anchor is looked up.
     """
 
-    level_re_anchor_db = 0.0 if program is None else program.level_re_anchor_db
     record = load_seat_level_reference(state_path=state_path)
     anchor = finite_float((record or {}).get("measured_db_spl"))
     reference_volume_db = finite_float((record or {}).get("reference_volume_db"))
@@ -175,21 +169,18 @@ def resolve_program_level(
             "with",
         )
 
-    target_db_spl = anchor + level_re_anchor_db
     ceiling = (
         _preset_ceiling_db_spl() if ceiling_db_spl is None else float(ceiling_db_spl)
     )
-    if target_db_spl > ceiling:
+    if anchor > ceiling:
         raise LevelUnresolved(
             LEVEL_OVER_CEILING,
-            f"the program drives at {target_db_spl:g} dB SPL (anchor "
-            f"{anchor:g} {level_re_anchor_db:+g}), above the preset's "
+            f"the banked anchor is {anchor:g} dB SPL, above the preset's "
             f"commissioning ceiling of {ceiling:g} dB SPL",
         )
     return ResolvedLevel(
-        target_db_spl=target_db_spl,
+        target_db_spl=anchor,
         anchor_db_spl=anchor,
-        level_re_anchor_db=level_re_anchor_db,
         reference_volume_db=reference_volume_db,
         mic_serial=sensitivity.serial,
     )

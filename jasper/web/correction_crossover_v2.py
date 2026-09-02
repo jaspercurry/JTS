@@ -120,7 +120,6 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
-from jasper.active_speaker.measurement_programs import HOLD_BUDGET_S
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
 
@@ -2196,7 +2195,7 @@ def _take_staged_angle_walk(
     try:
         axes_by_candidate = {
             candidate_id: candidate_measure_axes(
-                find_banked_candidate(candidate_id).candidate, preset=preset,
+                find_banked_candidate(candidate_id).candidate
             )
             for candidate_id in sorted(set(candidate_ids) - {""})
         }
@@ -4802,11 +4801,11 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 #: How long ONE position hold waits for whoever is moving the microphone
-#: before the session refuses rather than holding forever.
+#: before the session refuses rather than holding forever. Ten minutes covers
+#: the slower mover — a person walking a tape to the next bearing and posting
+#: the release.
 #:
-#: The NUMBER and why it is ten minutes belong to
-#: :data:`~jasper.active_speaker.measurement_programs.HOLD_BUDGET_S`; this is
-#: the gate that spends it. A hold is unbounded as far as the transport is
+#: A hold is unbounded as far as the transport is
 #: concerned — the capture page re-posts the same begin every 1.5 s and each
 #: re-post rearms the runner's inactivity deadline
 #: (``capture_relay.session.run_capture_plan``) — so without this budget nothing
@@ -4825,7 +4824,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: :meth:`PositionGate.gate` once
 #: :func:`enforce_session_volume_ceiling_if_stale` reports the walk outlived its
 #: ceiling.
-REMOTE_POSITION_HOLD_BUDGET_S = float(HOLD_BUDGET_S)
+REMOTE_POSITION_HOLD_BUDGET_S = 600.0
 
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
 #: branches on these, and the phone renders the message beside them.

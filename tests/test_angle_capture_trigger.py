@@ -77,8 +77,7 @@ from jasper.identity import CROSSOVER_PAGE_PATH
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 
 # One banked anchor, and the vendor header that makes it absolute. The level
-# the receipt must print is ``ANCHOR_DB_SPL`` -- every shipped program drives
-# at ``level_re_anchor_db == 0``.
+# the receipt must print is ``ANCHOR_DB_SPL`` -- a walk drives at the anchor.
 ANCHOR_DB_SPL = 77.5
 REFERENCE_VOLUME_DB = -18.0
 # Stubbed so the receipt's level does not depend on the output topology of
@@ -186,7 +185,7 @@ def test_cli_resolves_every_regime_and_mover_through_the_seam(regime, mover):
     args = cli.build_parser().parse_args(
         ["plan", "--angles", "0,7,-7,22,-22", "--regime", regime, "--mover", mover]
     )
-    built = cli._build_request(args).request
+    built = cli._build_request(args)
 
     expected = {
         REGIME_PER_DRIVER: per_driver_at,
@@ -202,7 +201,7 @@ def test_the_campaign_walk_plays_measure_at_five_angles_by_hand():
         ["plan", "--angles", "0,7,-7,22,-22", "--regime", "per_driver",
          "--mover", "human"]
     )
-    stops = resolve_request(cli._build_request(args).request)
+    stops = resolve_request(cli._build_request(args))
 
     assert [s.angle_deg for s in stops] == CAMPAIGN_ANGLES
     # Every stop plays MEASURE's interleaved per-driver object -- the forward
@@ -235,7 +234,7 @@ def test_both_pairs_the_regimes_so_the_microphone_moves_once_per_angle():
     args = cli.build_parser().parse_args(
         ["plan", "--angles", "0,45", "--regime", "both", "--mover", "arm"]
     )
-    stops = resolve_request(cli._build_request(args).request)
+    stops = resolve_request(cli._build_request(args))
 
     assert [(s.angle_deg, s.regime) for s in stops] == [
         (0, REGIME_PER_DRIVER), (0, REGIME_SUMMED),
@@ -314,8 +313,7 @@ def test_plan_echoes_the_delay_coordinate_when_stated(capsys):
     assert "tweeter" in human
     assert "128.588" in human
 
-    stated = cli._build_request(args)
-    payload = cli._walk_payload(stated.request, cli._resolved_level(stated.program))
+    payload = cli._walk_payload(cli._build_request(args), cli._resolved_level())
     assert payload["delayed_role"] == "tweeter"
     assert payload["delay_us"] == 128.588
 
@@ -378,54 +376,8 @@ def test_plan_writes_nothing(slot):
 
 
 # --------------------------------------------------------------------------- #
-# 3. the receipt / banking shape
+# 3. the receipt
 # --------------------------------------------------------------------------- #
-
-
-def test_each_stop_banks_in_the_shipped_cloud_position_record_shape(slot):
-    """The fields a stop determines are exactly the record's own fields.
-
-    ``cloud_position_record`` is the shipped per-position receipt. The planner
-    must not invent fields it has no evidence for, and must not misname the
-    ones it does have -- so this asserts membership against that function's real
-    signature rather than against a copied list.
-    """
-    import inspect
-
-    from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
-
-    record_fields = set(inspect.signature(cloud_position_record).parameters)
-    payload = cli._walk_payload(
-        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
-    )
-    banked = payload["stops"][0]["banks_as"]
-
-    # Every planned field is a real field of the record…
-    assert {"role", "wide"} <= set(banked) & record_fields
-    # …and the two that are NOT record fields are the pose's own geometry, which
-    # the record carries through ``prompt``/``wide`` rather than as numbers.
-    assert set(banked) - record_fields == {"offset_cm", "position_angle_deg"}
-    # Nothing MEASURED is claimed: a planner that printed a placeholder for a
-    # capture's own evidence would be inventing it.
-    for measured in (
-        "captured_at", "wav_sha256", "summed_ripple_db", "glitch_detected",
-        "gate_window_ms", "validity_floor_hz", "position_id", "take_id",
-    ):
-        assert measured not in banked
-
-
-def test_the_banked_pose_round_trips_the_commanded_bearing(slot):
-    payload = cli._walk_payload(
-        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
-    )
-    assert [s["banks_as"]["position_angle_deg"] for s in payload["stops"]] == (
-        CAMPAIGN_ANGLES
-    )
-    # …and the wide class is DERIVED from the distance, exactly as the shipped
-    # table assigns it: 22 deg off a 1 m mark is 40.4 cm, past the 30 cm edge.
-    assert [s["banks_as"]["wide"] for s in payload["stops"]] == (
-        [False, False, False, True, True]
-    )
 
 
 def test_the_staged_document_round_trips_the_whole_walk(slot):
@@ -952,9 +904,8 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
 def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
     """A named program's level is the banked anchor, in dB SPL, on the receipt.
 
-    ``level_re_anchor_db`` is what the program states; everything else in the
-    block is what makes it absolute, so a reader never has to guess whether the
-    number was measured or defaulted.
+    Every field beside it is what makes the number absolute, so a reader never
+    has to guess whether it was measured or defaulted.
     """
     args = cli.build_parser().parse_args(
         ["stage", "--program", "baseline", "--size", "express", "--json"]
@@ -965,7 +916,6 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
         "resolved": True,
         "target_db_spl": ANCHOR_DB_SPL,
         "anchor_db_spl": ANCHOR_DB_SPL,
-        "level_re_anchor_db": mp.program("baseline", "express").level_re_anchor_db,
         "reference_volume_db": REFERENCE_VOLUME_DB,
         "mic_serial": "8108494",
     }

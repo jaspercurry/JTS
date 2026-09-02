@@ -44,7 +44,7 @@
 | Put an accepted blend-region correction where the next crossover round will apply it, once | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber stage` |
 | Find out whether a bump in a banked round's response is a minimum-phase driver defect (a filter is the right tool), an interference null (it is not), or the room — with known-answer controls that must pass first | [Feature-classification instrument](#feature-classification-instrument) — `jasper-classify-features` |
 | Grade the state a round STARTED from (a fresh box's declarations-derived config, which no round grades), grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {entry,frozen,per-seat,repeat,agreement}` |
-| See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
+| See exactly what a per-driver or summed capture walk at stated angles resolves to — bearing, program, advance policy — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
 | Ask the next session for R-1's reverse-null — the design-axis MEASURE capture with one named driver branch riding sign-flipped | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage --polarity inverted --inverted-role <role>` |
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
@@ -2433,23 +2433,22 @@ receipt: `program` (empty for a free-form walk), `price`
 `level` is the walk's drive level resolved to **absolute dB SPL at the
 microphone** by
 [`measurement_level.py`](../jasper/active_speaker/measurement_level.py): the
-program's `level_re_anchor_db` (0 on every shipped row) added to the banked
-seat-level anchor, with the mic's parsed sensitivity resolved live and the
-preset's `max_commissioning_level_db_spl` as a hard ceiling. It never falls
-back to a relative number — `plan` prints the missing input, `stage` refuses
+banked seat-level anchor's own SPL, with the mic's parsed sensitivity resolved
+live and the preset's `max_commissioning_level_db_spl` as a hard ceiling. It
+never falls back to a relative number — `plan` prints the missing input, `stage` refuses
 with it as the `reason`: `seat_reference_missing` (run `jasper-seat-level`
 first), `mic_calibration_unavailable` (no stored calibration resolves for the
 mic the anchor names — store its vendor file via `/correction/calibration/fetch`),
 `mic_calibration_changed` (that mic resolves at a different sens factor than
-the anchor was measured with), `level_over_ceiling` (the program asks for more
-than the preset permits), or `preset_unavailable`.
+the anchor was measured with), `level_over_ceiling` (the anchor sits above
+what the preset permits), or `preset_unavailable`.
 
 `plan` is the **dry run of** `stage` — the same constructors, the same
 refusals, the same resolved walk — exactly as `propose` is the dry run of the
 prescriber's `stage` above. Its output names, per stop, the capture index, the
-signed bearing, the pose in the centimetres every shipped consumer reads, the
-program that stop plays, the advance policy the mover implies, and (for an arm)
-the `position_deg` the position gate will wait for.
+signed bearing, the pose prompt, the program that stop plays, the advance
+policy the mover implies, and (for an arm) the `position_deg` the position gate
+will wait for.
 
 **Angles are stated in whole degrees, negative LEFT and positive RIGHT facing
 the speaker, and nothing is coerced.** `7.5`, `0.4` and `+7 deg` are all
@@ -2552,7 +2551,6 @@ happened; do not assume it.
 | slug | why |
 |---|---|
 | `walk_regime_unsupported` | per-driver stops only: a lateral group plays MEASURE's program at every pose |
-| `walk_distance_unsupported` | a program row names a mark distance other than the 1 m every pose is derived at; refused at `plan`/`stage` rather than silently measured at 1 m |
 | `walk_mover_mismatch` | the walk's mover must match the session's tier, or the session stalls |
 | `walk_over_mover_envelope` | a stop is outside the stated mover's own reach (arm ±45°, person ±80°). Normally refused far earlier — see below — so reaching the take means a document was banked before that bound existed, or edited by hand |
 | `walk_over_relay_capacity` | the plan this session would emit needs more relay blob indexes than exist — reachable with a pre-apply cloud, and never for a legally staged walk on the shipped 3-capture shape |
