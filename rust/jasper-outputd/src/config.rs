@@ -104,15 +104,18 @@ pub const DEFAULT_DAC_CONTENT_RING_PATH: &str = "/dev/shm/jts-ring/dac-content.r
 
 /// Depth of that ring, at the ioplug's slot CEILING (`JTS_RING_MAX_SLOTS`).
 /// Not tunable from a conf.d edit, so not tunable from an env either — the
-/// writer's block spells the same number. 16 x 1024 frames = 341 ms at 48 kHz.
+/// writer's block spells the same number. 16 x 128 frames = 43 ms at 48 kHz.
 pub const DAC_CONTENT_RING_SLOTS: u32 = 16;
 
-/// Frames per slot on that ring. The slot IS the reader's period, which is what
-/// lets outputd consume a whole DAC period per DAC period and never hold a
-/// partial slot — so a box whose `period_frames` is not this value cannot serve
-/// the lane, and `Config::from_env` refuses to arm it rather than creating a
-/// ring the writer's ioplug can never open.
-pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = DEFAULT_PERIOD_FRAMES;
+/// Frames per slot on that ring — the box's ring slot, Python twin
+/// `jasper.fanin_coupling.RING_SLOT_FRAMES` (#3656). The slot IS the reader's
+/// period, which is what lets outputd consume a whole DAC period per DAC period
+/// and never hold a partial slot; every DAC profile declaring a latency floor
+/// runs outputd here. A box whose `period_frames` is not this value — the
+/// floorless profile, left at `DEFAULT_PERIOD_FRAMES` — cannot serve the lane,
+/// and `Config::from_env` refuses to arm it rather than creating a ring the
+/// writer's ioplug can never open.
+pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShmRingConfig {
@@ -1216,6 +1219,10 @@ mod tests {
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                     ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", bridge),
+                    // Spelled, not defaulted: the slot guard below passes on
+                    // the period every DAC-floored box actually runs, never on
+                    // the packaged `DEFAULT_PERIOD_FRAMES`.
+                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                 ],
                 || {
                     let cfg = Config::from_env().unwrap();
@@ -1269,11 +1276,14 @@ mod tests {
     /// than starting under a decision two keys claim to own.
     #[test]
     fn the_ring_arm_refuses_every_shape_it_cannot_serve() {
+        // Every row but the last spells the box's real period, or the slot
+        // guard would refuse it before the shape the row is about.
         let cases: [EnvCase; 5] = [
             (
                 "active-crossover lane: the pick would reach the tweeter",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                     ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
                 ],
             ),
@@ -1281,6 +1291,7 @@ mod tests {
                 "central ring declared too: two content sources on one DAC",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
                 ],
             ),
@@ -1288,6 +1299,7 @@ mod tests {
                 "the retired route declared too: one source, one spelling",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ],
             ),
@@ -1295,6 +1307,7 @@ mod tests {
                 "composite sink: not a stereo single-DAC member path",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("128")),
                     ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                     // Declared, or the composite's own child-PCM requirement
                     // refuses this row before the sink fence it is about.

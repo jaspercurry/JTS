@@ -415,8 +415,8 @@ install_jts_ring_platform() {
     # pcm.jts_ring_dac_content in 63-jts-ring-dac-content.conf — JOINS the set,
     # on the reboot side of the asymmetry below: its READER is jasper-outputd,
     # whose unit carries the same StartLimitBurst=5 + StartLimitAction=reboot as
-    # jasper-fanin, and its geometry is DERIVED from outputd's own period
-    # (DEFAULT_PERIOD_FRAMES), so a deploy that moves that number leaves a
+    # jasper-fanin, and its geometry is DERIVED from the box's ring slot
+    # (RING_SLOT_FRAMES), so a deploy that moves that number leaves a
     # stale-geometry file whose fatal attach reboots the household. Unlinking it
     # is mandatory for the same reason unlinking the three above is.
     #
