@@ -309,6 +309,7 @@ async def load_profile_config(
         sound_config_path,
     )
     from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.live_edit import plan_live_edit_for
 
     config_path = Path(config_dir)
     config_path.mkdir(parents=True, exist_ok=True)
@@ -359,6 +360,13 @@ async def load_profile_config(
     # (capture still follows).
     coupling_capture_kwargs = coupling_capture_kwargs_from_env()
 
+    # Set by _prepare_config when this durable write needs no fader duck, and
+    # taken by the FIRST load below. One shot because apply_dsp_config reuses
+    # load_config to ROLL BACK: an in-place rollback has just put the
+    # pre-prepare bytes back on disk, and re-sending the candidate this holds
+    # would undo exactly that.
+    quiet_load: dict[str, str] = {}
+
     async def _prepare_config() -> dict[str, Any]:
         current_path = await cam.get_config_file_path(best_effort=False)
         if not current_path:
@@ -371,20 +379,50 @@ async def load_profile_config(
             output_trim_db=output_trim_db,
             fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
+        quiet_load.clear()
+        # Rewriting the file CamillaDSP already runs, with a graph it will
+        # update in place, is as silent as a live edit -- so the Saved and Off
+        # tabs stop fading an A/B the listener is making on purpose. Decided by
+        # comparing the two graphs (ADR-0177), never by this caller declaring
+        # itself safe. Only the in-place shape qualifies: loading a DIFFERENT
+        # file is a real swap and keeps its bracket. A controller that cannot
+        # read back or normalize a raw config cannot be asked -- the statefile
+        # transport, with CamillaDSP down, is exactly that.
+        if same_config_file(str(current_path), out_path) and all(
+            hasattr(cam, name)
+            for name in (
+                "get_active_config_raw",
+                "normalize_config_raw",
+                "set_active_config_raw",
+            )
+        ):
+            if not (await plan_live_edit_for(cam, result.yaml)).duck:
+                quiet_load["yaml"] = result.yaml
         return {
             "prior_config_path": current_path,
             "room_peq_count": result.room_peq_count,
             "sound_filter_count": len(build_sound_filters(profile)),
         }
 
+    async def _load_config(path: str) -> bool:
+        yaml = quiet_load.pop("yaml", None)
+        if yaml is not None and same_config_file(path, out_path):
+            # set_active_config_raw, not the file loader: it is the write
+            # ADR-0211 verified takes CamillaDSP's in-place parameter path. The
+            # bytes are already at out_path and the loaded path does not move,
+            # so the end state is what a file reload would have left.
+            return bool(
+                await cam.set_active_config_raw(
+                    yaml, best_effort=False, duck=False,
+                )
+            )
+        return bool(await cam.set_config_file_path(path, best_effort=False))
+
     apply_state = await apply_dsp_config(
         source=source,
         candidate_path=out_path,
         prepare=_prepare_config,
-        load_config=lambda path: cam.set_config_file_path(
-            path,
-            best_effort=False,
-        ),
+        load_config=_load_config,
         get_current_config_path=lambda: cam.get_config_file_path(
             best_effort=True,
         ),

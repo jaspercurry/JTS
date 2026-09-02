@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 
@@ -33,7 +33,7 @@ try:  # libyaml when the wheel carries it — this parses two full CamillaDSP
 except ImportError:  # pragma: no cover - depends on the installed wheel
     from yaml import SafeLoader as _Loader  # type: ignore[assignment]
 
-__all__ = ["LiveEditPlan", "plan_live_edit"]
+__all__ = ["LiveEditPlan", "plan_live_edit", "plan_live_edit_for"]
 
 
 @dataclass(frozen=True)
@@ -99,3 +99,18 @@ def plan_live_edit(
         if before.get("type") != after.get("type"):
             return LiveEditPlan.swap("filter_kind_differs")
     return LiveEditPlan("parameters")
+
+
+async def plan_live_edit_for(cam: Any, wanted_yaml: str) -> LiveEditPlan:
+    """The plan for writing ``wanted_yaml`` onto whatever ``cam`` runs now.
+
+    Both graphs are read back in CamillaDSP's OWN normalization before they are
+    compared -- the running config, and the wanted one through ``ReadConfig``,
+    which parses and default-fills without applying. Comparing the emitter's
+    raw text against the running readback would differ on every edit (the
+    readback is a default-filled superset) and quietly duck every one.
+    """
+
+    running = await cam.get_active_config_raw(best_effort=True)
+    wanted = await cam.normalize_config_raw(wanted_yaml, best_effort=True)
+    return plan_live_edit(running, wanted)
