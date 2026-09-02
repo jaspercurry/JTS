@@ -9,7 +9,7 @@ USB, the physical data-role capability); the shared verdict is role only, for
 infrastructure with no single source intent.  The source coordinator
 (:mod:`jasper.source_intent`) is the single writer; every gated unit consumes
 one marker as ``ConditionPathExists=``, so an absent marker — or an absent
-directory before the first pass — blocks the start.  See ADR-0220.
+directory before the first pass — blocks the start.  See ADR-0221.
 """
 from __future__ import annotations
 
