@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -88,12 +87,10 @@ def _diameter_m(args: argparse.Namespace) -> float | None:
 
 
 def _cmd_distance(args: argparse.Namespace) -> int:
+    # The diameter's mutually-exclusive argparse group is required=True here,
+    # so argparse itself refuses a call that names neither unit.
     diameter = _diameter_m(args)
-    if diameter is None:
-        return _refused(
-            "close_reference_no_driver_diameter",
-            {"missing": "--driver-diameter-in or --driver-diameter-mm"},
-        )
+    assert diameter is not None
     record = recommended_distance(diameter, args.fc_hz)
     print(json.dumps({"status": "recommended", "distance": record},
                      indent=2, sort_keys=True))
@@ -142,7 +139,12 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         return _refused(REFUSE_UNREADABLE_ROUND, {"error": str(exc)})
 
     payload = {"status": "compared", "close_reference": report}
-    text = json.dumps(payload, indent=2, sort_keys=True, default=str)
+    # allow_nan=False: `NaN`/`-Infinity` are not JSON and a strict reader
+    # rejects them, so an ungraded number that stopped being `None` at the
+    # source fails here rather than in the reader's parser.
+    text = json.dumps(
+        payload, indent=2, sort_keys=True, default=str, allow_nan=False
+    )
     if args.out:
         Path(args.out).write_text(text + "\n")
     print(text)
@@ -171,24 +173,35 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                 f"{graded[0]:.0f}-{graded[1]:.0f} Hz" if graded else "not graded"
             )
             rms = row["rms_delta_db"]
+            residual = row["residual_rel_direct_db"]
             print(
                 f"  {window['name']} {span}: {row['verdict']}"
                 + (f" ({row['unresolved_reason']})" if row["unresolved_reason"] else "")
                 + (
                     ""
-                    if isinstance(rms, float) and math.isnan(rms)
+                    if rms is None or residual is None
                     else f", close-vs-far RMS {rms:.2f} dB "
                          f"(tolerance {row['tolerance_db']:.1f}), residual "
-                         f"{row['residual_rel_direct_db']:.1f} dB"
+                         f"{residual:.1f} dB"
                 ),
                 file=sys.stderr,
             )
     return EXIT_OK
 
 
-def _add_driver(child: argparse.ArgumentParser) -> None:
-    child.add_argument("--driver-diameter-in", type=float, default=None)
-    child.add_argument("--driver-diameter-mm", type=float, default=None)
+def _add_driver(child: argparse.ArgumentParser, *, required: bool) -> None:
+    """The driver diameter, in one unit or the other and never both.
+
+    Mirrors ``jasper-declare-geometry``'s ``_add_unit_pair`` (that helper hard-
+    codes an in/m pair, so this pair borrows the shape rather than the code):
+    without the exclusive group, ``_diameter_m``'s check order silently decided
+    which of two supplied units won.
+    """
+    group = child.add_mutually_exclusive_group(required=required)
+    group.add_argument("--driver-diameter-in", type=float, default=None,
+                       metavar="INCHES", help="driver diameter, in inches")
+    group.add_argument("--driver-diameter-mm", type=float, default=None,
+                       metavar="MM", help="driver diameter, in millimetres")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -206,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     distance = sub.add_parser(
         "distance", help="where to put the mic for this driver's close capture"
     )
-    _add_driver(distance)
+    _add_driver(distance, required=True)
     distance.add_argument(
         "--fc-hz", type=float, required=True,
         help="the crossover corner; the close capture is valid to fc/2",
@@ -233,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--fc-hz", type=float, default=None,
         help="crossover corner; caps the comparison band at fc/2",
     )
-    _add_driver(compare)
+    _add_driver(compare, required=False)
     compare.add_argument(
         "--far-gate-ms", type=float, default=None,
         help="override the far window; default is the declared geometry's own "

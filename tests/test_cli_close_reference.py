@@ -26,6 +26,7 @@ from scipy.signal import fftconvolve
 from jasper.active_speaker.crossover_v2.close_reference import (
     GATE_SOURCE_DECLARED,
     REFUSE_NO_CAPTURE,
+    VERDICT_UNRESOLVED,
 )
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_PROGRAM_UNMATCHED
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
@@ -124,6 +125,69 @@ def test_compare_publishes_its_frame_and_its_binding(rounds, tmp_path, capsys):
     assert report["geometry"]["sidecar_mark_distance_m"]["close"] == 1.0
     assert report["geometry"]["sidecar_disagrees"] is True
     assert json.loads(capsys.readouterr().out)["status"] == "compared"
+
+
+def test_an_ungraded_band_publishes_null_not_a_non_json_constant(
+    rounds, tmp_path, capsys
+):
+    """A strict parser has to be able to read the report.
+
+    The comparison band stops at fc/2, so the top spec band grades nothing —
+    and the ``NaN``/``-Infinity`` those absent numbers used to carry are not
+    JSON. ``parse_constant`` is the strict reader standing in here: it fires
+    on exactly the tokens a non-Python parser rejects.
+    """
+    out = tmp_path / "report.json"
+    assert main(_compare_argv(rounds, out)) == EXIT_OK
+    capsys.readouterr()
+
+    def _reject(token: str) -> None:
+        raise AssertionError(f"the report carries a non-JSON constant: {token}")
+
+    report = json.loads(out.read_text(), parse_constant=_reject)
+    ungraded = [
+        row
+        for window in report["close_reference"]["windows"]
+        for row in window["bands"]
+        if row["graded_band_hz"] is None
+    ]
+    assert ungraded
+    for row in ungraded:
+        assert row["verdict"] == VERDICT_UNRESOLVED
+        for field in (
+            "rms_delta_db",
+            "worst_far_bin_hz",
+            "worst_far_deviation_db",
+            "delta_at_worst_db",
+            "residual_rel_direct_db",
+            "residual_rel_far_db",
+        ):
+            assert row[field] is None, field
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["distance", "--fc-hz", "2500"],
+        ["distance", "--fc-hz", "2500",
+         "--driver-diameter-in", "5.5", "--driver-diameter-mm", "140"],
+        ["compare", "--far-round", "a", "--close-round", "b", "--close-m", "0.3",
+         "--driver-diameter-in", "5.5", "--driver-diameter-mm", "140"],
+    ],
+)
+def test_the_driver_diameter_takes_one_unit_or_the_other(argv):
+    """Both units used to be accepted, with mm silently beating in."""
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(argv)
+    assert excinfo.value.code == 2
+
+
+def test_compare_still_runs_without_any_declared_diameter():
+    """The control on the refusal above: only ``distance`` needs a diameter."""
+    args = build_parser().parse_args(
+        ["compare", "--far-round", "a", "--close-round", "b", "--close-m", "0.3"]
+    )
+    assert args.driver_diameter_in is None and args.driver_diameter_mm is None
 
 
 @pytest.mark.parametrize(

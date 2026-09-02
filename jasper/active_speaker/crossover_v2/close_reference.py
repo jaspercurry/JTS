@@ -64,6 +64,7 @@ from jasper.active_speaker.branch_chain import (
     placement_tolerance_db,
 )
 from jasper.active_speaker.flat_spec import SPEC_BANDS
+from jasper.audio_measurement.alignment import GCC_UPSAMPLE, gcc_phat
 from jasper.audio_measurement.gating import (
     SEARCH_T_MAX_MS,
     TAPER_FRACTION,
@@ -74,7 +75,6 @@ from jasper.audio_measurement.measurement_geometry import (
     GeometryFieldError,
 )
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
-from jasper.audio_measurement.program_analysis import GCC_UPSAMPLE, gcc_phat
 
 from .feature_classifier import (
     DETREND_FRACTION,
@@ -248,11 +248,19 @@ def _band_spectra(
 
 def _power_ratio_db(
     numerator: np.ndarray, denominator: np.ndarray, mask: np.ndarray
-) -> float:
-    num = float(np.mean(numerator[mask])) if mask.any() else 0.0
-    den = float(np.mean(denominator[mask])) if mask.any() else 0.0
+) -> float | None:
+    """The band's power ratio in dB, or ``None`` when there is none to read.
+
+    A band with no bins, or with no power on either side of the ratio, has no
+    answer -- and ``-Infinity`` is not a number JSON can carry, so the report
+    publishes ``null`` rather than a token a strict parser rejects.
+    """
+    if not mask.any():
+        return None
+    num = float(np.mean(numerator[mask]))
+    den = float(np.mean(denominator[mask]))
     if den <= 0.0 or num <= 0.0:
-        return -math.inf
+        return None
     return 10.0 * math.log10(num / den)
 
 
@@ -263,12 +271,18 @@ def _power_ratio_db(
 def _verdict(
     *,
     points: int,
-    rms_delta_db: float,
+    rms_delta_db: float | None,
     tolerance_db: float,
-    residual_rel_direct_db: float,
+    residual_rel_direct_db: float | None,
     alignment_trusted: bool,
 ) -> tuple[str, str | None]:
-    if points < MIN_BAND_POINTS:
+    # A missing delta or residual is the same state a thin band is in: nothing
+    # to grade. Both are `None` exactly when the band kept no points/bins.
+    if (
+        points < MIN_BAND_POINTS
+        or rms_delta_db is None
+        or residual_rel_direct_db is None
+    ):
         return VERDICT_UNRESOLVED, UNRESOLVED_OUTSIDE_VALIDITY
     if not alignment_trusted:
         return VERDICT_UNRESOLVED, UNRESOLVED_LOW_CONFIDENCE
@@ -310,14 +324,16 @@ def _bands(
         bins = (freqs >= lo) & (freqs < hi) if hi > lo else np.zeros_like(freqs, bool)
         residual_rel_direct = _power_ratio_db(residual_power, direct_power, bins)
         residual_rel_far = _power_ratio_db(residual_power, far_power, bins)
+        worst_hz: float | None = None
+        worst_far_db: float | None = None
+        delta_at_worst_db: float | None = None
+        rms_delta_db: float | None = None
         if points:
             worst = int(np.argmax(np.abs(far_curve[in_band])))
             worst_hz = float(grid[in_band][worst])
             worst_far_db = float(far_curve[in_band][worst])
             delta_at_worst_db = float(delta[in_band][worst])
             rms_delta_db = float(np.sqrt(np.mean(delta[in_band] ** 2)))
-        else:
-            worst_hz = worst_far_db = delta_at_worst_db = rms_delta_db = math.nan
         verdict, unresolved_reason = _verdict(
             points=points,
             rms_delta_db=rms_delta_db,
