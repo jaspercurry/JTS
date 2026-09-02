@@ -6,10 +6,7 @@
 > and the Q2 TTS-latency measurements. Kept because the numbers cost hardware
 > time and the rejected shapes are worth not re-litigating. Every number is
 > from its stated date and describes the topology of that date — several of
-> those topologies no longer exist (see the staleness notes inline). Current
-> operational truth is
-> [HANDOFF-distributed-active.md](../HANDOFF-distributed-active.md); the
-> decisions it once carried are ADR-0122 through ADR-0126.
+> those topologies no longer exist (see the staleness notes inline).
 
 ## S0-sync de-risk gate — bench result (2026-06-20)
 

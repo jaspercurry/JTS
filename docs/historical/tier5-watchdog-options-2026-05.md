@@ -2,11 +2,7 @@
 
 > **Status: historical.** The research and option comparison that produced
 > T5.1 and T5.2, frozen as written in May 2026. The decision is
-> [ADR-0146](../adr/0146-userspace-liveness-is-two-software-layers-and-three-deferred-dials.md);
-> what actually shipped, and everything added since (the bootloop guard, the
-> Camilla recovery handler, the persisted rate-limit state), is
-> [HANDOFF-resilience.md](../HANDOFF-resilience.md). The still-live deferral
-> record is [HANDOFF-tier5-watchdog-liveness.md](../HANDOFF-tier5-watchdog-liveness.md).
+> [ADR-0146](../adr/0146-userspace-liveness-is-two-software-layers-and-three-deferred-dials.md).
 > Costs, thresholds, and unit lists below describe the 2026-05 tree and were
 > not re-verified.
 
@@ -24,13 +20,6 @@ A large third-party toolchain compile on the 1 GB Pi 5 OOM-stalled userspace for
 - **No watchdog reset** — PID 1 stayed alive enough to keep
   patting `/dev/watchdog0` every <60 s
 - **Required manual power-cycle** to recover
-
-[Stage 1 of the memory-resilience plan](../HANDOFF-resilience.md)
-(PR #276) reduces the *frequency* of this failure shape (kernel
-OOM-killer fires within ~20 s under the new `OOMScoreAdjust`
-ladder + MGLRU `min_ttl_ms=1000`). But it does not address the
-*recovery* path when userspace still wedges anyway — that's this
-doc's scope.
 
 ### Why Tier 5 didn't fire
 
@@ -317,10 +306,7 @@ focused day of work. Build it in `jasper-control` mirroring
 - HTTP GET 127.0.0.1:8780/healthz (control alive — yes, the
   supervisor probes itself, which catches the "we're hung in
   asyncio" case). A `429` from jasper-control's request-admission
-  gate counts as alive-but-shedding, not dead — see the liveness
-  contract in [HANDOFF-resilience.md](../HANDOFF-resilience.md) (the
-  canonical T5.2 operational reference) for why overload shedding
-  must not manufacture a reboot.
+  gate counts as alive-but-shedding, not dead.
 - `cat /proc/loadavg` reads in <1 s (catches kernel I/O stall)
 
 Threshold: 3 consecutive failures, 30 s cadence with ±3 s
@@ -373,7 +359,6 @@ risk, not worth being first.
 - OneUpTime systemd watchdog guide — https://oneuptime.com/blog/post/2026-03-02-how-to-configure-systemd-watchdog-for-service-health-checks-on-ubuntu/view
 - Lennart on systemd watchdog — http://0pointer.de/blog/projects/watchdog.html
 - troglobit/watchdogd — https://github.com/troglobit/watchdogd
-- nohang, earlyoom, systemd-oomd — see [HANDOFF-resilience.md](../HANDOFF-resilience.md) "Stage 3"
 - PSI kernel docs — https://docs.kernel.org/accounting/psi.html
 - psi-notify — https://github.com/cdown/psi-notify
 - Chris Down on PSI + oomd — https://chrisdown.name/2020/05/06/psi-notify-notifying-before-cpu-memory-io-becomes-oversaturated.html

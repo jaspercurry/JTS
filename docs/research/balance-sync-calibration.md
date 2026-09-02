@@ -3,7 +3,6 @@
 > **Status: research artifact.** Snapshot from 2026-06-13 while
 > designing JTS stereo-pair balance/sync measurement. Preserved for
 > traceability and source links. Current operational truth lives in
-> [HANDOFF-multiroom.md](../HANDOFF-multiroom.md) and
 > [dumb-endpoint-bringup.md](../dumb-endpoint-bringup.md).
 
 ## Bottom line

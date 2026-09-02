@@ -790,10 +790,7 @@ harness/bench data, before any household session carries it.
 > WO-4's mechanism freeze (§8 item 3); P3 gates WO-3's delay adoption (Q-A);
 > and P1/P3/P4 all precede WO-6. **The ladder is pending owner ratification**,
 > so those items are *superseded-pending*: do not execute them as written, and
-> do not treat the ladder as decided either. The reconciliation — one writer —
-> lives in
-> [the phase spine](HANDOFF-correction-revision-plan.md#the-phase-spine--the-p0p4-ladder);
-> it is not restated here.
+> do not treat the ladder as decided either.
 
 Every WO: implementation by delegated agent, independent adversarial
 review to 0 blockers / 0 should-fixes, behavioral promises pinned by
