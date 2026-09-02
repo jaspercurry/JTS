@@ -323,9 +323,12 @@ def _coupling_state(
         )
         from ..env_file import read_value
 
+        # A file the reconciler has not written yet is a declared absence
+        # (undeclared is the ring); any other read failure is not a diagnosis
+        # and falls to the except below.
         try:
             fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
-        except OSError:
+        except FileNotFoundError:
             fanin_text = ""
         # The token AS WRITTEN, not a resolved transport: this block exists to
         # name a migrating box's retired value, which a resolver answering
@@ -333,7 +336,7 @@ def _coupling_state(
         coupling = (read_value(fanin_text, COUPLING_ENV_VAR) or "").strip().lower()
         try:
             outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
-        except OSError:
+        except FileNotFoundError:
             outputd_text = ""
         # What outputd IS RUNNING, through the one predicate that owns that
         # question. An UNDECLARED bridge is the ring (config.rs), so this

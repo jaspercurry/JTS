@@ -9,6 +9,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -387,6 +389,37 @@ def test_airplay_renderer_follows_jasper_env_and_ignores_retired_bridge_knobs(
     # Ring A 256 + Camilla 2048 + Ring B 128 + outputd DAC 1024 (jasper.env,
     # no longer shadowed) = 3456 / 48000. No rate_match term.
     assert "audio_backend_latency_offset_in_seconds = -0.072000;" in rendered
+
+
+@pytest.mark.parametrize(
+    ("outputd_env", "jasper_env", "expected"),
+    [
+        # The LAST assignment in a file wins, as it does for systemd.
+        (
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1024\n",
+            "",
+            "-0.072000",
+        ),
+        # A key PRESENT but empty in the higher layer is terminal: the daemon
+        # then sees that value, not jasper.env's, and falls to its default.
+        (
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=\n",
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1024\n",
+            "-0.114667",
+        ),
+    ],
+)
+def test_airplay_dac_buffer_layers_resolve_as_systemd_does(
+    tmp_path: Path, outputd_env: str, jasper_env: str, expected: str
+):
+    rendered, _ = _render(
+        tmp_path,
+        _PROD_CAMILLA,
+        outputd_env=outputd_env,
+        jasper_env_content=jasper_env,
+    )
+    assert f"audio_backend_latency_offset_in_seconds = {expected};" in rendered
 
 
 def test_airplay_renderer_falls_back_on_invalid_outputd_dac_buffer(tmp_path: Path):

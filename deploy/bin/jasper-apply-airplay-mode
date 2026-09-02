@@ -219,10 +219,17 @@ env_file_value() {
         $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
             sub(/^[^=]*=[[:space:]]*/, "")
             sub(/[[:space:]]*(#.*)?$/, "")
-            print
-            exit
+            value = $0
+            found = 1
         }
+        END { if (found) print value }
     ' "$file"
+}
+
+env_file_has_key() {
+    local file="$1"
+    local key="$2"
+    [[ -r "$file" ]] && grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$file"
 }
 
 # The caller below strips surrounding whitespace/quotes, then a leading
@@ -377,21 +384,23 @@ print(period * slots)
 PY
 }
 
-# What jasper-outputd resolves JASPER_OUTPUTD_DAC_BUFFER_FRAMES to, in the
-# unit's own EnvironmentFile order (later wins): the reconciler-owned
-# outputd.env, then /etc/jasper/jasper.env, then the daemon's compile-time
-# default. jasper-outputd.service pins NO `Environment=` for this key precisely
-# so that order holds — a literal there sits below jasper.env and shadows the
-# operator seam, which is the shear this reader used to inherit.
+# What jasper-outputd resolves JASPER_OUTPUTD_DAC_BUFFER_FRAMES to, walking
+# the unit's EnvironmentFile layers highest-precedence first: the
+# reconciler-owned outputd.env, then /etc/jasper/jasper.env, then the daemon's
+# compile-time default. jasper-outputd.service pins NO `Environment=` for this
+# key precisely so that order holds. A key that is PRESENT but empty or
+# non-numeric is terminal, as it is for systemd: the daemon then sees that
+# value, not a lower layer's, and falls to its own default.
 outputd_dac_buffer_frames() {
     local file value
     for file in "$OUTPUTD_ENV_FILE" "$JASPER_ENV_FILE"; do
+        env_file_has_key "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || continue
         value="$(nonnegative_int_or_empty \
             "$(env_file_value "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)")"
         if [[ -n "$value" && "$value" -gt 0 ]]; then
             printf '%s\n' "$value"
-            return
         fi
+        break
     done
     printf '%s\n' "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
 }
@@ -658,15 +667,6 @@ fi
 # back to shairport_substream, the shipped snd-aloop lane. Reading the
 # RESOLVED value (never the armed set) keeps the armed→device rule stated
 # once, in jasper/renderer_lanes.py.
-#
-# Known precedence divergence, accepted: env_file_value takes the FIRST
-# matching assignment (awk `print; exit`), while the map's Python reader
-# (jasper.renderer_lanes._env_file_value) and systemd's EnvironmentFile=
-# both take the LAST. Unreachable through the supported path — the map's
-# single writer (render_renderer_lanes_env) emits each key exactly once —
-# so only a hand-edited duplicate line could split the readers, and the
-# doctor's "shairport-sync.conf: output_device" coherence check names the
-# resulting armed-vs-rendered disagreement rather than leaving it silent.
 renderer_device="$(env_file_value "$RENDERER_LANES_FILE" JASPER_SHAIRPORT_DEVICE || true)"
 if [[ -z "$renderer_device" ]]; then
     renderer_device="shairport_substream"

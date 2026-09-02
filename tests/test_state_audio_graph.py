@@ -284,15 +284,15 @@ def test_coupling_state_fail_soft_reports_the_unknown_rather_than_a_default(
     It used to degrade to ``"persisted": "loopback"`` with
     ``"intent_coherent": True`` — after ADR-0100 that named the RETIRED
     transport and called it healthy, so an unreadable env file surfaced as a
-    working speaker. ``None`` says what actually happened. The catch is a
-    concrete exception set, not a blind except, so this drives it with one
-    member of that set (a malformed value) rather than an invented error.
+    working speaker. ``None`` says what actually happened. A MISSING file is
+    not this case (undeclared is the ring); an UNREADABLE one is.
     """
+    from pathlib import Path
 
     def _boom(*a, **k):
-        raise ValueError("boom")
+        raise PermissionError("boom")
 
-    monkeypatch.setattr("jasper.env_file.read_value", _boom)
+    monkeypatch.setattr(Path, "read_text", _boom)
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block == {
         "persisted": None,
