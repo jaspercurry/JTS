@@ -544,23 +544,28 @@ provenance stated — never vetoes:
   field-by-field guide is the runbook's "Reading a gate sweep", neither
   restated here — and a classification row's ladder numbers are in that
   report's frame, not this section's `depth_db` frame). `gate_rungs` is every
-  rung's pooled depth,
-  across-pose sigma and cycles-in-window; `gate_sensitivity` is what the
-  verdict turned on. **Sigma that GROWS with the window is the room; sigma that
-  is merely LARGE is directivity** — an azimuth-only pose cloud produces big,
-  perfectly window-invariant HF scatter, and reading that as the room
-  mis-attributes it (#3495). `MOVED` fires on either of two routes alone:
-  `sigma_growth_ratio` at or above 2.0 (measured: the features the room owns
-  read 3.6–5.5×, directivity 0.94–1.4×), or a `corrected_delta_db` past 0.5 dB
-  — the depth change across the ladder with the WINDOW's own share subtracted,
-  which is a different and smaller quantity than the raw swing this bullet used
-  to bound at ~1–2 dB. The growth ratio is not read at all when across-pose
-  sigma stays under 0.2 dB at the longest valid rung: repeat takes at one pose
-  have no across-pose disagreement, and the ratio there is their own capture
-  noise (the row says so in `gate_notes`). Rungs past the primary re-admit
-  reflections deliberately: convergence there is evidence of a real feature,
-  fan-out of a reflection. [Both bars are read off the banked validation
-  corpus; neither is a published law.]
+  rung's pooled depth, across-pose sigma and cycles-in-window;
+  `gate_sensitivity` is what the verdict turned on, `window_verdict_reasons`
+  naming which route fired. **Sigma that GROWS with the window is the room;
+  sigma that is merely LARGE is directivity** — an azimuth-only pose cloud
+  produces big, perfectly window-invariant HF scatter, and reading that as the
+  room mis-attributes it (#3495). `MOVED` fires on any one of three routes
+  alone: across-pose sigma growth, a null-model-corrected depth change, or a
+  centre that walks between the two rungs. The engine owns all three bars and
+  is the only place they are written down —
+  [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)'s
+  `SIGMA_GROWTH_ROOM_RATIO`, `SIGMA_GROWTH_MIN_SIGMA_DB`,
+  `GATE_DELTA_SLACK_DB` and `CENTRE_SHIFT_OCT`, each with the corpus reading
+  behind it, and every artifact stamps their live values into `thresholds`.
+  Two things a reader has to know rather than look up: the corrected delta is
+  a **smaller quantity** than the raw swing this bullet used to bound at
+  ~1–2 dB, because the window's own share is subtracted; and the growth ratio
+  is **not read at all** below the sigma floor, because repeat takes at one
+  pose have no across-pose disagreement and the ratio there is their own
+  capture noise (`sigma_growth_readable` says so per row). Rungs past the
+  primary re-admit reflections deliberately: convergence there is evidence of
+  a real feature, fan-out of a reflection. [The bars are read off the banked
+  validation corpus; none is a published law.]
 - **Ladder numbers banked before 2026-09-02 are in a different frame.** The
   ladder moved onto the engine's window family then (P1 §6 row D — 25 % tail,
   1 ms lead) from the classifier's own (row F, a full-span half-Hann tail with

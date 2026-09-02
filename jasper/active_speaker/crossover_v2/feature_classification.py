@@ -95,6 +95,12 @@ __all__ = [
 #: a large fraction of the matched non-minimum-phase scale is a cancellation,
 #: and EQ is structurally the wrong tool for one: a filter aimed at a null
 #: lowers the direct sound and the delayed copy together.
+#:
+#: A row carries two of these: ``egd_verdict`` is what the instrument ASSERTS
+#: and ``egd_verdict_raw`` is what the numbers said before the known-answer
+#: controls gate it. The ``_raw`` suffix elsewhere in this package
+#: (:mod:`.evidence_packet`) means bytes before parsing, which is a different
+#: thing entirely.
 EGD_MIN_PHASE = "MIN-PHASE"
 EGD_NON_MIN_PHASE = "NON-MIN-PHASE"
 EGD_AMBIGUOUS = "ambiguous"

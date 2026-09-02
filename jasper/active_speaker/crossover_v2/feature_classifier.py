@@ -124,15 +124,25 @@ from .feature_optics import (
     feature_q,
     read_feature,
 )
-from .gate_sweep import DEFAULT_RUNGS_MS, frame_descriptor, sweep_features
+from .gate_sweep import (
+    CENTRE_SHIFT_OCT,
+    DEFAULT_RUNGS_MS,
+    GATE_DELTA_SLACK_DB,
+    SIGMA_GROWTH_MIN_SIGMA_DB,
+    SIGMA_GROWTH_ROOM_RATIO,
+    WINDOW_MOVED,
+    WINDOW_STABLE,
+    frame_descriptor,
+    sweep_features,
+)
 from .gate_sweep import analysis_grid as sweep_analysis_grid
 from .journey import PHASE_CLOUD_VERIFY, PHASE_LATERAL, PHASE_VERIFY
 from .round_captures import (
     REFUSE_RADIATED_BAND_MISSING,
     PoseCapture,
     RoundCapturesRefused,
+    radiated_band_of,
 )
-from .round_captures import _radiated_band as radiated_band_of
 
 __all__ = [
     "ADMISSIBLE_PHASES",
@@ -203,6 +213,19 @@ CLASSIFICATION_REFUSAL_REASONS = frozenset({
     PROGRAM_MISSING,
     NO_FEATURES_DETECTED,
 })
+
+# --- ladder refusals — the round still classifies, the window verdict does not
+
+#: A ladder of one rung. The window verdict compares the shortest and longest
+#: resolution-valid rung, so one rung compares with nothing. Deliberately not a
+#: :data:`CLASSIFICATION_REFUSAL_REASONS` member: it costs the window verdict
+#: and nothing else.
+GATE_LADDER_NEEDS_TWO_RUNGS = "gate_ladder_needs_two_rungs"
+
+#: The engine declined this ladder or a bin on it for a reason of its own
+#: (:exc:`ValueError`), carried through rather than raised: the same trade as
+#: above, and for the same reason.
+GATE_LADDER_UNUSABLE = "gate_ladder_unusable"
 
 # --- per-capture admissibility — why each capture in the ring was dropped --- #
 
@@ -431,52 +454,9 @@ FRAC_NMP_NON_MIN_PHASE = 0.50
 #: must sit before it is a feature of the response rather than of the noise.
 Z_LOCAL_FLAT = 3.0
 
-#: Across-pose sigma growth, longest valid rung over shortest, at or above
-#: which the feature is the room's. It sits in a wide measured gap rather than
-#: on a convention: on the banked validation corpus
-#: (``captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md``
-#: and the P1 report it reproduces) the three sub-1.2 kHz features the room
-#: owns read 3.6x / 5.5x / 5.1x, and every HF feature — pure directivity,
-#: whose across-pose scatter is large and perfectly window-invariant — reads
-#: 0.94x to 1.4x. Sigma that is LARGE is not the discriminator and reading it
-#: as one mis-attributes directivity (#3495); sigma that GROWS is.
-SIGMA_GROWTH_ROOM_RATIO = 2.0
-
-#: ...and below this much across-pose sigma at the longest valid rung, the
-#: ratio above is not read at all.
-#:
-#: A round whose captures are repeat takes at ONE pose has across-pose sigma
-#: that is its own capture noise, and a ratio of two noise figures is a coin
-#: toss with a room's name on it: measured at 1e-4 dB on this instrument's
-#: synthetic fixtures, where it read 2.3x and would have called a known
-#: minimum-phase resonance the room. The floor is three orders of magnitude
-#: above that and an order below every real across-pose disagreement in the
-#: banked validation corpus (P1 sec 5b: 1.4-2.9 dB at 20 ms where the room
-#: owns the feature, 0.13-2.35 dB where directivity does), so it costs the
-#: discriminator nothing there. Below it the ladder still decides on the
-#: corrected delta, and the row's ``gate_notes`` says the ratio was not read.
-SIGMA_GROWTH_MIN_SIGMA_DB = 0.2
-
-#: The second route to :data:`GATE_MOVED`: how far the null-model-corrected
-#: depth may move between the shortest and longest resolution-valid rung
-#: before the window is judged to have been reading the room.
-#:
-#: **This is dB, and the constant it replaced was a RATIO.** The old test
-#: compared a retention fraction against its own null model's fraction with a
-#: 0.15 floor; the engine publishes a corrected dB delta instead — the fitted
-#: notch synthesized, injected into a real capture IR and re-read through the
-#: same rungs, so the window's own bias is subtracted rather than divided out.
-#: A number from the old field cannot be compared with one from this one.
-#:
-#: 0.5 dB is docs/tuning-methodology.md sec 6's own ~1-2 dB prudence bar
-#: carried onto the corrected quantity: on the banked validation corpus the
-#: null model removes ~1.1 dB of window bias from a sub-500 Hz feature's raw
-#: 3->20 ms swing (441.6 Hz: raw -2.89, corrected -1.74; 1000 Hz: raw -1.23,
-#: corrected -0.14), so the raw bar lands here once the window's own share is
-#: subtracted. It keeps a wide margin either side: the window-invariant HF
-#: bins of that corpus correct to 0.06-0.11 dB, and the features the room owns
-#: correct to 1.7-3.2 dB.
-GATE_DELTA_SLACK_DB = 0.5
+# The room/speaker thresholds are :mod:`.gate_sweep`'s — the engine that runs
+# the ladder owns what counts as the window having moved a feature, and this
+# module maps its three-word verdict into the register (:func:`_gate_call`).
 
 # --- control specifications and their bars ---------------------------------- #
 
@@ -1608,24 +1588,35 @@ def _sweep_ladder(
     sample_rate: int,
     features: Sequence[float],
     rungs_ms: Sequence[float],
-) -> tuple[dict[str, dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, Any],
+    list[dict[str, Any]],
+    dict[str, Any] | None,
+]:
     """Every feature through :func:`~.gate_sweep.sweep_features`, plus its frame.
 
-    Returns ``(by_feature, frame, refusal)``. ``refusal`` is ``None`` when the
-    ladder ran; otherwise it names why it could not, and ``by_feature`` is
-    empty — the LADDER is refused for the round, never the classification. A
-    round with one capture, or with sidecars banking no radiated band, still
-    gets its phase class, its decay reads and its per-pose facts; what it does
-    not get is a window verdict, and every row says so by name rather than
-    reading :data:`GATE_STABLE` off a test that never ran.
+    Returns ``(by_feature, frame, poses, refusal)``. ``refusal`` is ``None``
+    when the ladder ran; otherwise it names why it could not, and
+    ``by_feature`` is empty — the LADDER is refused for the round, never the
+    classification. A round with one capture, with sidecars banking no
+    radiated band, or with a ladder of one rung still gets its phase class,
+    its decay reads and its per-pose facts; what it does not get is a window
+    verdict, and every row says so by name rather than reading
+    :data:`GATE_STABLE` off a test that never ran.
+
+    ``poses`` is who each pose row of every feature IS, banked once for the
+    round beside the frame rather than repeated inside each feature, in the
+    order those rows are in. Position is the join, not ``pose_key``: a ring
+    capture carries an angle only when a walk log bound one, and a round with
+    none has the same key on every pose.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     frame = frame_descriptor(rungs, sweep_analysis_grid())
     # Everything but `radiated_band_hz`, `sample_rate`, `ir` and `peak_idx` is
-    # disclosure: the engine echoes it into its `poses` rows so a report can
-    # name the capture it read, and none of it moves a number. A commanded
-    # turntable angle is the one pose fact a ring capture carries, and the
-    # program digest is not one this loader keeps.
+    # disclosure: it names the capture a pose row was read from, and none of it
+    # moves a number. A commanded turntable angle is the one pose fact a ring
+    # capture carries, and the program digest is not one this loader keeps.
     poses: list[PoseCapture] = []
     unbanded: list[str] = []
     for capture, ir, peak in zip(captures, irs, peaks):
@@ -1655,6 +1646,7 @@ def _sweep_ladder(
         return (
             {},
             frame,
+            [],
             {
                 "reason": REFUSE_RADIATED_BAND_MISSING,
                 "captures": unbanded,
@@ -1666,13 +1658,54 @@ def _sweep_ladder(
                 ),
             },
         )
+    banked_poses = [
+        {
+            "pose_key": pose.pose_key,
+            "capture_id": pose.capture_id,
+            "phase": pose.phase,
+            "azimuth_deg": pose.azimuth_deg,
+            "vertical_deg": pose.vertical_deg,
+            "mark_distance_m": pose.mark_distance_m,
+            "capture_wav": pose.wav.name if pose.wav is not None else None,
+        }
+        for pose in poses
+    ]
+    if len(rungs) < 2:
+        # The engine raises on this, and a ladder is not worth the round: a
+        # caller who asked for one rung still gets every other fact.
+        return (
+            {},
+            frame,
+            banked_poses,
+            {
+                "reason": GATE_LADDER_NEEDS_TWO_RUNGS,
+                "rungs_ms": list(rungs),
+                "note": (
+                    "the window verdict compares the shortest and longest "
+                    "resolution-valid rung, so one rung compares with nothing"
+                ),
+            },
+        )
     try:
         swept = sweep_features(poses, rungs_ms=rungs, at_hz=list(features))
     except RoundCapturesRefused as refusal:
-        return {}, frame, {"reason": refusal.reason, **refusal.detail}
+        return {}, frame, banked_poses, {"reason": refusal.reason, **refusal.detail}
+    except ValueError as exc:
+        # Anything else the engine's own input check refuses -- today only a
+        # bin off its 200-20000 Hz grid, which this caller can reach with a
+        # long enough `gate_ms`. Folded, not swallowed: the message rides the
+        # refusal into the artifact. Remove when the engine stops raising and
+        # refuses by name instead.
+        return (
+            {},
+            frame,
+            banked_poses,
+            {"reason": GATE_LADDER_UNUSABLE, "detail": str(exc)},
+        )
     return (
         {f"{fc:.0f}": result for fc, result in zip(features, swept)},
         frame,
+        banked_poses,
         None,
     )
 
@@ -2076,21 +2109,22 @@ def _fdw_rungs(
     return out
 
 
+#: The engine's three words in the register's own. A mapping, never a second
+#: rule: :mod:`.gate_sweep` decides what counts as the window having moved a
+#: feature, and ``unresolved`` — the test did not answer — becomes
+#: :data:`UNRESOLVED`, never :data:`GATE_STABLE`, which is a finding.
+_GATE_VERDICT_OF = {WINDOW_STABLE: GATE_STABLE, WINDOW_MOVED: GATE_MOVED}
+
+
 def _gate_call(
     sweep: Mapping[str, Any] | None, refusal: Mapping[str, Any] | None
 ) -> dict[str, Any]:
     """One feature's window verdict and its working, off the engine's result.
 
-    Two independent routes to :data:`GATE_MOVED`, either one alone:
-    across-pose sigma that GROWS with the window past
-    :data:`SIGMA_GROWTH_ROOM_RATIO`, and a null-model-corrected depth that
-    moves past :data:`GATE_DELTA_SLACK_DB`. The first is the P1 discriminator
-    and the second is what a single-pose-cloud round still has; a room feature
-    usually trips both, directivity trips neither.
-
-    A verdict of :data:`UNRESOLVED` is the register's own ambiguous word doing
-    the job it does everywhere else: the test did not answer. It is never
-    :data:`GATE_STABLE`, which is a finding.
+    The verdict is :data:`~.gate_sweep.WINDOW_MOVED` and friends translated
+    through :data:`_GATE_VERDICT_OF`; which routes fired, and the thresholds
+    they fired against, are the engine's and are carried through in
+    ``gate_sensitivity`` rather than re-derived here.
     """
     notes: list[str] = []
     if refusal is not None:
@@ -2104,30 +2138,28 @@ def _gate_call(
     excess_loss: dict[str, float] = {}
     slack_by_rung: dict[str, float] = {}
     tension = False
-    if sweep is None or sensitivity is None:
+    if sweep is None:
         gate_verdict = UNRESOLVED
     else:
+        gate_verdict = _GATE_VERDICT_OF.get(sweep["window_verdict"], UNRESOLVED)
+    if sweep is not None and sensitivity is not None:
         long_key = f"{sensitivity['longest_valid_rung_ms']:g}"
         delta = float(sensitivity["corrected_delta_db"])
-        growth = float(sensitivity["sigma_growth_ratio"])
-        long_sigma = float(sweep["sigma_db_by_rung"][long_key])
         # Keyed by the rung the delta was read AT, against the shortest valid
         # one; both endpoints are named in `gate_sensitivity`.
         excess_loss[long_key] = delta
         slack_by_rung[long_key] = GATE_DELTA_SLACK_DB
-        sigma_readable = long_sigma >= SIGMA_GROWTH_MIN_SIGMA_DB
-        if not sigma_readable:
+        if not sensitivity["sigma_growth_readable"]:
+            long_sigma = float(sweep["sigma_db_by_rung"][long_key])
             notes.append(
                 f"across-pose sigma is {long_sigma:.3f} dB at {long_key} ms, "
                 f"under the {SIGMA_GROWTH_MIN_SIGMA_DB:g} dB floor: these "
                 "captures did not disagree, so the growth ratio is their own "
                 "noise and is not read"
             )
-        grew = sigma_readable and growth >= SIGMA_GROWTH_ROOM_RATIO
-        deepened = abs(delta) > GATE_DELTA_SLACK_DB
-        moved = grew or deepened
-        gate_verdict = GATE_MOVED if moved else GATE_STABLE
-        tension = not moved and abs(delta) > 0.5 * GATE_DELTA_SLACK_DB
+        tension = (
+            gate_verdict == GATE_STABLE and abs(delta) > 0.5 * GATE_DELTA_SLACK_DB
+        )
 
     rungs = _gate_rungs(sweep)
     for rung_key, entry in rungs.items():
@@ -2148,6 +2180,8 @@ def _gate_call(
             if sweep is None
             else {
                 "bin_hz": sweep["bin_hz"],
+                "window_verdict": sweep["window_verdict"],
+                "window_verdict_reasons": list(sweep["window_verdict_reasons"]),
                 "sensitivity": sensitivity,
                 "null_reason": sweep.get("sensitivity_null_reason"),
                 "poses": sweep["poses"],
@@ -2447,7 +2481,7 @@ def classify_round(
     pooled_db = {f"{fc:.0f}": read_feature(pooled, grid, fc) for fc in features}
     measured_q = {f"{fc:.0f}": feature_q(pooled, grid, fc) for fc in features}
 
-    swept, frame, ladder_refusal = _sweep_ladder(
+    swept, frame, ladder_poses, ladder_refusal = _sweep_ladder(
         captures, irs, peaks, sample_rate, features, ladder
     )
     timing = _timing_scatter(captures, irs, peaks, sample_rate, trusted_band_hz)
@@ -2504,6 +2538,7 @@ def classify_round(
             "sigma_growth_room_ratio": SIGMA_GROWTH_ROOM_RATIO,
             "sigma_growth_min_sigma_db": SIGMA_GROWTH_MIN_SIGMA_DB,
             "gate_delta_slack_db": GATE_DELTA_SLACK_DB,
+            "centre_shift_oct": CENTRE_SHIFT_OCT,
             "feature_stability_z": FEATURE_STABILITY_Z,
             "feature_min_departure_db": FEATURE_MIN_DEPARTURE_DB,
             "feature_min_separation_oct": FEATURE_MIN_SEPARATION_OCT,
@@ -2515,6 +2550,10 @@ def classify_round(
             "gate_ms_primary": primary,
             "gate_ladder_ms": list(ladder),
             "gate_ladder_frame": frame,
+            # Who each feature's pose rows ARE, once for the round. The engine
+            # keys them by `pose_key` and publishes nothing else per feature,
+            # because who a pose is does not vary with the bin.
+            "gate_ladder_poses": ladder_poses,
             "gate_ladder_refused": ladder_refusal,
             # P1 sec 6 measured one capture's 441.6 Hz feature through both
             # window families and they disagree by 1.72 dB on the same 7->20 ms

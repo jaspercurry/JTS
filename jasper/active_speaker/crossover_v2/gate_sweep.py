@@ -43,17 +43,20 @@ Three measured hazards this module exists to not repeat (all P1):
 One engine, two doors: :func:`sweep_round` reads a banked round directory,
 :func:`sweep_features` reads captures a caller already holds. Both go through
 the same ladder, so no second reader grows a window shape beside this one.
+The ROOM/SPEAKER rule is this module's too — ``window_verdict`` and the routes
+that produced it are published per feature, and a caller maps those three
+words into its own register rather than re-applying the thresholds.
 
 Pipeline stage: **diagnose**, offline and read-only. It plays nothing,
-writes nothing but its own report, and decides nothing: the output is
-evidence for an attribution argument, not a verdict, and EQ is not its
+writes nothing but its own report, and decides nothing beyond that one
+attribution: the output is evidence for an argument, and EQ is not its
 business.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +126,77 @@ N_FFT = 1 << 16
 #: Length of the null model's host array, in seconds. Long enough for a
 #: high-Q notch's own ringing to finish well inside it.
 NULL_MODEL_HOST_S = 0.2
+
+#: Q multiplier for the disclosure-only narrow bracket on the window bias.
+#: The ladder this engine replaced bracketed its null model between the fitted
+#: Q and a narrower one; the bracket said whether the correction was sensitive
+#: to the fit's own width. It corrects nothing here either — it is published
+#: beside the fitted-Q bias so a reader can see how much of the correction the
+#: width choice is worth.
+NARROW_Q_BRACKET = 1.5
+
+# --- the room/speaker rule ---------------------------------------------------
+#
+# The verdict is this engine's, not its callers'. Two readers of one ladder
+# applying two thresholds would be two instruments wearing one name.
+
+#: Across-pose sigma growth, longest valid rung over shortest, at or above
+#: which the feature is the room's. It sits in a wide measured gap rather than
+#: on a convention: on the banked validation corpus
+#: (``captures/recommission-day2-2026-09-01/gate-sweep-validation/README.md``
+#: and the P1 report it reproduces) the three sub-1.2 kHz features the room
+#: owns read 3.6x / 5.5x / 5.1x, and every HF feature — pure directivity,
+#: whose across-pose scatter is large and perfectly window-invariant — reads
+#: 0.94x to 1.4x. Sigma that is LARGE is not the discriminator and reading it
+#: as one mis-attributes directivity (#3495); sigma that GROWS is.
+SIGMA_GROWTH_ROOM_RATIO = 2.0
+
+#: ...and below this much across-pose sigma at the LONGEST valid rung, the
+#: ratio above is not read at all.
+#:
+#: The floor is on the LONG rung deliberately: a room feature is exactly a tiny
+#: short-rung sigma that grows (P1: 358 Hz, six seats within 0.03 dB at 3 ms,
+#: 2.26 dB by 12 ms), so a floor on the ratio's denominator would delete the
+#: signal this instrument exists to find. A round whose captures are repeat
+#: takes at ONE pose has across-pose sigma that is its own capture noise, and a
+#: ratio of two noise figures is a coin toss with a room's name on it: measured
+#: at 1e-4 dB on the classifier's synthetic fixtures, where it read 2.3x and
+#: would have called a known minimum-phase resonance the room. This floor is
+#: three orders of magnitude above that and an order below every real
+#: across-pose disagreement in the banked validation corpus (P1 sec 5b:
+#: 1.4-2.9 dB at 20 ms where the room owns the feature, 0.13-2.35 dB where
+#: directivity does), so it costs the discriminator nothing there.
+SIGMA_GROWTH_MIN_SIGMA_DB = 0.2
+
+#: How far the null-model-corrected depth may move between the shortest and
+#: longest resolution-valid rung before the window is judged to have been
+#: reading the room.
+#:
+#: **dB on the CORRECTED quantity**, which is smaller than a raw swing and not
+#: comparable with one. It is docs/tuning-methodology.md sec 6's own ~1-2 dB
+#: prudence bar carried onto it: the null model removes ~1.1 dB of window bias
+#: from a sub-500 Hz feature's raw 3->20 ms swing on the banked validation
+#: corpus (441.6 Hz: raw -2.89, corrected -1.74; 1000 Hz: raw -1.23, corrected
+#: -0.14), and the margin either side stays wide — window-invariant HF bins
+#: correct to 0.06-0.11 dB, features the room owns to 1.7-3.2 dB.
+GATE_DELTA_SLACK_DB = 0.5
+
+#: Centre movement between the shortest and longest valid rung, in octaves,
+#: past which the feature has moved. A quarter of the 1/6-octave centre search,
+#: so a shift this size is a real walk rather than the search span's own edge.
+CENTRE_SHIFT_OCT = 1.0 / 24.0
+
+#: The three words a feature's ladder can say. ``unresolved`` is the test not
+#: answering; it is never ``stable``, which is a finding.
+WINDOW_STABLE = "stable"
+WINDOW_MOVED = "moved"
+WINDOW_UNRESOLVED = "unresolved"
+
+#: Which route put a feature at :data:`WINDOW_MOVED`. Any one alone is enough,
+#: and a room feature usually trips more than one.
+ROUTE_SIGMA_GROWTH = "sigma_growth"
+ROUTE_DEPTH_DELTA = "depth_delta"
+ROUTE_CENTRE_SHIFT = "centre_shift"
 
 # --- refusals: every one names the input that was missing --------------------
 
@@ -373,6 +447,7 @@ def window_bias_db(
     grid: np.ndarray,
     fit: NotchFit,
     rungs_ms: Sequence[float],
+    host_detrended_by_rung: Mapping[float, np.ndarray] | None = None,
 ) -> dict[float, float]:
     """How much of a feature of ``fit``'s shape each rung's WINDOW invents.
 
@@ -381,6 +456,10 @@ def window_bias_db(
     re-read at every rung. Each read is with-notch minus without-notch
     through identical windows, so the host's own structure cancels and what
     is left is the window's doing.
+
+    ``host_detrended_by_rung`` supplies the without-notch half when the caller
+    already holds it (:func:`_host_detrended`); it does not depend on ``fit``,
+    so a round re-reads one host for every feature it prices.
     """
     from scipy.signal import lfilter
 
@@ -393,13 +472,57 @@ def window_bias_db(
         with_notch = gated_curve(
             notched, sample_rate, gate_ms=rung, peak_idx=peak_idx, grid=grid
         )
-        without = gated_curve(
-            clean, sample_rate, gate_ms=rung, peak_idx=peak_idx, grid=grid
-        )
+        if host_detrended_by_rung is None:
+            without = detrend(
+                gated_curve(
+                    clean, sample_rate, gate_ms=rung, peak_idx=peak_idx, grid=grid
+                ),
+                grid,
+            )
+        else:
+            without = host_detrended_by_rung[rung]
         read_with = float(np.interp(fit.centre_hz, grid, detrend(with_notch, grid)))
-        read_without = float(np.interp(fit.centre_hz, grid, detrend(without, grid)))
+        read_without = float(np.interp(fit.centre_hz, grid, without))
         bias[rung] = read_with - read_without
     return bias
+
+
+#: Memo of the without-notch host reads, keyed by (host name, host rung, rung).
+HostCurves = dict[tuple[str, float, float], np.ndarray]
+
+
+def _host_detrended(
+    cache: HostCurves,
+    name: str,
+    host: np.ndarray,
+    sample_rate: int,
+    *,
+    peak_idx: int,
+    grid: np.ndarray,
+    host_rung_ms: float,
+    rungs_ms: Sequence[float],
+) -> dict[float, np.ndarray]:
+    """The without-notch host reads, detrended, memoised for the whole round.
+
+    One round prices every feature against the same two hosts, and the
+    without-notch half of a bias read does not depend on the feature — so a
+    naive loop pays one ``rfft`` of :data:`N_FFT` plus a fractional-octave
+    smooth per feature per host per rung for an array it already computed.
+    """
+    out: dict[float, np.ndarray] = {}
+    for rung in rungs_ms:
+        key = (name, host_rung_ms, rung)
+        curve = cache.get(key)
+        if curve is None:
+            curve = detrend(
+                gated_curve(
+                    host, sample_rate, gate_ms=rung, peak_idx=peak_idx, grid=grid
+                ),
+                grid,
+            )
+            cache[key] = curve
+        out[rung] = curve
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -434,6 +557,33 @@ def _across_pose_sigma(
     }
 
 
+def moved_routes(
+    *,
+    sigma_growth_ratio: float,
+    sigma_growth_readable: bool,
+    corrected_delta_db: float,
+    centre_shift_oct: float,
+) -> list[str]:
+    """Which routes say the window MOVED this feature. Any one alone is enough.
+
+    Three independent readings of one question, because each is blind where
+    another sees: across-pose sigma that GROWS is the P1 discriminator and
+    needs a real pose cloud; a corrected depth change is what a round of
+    repeat takes at one pose still has; and a centre that WALKS between the
+    two rungs catches a feature the window re-makes without deepening, which
+    the other two miss entirely. An empty list is
+    :data:`WINDOW_STABLE` — a finding, not a silence.
+    """
+    routes: list[str] = []
+    if sigma_growth_readable and sigma_growth_ratio >= SIGMA_GROWTH_ROOM_RATIO:
+        routes.append(ROUTE_SIGMA_GROWTH)
+    if abs(corrected_delta_db) > GATE_DELTA_SLACK_DB:
+        routes.append(ROUTE_DEPTH_DELTA)
+    if abs(centre_shift_oct) > CENTRE_SHIFT_OCT:
+        routes.append(ROUTE_CENTRE_SHIFT)
+    return routes
+
+
 def _feature_result(
     reads: Sequence[SweepCurves],
     grid: np.ndarray,
@@ -441,11 +591,19 @@ def _feature_result(
     hz: float,
     *,
     rungs_ms: Sequence[float],
+    cache: HostCurves,
 ) -> dict[str, Any]:
-    """One bin read through the whole ladder: table, poses, null model.
+    """One bin read through the whole ladder: table, poses, null model, verdict.
 
     ``hz`` is snapped to the nearest analysis-grid bin and the snapped
     ``bin_hz`` is what every number below is read at.
+
+    Each pose row carries only what varies with the BIN — its per-rung values.
+    Who that pose is is the round's fact, not the feature's, and it is banked
+    once beside the report rather than N times inside it. The rows are in
+    capture order, which is the order that block is in: a round whose captures
+    declare no pose has one ``pose_key`` for all of them, so the JOIN is the
+    position, not the key.
     """
     grid_index = int(np.argmin(np.abs(grid - float(hz))))
     bin_hz = float(grid[grid_index])
@@ -461,10 +619,6 @@ def _feature_result(
         "poses": [
             {
                 "pose_key": read.capture.pose_key,
-                "capture_id": read.capture.capture_id,
-                "azimuth_deg": read.capture.azimuth_deg,
-                "vertical_deg": read.capture.vertical_deg,
-                "mark_distance_m": read.capture.mark_distance_m,
                 "value_db_by_rung": {
                     _key(r): float(read.curves[r][grid_index]) for r in rungs_ms
                 },
@@ -476,19 +630,34 @@ def _feature_result(
         ],
     }
     if len(valid) < 2:
-        result["sensitivity"] = None
-        result["sensitivity_null_reason"] = NULL_INSUFFICIENT_VALID_RUNGS
-        return result
+        return _unresolved(result, NULL_INSUFFICIENT_VALID_RUNGS)
 
     short, long_ = min(valid), max(valid)
     if bin_sigma[short] <= 0.0:
-        result["sensitivity"] = None
-        result["sensitivity_null_reason"] = NULL_DEGENERATE_SHORT_RUNG
-        return result
+        return _unresolved(result, NULL_DEGENERATE_SHORT_RUNG)
 
+    pair = (short, long_)
     fit = fit_notch(reads, grid, rung_ms=long_, nominal_hz=bin_hz)
+    # The same feature fitted at the OTHER end of the ladder. A centre that
+    # walks between the two rungs is a feature the window is re-making, which
+    # the depth routes can miss entirely when it walks without deepening.
+    fit_short = fit_notch(reads, grid, rung_ms=short, nominal_hz=bin_hz)
+    centre_shift_oct = float(np.log2(fit.centre_hz / fit_short.centre_hz))
     host = reads[0].capture
     hosts = null_model_hosts(host, host_rung_ms=long_)
+    host_reads = {
+        name: _host_detrended(
+            cache,
+            name,
+            ir,
+            host.sample_rate,
+            peak_idx=peak,
+            grid=grid,
+            host_rung_ms=long_,
+            rungs_ms=pair,
+        )
+        for name, (ir, peak) in hosts.items()
+    }
     bias_by_host = {
         name: window_bias_db(
             ir,
@@ -496,10 +665,21 @@ def _feature_result(
             peak_idx=peak,
             grid=grid,
             fit=fit,
-            rungs_ms=(short, long_),
+            rungs_ms=pair,
+            host_detrended_by_rung=host_reads[name],
         )
         for name, (ir, peak) in hosts.items()
     }
+    real_ir, real_peak = hosts["real"]
+    narrow = window_bias_db(
+        real_ir,
+        host.sample_rate,
+        peak_idx=real_peak,
+        grid=grid,
+        fit=replace(fit, q=fit.q * NARROW_Q_BRACKET),
+        rungs_ms=pair,
+        host_detrended_by_rung=host_reads["real"],
+    )
     bias = bias_by_host["real"]
     raw_delta = float(
         np.median([read.detrended[long_][grid_index] for read in reads])
@@ -508,17 +688,37 @@ def _feature_result(
     bias_delta = bias[long_] - bias[short]
     synthetic = bias_by_host["synthetic"]
     synthetic_delta = synthetic[long_] - synthetic[short]
+    corrected_delta = raw_delta - bias_delta
+    growth = bin_sigma[long_] / bin_sigma[short]
+    sigma_readable = bin_sigma[long_] >= SIGMA_GROWTH_MIN_SIGMA_DB
+    reasons = moved_routes(
+        sigma_growth_ratio=growth,
+        sigma_growth_readable=sigma_readable,
+        corrected_delta_db=corrected_delta,
+        centre_shift_oct=centre_shift_oct,
+    )
     result["sensitivity"] = {
         "shortest_valid_rung_ms": short,
         "longest_valid_rung_ms": long_,
-        "sigma_growth_ratio": bin_sigma[long_] / bin_sigma[short],
+        "sigma_growth_ratio": growth,
+        # Whether the ratio above was read at all. Below the floor these
+        # captures did not disagree, and the ratio is their own noise.
+        "sigma_growth_readable": sigma_readable,
         "raw_delta_db": raw_delta,
         "bias_delta_db": bias_delta,
-        "corrected_delta_db": raw_delta - bias_delta,
+        "corrected_delta_db": corrected_delta,
         # The same bias through a bare-impulse host. It corrects nothing —
         # it is the disclosure that says whether the real host was still
         # additive at this depth (see :func:`null_model_hosts`).
         "bias_delta_synthetic_host_db": synthetic_delta,
+        # ...and the same bias off a narrower notch of the same depth. Also
+        # disclosure: how much of the correction the fitted width is worth.
+        "bias_delta_narrow_q_db": narrow[long_] - narrow[short],
+        "centre_shift_oct": centre_shift_oct,
+        "centre_hz_by_rung": {
+            _key(short): fit_short.centre_hz,
+            _key(long_): fit.centre_hz,
+        },
         "null_model": {
             "centre_hz": fit.centre_hz,
             "depth_db": fit.depth_db,
@@ -527,13 +727,27 @@ def _feature_result(
             "per_pose_depth_db": list(fit.per_pose_depth_db),
             "per_pose_q": list(fit.per_pose_q),
             "host_capture_id": host.capture_id,
-            "read_db_by_rung": {_key(r): bias[r] for r in (short, long_)},
-            "synthetic_host_read_db_by_rung": {
-                _key(r): synthetic[r] for r in (short, long_)
-            },
+            "read_db_by_rung": {_key(r): bias[r] for r in pair},
+            "synthetic_host_read_db_by_rung": {_key(r): synthetic[r] for r in pair},
         },
     }
     result["sensitivity_null_reason"] = None
+    result["window_verdict"] = WINDOW_MOVED if reasons else WINDOW_STABLE
+    result["window_verdict_reasons"] = reasons
+    return result
+
+
+def _unresolved(result: dict[str, Any], null_reason: str) -> dict[str, Any]:
+    """A bin the ladder could not price, and the input that was missing.
+
+    The verdict sits beside ``sensitivity`` rather than inside it, because
+    this is exactly the case where there is no ``sensitivity`` block to hold
+    it — and a caller must be able to read one word for every feature.
+    """
+    result["sensitivity"] = None
+    result["sensitivity_null_reason"] = null_reason
+    result["window_verdict"] = WINDOW_UNRESOLVED
+    result["window_verdict_reasons"] = [null_reason]
     return result
 
 
@@ -544,6 +758,7 @@ def _band_result(
     band: tuple[float, float, float],
     *,
     rungs_ms: Sequence[float],
+    cache: HostCurves,
 ) -> dict[str, Any]:
     lo_hz, hi_hz, tolerance_db = band
     radiated = (
@@ -558,17 +773,13 @@ def _band_result(
         "radiated_band_hz": list(radiated),
     }
     if graded is None:
-        result["sensitivity"] = None
-        result["sensitivity_null_reason"] = NULL_BAND_NOT_RADIATED
-        return result
+        return _unresolved(result, NULL_BAND_NOT_RADIATED)
 
     mask = (grid >= graded[0]) & (grid < graded[1])
     if not mask.any():
         # A graded band narrower than one grid step is non-empty as a span and
         # empty as a set of bins. There is nothing to be worst.
-        result["sensitivity"] = None
-        result["sensitivity_null_reason"] = NULL_BAND_BELOW_GRID_RESOLUTION
-        return result
+        return _unresolved(result, NULL_BAND_BELOW_GRID_RESOLUTION)
 
     longest = max(rungs_ms)
     median_detrended = np.median(
@@ -577,7 +788,9 @@ def _band_result(
     worst_index = int(np.argmax(np.abs(median_detrended[mask])))
     worst_hz = float(grid[mask][worst_index])
 
-    feature = _feature_result(reads, grid, sigma, worst_hz, rungs_ms=rungs_ms)
+    feature = _feature_result(
+        reads, grid, sigma, worst_hz, rungs_ms=rungs_ms, cache=cache
+    )
     result["worst_bin_hz"] = feature.pop("bin_hz")
     # The band's deepest feature is not always its most window-divergent one
     # (P1), so the whole band's mean sigma is published beside the worst
@@ -658,8 +871,9 @@ def _feature_at(
     hz: float,
     *,
     rungs_ms: Sequence[float],
+    cache: HostCurves,
 ) -> dict[str, Any]:
-    result = _feature_result(reads, grid, sigma, hz, rungs_ms=rungs_ms)
+    result = _feature_result(reads, grid, sigma, hz, rungs_ms=rungs_ms, cache=cache)
     return {
         "requested_hz": hz,
         "band_hz": _spec_band_of(result["bin_hz"]),
@@ -747,7 +961,11 @@ def sweep_features(
     """
     rungs, wanted = _validated(rungs_ms, at_hz)
     grid, reads, sigma = _prepare(captures, rungs)
-    return [_feature_at(reads, grid, sigma, hz, rungs_ms=rungs) for hz in wanted]
+    cache: HostCurves = {}
+    return [
+        _feature_at(reads, grid, sigma, hz, rungs_ms=rungs, cache=cache)
+        for hz in wanted
+    ]
 
 
 def sweep_round(
@@ -768,6 +986,7 @@ def sweep_round(
     rungs, wanted = _validated(rungs_ms, at_hz)
     captures = discover_captures(Path(round_dir))
     grid, reads, sigma = _prepare(captures, rungs)
+    cache: HostCurves = {}
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_by": GENERATED_BY,
@@ -796,11 +1015,12 @@ def sweep_round(
             for read in reads
         ],
         "bands": [
-            _band_result(reads, grid, sigma, band, rungs_ms=rungs)
+            _band_result(reads, grid, sigma, band, rungs_ms=rungs, cache=cache)
             for band in SPEC_BANDS
         ],
         "features": [
-            _feature_at(reads, grid, sigma, hz, rungs_ms=rungs) for hz in wanted
+            _feature_at(reads, grid, sigma, hz, rungs_ms=rungs, cache=cache)
+            for hz in wanted
         ],
         "sigma_map": _sigma_map(grid, sigma, rungs),
     }

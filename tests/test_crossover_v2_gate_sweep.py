@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,7 +30,11 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     add_delayed_copy,
     biquad_peaking,
 )
-from jasper.active_speaker.crossover_v2.gate_sweep import sweep_features, sweep_round
+from jasper.active_speaker.crossover_v2.gate_sweep import (
+    moved_routes,
+    sweep_features,
+    sweep_round,
+)
 from jasper.active_speaker.crossover_v2.round_captures import (
     PoseCapture,
     RoundCapturesRefused,
@@ -255,6 +260,10 @@ def test_null_model_recovers_the_windows_own_bias(direct_only_report: dict) -> N
     # instead of shrinking it, and call the window's own doing the room's.
     assert sensitivity["bias_delta_db"] < 0.0
     assert synthetic_bias < 0.0
+    # The narrow-Q bracket corrects nothing and must not contradict either:
+    # a notch of the same depth and 1.5x the Q is still deepened by a longer
+    # window, and a bracket of the opposite sign would be reporting noise.
+    assert sensitivity["bias_delta_narrow_q_db"] < 0.0
     assert abs(corrected) < 0.75 * abs(raw)
     # The bare-impulse host cannot saturate against the capture's own
     # feature, so it recovers the bias more completely — the gap between the
@@ -282,6 +291,9 @@ def test_resolution_masks_gate_the_sensitivity_not_the_table(tmp_path: Path) -> 
     assert len(band["poses"]) == 3
     for pose in band["poses"]:
         assert set(pose["value_db_by_rung"]) == {"1", "2"}
+        # Only what varies with the BIN. Who the pose is is the round's fact
+        # and is published once, in the report's own `poses` block.
+        assert set(pose) == {"pose_key", "value_db_by_rung", "detrended_db_by_rung"}
 
 
 @pytest.mark.parametrize("radiated_lo_hz", [1990.0, 1999.0])
@@ -417,3 +429,152 @@ def test_the_in_memory_door_rejects_a_frequency_off_the_grid(
     _root, captures = in_memory_round
     with pytest.raises(ValueError):
         sweep_features(captures, at_hz=(hz,))
+
+
+# --------------------------------------------------------------------------- #
+# the room/speaker rule the engine now owns
+# --------------------------------------------------------------------------- #
+
+
+#: A ladder whose poses genuinely disagree, so the sigma route is readable at
+#: all. Comfortably over the floor below which a ratio is capture noise.
+_READABLE = {"sigma_growth_readable": True}
+#: The two ends of a route that is NOT the one under test, held flat.
+_FLAT = {"sigma_growth_ratio": 1.0, "corrected_delta_db": 0.0, "centre_shift_oct": 0.0}
+
+
+@pytest.mark.parametrize(
+    ("moved", "expected"),
+    # Each case moves exactly ONE route and holds the other two flat, and every
+    # number is a literal bracketing a shipped bar from one side: a case written
+    # as a multiple of the constant it tests moves with the constant and pins
+    # nothing. 4.0x / 1.2x bracket 2.0x; 3.0 / 0.1 dB bracket 0.5 dB; 1/12 and
+    # 1/48 octave bracket 1/24.
+    [
+        pytest.param({"sigma_growth_ratio": 4.0}, [gate_sweep.ROUTE_SIGMA_GROWTH], id="sigma-grew"),
+        pytest.param({"sigma_growth_ratio": 1.2}, [], id="sigma-flat"),
+        pytest.param({"corrected_delta_db": 3.0}, [gate_sweep.ROUTE_DEPTH_DELTA], id="deeper"),
+        pytest.param({"corrected_delta_db": -3.0}, [gate_sweep.ROUTE_DEPTH_DELTA], id="shallower"),
+        pytest.param({"corrected_delta_db": 0.1}, [], id="depth-flat"),
+        pytest.param({"centre_shift_oct": 1.0 / 12.0}, [gate_sweep.ROUTE_CENTRE_SHIFT], id="walked-up"),
+        pytest.param({"centre_shift_oct": -1.0 / 12.0}, [gate_sweep.ROUTE_CENTRE_SHIFT], id="walked-down"),
+        pytest.param({"centre_shift_oct": 1.0 / 48.0}, [], id="centre-flat"),
+    ],
+)
+def test_each_route_alone_says_the_window_moved_the_feature(
+    moved: dict[str, float], expected: list[str]
+) -> None:
+    """Three independent readings, any one alone. Signed either way.
+
+    A feature the window makes deeper and one it makes shallower are both the
+    window's, and so is one whose centre walks up or down. The third route is
+    here because it is the only one that catches a feature the window re-makes
+    WITHOUT deepening it.
+    """
+    assert moved_routes(**{**_FLAT, **_READABLE, **moved}) == expected
+
+
+def test_a_sigma_growth_over_capture_noise_is_not_read_as_the_room() -> None:
+    """A ratio of two noise figures is a coin toss with a room's name on it.
+
+    Repeat takes at ONE pose produce across-pose sigma of ~1e-4 dB whose ratio
+    across the ladder reads over the room bar on a known minimum-phase
+    resonance (measured, on the classifier's own fixtures). Below the floor the
+    ratio is not read at all, and the other two routes still decide.
+    """
+    growing = {**_FLAT, "sigma_growth_ratio": 4.0}
+    assert moved_routes(**growing, sigma_growth_readable=True) == [
+        gate_sweep.ROUTE_SIGMA_GROWTH
+    ]
+    assert moved_routes(**growing, sigma_growth_readable=False) == []
+
+
+def test_the_ladder_verdict_rides_the_report_beside_its_sensitivity(
+    pose_varying_report: dict, direct_only_report: dict
+) -> None:
+    """One word per feature, on every row, whether or not it could be priced.
+
+    A caller must be able to read a verdict for every bin — including the ones
+    the ladder refused to price, where there is no ``sensitivity`` block to
+    carry it and the null reason is the reason.
+    """
+    varying = _low_band(pose_varying_report)
+    assert varying["window_verdict"] == gate_sweep.WINDOW_MOVED
+    assert gate_sweep.ROUTE_SIGMA_GROWTH in varying["window_verdict_reasons"]
+    assert varying["sensitivity"]["sigma_growth_readable"] is True
+
+    # The top band of the round with no late arrival at all: nothing in the IR
+    # for a longer window to admit, so no route has anything to fire on.
+    direct = direct_only_report["bands"][-1]
+    assert direct["window_verdict"] == gate_sweep.WINDOW_STABLE
+    assert direct["window_verdict_reasons"] == []
+
+    unpriced = sweep_round(
+        Path(direct_only_report["round_dir"]), rungs_ms=(1.0, 2.0)
+    )["bands"][LOW_BAND]
+    assert unpriced["sensitivity"] is None
+    assert unpriced["window_verdict"] == gate_sweep.WINDOW_UNRESOLVED
+    assert unpriced["window_verdict_reasons"] == [
+        gate_sweep.NULL_INSUFFICIENT_VALID_RUNGS
+    ]
+
+
+#: A driver notch and a reflection whose comb null lands beside it. The 5 ms
+#: copy is outside the 4 ms rung and inside the 20 ms one, and its nulls sit at
+#: odd multiples of 100 Hz -- so 1100 Hz, an eighth of an octave above the
+#: notch and well inside the 1/6-octave centre search, is a null the LONG
+#: window admits and the short one does not.
+_WALK_NOTCH_HZ = 1000.0
+_WALK_NOTCH_DB = -6.0
+_WALK_NOTCH_Q = 12.0
+_WALK_COPY_MS = 5.0
+_WALK_COPY_GAIN = 0.4
+
+
+def test_a_feature_whose_centre_walks_between_the_rungs_reads_moved() -> None:
+    """The route the two depth readings are blind to, on a known answer.
+
+    A window that re-makes a feature at a DIFFERENT frequency has moved it,
+    and the fit has to be run at both ends of the ladder to see that. One fit
+    reused for both rungs reads a shift of exactly zero and this route can
+    never fire.
+    """
+    captures = []
+    for index in range(3):
+        ir = np.zeros(IR_LEN, dtype=np.float64)
+        ir[PEAK_IDX] = 1.0
+        ir = add_delayed_copy(ir, 0.20 + 0.02 * index, 0.3, RATE)
+        b, a = biquad_peaking(_WALK_NOTCH_HZ, _WALK_NOTCH_DB, _WALK_NOTCH_Q, RATE)
+        ir = np.asarray(lfilter(b, a, ir), dtype=np.float64)
+        ir = add_delayed_copy(ir, _WALK_COPY_GAIN, _WALK_COPY_MS, RATE)
+        captures.append(
+            PoseCapture(
+                capture_id=f"walk_{index:02d}",
+                phase=None,
+                wav=None,
+                program=None,
+                program_sha256="",
+                azimuth_deg=AZIMUTHS_DEG[index],
+                vertical_deg=0.0,
+                mark_distance_m=1.0,
+                radiated_band_hz=(150.0, 20000.0),
+                sample_rate=RATE,
+                ir=ir,
+                peak_idx=PEAK_IDX,
+            )
+        )
+    (feature,) = sweep_features(
+        captures, rungs_ms=(4.0, 20.0), at_hz=(_WALK_NOTCH_HZ,)
+    )
+    sensitivity = feature["sensitivity"]
+
+    assert feature["window_verdict"] == gate_sweep.WINDOW_MOVED
+    assert gate_sweep.ROUTE_CENTRE_SHIFT in feature["window_verdict_reasons"]
+    # The short rung reads the driver's own notch; the long one reads the comb
+    # null the reflection puts an eighth of an octave above it.
+    centres = sensitivity["centre_hz_by_rung"]
+    assert centres["4"] == pytest.approx(_WALK_NOTCH_HZ, rel=0.02)
+    assert centres["20"] > _WALK_NOTCH_HZ * 2 ** (1.0 / 12.0)
+    assert sensitivity["centre_shift_oct"] == pytest.approx(
+        math.log2(centres["20"] / centres["4"])
+    )

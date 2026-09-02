@@ -611,8 +611,8 @@ def test_every_published_uncertainty_labels_itself_random_or_systematic(packet):
     Each spread the rows carry says which KIND it is and what it is a spread
     of, and the columns that merely look like one say why they are not. The two
     kinds are never pooled into a single published figure, which is why
-    ``gate_slack`` — the larger of a fixed floor and a random 3-sigma — is on
-    the second list rather than labelled as either.
+    ``gate_slack`` — the fixed dB bar a corrected depth change is TESTED
+    against — is on the second list rather than labelled as either.
     """
     uncertainty = packet["feature_classification"]["uncertainty"]
     fields = uncertainty["fields"]

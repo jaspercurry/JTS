@@ -146,8 +146,12 @@ def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
     return None
 
 
-def _radiated_band(doc: Mapping[str, Any]) -> tuple[float, float] | None:
+def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     """The band this capture's DUT actually radiates, from its own curves.
+
+    Public because :mod:`.feature_classifier` asks the same question of the
+    sidecars it loads itself, and two readings of one sidecar field would be
+    two answers waiting to disagree.
 
     Absent yields ``None`` rather than a default span, for the reason
     :mod:`~jasper.audio_measurement.gate_disclosure`'s header records: the
@@ -242,7 +246,7 @@ def discover_captures(
             )
         if select is not None and not select(doc):
             continue
-        band = _radiated_band(doc)
+        band = radiated_band_of(doc)
         if band is None:
             raise RoundCapturesRefused(
                 REFUSE_RADIATED_BAND_MISSING,
