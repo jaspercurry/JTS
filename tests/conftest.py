@@ -48,6 +48,35 @@ if sys.version_info < (3, 11):
     )
 
 
+# --- subprocesses must import the tree under test ----------------------
+#
+# 141 test files spawn a subprocess that imports `jasper` (a scripts/ entry
+# point or a console script); 9 of them pass an explicit PYTHONPATH. The
+# other ~132 inherit the parent env, and `jasper` then resolves through the
+# venv's EDITABLE install — a .pth finder pinned to the checkout the venv was
+# built in. That is the right tree in a plain clone and the WRONG one in a
+# git worktree, where the venv belongs to the main checkout and the main
+# checkout sits on whatever branch its own agent left it on.
+#
+# The failure mode that matters is not the loud one. On 2026-09-01 a worktree
+# lane reported 5 failures in test_jasper_pipe_probe_script because the main
+# checkout was mid-refactor on another branch and had no `analytic_signal` —
+# an ImportError, so it was noticed. Had that branch merely CHANGED the
+# function's behavior instead of removing it, those tests would have PASSED
+# while validating code that is not the code under test, in a lane whose
+# whole job is to gate a merge.
+#
+# Setting it here rather than in the lane scripts covers every entry point
+# (scripts/test-fast, scripts/test-merge, a bare pytest, an IDE runner) and
+# every spawn shape, and prepending keeps an operator's own PYTHONPATH.
+# No-op in CI and in a plain clone, where this path is already the one the
+# editable install points at.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    [_REPO_ROOT, *(p for p in [os.environ.get("PYTHONPATH", "")] if p)]
+)
+
+
 # --- socketserver shutdown latency -------------------------------------
 #
 # 23 test files spin a throwaway ThreadingHTTPServer per test (51 call
