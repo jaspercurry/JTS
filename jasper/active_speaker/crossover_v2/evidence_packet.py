@@ -143,7 +143,7 @@ from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
 from .contracts import POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
-from .record_index import bundle_measurements
+from .record_index import Measurement, bundle_measurements
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
 # resolving it through the module on every call is what makes that ownership
 # real rather than a copy taken once at import. A gate round proved the
@@ -1143,15 +1143,15 @@ def _read_take_diagnostic(path: Path) -> dict[str, Any] | None:
 
 def _banked_takes(
     session_dir: Path,
+    rows: Sequence[Measurement],
     phase: str | None,
     read: Callable[[Path], dict[str, Any] | None],
 ) -> list[dict[str, Any]]:
     """Every banked take of one ``phase``, narrowed by its own accept rule.
 
-    Selected out of the bundle's measurement index rather than by globbing a
-    directory: the index rescans the take files on every read (see
-    :func:`~.record_index.bundle_measurements`), so it names the same set a
-    glob would and names it in the one place the store also writes.
+    ``rows`` is the bundle's measurement index, scanned ONCE per packet
+    (:func:`~.record_index.bundle_measurements` rescans the take files on every
+    call) and narrowed here rather than re-selected per block.
 
     ``phase`` of ``None`` takes every take the round banked.
 
@@ -1163,7 +1163,8 @@ def _banked_takes(
     artifacts = session_dir / EVIDENCE_ROOT / "artifacts"
     takes = [
         read(artifacts / row.path)
-        for row in bundle_measurements(session_dir, phase=phase)
+        for row in rows
+        if phase is None or row.phase == phase
     ]
     return [take for take in takes if take is not None]
 
@@ -1179,7 +1180,9 @@ def _distinct_degrees(takes: list[Any], field: str) -> list[int]:
     return sorted(values)
 
 
-def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
+def _lateral_poses_block(
+    session_dir: Path, rows: Sequence[Measurement],
+) -> dict[str, Any]:
     """The signed bearings a lateral walk banked, one row per accepted take.
 
     Read from the round's own ``positions/{take_id}.json`` sidecars through
@@ -1206,7 +1209,7 @@ def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
     opinion about which take counted.
     """
     takes = _banked_takes(
-        session_dir, PHASE_LATERAL, position_cycle.read_lateral_take,
+        session_dir, rows, PHASE_LATERAL, position_cycle.read_lateral_take,
     )
     if not takes:
         return {
@@ -1258,28 +1261,25 @@ CANDIDATE_GRADINGS_UNAVAILABLE = "gradings_unavailable"
 NO_CANDIDATE_TAKES = "no_candidate_takes"
 
 
-def _candidates_block(session_dir: Path) -> dict[str, Any]:
-    """Which candidates this round played, at which poses, and how they ranked.
+def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
+    """Which candidates this round played, and at which poses.
 
-    Read off the take index's own ``candidate_id`` column
-    (:func:`~.record_index.bundle_measurements`) — the label the
-    ``jasper-measure`` door demands so the variants can be selected apart, and
-    the only place the association is written.
+    Selected on the take index's ``candidate_id`` column across EVERY phase:
+    the engine's own capture record (``session._record``) carries a candidate
+    id and no phase at all, so a phase-narrowed selection would miss exactly
+    the takes a candidate cycle banks.
 
     An INVENTORY, not a verdict: which candidate is ADOPTED stays
     :func:`~.verification.decide_adoption`'s question over the round's own axes.
     """
-    rows = [
-        row for row in bundle_measurements(session_dir, phase=PHASE_LATERAL)
-        if row.candidate_id
-    ]
-    if not rows:
+    labelled = [row for row in rows if row.candidate_id]
+    if not labelled:
         return {
             "available": False,
-            **_absence(NO_CANDIDATE_TAKES, False, "lateral takes' candidate_id"),
+            **_absence(NO_CANDIDATE_TAKES, False, "banked takes' candidate_id"),
         }
-    by_candidate: dict[str, list[Any]] = {}
-    for row in rows:
+    by_candidate: dict[str, list[Measurement]] = {}
+    for row in labelled:
         by_candidate.setdefault(row.candidate_id, []).append(row)
     candidates = []
     for candidate_id in sorted(by_candidate):
@@ -1310,15 +1310,16 @@ def _candidates_block(session_dir: Path) -> dict[str, Any]:
             "record_index.bundle_measurements"
         ),
         "note": (
-            "one row per candidate this round measured, with the poses it was "
-            "measured at. Two candidates measured at different poses are not "
-            "comparable on these takes alone; the candidate cycle holds one "
-            "pose and swaps the graph under it"
+            "two candidates measured at different poses are not comparable on "
+            "these takes alone; the candidate cycle holds one pose and swaps "
+            "the graph under it"
         ),
     }
 
 
-def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
+def _entry_baseline_block(
+    session_dir: Path, rows: Sequence[Measurement],
+) -> dict[str, Any]:
     """The round's measured "before", read from the take that banked it.
 
     The receipt already names this capture — ``n_bins``, ``n_excluded``, the
@@ -1341,7 +1342,7 @@ def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
     costs the household a retake, so a missing take is not a defect here.
     """
     takes = _banked_takes(
-        session_dir, PHASE_ENTRY_BASELINE,
+        session_dir, rows, PHASE_ENTRY_BASELINE,
         position_cycle.read_entry_baseline_take,
     )
     if not takes:
@@ -1375,7 +1376,9 @@ def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
     }
 
 
-def _capture_snr_block(session_dir: Path) -> dict[str, Any]:
+def _capture_snr_block(
+    session_dir: Path, rows: Sequence[Measurement],
+) -> dict[str, Any]:
     """Per-capture signal-to-noise, off the round's own banked takes.
 
     Every accepted take carries the analysis's flat ``diagnostic`` block —
@@ -1405,7 +1408,7 @@ def _capture_snr_block(session_dir: Path) -> dict[str, Any]:
     undeclared: set[str] = set()
     declared_as: dict[str, str] = {}
     seen = 0
-    for take in _banked_takes(session_dir, None, _read_take_diagnostic):
+    for take in _banked_takes(session_dir, rows, None, _read_take_diagnostic):
         seen += 1
         diagnostic = _mapping(take.get("diagnostic"))
         if not diagnostic:
@@ -3269,11 +3272,14 @@ def build_crossover_evidence_packet(
     operator_notes = _operator_notes_block(_mapping(draft_raw), draft_reason)
     classification = _classification_block(classification_raw, classification_reason)
     harmonics = _harmonics_block(harmonics_raw, harmonics_reason)
-    lateral_poses = _lateral_poses_block(session_dir)
-    candidates = _candidates_block(session_dir)
-    entry_baseline = _entry_baseline_block(session_dir)
+    # ONE scan of the bundle's take files, narrowed per block below: every
+    # ``bundle_measurements`` call reopens all of them.
+    take_rows = bundle_measurements(session_dir)
+    lateral_poses = _lateral_poses_block(session_dir, take_rows)
+    candidates = _candidates_block(take_rows)
+    entry_baseline = _entry_baseline_block(session_dir, take_rows)
 
-    capture_snr = _capture_snr_block(session_dir)
+    capture_snr = _capture_snr_block(session_dir, take_rows)
 
     identity, identity_withheld = _copy_allowed(
         _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS

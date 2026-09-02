@@ -49,8 +49,8 @@ __all__ = [
 REASON_SEPARATED = "separated"
 #: They are not, so the winner is named without a claim that it is better.
 REASON_INSIDE_REPEAT_FLOOR = "inside_repeat_floor"
-#: No floor was supplied, so "far enough" is unknown — the winner is still
-#: named and the separation claim withheld rather than assumed.
+#: No usable floor was supplied, so "far enough" is unknown — the winner is
+#: still named and the separation claim withheld rather than assumed.
 REASON_REPEAT_FLOOR_UNKNOWN = "repeat_floor_unknown"
 #: Fewer than two candidates survived, so there is no comparison behind the
 #: winner.
@@ -87,6 +87,13 @@ class CandidateRank:
     rollback: bool
     max_error_db: float
     rms_error_db: float
+    #: The number this candidate was actually ORDERED on: the map's
+    #: frame-removed RMS where it carries one, and ``rms_error_db`` where it
+    #: does not. The frame is the offset and tilt the classifier fitted where
+    #: the correction commanded nothing (:attr:`DeltaProbeMap.frame`), so
+    #: ranking on the raw RMS would order candidates partly on a shift the
+    #: classifier itself declared uncommanded.
+    ranked_rms_db: float
     gain_factor: float | None
     exceedance_octaves: float
 
@@ -116,12 +123,18 @@ class CandidateComparison:
 
 
 def _rank(candidate_id: str, probe: DeltaProbeMap) -> CandidateRank:
+    frame_removed = probe.frame_removed_rms_db
     return CandidateRank(
         candidate_id=candidate_id,
         verdict=probe.verdict,
         rollback=probe.rollback,
         max_error_db=probe.max_error_db,
         rms_error_db=probe.rms_error_db,
+        # Keyed on the FIELD and not on a verdict: a map either measured a
+        # frame or it did not, and that is the whole question here.
+        ranked_rms_db=(
+            probe.rms_error_db if frame_removed is None else frame_removed
+        ),
         gain_factor=probe.gain_factor,
         exceedance_octaves=probe.exceedance_octaves,
     )
@@ -139,10 +152,11 @@ def compare_candidates(
       gradings: one graded map per candidate id.
       pose_count: how many poses those maps were measured at — disclosed, not
         checked: this module ranks what it is handed.
-      repeat_floor_db: the measured in-capture repeat floor, dB
-        (``evidence_packet``'s ``accuracy_budget.in_capture_repeat_floor``).
-        ``None`` is unmeasured, which withholds the separation claim instead of
-        substituting a threshold.
+      repeat_floor_db: how far apart two candidates must sit to be ordered at
+        all, in the SAME units as the number ranked on — RMS dB over the probe
+        band. Deriving one from a repeat study is the caller's, not this
+        module's: ``None`` or a non-positive value is "no usable floor", which
+        withholds the separation claim instead of substituting a threshold.
 
     ``winner`` is ``""`` only when nothing survived exclusion. Fewer than two
     SURVIVORS — which includes fewer than two gradings — names the survivor and
@@ -151,7 +165,7 @@ def compare_candidates(
     ranked = [_rank(cid, probe) for cid, probe in sorted(gradings.items())]
     survivors = sorted(
         (rank for rank in ranked if rank.verdict not in _EXCLUDED_VERDICTS),
-        key=lambda rank: (rank.rms_error_db, rank.candidate_id),
+        key=lambda rank: (rank.ranked_rms_db, rank.candidate_id),
     )
     excluded = tuple(rank for rank in ranked if rank.verdict in _EXCLUDED_VERDICTS)
     if not survivors:
@@ -161,11 +175,13 @@ def compare_candidates(
         )
     if len(survivors) < 2:
         reason, separated = REASON_SINGLE_CANDIDATE, False
-    elif repeat_floor_db is None:
+    elif repeat_floor_db is None or repeat_floor_db <= 0.0:
         reason, separated = REASON_REPEAT_FLOOR_UNKNOWN, False
     else:
-        margin = survivors[1].rms_error_db - survivors[0].rms_error_db
-        separated = margin >= repeat_floor_db
+        margin = survivors[1].ranked_rms_db - survivors[0].ranked_rms_db
+        # Strictly greater: a margin exactly ON the floor is the floor, not an
+        # ordering the instrument resolved.
+        separated = margin > repeat_floor_db
         reason = REASON_SEPARATED if separated else REASON_INSIDE_REPEAT_FLOOR
     return CandidateComparison(
         ranked=tuple(survivors) + excluded,

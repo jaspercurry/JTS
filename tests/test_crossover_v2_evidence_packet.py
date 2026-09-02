@@ -20,7 +20,11 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE
-from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.contracts import (
+    MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_KEY,
+    POSITION_EVIDENCE_KIND,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CANDIDATE_GRADINGS_UNAVAILABLE,
     NO_CANDIDATE_TAKES,
@@ -453,17 +457,26 @@ def test_the_history_is_bounded_at_max_rounds(tmp_path):
 
 def _bank_candidate_take(
     round_dir: Path, *, take_id: str, candidate_id: str, position_deg: int,
+    phase: str | None = None,
 ) -> None:
-    """One banked lateral take carrying the candidate it measured — the shape
-    ``record_index.bundle_measurements`` selects on, written directly."""
+    """One banked take carrying the candidate it measured.
+
+    The ENGINE's record shape as ``record_store.bank`` envelopes it: the
+    artifact kind and ``measure_kind`` the store writes, and no ``phase`` —
+    ``session._record`` carries none, which is the reason this block cannot
+    select on one. ``phase`` is passed only to stand in for the walk's own
+    lateral take, which carries both.
+    """
     positions = round_dir / "positions"
     positions.mkdir(parents=True, exist_ok=True)
     (positions / f"{take_id}.json").write_text(json.dumps({
         "kind": POSITION_EVIDENCE_KIND,
-        "phase": PHASE_LATERAL,
+        MEASURE_KIND_KEY: MEASURE_KIND_CANDIDATE,
+        "take_id": take_id,
         "candidate_id": candidate_id,
         "position_deg": position_deg,
         "vertical_deg": 0,
+        **({"phase": phase} if phase is not None else {}),
     }))
 
 
@@ -479,12 +492,16 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
     session, _ = _bundle(tmp_path)
     round_dir, _ = round_artifact_dir(session)
     assert round_dir is not None
-    for take_id, candidate_id, deg in (
-        ("t1", "cand_b", 0), ("t2", "cand_a", 0), ("t3", "cand_a", -20),
+    # Both producers: the engine's phase-less candidate record, and a walk
+    # take that carries the lateral phase beside its candidate id.
+    for take_id, candidate_id, deg, phase in (
+        ("t1", "cand_b", 0, None),
+        ("t2", "cand_a", 0, None),
+        ("t3", "cand_a", -20, PHASE_LATERAL),
     ):
         _bank_candidate_take(
             round_dir, take_id=take_id, candidate_id=candidate_id,
-            position_deg=deg,
+            position_deg=deg, phase=phase,
         )
     packet = build_crossover_evidence_packet(session)
     block = packet["candidates"]

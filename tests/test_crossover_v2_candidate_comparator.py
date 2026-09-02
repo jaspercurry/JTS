@@ -39,7 +39,9 @@ from jasper.active_speaker.delta_probe import (
 _ROLLBACK = sorted(DELTA_PROBE_ROLLBACK_VERDICTS)[0]
 
 
-def _map(verdict: str, rms_error_db: float) -> DeltaProbeMap:
+def _map(
+    verdict: str, rms_error_db: float, frame_removed_rms_db: float | None = None,
+) -> DeltaProbeMap:
     return DeltaProbeMap(
         verdict=verdict, reason="", probe_band_hz=(200.0, 5000.0), n_bins=8,
         max_error_db=rms_error_db * 2.0, rms_error_db=rms_error_db,
@@ -47,6 +49,7 @@ def _map(verdict: str, rms_error_db: float) -> DeltaProbeMap:
         tolerance_low_db=DELTA_PROBE_TOLERANCE_LOW_DB,
         tolerance_high_db=DELTA_PROBE_TOLERANCE_HIGH_DB,
         spatial=SPATIAL_COST_UNAVAILABLE,
+        frame_removed_rms_db=frame_removed_rms_db,
     )
 
 
@@ -64,9 +67,27 @@ def _map(verdict: str, rms_error_db: float) -> DeltaProbeMap:
             id="a_gap_inside_the_floor_names_a_winner_and_no_separation",
         ),
         pytest.param(
+            {"a": (VERDICT_MATCHED, 1.0), "b": (VERDICT_MATCHED, 1.5)},
+            0.5, "a", REASON_INSIDE_REPEAT_FLOOR, False, ["a", "b"],
+            id="a_gap_exactly_on_the_floor_is_the_floor_not_an_ordering",
+        ),
+        pytest.param(
             {"a": (VERDICT_MATCHED, 1.0), "b": (VERDICT_MATCHED, 3.0)},
             None, "a", REASON_REPEAT_FLOOR_UNKNOWN, False, ["a", "b"],
             id="an_unmeasured_floor_withholds_the_separation_claim",
+        ),
+        pytest.param(
+            {"a": (VERDICT_MATCHED, 1.0), "b": (VERDICT_MATCHED, 1.0)},
+            0.0, "a", REASON_REPEAT_FLOOR_UNKNOWN, False, ["a", "b"],
+            id="a_zero_floor_cannot_separate_a_tie",
+        ),
+        pytest.param(
+            {
+                "a": (VERDICT_MATCHED, 1.0, 2.0),
+                "b": (VERDICT_MATCHED, 2.0, 0.5),
+            },
+            0.5, "b", REASON_SEPARATED, True, ["b", "a"],
+            id="the_frame_removed_rms_is_what_is_ranked_when_a_map_carries_one",
         ),
         pytest.param(
             {"a": (VERDICT_MATCHED, 2.0), "b": (_ROLLBACK, 0.1)},
@@ -120,6 +141,7 @@ def test_each_rank_carries_its_own_maps_numbers():
         "rollback": probe.rollback,
         "max_error_db": probe.max_error_db,
         "rms_error_db": probe.rms_error_db,
+        "ranked_rms_db": probe.rms_error_db,
         "gain_factor": probe.gain_factor,
         "exceedance_octaves": probe.exceedance_octaves,
     }
