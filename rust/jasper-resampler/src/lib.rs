@@ -6,29 +6,23 @@
 //! that drives it.
 //!
 //! This crate is the ONE shared resampling algorithm in the JTS audio
-//! daemons. It holds three composable pieces:
-//!
-//! - [`SincTable`] — a precomputed Blackman-Harris windowed-sinc interpolation
-//!   table (2048 sub-sample phases × 33 taps). Built once and shared; never
-//!   rebuilt per block (it is ~540 KB of `f64`).
-//! - [`RateController`] — the shared [`jasper_clock::Dll`] (spa_dll loop) wired
-//!   to a buffer-fill error and bounded by an output ppm clamp. It turns "the
-//!   ring is `error_frames` away from its target" into a resampler ratio.
-//! - [`BlockResampler`] — a streaming resampler that pushes interleaved input
-//!   into an internal [`AudioRing`] and emits output frames by advancing a
-//!   *fractional* read cursor (`next_input_frame += ratio` per output frame),
-//!   so successive blocks are phase-continuous (no per-block click).
+//! daemons. Three composable pieces — [`SincTable`] (the precomputed
+//! Blackman-Harris windowed-sinc interpolation kernel), [`RateController`]
+//! (the shared [`jasper_clock::Dll`] wired to a buffer-fill error and bounded
+//! by an output ppm clamp), and [`BlockResampler`] (a streaming resampler over
+//! an internal [`AudioRing`], phase-continuous across blocks) — each with its
+//! constraints on its own item.
 //!
 //! [`resample_i16`] is a one-shot convenience over a fresh resampler — the
 //! stateless reference pinned by the in-crate `golden_vector_is_stable` test.
+//! That test is the ONLY guard against silent math drift here: this is a
+//! Rust-only primitive with no cross-language binding or contract test, so the
+//! golden asserts exact equality rather than an LSB tolerance.
 //!
-//! # Provenance
-//!
-//! `jasper-fanin`'s `lane_resampler.rs` is the crate's sole
-//! resampling-algorithm consumer. This is a Rust-only primitive — there is no
-//! cross-language binding or contract test in this repo (see
-//! docs/RESEARCH-pipewire-low-latency.md). Silent math drift is caught by the
-//! in-crate `golden_vector_is_stable` regression test instead.
+//! `jasper-fanin`'s `lane_resampler.rs` is the sole consumer of the resampling
+//! algorithm itself ([`AudioRing`] + [`SincTable`] + [`RateController`]); the
+//! width-conversion primitives below have wider consumers (`jasper-outputd`,
+//! `jasper-tts-protocol`).
 //!
 //! # What this crate is NOT
 //!
@@ -49,17 +43,15 @@
 //! and rounds with [`clamp_i32`]. The narrow round trip is bit-transparent —
 //! [`SPINE_SCALE_F64`] explains why, `spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly`
 //! pins the arithmetic, and the END-TO-END proof is jasper-fanin's
-//! `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`, whose
-//! expectations were captured from the pre-change code and are asserted exactly
-//! over a whole period of the shipping route. (`golden_vector_is_stable` here is
-//! a 4-frame drift tripwire for this crate's own math, not that proof.)
+//! `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`, which
+//! asserts a whole period of the shipping route exactly.
 //! [`BlockResampler`] and [`resample_i16`] keep their `i16`-in, `i16`-out
 //! signatures on top of that.
 //!
 //! # The capture-follower ratio convention
 //!
 //! Both the [`RateController`] sign and the [`BlockResampler`] cursor follow
-//! PipeWire's *capture* direction, which content_bridge already proves:
+//! PipeWire's *capture* direction:
 //!
 //! - The controller feeds the DLL the **negated** fill error (`fill - target`),
 //!   so a too-full ring (`error_frames > 0`) settles to `ratio > 1`.
@@ -109,10 +101,10 @@ pub fn minimum_safe_fill_frames(period_frames: u32, max_adjust_ppm: f64) -> usiz
 const CUTOFF: f64 = 0.97;
 
 // ---------------------------------------------------------------------------
-// Kernel math — lifted verbatim from content_bridge.rs. Do not "clean up" the
-// f64 ops, the Blackman-Harris coefficients, the normalization, or the
-// rounding: any change is a silent output-drift risk, caught by the in-crate
-// `golden_vector_is_stable` regression test.
+// Kernel math. Do not "clean up" the f64 ops, the Blackman-Harris
+// coefficients, the normalization, or the rounding: any change is a silent
+// output-drift risk, caught by the in-crate `golden_vector_is_stable`
+// regression test.
 // ---------------------------------------------------------------------------
 
 fn sinc(x: f64) -> f64 {
@@ -158,12 +150,6 @@ fn build_sinc_table() -> Vec<[f64; TAPS]> {
 
 /// Round-to-nearest, saturating to the `i16` range — the exact rounding the
 /// daemon path uses.
-///
-/// It once said "so cross-language output matches at the LSB". There is no
-/// second language left to match: the C++/usbsink mirror and its Python
-/// contract test were cut (see this crate's "What this crate is NOT"), and
-/// `golden_vector_is_stable` is now an exact-equality tripwire rather than a
-/// ±1 LSB agreement check.
 pub fn clamp_i16(value: f64) -> i16 {
     value.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
@@ -253,12 +239,8 @@ pub fn convert_s32_to_s16(input: &[i32], output: &mut [i16]) -> bool {
 /// `i32::from` FIRST is load-bearing: shifting the i16 and widening afterwards
 /// would shift every significant bit out of a 16-bit value.
 ///
-/// Moved here from `jasper-outputd`'s `alsa_backend` (its sign-boundary and
-/// scale-change vectors travelled with it) when outputd's program spine became
-/// i32: the widening stopped being one sink's private staging step and became
-/// the conversion at every S16 ingress into the wide spine — the content lane,
-/// the SHM ring, the round-trip FIFO, and the TTS wire. One tested primitive for
-/// all of them.
+/// The ONE conversion at every S16 ingress into the wide spine — the content
+/// lane, the SHM ring, the round-trip FIFO, and the TTS wire.
 #[inline]
 pub fn widen_i16_to_i32(sample: i16) -> i32 {
     i32::from(sample) << 16
@@ -491,9 +473,9 @@ pub fn rms_dbfs_i32(samples: &[i32]) -> f64 {
 /// A precomputed windowed-sinc interpolation table.
 ///
 /// Built ONCE (it is `PHASES * TAPS` `f64` ≈ 540 KB) and shared across every
-/// resample call — both [`BlockResampler`] and `jasper-outputd`'s content
-/// bridge hold one and pass it to [`SincTable::interpolate`]. Never rebuild it
-/// per block.
+/// resample call — [`BlockResampler`] and `jasper-fanin`'s lane resampler each
+/// hold one and pass it to [`SincTable::interpolate`]. Never rebuild it per
+/// block.
 #[derive(Debug, Clone)]
 pub struct SincTable {
     phases: Vec<[f64; TAPS]>,
@@ -545,8 +527,8 @@ impl Default for SincTable {
 /// A fixed-capacity interleaved **i32 spine-scale** ring addressed by a
 /// monotonic frame counter.
 ///
-/// Lifted verbatim from `content_bridge.rs`: writes advance `write_frame`,
-/// drops oldest-first on overflow (advancing `read_frame`), and
+/// Writes advance `write_frame`, drop oldest-first on overflow (advancing
+/// `read_frame`), and
 /// [`AudioRing::sample`] reads any frame in `[read_frame, write_frame)` (0
 /// outside that window). The monotonic counters let a fractional read cursor
 /// live in the *same* coordinate space as the writes, which is what makes the
@@ -642,7 +624,7 @@ impl AudioRing {
     ///
     /// The widening is done here rather than in a caller-owned scratch buffer so
     /// a narrow producer needs no second allocation and no second copy — the
-    /// hot path is one pass, exactly as it was when the ring stored i16.
+    /// hot path stays one pass.
     pub fn push_interleaved_narrow(&mut self, samples: &[i16]) -> u64 {
         let frames = samples.len() / self.channels;
         let mut dropped = 0u64;
@@ -749,11 +731,8 @@ impl std::error::Error for RingError {}
 /// Drives a resampler ratio that holds a buffer at its target fill.
 ///
 /// The loop math is the shared [`jasper_clock::Dll`] (the spa_dll second-order
-/// DLL) — the same loop content_bridge used to embed directly; this is that
-/// controller lifted into the shared crate so both content_bridge and the
-/// usbsink path use one implementation. The DLL's third integrator gives zero
-/// steady-state fill error; its `max_error` slew clamp and `max_resync`
-/// hard-jump come for free.
+/// DLL). Its third integrator gives zero steady-state fill error; its
+/// `max_error` slew clamp and `max_resync` hard-jump come for free.
 ///
 /// Site-specific I/O stays at the call site: the *source* of `error_frames`
 /// (a queue depth, a ring fill delta) and what the ratio *drives* are the
@@ -775,8 +754,7 @@ impl RateController {
     /// Hz and whose output ratio is clamped to `±max_adjust_ppm`.
     ///
     /// `rate` is explicit (not hardcoded) so each consumer passes its own
-    /// nominal rate: content_bridge passes `outputd`'s 48000, the usbsink path
-    /// passes its capture rate.
+    /// nominal rate rather than inheriting a 48 kHz assumption.
     pub fn new(max_adjust_ppm: f64, period_frames: u32, rate: u32) -> Self {
         Self::with_max_resync(max_adjust_ppm, period_frames, rate, None)
     }
@@ -901,9 +879,8 @@ impl RateController {
 ///
 /// Capture-follower semantics: `ratio > 1` advances the cursor by more than one
 /// input frame per output frame, so it consumes input FASTER and emits FEWER
-/// output frames (draining the buffer); `ratio < 1` emits more. This matches
-/// content_bridge's `next_input_frame += ratio` and PipeWire's capture
-/// `1.0 / corr`.
+/// output frames (draining the buffer); `ratio < 1` emits more. This is
+/// PipeWire's capture `1.0 / corr`.
 #[derive(Debug, Clone)]
 pub struct BlockResampler {
     ring: AudioRing,
@@ -986,9 +963,7 @@ impl BlockResampler {
         // `pos + RADIUS_FRAMES + 1.0 <= write_frame` keeps that tap strictly
         // inside `[read_frame, write_frame)` (since `floor(pos) <= pos`), so no
         // output is computed against unwritten input; the cursor stops one step
-        // short and the remaining input carries to the next call. This single
-        // condition is the sole emit gate — when no frame fits, the loop simply
-        // produces an empty Vec.
+        // short and the remaining input carries to the next call.
         let write_frame = self.ring.write_frame() as f64;
         let mut pos = self.next_input_frame;
         let mut out: Vec<i16> = Vec::new();
@@ -1009,7 +984,6 @@ impl BlockResampler {
         }
         self.next_input_frame = pos;
 
-        // Free history the cursor has passed, keeping RADIUS_FRAMES + 1 behind.
         let keep_from = pos.floor() as i64 - RADIUS_FRAMES - 1;
         self.ring.drop_before(keep_from);
         out
@@ -1062,9 +1036,8 @@ pub fn resample_i16(input: &[i16], channels: usize, ratio: f64, table: &SincTabl
 /// The golden contract fixture: one canonical deterministic input and the
 /// ratios the in-crate golden test pins [`resample_i16`]'s output at.
 ///
-/// With one implementation in tree there is no tolerance to hide behind:
-/// `golden_vector_is_stable` asserts EXACT equality, which is what makes it a
-/// tripwire rather than a formality.
+/// `golden_vector_is_stable` asserts EXACT equality against it — there is no
+/// second implementation to allow a tolerance for.
 ///
 /// This is the SINGLE definition of the fixture — the in-crate golden test and
 /// the `golden_vector` example both reference it, so the two can never silently
@@ -1074,8 +1047,7 @@ pub mod golden {
     use super::clamp_i16;
 
     /// The canonical 256-frame deterministic stereo input. Pure integer-seeded
-    /// trig so it is bit-reproducible on any host. The C++ contract test
-    /// generates the identical signal.
+    /// trig so it is bit-reproducible on any host.
     pub fn canonical_input() -> Vec<i16> {
         (0..256)
             .flat_map(|n| {
@@ -1211,7 +1183,6 @@ mod tests {
             slower_frames > unity_frames,
             "ratio<1 must emit more frames: {slower_frames} !> {unity_frames}"
         );
-        // The counts track ~ input/ratio (within the kernel-edge slack).
         let approx_faster = (in_frames as f64 / 1.01) as usize;
         assert!(
             faster_frames.abs_diff(approx_faster) < 2 * TAPS,
@@ -1229,8 +1200,6 @@ mod tests {
 
         let one_shot = resample_i16(&input, 2, ratio, &table);
 
-        // Feed the same signal in 480-frame (10 ms) blocks through one
-        // streaming resampler, accumulating output.
         let mut streamer = BlockResampler::with_table(2, 32_768, table.clone()).expect("streamer");
         let block = PERIOD as usize;
         let mut streamed: Vec<i16> = Vec::new();
@@ -1297,7 +1266,6 @@ mod tests {
         // |delta| exactly AT each block seam. A click at a seam would make the
         // seam delta an outlier.
         let left: Vec<i32> = streamed.iter().step_by(2).map(|&s| s as i32).collect();
-        // Cumulative frame index of each seam.
         let mut seam_indices: Vec<usize> = Vec::new();
         let mut acc = 0usize;
         for (i, len) in block_lengths.iter().enumerate() {
@@ -1374,8 +1342,6 @@ mod tests {
         for _ in 0..200 {
             ctl.next_ratio(0.0);
         }
-        // One positive fill error (ring too full) -> ratio should rise above
-        // the prior (drain faster).
         let before = ctl.ratio_ppm();
         ctl.next_ratio(64.0);
         assert!(
@@ -1391,8 +1357,6 @@ mod tests {
     /// clamp; the reported ratio saturates at the bound and clamp_count climbs.
     #[test]
     fn rate_controller_output_clamp_bounds_ratio() {
-        // Tiny 10 ppm clamp vs a big +400 ppm producer: the loop wants far more
-        // than the clamp allows, so it saturates.
         let mut ctl = RateController::new(10.0, PERIOD, RATE);
         let _ = run_rate_loop(&mut ctl, 400.0, 5_000);
         assert!(
@@ -1439,7 +1403,6 @@ mod tests {
     #[test]
     fn rate_controller_hard_resyncs_on_a_step() {
         let mut ctl = RateController::new(500.0, PERIOD, RATE);
-        // Establish a lock on a small offset.
         run_rate_loop(&mut ctl, 30.0, 60_000);
         assert!(ctl.is_locked(), "precondition: locked before the step");
         let resyncs_before = ctl.resync_count();
@@ -1455,7 +1418,6 @@ mod tests {
         );
         assert!((ratio - 1.0).abs() < 1e-12, "resync returns unity ratio");
         assert!(!ctl.is_locked(), "resync drops lock");
-        // And it re-locks cleanly afterward.
         run_rate_loop(&mut ctl, 30.0, 60_000);
         assert!(ctl.is_locked(), "loop re-locks after a resync");
     }
@@ -1496,7 +1458,6 @@ mod tests {
         assert!(r.pending_input_frames() < 2048);
         r.reset();
         assert_eq!(r.pending_input_frames(), 0, "reset clears buffered input");
-        // A fresh block after reset produces output again (re-primes cleanly).
         let out = r.resample_block(&stereo_signal(2048), 1.0);
         assert!(!out.is_empty(), "resampler re-primes and emits after reset");
     }
@@ -1511,7 +1472,6 @@ mod tests {
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let mut r = BlockResampler::with_table(2, 8192, table.clone()).expect("resampler");
             let out = r.resample_block(&input, bad);
-            // Unity-ish output frame count (within kernel slack), not empty.
             assert!(
                 !out.is_empty(),
                 "degenerate ratio {bad} should emit (unity)"
@@ -1569,7 +1529,7 @@ mod tests {
         assert_eq!(clamp_i16(-1.0e12), i16::MIN);
     }
 
-    /// The pinned S32→S16 sign-boundary vector (C2). This is the SINGLE
+    /// The pinned S32→S16 sign-boundary vector. This is the SINGLE
     /// definition of the UAC2 narrowing math; jasper-fanin's direct capture
     /// consumes [`s32_high_word_to_s16`] and re-asserts this exact vector in its
     /// own suite.
@@ -1589,20 +1549,19 @@ mod tests {
         let mut output = [7i16; 6];
         assert!(convert_s32_to_s16(&input, &mut output));
         assert_eq!(output, [0, 0x7fff, i16::MIN, -1, -1, -2]);
-        // Length mismatch is a programming error: return false, don't panic.
         let mut short = [0i16; 3];
         assert!(!convert_s32_to_s16(&input, &mut short));
     }
 
-    // ---- The widened DIRECT-lane path (U2 / #2223) ------------------------
+    // ---- The widened DIRECT-lane path (#2223) -----------------------------
     // The sign-boundary vectors above pin what the NARROW capture route does to
     // a gadget sample. These pin what the WIDE route does with the same values:
     // it carries them, unchanged, all the way into the interpolation ring.
 
-    /// The U2 sign-boundary vectors, on the widened side. Every value the
-    /// narrow route truncates through `s32_high_word_to_s16` reaches the ring
-    /// BIT-EXACT on the wide route — including the S24-in-S32 placements the
-    /// exit-gate fixture uses and both 24-bit sign rails.
+    /// The sign-boundary vectors, on the widened side. Every value the narrow
+    /// route truncates through `s32_high_word_to_s16` reaches the ring
+    /// BIT-EXACT on the wide route — including the S24-in-S32 placements and
+    /// both 24-bit sign rails.
     #[test]
     fn the_wide_capture_route_carries_every_sign_boundary_sample_unchanged() {
         // (raw gadget sample, what the NARROW route would keep)
@@ -1649,9 +1608,7 @@ mod tests {
     /// saturation rails. The end-to-end half of the same claim is jasper-fanin's
     /// `the_narrow_direct_route_is_byte_identical_to_its_committed_golden` —
     /// exact, whole-period, and on the shipping route. `golden_vector_is_stable`
-    /// is a 4-frame drift tripwire and was never that proof: before it was
-    /// tightened to exact equality, a floor-rounding mutant of
-    /// [`spine_acc_to_i16`] passed it.
+    /// is a 4-frame drift tripwire, not that proof.
     #[test]
     fn spine_narrowing_reproduces_the_pre_spine_i16_rounding_exactly() {
         let accs = [
@@ -1726,15 +1683,11 @@ mod tests {
     }
 
     // ---- The output spine's width conversions ----------------------------
-    // These four tests came over from jasper-outputd's `alsa_backend` with
-    // `widen_i16_to_i32` and gained the narrowing direction. They are the
-    // primitive-level half of the wide-path transparency argument; the
+    // The primitive-level half of the wide-path transparency argument; the
     // pipeline-level half lives in `jasper_outputd::core`.
 
     #[test]
     fn widening_preserves_sign_full_scale_and_silence() {
-        // Left-justified widening: the same mapping ALSA's own S16->S32 plug
-        // performs, which is why retiring that plug is bit-transparent.
         let samples = [i16::MAX, i16::MIN, 0, 1, -1, 256, -256];
         let mut out = vec![0i32; samples.len()];
 
@@ -1769,9 +1722,8 @@ mod tests {
 
     #[test]
     fn widening_is_exactly_a_scale_change_not_a_gain_change() {
-        // Every sample must land on `value * 65536` — no dither, no rounding,
-        // no headroom trim. A gain change here would be inaudible in a unit
-        // test and very audible in a room.
+        // A gain change here would be inaudible in a unit test and very audible
+        // in a room.
         let samples: Vec<i16> = (-32_768..=32_767).step_by(97).map(|v| v as i16).collect();
         let mut out = vec![0i32; samples.len()];
 
@@ -1784,12 +1736,6 @@ mod tests {
 
     #[test]
     fn widening_rejects_a_staging_length_that_does_not_match_the_period() {
-        // Without the check the `zip` would quietly widen 2 of 4 samples and
-        // leave the rest stale — a short/torn period at the speaker with
-        // nothing in any counter to show for it. Both directions are wrong:
-        // staging shorter than the period truncates it, staging longer writes
-        // a tail the period never produced. And the refusal must leave the
-        // output UNTOUCHED, not half-written.
         let mut short = [9i32; 2];
         assert!(!widen_i16_to_i32_slice(&[1, 2, 3, 4], &mut short));
         assert_eq!(short, [9, 9], "a refused widen must not write anything");
@@ -1801,8 +1747,6 @@ mod tests {
 
     #[test]
     fn narrowing_rounds_to_nearest_and_saturates_at_the_rails() {
-        // The speaker-edge quantizer's pinned contract. Full scale both signs,
-        // the i32 rail that has to clamp, and the half-step boundaries.
         assert_eq!(narrow_i32_to_i16_round(0), 0, "zeros round to zeros");
         assert_eq!(narrow_i32_to_i16_round(0x7FFF_0000), i16::MAX);
         assert_eq!(narrow_i32_to_i16_round(i32::MIN), i16::MIN);
@@ -1811,7 +1755,6 @@ mod tests {
         // Without the clamp this wraps to `i16::MIN` — full-scale positive
         // becoming full-scale negative, the loudest possible defect.
         assert_eq!(narrow_i32_to_i16_round(i32::MAX), i16::MAX);
-        // Just under / just over half a step: the rounding decision itself.
         assert_eq!(narrow_i32_to_i16_round(32_767), 0);
         assert_eq!(narrow_i32_to_i16_round(32_768), 1);
         assert_eq!(narrow_i32_to_i16_round(98_303), 1); // 1.49999 steps
@@ -1826,11 +1769,11 @@ mod tests {
 
     #[test]
     fn narrowing_is_not_the_truncating_uac2_capture_conversion() {
-        // The whole point of adding a second i32->i16 primitive. On a sample
-        // half an LSB below zero the capture conversion steps DOWN and this one
-        // rounds to silence; that per-sample downward bias, applied to a decay
-        // tail, is the audible defect the wide path removes. If these two ever
-        // agree on this vector, one of them has been changed into the other.
+        // On a sample half an LSB below zero the capture conversion steps DOWN
+        // and this one rounds to silence; that per-sample downward bias,
+        // applied to a decay tail, is the audible defect the wide path removes.
+        // If these two ever agree on this vector, one of them has been changed
+        // into the other.
         assert_eq!(s32_high_word_to_s16(-65_537), -2);
         assert_eq!(narrow_i32_to_i16_round(-65_537), -1);
         assert_eq!(s32_high_word_to_s16(-1), -1);
@@ -1872,7 +1815,6 @@ mod tests {
             32_766,
             -32_767,
         ];
-        // A ramp across the whole range, plus a run of silence.
         fixture.extend((-32_768..=32_767).step_by(37).map(|v| v as i16));
         fixture.extend(std::iter::repeat_n(0i16, 64));
 
@@ -1908,9 +1850,7 @@ mod tests {
 
     #[test]
     fn narrowing_to_24_bits_rounds_to_nearest_and_saturates_at_the_rails() {
-        // The 24-bit edge quantizer's pinned contract, in the same shape as the
-        // i16 sibling's: full scale both signs, the i32 rail that has to clamp,
-        // and the half-step boundaries. The step here is 256, not 65536.
+        // The step here is 256, not 65536.
         assert_eq!(narrow_i32_to_i24_round(0), 0, "zeros round to zeros");
         assert_eq!(narrow_i32_to_i24_round(0x7FFF_FF00), 8_388_607);
         assert_eq!(narrow_i32_to_i24_round(i32::MIN), -8_388_608);
@@ -1920,7 +1860,6 @@ mod tests {
         // 8_388_608 — one past the rail, whose low three bytes are 00 00 80,
         // i.e. full-scale NEGATIVE on the wire. Loudest possible defect.
         assert_eq!(narrow_i32_to_i24_round(i32::MAX), 8_388_607);
-        // Just under / just over half a step: the rounding decision itself.
         assert_eq!(narrow_i32_to_i24_round(127), 0);
         assert_eq!(narrow_i32_to_i24_round(128), 1);
         assert_eq!(narrow_i32_to_i24_round(383), 1); // 1.49609 steps
@@ -1935,16 +1874,11 @@ mod tests {
 
     #[test]
     fn narrowing_to_24_bits_is_not_a_truncating_shift() {
-        // The 24-bit twin of `narrowing_is_not_the_truncating_uac2_capture_conversion`.
-        // There is no shipped truncating i32->i24 to compare against, so the
-        // contrast is MEASURED here against the shift a careless implementation
-        // would use, rather than asserted from memory. If these ever agree on
-        // these vectors, the rounding term has been dropped.
-        //
-        // Every vector here is a value where the two genuinely DIVERGE, which is
-        // not every off-grid sample: `-129` rounds to `-1` and `-129 >> 8` is
-        // also `-1`, so it proves nothing and is deliberately absent. (Found by
-        // running this test, not by reading it.)
+        // Every vector here is a value where rounding and `>> 8` genuinely
+        // DIVERGE, which is not every off-grid sample: `-129` rounds to `-1`
+        // and `-129 >> 8` is also `-1`, so it proves nothing and is
+        // deliberately absent. If these ever agree on these vectors, the
+        // rounding term has been dropped.
         for sample in [-1i32, -257, -384, 128, 255] {
             let truncated = sample >> 8;
             let rounded = narrow_i32_to_i24_round(sample);
@@ -2153,14 +2087,12 @@ mod tests {
         assert_eq!(ring.fill_frames(), 1000);
         let write_before = ring.write_frame();
 
-        // Trim down to 256: drops the oldest 744.
         let dropped = ring.trim_to(256);
         assert_eq!(dropped, 744);
         assert_eq!(ring.fill_frames(), 256);
-        // write_frame is untouched — the newest frame is preserved.
         assert_eq!(ring.write_frame(), write_before);
         // read_frame advanced to keep exactly the newest 256 frames: frames
-        // [744, 1000). Sample the oldest surviving and newest frames by index.
+        // [744, 1000).
         let oldest_kept = ring.read_frame();
         assert_eq!(oldest_kept, 744);
         // Spine scale: the ring widened each i16 on the way in, so a frame
@@ -2175,7 +2107,6 @@ mod tests {
             widen_i16_to_i32(999),
             "newest frame preserved"
         );
-        // Dropped frames read as 0 (outside the live window).
         assert_eq!(ring.sample(743, 0), 0, "dropped frame is gone");
     }
 
@@ -2185,13 +2116,10 @@ mod tests {
         let block: Vec<i16> = (0..100).flat_map(|n| [n as i16, n as i16]).collect();
         ring.push_interleaved_narrow(&block); // 100 frames
         assert_eq!(ring.fill_frames(), 100);
-        // Target above current fill: nothing dropped.
         assert_eq!(ring.trim_to(256), 0);
         assert_eq!(ring.fill_frames(), 100);
-        // Target exactly equal: still nothing dropped.
         assert_eq!(ring.trim_to(100), 0);
         assert_eq!(ring.fill_frames(), 100);
-        // Target 0 drops everything.
         assert_eq!(ring.trim_to(0), 100);
         assert_eq!(ring.fill_frames(), 0);
     }
@@ -2231,26 +2159,14 @@ mod tests {
     #[test]
     fn golden_vector_is_stable() {
         let table = SincTable::new();
-        // The single canonical fixture input — shared with the `golden_vector`
-        // example.
         let input = golden::canonical_input();
         let out = resample_i16(&input, golden::CHANNELS, 1.0001, &table);
-        // The fixture is committed as the first/last few samples + length so a
-        // silent math drift fails here. These values were produced by this
-        // exact code; regenerate deliberately.
         assert_eq!(out.len(), GOLDEN_1_0001_LEN, "golden length drift");
         for (i, &(idx, l, r)) in GOLDEN_1_0001_SPOT.iter().enumerate() {
             let got_l = out[idx * 2];
             let got_r = out[idx * 2 + 1];
-            // EXACT. The ±1 tolerance this used to carry existed to let a
-            // second implementation (the since-deleted C++/usbsink mirror)
-            // agree "at the LSB"; with one implementation left, a one-LSB
-            // allowance only hides drift. It hid a real one: a floor-rounding
-            // mutant of `spine_acc_to_i16` passed this test, which is why the
-            // bit-transparency claim now cites
-            // `the_narrow_direct_route_is_byte_identical_to_its_committed_golden`
-            // — an exact, whole-period pin on the shipping route — and this
-            // stays what it is, a 4-frame in-crate tripwire for math drift.
+            // EXACT: with one implementation in tree a ±1 LSB allowance only
+            // hides drift. Do not loosen it.
             assert_eq!(
                 (got_l, got_r),
                 (l, r),
@@ -2260,15 +2176,13 @@ mod tests {
     }
 
     // Golden fixture for ratio 1.0001 over the 256-frame deterministic input in
-    // `golden_vector_is_stable`. These spot values are the in-crate tripwire
-    // for silent output drift in this crate's resampler math.
-    // 223 output frames × 2 channels interleaved = 446 i16 samples (256 input
-    // frames, cursor seated at RADIUS_FRAMES, ratio 1.0001).
+    // `golden_vector_is_stable`. 223 output frames × 2 channels interleaved =
+    // 446 i16 samples (256 input frames, cursor seated at RADIUS_FRAMES, ratio
+    // 1.0001).
     const GOLDEN_1_0001_LEN: usize = 446;
     // (output frame index, left, right) at a few stable positions past the
-    // cursor warm-up. Values are produced by this crate's math (regenerate via
-    // `cargo run --example golden_vector` if the math is intentionally changed
-    // on BOTH languages in lockstep).
+    // cursor warm-up. Regenerate via `cargo run --example golden_vector` if the
+    // math is intentionally changed.
     const GOLDEN_1_0001_SPOT: [(usize, i16, i16); 4] = [
         (32, 3138, -4881),
         (64, -5874, 3879),
