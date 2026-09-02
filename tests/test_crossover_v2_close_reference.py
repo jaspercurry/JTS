@@ -25,11 +25,15 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     GATE_SOURCE_CALLER,
     GATE_SOURCE_DECLARED,
     GATE_SOURCE_DEFAULT,
+    MIN_BAND_POINTS,
     REFUSE_UNREADABLE_ROUND,
+    RESIDUAL_FLOOR_DB,
     VERDICT_AGREEMENT,
     VERDICT_ROOM_DOMINATED,
     VERDICT_UNRESOLVED,
     UNRESOLVED_NO_CANCELLATION,
+    _power_ratio_db,
+    _verdict,
     cancellation_depth_db,
     compare_impulse_responses,
     declared_clean_window_ms,
@@ -343,6 +347,31 @@ def test_cancellation_budget_matches_the_banked_derivation(lag_us, f_hz, expecte
     assert cancellation_depth_db(f_hz, lag_us * 1e-6) == pytest.approx(
         expected_db, abs=0.5
     )
+
+
+@pytest.mark.parametrize("f_hz, lag_s", [(0.0, 5e-6), (1000.0, 0.0)])
+def test_cancellation_depth_reads_none_not_negative_infinity_at_zero_ratio(
+    f_hz, lag_s
+):
+    """A budget that reads as ``-inf`` is not a number JSON can carry."""
+    assert cancellation_depth_db(f_hz, lag_s) is None
+
+
+def test_perfect_cancellation_reaches_agreement_not_no_data():
+    """A residual of exactly zero is the best possible read, not an absent one."""
+    mask = np.array([True, True, True])
+    residual_rel_direct_db = _power_ratio_db(
+        np.zeros(3), np.array([1.0, 2.0, 3.0]), mask
+    )
+    assert residual_rel_direct_db == RESIDUAL_FLOOR_DB
+    verdict, reason = _verdict(
+        points=MIN_BAND_POINTS,
+        rms_delta_db=0.0,
+        tolerance_db=1.0,
+        residual_rel_direct_db=residual_rel_direct_db,
+        alignment_trusted=True,
+    )
+    assert (verdict, reason) == (VERDICT_AGREEMENT, None)
 
 
 def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path):

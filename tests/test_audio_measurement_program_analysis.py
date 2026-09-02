@@ -44,6 +44,12 @@ from jasper.audio_measurement import (
     program_analysis,
     snr_policy,
 )
+from jasper.audio_measurement.alignment import (
+    GCC_UPSAMPLE,
+    _gcc_correlation,
+    _gcc_local_peak_snap,
+    gcc_phat,
+)
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.frame_fit import fit_frame
@@ -81,7 +87,6 @@ from jasper.audio_measurement.program_analysis import (
     CAPTURE_BOUND_MARGIN_S,
     GAIN_MAX_DIGITAL_PEAK_DBFS,
     GCC_SNAP_RADIUS_PERIODS,
-    GCC_UPSAMPLE,
     IR_POST_MS,
     IR_PRE_MS,
     ConfiguredPathConditioningError,
@@ -116,9 +121,6 @@ from jasper.audio_measurement.program_analysis import (
     _compose_configured_path_ir,
     _deconvolve_window,
     _gate_floor_hz,
-    _gcc_correlation,
-    _gcc_local_peak_snap,
-    gcc_phat,
     _global_offset,
     _locate_segments,
     _n_fft_for,
