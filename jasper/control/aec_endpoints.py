@@ -375,13 +375,23 @@ def _commission_status() -> dict[str, Any]:
 
     `state`/`detail` come from the commissioner's persisted outcome record
     (empty strings before the first run), so a failed run's reason survives
-    for the wake page instead of dying in the journal."""
+    for the wake page instead of dying in the journal. `phase` and the banked
+    delays ride through only when the record carries them, so a record the
+    commissioner wrote without them leaves the keys absent rather than
+    inventing a value the page would render."""
     last = _read_commission_state()
-    return {
+    status: dict[str, Any] = {
         "running": _unit_active(_AEC_COMMISSION_SERVICE),
         "state": str(last.get("state") or ""),
         "detail": str(last.get("detail") or ""),
     }
+    if isinstance(last.get("phase"), str) and last["phase"]:
+        status["phase"] = last["phase"]
+    for key in ("sys_delay", "k_samples"):
+        value = last.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            status[key] = value
+    return status
 
 
 def _xvf_firmware_update_status() -> dict[str, Any]:

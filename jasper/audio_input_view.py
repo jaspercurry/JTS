@@ -233,7 +233,13 @@ def _echo_view(
     active = str(profile.get("active") or "")
     state = str(profile.get("state") or "unknown")
     reason = str(profile.get("reason") or "")
-    action = str(profile.get("action") or "")
+    # The wake page's own commission button owns this remedy, so the SSH
+    # instruction it replaces stays in doctor and never reaches the browser.
+    action = (
+        ""
+        if profile.get("commission_recommended")
+        else str(profile.get("action") or "")
+    )
     managed_xvf = (
         mic_view.get("kind") == "xvf3800" and selection != PROFILE_CUSTOM
     )
@@ -323,7 +329,6 @@ def _echo_view(
         "title": title,
         "detail": detail,
         "action": action,
-        "commission_recommended": bool(profile.get("commission_recommended")),
         "state": state,
         "bridge_active": bridge_active,
         "hardware": {

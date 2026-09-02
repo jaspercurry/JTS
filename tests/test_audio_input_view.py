@@ -148,6 +148,7 @@ def test_xvf_without_chip_plan_reads_as_running_aec3_with_the_chip_choice_shut()
         "state": "disclosed_stale",
         "reason": "mic has no validated production chip-AEC beam plan",
         "action": "Run sudo jasper-aec-commission",
+        "commission_recommended": True,
     }
     status["chip_aec_gate"] = {
         "status": "needs_calibration",
@@ -194,7 +195,9 @@ def test_xvf_without_chip_plan_reads_as_running_aec3_with_the_chip_choice_shut()
     assert _choice(view, "xvf_software_aec3")["selected"] is False
     assert _choice(view, "xvf_software_aec3")["visible"] is False
     assert _choice(view, "auto")["selected"] is True
-    assert view["echo"]["action"] == "Run sudo jasper-aec-commission"
+    # The re-commission remedy is the page's own button, so its SSH prose is
+    # dropped from the web wire (doctor keeps it).
+    assert view["echo"]["action"] == ""
     assert view["advanced"] == {}
 
 
