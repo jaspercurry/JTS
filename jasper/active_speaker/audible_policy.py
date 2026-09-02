@@ -49,7 +49,10 @@ def audible_role_block_code(role: Any) -> str:
 def audible_role_block_message(role: Any) -> str:
     if normalise_driver_role(role) == "tweeter":
         return "high-frequency driver playback requires a valid protection profile"
-    return "audible tests are limited to woofer, mid, subwoofer, full_range targets"
+    return (
+        "audible tests are limited to "
+        f"{', '.join(sorted(AUDIBLE_TEST_ALLOWED_ROLES))} targets"
+    )
 
 
 def audible_policy_payload(

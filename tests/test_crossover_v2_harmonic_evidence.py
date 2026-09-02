@@ -1219,6 +1219,13 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept():
     assert rebuilt.program_id == program.program_id
     assert downstream == pytest.approx(-20.0)
 
+    # A 1-way round measured on a non-default band gets an operator remedy,
+    # same as the pair's --woofer-band / --tweeter-band.
+    args = read_distortion.build_parser().parse_args(
+        ["bundle", "--dumps", "d", "--state", "s", "--full-range-band", "45:18000"],
+    )
+    assert args.full_range_band == (45.0, 18000.0)
+
 
 def test_the_orders_the_product_publishes_are_not_the_kernels_ceiling():
     """A kernel that learned a 4th order must not widen a banked schema."""

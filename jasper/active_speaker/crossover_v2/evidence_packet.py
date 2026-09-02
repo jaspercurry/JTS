@@ -3068,6 +3068,7 @@ def _not_evaluated(
     gate_numbers_reason: str,
     reflector_path_reason: str,
     findings: dict[str, Any],
+    no_crossover: bool,
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
 
@@ -3235,6 +3236,10 @@ def _not_evaluated(
                 "finding was promoted for this round"
             ),
         })
+    if no_crossover:
+        entries.append({"field": "crossover_region.band_hz", "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY})
+        entries.append({"field": "request_time_prescriptions.alignment", "reason": doors.ALIGNMENT_NO_CROSSOVER_REGION})
+        entries.append({"field": "request_time_prescriptions.topology", "reason": doors.TOPOLOGY_NO_CROSSOVER_REGION})
     return entries
 
 
@@ -3520,21 +3525,16 @@ def build_crossover_evidence_packet(
             gate_numbers_reason=_gate_numbers_reason(positions, verify),
             reflector_path_reason=str(reflections.get("reason") or ""),
             findings=findings,
+            no_crossover=no_crossover,
         ),
         # TWO contracts, one per prescription class, each written by the gate
-        # that enforces it. Beside each other rather than merged: they describe
-        # different shapes with different bounds, and a merged block would need
-        # an owner that is neither gate.
+        # that enforces it. Beside each other rather than merged: a merged
+        # block would need an owner that is neither gate.
         "response_format": prescription_response_format(),
         "driver_response_format": driver_prescription_response_format(),
-        # …and the doors this one does NOT open (#2773). A reader who found
-        # only the two contracts above would conclude that two things can be
-        # prescribed for a round, when four can — the other two arrive as
-        # request-body keys at session open and refuse the whole session rather
-        # than just the staging. Named apart from the two above rather than
-        # listed beside them precisely because they are not stageable: a
-        # document of this class handed to ``stage`` is refused by the class
-        # gate, and the block says where it belongs instead.
+        # …and the doors this one does NOT open (#2773): the other two arrive
+        # as session-open request-body keys, not something ``stage`` can act
+        # on, so they are named apart from the two contracts above.
         "request_time_prescriptions": doors.request_time_prescriptions(no_crossover, _absence),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)

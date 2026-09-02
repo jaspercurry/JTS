@@ -209,6 +209,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="tweeter sweep band in Hz (default %(default)s)",
     )
     parser.add_argument(
+        "--full-range-band",
+        type=_band,
+        default=DEFAULT_FULL_RANGE_BAND_HZ,
+        metavar="LO:HI",
+        help=(
+            "1-way (passive full-range main) sweep band in Hz; used only when "
+            "the round banked one full-range role (default %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--calibration",
         type=Path,
         default=None,
@@ -293,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
             round_bands_hz(state, {
                 "woofer": args.woofer_band,
                 "tweeter": args.tweeter_band,
-                "full_range": DEFAULT_FULL_RANGE_BAND_HZ,
+                "full_range": args.full_range_band,
             }),
             session_id=session_id,
             orders=HARMONIC_ORDERS,

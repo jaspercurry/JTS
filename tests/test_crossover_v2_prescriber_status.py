@@ -896,6 +896,29 @@ def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     _rebank_round_as_no_crossover(session)
 
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
+    packet = cli.build_crossover_evidence_packet(
+        session, state_path=None, driver_draft_path=draft
+    )
+    for door in ("alignment", "topology"):
+        assert packet["request_time_prescriptions"][door]["available"] is False
+    assert (
+        packet["request_time_prescriptions"]["alignment"]["reason"]
+        == cli.ALIGNMENT_NO_CROSSOVER_REGION
+    )
+    assert (
+        packet["request_time_prescriptions"]["topology"]["reason"]
+        == cli.TOPOLOGY_NO_CROSSOVER_REGION
+    )
+    not_evaluated = {e["field"]: e["reason"] for e in packet["not_evaluated"]}
+    assert not_evaluated["crossover_region.band_hz"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+    assert (
+        not_evaluated["request_time_prescriptions.alignment"]
+        == cli.ALIGNMENT_NO_CROSSOVER_REGION
+    )
+    assert (
+        not_evaluated["request_time_prescriptions.topology"]
+        == cli.TOPOLOGY_NO_CROSSOVER_REGION
+    )
 
     assert payload["declared"]["roles"] == ["full_range"]
     # The SHAPE, not a measurement that has not happened yet.

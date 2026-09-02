@@ -60,6 +60,14 @@ _STYLE_HIGH_PASS_HZ = {
     _UNKNOWN_HF_STYLE: 5000.0,
 }
 
+#: Shared by the ``tweeter`` and ``full_range`` classes: -65 dBFS was sized for
+#: a naked driver tone with no proven protective high-pass, and 100 ms is the
+#: floor-test duration that figure was validated at (see the HF
+#: measurement-ceiling derivation below for why -65 is superseded, not raised,
+#: on the program-admission path).
+_HIGH_FREQUENCY_FLOOR_TEST_MS = 100
+_HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS = -65.0
+
 
 @dataclass(frozen=True)
 class DriverProtectionProfile:
@@ -137,10 +145,8 @@ def driver_protection_profile(
             driver_style=style,
             min_highpass_hz=None,
             floor_test_frequency_hz=floor if floor is not None and floor > 0 else None,
-            # The stricter figure of the two existing classes on each axis
-            # (ms, dBFS): nothing here derives a louder full-range ceiling.
-            floor_test_duration_ms=100,
-            max_auto_level_dbfs=-65.0,
+            floor_test_duration_ms=_HIGH_FREQUENCY_FLOOR_TEST_MS,
+            max_auto_level_dbfs=_HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS,
         )
     if role_id in LOW_FREQUENCY_ROLES:
         if role_id == "subwoofer":
@@ -167,14 +173,13 @@ def driver_protection_profile(
             driver_style=hf_style,
             min_highpass_hz=min_highpass,
             floor_test_frequency_hz=max(min_highpass, 3000.0),
-            floor_test_duration_ms=100,
-            # -65 dBFS was sized for a NAKED driver tone with no proven
-            # protective HP. On the program-admission path (a graph that
-            # carries the crossover HP by construction) this is superseded by
-            # the sensitivity-derived ceiling below -- see
+            floor_test_duration_ms=_HIGH_FREQUENCY_FLOOR_TEST_MS,
+            # On the program-admission path (a graph that carries the
+            # crossover HP by construction) this is superseded by the
+            # sensitivity-derived ceiling below -- see
             # ``derive_hf_measurement_ceiling_dbfs`` and
             # ``jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings``.
-            max_auto_level_dbfs=-65.0,
+            max_auto_level_dbfs=_HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS,
         )
     return DriverProtectionProfile(
         role=role_id,

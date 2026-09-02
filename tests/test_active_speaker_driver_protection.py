@@ -466,3 +466,13 @@ def test_the_excitation_floor_reads_the_declaration_and_never_invents_one(
     """The class table is deliberately not consulted: the frequency a driver may
     be DRIVEN to is a question only a declaration answers."""
     assert driver_excitation_floor_hz(driver) == expected
+
+
+def test_full_range_shares_its_ceiling_and_floor_test_duration_with_tweeter() -> None:
+    """A single amp channel is at least as fragile as the tweeter it may drive
+    -- the two classes share one figure on each axis, not independent ones."""
+    full_range = driver_protection_profile("full_range", declared_floor_hz=60.0)
+    tweeter = driver_protection_profile("tweeter", driver_style="dome_tweeter")
+
+    assert full_range.max_auto_level_dbfs == tweeter.max_auto_level_dbfs
+    assert full_range.floor_test_duration_ms == tweeter.floor_test_duration_ms
