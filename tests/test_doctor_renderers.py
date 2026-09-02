@@ -367,7 +367,9 @@ def test_renderer_resolvable_all_ok(monkeypatch):
         }[unit],
     )
     monkeypatch.setattr(
-        doctor.renderers, "_probe_open_as_user", lambda dev, user: (True, "")
+        doctor.renderers,
+        "_probe_open_as_user",
+        lambda dev, user: (doctor.renderers.ProbeOutcome.OPENED, ""),
     )
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -376,56 +378,143 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     assert "bluealsa-aplay(root)→bluealsa_substream" in r.detail
 
 
-def test_renderer_resolvable_accepts_busy_private_fanin_lane(monkeypatch):
-    """An active renderer already owns its private lane, so a second
-    aplay probe can return EBUSY. That is not an Unknown-PCM failure."""
-    monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
-    )
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
-    monkeypatch.setattr(
-        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
-    )
-    monkeypatch.setattr(
-        doctor.renderers,
-        "_probe_open_as_user",
-        lambda dev, user: (False, "Device or resource busy"),
-    )
-    monkeypatch.setattr(
-        doctor.renderers,
-        "_fanin_lane_busy_owner_matches",
-        lambda dev, unit: (True, "busy/owned pid=123"),
-    )
-    r = doctor.check_renderer_device_resolvable()
-    assert r.status == "ok"
-    assert "busy/owned" in r.detail
+# Captured on jts3 (#3515) from the non-negotiable-#5 probe run against
+# `librespot_ring_lane` while a live writer held it. The busy marker is the
+# SECOND line: the ioplug refuses from `prepare`, which alsa-lib runs inside
+# `snd_pcm_hw_params`, so aplay's hw_params dump lands AFTER it.
+_BUSY_RING_LANE_STDERR = """\
+event=jts_ring.writer.busy path=/dev/shm/jts-ring/lane-spotify.ring \
+reason=writer_lock_held
+ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: \
+writer_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16 \
+(ring already has a live writer — EBUSY)
+aplay: set_params:1456: Unable to install hw params:
+ACCESS:  RW_INTERLEAVED
+FORMAT:  S16_LE
+SUBFORMAT:  STD
+SAMPLE_BITS: 16
+FRAME_BITS: 32
+CHANNELS: 2
+RATE: 48000
+PERIOD_TIME: (5333 5334)
+PERIOD_SIZE: 256
+PERIOD_BYTES: 1024
+PERIODS: 16
+BUFFER_TIME: (85333 85334)
+BUFFER_SIZE: 4096
+BUFFER_BYTES: 16384
+TICK_TIME: 0
+"""
+
+# Same box, same command, a PCM name that resolves nowhere.
+_UNKNOWN_PCM_STDERR = (
+    "ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM jts_no_such_pcm\n"
+    "aplay: main:850: audio open error: No such file or directory\n"
+)
+
+# Same box, same command, nothing holding the lane: the probe ran its full
+# duration and `timeout` killed it.
+_IDLE_RING_LANE_STDERR = (
+    "aplay: pcm_write:2178: write error: Interrupted system call\n"
+    "ALSA lib pcm_jts_ring.c:644:(jts_ring_close) jts_ring: closing "
+    "published_slots=166 drop_no_reader=0 full_waits=0\n"
+)
+
+_OWNED_CGROUP = "0::/system.slice/librespot.service\n"
+_STRAY_CGROUP = "0::/user.slice/user-1000.slice/session-1461.scope\n"
 
 
-def test_renderer_resolvable_rejects_busy_lane_owned_by_wrong_unit(monkeypatch):
-    """EBUSY is okay only when /proc shows the expected renderer owns
-    the private fan-in lane."""
-    monkeypatch.setattr(
-        doctor.renderers, "_renderer_device_shairport", lambda: "shairport_substream"
-    )
-    monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
+class _FakeCgroupPath:
+    def __init__(self, text):
+        self._text = text
+
+    def read_text(self):
+        return self._text
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "cgroup", "expect_outcome", "expect_status"),
+    [
+        # A ring lane refused by its OWN renderer's writer lock: the probe
+        # reached the lock, so the PCM resolved and opened.
+        (
+            1, _BUSY_RING_LANE_STDERR, _OWNED_CGROUP,
+            doctor.renderers.ProbeOutcome.BUSY, "ok",
+        ),
+        # The PR #223 bug class stays a hard failure.
+        (
+            1, _UNKNOWN_PCM_STDERR, _OWNED_CGROUP,
+            doctor.renderers.ProbeOutcome.FAILED, "fail",
+        ),
+        # Busy, but a stray process holds the ring — not the renderer.
+        (
+            1, _BUSY_RING_LANE_STDERR, _STRAY_CGROUP,
+            doctor.renderers.ProbeOutcome.BUSY, "fail",
+        ),
+        # The probe never executed. A live ring writer must not excuse that:
+        # the header proves the RENDERER opened the lane, never that the
+        # probe resolved it as the unit's User=.
+        (
+            1, "sudo: a password is required\n", _OWNED_CGROUP,
+            doctor.renderers.ProbeOutcome.FAILED, "fail",
+        ),
+        # One extra alsa-lib line must not defeat the Unknown-PCM failure:
+        # nothing here may key on a fixed slice of stderr.
+        (
+            1,
+            _UNKNOWN_PCM_STDERR + "ALSA lib conf.c:5205: Unknown parameter\n",
+            _OWNED_CGROUP,
+            doctor.renderers.ProbeOutcome.FAILED, "fail",
+        ),
+        # `timeout` fired: aplay wrote silence for the whole probe.
+        (
+            124, _IDLE_RING_LANE_STDERR, _OWNED_CGROUP,
+            doctor.renderers.ProbeOutcome.OPENED, "ok",
+        ),
+    ],
+)
+def test_ring_lane_probe_verdict_and_check_status(
+    monkeypatch, returncode, stderr, cgroup, expect_outcome, expect_status
+):
+    """(returncode, stderr, ring header) -> verdict -> check status.
+
+    Real aplay output captured on jts3, run through the real classifier and
+    the real ownership gate; only the subprocess, the ring header and the
+    /proc cgroup read are stubbed. A busy verdict is what licenses the
+    ownership check — never a substitute for a probe that did not open."""
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
+    )
+    monkeypatch.setattr(doctor.renderers, "_systemd_user_for", lambda unit: "pi")
+    monkeypatch.setattr(
+        doctor.renderers, "_resolve_systemd_env_vars", lambda device, unit: device
     )
     monkeypatch.setattr(
-        doctor.renderers,
-        "_probe_open_as_user",
-        lambda dev, user: (False, "Device or resource busy"),
+        doctor.renderers.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=returncode, stdout="", stderr=stderr
+        ),
     )
     monkeypatch.setattr(
-        doctor.renderers,
-        "_fanin_lane_busy_owner_matches",
-        lambda dev, unit: (False, "busy but owner pid=999 cgroup='other.service'"),
+        "jasper.renderer_lanes.ring_writer_pid", lambda label: 4242
     )
-    r = doctor.check_renderer_device_resolvable()
-    assert r.status == "fail"
-    assert "other.service" in r.detail
+    real_path = doctor.renderers.Path
+    monkeypatch.setattr(
+        doctor.renderers,
+        "Path",
+        lambda arg: (
+            _FakeCgroupPath(cgroup)
+            if str(arg).startswith("/proc/")
+            else real_path(arg)
+        ),
+    )
+
+    outcome, _ = doctor.renderers._classify_probe(returncode, stderr)
+    assert outcome is expect_outcome
+    assert doctor.check_renderer_device_resolvable().status == expect_status
 
 
 def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
@@ -457,8 +546,11 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     # — only shairport-sync fails. Doctor must still fail-the-check.
     def fake_probe(dev, user):
         if user == "shairport-sync":
-            return (False, "ALSA lib pcm.c:2722: Unknown PCM shairport_substream")
-        return (True, "")
+            return (
+                doctor.renderers.ProbeOutcome.FAILED,
+                "ALSA lib pcm.c:2722: Unknown PCM shairport_substream",
+            )
+        return (doctor.renderers.ProbeOutcome.OPENED, "")
 
     monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
 
@@ -483,7 +575,9 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
         doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
     )
     monkeypatch.setattr(
-        doctor.renderers, "_probe_open_as_user", lambda d, u: (False, "open failed")
+        doctor.renderers,
+        "_probe_open_as_user",
+        lambda d, u: (doctor.renderers.ProbeOutcome.FAILED, "open failed"),
     )
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "fail"
@@ -502,7 +596,9 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
         doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
     )
     monkeypatch.setattr(
-        doctor.renderers, "_probe_open_as_user", lambda d, u: (True, "")
+        doctor.renderers,
+        "_probe_open_as_user",
+        lambda d, u: (doctor.renderers.ProbeOutcome.OPENED, ""),
     )
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
@@ -575,7 +671,7 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
 
     def fake_probe(device, user):
         received.append(device)
-        return (True, "")
+        return (doctor.renderers.ProbeOutcome.OPENED, "")
 
     monkeypatch.setattr(doctor.renderers, "_probe_open_as_user", fake_probe)
 
