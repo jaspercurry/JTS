@@ -2,25 +2,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Renderer-ingress ring capture: the third fan-in lane source (U3 / P6).
+//! Renderer-ingress ring capture: the third fan-in lane source.
 //!
 //! A renderer-ingress lane reads a per-renderer SHM slot ring
-//! (`/dev/shm/jts-ring/lane-<label>.ring`) that the renderer's own
-//! `jts_ring` ioplug writes, instead of reading that lane's snd-aloop capture
-//! substream. The transport changes; nothing else about the lane does — it keeps
-//! its position in the sum, its selection/mute gate, its RMS meter, and (where a
-//! lane has one) its `LaneResampler` at exactly the same place in the read path.
-//! The ioplug is a dumb frame carrier.
+//! (`/dev/shm/jts-ring/lane-<label>.ring`) that the renderer's own `jts_ring`
+//! ioplug writes, instead of reading that lane's snd-aloop capture substream.
+//! Only the transport changes: the lane keeps its position in the sum, its
+//! selection/mute gate, its RMS meter, and (where it has one) its
+//! `LaneResampler`.
 //!
-//! ## Presence model — the USB DIRECT precedent, applied to a file
+//! ## Presence model
 //!
-//! `Input::pcm` is already `Option<PCM>` and `None` on the USB DIRECT lane, whose
-//! device comes and goes with a host cable. A renderer ring has the same shape of
-//! dynamism for a different reason: the ring FILE exists only once some writer has
-//! created it, `/dev/shm` is tmpfs (so the file is gone after a reboot until a
-//! writer returns), and a renderer can be stopped, disabled by `/sources/`, or
-//! crash-looping. So this lane is the same small state machine as
-//! [`super::direct_capture::DirectCapture`]:
+//! The same two-state machine as [`super::direct_capture::DirectCapture`]:
 //!
 //! * [`RingCapture::Attached`] — the ring is mapped; the lane consumes one slot
 //!   per render period.
@@ -31,64 +24,48 @@
 //!
 //! Neither state can fail the daemon: the fail-hard "every configured input is
 //! required" contract is exempted for a ring lane exactly as it is for the direct
-//! lane. That is deliberate and it is the resilience property this module exists
-//! to provide — a renderer that is off, a ring that has not been created yet, and
-//! a stale ring from a previous boot all render silence and self-heal, rather than
+//! lane, so a renderer that is off, a ring that has not been created yet, and a
+//! stale ring from a previous boot all render silence and self-heal rather than
 //! taking the whole summed music path down with them.
 //!
-//! ## What a DEAD WRITER looks like, and why nothing here has to detect it
+//! ## A dead writer is not a detached ring
 //!
-//! `jasper_ring`'s reader already owns writer liveness: an empty ring zero-fills
-//! the caller's buffer and returns [`SlotRead::Empty`], and
-//! [`RingMetrics::writer_alive`] reports a pid-plus-heartbeat view that goes false
-//! within [`jasper_ring::WRITER_LIVENESS_TIMEOUT_NS`] of the writer stopping. So a
-//! writer that dies mid-stream needs no detection here at all: the lane simply
-//! reads empty slots and mixes silence, and `/state` says `writer_alive:false`
-//! next to a climbing `empty_reads`. There is no reattach for that case, because
-//! the ring is still perfectly attached — which is why the retry latch below is
-//! armed ONLY by an attach failure, never by an empty read. Arming it on empty
-//! reads would tear down and rebuild a healthy mapping every time a renderer
-//! paused.
+//! `jasper_ring`'s reader owns writer liveness: an empty ring zero-fills the
+//! caller's buffer and returns [`SlotRead::Empty`], and
+//! [`RingMetrics::writer_alive`] reports a pid-plus-heartbeat view that goes
+//! false within [`jasper_ring::WRITER_LIVENESS_TIMEOUT_NS`] of the writer
+//! stopping. The ring is still perfectly attached, which is why the retry latch
+//! below is armed ONLY by an attach failure, never by an empty read: arming it on
+//! empty reads would tear down and rebuild a healthy mapping every time a
+//! renderer paused.
 //!
 //! ## Allocation and blocking
 //!
 //! Zero allocation in the steady path: [`read_ring_and_render`] consumes directly
 //! into the lane's existing period buffer, and the retry path formats no strings
-//! (the detach reason is a `&'static str` on a copy `enum`). The ATTACHED path
-//! does not block — `try_consume_slot` is a non-blocking memcpy-or-zero-fill, and
-//! the only syscalls are the ones `jasper_ring` makes on the mapping itself.
-//!
-//! **The DETACHED path does not block either, since #2538.** The attach it needs
-//! is `RingReader::create_or_attach`, which takes an inter-process `flock`
-//! bounded at `OPEN_LOCK_WAIT_TIMEOUT_MS` = 500 ms (`jasper-ring/src/lib.rs`)
-//! plus the open/mmap/header-validate work. That used to run INLINE here, once
-//! per [`RING_REATTACH_RETRY_PERIODS`] (≈2 s) per detached lane; against a
-//! 5.33 ms render period and two 128-frame slots of downstream cushion, the
-//! worst case was ~187 slots of audio — the #2533 defect class, on a path that
-//! needs no USB host to fire. [`RingAttacher`] moves it to a
-//! `fanin-ring-attacher` thread, the sibling of `fanin-direct-opener`: the
-//! detached lane costs one non-blocking `try_recv`
-//! per period and one non-blocking `send` per retry window, and keeps rendering
-//! silence until a reader comes back.
+//! (the detach reason is a `&'static str` on a copy `enum`). Neither path blocks.
+//! `try_consume_slot` is a non-blocking memcpy-or-zero-fill, and the attach —
+//! `RingReader::create_or_attach`, which takes an inter-process `flock` bounded
+//! at `OPEN_LOCK_WAIT_TIMEOUT_MS` = 500 ms (`jasper-ring/src/lib.rs`) plus the
+//! open/mmap/header-validate work — runs on a `fanin-ring-attacher` thread
+//! ([`RingAttacher`], #2538) rather than INLINE once per
+//! [`RING_REATTACH_RETRY_PERIODS`] (≈2 s) per detached lane. Against a 5.33 ms
+//! render period and two 128-frame slots of downstream cushion, inline was a
+//! worst case of ~187 slots of audio — the #2533 defect class, on a path that
+//! needs no USB host to fire.
 //!
 //! **How often is a lane detached?** Not "whenever the renderer is idle" — that
-//! is the ATTACHED-with-`writer_alive:false` state described above, because
+//! is the ATTACHED-with-`writer_alive:false` state above, because
 //! `create_or_attach` CREATES the ring when it is absent and fan-in (root) can
-//! always do so. Detached means a genuine fault (a geometry shear, a permission
-//! refusal, a full tmpfs) or a transient (`.open.lock` contention against the
-//! writer's own open, the single period an orphan re-latch spends detached).
-//! Note the ring DIRECTORY is not on that list: `ensure_parent_dir` creates it,
-//! so a missing directory is not a startup state a root fan-in can observe. So
-//! this is not a most-of-the-time cost — but for as long as a lane IS detached,
-//! the bounded `flock` really did run inside the render period, and a shear or a
-//! permissions fault persists until an operator fixes it. `jasper-doctor` reads
-//! it the same way: a detached lane is a PROBLEM there, while a lane that is
-//! attached with a PAUSED renderer (frames read, `writer_alive:false`) falls
-//! through to healthy — which is the idle case, and is not detached.
+//! always do so, `ensure_parent_dir` creating the directory first. Detached means
+//! a genuine fault (a geometry shear, a permission refusal, a full tmpfs) or a
+//! transient (`.open.lock` contention against the writer's own open, the single
+//! period an orphan re-latch spends detached). A shear or a permissions fault
+//! persists until an operator fixes it, so an affected box paid the inline cost
+//! every ~2 s for as long as it lasted.
 //!
 //! The retry latches are also PHASE-SEEDED per lane ([`reattach_phase`]) so a box
-//! with several detached lanes spreads its attempts across the window instead of
-//! firing every lane in one period.
+//! with several detached lanes spreads its attempts across the window.
 
 use super::*;
 
@@ -101,30 +78,28 @@ use jasper_ring::{Geometry, RingMetrics, RingReader, SlotRead, SAMPLE_FORMAT_S32
 /// periods is 2.048 s. (375 would be the exact 2 s; 384 is chosen instead
 /// because it is a power-of-two multiple, which keeps the arithmetic exact
 /// across the period sizes fan-in actually runs and costs 48 ms of latency
-/// nobody can perceive on a reattach.) Same cadence and same reasoning as the
-/// USB DIRECT lane's `DIRECT_REOPEN_RETRY_PERIODS`: frequent enough that a
-/// renderer coming up is picked up within a couple of seconds, rare enough that
-/// a box whose renderer is switched OFF at `/sources/` is not opening a file
-/// 187 times a second forever.
+/// nobody can perceive on a reattach.) Same cadence as the USB DIRECT lane's
+/// `DIRECT_REOPEN_RETRY_PERIODS`: frequent enough that a renderer coming up is
+/// picked up within a couple of seconds, rare enough that a box whose renderer
+/// is switched OFF at `/sources/` is not opening a file 187 times a second
+/// forever.
 ///
-/// **Relationship to the renderer's own `RestartSec`.** librespot restarts at
-/// `RestartSec=5`, comfortably longer than this window, so a crash-looping
-/// renderer is always found by the FIRST retry after each respawn rather than
-/// being missed between probes. Keep this cadence below any ring-writing
-/// renderer's `RestartSec`; if a renderer ever restarts faster than ~2 s, this
-/// constant is what has to move, not the unit.
+/// Keep this cadence below any ring-writing renderer's `RestartSec` (librespot
+/// ships `RestartSec=5`) so a crash-looping renderer is found by the FIRST retry
+/// after each respawn rather than missed between probes; if a renderer ever
+/// restarts faster than ~2 s, this constant is what has to move, not the unit.
 pub(super) const RING_REATTACH_RETRY_PERIODS: u64 = 384;
 
 /// This lane's PHASE within the retry window, in render periods: the countdown a
 /// ring lane starts life with, so N lanes spread their FIRST attempts evenly
 /// across [`RING_REATTACH_RETRY_PERIODS`] rather than firing in one period
-/// (#2538).
+/// (#2538). Nothing here reads a wall clock: the phase is decided once and then
+/// carried by the ordinary latch. What it spreads is the WORKER side — several
+/// lanes detached at once (a geometry shear across the conf.d, a tmpfs that
+/// filled) each take their own bounded `flock` and contend for
+/// `/dev/shm/jts-ring/`.
 ///
-/// **What the seed does, and what it does not promise.** It spreads the FIRST
-/// retry of each lane across the window, and nothing here reads a wall clock —
-/// the phase is decided once and then carried by the ordinary latch. It is not a
-/// standing guarantee that two lanes never retry in the same period, and it
-/// should not be read as one:
+/// It is NOT a standing guarantee that two lanes never retry in the same period:
 ///
 /// * the cycle is not exactly this constant. A queue re-arms the latch to
 ///   [`RING_REATTACH_RETRY_PERIODS`] and so does ADOPTING the result, so a lane
@@ -133,15 +108,6 @@ pub(super) const RING_REATTACH_RETRY_PERIODS: u64 = 384;
 /// * the orphan re-latch in [`read_ring_and_render`] sets the latch to 0
 ///   unconditionally — deliberately, since that is a live file waiting to be
 ///   opened — so lanes orphaned in the same period are in lockstep from then on.
-///
-/// **What it buys now that the attach is off-thread.** Not render-thread time —
-/// [`RingAttacher`] already removed that, and a queued attach costs one
-/// non-blocking `send`. It spreads the WORKER side: when several lanes are
-/// detached at once (a geometry shear across the conf.d, a tmpfs that filled),
-/// their `create_or_attach` calls each take their own bounded `flock` and
-/// contend for `/dev/shm/jts-ring/`. Spreading them keeps that work off one
-/// instant, and keeps the property that made lockstep dangerous from ever being
-/// reintroduced by a future inline call.
 ///
 /// `lane_count == 0` cannot occur (a lane index implies a lane) but returns 0
 /// rather than dividing by it — a phase of 0 is a legal, if unspread, answer.
@@ -159,24 +125,19 @@ pub(super) const fn reattach_phase(lane_index: usize, lane_count: usize) -> u64 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RingDetachReason {
     /// The ring path could not be resolved at all — the `NotFound`/`ENOENT`
-    /// classification, and a genuinely NARROW one.
+    /// classification, and a genuinely NARROW one: a RACE, the ring file or its
+    /// directory disappearing between the create/attach steps (an arm/disarm or a
+    /// geometry-change clear running underneath this open).
     ///
-    /// **It is not "fan-in started before the renderer".** That was the original
-    /// P6a text here and it is wrong in the direction that matters:
-    /// [`attach_ring`] creates the ring when it is absent (`O_CREAT|O_EXCL`, with
-    /// `ensure_parent_dir` creating the directory first) and fan-in runs as root,
-    /// so starting before — or entirely without — the renderer produces an
-    /// ATTACH, not this. A lane whose renderer never publishes sits ATTACHED with
-    /// `writer_alive:false`; see the module docs' presence model.
-    ///
-    /// What actually lands here is a RACE: the ring file or its directory
-    /// disappearing between the create/attach steps (an arm/disarm or a
-    /// geometry-change clear running underneath this open). The other failure
-    /// modes people reach for do NOT land here — `.open.lock` exhaustion returns
-    /// `EAGAIN` (`WouldBlock`), a full tmpfs returns `ENOSPC` (`StorageFull`),
-    /// and a permission refusal returns `EACCES` (`PermissionDenied`); all three
-    /// classify as [`RingDetachReason::Refused`], whose remediation text is the
-    /// one that fits them.
+    /// It is NOT "fan-in started before the renderer": [`attach_ring`] creates
+    /// the ring when it is absent (`O_CREAT|O_EXCL`, with `ensure_parent_dir`
+    /// creating the directory first) and fan-in runs as root, so starting before
+    /// — or entirely without — the renderer produces an ATTACH. Nor is it the
+    /// other modes people reach for: `.open.lock` exhaustion returns `EAGAIN`
+    /// (`WouldBlock`), a full tmpfs returns `ENOSPC` (`StorageFull`), and a
+    /// permission refusal returns `EACCES` (`PermissionDenied`); all three
+    /// classify as [`RingDetachReason::Refused`], whose remediation text fits
+    /// them.
     Unavailable,
     /// The ring exists but its header declares a different geometry than this lane
     /// builds — the conf.d block and fan-in's derived geometry have sheared. This
@@ -195,10 +156,9 @@ pub(super) enum RingDetachReason {
     /// geometry change cleared and recreated it, or an arm/disarm did) while
     /// this reader held it open. An mmap survives an unlink, so the lane would
     /// otherwise report `attached:true` and read an ORPHANED inode forever —
-    /// indistinguishable from an idle source on every other counter. Detected
-    /// on the slow check cadence and self-heals by re-latching onto the live
-    /// file, so it needs no operator; it is a distinct token only so the
-    /// journal shows the re-latch happened rather than an unexplained gap.
+    /// indistinguishable from an idle source on every other counter. Self-heals
+    /// by re-latching onto the live file, so it needs no operator; it is a
+    /// distinct token only so the journal shows the re-latch happened.
     Orphaned,
 }
 
@@ -226,15 +186,12 @@ impl RingDetachReason {
     }
 }
 
-/// Shared renderer-ring counters for the STATUS `ring{}` block, mirroring
-/// [`super::direct_capture::DirectObservability`]'s idiom exactly: the mixer work
+/// Shared renderer-ring counters for the STATUS `ring{}` block: the mixer work
 /// thread writes them, the state-server thread reads them lock-free, and they are
 /// cloned into [`crate::state::InputSnapshotSource`] at construction.
 ///
-/// Everything here that `jasper_ring` already counts is MIRRORED rather than
-/// re-derived: `RingReader::metrics()` returns a plain `Copy` snapshot, and the
-/// read path stores the fields `/state` needs into these atomics on each period.
-/// Re-deriving occupancy or empty-read counts in fan-in would be a second source
+/// Everything `jasper_ring` already counts is MIRRORED rather than re-derived —
+/// re-deriving occupancy or empty-read counts in fan-in would be a second source
 /// of truth for numbers the ring already owns.
 #[derive(Clone)]
 pub struct RingLaneObservability {
@@ -242,9 +199,8 @@ pub struct RingLaneObservability {
     pub path: String,
     /// The geometry this lane attaches with, held whole rather than as loose
     /// scalars: the reattach path must present the SAME tuple the initial attach
-    /// used or the header comparison rejects it, and a struct that cannot be
-    /// partially rebuilt is the cheapest way to guarantee that. STATUS reads
-    /// `period_frames` / `n_slots` off it.
+    /// used or the header comparison rejects it. STATUS reads `period_frames` /
+    /// `n_slots` off it.
     pub geometry: Geometry,
     /// Whether the ring is currently mapped. `false` renders silence.
     pub attached: Arc<AtomicBool>,
@@ -258,24 +214,20 @@ pub struct RingLaneObservability {
     pub attaches: Arc<AtomicU64>,
     /// Cumulative reattach attempts QUEUED while detached. A growing value with
     /// `attached=false` means the ring is not attachable — the renderer is off,
-    /// or the geometry/permissions are wrong (read `detach_reason`). Since #2538
-    /// an attempt is counted when it is handed to the `fanin-ring-attacher`
-    /// thread rather than when it runs, so this climbs on the retry cadence even
-    /// while one attach is still executing.
+    /// or the geometry/permissions are wrong (read `detach_reason`). An attempt
+    /// is counted when it is HANDED to the `fanin-ring-attacher` thread, not when
+    /// it runs, and `RingAttacher::request` refuses while one is outstanding, so
+    /// this stays flat for as long as an attach is executing.
     ///
     /// **The dead-worker tell.** This value FROZEN alongside `attached=false`
     /// and `attach_pending=false` means the attacher thread is gone: the lane is
     /// detached, nothing is queued, and nothing is being attempted — a silent
     /// wedge that no other counter separates from a lane nobody is looking at.
-    /// (Byte-for-byte the direct lane's `retries`/`reopen_pending` shape.)
     pub retries: Arc<AtomicU64>,
     /// Whether an attach is currently QUEUED on this lane's
-    /// `fanin-ring-attacher` thread (#2538), mirroring the direct lane's
-    /// `reopen_pending`. Since the attach no longer runs in the render loop,
-    /// this is how an operator sees one in progress — and a value stuck `true`
-    /// alongside a climbing `retries` says the attach itself is hanging (a held
-    /// `.open.lock`, a wedged tmpfs), which now costs this lane silence rather
-    /// than costing the speaker slots.
+    /// `fanin-ring-attacher` thread (#2538). Stuck `true` alongside a frozen
+    /// `retries` says the attach itself is hanging (a held `.open.lock`, a wedged
+    /// tmpfs), which costs this lane silence rather than the speaker's slots.
     pub attach_pending: Arc<AtomicBool>,
     /// The writer looked alive at the last read (pid stamped AND heartbeat inside
     /// [`jasper_ring::WRITER_LIVENESS_TIMEOUT_NS`]). Mirrored from
@@ -294,10 +246,9 @@ pub struct RingLaneObservability {
     /// `empty_reads` by the ring itself, and kept split here, because a lane that
     /// has never been written is a different fact from one that slipped.
     pub startup_empty_reads: Arc<AtomicU64>,
-    /// Times the observed writer epoch changed — the renderer reattached. This is
-    /// the DISCRIMINATOR the campaign's standing ring watch uses: `empty_reads`
-    /// rising with `epoch_resets` flat is a drain; both rising is a writer
-    /// restart artefact.
+    /// Times the observed writer epoch changed — the renderer reattached. The
+    /// DISCRIMINATOR for a drain: `empty_reads` rising with `epoch_resets` flat
+    /// is a drain; both rising is a writer restart artefact.
     pub epoch_resets: Arc<AtomicU64>,
 }
 
@@ -321,8 +272,7 @@ impl RingLaneObservability {
     }
 
     /// Publish one period's ring metrics. Lock-free, allocation-free, no syscall —
-    /// safe on the hot path. Mirrors, never re-derives: every field here is a
-    /// field `jasper_ring` already maintains.
+    /// safe on the hot path.
     fn publish(&self, m: &RingMetrics) {
         self.writer_alive.store(m.writer_alive, Ordering::Relaxed);
         self.writer_pid.store(m.writer_pid, Ordering::Relaxed);
@@ -349,8 +299,7 @@ impl RingLaneObservability {
 pub(super) enum RingCapture {
     /// The ring is mapped; the lane consumes one slot per render period.
     /// `periods_until_check` counts down to the next orphaned-inode probe (see
-    /// [`RingDetachReason::Orphaned`]); it shares the reattach cadence, because
-    /// both are "sample something slow, not every period".
+    /// [`RingDetachReason::Orphaned`]), on the reattach cadence.
     Attached {
         reader: Box<RingReader>,
         periods_until_check: u64,
@@ -364,12 +313,11 @@ pub(super) enum RingCapture {
 /// sample rate, one slot per fan-in render period, depth derived from the aloop
 /// cushion the lane replaced.
 ///
-/// The WIRE is this box's one resolved width ([`Config::program_wire_is_wide`]),
-/// the same fact that decides the program ring's payload — a renderer lane is
-/// not a second width axis. The write end declares the same width in
-/// `deploy/alsa/conf.d/61-jts-renderer-lanes.conf`; fan-in creates the ring, so
-/// a box whose declarations have sheared fails the RENDERER's `snd_pcm_open`
-/// loudly rather than narrowing anything silently.
+/// The WIRE is this box's one resolved width ([`Config::program_wire_is_wide`]) —
+/// a renderer lane is not a second width axis. The write end declares the same
+/// width in `deploy/alsa/conf.d/61-jts-renderer-lanes.conf`; fan-in creates the
+/// ring, so a box whose declarations have sheared fails the RENDERER's
+/// `snd_pcm_open` loudly rather than narrowing anything silently.
 pub(super) fn renderer_ring_geometry(config: &Config) -> Option<Geometry> {
     Some(Geometry {
         rate: config.sample_rate,
@@ -383,83 +331,56 @@ pub(super) fn renderer_ring_geometry(config: &Config) -> Option<Geometry> {
 /// Attempt one attach of a renderer-ingress ring, returning the reader or the
 /// classified reason it could not be had.
 ///
-/// `RingReader::create_or_attach` CREATES the ring when it is absent, which is
-/// what we want: whichever end starts first materializes the file, and the
-/// directory's setgid bit plus both ends' `UMask=0007` make it group-writable
-/// either way (both ends write the header — the reader stamps `read_seq` and its
-/// heartbeat). Creating from the reader side is also what makes fan-in's derived
-/// geometry the one that lands in a fresh header, so a renderer whose conf.d has
-/// sheared fails ITS open loudly instead of silently establishing a ring fan-in
-/// then refuses.
+/// `RingReader::create_or_attach` CREATES the ring when it is absent: whichever
+/// end starts first materializes the file, and the directory's setgid bit plus
+/// both ends' `UMask=0007` make it group-writable either way (both ends write the
+/// header — the reader stamps `read_seq` and its heartbeat). Creating from the
+/// reader side also makes fan-in's derived geometry the one that lands in a fresh
+/// header, so a renderer whose conf.d has sheared fails ITS open loudly instead
+/// of silently establishing a ring fan-in then refuses.
 fn attach_ring(path: &str, geometry: Geometry) -> Result<RingReader, RingDetachReason> {
     RingReader::create_or_attach(path, geometry).map_err(|e| RingDetachReason::classify(&e))
 }
 
 /// One reattach for the `fanin-ring-attacher` thread to perform OFF the render
-/// thread. The geometry travels with the request precisely so the worker presents
-/// the SAME tuple the initial attach used — the header comparison rejects a
+/// thread. The geometry travels with the request so the worker presents the SAME
+/// tuple the initial attach used — the header comparison rejects a
 /// rebuilt-from-parts one.
 struct RingAttachRequest {
     path: String,
     geometry: Geometry,
 }
 
-/// The result of one queued attach: the live reader, or the classified reason it
-/// could not be had. The `io::Error` is not carried across the channel — it is
-/// classified on the worker thread, so the render thread receives the same
-/// `Copy` token it stores in `/state` and nothing more.
+/// The result of one queued attach. The `io::Error` is not carried across the
+/// channel — it is classified on the worker thread, so the render thread receives
+/// the same `Copy` token it stores in `/state` and nothing more.
 enum RingAttachOutcome {
     Attached(Box<RingReader>),
     Failed(RingDetachReason),
 }
 
-/// A renderer-ingress lane's deferred attach channel (#2538).
+/// A renderer-ingress lane's deferred attach channel (#2538): [`attach_ring`]
+/// runs here instead of in the mixer's render loop. One `Sender::send` per retry
+/// window and one `try_recv` per detached period; nothing blocks.
 ///
-/// **Why this exists.** [`attach_ring`] bottoms out in
-/// `RingReader::create_or_attach`, which takes the ring's adjacent
-/// `.open.lock` `flock` under a 500 ms deadline
-/// (`OPEN_LOCK_WAIT_TIMEOUT_MS` in `jasper-ring`) and then opens, mmaps, and
-/// header-validates the file. That used to run INLINE in the mixer's render
-/// loop, once per [`RING_REATTACH_RETRY_PERIODS`] (≈2 s) for every detached
-/// lane. The render loop's budget is one period (5.33 ms at the shipped 256
-/// frames) and the downstream pipeline holds two 128-frame slots of cushion, so
-/// anything over ~2.7 ms costs a whole slot: CamillaDSP reads an empty Ring A (a
-/// 128-frame silence INSERTION) or fan-in free-run-drops a slot it could not
-/// publish in time (a 128-frame DELETION). 500 ms is ~187 of those slots, and
+/// The render loop's budget is one period (5.33 ms at the shipped 256 frames) and
+/// the downstream pipeline holds two 128-frame slots of cushion, so anything over
+/// ~2.7 ms costs a whole slot: CamillaDSP reads an empty Ring A (a 128-frame
+/// silence INSERTION) or fan-in free-run-drops a slot it could not publish in
+/// time (a 128-frame DELETION). The 500 ms `.open.lock` deadline
+/// (`OPEN_LOCK_WAIT_TIMEOUT_MS` in `jasper-ring`) is ~187 of those slots, and
 /// fan-in's own `RingStallTracker` has a 1 s floor and cannot see any of it.
 ///
-/// **How exposed is a box to that?** Less than a paused renderer suggests, and
-/// the honest bound is worth stating rather than the dramatic one. A lane whose
-/// renderer is merely not publishing is ATTACHED with `writer_alive:false`, not
-/// detached — `create_or_attach` CREATES an absent ring and fan-in runs as root,
-/// so the file materializes whichever end arrives first (see
-/// [`open_ring_input`]). Detached is a FAULT-or-transient state: a geometry
-/// shear, a permission refusal, a full tmpfs, `.open.lock` contention against
-/// the writer's own open, or the single period an orphan re-latch spends
-/// detached. (Not a missing ring directory — `ensure_parent_dir` creates
-/// it.) Two things follow. It is
-/// not a most-of-the-time cost — but a shear or a permissions fault does not
-/// clear itself, so an affected box paid this every ~2 s until an operator
-/// noticed, and unlike the DIRECT lane's opener it needs no host and no cable to
-/// be exposed at all.
-///
-/// The lane now hands attaches to a dedicated thread and keeps rendering silence
-/// until a reader comes back. One `Sender::send` per retry window and one
-/// `try_recv` per detached period; nothing blocks.
-///
-/// **One attacher per lane, deliberately.** Each ring lane owns its own thread
-/// and therefore its own in-flight latch — a shared worker would serialize four
-/// lanes' bounded waits behind one another, so a fourth lane could sit 1.5 s
-/// behind a first lane's slow attach for no benefit. The threads block in
-/// `recv()` when idle and cost no CPU, and the rings they lock are different
-/// inodes, so they do not contend with each other. The cost that is NOT free is
-/// MEMORY: up to four extra threads at Rust's 2 MiB default stack, and because
-/// they are spawned in `Mixer::new` — before `main` calls `lock_memory()` —
-/// their stacks are inside the `mlockall` and stay resident. Bounded and small
-/// against a 1 GB Pi, paid only on a box with armed ring lanes, and the reason
-/// this is a per-lane thread rather than a per-lane thread POOL; but on this
-/// hardware the saturation question is RAM, not CPU, so it is named rather than
-/// left implied.
+/// **One attacher per lane, deliberately.** Each lane owns its own in-flight
+/// latch; a shared worker would serialize four lanes' bounded waits behind one
+/// another, so a fourth lane could sit 1.5 s behind a first lane's slow attach.
+/// The threads block in `recv()` when idle and the rings they lock are different
+/// inodes, so they do not contend. The cost that is NOT free is MEMORY: up to
+/// four extra threads at Rust's 2 MiB default stack, and because they are spawned
+/// in `Mixer::new` — before `main` calls `lock_memory()` — their stacks are inside
+/// the `mlockall` and stay resident. Bounded and small against a 1 GB Pi, paid
+/// only on a box with armed ring lanes, and the reason this is a per-lane thread
+/// rather than a per-lane thread POOL.
 pub(super) struct RingAttacher {
     req_tx: Sender<RingAttachRequest>,
     res_rx: std::sync::mpsc::Receiver<RingAttachOutcome>,
@@ -468,30 +389,23 @@ pub(super) struct RingAttacher {
     /// backlog of retries behind it.
     in_flight: bool,
     /// The STATUS mirror of `in_flight` (`ring.attach_pending`), shared with the
-    /// state-server thread — the same idiom as the direct lane's
-    /// `reopen_pending`. Stuck `true` alongside a climbing `retries` means the
-    /// attach itself is hanging, which now costs this lane silence rather than
-    /// costing the speaker slots.
+    /// state-server thread.
     pending_gauge: Arc<AtomicBool>,
 }
 
 impl RingAttacher {
     /// Spawn the attacher thread. Called at lane construction
-    /// ([`open_ring_input`], which `Mixer::new` runs before `main` calls
-    /// `mlockall`, like every other fan-in helper thread).
+    /// ([`open_ring_input`]), which `Mixer::new` runs before `main` calls
+    /// `mlockall`.
     pub(super) fn spawn(label: &str, pending_gauge: Arc<AtomicBool>) -> std::io::Result<Self> {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<RingAttachRequest>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<RingAttachOutcome>();
         std::thread::Builder::new()
-            // One thread per lane, so the LABEL rides the name and a thread dump
-            // says which lane is attaching. Longer than Linux's 15-byte visible
-            // comm, which is fine and is checked, not assumed: std's Linux
-            // `set_name` truncates to `TASK_COMM_LEN` BEFORE calling
-            // `pthread_setname_np`, so the call succeeds and its debug-build
-            // assertion holds in a test binary too (read out of the pinned
-            // toolchain's own `sys/pal/unix/thread.rs`). `fanin-direct-opener`
-            // is already over the limit on the same mechanism. The full name is
-            // what this file and the contract guard are written against.
+            // One thread per lane, so the LABEL rides the name. Longer than
+            // Linux's 15-byte visible comm: std's Linux `set_name` truncates to
+            // `TASK_COMM_LEN` BEFORE calling `pthread_setname_np`, so the call
+            // succeeds and its debug-build assertion holds in a test binary too.
+            // `fanin-direct-opener` is already over the limit the same way.
             .name(format!("fanin-ring-attacher-{label}"))
             .spawn(move || {
                 while let Ok(req) = req_rx.recv() {
@@ -567,8 +481,7 @@ impl RingAttacher {
 /// opened at all), exactly as on the USB DIRECT lane.
 ///
 /// The attach HERE is inline on purpose and is not the #2538 defect: this runs in
-/// `Mixer::new`, on the constructing thread, before the render loop exists. Only
-/// the retry inside the loop had to move ([`RingAttacher`]).
+/// `Mixer::new`, on the constructing thread, before the render loop exists.
 ///
 /// `lane_index` / `lane_count` position this lane inside the retry window
 /// ([`reattach_phase`]) so detached lanes do not retry in lockstep.
@@ -582,8 +495,8 @@ pub(super) fn open_ring_input(
     let path = crate::config::renderer_ring_path(label);
     let phase = reattach_phase(lane_index, lane_count);
     // `Config::from_env` refuses an armed lane whose geometry has no whole-slot
-    // expression, so this is `Some` on every live ring lane. The fallback keeps
-    // the function total rather than panicking on a config that cannot reach here.
+    // expression, so this is `Some` on every live ring lane; the fallback keeps
+    // the function total rather than panicking.
     let geometry = renderer_ring_geometry(config).unwrap_or(Geometry {
         rate: config.sample_rate,
         channels: CHANNELS,
@@ -604,9 +517,8 @@ pub(super) fn open_ring_input(
             );
             RingCapture::Attached {
                 reader: Box::new(reader),
-                // Phase-seeded like the retry latch: this lane's orphan probe
-                // shares the cadence constant, so seeding both from one value is
-                // what keeps the lane de-phased whichever arm it starts in.
+                // Phase-seeded like the retry latch, so the lane is de-phased
+                // whichever arm it starts in.
                 periods_until_check: phase,
             }
         }
@@ -628,11 +540,9 @@ pub(super) fn open_ring_input(
         }
     };
 
-    // The deferred attach channel (#2538). Spawned at construction, before `main`
-    // calls `mlockall`, like every other fan-in helper thread. A spawn failure
-    // leaves the lane WITHOUT self-heal rather than restoring the inline attach:
-    // a 500 ms-bounded `flock` inside the render loop's 5.33 ms period budget,
-    // against a two-slot downstream ring, is the defect being fixed.
+    // A spawn failure leaves the lane WITHOUT self-heal rather than restoring the
+    // inline attach: a 500 ms-bounded `flock` inside the render loop's 5.33 ms
+    // period budget, against a two-slot downstream ring, is the #2538 defect.
     let ring_attacher = match RingAttacher::spawn(label, Arc::clone(&obs.attach_pending)) {
         Ok(attacher) => Some(attacher),
         Err(e) => {
@@ -649,9 +559,9 @@ pub(super) fn open_ring_input(
     ring_lane_input(label, path, geometry, ring, ring_attacher, resampler, obs)
 }
 
-/// The one place a ring lane's `Input` is assembled, for production and for the
-/// tests alike: the lane's period width follows the ring's own `sample_format`,
-/// so the slot geometry and the buffer it is consumed into cannot disagree.
+/// The one place a ring lane's `Input` is assembled: the lane's period width
+/// follows the ring's own `sample_format`, so the slot geometry and the buffer it
+/// is consumed into cannot disagree.
 fn ring_lane_input(
     label: &str,
     path: String,
@@ -664,16 +574,15 @@ fn ring_lane_input(
     let period_samples = (geometry.period_frames as usize) * (CHANNELS as usize);
     Input {
         // A ring lane does NOT open its aloop substream — its only source is the
-        // SHM ring, the same way the DIRECT lane's only source is the gadget.
+        // SHM ring.
         pcm: None,
         direct: None,
         direct_opener: None,
         ring: Some(ring),
         ring_attacher,
         label: label.to_string(),
-        // STATUS's `pcm` for this lane is the ring PATH, not an ALSA name: it is
-        // where the lane's audio actually comes from, and a stale aloop name here
-        // would tell an operator the opposite of the truth.
+        // STATUS's `pcm` for this lane is the ring PATH, not an ALSA name: a
+        // stale aloop name here would tell an operator the opposite of the truth.
         pcm_name: path,
         read_buf: vec![0i16; period_samples],
         read_buf_wide: super::spine_read_buf(
@@ -699,24 +608,18 @@ fn ring_lane_input(
 /// `period_frames` on a filled slot, `0` on an empty ring or while detached.
 ///
 /// Never returns `Err` and never blocks. One slot is consumed per call because the
-/// ring's slot IS one fan-in render period by construction, so the whole read is a
-/// single non-blocking consume straight into the lane's existing
-/// buffer: no allocation, no intermediate copy, no drain loop, and no catch-up
-/// resync — a bounded ring cannot back up past its own depth the way an aloop
-/// capture ring can, so `drain_input_excess` has nothing to do here and is not
-/// called.
+/// ring's slot IS one fan-in render period by construction: no allocation, no
+/// intermediate copy, no drain loop, and no catch-up resync — a bounded ring
+/// cannot back up past its own depth the way an aloop capture ring can, so
+/// `drain_input_excess` has nothing to do here and is not called.
 pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> usize {
     // Take ownership of the state machine so the reattach path can mutate `input`
     // (observability, resampler) without a double borrow. Restored before return.
     //
-    // A `None` here would mean the mixer dispatched a non-ring lane to this
-    // function, which its `input.ring.is_some()` arm makes impossible. It is
-    // still handled as SILENCE rather than a panic: this is a production audio
-    // daemon, and the correct response to "a lane is somehow not what we thought"
-    // is the same as the correct response to every other lane fault in this
-    // module — contribute nothing and keep the mix running. A panic here would
-    // take the whole summed music path down to enforce an invariant whose
-    // violation costs one lane.
+    // `None` is unreachable (the mixer's `input.ring.is_some()` arm dispatches
+    // here) and is handled as SILENCE rather than a panic: a panic would take the
+    // whole summed music path down to enforce an invariant whose violation costs
+    // one lane.
     let Some(mut ring) = input.ring.take() else {
         super::silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
         return 0;
@@ -732,10 +635,8 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
             // ORPHANED-INODE probe, on the slow cadence (an fstat + a stat is a
             // syscall pair, not something to pay per period). An mmap survives
             // an unlink, so a ring replaced underneath this reader leaves a
-            // perfectly valid mapping of a file nothing writes any more — the
-            // lane would report attached and read silence forever, which no
-            // counter here distinguishes from an idle renderer. Detaching
-            // re-latches onto the live file on the next period.
+            // valid mapping of a file nothing writes any more, which no counter
+            // here distinguishes from an idle renderer.
             if *periods_until_check == 0 {
                 let owns = reader.owns_linked_path().unwrap_or(false);
                 if !owns {
@@ -747,11 +648,10 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
                 *periods_until_check -= 1;
             }
             let want = period_frames * (CHANNELS as usize);
-            // Guard the slot-shaped copy: a consume requires exactly one slot's
-            // worth of samples. The lane's period buffer is built at
-            // `period_frames * CHANNELS` and the geometry's slot is `period_frames`,
-            // so these agree by construction; a mismatch would be a construction
-            // bug, and rendering silence is the safe answer to one.
+            // A consume requires exactly one slot's worth of samples. The lane's
+            // period buffer is built at `period_frames * CHANNELS` and the
+            // geometry's slot is `period_frames`, so these agree by construction;
+            // a mismatch is a construction bug, answered with silence.
             let wide = !input.read_buf_wide.is_empty();
             let held = if wide {
                 input.read_buf_wide.len()
@@ -762,9 +662,9 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
                 super::silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
                 0
             } else {
-                // One slot, at this lane's width. Both entry points are typed
-                // views of the same byte copy in the ring core; the buffer the
-                // lane allocated at construction picks which.
+                // Both entry points are typed views of the same byte copy in the
+                // ring core; the buffer the lane allocated at construction picks
+                // which.
                 let read = if wide {
                     reader.try_consume_slot_wide(&mut input.read_buf_wide[..want])
                 } else {
@@ -781,10 +681,8 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
                             .fetch_add(period_frames as u64, Ordering::Relaxed);
                         period_frames
                     }
-                    // The ring zero-filled the buffer for us; the lane contributes
-                    // silence. NOT a fault and NOT a reattach trigger — see the
-                    // module docs on why the retry latch is armed only by an attach
-                    // failure.
+                    // The ring zero-filled the buffer. NOT a fault and NOT a
+                    // reattach trigger — see the module docs.
                     SlotRead::Empty => 0,
                 }
             }
@@ -813,8 +711,8 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
         if let Some(r) = input.resampler.as_mut() {
             r.reset();
         }
-        // periods_until_retry = 0: re-latch on the very next period. This is a
-        // live file waiting to be opened, not an absent one to back off from.
+        // Re-latch on the very next period: this is a live file waiting to be
+        // opened, not an absent one to back off from.
         ring = RingCapture::Detached {
             periods_until_retry: 0,
         };
@@ -825,12 +723,9 @@ pub(super) fn read_ring_and_render(input: &mut Input, period_frames: usize) -> u
 
 /// While `Detached`: adopt a finished attach if this lane's attacher thread has
 /// one ready, else count the period-based retry latch down and QUEUE the next
-/// attempt when it reaches 0. No wall clock — one decrement per render period,
-/// the same latch idiom as the USB DIRECT lane's reopen — and, since #2538, no
-/// blocking: the `create_or_attach` (and the bounded `flock` inside it) runs on
-/// `fanin-ring-attacher`, so a detached lane costs this loop one non-blocking
-/// `try_recv` per period instead of a full attach attempt every ~2 s inside the
-/// period budget.
+/// attempt when it reaches 0. No wall clock — one decrement per render period —
+/// and no blocking: the attach itself runs on `fanin-ring-attacher` (#2538), so a
+/// detached lane costs this loop one non-blocking `try_recv` per period.
 ///
 /// A successful reattach resets the lane's resampler (the ring's own attach
 /// resync drops stale slots, so the lane resumes from the writer's tip and any
@@ -861,14 +756,12 @@ fn maybe_reattach_ring(ring: RingCapture, input: &mut Input) -> RingCapture {
             periods_until_retry: RING_REATTACH_RETRY_PERIODS,
         };
     };
-    // A `None` attacher (spawn failed) cannot self-heal without blocking the
-    // render loop, and blocking it is the defect: stay Detached (silence) with
-    // the latch re-armed. `request` is also a no-op while one is already in
-    // flight, so a slow attach can never be re-queued into a backlog.
-    //
-    // The geometry handed over is the SAME tuple the initial attach used — held
-    // whole precisely so a reattach cannot present a rebuilt-from-parts geometry
-    // the header then rejects.
+    // A `None` attacher (spawn failed) stays Detached (silence) with the latch
+    // re-armed rather than attaching inline — blocking the render loop is the
+    // defect. `request` is also a no-op while one is already in flight, so a slow
+    // attach can never be re-queued into a backlog. The geometry handed over is
+    // the SAME tuple the initial attach used; a rebuilt-from-parts one would be
+    // rejected by the header comparison.
     let queued = match input.ring_attacher.as_mut() {
         Some(attacher) => attacher.request(&obs.path, obs.geometry),
         None => false,
@@ -914,10 +807,9 @@ fn adopt_attach_outcome(outcome: RingAttachOutcome, input: &mut Input) -> RingCa
             }
         }
         RingAttachOutcome::Failed(reason) => {
-            // Record the CURRENT reason (it can change — an `unavailable` ring that
-            // a renderer then creates at a sheared geometry becomes `geometry`), but
-            // do not log per retry: only the attached/detached TRANSITIONS log, the
-            // same discipline as the direct lane's reopen.
+            // Record the CURRENT reason (it can change — an `unavailable` ring
+            // that a renderer then creates at a sheared geometry becomes
+            // `geometry`), but do not log per retry: only TRANSITIONS log.
             obs.detach_reason.store(reason as u64, Ordering::Relaxed);
             RingCapture::Detached {
                 periods_until_retry: RING_REATTACH_RETRY_PERIODS,
@@ -928,11 +820,9 @@ fn adopt_attach_outcome(outcome: RingAttachOutcome, input: &mut Input) -> RingCa
 
 #[cfg(test)]
 mod tests {
-    //! The renderer-ingress lane's PRESENCE model, exercised against a real
-    //! `jasper_ring` writer on a real SHM file. Nothing here needs ALSA, a
-    //! renderer, or a Pi — which is the point: the lane's resilience contract
-    //! (absent ring, writer death, geometry shear, self-heal) is the part most
-    //! likely to be wrong on hardware and least likely to be reachable there.
+    //! The renderer-ingress lane's PRESENCE model (absent ring, writer death,
+    //! geometry shear, self-heal), exercised against a real `jasper_ring` writer
+    //! on a real SHM file. Nothing here needs ALSA, a renderer, or a Pi.
 
     use super::*;
     use jasper_ring::{RingWriter, TestRingWriter, SAMPLE_FORMAT_S16LE};
@@ -966,8 +856,7 @@ mod tests {
     }
 
     /// Build a ring lane `Input` directly, bypassing `Config` so the test does
-    /// not have to mutate process env; the `Input` itself comes from the same
-    /// `ring_lane_input` production uses.
+    /// not have to mutate process env.
     fn ring_lane(path: &str) -> Input {
         ring_lane_at(path, test_geometry())
     }
@@ -990,9 +879,8 @@ mod tests {
                 }
             }
         };
-        // A REAL attacher thread, like production: the reattach path is what most
-        // of this module's tests exercise, and stubbing the worker would test a
-        // lane shape no box ever runs.
+        // A REAL attacher thread, like production: stubbing the worker would test
+        // a lane shape no box ever runs.
         let ring_attacher =
             Some(RingAttacher::spawn("spotify", Arc::clone(&obs.attach_pending)).unwrap());
         ring_lane_input(
@@ -1024,8 +912,8 @@ mod tests {
     }
 
     /// Poll an attacher the way the render loop does — non-blocking, with wall
-    /// clock passing between attempts — until its result lands. Bounded so a
-    /// broken worker fails the test instead of hanging it.
+    /// clock passing between attempts. Bounded so a broken worker fails the test
+    /// instead of hanging it.
     fn collect(attacher: &mut RingAttacher) -> Option<RingAttachOutcome> {
         for _ in 0..2_000 {
             if let Some(outcome) = attacher.poll() {
@@ -1038,13 +926,11 @@ mod tests {
 
     /// Drive render periods until `done` holds, up to `max_periods`.
     ///
-    /// **Why a helper and not a bare loop.** Since #2538 the attach happens on the
-    /// lane's `fanin-ring-attacher` thread and the render side adopts the result
-    /// on a LATER period, so a loop that runs periods back to back at test speed
-    /// can outrun the worker and conclude the lane never healed. Production cannot:
-    /// one period is 5.33 ms of wall clock, which is several orders of magnitude
-    /// more than an attach needs. This restores that by yielding — but only while
-    /// an attach is actually queued, so a test that never queues one pays nothing.
+    /// The attach happens on the lane's `fanin-ring-attacher` thread and the
+    /// render side adopts the result on a LATER period, so a loop that runs
+    /// periods back to back at test speed can outrun the worker and conclude the
+    /// lane never healed. Production cannot: one period is 5.33 ms of wall clock.
+    /// This yields, but only while an attach is actually queued.
     fn drive_until(
         input: &mut Input,
         max_periods: u64,
@@ -1063,27 +949,18 @@ mod tests {
     }
 
     /// A lane whose ring cannot be attached at all renders SILENCE and does not
-    /// spin: it reports zero real frames and stays detached across many periods,
-    /// making at most one attach attempt per retry window.
-    ///
-    /// The no-spin half is the load-bearing one. A lane that retried the attach
+    /// spin: at most one attach attempt per retry window. A lane that retried
     /// every period would `open()` a file ~187 times a second, forever, on any
-    /// box whose renderer is switched off at `/sources/` — the exact
-    /// unbounded-work failure the Pi budget forbids.
+    /// box whose renderer is switched off at `/sources/`.
     #[test]
     fn an_unattachable_ring_renders_silence_and_retries_at_a_bounded_rate() {
         // An unattachable path that is unattachable for EVERY privilege level:
         // the parent is a regular FILE, so `ensure_parent_dir`'s `mkdir` fails
         // EEXIST — measured, `ErrorKind::AlreadyExists` / errno 17 — and root
-        // gets the same.
-        //
-        // The obvious choice — a path under a directory that does not exist —
-        // is NOT deterministic here. `attach_or_create` calls `ensure_parent_dir`
-        // FIRST, so that case's failure is whatever CREATING the directory
-        // returns: ENOENT where the parent is writable, EACCES on CI's non-root
-        // runner (which is what turned this test red on its first-ever Linux
-        // run), and SUCCESS as root — which would attach and invert every
-        // assertion below. Parent-is-a-file removes the privilege dependency.
+        // gets the same. A path under a MISSING directory is not deterministic:
+        // `attach_or_create` calls `ensure_parent_dir` first, so the failure is
+        // whatever creating the directory returns — ENOENT where the parent is
+        // writable, EACCES on CI's non-root runner, SUCCESS as root.
         let blocker = ring_path("notdir-blocker");
         cleanup(&blocker);
         std::fs::write(&blocker, b"not a directory").unwrap();
@@ -1119,15 +996,10 @@ mod tests {
             0,
             "no attach ever succeeded"
         );
-        // EEXIST is neither "absent" nor "geometry", so it classifies
-        // `refused` — the token whose remedy points at the environment
-        // (permissions / directory shape), which is the right advice here.
-        //
-        // Note this test pins the token for THIS errno only. The full
-        // reason MAPPING is pinned on synthetic errors by
-        // `attach_failures_classify_onto_the_remedy_they_need`, which is where a
-        // mapping belongs; what THIS test owns is the behaviour — silence, no
-        // spin, and never falsely attached.
+        // EEXIST is neither "absent" nor "geometry", so it classifies `refused` —
+        // the token whose remedy points at the environment (permissions /
+        // directory shape). The full reason MAPPING is pinned by
+        // `attach_failures_classify_onto_the_remedy_they_need`.
         assert_eq!(
             obs.detach_reason_str(),
             RingDetachReason::Refused.as_str(),
@@ -1143,15 +1015,12 @@ mod tests {
         cleanup(&blocker);
     }
 
-    /// A WIDE lane carries a renderer's low bits all the way to the mix.
-    ///
-    /// The ring lane's width is the box's one resolved wire, so on a wide box
-    /// the slot is S32 and the period lands in `read_buf_wide` — the same
+    /// A WIDE lane carries a renderer's low bits all the way to the mix: on a
+    /// wide box the slot is S32 and the period lands in `read_buf_wide`, the
     /// spine-scale buffer the mixer sums without a shift. The payload is a
-    /// 24-bit-in-S32 pattern whose low byte is exactly what a narrow lane's
-    /// truncation used to discard (#3460); publishing it as explicit
-    /// little-endian bytes means this pins the wire layout too, not just the
-    /// reader's own cast.
+    /// 24-bit-in-S32 pattern whose low byte is what a narrow lane's truncation
+    /// used to discard (#3460); publishing it as explicit little-endian bytes
+    /// pins the wire layout too, not just the reader's own cast.
     #[test]
     fn a_wide_lane_carries_a_24_bit_sample_to_the_mix_bit_exact() {
         let path = ring_path("wide");
@@ -1164,9 +1033,7 @@ mod tests {
         );
 
         let samples = (TEST_PERIOD as usize) * (CHANNELS as usize);
-        // 24-bit content in S32 placement: the low byte is the bit the narrow
-        // wire could not carry, and the high nibble varies per sample so a
-        // stride bug cannot pass.
+        // The high nibble varies per sample so a stride bug cannot pass.
         let payload: Vec<i32> = (0..samples)
             .map(|i| ((i as i32) << 16) | 0x0000_5600)
             .collect();
@@ -1192,7 +1059,6 @@ mod tests {
              period and the mixer picks it by which one is allocated",
         );
 
-        // Empty ring: silence in the buffer the lane actually holds.
         input.read_buf_wide.fill(0x1234_5678);
         let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
         assert_eq!(frames, 0, "an empty ring contributes no real frames");
@@ -1235,7 +1101,6 @@ mod tests {
             TEST_PERIOD as u64,
         );
 
-        // Ring now empty — the writer paused. Silence, no detach, no counter lie.
         input.read_buf.fill(0x1234);
         let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
         assert_eq!(frames, 0, "an empty ring contributes no real frames");
@@ -1258,8 +1123,7 @@ mod tests {
     }
 
     /// A writer that DIES mid-stream leaves the lane attached and silent, with
-    /// `writer_alive` false and `empty_reads` climbing — the observable shape the
-    /// campaign's standing ring watch reads. Crucially the lane does NOT detach,
+    /// `writer_alive` false and `empty_reads` climbing. The lane does NOT detach,
     /// and it resumes the instant a writer returns.
     #[test]
     fn a_writer_that_dies_mid_stream_silences_the_lane_and_it_recovers_on_return() {
@@ -1301,7 +1165,6 @@ mod tests {
              from a live one"
         );
 
-        // A renderer returning re-publishes; the lane picks it up with no reattach.
         let mut writer2 = TestRingWriter::create_or_attach(&path, test_geometry()).unwrap();
         let payload2 = vec![0x0202_i16; samples];
         assert!(writer2.try_publish_slot(&payload2));
@@ -1324,8 +1187,8 @@ mod tests {
     /// A ring whose header declares a different geometry than the lane builds is
     /// refused, classified `geometry` (not `unavailable`), and the lane renders
     /// silence rather than reading frames at the wrong shape. This is the
-    /// conf.d-vs-fan-in shear, and misreading it as a transient would leave an
-    /// operator retrying forever with no idea why.
+    /// conf.d-vs-fan-in shear; misreading it as a transient would leave an
+    /// operator retrying forever.
     #[test]
     fn a_sheared_ring_geometry_is_refused_and_named_as_a_geometry_fault() {
         let path = ring_path("shear");
@@ -1359,10 +1222,6 @@ mod tests {
     fn a_detached_lane_self_heals_when_a_ring_appears() {
         let path = ring_path("selfheal");
         cleanup(&path);
-        // Start detached by pointing at an uncreatable path, then swap the
-        // observability path to a creatable one — the same transition a real box
-        // makes when its ring directory or renderer arrives.
-        //
         // Parent-is-a-file (EEXIST) rather than parent-does-not-exist, for the
         // same privilege-independence reason as
         // `an_unattachable_ring_renders_silence_and_retries_at_a_bounded_rate`:
@@ -1375,10 +1234,8 @@ mod tests {
         assert!(is_detached(&input));
         // Repoint the PATH only, carrying every shared counter — above all the
         // `attach_pending` gauge, whose `Arc` the attacher thread captured at
-        // spawn. Production never swaps a lane's observability at all (it is
-        // built once in `open_ring_input`), so a wholesale replacement here would
-        // silently detach the gauge from the worker that publishes it and leave
-        // this test reading a value nothing writes.
+        // spawn. A wholesale replacement would detach the gauge from the worker
+        // that publishes it and leave this test reading a value nothing writes.
         let healed = RingLaneObservability {
             path: path.clone(),
             ..input.ring_obs.clone().unwrap()
@@ -1415,8 +1272,7 @@ mod tests {
 
     /// The steady read path allocates nothing: the lane's buffer is reused period
     /// after period and never grows. Asserted through capacity rather than an
-    /// allocator hook, which is the strongest hardware-free statement available
-    /// and pins the property the Pi budget actually cares about.
+    /// allocator hook — the strongest hardware-free statement available.
     #[test]
     fn the_steady_read_path_reuses_the_lane_buffer_and_never_grows_it() {
         let path = ring_path("noalloc");
@@ -1462,9 +1318,8 @@ mod tests {
     ///
     /// An mmap survives an unlink, so without the orphan probe the lane would
     /// hold a valid mapping of a dead inode: `attached:true`, reads succeeding,
-    /// silence forever, and no counter separating it from an idle renderer.
-    /// This is the shape an arm/disarm (which clears a stale ring) or a
-    /// geometry change produces on a running box.
+    /// silence forever. An arm/disarm (which clears a stale ring) or a geometry
+    /// change produces this on a running box.
     #[test]
     fn a_ring_replaced_underneath_the_reader_is_relatched_not_read_forever() {
         let path = ring_path("orphan");
@@ -1472,7 +1327,6 @@ mod tests {
         let mut input = ring_lane(&path);
         let samples = (TEST_PERIOD as usize) * (CHANNELS as usize);
 
-        // Prove the lane works on the ORIGINAL file first.
         {
             let mut w = TestRingWriter::create_or_attach(&path, test_geometry()).unwrap();
             assert!(w.try_publish_slot(&vec![0x0A0A_i16; samples]));
@@ -1488,10 +1342,8 @@ mod tests {
         let _ = std::fs::remove_file(format!("{path}.open.lock"));
         let mut fresh = TestRingWriter::create_or_attach(&path, test_geometry()).unwrap();
 
-        // Drive periods until the orphan probe fires and the lane re-latches.
         // The probe runs on the slow cadence, so this needs the full window plus
-        // the re-latch period — which is the point: the lane recovers on its own,
-        // with no operator and no restart.
+        // the re-latch period.
         let obs = input.ring_obs.as_ref().unwrap().clone();
         let relatched = drive_until(&mut input, RING_REATTACH_RETRY_PERIODS + 32, |_| {
             obs.attaches.load(Ordering::Relaxed) >= 2
@@ -1503,11 +1355,9 @@ mod tests {
         );
         assert!(obs.attached.load(Ordering::Relaxed));
 
-        // Publish AFTER the re-latch, not before. A fresh attach resyncs
+        // Publish AFTER the re-latch, not before: a fresh attach resyncs
         // `read_seq = write_seq` (stale slots are worthless to a pacer), so a
-        // slot published before the re-latch is deliberately dropped by it —
-        // asserting on that slot would test the reader's resync, not the
-        // re-latch. What matters is that the re-latched lane carries LIVE audio.
+        // slot published before the re-latch is deliberately dropped by it.
         assert!(fresh.try_publish_slot(&vec![0x0B0B_i16; samples]));
         let frames = read_ring_and_render(&mut input, TEST_PERIOD as usize);
         assert_eq!(
@@ -1533,8 +1383,8 @@ mod tests {
     }
 
     /// Every detach reason round-trips through the atomic `/state` publishes as
-    /// its own token. A reason that collapsed onto another's spelling would tell
-    /// an operator to apply the wrong remedy.
+    /// its own token; a collapsed spelling would send an operator to the wrong
+    /// remedy.
     #[test]
     fn every_detach_reason_has_its_own_published_token() {
         let obs = RingLaneObservability::new("/tmp/x.ring".to_string(), test_geometry());
@@ -1580,12 +1430,10 @@ mod tests {
 
     /// #2538: at most ONE attach is in flight per lane, ever.
     ///
-    /// The latch is the thing that keeps a slow attach from building a backlog:
-    /// the retry window keeps expiring while an attach runs, and without the
+    /// The retry window keeps expiring while an attach runs, and without the
     /// latch each expiry would queue another. The worker holds a `.open.lock`
     /// while it works, so a queue of them would serialize into an ever-growing
-    /// tail of bounded waits — with the newest request, the only one anyone
-    /// wants, at the back.
+    /// tail of bounded waits, newest request last.
     #[test]
     fn at_most_one_attach_is_in_flight_per_lane() {
         let path = ring_path("inflight");
@@ -1631,11 +1479,9 @@ mod tests {
     }
 
     /// #2538: `poll` on an idle attacher is a no-op, and a DEAD worker thread
-    /// releases the latch instead of pinning it in flight forever.
-    ///
-    /// The dead-worker direction is the one that matters: a lane that latched
-    /// `in_flight` on a disconnected channel would stop retrying for the life of
-    /// the process, turning a recoverable ring into permanent silence.
+    /// releases the latch instead of pinning it in flight forever — a lane that
+    /// latched `in_flight` on a disconnected channel would stop retrying for the
+    /// life of the process, turning a recoverable ring into permanent silence.
     #[test]
     fn a_dead_attacher_thread_releases_the_latch_rather_than_pinning_it() {
         let gauge = Arc::new(AtomicBool::new(false));
@@ -1645,10 +1491,10 @@ mod tests {
             "polling with nothing queued must not block or invent a result"
         );
 
-        // Simulate a worker that died with a request outstanding: latch in flight,
-        // then swap in a receiver whose sender is already gone (`channel().1`
-        // drops the `Sender` on the spot), which is exactly what `try_recv` sees
-        // after the real thread exits.
+        // A worker that died with a request outstanding: latch in flight, then
+        // swap in a receiver whose sender is already gone (`channel().1` drops
+        // the `Sender` on the spot), which is what `try_recv` sees after the real
+        // thread exits.
         attacher.in_flight = true;
         attacher.publish_pending();
         attacher.res_rx = std::sync::mpsc::channel().1;
@@ -1704,11 +1550,9 @@ mod tests {
     }
 
     /// #2538: a lane whose attacher thread could not be spawned stays SILENT and
-    /// never falls back to attaching inline.
-    ///
-    /// The fail direction is deliberate and is the whole point of the change: an
-    /// inline fallback would restore a 500 ms-bounded `flock` inside a 5.33 ms
-    /// render period on precisely the box where something is already wrong.
+    /// never falls back to attaching inline — an inline fallback would restore a
+    /// 500 ms-bounded `flock` inside a 5.33 ms render period on precisely the box
+    /// where something is already wrong.
     #[test]
     fn a_lane_with_no_attacher_stays_silent_instead_of_attaching_inline() {
         let path = ring_path("noattacher");

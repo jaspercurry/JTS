@@ -325,24 +325,26 @@ def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
         assert not disclosure_file.exists()
 
 
-def test_an_older_schema_artifact_arms_the_chip_from_the_k_it_banked(
+def test_an_older_schema_artifact_is_treated_as_nothing_banked(
     monkeypatch, disclosure_file, tmp_path
 ) -> None:
-    # A schema bump moved the artifact's shape, not the quantity it measured,
-    # so boot runs from the banked K and discloses that it could not compare
-    # the commissioned identity.
+    # An artifact predating the current schema cannot be compared against
+    # this box, so the reader refuses it like any other invalid artifact and
+    # boot falls back to the shipped hardware-class alignment.
     banked = AlignmentArtifact(_live_identity(), 245, -38).to_dict() | {"schema": 1}
     path = tmp_path / "chip-aec-alignment.json"
     path.write_text(json.dumps(banked), encoding="utf-8")
+    with pytest.raises(ValueError):
+        alignment.load_artifact(path)
+
     dev = _FakeXvfDevice()
     _arm_chip_aec(monkeypatch, dev, artifact=lambda: alignment.load_artifact(path))
+    row = _shipped_row()
+    monkeypatch.setattr(shipped_alignment, "REGISTRY", (row,))
 
     assert aec_init.main() == 0
 
-    assert _write_map(dev)["AUDIO_MGR_SYS_DELAY"] == [-38]
-    assert str(alignment.ARTIFACT_SCHEMA) in disclosure_file.read_text(
-        encoding="utf-8"
-    )
+    assert _write_map(dev)["AUDIO_MGR_SYS_DELAY"] == [row.sys_delay]
 
 
 def _shipped_row(

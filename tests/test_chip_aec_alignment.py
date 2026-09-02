@@ -280,18 +280,15 @@ def test_a_harvested_entry_round_trips_into_the_registry_it_is_pasted_into(
     assert shipped.for_identity(replace(_identity(), output_id="different_dac")) is None
 
 
-def test_a_malformed_artifact_is_not_merely_a_superseded_one() -> None:
-    # The exact-field-set check still rejects an artifact missing the
-    # commissioned SYS_DELAY. Only a recognisable OLDER SCHEMA earns
-    # ArtifactSchemaSuperseded, which hands its banked K out to be applied —
-    # a shape nobody can validate must not reach that path.
+def test_a_malformed_artifact_is_rejected() -> None:
+    # The exact-field-set check rejects an artifact missing the commissioned
+    # SYS_DELAY.
     artifact = AlignmentArtifact(_identity(), 245, -38)
     older = artifact.to_dict()
     del older["sys_delay"]
 
-    with pytest.raises(ValueError) as invalid:
+    with pytest.raises(ValueError):
         artifact_from_dict(older)
-    assert not isinstance(invalid.value, alignment.ArtifactSchemaSuperseded)
 
     with pytest.raises(ValueError, match="out of range"):
         AlignmentArtifact(_identity(), 245, xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1)
@@ -301,31 +298,19 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
     artifact = AlignmentArtifact(_identity(), 245, -38)
     assert artifact_from_dict(artifact.to_dict()) == artifact
 
-    # An older schema still banks a usable K, so it is handed out for boot to
-    # apply and disclose rather than parking the box on a version number.
+    # An older schema predates a key this build requires to compare the
+    # commissioned identity, so it is refused like any other unreadable
+    # artifact — `resolve_banked_alignment` falls back to the shipped table.
     legacy = artifact.to_dict() | {"schema": 1}
-    with pytest.raises(alignment.ArtifactSchemaSuperseded) as superseded:
+    with pytest.raises(ValueError):
         artifact_from_dict(legacy)
-    assert (superseded.value.k_samples, superseded.value.sys_delay) == (245, -38)
-
-    # ...but only when what it banked survives the same checks the current
-    # schema applies.
-    unusable = artifact.to_dict() | {
-        "schema": 1,
-        "sys_delay": xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1,
-    }
-    with pytest.raises(ValueError) as invalid:
-        artifact_from_dict(unusable)
-    assert not isinstance(invalid.value, alignment.ArtifactSchemaSuperseded)
 
     # A schema from the FUTURE is what a rollback leaves behind
-    # (JASPER_DEPLOY_ALLOW_DOWNGRADE). This build cannot know what its K means,
-    # so it refuses rather than applying it under a false "predates" message —
-    # and a non-integer schema is not an ordering at all.
+    # (JASPER_DEPLOY_ALLOW_DOWNGRADE), and a non-integer schema is not an
+    # ordering at all — both are refused the same way.
     for schema in (alignment.ARTIFACT_SCHEMA + 1, "3", 3.0, None):
-        with pytest.raises(ValueError) as newer:
+        with pytest.raises(ValueError):
             artifact_from_dict(artifact.to_dict() | {"schema": schema})
-        assert not isinstance(newer.value, alignment.ArtifactSchemaSuperseded)
 
     # Same schema, mangled identity field-set: a shape this build DOES claim to
     # read but cannot, so it stays a hard refusal too.
@@ -333,15 +318,13 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
     mangled["identity"] = {
         name: v for name, v in mangled["identity"].items() if name != "output_format"
     }
-    with pytest.raises(ValueError) as broken:
+    with pytest.raises(ValueError):
         artifact_from_dict(mangled)
-    assert not isinstance(broken.value, alignment.ArtifactSchemaSuperseded)
 
     expanded = json.loads(json.dumps(artifact.to_dict()))
     expanded["timing_trials"] = [1, 2, 3]
-    with pytest.raises(ValueError) as extra:
+    with pytest.raises(ValueError):
         artifact_from_dict(expanded)
-    assert not isinstance(extra.value, alignment.ArtifactSchemaSuperseded)
 
 
 @pytest.mark.parametrize(
@@ -475,7 +458,9 @@ def test_timing_correlation_removes_filtered_window_mean(monkeypatch) -> None:
     assert all(abs(value) < 1e-8 for value in observed_means[0])
 
 
-def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
+def _product_captures(*, clipped: bool = False) -> tuple[np.ndarray, ...]:
+    """An AEC-on/off pair that clears every product threshold it is held to."""
+
     _stereo, _reference, active = commissioning_stimulus()
     rng = np.random.default_rng(7)
     on = rng.integers(-10, 11, size=(32_000, 6), dtype=np.int16)
@@ -489,6 +474,16 @@ def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
         on[start : start + len(active), beam] = (active.astype(np.int32) // 20).astype(
             np.int16
         )
+    if clipped:
+        # Same samples in both captures, so the ratio the other four
+        # thresholds are measured from does not move with the clip count.
+        on[start + 50 : start + 55, 2] = alignment.CLIP
+        off[start + 50 : start + 55, 2] = alignment.CLIP
+    return on, off, active
+
+
+def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
+    on, off, active = _product_captures()
 
     result = analyze_product(on, off, active)
 
@@ -496,3 +491,39 @@ def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
     assert min(result.beam_acquisition_db) > 8
     assert min(result.beam_suppression_db) > 20
     assert result.clipped_samples == 0
+
+
+@pytest.mark.parametrize(
+    "constant, impossible, measured",
+    [
+        ("MAX_RAW_LEVEL_DELTA_DB", -1.0, "raw_level_delta_db_abs"),
+        ("MIN_RAW_EXCESS_SNR_DB", 500.0, "raw_excess_snr_db"),
+        ("MIN_BEAM_ACQUISITION_DB", 500.0, "beam_acquisition_db"),
+        ("MIN_BEAM_SUPPRESSION_DB", 500.0, "beam_suppression_db"),
+    ],
+)
+def test_a_rejected_product_capture_carries_each_metric_beside_its_threshold(
+    constant, impossible, measured, monkeypatch
+) -> None:
+    # The refusal IS the evidence: jts.local refused on the five-threshold
+    # block with a bare message, so the measurement that failed and the number
+    # it was held to both had to be re-derived by hand (#3271).
+    on, off, active = _product_captures()
+    expected = analyze_product(on, off, active).evidence()[measured]
+    monkeypatch.setattr(alignment, constant, impossible)
+
+    with pytest.raises(alignment.Rejected) as rejected:
+        analyze_product(on, off, active)
+
+    fields = rejected.value.fields
+    assert (fields[measured], fields[constant.lower()]) == (expected, impossible)
+    assert fields["clipped_samples"] == 0
+
+
+def test_a_clipping_product_capture_is_refused_with_the_count() -> None:
+    on, off, active = _product_captures(clipped=True)
+
+    with pytest.raises(alignment.Rejected) as rejected:
+        analyze_product(on, off, active)
+
+    assert rejected.value.fields["clipped_samples"] == 10
