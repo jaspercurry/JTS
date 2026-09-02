@@ -14,12 +14,10 @@ import sys
 
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
+    METERS_PER_INCH,
     DeclaredGeometry,
     load_declared_geometry,
 )
-
-#: 1 international inch, exactly (25.4 mm).
-METERS_PER_INCH = 0.0254
 
 EXIT_OK = 0
 EXIT_REFUSED = 1

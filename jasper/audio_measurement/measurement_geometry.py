@@ -31,6 +31,9 @@ from ..atomic_io import atomic_write_json
 
 DEFAULT_PATH = "/var/lib/jasper/measurement_geometry.json"
 
+#: 1 international inch, exactly.
+METERS_PER_INCH = 0.0254
+
 MIN_HEIGHT_M = 0.1
 MAX_HEIGHT_M = 3.0
 MIN_DISTANCE_M = 0.15

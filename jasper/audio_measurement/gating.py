@@ -173,6 +173,13 @@ logger = logging.getLogger(__name__)
 #: reader comparing records across the boundary can tell which convention a
 #: ToA was written under.
 GATING_SCHEMA_VERSION = 2
+
+#: Schema at which ``first_reflection_ms`` began reporting the reflection's
+#: ARRIVAL rather than its onset (schema 1 stored the onset). Pinned
+#: independently of GATING_SCHEMA_VERSION on purpose: an unrelated future
+#: bump to that version must not reinterpret an already-written v2 block.
+ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION = 2
+
 WINDOW_KIND = "half_hann_tail"
 
 # --- P1a consult table (see docs/active-crossover-information-design.md) ---

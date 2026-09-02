@@ -60,6 +60,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     ExcitationProgram,
@@ -274,7 +275,7 @@ def format_position_distance(offset_cm: float) -> str:
     between 0.1 m and 0.6 m, and "0.12 m LEFT" is worse copy than "12 cm
     LEFT" for the same number.
     """
-    inches = round(float(offset_cm) / 2.54)
+    inches = round(float(offset_cm) / (METERS_PER_INCH * 100.0))
     return f"{inches:g} in ({float(offset_cm):g} cm)"
 
 

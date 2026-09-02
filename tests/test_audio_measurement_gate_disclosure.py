@@ -468,29 +468,37 @@ def test_a_large_delta_gets_no_smallness_gloss_either_way():
     assert "genuinely little to remove" not in text
 
 
-def test_describe_gate_names_the_internal_ledger_when_the_guard_caught_one():
-    """The asymmetric-cost guard is disclosed, not silent: a reader must be
-    able to see that a real early feature was found and deliberately NOT
-    gated (the jts3 horn's ~291 us feature)."""
+@pytest.mark.parametrize(
+    ("classification", "expected", "unexpected"),
+    [
+        # The asymmetric-cost guard is disclosed, not silent: a reader must
+        # be able to see that a real early feature was found and
+        # deliberately NOT gated (the jts3 horn's ~291 us feature).
+        (
+            gating.CLASS_DUT_INTERNAL,
+            ("1 early feature arriving before the search window opens",
+             "deliberately not gated"),
+            (),
+        ),
+        # A gateable-only ledger is a different statement -- the guard
+        # stays silent about it.
+        (
+            gating.CLASS_GATEABLE,
+            (),
+            ("loudspeaker-internal",),
+        ),
+    ],
+)
+def test_describe_gate_and_the_internal_reflection_ledger(classification, expected, unexpected):
     text = gate_disclosure.describe_gate({
         "floor_source": gating.FLOOR_SEARCH_BOUND,
         "window_ms": 7.0,
         "internal_reflection_ledger": [
             {"tau_us": 291.7, "level_db": -11.2,
-             "classification": gating.CLASS_DUT_INTERNAL},
+             "classification": classification},
         ],
     })
-    assert "1 early feature arriving before the search window opens" in text
-    assert "deliberately not gated" in text
-
-
-def test_describe_gate_is_silent_about_a_ledger_of_only_gateable_candidates():
-    text = gate_disclosure.describe_gate({
-        "floor_source": gating.FLOOR_SEARCH_BOUND,
-        "window_ms": 7.0,
-        "internal_reflection_ledger": [
-            {"tau_us": 645.8, "level_db": -19.8,
-             "classification": gating.CLASS_GATEABLE},
-        ],
-    })
-    assert "loudspeaker-internal" not in text
+    for substring in expected:
+        assert substring in text
+    for substring in unexpected:
+        assert substring not in text

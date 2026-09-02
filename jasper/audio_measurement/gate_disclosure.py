@@ -94,10 +94,6 @@ DELTA_CEILING_HZ = 20000.0
 #: printed beside the word.
 SMALL_DELTA_RMS_DB = 1.0
 
-#: First gating schema whose ``first_reflection_ms`` is an arrival rather
-#: than an onset — gating's ``GATING_SCHEMA_VERSION`` carries the boundary.
-_ARRIVAL_SCHEMA_VERSION = 2
-
 
 def evaluation_band_hz(
     trusted_floor_hz: float | None,
@@ -343,35 +339,27 @@ def _floor_from_bounce_s(t_first_bounce_s: float | None) -> float | None:
     return gating.f_entanglement_floor_hz(t)
 
 
-def _reports_arrival(schema_version: Any) -> bool:
-    """Whether the block's ``first_reflection_ms`` is the reflection's ARRIVAL.
-
-    Schema 1 put the ONSET in that field
-    (:data:`~jasper.audio_measurement.gating.GATING_SCHEMA_VERSION`), which
-    is an earlier time and would misstate the bounce. An absent or
-    unreadable version is a block this module's own callers built, not a v1
-    record — every persisted block carries the number.
-    """
-    version = _finite(schema_version)
-    return version is None or version >= _ARRIVAL_SCHEMA_VERSION
-
-
 def _entanglement_floor(
     source_of_bound: str | None,
     reflection_delay_ms: float | None,
     declared_first_bounce_s: float | None,
     *,
-    arrival_reported: bool,
+    schema_version: Any,
 ) -> tuple[float | None, str]:
     """``(floor_hz, source)`` — measured beats declared beats unknown.
 
     A measured reflection is the only source that also proves the bounce it
     times exists; a declared geometry is the operator's tape measure. Neither
-    available is where this rig class lives (#3502). A block that reports no
-    arrival (:func:`_reports_arrival`) has nothing to time, so it falls
-    through to declared however its window was bound.
+    available is where this rig class lives (#3502). A block whose schema
+    predates :data:`~jasper.audio_measurement.gating.ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION`
+    reports no arrival and has nothing to time, so it falls through to
+    declared however its window was bound.
     """
-    if arrival_reported and source_of_bound == gating.FLOOR_MEASURED:
+    version = _finite(schema_version)
+    reports_arrival = (
+        version is None or version >= gating.ARRIVAL_REPORTED_SINCE_SCHEMA_VERSION
+    )
+    if reports_arrival and source_of_bound == gating.FLOOR_MEASURED:
         measured = _floor_from_bounce_s(
             reflection_delay_ms / 1000.0 if reflection_delay_ms is not None else None
         )
@@ -396,7 +384,7 @@ def build_gate_disclosure(
     ``None`` — "unknown", never a fabricated value. A schema-1 block (whose
     ``first_reflection_ms`` is an ONSET, not an arrival) reads cleanly; its
     absent fields come back ``None`` and its onset never times the
-    entanglement floor (:func:`_reports_arrival`).
+    entanglement floor (:func:`_entanglement_floor`).
 
     ``declared_first_bounce_s`` is the operator's geometry, in seconds, and
     is the entanglement floor's fallback source — used only when the gating
@@ -420,7 +408,7 @@ def build_gate_disclosure(
         floor_source,
         _relative_delay_ms(reflection_toa_ms, direct_peak_ms),
         declared_first_bounce_s,
-        arrival_reported=_reports_arrival(b.get("schema_version")),
+        schema_version=b.get("schema_version"),
     )
     return GateDisclosure(
         gate_ms=_finite(b.get("window_ms")),
