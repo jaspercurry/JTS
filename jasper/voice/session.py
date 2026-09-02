@@ -425,6 +425,12 @@ class LiveConnection(Protocol):
         ``/state.voice.connection_error``."""
         ...
 
+    def outage_cue(self) -> str | None:
+        """The cue naming the remedy for the current outage, or None
+        while healthy or while the failure is still transient. The wake
+        path plays it in place of ``cant_connect``."""
+        ...
+
     def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
         """Wire the cue player for a terminal connection failure. The
         daemon calls this once the ``WakeLoop`` exists."""

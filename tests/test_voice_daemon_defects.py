@@ -286,7 +286,9 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
     cue. (Layer 2 separately keeps the usage write from reaching here at
     all; this pins the cue honesty regardless of what throws.)"""
 
-    async def _drive(*, paused: bool) -> list[str]:
+    async def _drive(
+        *, paused: bool, conn_paused: bool = False, cue: str | None = None,
+    ) -> list[str]:
         wl = WakeLoop.for_tests()
         played: list[str] = []
 
@@ -311,6 +313,9 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
             def is_paused(self) -> bool:
                 return self._paused
 
+            def outage_cue(self) -> str | None:
+                return cue
+
         wl._wake_late_cancelled = lambda *_a, **_k: False
         wl._peer_arbitrate = _win
         wl._prepare_assistant_loudness_context = _noop
@@ -324,7 +329,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
                 score=0.9,
                 rms_dbfs=-30.0,
                 spend_allowed=True,
-                conn_paused=False,  # snapshot said fine; the failure is local
+                conn_paused=conn_paused,
                 can_serve=True,
             )
         finally:
@@ -338,6 +343,13 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
     # Connection genuinely dropped into paused/failed mid-acquire ->
     # cant_connect is the truthful cue.
     assert await _drive(paused=True) == ["cant_connect"]
+
+    # ADR-0215: a TERMINAL outage names its remedy instead — "I'll keep
+    # trying" is a false promise when retrying cannot help. Pinned at the
+    # wake gate (conn_paused), the path the household actually hits.
+    assert await _drive(
+        paused=True, conn_paused=True, cue="provider_out_of_credit",
+    ) == ["provider_out_of_credit"]
 
 
 async def test_turn_open_failure_releases_output_gate_before_cue():

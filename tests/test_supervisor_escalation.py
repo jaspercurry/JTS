@@ -4,9 +4,10 @@
 
 """A broken cloud connection is announced once, and only when a human must act.
 
-Covers `is_transient` (which failures retrying can fix), `OutageTracker`
-(the once-per-outage edge trigger), and one end-to-end pass through the
-Gemini supervisor's reconnect loop. See ADR-0215.
+Covers `is_transient` (which failures retrying can fix), `outage_cue`
+(which pre-baked remedy a terminal failure names), `OutageTracker` (the
+once-per-remedy-per-outage edge trigger), and one end-to-end pass through
+the Gemini supervisor's reconnect loop. See ADR-0215.
 """
 from __future__ import annotations
 
@@ -15,9 +16,12 @@ import asyncio
 import pytest
 
 from jasper.voice._supervisor import (
-    ESCALATION_CUE_SLUG,
+    NEEDS_ATTENTION_CUE_SLUG,
+    OUT_OF_CREDIT_CUE_SLUG,
     OutageTracker,
+    failure_detail,
     is_transient,
+    outage_cue,
 )
 from tests.test_failure_detail import _Rejected
 
@@ -46,6 +50,13 @@ class _OtherTerminal(Exception):
 class _Status:
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code
+
+
+# Captured verbatim from the live xAI 403 that motivated ADR-0215.
+_CREDIT_BODY = (
+    b'{"error":"Your team has either used all available credits or reached'
+    b' its monthly spending limit."}'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +88,38 @@ def test_is_transient_classifies_by_who_must_act(
 
 
 # ---------------------------------------------------------------------------
+# outage_cue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "cue"),
+    [
+        (_Rejected(403, b""), NEEDS_ATTENTION_CUE_SLUG),
+        (_Rejected(403, _CREDIT_BODY), OUT_OF_CREDIT_CUE_SLUG),
+        (_Rejected(401, b""), NEEDS_ATTENTION_CUE_SLUG),
+        (_Rejected(429, b""), None),
+        (OSError("network blip"), None),
+        (ValueError("bad config"), NEEDS_ATTENTION_CUE_SLUG),
+    ],
+    ids=[
+        "rejected-no-body",
+        "rejected-out-of-credit",
+        "bad-key",
+        "rate-limited",
+        "network",
+        "local-config",
+    ],
+)
+def test_outage_cue_names_the_remedy(
+    exc: BaseException, cue: str | None,
+) -> None:
+    """The provider's own rejection text picks between the two terminal
+    cues; a transient failure names no remedy at all."""
+    assert outage_cue(exc, failure_detail(exc)) == cue
+
+
+# ---------------------------------------------------------------------------
 # OutageTracker
 # ---------------------------------------------------------------------------
 
@@ -94,24 +137,34 @@ async def _drive(tracker: OutageTracker, events: list[object]) -> None:
 @pytest.mark.parametrize(
     ("events", "expected"),
     [
-        ([_Terminal()], 1),
-        ([OSError("blip"), OSError("blip again")], 0),
-        ([_Terminal(), _Terminal()], 1),
-        ([_Terminal(), _OtherTerminal()], 1),
-        ([_Terminal(), None, _Terminal()], 2),
-        ([_Terminal(), OSError("blip"), _Terminal()], 1),
+        ([_Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
+        ([OSError("blip"), OSError("blip again")], []),
+        ([_Terminal(), _Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
+        ([_Terminal(), _OtherTerminal()], [NEEDS_ATTENTION_CUE_SLUG]),
+        (
+            [_Terminal(), _Rejected(403, _CREDIT_BODY)],
+            [NEEDS_ATTENTION_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG],
+        ),
+        (
+            [_Rejected(403, _CREDIT_BODY), _Rejected(403, _CREDIT_BODY)],
+            [OUT_OF_CREDIT_CUE_SLUG],
+        ),
+        ([_Terminal(), None, _Terminal()], [NEEDS_ATTENTION_CUE_SLUG] * 2),
+        ([_Terminal(), OSError("blip"), _Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
     ],
     ids=[
         "terminal-speaks",
         "transient-silent",
         "same-outage-speaks-once",
-        "changed-terminal-class-still-one-outage",
+        "same-remedy-different-status-speaks-once",
+        "changed-remedy-mid-outage-re-announces",
+        "same-remedy-twice-speaks-once",
         "recovery-rearms",
         "transient-mid-outage-does-not-rearm",
     ],
 )
-async def test_escalation_speaks_once_per_outage(
-    events: list[object], expected: int,
+async def test_escalation_speaks_once_per_remedy_per_outage(
+    events: list[object], expected: list[str],
 ) -> None:
     calls: list[str] = []
 
@@ -121,7 +174,22 @@ async def test_escalation_speaks_once_per_outage(
     tracker = OutageTracker()
     tracker.set_callback(cb)
     await _drive(tracker, events)
-    assert calls == [ESCALATION_CUE_SLUG] * expected
+    assert calls == expected
+
+
+async def test_cue_tracks_the_latest_failure() -> None:
+    """`cue` is what the wake path would play right now: the current
+    remedy, and nothing once a retry might still fix it."""
+    tracker = OutageTracker()
+    await _drive(tracker, [_Terminal()])
+    assert tracker.cue == NEEDS_ATTENTION_CUE_SLUG
+
+    await _drive(tracker, [OSError("blip")])
+    assert tracker.cue is None
+
+    await _drive(tracker, [_Rejected(403, _CREDIT_BODY), None])
+    assert tracker.cue is None
+    assert tracker.detail is None
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +236,7 @@ async def test_supervisor_speaks_once_then_recovers_silently() -> None:
 
         await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
         await asyncio.sleep(0.05)
-        assert cue_calls == [ESCALATION_CUE_SLUG]
+        assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG]
         assert conn.last_failure_detail() is None
     finally:
         await conn.stop()

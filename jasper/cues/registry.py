@@ -58,7 +58,10 @@ CUES: tuple[CueDef, ...] = (
         ),
         description=(
             "Played when wake fires while the voice backend is in "
-            "reconnect / paused-for-backoff state."
+            "reconnect / paused-for-backoff state for a TRANSIENT "
+            "reason. A terminal outage plays the provider_* cue naming "
+            "its remedy instead — 'I'll keep trying' is a false promise "
+            "there (ADR-0215)."
         ),
     ),
     CueDef(
@@ -80,22 +83,31 @@ CUES: tuple[CueDef, ...] = (
         ),
     ),
     CueDef(
-        slug="cant_reach_cloud",
+        slug="provider_out_of_credit",
         template=(
-            "Heads up — I'm having trouble reaching the cloud and "
-            "I'll keep trying. You might want to check on me at "
+            "My AI service is out of credit. Please check me at "
             "{hostname}."
         ),
         description=(
-            "Proactive cue fired by the connection supervisor on the "
-            "first terminal failure of an outage — one retrying cannot "
-            "fix, such as the provider rejecting the key or the account "
-            "being out of credit. Transient failures retry in silence. "
-            "Spoken once per outage; a successful reconnect re-arms it "
-            "silently. Distinguished from cant_connect: that one is "
-            "reactive to a wake event during a paused window. This one "
-            "fires without a wake event so the user knows the speaker "
-            "is broken even when they haven't tried to use it."
+            "Terminal connection failure whose rejection body names "
+            "credit, quota, billing or a spending limit. Spoken "
+            "proactively on the first such failure of an outage, and "
+            "again on any wake while that outage lasts (in place of "
+            "cant_connect, which promises a retry that cannot help). "
+            "ADR-0215."
+        ),
+    ),
+    CueDef(
+        slug="provider_needs_attention",
+        template=(
+            "My AI service needs attention. Please check me at "
+            "{hostname}."
+        ),
+        description=(
+            "Any other terminal connection failure — rejected key, "
+            "missing model, malformed config. Same two paths as "
+            "provider_out_of_credit: proactive on the outage's first "
+            "terminal failure, and on wake while it lasts. ADR-0215."
         ),
     ),
     CueDef(

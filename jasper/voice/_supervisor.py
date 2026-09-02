@@ -29,7 +29,15 @@ from .session import CuePlayer
 
 logger = logging.getLogger(__name__)
 
-ESCALATION_CUE_SLUG = "cant_reach_cloud"
+OUT_OF_CREDIT_CUE_SLUG = "provider_out_of_credit"
+NEEDS_ATTENTION_CUE_SLUG = "provider_needs_attention"
+
+# Markers that a rejection body blames the account's balance rather than its
+# configuration: the xAI 403 reads "used all available credits or reached its
+# monthly spending limit"; OpenAI sends `insufficient_quota`.
+_OUT_OF_CREDIT_MARKERS = (
+    "credit", "quota", "billing", "spending limit", "payment",
+)
 
 # Cap on the cause string stored and logged. Comfortably fits a provider's
 # JSON error body; short enough that an HTML error page cannot flood the
@@ -102,18 +110,34 @@ def is_transient(exc: BaseException) -> bool:
     return True
 
 
+def outage_cue(exc: BaseException, detail: str) -> str | None:
+    """Which pre-baked cue names the remedy for this failure.
+
+    ``None`` while retrying can still fix it. Otherwise the provider's
+    own redacted rejection text (``failure_detail``) decides between
+    "out of credit" and the catch-all "needs attention". See ADR-0215."""
+    if is_transient(exc):
+        return None
+    lowered = detail.lower()
+    if any(marker in lowered for marker in _OUT_OF_CREDIT_MARKERS):
+        return OUT_OF_CREDIT_CUE_SLUG
+    return NEEDS_ATTENTION_CUE_SLUG
+
+
 class OutageTracker:
     """Track the current outage for a connection.
 
-    Holds its redacted cause for logs and ``/state``, and whether it has
-    been announced. The announcement is edge-triggered: the cue fires on
-    the first terminal failure after the connection last worked, never on
-    a timer, and a recovery re-arms it silently. One instance per
-    connection. See ADR-0215."""
+    Holds its redacted cause for logs and ``/state``, and the cue that
+    names the remedy. The announcement is edge-triggered: the cue fires
+    on the first terminal failure after the connection last worked,
+    never on a timer, a recovery re-arms it silently, and a remedy that
+    changes mid-outage is announced again. One instance per connection.
+    See ADR-0215."""
 
     def __init__(self) -> None:
         self.detail: str | None = None
-        self._announced = False
+        self.cue: str | None = None
+        self._announced: str | None = None
         self._cb: CuePlayer | None = None
 
     def set_callback(self, cb: CuePlayer | None) -> None:
@@ -123,13 +147,16 @@ class OutageTracker:
     def on_failure(self, exc: BaseException) -> None:
         """Record a failed session open, announcing a terminal one once."""
         self.detail = failure_detail(exc)
-        if is_transient(exc) or self._announced:
+        # Latest failure wins, so a transient failure after a terminal
+        # one reads as transient again.
+        self.cue = outage_cue(exc, self.detail)
+        if self.cue is None or self.cue == self._announced:
             return
-        self._announced = True
+        self._announced = self.cue
         log_event(
             logger,
             "voice.connection.terminal_failure",
-            cue=ESCALATION_CUE_SLUG,
+            cue=self.cue,
             exc=type(exc).__name__,
             level=logging.WARNING,
         )
@@ -138,14 +165,15 @@ class OutageTracker:
         # Fire-and-forget: cue playback must not stall the reconnect
         # cadence.
         asyncio.create_task(
-            self._cb(ESCALATION_CUE_SLUG),
+            self._cb(self.cue),
             name="jasper-supervisor-escalation-cue",
         )
 
     def on_recovery(self) -> None:
         """A session opened: clear the outage and re-arm, silently."""
         self.detail = None
-        self._announced = False
+        self.cue = None
+        self._announced = None
 
 
 class DeferredReconnect:
