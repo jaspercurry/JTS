@@ -416,7 +416,7 @@ def resolve_enable_rate_adjust(playback_device: str | None) -> bool:
     HCtl and has no mixer element to actuate, and a requested ``true`` would
     only echo back on ``capture_status.rate_adjust`` while nothing moved. True
     for an ordinary ALSA sink, whose own clock the adjuster can track. See
-    ADR-0216.
+    ADR-0218.
     """
 
     return playback_device is not None and playback_device not in RING_PCM_DEVICES
