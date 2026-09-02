@@ -542,7 +542,7 @@ def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert "DONGLE_CARD=A" in result.stdout
     assert "APPLE_DONGLE_PRESENT=1" in result.stdout
-    assert "APPLE_DONGLE_SERVICE_CARD=A" in result.stdout
+    assert "APPLE_DONGLE_SERVICE_CARD=auto" in result.stdout
     assert "OUTPUT_DAC_CARD=sndrpihifiberry" in result.stdout
     assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
