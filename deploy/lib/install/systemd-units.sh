@@ -261,7 +261,8 @@ install_hid_accessory_unit_files() {
 # Staged on streambox but never boot-enabled: jasper-accessory-reconcile starts
 # and stops jasper-voice as a mic-bearing remote pairs and unpairs, and
 # `systemctl start` on a unit whose file was never installed exits 1. The full
-# profile stages the same file inside its own rollback transaction below.
+# profile calls this from inside its rollback transaction below, so `install`
+# here resolves to the transactional wrapper.
 # See docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
 install_voice_unit_files() {
     install -m 0644 \
@@ -362,6 +363,10 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
             "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
             "${SYSTEMD_DIR}/jasper-voice.service"
+            "${SYSTEMD_DIR}/jasper-input.service"
+            "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
+            "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
+            "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
         )
         if [[ -x /usr/bin/snapserver ]]; then
             verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
@@ -1266,9 +1271,7 @@ install_systemd_units() {
     # its containing directory outside group-writable StateDirectory=jasper so
     # a non-root service in the shared `jasper` group cannot replace the proof.
     install -d -m 0755 -o root -g root /var/lib/jasper-enhanced-aec
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
-        "${SYSTEMD_DIR}/jasper-voice.service"
+    install_voice_unit_files
     # The wizard daemons are SOCKET-ACTIVATED (each .service is paired
     # with a .socket unit that holds the port and re-spawns the daemon
     # on demand). systemd binds the listener; the daemon adopts the fd

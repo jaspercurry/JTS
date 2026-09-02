@@ -30,6 +30,7 @@ preserved here.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import tomllib
@@ -279,7 +280,10 @@ def test_streambox_plan_includes_audio_graph_not_voice_brain():
         "jasper-outputd daemon",
         "CamillaDSP:",
         "AirPlay, Spotify Connect, Bluetooth, and USB Audio Input",
-        "voice, wake-word, mic/AEC",  # listed as out-of-scope
+        "wake-word, local microphone, or AEC",  # listed as out-of-scope
+        # The assistant IS in scope, owned by the accessory reconciler.
+        # See docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+        "jasper-accessory-reconcile starts and stops jasper-voice",
     ]:
         assert expected in result.stdout, expected
     for forbidden in [
@@ -303,6 +307,12 @@ def test_full_plan_includes_voice_and_audio_graph():
         assert expected in result.stdout, expected
 
 
+def _distribution_name(requirement: str) -> str:
+    """Distribution name of a PEP 508 requirement — the text before any
+    version specifier, environment marker, or direct-reference URL."""
+    return re.split(r"[<>=!;@ ]", requirement, maxsplit=1)[0].strip()
+
+
 def test_pyproject_base_install_stays_minimal():
     data = tomllib.loads(PYPROJECT.read_text())
     base = data["project"]["dependencies"]
@@ -313,9 +323,17 @@ def test_pyproject_base_install_stays_minimal():
     for dep_prefix in ["camilladsp", "google-genai", "openai", "onnxruntime"]:
         assert not any(dep.startswith(dep_prefix) for dep in base)
         assert any(dep.startswith(dep_prefix) for dep in full)
-    # streambox stays voice-brain-light.
-    for voice_only in ["google-genai", "openai", "onnxruntime"]:
-        assert not any(dep.startswith(voice_only) for dep in streambox)
+    # A push-to-talk-only streambox runs the assistant, so it carries the
+    # provider/tool SDKs; it never builds a wake detector, opens the local
+    # mic, or talks to the XVF3800, so those four runtimes stay full-only.
+    # See docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    assert set(streambox) < set(full)
+    assert {_distribution_name(dep) for dep in set(full) - set(streambox)} == {
+        "onnxruntime",
+        "pyusb",
+        "libusb_package",
+        "pyalsaaudio",
+    }
 
 
 def test_correction_relay_dependency_is_explicit_in_both_install_profiles():

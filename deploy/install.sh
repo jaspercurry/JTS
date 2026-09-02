@@ -364,7 +364,8 @@ print_streambox_install_plan() {
 No host changes are made in this mode. This is the Raspberry Pi Zero-class
 local-renderer tier: AirPlay, Spotify Connect, Bluetooth, and USB Audio Input,
 CamillaDSP sound/EQ/correction, and the same grouping reconciler as full
-speakers — without voice, wake-word, mic/AEC, or assistant providers.
+speakers, plus the assistant on a paired mic-bearing remote — without
+wake-word, local microphone, or AEC.
 
 Run for real from a Pi-local checkout:
   sudo JASPER_INSTALL_PROFILE=streambox JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
@@ -486,14 +487,18 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      role, then synchronously hands off to the canonical source coordinator,
      which parks local renderers on a follower and restores allowed sources
      after unpairing.
+   - Stage jasper-voice.service without boot-enabling it:
+     jasper-accessory-reconcile starts and stops jasper-voice as a
+     mic-bearing remote pairs and unpairs, so the assistant is resident
+     only while such a remote is present. Push-to-talk on that remote's
+     mic — never a wake word, never the local mic.
    - Seed WiFi guardian recovery, memory/cgroup tuning, journald
      persistence, Avahi identity, correction TLS, and jasper-doctor.
 
 6. Explicitly out of scope for the streambox tier
-   - Voice, wake-word, microphone/AEC, assistant provider SDKs, Google
-     account tools, transit/weather voice tools, local TTS/cues, HID
-     accessory bridge, wake corpus tooling, and
-     CamillaGUI.
+   - Wake-word detection and its ONNX runtime/models, wake corpus
+     tooling, the local microphone array and AEC (including the XVF3800
+     host), local TTS/cue regeneration, and CamillaGUI.
 
 This dry run is a planning aid for contributors; it is not a substitute
 for real Zero 2 W validation of first-run Rust build cost, memory pressure,
