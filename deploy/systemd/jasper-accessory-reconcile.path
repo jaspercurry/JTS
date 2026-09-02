@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Jasper accessory reconciler when a refresh is requested
+
+[Path]
+# Any writer in group `jasper` touches this file to request a pass; the
+# reconciler CLAIMS it (atomic rename) at the start of its run, so a request
+# written mid-pass survives and re-triggers one more. PathExists is
+# level-triggered and re-checks when the oneshot deactivates.
+PathExists=/var/lib/jasper/accessory-reconcile.request
+Unit=jasper-accessory-reconcile.service
+
+[Install]
+WantedBy=multi-user.target

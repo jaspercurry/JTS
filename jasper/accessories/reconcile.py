@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
+import os
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -72,6 +74,58 @@ _OWNER_OPERATION_TIMEOUT_BUDGET_SEC = (
     + _ADAPTER_TIMEOUT_BUDGET_SEC
     + _VOICE_REFRESH_TIMEOUT_BUDGET_SEC
 )
+
+
+# Request protocol for jasper-accessory-reconcile.path. This module is the
+# single source of truth for it: the path unit watches this file, and every
+# writer goes through the two functions below.
+DEFAULT_RECONCILE_REQUEST_FILE = "/var/lib/jasper/accessory-reconcile.request"
+_CLAIMED_SUFFIX = ".claimed"
+# 0664, not 0600: the reconciler runs as root with an empty
+# CapabilityBoundingSet, so it has no DAC override and reads this like any
+# other group/other member.
+_REQUEST_FILE_MODE = 0o664
+
+
+def request_reconcile(reason: str, *, path: str | None = None) -> None:
+    """Ask for one fresh accessory pass. Any member of group ``jasper`` may call
+    this; no systemd privilege is involved.
+
+    Published atomically so the path unit never sees a half-written request, and
+    so a request racing a pass either lands before the claim (this pass carries
+    it) or after (the path unit re-triggers). Raises ``OSError`` if the request
+    could not be published — a silent failure here is a lost refresh.
+    """
+    atomic_write_text(
+        path or DEFAULT_RECONCILE_REQUEST_FILE, reason, mode=_REQUEST_FILE_MODE,
+    )
+
+
+def claim_reconcile_request(path: str | None = None) -> str | None:
+    """Consume a pending request at the START of a pass; return its reason.
+
+    The rename is the claim, and it must happen before the pass reads any
+    BlueZ state: a request written after it survives under the original name
+    and re-triggers the path unit, so no requester is ever answered by a pass
+    that predates it. Reading and then unlinking would instead destroy that
+    racing request. A failed claim other than "no request" propagates — the
+    path unit would otherwise re-trigger on the same file forever.
+    """
+    target = path or DEFAULT_RECONCILE_REQUEST_FILE
+    claimed = target + _CLAIMED_SUFFIX
+    try:
+        os.replace(target, claimed)
+    except FileNotFoundError:
+        return None
+    try:
+        # Best-effort: the claim, not the label, is what makes the pass fresh.
+        reason = Path(claimed).read_text(encoding="utf-8").strip()
+    except OSError:
+        reason = ""
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(claimed)
+    return reason or None
 
 
 class AccessoryReconcileError(RuntimeError):
@@ -637,6 +691,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=DEFAULT_ACCESSORY_MIC_ENV_FILE)
     parser.add_argument("--reason", default="manual")
+    parser.add_argument("--reason-file", default=DEFAULT_RECONCILE_REQUEST_FILE)
     return parser.parse_args(argv)
 
 
@@ -646,14 +701,17 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # A claimed request names its own requester; --reason is the fallback for
+    # the direct boot/install starts, which carry no request file.
+    reason = claim_reconcile_request(args.reason_file) or args.reason
     try:
-        asyncio.run(reconcile_once(env_file=args.env_file, reason=args.reason))
+        asyncio.run(reconcile_once(env_file=args.env_file, reason=reason))
         return 0
     except AccessoryReconcileError as exc:
         log_event(
             logger,
             "accessory_mic.reconcile_failed",
-            reason=args.reason,
+            reason=reason,
             err=str(exc),
             level=logging.ERROR,
         )

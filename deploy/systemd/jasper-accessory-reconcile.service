@@ -1,8 +1,9 @@
 [Unit]
 Description=Jasper accessory profile reconciler
-# This oneshot has no automatic Restart= loop. Source transactions deliberately
-# start it more than once to drain an older snapshot and queue a fresh pass, so
-# the manager's default start-rate limit would reject healthy rapid toggles.
+# This oneshot has no automatic Restart= loop. jasper-accessory-reconcile.path
+# starts it once per request file, and a rapid toggle (pair then forget) is a
+# healthy burst of those, so the manager's default start-rate limit would reject
+# exactly the passes that must run.
 StartLimitIntervalSec=0
 # Source intent owns whether BlueZ may run. Ordering is passive: neither this
 # oneshot nor an optional adapter may pull bluetooth.service up through Wants=.

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from dbus_next.errors import DBusError
 
+from jasper.accessories import reconcile as accessory_reconcile
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.engine import BluetoothEngine, _format_dbus_error
 from jasper.bluetooth.models import (
@@ -220,14 +221,8 @@ def _scan_engine(adapter: _FakeAdapter) -> BluetoothEngine:
     return engine
 
 
-def _engine(reasons: list[str]) -> BluetoothEngine:
+def _wire_fakes(engine: BluetoothEngine) -> BluetoothEngine:
     device = _wiim_device()
-
-    async def reconcile(reason: str) -> object:
-        reasons.append(reason)
-        return object()
-
-    engine = BluetoothEngine(accessory_reconcile=reconcile)
     setattr(engine, "_bus", _FakeBus(device))
     setattr(engine, "_observer", _FakeObserver(device))
     setattr(
@@ -239,6 +234,36 @@ def _engine(reasons: list[str]) -> BluetoothEngine:
         ),
     )
     return engine
+
+
+def _engine(reasons: list[str]) -> BluetoothEngine:
+    async def reconcile(reason: str) -> object:
+        reasons.append(reason)
+        return object()
+
+    return _wire_fakes(BluetoothEngine(accessory_reconcile=reconcile))
+
+
+def _default_reconcile_engine() -> BluetoothEngine:
+    """Deliberately constructed with NO ``accessory_reconcile=``.
+
+    That is the wiring jasper-web actually ships, and the only way a default
+    swapped for a stub fails here rather than only on hardware.
+    """
+    return _wire_fakes(BluetoothEngine())
+
+
+async def _device_removed(_mac: str, _adapter: str) -> None:
+    return None
+
+
+async def _run_device_action(engine: BluetoothEngine, action: str):
+    if action == "pair":
+        return [
+            event
+            async for event in engine.pair("CA:AC:04:04:09:D7", timeout_s=1.0)
+        ]
+    return await getattr(engine, action)("CA:AC:04:04:09:D7")
 
 
 def _shared_bus_engine(
@@ -277,9 +302,106 @@ async def test_pair_refreshes_accessory_profiles_before_ready_event():
     refresh_index = next(
         i
         for i, event in enumerate(events)
-        if event.get("detail") == "Refreshing optional accessory profiles."
+        if event.get("detail") == "Requested an accessory profile refresh."
     )
     assert refresh_index < ready_index
+
+
+@pytest.mark.parametrize(
+    ("action", "reason"),
+    (
+        ("pair", "bluetooth-pair"),
+        ("connect", "bluetooth-connect"),
+        ("forget", "bluetooth-forget"),
+    ),
+)
+async def test_accessory_refresh_publishes_a_request_for_the_root_owner(
+    monkeypatch,
+    tmp_path,
+    action: str,
+    reason: str,
+):
+    """This engine runs inside jasper-web, which holds no systemd privilege of
+    its own. It asks for a pass by publishing a request file that
+    jasper-accessory-reconcile.path acts on — never by running systemctl."""
+    request = tmp_path / "accessory-reconcile.request"
+    monkeypatch.setattr(
+        accessory_reconcile, "DEFAULT_RECONCILE_REQUEST_FILE", str(request),
+    )
+    monkeypatch.setattr("jasper.bluetooth.adapter.remove_device", _device_removed)
+
+    await _run_device_action(_default_reconcile_engine(), action)
+
+    assert request.read_text(encoding="utf-8") == reason
+
+
+@pytest.mark.parametrize("action", ("pair", "connect", "forget"))
+async def test_the_request_is_published_only_after_bluez_has_acted(
+    monkeypatch,
+    tmp_path,
+    action: str,
+):
+    """A request published first can be claimed by a pass that reads BlueZ
+    before this change lands — the stale-pass bug the claim protocol exists to
+    close. The write has to be the last thing the action does."""
+    order: list[str] = []
+    request = tmp_path / "accessory-reconcile.request"
+    monkeypatch.setattr(
+        accessory_reconcile, "DEFAULT_RECONCILE_REQUEST_FILE", str(request),
+    )
+    real_write = accessory_reconcile.atomic_write_text
+
+    def record_request(*args, **kwargs):
+        order.append("request")
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(accessory_reconcile, "atomic_write_text", record_request)
+
+    async def record_removal(_mac: str, _adapter: str) -> None:
+        order.append("bluez")
+
+    monkeypatch.setattr("jasper.bluetooth.adapter.remove_device", record_removal)
+    engine = _default_reconcile_engine()
+    bus = engine._bus
+    assert isinstance(bus, _FakeBus)
+    for name in ("call_pair", "call_connect"):
+        async def record_bluez(_call=getattr(bus.proxy.device, name)) -> None:
+            order.append("bluez")
+            await _call()
+
+        setattr(bus.proxy.device, name, record_bluez)
+
+    await _run_device_action(engine, action)
+
+    assert "bluez" in order
+    assert order[-1] == "request"
+    assert order.count("request") == 1
+
+
+@pytest.mark.parametrize("action", ("connect", "forget"))
+async def test_an_unwritable_request_keeps_the_device_action_successful(
+    monkeypatch,
+    tmp_path,
+    caplog,
+    action: str,
+):
+    """The refresh is optional; the device action is not. A request that cannot
+    be published is the case the retry-at-boot copy exists for — the boot start
+    claims any leftover request."""
+    blocked = tmp_path / "accessory-reconcile.request"
+    blocked.mkdir()  # publishing over a directory is a real OSError
+    monkeypatch.setattr(
+        accessory_reconcile, "DEFAULT_RECONCILE_REQUEST_FILE", str(blocked),
+    )
+    monkeypatch.setattr("jasper.bluetooth.adapter.remove_device", _device_removed)
+    caplog.set_level(logging.WARNING, logger="jasper.bluetooth.engine")
+
+    result = await _run_device_action(_default_reconcile_engine(), action)
+
+    assert result.ok is True
+    assert "optional accessory refresh will retry at boot" in result.message
+    assert "event=bluetooth.accessory_reconcile_failed" in caplog.text
+    assert f"reason=bluetooth-{action}" in caplog.text
 
 
 @pytest.mark.parametrize("bond_succeeds", (True, False))
