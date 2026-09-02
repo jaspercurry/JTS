@@ -13,6 +13,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
 from .. import identity_state
@@ -269,7 +270,9 @@ def _audio_graph_state(
         else None
     )
     coupling_block = _coupling_state(
-        fanin_status=fanin_status, outputd_status=outputd_status
+        fanin_status=fanin_status,
+        outputd_status=outputd_status,
+        outputd_env=plan.outputd_env,
     )
     return {
         "route": {
@@ -322,6 +325,7 @@ def _coupling_state(
     *,
     fanin_status: dict[str, Any] | None,
     outputd_status: dict[str, Any] | None = None,
+    outputd_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The resolved fan-in -> CamillaDSP coupling (audio-graph consolidation P2/P4).
 
@@ -336,10 +340,16 @@ def _coupling_state(
     change). Fail-soft: any read error degrades to ``None`` (see the except
     below) rather than erroring the whole /state call.
 
-    ``intent_coherent`` is named for what it compares: two env strings. It was
-    published as ``coherent`` until R5b, which reads as a verdict on the ring
-    itself — and the two tokens can agree perfectly while the rings shear on
-    format, channels, period or slots. ``observed`` is where the ring's actual
+    ``intent_coherent`` is named for what it compares: the persisted coupling
+    against the content source outputd resolved from its env. It was published
+    as ``coherent`` until R5b, which reads as a verdict on the ring itself — and
+    the two can agree perfectly while the rings shear on format, channels,
+    period or slots. ``content_bridge`` names the resolved source: ``shm_ring``
+    (the central post-DSP ring, including the undeclared default),
+    ``dac_content_ring`` (a dumb bonded member, off the round-trip return ring),
+    ``direct`` (nothing serves it), or ``contradicted`` — the marker declared
+    beside a bridge, which outputd refuses at startup.
+    ``observed`` is where the ring's actual
     wire lives: both daemons read their attached header back and publish it
     (fan-in as ``output.ring.wire_format``/``channels``, outputd as
     ``shm_ring.format``/``channels``), which is a fact about the running
@@ -349,15 +359,18 @@ def _coupling_state(
     try:
         from pathlib import Path
 
-        from ..fanin.ring_health import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
+        from ..audio_runtime_plan import TRANSPORT_DAC_CONTENT_RING
+        from ..fanin.ring_health import FANIN_ENV_PATH
         from ..fanin_coupling import (
             COUPLING_ENV_VAR,
-            OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_SHM_RING,
             coupling_value_removed,
-            outputd_bridge_is_ring,
+            dac_content_marker_contradicted,
+            dac_content_ring_served,
+            outputd_content_is_central_ring,
         )
         from ..env_file import read_value
+        from ..env_load import outputd_reconciled_env
 
         # A file the reconciler has not written yet is a declared absence
         # (undeclared is the ring); any other read failure is not a diagnosis
@@ -370,22 +383,29 @@ def _coupling_state(
         # name a migrating box's retired value, which a resolver answering
         # "the ring or nothing" cannot spell.
         coupling = (read_value(fanin_text, COUPLING_ENV_VAR) or "").strip().lower()
-        try:
-            outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            outputd_text = ""
-        # What outputd IS RUNNING, through the one predicate that owns that
+        # The runtime plan already merged outputd's two env layers this /state
+        # build; take that rather than reading both files again. ``None`` is the
+        # standalone path (a focused caller, or a plan that failed to build).
+        outputd_values = (
+            dict(outputd_env) if outputd_env is not None else outputd_reconciled_env()
+        )
+        # What outputd IS RUNNING, through the predicates that own that
         # question. An UNDECLARED bridge is the ring (config.rs), so this
         # reports `shm_ring` for a box that named nothing — which is what it
         # runs. Reporting the raw absence instead made a healthy box's pair read
-        # as incoherent on this surface.
-        content_bridge = (
-            OUTPUTD_CONTENT_BRIDGE_SHM_RING
-            if outputd_bridge_is_ring(
-                read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
-            )
-            else "direct"
-        )
+        # as incoherent on this surface. An armed dac-content marker OVERRIDES
+        # that default: outputd resolves the bonded return ring as its sole
+        # content source, which is the third value this field can take.
+        if dac_content_marker_contradicted(outputd_values):
+            # The pair outputd refuses at startup: neither source is running,
+            # and calling it either one would report a silent box as served.
+            content_bridge = "contradicted"
+        elif dac_content_ring_served(outputd_values):
+            content_bridge = TRANSPORT_DAC_CONTENT_RING
+        elif outputd_content_is_central_ring(outputd_values):
+            content_bridge = OUTPUTD_CONTENT_BRIDGE_SHM_RING
+        else:
+            content_bridge = "direct"
         live_transport = None
         if isinstance(fanin_status, dict):
             output = fanin_status.get("output")
@@ -394,12 +414,18 @@ def _coupling_state(
         return {
             "persisted": coupling or None,
             "content_bridge": content_bridge,
-            # Each end asked its own daemon's accept set, so UNDECLARED is the
-            # ring on both — the pair this used to call incoherent on every box
-            # the reconciler had not written.
+            # COHERENT means "outputd is running a content source this coupling
+            # implies", not "both strings say shm_ring". Each end asked its own
+            # daemon's accept set, so UNDECLARED is the ring on both — the pair
+            # this used to call incoherent on every box the reconciler had not
+            # written. A dumb bonded member is the second served source: its
+            # fan-in hop is Ring A like every other box's and its post-DSP hop is
+            # the bonded return ring BY DESIGN, so calling that pair incoherent
+            # would report a correctly-configured speaker as mid-flip. `direct`
+            # remains the one incoherent value — nothing serves it.
             "intent_coherent": (
                 not coupling_value_removed(coupling)
-                and content_bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
+                and content_bridge not in ("direct", "contradicted")
             ),
             "live_transport": live_transport,
             "observed": {

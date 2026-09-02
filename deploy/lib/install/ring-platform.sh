@@ -337,16 +337,14 @@ install_jts_ring_conf_assets() {
 
     # 1d. DAC-content return ring PCM (#3118). Same shape and same reason as the
     #     three blocks above: system-wide 0644 so any user can resolve the name.
-    #     It has NO consumers yet — the lane it serves is parked (ADR-0178
-    #     `grouped_dac_content_lane`) and nothing names pcm.jts_ring_dac_content
-    #     (jasper/multiroom/dac_content_ring.py) until the transport lands. On
-    #     every box in the fleet this file costs one block alsa-lib parses and
-    #     nothing else.
+    #     A bonded DUMB member's snapclient opens it for write and jasper-outputd
+    #     reads it as that box's sole content source; every solo box parses one
+    #     block and opens nothing.
     local dac_content_src="${REPO_DIR}/deploy/alsa/conf.d/63-jts-ring-dac-content.conf"
     if [[ -f "${dac_content_src}" ]]; then
         install -d -m 0755 /etc/alsa/conf.d
         install -m 0644 "${dac_content_src}" /etc/alsa/conf.d/63-jts-ring-dac-content.conf
-        echo "  Installed /etc/alsa/conf.d/63-jts-ring-dac-content.conf (pcm.jts_ring_dac_content; the grouping leader's round-trip return)"
+        echo "  Installed /etc/alsa/conf.d/63-jts-ring-dac-content.conf (pcm.jts_ring_dac_content; a bonded dumb member's round-trip return)"
     else
         echo "  WARN: ${dac_content_src} missing; DAC-content return ring PCM not installed" >&2
     fi
@@ -415,7 +413,7 @@ install_jts_ring_platform() {
     # RING FILES ONLY, never the sibling `.writer.lock` / `.open.lock`:
     # unlinking a lock opens a silent inode-tear window between two holders.
     #
-    # `dac-content.ring` — the grouping leader's round-trip return,
+    # `dac-content.ring` — a bonded dumb member's round-trip return,
     # pcm.jts_ring_dac_content in 63-jts-ring-dac-content.conf — JOINS the set,
     # on the reboot side of the asymmetry below: its READER is jasper-outputd,
     # whose unit carries the same StartLimitBurst=5 + StartLimitAction=reboot as

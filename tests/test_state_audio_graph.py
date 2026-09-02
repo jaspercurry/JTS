@@ -175,7 +175,7 @@ def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch, tmp_path):
     """
     _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
         "/nonexistent/outputd.env",
     )
     block = state_aggregate._coupling_state(
@@ -205,7 +205,7 @@ def test_coupling_state_ring_armed_reports_coherent_pair(
     outputd_env.write_text(outputd_env_text)
     _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     block = state_aggregate._coupling_state(
         fanin_status={"output": {"transport": "shm_ring", "ring": {}}}
@@ -271,7 +271,7 @@ def test_observed_ring_wire_reads_both_producers_real_status_shapes(monkeypatch,
         lambda *a, **k: "shm_ring",
     )
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     block = state_aggregate._coupling_state(
         fanin_status=_FANIN_RING_STATUS, outputd_status=_OUTPUTD_RING_STATUS
@@ -343,6 +343,66 @@ def test_observed_ring_wire_uses_each_producers_own_format_key():
     )
 
 
+def test_coupling_state_bonded_member_is_coherent_on_the_return_ring(
+    monkeypatch, tmp_path
+):
+    """A DUMB bonded member is a THIRD content source, not an incoherent box.
+
+    Its marker lives in `grouping-outputd.env`, the second env layer — so this
+    also pins that this surface reads the merge rather than `outputd.env` alone,
+    which is what left it reporting a bonded box on an env it is not running.
+    Its fan-in hop is Ring A like every other box's, and its post-DSP hop is the
+    bonded return ring BY DESIGN, so the pair is coherent.
+    """
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("", encoding="utf-8")
+    grouping_env = tmp_path / "grouping-outputd.env"
+    grouping_env.write_text(
+        "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8"
+    )
+    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    monkeypatch.setattr(
+        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+    )
+
+    block = state_aggregate._coupling_state(fanin_status=None)
+    assert block["persisted"] == "shm_ring"
+    assert block["content_bridge"] == "dac_content_ring"
+    assert block["intent_coherent"] is True
+
+
+def test_coupling_state_reports_the_marker_beside_a_bridge_as_incoherent(
+    monkeypatch, tmp_path
+):
+    """The pair outputd refuses is neither content source, and not coherent.
+
+    This is the live shape a bonded member lands in when its grouping layer
+    fails to clear the bridge `jasper-fanin-coupling-auto` writes (ADR-0220).
+    """
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(
+        "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n", encoding="utf-8"
+    )
+    grouping_env = tmp_path / "grouping-outputd.env"
+    grouping_env.write_text(
+        "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8"
+    )
+    _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    monkeypatch.setattr(
+        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+    )
+
+    block = state_aggregate._coupling_state(fanin_status=None)
+    assert block["content_bridge"] == "contradicted"
+    assert block["intent_coherent"] is False
+
+
 def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     # shm_ring fan-in but direct outputd = partial flip -> coherent False. The
     # token has to be STATED: an absent key is the ring, so a partial flip is
@@ -351,7 +411,7 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n")
     _pin_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block["persisted"] == "shm_ring"
@@ -411,7 +471,7 @@ def test_coupling_state_publishes_no_operator_pin(monkeypatch, tmp_path):
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
         str(tmp_path / "nope.env"),
     )
     block = state_aggregate._coupling_state(fanin_status=None)
@@ -439,7 +499,7 @@ def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
         str(tmp_path / "outputd.env"),
     )
 

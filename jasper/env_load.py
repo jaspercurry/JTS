@@ -45,6 +45,9 @@ from typing import Literal
 # UNION of every unit's persistent EnvironmentFile= (not one daemon's).
 # Guarded by tests/test_env_load_mirrors_unit.py: add a wizard env file to ANY
 # deploy/systemd/*.service and the test fails until it's added here too.
+#: The operator-owned base layer every daemon unit loads first.
+BASE_ENV_PATH = "/etc/jasper/jasper.env"
+
 ENV_FILES = (
     "/etc/jasper/jasper.env",
     # jasper-voice.service order (the most config-consuming daemon):
@@ -203,6 +206,40 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     for path in files:
         merged.update(parse_env_file(path))
     return merged
+
+
+def outputd_reconciled_env(outputd_env_path: str | None = None) -> dict[str, str]:
+    """jasper-outputd's persistent env, read fresh through its own layering.
+
+    THE ONE MERGE every surface that reports what outputd is RUNNING consumes —
+    parks, the doctor, ``/state``, the runtime plan, the health sampler — in the
+    unit's own ``EnvironmentFile=`` order
+    (``deploy/systemd/jasper-outputd.service``): ``jasper.env``, then
+    ``outputd.env``, then ``grouping-outputd.env``. LATER WINS, exactly as it
+    does for the daemon. All three, not the last two: keys an operator pins in
+    ``jasper.env`` — the period above all — are ones outputd loads, so a reader
+    that skipped that layer would answer for an env the daemon is not running.
+
+    NOT ``ENV_FILES``: that tuple is jasper-voice's order, and it lists
+    ``grouping-outputd.env`` BEFORE ``outputd.env`` — the opposite of what
+    outputd loads, which would silently invert every bonded pin.
+
+    ``outputd_env_path`` overrides the outputd.env layer only (the
+    ``JASPER_OUTPUTD_ENV_FILE`` operator seam); the other two keep their own
+    paths so an override cannot hide a bonded pin or an operator's. Paths come
+    from the modules that own them, through lazy imports because this module is
+    a leaf every one of them can import.
+    """
+    from jasper.fanin.coupling_reconcile import OUTPUTD_ENV_PATH
+    from jasper.multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
+
+    return merged_env_files(
+        (
+            BASE_ENV_PATH,
+            outputd_env_path or OUTPUTD_ENV_PATH,
+            OUTPUTD_GROUPING_ENV_FILE,
+        )
+    )
 
 
 def load_env_files(paths: "tuple[str, ...] | None" = None) -> None:
