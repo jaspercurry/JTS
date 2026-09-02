@@ -1988,3 +1988,49 @@ def test_a_band_with_no_worst_bin_is_told_apart_from_a_round_with_no_captures(
     assert stamped.bands[0].gate_sensitivity_note == NOT_SWEPT_CAPTURES_UNREADABLE
     assert stamped.gate_sweep_frame is None
     assert stamped.overall_passed == report.overall_passed
+
+
+def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
+    """The door the driving LLM actually reaches: one round in, the graded spec
+    with room-or-speaker answered at each band's own worst bin out.
+    """
+    import shutil
+
+    from jasper.cli.round_views import main
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+        combined_db=_curve_dipping_at(FEATURE_HZ),
+    )
+    # The captures live INSIDE the session bundle, where a real banked round
+    # carries them, so one directory answers both readers: the evidence packet
+    # for the verdict and the raw WAVs for the ladder.
+    captures = _write_round(
+        tmp_path / "captures",
+        [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
+    )
+    shutil.copytree(
+        captures / "bundle" / "b0", round_dir / "bundle" / "sess1", dirs_exist_ok=True,
+    )
+
+    rc = main(
+        ["spec-sweep", str(round_dir), "--rungs-ms", "5", "20"],
+    )
+
+    assert rc == 0
+    payload = json.loads((round_dir / "spec_gate_sensitivity.json").read_text())
+    assert payload["round_dir"] == str(round_dir)
+    spec = payload["spec"]
+    assert spec["gate_sweep_frame"]["rungs_ms"] == [5.0, 20.0]
+
+    low = spec["bands"][0]
+    assert low["gate_sensitivity_note"] is None
+    assert low["n_valid_rungs"] == 2
+    assert np.isfinite(low["sigma_growth_ratio"])
+    assert np.isfinite(low["gate_sensitivity_db"])
+    # The verdict is the round's OWN, re-read and not re-graded.
+    banked = load_banked_round(round_dir).graded_report
+    assert spec["overall_passed"] == banked.overall_passed
+    assert low["max_deviation_hz"] == banked.bands[0].max_deviation_hz
+    assert low["passed"] == banked.bands[0].passed

@@ -591,9 +591,13 @@ contributed), `n_valid_rungs`, and `gate_sensitivity_note` when there is no
 number; the report carries `gate_sweep_frame`, without which none of them
 reproduces. They are DISCLOSURE — no grade moves — and they are stamped from
 the round's raw captures, not from the pipeline's already-gated ones, which is
-why the reader that stamps them is offline
-(`round_views.spec_with_gate_sensitivity`). Read `gate_sensitivity_note` first:
-a `not_swept_` prefix means the ladder never ran, a bare slug means it ran and
+why the reader that stamps them is offline:
+
+    jasper-round-views spec-sweep <round-dir> [--rungs-ms 3 4 5 7 9 12 20]
+
+writes the graded verdict carrying all five to
+`<round-dir>/spec_gate_sensitivity.json`. Read `gate_sensitivity_note` first: a
+`not_swept_` prefix means the ladder never ran, a bare slug means it ran and
 declined. `jasper-gate-sweep --at-hz` is now only for a bin the verdict did
 *not* flag.
 

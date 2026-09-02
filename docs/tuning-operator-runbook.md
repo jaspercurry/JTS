@@ -461,7 +461,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` mutates) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply` | Open, wait on and apply a crossover round from the speaker itself. The same three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate. | mutating-with-gates (`open`/`apply` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, and the shared frequency view — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
+| `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|spec-sweep\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, the gate sweep read onto the spec verdict, and the shared frequency view — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
 | `jasper-round-bank` | Bank one live commissioning session into the on-box campaign home, where it outlives session retention. | mutating (copies evidence; changes nothing played) | `jasper/cli/round_bank.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
@@ -958,10 +958,17 @@ entangled sub-span, `null` when the band sits wholly above the floor. The band
 still grades and still passes or fails exactly as it did; what the field adds is
 the reservation on how far up that verdict is a claim about the speaker.
 
-**Room or speaker, at the band's own worst bin.** A spec report stamped by
-`round_views.spec_with_gate_sensitivity` carries four more fields per band and
-one on the report itself. All five are disclosure — no grade moves — and every
-one is `null` on a report nothing stamped.
+**Room or speaker, at the band's own worst bin.** Run
+
+```
+jasper-round-views spec-sweep <round-dir>
+```
+
+and the round's own graded verdict comes back with four more fields per band
+and one on the report itself, written to
+`<round-dir>/spec_gate_sensitivity.json` (`--rungs-ms` sets the ladder, `--out`
+moves the file, `-` prints it). All five are disclosure — no grade moves — and
+every one is `null` on a report nothing stamped.
 
 | Field | What it says |
 |---|---|

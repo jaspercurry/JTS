@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, eight subcommands — each a thin argparse wrapper over
+One console script, nine subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. A round directory is EITHER a banked round tree or
 a live session bundle still on the speaker
@@ -48,6 +48,15 @@ Subcommands:
 * ``agreement <round-dir>`` — per-position sign/magnitude testimony for
   every feature in the trusted sweep, built from the same per-seat curves
   ``per-seat`` computes. Writes ``agreement.json``.
+* ``spec-sweep <round-dir>`` — the round's own graded spec verdict, with
+  "is this band's worst bin the room or the speaker" answered AT that bin:
+  the gate ladder's ``sigma_growth_ratio`` (growth with window length is what
+  says room), the window's null-model-corrected contribution in dB, how many
+  rungs were resolution-valid, and the frame all three are stated in.
+  Disclosure only — no grade moves, and every field is a re-reading of the
+  spec report the round already banked. Writes
+  ``spec_gate_sensitivity.json``. Reach for ``jasper-gate-sweep --at-hz``
+  only for a bin this verdict did NOT flag.
 * ``frequency <source-a> [<source-b>]`` — the renderer-neutral frequency view
   shared with the JTS web page. A source may be a banked round, a session
   bundle, or a JSON measurement/analysis document.
@@ -73,6 +82,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
     BankedRound,
@@ -86,6 +96,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     per_seat_curves,
     repeat_floor_provenance,
     repeatability_spread,
+    spec_with_gate_sensitivity,
     verify_pose_curve,
 )
 from jasper.active_speaker.frequency_view import build_frequency_view
@@ -381,6 +392,35 @@ def _cmd_co_metrics(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _band_sweep_line(band: Any) -> str:
+    """One band's gate read as the operator reads it: which band, then whether
+    that band's own worst bin is the room or the speaker."""
+    label = f"{band.f_lo_hz:g}-{band.f_hi_hz:g} Hz"
+    if band.sigma_growth_ratio is None:
+        return f"{label} NOT SWEPT ({band.gate_sensitivity_note})"
+    return (
+        f"{label} @{band.max_deviation_hz:.1f} Hz "
+        f"sigma x{band.sigma_growth_ratio:.2f} over {band.n_valid_rungs} rung(s), "
+        f"window {band.gate_sensitivity_db:+.2f} dB"
+    )
+
+
+def _cmd_spec_sweep(args: argparse.Namespace) -> int:
+    banked = load_banked_round(Path(args.round_dir))
+    report = spec_with_gate_sensitivity(banked, rungs_ms=args.rungs_ms)
+    payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
+    written = _write_json(
+        payload, args.out, _default_out(banked, "spec_gate_sensitivity.json"),
+    )
+    print(
+        "spec-sweep [disclosure only, no grade moves]: "
+        + "; ".join(_band_sweep_line(band) for band in report.bands)
+        + (f" -> {written}" if written else ""),
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _frequency_source(path: Path):
     """One round, bundle, or JSON document as a neutral frequency run."""
 
@@ -434,8 +474,9 @@ def build_parser() -> argparse.ArgumentParser:
             "The round-grading comparison views: entry-state grading, "
             "frozen-reference grading, per-seat curves, session-to-session "
             "repeatability and the banked repeat floor, per-seat agreement, "
-            "audibility co-metrics, and the shared frequency view — over "
-            "banked rounds and live sessions."
+            "audibility co-metrics, the gate sweep read onto the spec verdict, "
+            "and the shared frequency view — over banked rounds and live "
+            "sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -450,6 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
             "EXAMPLES\n"
             "  jasper-round-views frequency captures/.../session-1/round-3\n"
             "  jasper-round-views frozen captures/.../baseline captures/.../round-3\n"
+            "  jasper-round-views spec-sweep captures/.../session-1/round-3\n"
             "\n"
             "EXIT CODES\n"
             "  0  EXIT_OK -- graded; printed, or written to --out. entry can\n"
@@ -523,6 +565,22 @@ def build_parser() -> argparse.ArgumentParser:
     co_metrics.add_argument("round_dir", help=_ROUND_DIR_HELP)
     co_metrics.add_argument("--out", default=None, help="write the result here (- for stdout)")
     co_metrics.set_defaults(func=_cmd_co_metrics)
+
+    spec_sweep = sub.add_parser(
+        "spec-sweep",
+        help="the round's spec verdict with room-or-speaker answered at each band's worst bin",
+    )
+    spec_sweep.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    spec_sweep.add_argument(
+        "--rungs-ms", type=float, nargs="+", default=list(DEFAULT_RUNGS_MS),
+        metavar="MS",
+        help=(
+            "gate ladder, in milliseconds "
+            f"(default: {' '.join(f'{r:g}' for r in DEFAULT_RUNGS_MS)})"
+        ),
+    )
+    spec_sweep.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    spec_sweep.set_defaults(func=_cmd_spec_sweep)
 
     frequency = sub.add_parser("frequency", help="build the shared frequency-response view")
     frequency.add_argument(
