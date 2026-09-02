@@ -22,10 +22,12 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.close_reference import (
     REFUSE_GATE_NOT_POSITIVE,
-    REFUSE_NO_CAPTURE,
     VERDICT_UNRESOLVED,
 )
-from jasper.active_speaker.crossover_v2.round_captures import REFUSE_PROGRAM_UNMATCHED
+from jasper.active_speaker.crossover_v2.round_captures import (
+    REFUSE_NO_CAPTURE,
+    REFUSE_PROGRAM_UNMATCHED,
+)
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.sweep import synchronized_swept_sine

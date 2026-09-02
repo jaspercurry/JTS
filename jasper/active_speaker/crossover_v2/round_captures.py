@@ -291,3 +291,92 @@ def discover_captures(
 
 def _number(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
+
+
+# --------------------------------------------------------------------------- #
+# which capture of a round a single-capture reader takes
+# --------------------------------------------------------------------------- #
+
+#: :func:`select_capture`'s own two. The strings keep the close reference's
+#: name because they are published: they are the ``reason`` its report and its
+#: CLI's exit code are keyed on.
+REFUSE_UNREADABLE_ROUND = "close_reference_unreadable_round"
+REFUSE_NO_CAPTURE = "close_reference_no_capture"
+
+
+def select_capture(
+    round_dir: Path, *, capture_id: str | None = None
+) -> PoseCapture:
+    """The one capture a single-capture reader takes out of ``round_dir``.
+
+    ``capture_id`` selects by the capture's own id or its WAV stem. With none,
+    the on-axis capture wins: azimuth 0, elevation 0, first by capture id.
+    Raises :class:`RoundCapturesRefused` rather than guessing.
+
+    The choice is made on each sidecar DOC, through
+    :func:`discover_captures`'s ``select``, so the poses the reader discards
+    are never deconvolved. The predicate records what it
+    was shown, which is what a refusal here has to name.
+    """
+    root = Path(round_dir)
+    if not root.is_dir():
+        raise RoundCapturesRefused(REFUSE_UNREADABLE_ROUND, {"round_dir": str(root)})
+    seen: list[str] = []
+    if capture_id is not None:
+        def wanted(doc: Mapping[str, Any]) -> bool:
+            declared = doc.get("position_id")
+            seen.append(str(declared) if declared else "")
+            # A sidecar that declares no id takes its capture id from its own
+            # file name, which this predicate cannot see; it stays in and the
+            # WAV-stem match below decides.
+            return not declared or str(declared) == capture_id
+
+        named = [
+            capture
+            for capture in discover_captures(root, select=wanted)
+            if capture_id
+            in (capture.capture_id, capture.wav.stem if capture.wav else None)
+        ]
+        if not named:
+            raise RoundCapturesRefused(
+                REFUSE_NO_CAPTURE,
+                {
+                    "round_dir": str(root),
+                    "capture_id": capture_id,
+                    "captures": seen,
+                },
+            )
+        return named[0]
+
+    def on_axis_doc(doc: Mapping[str, Any]) -> bool:
+        seen.append(doc_pose_key(doc))
+        # A pose declared as anything but a number compares False here, the
+        # same answer the decoded ``None`` gave.
+        return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
+
+    on_axis = discover_captures(root, select=on_axis_doc)
+    if not on_axis:
+        raise RoundCapturesRefused(
+            REFUSE_NO_CAPTURE,
+            {
+                "round_dir": str(root),
+                "note": "no capture declares azimuth 0 / elevation 0",
+                "poses": seen,
+            },
+        )
+    return on_axis[0]
+
+
+def capture_row(capture: PoseCapture) -> dict[str, Any]:
+    """What a report says about a capture it read."""
+    return {
+        "capture_id": capture.capture_id,
+        "phase": capture.phase,
+        "pose_key": capture.pose_key,
+        "wav": capture.wav.name if capture.wav else None,
+        "program": capture.program.name if capture.program else None,
+        "position_deg": capture.azimuth_deg,
+        "vertical_deg": capture.vertical_deg,
+        "mark_distance_m": capture.mark_distance_m,
+        "stimulus_wav_sha256": capture.program_sha256,
+    }

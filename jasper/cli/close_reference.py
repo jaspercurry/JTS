@@ -47,11 +47,11 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.branch_chain import recommended_distance
-from jasper.active_speaker.crossover_v2.close_reference import (
+from jasper.active_speaker.crossover_v2.close_reference import compare_rounds
+from jasper.active_speaker.crossover_v2.round_captures import (
     REFUSE_UNREADABLE_ROUND,
-    compare_rounds,
+    RoundCapturesRefused,
 )
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,

@@ -44,7 +44,8 @@ refinement, mirroring the correction confidence model's staging):
 The gate above resolves to the integer sample; the sub-sample family below
 (``gcc_phat``'s band-limited phase-transform correlation, its ``parabolic_peak``
 refine, and the anchor-gated ``_gcc_local_peak_snap``) resolves past it, so one
-module owns every way this repo locates one signal inside another.
+module owns every way this repo locates one signal inside another —
+and, in ``fractional_shift``, the way it applies what it found.
 """
 from __future__ import annotations
 
@@ -409,3 +410,15 @@ def _gcc_local_peak_snap(
     refined = parabolic_peak(abs_cc, best_ell % m)
     circ = refined if refined <= m / 2 else refined - m
     return float(circ / upsample)
+
+
+def fractional_shift(x: np.ndarray, samples: float) -> np.ndarray:
+    """Shift ``x`` right by ``samples`` (may be fractional) via linear phase.
+
+    The companion to :func:`gcc_phat`: that one measures a sub-sample lag,
+    this one applies it without quantising it back to a whole sample.
+    """
+    n = x.size
+    spectrum = np.fft.rfft(x)
+    freqs = np.fft.rfftfreq(n)
+    return np.fft.irfft(spectrum * np.exp(-2j * np.pi * freqs * samples), n=n)

@@ -25,7 +25,6 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     GATE_SOURCE_CALLER,
     GATE_SOURCE_DEFAULT,
     MIN_BAND_POINTS,
-    REFUSE_UNREADABLE_ROUND,
     RESIDUAL_FLOOR_DB,
     VERDICT_AGREEMENT,
     VERDICT_ROOM_DOMINATED,
@@ -36,9 +35,12 @@ from jasper.active_speaker.crossover_v2.close_reference import (
     cancellation_depth_db,
     compare_impulse_responses,
     declared_clean_window_ms,
+)
+from jasper.active_speaker.crossover_v2.round_captures import (
+    REFUSE_UNREADABLE_ROUND,
+    RoundCapturesRefused,
     select_capture,
 )
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 
