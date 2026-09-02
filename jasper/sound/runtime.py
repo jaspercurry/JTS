@@ -379,7 +379,6 @@ async def load_profile_config(
             output_trim_db=output_trim_db,
             fanin_coupling_capture_kwargs=coupling_capture_kwargs,
         )
-        quiet_load.clear()
         # Rewriting the file CamillaDSP already runs, with a graph it will
         # update in place, is as silent as a live edit -- so the Saved and Off
         # tabs stop fading an A/B the listener is making on purpose. Decided by

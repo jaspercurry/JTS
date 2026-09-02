@@ -9,7 +9,8 @@ A pipeline replace ducks the fader for ~0.85 s; a parameter write does not.
 the two graphs, so what these pin is that a value — and even a biquad's own
 ``type`` string, which lives under ``parameters`` — may move freely, and
 anything structural (sections, devices, pipeline, the filter set, or a
-filter's OUTER kind) falls back to the ducked swap.
+filter's OUTER kind) falls back to the ducked swap. One value is not free: a
+``Gain``'s, because moving it steps the whole programme's level at once.
 """
 
 from __future__ import annotations
@@ -26,6 +27,10 @@ devices:
   chunksize: 1024
   volume_limit: 0.0
 filters:
+  sound_preamp:
+    type: Gain
+    description: null
+    parameters: {gain: 0.0, inverted: false, mute: false}
   sound_advanced_1:
     type: Biquad
     description: null
@@ -37,7 +42,7 @@ filters:
 pipeline:
   - type: Filter
     channels: [0, 1]
-    names: [sound_advanced_1, sound_advanced_2]
+    names: [sound_preamp, sound_advanced_1, sound_advanced_2]
 """
 
 
@@ -105,8 +110,10 @@ def test_the_filters_outer_kind_changing_is_a_ducked_swap():
     "wanted, reason",
     [
         pytest.param(
-            RUNNING.replace("names: [sound_advanced_1, sound_advanced_2]",
-                            "names: [sound_advanced_1]"),
+            RUNNING.replace(
+                "names: [sound_preamp, sound_advanced_1, sound_advanced_2]",
+                "names: [sound_preamp, sound_advanced_1]",
+            ),
             "pipeline_differs",
             id="band_dropped_from_the_chain",
         ),
@@ -228,11 +235,11 @@ def _carrier_emitting(wanted: str):
     return _Carrier()
 
 
-def _running_at(tmp_path) -> pathlib.Path:
+def _running_at(tmp_path, running: str = RUNNING) -> pathlib.Path:
     config_dir = tmp_path / "configs"
     config_dir.mkdir(exist_ok=True)
     current = config_dir / "sound_current.yml"
-    current.write_text(RUNNING, encoding="utf-8")
+    current.write_text(running, encoding="utf-8")
     return current
 
 
@@ -298,6 +305,31 @@ async def test_a_durable_save_ducks_only_when_the_live_rule_says_swap(
 
     assert cam.raw_writes == ([False] if quiet else [])
     assert cam.path_loads == ([] if quiet else [str(current)])
+
+
+@pytest.mark.parametrize(
+    "trim", ["sound_preamp", "room_headroom", "active_baseline_headroom"],
+)
+async def test_a_save_that_moves_a_broadband_trim_keeps_its_duck(
+    tmp_path, monkeypatch, trim,
+):
+    """A headroom drag or a match-loudness toggle is realised HERE, and steps.
+
+    CamillaDSP would write these Gains in place, and that is the problem: the
+    whole programme lands on a new level in one sample, by up to tens of dB.
+    The live-draft path never meets one because it freezes the trim; the
+    durable save is where a changed trim arrives, so it keeps the file loader.
+    """
+    running = RUNNING.replace("sound_preamp", trim)
+    current = _running_at(tmp_path, running)
+    cam = _RecordingCamilla(str(current), running)
+
+    await _save(
+        tmp_path, monkeypatch, cam, running.replace("gain: 0.0", "gain: -12.0"),
+    )
+
+    assert cam.raw_writes == []
+    assert cam.path_loads == [str(current)]
 
 
 async def test_a_save_onto_a_different_file_keeps_its_duck(tmp_path, monkeypatch):
