@@ -600,7 +600,6 @@ _POST_ROUTES = frozenset({
     "/sync/start",
     "/sync/play",
     "/sync/analyze",
-    "/sync/relay-capture",
     "/sync/apply",
     "/sync/stop",
     "/sync/reset",
@@ -5141,68 +5140,6 @@ def _handle_relay_level_match(
     return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
 
-def _handle_sync_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /sync/relay-capture: capture the sync markers via the cloud relay (the
-    phone runs the capture page on jasper.tech) instead of a same-origin upload.
-
-    CONFIG-GATED. The sync session window must already be open (the /sync/ Start
-    button → handle_start), exactly as the browser flow requires before playing
-    the marker. sync_flow owns the stimulus + analysis;
-    this just bridges the relay transport through the shared orchestrator. The
-    second real caller of the RelayCaptureKind seam — a new kind is a descriptor,
-    not a new handler. ON-DEVICE: the acoustic marker capture is not exercised
-    hardware-free (same status as the room relay)."""
-    from jasper.capture_relay import correction_adapter
-    from jasper.capture_relay.spec import build_sync_marker_spec
-
-    from . import sync_flow
-
-    relay_base = _require_relay_base()  # gated off until configured; inert otherwise
-    session_token, err = sync_flow.relay_session_token()
-    if err is not None:
-        raise ValueError(err)
-    assert session_token is not None
-
-    def _open(
-        client: RelayClient | None,
-        base: str,
-        capture_origin: str,
-        return_url: str,
-    ) -> RelayCapture:
-        client = _require_relay_client(client)
-        return correction_adapter.open_capture(
-            client,
-            build_sync_marker_spec(),
-            relay_base=base,
-            capture_origin=capture_origin,
-            return_url=return_url,
-        )
-
-    async def _run(client: RelayClient | None, pi_session: PiCaptureSession) -> None:
-        await sync_flow.relay_run_and_consume(
-            client,
-            pi_session,
-            session_token=session_token,
-        )
-
-    kind = RelayCaptureKind(
-        label="sync_marker",
-        open=_open,
-        run_and_consume=_run,
-    )
-    return {
-        "relay": _run_relay_capture(
-            kind,
-            relay_base,
-            return_url=_request_local_return_url(handler, "/correction/sync"),
-            # One capture, bounded by run_capture's own timeouts: it cannot sit
-            # through a 600 s inbound-idle window the way a multi-position cloud
-            # does, so no hold; reviewed and deliberately left unheld by #1860.
-            idle_hold=no_hold,
-        )
-    }
-
-
 def _handle_crossover_relay_cancel() -> dict[str, Any]:
     """Stop Crossover relay work and keep its slot until cleanup completes.
 
@@ -6313,16 +6250,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return asyncio.run_coroutine_threadsafe(
                     coro, _ensure_loop())
 
-            # The relay capture has different response semantics (a dict +
-            # ValueError → client error), and MUST be handled here inside the
-            # /sync/ prefix dispatch — the main do_POST ladder never sees /sync/*.
-            if path == "/sync/relay-capture":
-                try:
-                    self._send_json(_handle_sync_relay_capture(self))
-                except ValueError as e:
-                    self._send_client_error(str(e))
-                return
-
             try:
                 if path == "/sync/start":
                     blocked = _correction_start_blocker()
@@ -6449,9 +6376,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # ``socketserver.BaseServer.handle_error``, which logs a
                     # traceback and drops the connection with NO response at
                     # all. The driver sees a closed socket instead of the
-                    # reason its body was rejected. Same
-                    # ``_send_client_error`` (400) the /sync/relay-capture arm
-                    # uses for the identical shape.
+                    # reason its body was rejected.
                     self._send_client_error(str(e))
                 except ValueError as e:
                     self._send_json(

@@ -40,7 +40,7 @@ for a different session; ``/v2/verify`` re-arms VERIFY only (a 1-entry plan)
 from the persisted post-apply state, per §5.2's re-verify action.
 
 ON-DEVICE: the acoustic playback binding is not exercised hardware-free (same
-status as the room/sync relay flows) — W6 validates it end-to-end on JTS3.
+status as the room relay flow) — W6 validates it end-to-end on JTS3.
 """
 
 from __future__ import annotations
