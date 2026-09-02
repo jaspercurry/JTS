@@ -57,7 +57,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_DEG_KEY,
     CrossoverV2FlowError,
 )
-from jasper.active_speaker import measurement_level as ml
+from jasper.active_speaker import seat_level_reference as slr
 from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     write_seat_level_reference,
@@ -109,11 +109,15 @@ def _bank_an_anchor(tmp_path, monkeypatch):
     )
     cal = tmp_path / "umik2.txt"
     cal.write_text(CAL_WITH_SENS)
-    real = ml.resolve_mic_sensitivity
+    from jasper.audio_measurement import calibration
+
+    real = calibration.resolve_mic_sensitivity
     monkeypatch.setattr(
-        ml, "resolve_mic_sensitivity", lambda **_kw: real(calibration_file=str(cal))
+        calibration,
+        "resolve_mic_sensitivity",
+        lambda **_kw: real(calibration_file=str(cal)),
     )
-    monkeypatch.setattr(ml, "_preset_ceiling_db_spl", lambda: CEILING_DB_SPL)
+    monkeypatch.setattr(slr, "_ceiling_db_spl", lambda: CEILING_DB_SPL)
 
 
 @pytest.fixture
@@ -939,7 +943,7 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
     body = json.loads(capsys.readouterr().out)
 
     assert body["ok"] is False
-    assert body["reason"] == ml.SEAT_REFERENCE_MISSING
+    assert body["reason"] == slr.ANCHOR_UNUSABLE
     assert not spool.staged_angle_request_pending()
 
     # ``plan`` is the dry run that SHOWS what is missing rather than refusing.
@@ -947,11 +951,12 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
         ["plan", "--program", "baseline", "--size", "express", "--json"]
     )
     assert cli._cmd_plan(plan) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["level"] == {
-        "resolved": False,
-        "reason": ml.SEAT_REFERENCE_MISSING,
-        "detail": ml.SEAT_REFERENCE_MISSING_DETAIL,
-    }
+    unresolved = json.loads(capsys.readouterr().out)["level"]
+    assert unresolved["resolved"] is False
+    assert unresolved["reason"] == slr.ANCHOR_UNUSABLE
+    # One slug for the three ways an anchor goes unusable, so the remedy is
+    # only ever in the detail.
+    assert "jasper-seat-level" in unresolved["detail"]
 
 
 def test_a_spot_stages_one_raised_pose(slot, capsys):
@@ -1071,10 +1076,11 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
     spool.set_angle_request_spool_path_for_tests(Path(slot))
     import jasper.active_speaker.session_volume_plan as svp
     svp.DEFAULT_SESSION_VOLUME_STATE_PATH = Path(volume_state)
-    import jasper.active_speaker.measurement_level as ml
-    _real = ml.resolve_mic_sensitivity
-    ml.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
-    ml._preset_ceiling_db_spl = lambda: 90.0
+    import jasper.active_speaker.seat_level_reference as slr
+    from jasper.audio_measurement import calibration
+    _real = calibration.resolve_mic_sensitivity
+    calibration.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
+    slr._ceiling_db_spl = lambda: 90.0
     raise SystemExit(
         cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
     )

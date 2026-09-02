@@ -17,13 +17,9 @@ enforce: a program says where to measure, not where the mover can go.
 
 Deliberate omissions, so absence reads as a decision:
 
-* The plan's nearfield captures per woofer (and port, when vented) are NOT
-  poses here — the nearfield regime is not wired. They arrive with it (plan,
-  "Nearfield splice v1 (Wave 4.2)").
-* No ``verify`` row. The shipped verify flow owns its own pose table
-  (``crossover_v2.capture_plan.CLOUD_VERIFY_POSE_PROMPTS`` and
-  ``verify_pose_table``, re-exported by ``crossover_v2_flow``); a second copy
-  would be a second definition of one thing.
+* No nearfield poses — that regime is not wired (plan, "Nearfield splice v1").
+* No ``verify`` row: the shipped verify flow owns its own pose table
+  (``crossover_v2.capture_plan.verify_pose_table``).
 * No level and no mark distance. Every program measures at the walk's own
   :data:`~jasper.active_speaker.crossover_v2_flow.MARK_DISTANCE_M`, driven at
   the banked seat-level anchor's own SPL.
@@ -111,10 +107,9 @@ _BASELINE_EXPRESS_POSES: tuple[ProgramPose, ...] = (
     ProgramPose(0, 10),
 )
 
-# The candidate cycle's poses (#3498). Few and unrepeated on purpose: what a
-# tournament round multiplies is the CANDIDATE list, and a candidate is only
-# comparable to another measured from the same place, so poses cost travel
-# where candidates cost captures.
+# The candidate cycle's poses (#3498). Few and unrepeated on purpose: a
+# tournament round multiplies the CANDIDATE list, and a candidate is only
+# comparable to another measured from the same place.
 _TOURNAMENT_EXPRESS_POSES: tuple[ProgramPose, ...] = (ProgramPose(0, 0),)
 
 _TOURNAMENT_FULL_POSES: tuple[ProgramPose, ...] = (
