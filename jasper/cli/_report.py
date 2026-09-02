@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""JSON report writer for the read-only measurement CLIs: sort_keys, no NaN."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from jasper.atomic_io import atomic_write_text
+
+
+def render_report(payload: Any) -> str:
+    """``payload`` as the one JSON text every one of these tools publishes."""
+
+    return json.dumps(payload, indent=2, sort_keys=True, default=float, allow_nan=False)
+
+
+def write_report(
+    payload: Any, out: str | None, default_path: Path, *, make_parents: bool = False,
+) -> Path | None:
+    """Write ``payload`` to ``out`` (``-`` = stdout) or ``default_path``.
+
+    Returns the path, ``None`` for stdout. Without ``make_parents`` a missing
+    parent is a ``FileNotFoundError``, not a directory this invented.
+    """
+    text = render_report(payload)
+    if out == "-":
+        print(text)
+        return None
+    target = Path(out) if out else default_path
+    if not make_parents and not target.parent.is_dir():
+        raise FileNotFoundError(f"no such directory: {target.parent}")
+    atomic_write_text(target, text + "\n")
+    return target

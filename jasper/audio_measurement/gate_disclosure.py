@@ -124,8 +124,7 @@ def evaluation_band_hz(
     floor = float(floor_hz)
     if not all(math.isfinite(v) for v in (lo_r, hi_r, floor)):
         return None
-    lo = max(floor, lo_r)
-    return (lo, hi_r) if lo < hi_r else None
+    return gating.intersect_bands((floor, hi_r), (lo_r, hi_r))
 
 
 def _magnitude_db(ir: np.ndarray, sample_rate: float, n_fft: int) -> tuple[np.ndarray, np.ndarray]:

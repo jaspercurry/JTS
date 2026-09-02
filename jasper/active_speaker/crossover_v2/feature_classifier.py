@@ -132,10 +132,10 @@ from .gate_sweep import (
     SIGMA_GROWTH_ROOM_RATIO,
     WINDOW_MOVED,
     WINDOW_STABLE,
+    analysis_grid,
     frame_descriptor,
     sweep_features,
 )
-from .gate_sweep import analysis_grid as sweep_analysis_grid
 from .journey import PHASE_CLOUD_VERIFY, PHASE_LATERAL, PHASE_VERIFY
 from .round_captures import (
     REFUSE_RADIATED_BAND_MISSING,
@@ -381,9 +381,9 @@ TRUSTED_CEILING_HZ = 16000.0
 
 #: Analysis grid: logarithmic, and dense enough that a 1/12-octave feature has
 #: hundreds of samples across it at every frequency.
-GRID_LO_HZ = 300.0
-GRID_HI_HZ = 16000.0
-GRID_POINTS = 12000
+CLASSIFICATION_GRID_LO_HZ = 300.0
+CLASSIFICATION_GRID_HI_HZ = 16000.0
+CLASSIFICATION_GRID_POINTS = 12000
 
 #: Zero-padded transform length for the phase chain. Interpolation, not
 #: resolution: it gives the local slope fit samples to work with.
@@ -930,8 +930,9 @@ def gate(
     return segment * window
 
 
-def analysis_grid() -> np.ndarray:
-    return np.geomspace(GRID_LO_HZ, GRID_HI_HZ, GRID_POINTS)
+def classification_grid() -> np.ndarray:
+    lo, hi = CLASSIFICATION_GRID_LO_HZ, CLASSIFICATION_GRID_HI_HZ
+    return np.geomspace(lo, hi, CLASSIFICATION_GRID_POINTS)
 
 
 def smoothed_curve(
@@ -946,7 +947,8 @@ def smoothed_curve(
     therefore this instrument's, not a reproduction of the night's.
     """
     freqs, db = magnitude_response(segment.astype(np.float32), sample_rate)
-    keep = np.isfinite(db) & (freqs >= GRID_LO_HZ * 0.8) & (freqs <= GRID_HI_HZ * 1.2)
+    lo, hi = CLASSIFICATION_GRID_LO_HZ * 0.8, CLASSIFICATION_GRID_HI_HZ * 1.2
+    keep = np.isfinite(db) & (freqs >= lo) & (freqs <= hi)
     smoothed = smooth_fractional_octave(
         freqs[keep], db[keep], MAGNITUDE_SMOOTH_FRACTION
     )
@@ -1612,7 +1614,7 @@ def _sweep_ladder(
     none has the same key on every pose.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
-    frame = frame_descriptor(rungs, sweep_analysis_grid())
+    frame = frame_descriptor(rungs, analysis_grid())
     # Everything but `radiated_band_hz`, `sample_rate`, `ir` and `peak_idx` is
     # disclosure: it names the capture a pose row was read from, and none of it
     # moves a number. A commanded turntable angle is the one pose fact a ring
@@ -2109,6 +2111,10 @@ def _fdw_rungs(
     return out
 
 
+# --------------------------------------------------------------------------- #
+# composing the row, and the public entry point
+# --------------------------------------------------------------------------- #
+
 #: The engine's three words in the register's own. A mapping, never a second
 #: rule: :mod:`.gate_sweep` decides what counts as the window having moved a
 #: feature, and ``unresolved`` — the test did not answer — becomes
@@ -2358,7 +2364,7 @@ def classify_round(
     ladder = tuple(sorted(float(g) for g in (gates_ms or DEFAULT_RUNGS_MS)))
     primary = float(gate_ms)
     trusted_band_hz = (f_trusted_floor_hz(primary * 1e-3), TRUSTED_CEILING_HZ)
-    grid = analysis_grid()
+    grid = classification_grid()
 
     irs: list[np.ndarray] = []
     peaks: list[int] = []

@@ -19,6 +19,8 @@ from jasper.audio_measurement.measurement_geometry import (
     load_declared_geometry,
 )
 
+from ._unit_pair import add_unit_pair, unit_pair_meters
+
 EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_NOT_FOUND = 2
@@ -31,24 +33,9 @@ EXIT_WRITE_FAILED = 3
 AUTHORITY_TIER = "advisory (`set` writes; `show` does not)"
 
 
-def _add_unit_pair(parser: argparse.ArgumentParser, name: str, *, required: bool, label: str) -> None:
-    group = parser.add_mutually_exclusive_group(required=required)
-    group.add_argument(f"--{name}-in", type=float, default=None, metavar="INCHES", help=f"{label}, in inches")
-    group.add_argument(f"--{name}-m", type=float, default=None, metavar="METERS", help=f"{label}, in meters")
-
-
-def _optional_meters(args: argparse.Namespace, dest_prefix: str) -> float | None:
-    in_value = getattr(args, f"{dest_prefix}_in")
-    if in_value is not None:
-        return float(in_value) * METERS_PER_INCH
-    m_value = getattr(args, f"{dest_prefix}_m")
-    return float(m_value) if m_value is not None else None
-
-
-def _required_meters(args: argparse.Namespace, dest_prefix: str) -> float:
-    # The dest's mutually-exclusive argparse group is required=True, so
-    # argparse itself refuses a call that leaves both units unset.
-    value = _optional_meters(args, dest_prefix)
+def _required_meters(args: argparse.Namespace, name: str) -> float:
+    # The pair's argparse group is required=True, so both-unset never reaches here.
+    value = unit_pair_meters(args, name)
     assert value is not None
     return value
 
@@ -88,10 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     set_parser = sub.add_parser("set", help="store the declared rig geometry")
-    _add_unit_pair(set_parser, "speaker-height", required=True, label="speaker acoustic-center height")
-    _add_unit_pair(set_parser, "mic-height", required=True, label="microphone height")
-    _add_unit_pair(set_parser, "distance", required=True, label="speaker-to-mic distance")
-    _add_unit_pair(set_parser, "ceiling-height", required=False, label="ceiling height (optional)")
+    add_unit_pair(set_parser, "speaker-height", required=True, label="speaker acoustic-center height")
+    add_unit_pair(set_parser, "mic-height", required=True, label="microphone height")
+    add_unit_pair(set_parser, "distance", required=True, label="speaker-to-mic distance")
+    add_unit_pair(set_parser, "ceiling-height", required=False, label="ceiling height (optional)")
     set_parser.add_argument(
         "--path", default=DEFAULT_PATH,
         help=f"override the stored file location (default: {DEFAULT_PATH})",
@@ -110,10 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
 def _cmd_set(args: argparse.Namespace) -> int:
     try:
         geometry = DeclaredGeometry(
-            speaker_height_m=_required_meters(args, "speaker_height"),
-            mic_height_m=_required_meters(args, "mic_height"),
+            speaker_height_m=_required_meters(args, "speaker-height"),
+            mic_height_m=_required_meters(args, "mic-height"),
             distance_m=_required_meters(args, "distance"),
-            ceiling_height_m=_optional_meters(args, "ceiling_height"),
+            ceiling_height_m=unit_pair_meters(args, "ceiling-height"),
         )
     except ValueError as exc:
         print(f"jasper-declare-geometry: refused: {exc}", file=sys.stderr)

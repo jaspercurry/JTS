@@ -66,9 +66,9 @@ from jasper.active_speaker.branch_chain import (
 from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.alignment import GCC_UPSAMPLE, gcc_phat
 from jasper.audio_measurement.gating import (
-    SEARCH_T_MAX_MS,
     TAPER_FRACTION,
     f_trusted_floor_hz,
+    intersect_bands,
 )
 from jasper.audio_measurement.measurement_geometry import (
     DeclaredGeometry,
@@ -77,9 +77,10 @@ from jasper.audio_measurement.measurement_geometry import (
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
 from .feature_classifier import (
-    GRID_HI_HZ,
-    GRID_LO_HZ,
-    analysis_grid,
+    CLASSIFICATION_GRID_HI_HZ,
+    CLASSIFICATION_GRID_LO_HZ,
+    DEFAULT_GATE_MS,
+    classification_grid,
     smoothed_curve,
 )
 from .feature_optics import (
@@ -119,11 +120,6 @@ CLOSE_REFERENCE_SCHEMA_VERSION = 1
 
 #: The tool a reader re-runs to reproduce a report.
 GENERATED_BY = "jasper-close-reference"
-
-#: Gate length, ms, with neither an explicit gate nor a declared geometry to
-#: derive one from: the pipeline's own reflection-search ceiling, the longest
-#: window the product ever calls reflection-free.
-DEFAULT_GATE_MS = SEARCH_T_MAX_MS
 
 #: Transform length for the residual and reference spectra. Fixed, so bin
 #: density never varies with the gate length being compared; the padding is
@@ -334,15 +330,16 @@ def _bands(
     comparison_band_hz: tuple[float, float],
     alignment_trusted: bool,
 ) -> list[dict[str, Any]]:
-    lo_edge, hi_edge = comparison_band_hz
     delta = close_curve - far_curve
     out: list[dict[str, Any]] = []
     for nominal_lo, nominal_hi, tolerance_db in SPEC_BANDS:
-        lo = max(float(nominal_lo), lo_edge)
-        hi = min(float(nominal_hi), hi_edge)
-        in_band = (grid >= lo) & (grid < hi) if hi > lo else np.zeros_like(grid, bool)
+        graded = intersect_bands(
+            (float(nominal_lo), float(nominal_hi)), comparison_band_hz
+        )
+        lo, hi = graded or (0.0, 0.0)  # no overlap: both masks select nothing
+        in_band = (grid >= lo) & (grid < hi)
         points = int(in_band.sum())
-        bins = (freqs >= lo) & (freqs < hi) if hi > lo else np.zeros_like(freqs, bool)
+        bins = (freqs >= lo) & (freqs < hi)
         residual_rel_direct = _power_ratio_db(residual_power, direct_power, bins)
         residual_rel_far = _power_ratio_db(residual_power, far_power, bins)
         worst_hz: float | None = None
@@ -364,7 +361,7 @@ def _bands(
         )
         out.append({
             "nominal_band_hz": [float(nominal_lo), float(nominal_hi)],
-            "graded_band_hz": [lo, hi] if hi > lo else None,
+            "graded_band_hz": list(graded) if graded else None,
             "tolerance_db": float(tolerance_db),
             "points": points,
             "worst_far_bin_hz": worst_hz,
@@ -471,8 +468,8 @@ def compare_impulse_responses(
         else math.inf
     )
     band_top_hz = 0.5 * float(fc_hz) if fc_hz else math.inf
-    lo_edge = max(GRID_LO_HZ, trusted_far_hz)
-    hi_edge = min(GRID_HI_HZ, ceiling_hz, band_top_hz)
+    lo_edge = max(CLASSIFICATION_GRID_LO_HZ, trusted_far_hz)
+    hi_edge = min(CLASSIFICATION_GRID_HI_HZ, ceiling_hz, band_top_hz)
     comparison_band_hz = (lo_edge, max(lo_edge, hi_edge))
 
     align_lo, align_hi = comparison_band_hz
@@ -503,7 +500,7 @@ def compare_impulse_responses(
         confidence >= ALIGNMENT_CONFIDENCE_FLOOR and not at_edge
     )
 
-    grid = analysis_grid()
+    grid = classification_grid()
     windows: list[dict[str, Any]] = []
     for name, gate_ms, span, gate_source, declared_ms in (
         (WINDOW_FAR, far_gate_ms, far_span, far_gate_source, declared_far_ms),
@@ -517,7 +514,7 @@ def compare_impulse_responses(
         _, residual_power = _band_spectra(residual_seg, sr)
         # Each window grades down to ITS OWN resolution floor: the close
         # capture's longer clean window is the whole reason to take it.
-        window_band = (max(GRID_LO_HZ, f_trusted_floor_hz(span / sr)), hi_edge)
+        window_band = (max(CLASSIFICATION_GRID_LO_HZ, f_trusted_floor_hz(span / sr)), hi_edge)
         windows.append({
             "name": name,
             "gate_ms": float(gate_ms),
@@ -554,7 +551,7 @@ def compare_impulse_responses(
             "close_gate_ms": float(close_gate_ms),
             "smooth_fraction": MAGNITUDE_SMOOTH_FRACTION,
             "detrend_fraction": DETREND_FRACTION,
-            "grid_hz": [GRID_LO_HZ, GRID_HI_HZ],
+            "grid_hz": [CLASSIFICATION_GRID_LO_HZ, CLASSIFICATION_GRID_HI_HZ],
             "grid_points": int(grid.size),
             "n_fft": RESIDUAL_N_FFT,
             "alignment_band_hz": [align_lo, align_hi],

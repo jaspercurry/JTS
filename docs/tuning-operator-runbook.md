@@ -831,11 +831,11 @@ words, and `gate_sensitivity.window_verdict_reasons` names which route fired
 #3557). `MOVED` has **three independent routes**, any one alone:
 
 - **across-pose sigma that GROWS** with the window, between the shortest and
-  longest resolution-valid rung. Sigma that is merely LARGE is not evidence:
-  an azimuth-only pose cloud gives big, perfectly window-invariant HF scatter
-  that is pure directivity (#3495). The ratio is **not read at all** below the
-  sigma floor — repeat takes at one pose have no across-pose disagreement, and
-  the ratio there is their own capture noise; `sigma_growth_readable` says so.
+  longest resolution-valid rung (why growth and not size:
+  [`gate_sweep.py`](../jasper/active_speaker/crossover_v2/gate_sweep.py)). The
+  ratio is **not read at all** below the sigma floor — repeat takes at one pose
+  have no across-pose disagreement, and the ratio there is their own capture
+  noise; `sigma_growth_readable` says so.
 - **a corrected depth change**, published per row as `excess_loss_vs_null`
   against `gate_slack`. It is the depth change across the ladder with the
   WINDOW's own share subtracted (the fitted notch is synthesized, injected
@@ -1085,7 +1085,7 @@ whenever it cannot be formed:
 | Field | Meaning |
 |---|---|
 | `shortest_valid_rung_ms` / `longest_valid_rung_ms` | the span the headline is over — **resolution-valid rungs only**, so it is often not 3→20 ms |
-| `sigma_growth_ratio` | σ at the longest valid rung over σ at the shortest. Growth is the room; ≈ 1 with large σ is directivity. **≥ 2.0 is `moved`** (measured: the features the room owns read 3.6–5.5×, directivity 0.94–1.4×) |
+| `sigma_growth_ratio` | σ at the longest valid rung over σ at the shortest. **≥ 2.0 is `moved`** (measured: the features the room owns read 3.6–5.5×, directivity 0.94–1.4×) |
 | `sigma_growth_readable` | whether the ratio was read at all. `false` below **0.2 dB** of σ at the long rung — repeat takes at one pose have no across-pose disagreement, and the ratio there is their own capture noise. The floor is on the LONG rung deliberately: a room feature is exactly a tiny short-rung σ that grows |
 | `raw_delta_db` | median detrended level at the long rung minus at the short one |
 | `bias_delta_db` | what the WINDOW alone does to a feature of this shape, from a notch fitted across poses, synthesized, injected into this round's own capture IR and re-read through the same two rungs |
@@ -1093,7 +1093,8 @@ whenever it cannot be formed:
 | `centre_shift_oct` | `log2` of the long-rung fitted centre over the short-rung one, with both in `centre_hz_by_rung`. **Past ±1/24 octave is `moved`**: a window that re-makes the feature at a different frequency has moved it, which the two depth routes can miss entirely |
 | `bias_delta_synthetic_host_db` | the same bias through a bare-impulse host. It corrects nothing — it discloses whether the real host was still additive at this depth |
 | `bias_delta_narrow_q_db` | the same bias off a notch of the same depth at 1.5× the fitted Q. Also disclosure: how much of the correction the width fit is worth |
-| `null_model` | the fit behind the correction: `centre_hz`, `depth_db`, `q` and their per-pose values, `host_capture_id`, and what the model read at each of the two rungs (`read_db_by_rung`, `synthetic_host_read_db_by_rung`) |
+| `null_model` | the fit behind the correction: `centre_hz`, `depth_db`, `q`, `host_capture_id`, and what the model read at each of the two rungs (`read_db_by_rung`, `synthetic_host_read_db_by_rung`) |
+| `null_model.per_pose_centre_hz` / `per_pose_depth_db` / `per_pose_q` | the same three numbers at every pose, in pose order — the median above is taken over exactly these. Disclosure only: nothing reads them back, and they are there so a median that hid a pose fitting a different feature is visible. Every centre lies inside the ±1/6-octave search span around the bin |
 
 | `sensitivity_null_reason` | What was missing |
 |---|---|

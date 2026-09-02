@@ -634,6 +634,30 @@ def test_the_verify_outcome_always_carries_the_code_that_produced_it():
         assert verdict["accepted"] is (outcome == "pass")
 
 
+def test_an_inconclusive_capture_reads_its_gate_record_once(monkeypatch):
+    """The gate record is derived once per consume, then read, never rebuilt."""
+    fakes = FakeSeams()
+    c = _conductor(fakes)
+    _run_phase(c, 1, 1)
+    _run_phase(c, 2, 2)
+    c.note_apply_complete()
+
+    calls = []
+    real = flow._declared_first_bounce_s
+    monkeypatch.setattr(
+        flow,
+        "_declared_first_bounce_s",
+        lambda distance_m: (calls.append(distance_m), real(distance_m))[1],
+    )
+    fakes.verify = lambda program: _verify_analysis(program, max_db=0.5, gate_ms=5.0)
+    verdict = _run_phase(c, 3, 3)
+
+    assert verdict["code"] == "verify_inconclusive"
+    assert len(calls) == 1
+    assert c.verify_gate is not None
+    assert verdict["reflection_measured"] == c.verify_gate["reflection_measured"]
+
+
 def test_a_level_shift_records_its_own_code_not_the_gates():
     """The second road to "inconclusive". Before #1974 both roads produced the
     same household sentence, which blamed a room reflection — on a verdict

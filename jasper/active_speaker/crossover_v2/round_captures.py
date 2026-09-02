@@ -21,7 +21,6 @@ Reads only: nothing here plays, writes or decides.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,6 +29,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.sweep import read_wav_mono
 
@@ -116,10 +116,6 @@ def _pose_field(value: float | None) -> str:
     return "na" if value is None else f"{value:+.2f}"
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
     """The program hash this sidecar declares, or one hashed from its bytes.
 
@@ -142,7 +138,7 @@ def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
             if not candidate.is_absolute():
                 candidate = root / named
             if candidate.is_file():
-                return _sha256(candidate)
+                return sha256_file(candidate)
     return None
 
 
@@ -203,7 +199,7 @@ def discover_captures(
         )
     programs: dict[str, Path] = {}
     for candidate in sorted(round_dir.glob("**/*program*.wav")):
-        programs.setdefault(_sha256(candidate), candidate)
+        programs.setdefault(sha256_file(candidate), candidate)
     if not programs:
         raise RoundCapturesRefused(
             REFUSE_NO_PROGRAMS,

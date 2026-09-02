@@ -41,6 +41,7 @@ from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefus
 
 from ._logging import configure_verbose_logging
 from ._refusal import refused
+from ._report import write_report
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -85,10 +86,8 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         report = sweep_round(round_dir, rungs_ms=args.rungs_ms, at_hz=args.at_hz or ())
     except RoundCapturesRefused as exc:
         return _refused(exc.reason, json.dumps(exc.detail, sort_keys=True, default=str))
-    out = Path(args.out) if args.out else round_dir / DEFAULT_OUT_NAME
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, indent=2, sort_keys=True, default=float))
-    print(json.dumps({"status": "swept", "out": str(out)}, indent=2, sort_keys=True))
+    out = write_report(report, args.out, round_dir / DEFAULT_OUT_NAME, make_parents=True)
+    print(json.dumps({"status": "swept", "out": str(out or "-")}, indent=2, sort_keys=True))
     for band in report["bands"]:
         label = f"  {band['band_hz'][0]:g}-{band['band_hz'][1]:g} Hz"
         worst_bin_hz = band.get("worst_bin_hz")
@@ -108,21 +107,26 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def add_rungs_ms_argument(parser: argparse.ArgumentParser) -> None:
-    """The gate ladder flag, shared by every command that runs one
-    (:mod:`jasper.cli.round_views`'s ``spec-sweep`` included) so the default
-    ladder and its help text have one owner.
+def add_rungs_ms_argument(
+    parser: argparse.ArgumentParser, *, flag: str = "--rungs-ms",
+    dest: str | None = None, repeatable: bool = False,
+) -> None:
+    """The gate ladder flag, so the shipped ladder has one owner.
+
+    ``repeatable=True`` defaults to ``None``, never the shipped rungs: an
+    argparse ``append`` over a non-empty default ADDS to it, not replaces it.
     """
+    shipped = " ".join(f"{r:g}" for r in DEFAULT_RUNGS_MS)
+    if repeatable:
+        parser.add_argument(
+            flag, type=float, action="append", default=None, dest=dest,
+            metavar="MS",
+            help=f"one rung in ms, repeatable; replaces the ladder ({shipped})",
+        )
+        return
     parser.add_argument(
-        "--rungs-ms",
-        type=float,
-        nargs="+",
-        default=list(DEFAULT_RUNGS_MS),
-        metavar="MS",
-        help=(
-            "gate ladder, in milliseconds "
-            f"(default: {' '.join(f'{r:g}' for r in DEFAULT_RUNGS_MS)})"
-        ),
+        flag, type=float, nargs="+", default=list(DEFAULT_RUNGS_MS), dest=dest,
+        metavar="MS", help=f"gate ladder, in milliseconds (default: {shipped})",
     )
 
 
@@ -186,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out",
         default=None,
-        help=f"where to write the report (default: <round_dir>/{DEFAULT_OUT_NAME})",
+        help=f"where to write the report (- for stdout; default: <round_dir>/{DEFAULT_OUT_NAME})",
     )
     parser.set_defaults(func=_cmd_sweep)
     return parser

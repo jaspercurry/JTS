@@ -54,8 +54,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
-
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
     NO_ROUND_ARTIFACTS_REASON,
@@ -70,7 +68,8 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_captures,
     load_round_pose_curves,
 )
-from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
+from jasper.cli._report import write_report
+from jasper.cli.gate_sweep import add_rungs_ms_argument
 
 EXIT_OK = 0
 EXIT_ROUND_UNREADABLE = 1
@@ -155,20 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_GATE_MS,
         help=f"primary analysis window (default {DEFAULT_GATE_MS:g})",
     )
-    parser.add_argument(
-        "--gates-ms",
-        type=float,
-        action="append",
-        default=None,
-        metavar="MS",
-        help=(
-            "one rung of the window ladder, repeatable -- REPLACING the "
-            "shipped one rather than adding to it. Rungs above the primary "
-            "window are legal: they re-admit reflections, so convergence vs "
-            "fan-out across the ladder is readable. Omitted, the gate sweep's "
-            f"own ladder is used ({', '.join(f'{g:g}' for g in DEFAULT_RUNGS_MS)} ms)"
-        ),
-    )
+    add_rungs_ms_argument(parser, flag="--gates-ms", repeatable=True)
     parser.add_argument(
         "--out",
         type=Path,
@@ -280,9 +266,7 @@ def main(argv: list[str] | None = None) -> int:
 
     destination = args.out or (round_dir / CLASSIFICATION_ARTIFACT)
     try:
-        # Atomic: this file is durable evidence a later round reads, and a
-        # torn write would be read as a verdict rather than as a broken file.
-        atomic_write_text(destination, json.dumps(artifact, indent=1))
+        write_report(artifact, None, destination, make_parents=True)
     except OSError as exc:
         return _fail(
             f"classified, but could not write {destination}: {exc}",

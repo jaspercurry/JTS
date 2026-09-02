@@ -66,8 +66,8 @@ Subcommands:
   above stay the acceptance path. Writes ``audibility_co_metrics.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
-(``-`` for stdout, except ``repeat-floor``, whose record is published
-atomically by its owning module and so requires a real path), and prints a
+(``-`` for stdout, except ``repeat-floor``, whose record is published by
+its owning module and so requires a real path), and prints a
 one-line human summary to stderr either way. Exit ``0`` on success, ``1``
 when a round directory could not be read into a comparable view
 (:class:`~jasper.active_speaker.crossover_v2.round_views.RoundViewsError`) or
@@ -112,6 +112,7 @@ from jasper.active_speaker.repeat_floor import (
     write_repeat_floor,
 )
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
+from jasper.cli._report import write_report
 from jasper.cli.gate_sweep import add_rungs_ms_argument
 
 EXIT_OK = 0
@@ -149,21 +150,6 @@ _ROUND_TOOL_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
-def _write_json(payload: Any, out: str | None, default_path: Path) -> Path | None:
-    """Write ``payload`` to ``out`` (``-`` = stdout) or ``default_path``.
-
-    Returns the path written, or ``None`` when written to stdout — the
-    caller's summary line reads differently in each case.
-    """
-    text = json.dumps(payload, indent=2, sort_keys=True)
-    if out == "-":
-        print(text)
-        return None
-    target = Path(out) if out else default_path
-    target.write_text(text + "\n")
-    return target
-
-
 def _default_out(round_: BankedRound, name: str) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
@@ -197,7 +183,7 @@ def _frequency_default_out(source: Path) -> Path:
 def _cmd_entry(args: argparse.Namespace) -> int:
     banked = load_banked_round(Path(args.round_dir))
     grade = entry_state_grade(banked)
-    written = _write_json(
+    written = write_report(
         grade.to_dict(), args.out, _default_out(banked, "entry_state_grade.json")
     )
     report = grade.report
@@ -235,7 +221,7 @@ def _cmd_frozen(args: argparse.Namespace) -> int:
     baseline = load_banked_round(Path(args.baseline_dir))
     target = load_banked_round(Path(args.target_dir))
     result = frozen_reference_grade(baseline, target)
-    written = _write_json(
+    written = write_report(
         result.to_dict(), args.out, _default_out(target, "frozen_reference.json")
     )
     print(
@@ -270,7 +256,7 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
             for seat in seats
         ],
     }
-    written = _write_json(payload, args.out, _default_out(banked, "per_seat.json"))
+    written = write_report(payload, args.out, _default_out(banked, "per_seat.json"))
     print(
         f"per-seat: {len(seats)} seat(s) ({', '.join(s.position_id for s in seats)}); "
         f"verify pose {'included' if verify.curve is not None else f'ABSENT ({verify.reason})'}"
@@ -289,7 +275,7 @@ def _load_rounds(round_dirs: Sequence[str]) -> list[tuple[str, BankedRound]]:
 def _cmd_repeat(args: argparse.Namespace) -> int:
     rounds = _load_rounds(args.round_dirs)
     result = repeatability_spread(rounds)
-    written = _write_json(
+    written = write_report(
         result.to_dict(), args.out, _default_out(rounds[0][1], "repeatability.json")
     )
     shipped = next((m for m in result.metrics if m.name == SHIPPED_POOL_METRIC), None)
@@ -352,7 +338,7 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
         "testify_db": args.testify_db,
         "features": [feature.to_dict() for feature in features],
     }
-    written = _write_json(payload, args.out, _default_out(banked, "agreement.json"))
+    written = write_report(payload, args.out, _default_out(banked, "agreement.json"))
     # `common_mode is True`, never a bare truthiness test: `None` (not
     # evaluable, below AGREEMENT_TESTIFY_MIN seats) must not be silently
     # counted alongside `False` (evaluated and failed the bar).
@@ -370,7 +356,7 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
 def _cmd_co_metrics(args: argparse.Namespace) -> int:
     banked = load_banked_round(Path(args.round_dir))
     result = audibility_co_metrics(banked)
-    written = _write_json(
+    written = write_report(
         result.to_dict(), args.out, _default_out(banked, "audibility_co_metrics.json")
     )
     on_axis = (
@@ -418,7 +404,7 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     banked = load_banked_round(Path(args.round_dir))
     report = spec_with_gate_sensitivity(banked, rungs_ms=args.rungs_ms)
     payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
-    written = _write_json(
+    written = write_report(
         payload, args.out, _default_out(banked, "spec_gate_sensitivity.json"),
     )
     print(
@@ -462,7 +448,7 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     run_a = _frequency_source(source_a)
     run_b = _frequency_source(Path(args.source_b)) if args.source_b else None
     payload = build_frequency_view(run_a, run_b)
-    written = _write_json(payload, args.out, _frequency_default_out(source_a))
+    written = write_report(payload, args.out, _frequency_default_out(source_a))
     print(
         f"frequency: {len(payload['runs'])} run(s)"
         f"{f' -> {written}' if written else ''}",
