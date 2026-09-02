@@ -23,8 +23,8 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 // Resolve a path relative to the repo root — for the common case of loading
-// a fixed deploy/assets or capture-page source from a file that otherwise
-// has no reason to import node:path/node:url itself. A path a caller
+// a fixed deploy/assets source from a file that otherwise has no reason to
+// import node:path/node:url itself. A path a caller
 // already has (e.g. from process.argv, which readFileSync resolves against
 // CWD exactly as before) should be passed to loadEsm/buildFunction as-is —
 // this helper is for building one, not for normalizing one you have.

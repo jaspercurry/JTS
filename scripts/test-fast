@@ -181,9 +181,6 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
       add_test_if_present "tests/test_wake_training_feature_bank.py"
       ;;
-    capture-page/*)
-      add_test_if_present "tests/test_capture_page_js.py"
-      ;;
     tests/voice_eval/*)
       ;;
     jasper/*/*.py)

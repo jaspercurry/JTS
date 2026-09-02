@@ -198,7 +198,7 @@ Two operational notes:
   --severity=warning`) — CI parses and lints the installer, deploy
   helpers, shell operator scripts that can mutate a live speaker, and
   maintainer build entry points. It selects the whole `deploy` tree
-  (plus `scripts` and `capture-page`) by shebang/extension,
+  (plus `scripts`) by shebang/extension,
   so a shell script added anywhere under `deploy/` is auto-covered.
 - **Supply-chain provenance** (`python3 scripts/check-provenance.py`) —
   required when touching install/build fetches, wake/DTLN model
