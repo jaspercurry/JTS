@@ -612,6 +612,18 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ),
     (
         "jasper-ring/src/lib.rs",
+        "the i32-typed slot view is only valid on an S32LE ring",
+    ): (
+        "The wide twin of the i16 tripwire above, covering "
+        "RingReader::try_consume_slot_wide -- which measures its buffer in "
+        "4-byte samples and is therefore correct only on an S32LE geometry. "
+        "Same audit in every respect: debug-only, on a geometry the mapping "
+        "was constructed with rather than external input, with the real "
+        "guard being the wire-format behaviour tests in jasper-fanin "
+        "(a_wide_lane_carries_a_24_bit_sample_to_the_mix_bit_exact)."
+    ),
+    (
+        "jasper-ring/src/lib.rs",
         "samples.len(), g.samples_per_slot()",
     ): (
         "try_publish_slot's own doc comment states the exact contract "

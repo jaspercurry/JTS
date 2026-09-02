@@ -463,6 +463,16 @@ impl RingMapping {
         );
     }
 
+    /// The same tripwire for the `i32`-typed wrapper: `samples_per_slot` 4-byte
+    /// samples is one slot on an S32LE ring and the wrong size on any other.
+    pub(crate) fn debug_assert_s32_typed_view(&self) {
+        debug_assert_eq!(
+            self.geometry.sample_format,
+            layout::SAMPLE_FORMAT_S32LE,
+            "the i32-typed slot view is only valid on an S32LE ring"
+        );
+    }
+
     /// One slot's payload size in bytes. Infallible here: every path that
     /// produces a `RingMapping` validated the geometry first.
     fn slot_bytes(&self) -> usize {
@@ -557,6 +567,16 @@ fn i16_samples_as_bytes_mut(samples: &mut [i16]) -> &mut [u8] {
     // consumed for the lifetime of the returned view, so no aliasing `[i16]`
     // reference exists while it lives. Every byte pattern is a valid `i16`, so
     // writing arbitrary bytes through the view leaves `samples` initialized.
+    unsafe { std::slice::from_raw_parts_mut(samples.as_mut_ptr() as *mut u8, bytes) }
+}
+
+/// The `i32` counterpart of [`i16_samples_as_bytes_mut`], for a consumer whose
+/// period buffer is spine-scale on an S32LE ring.
+fn i32_samples_as_bytes_mut(samples: &mut [i32]) -> &mut [u8] {
+    let bytes = std::mem::size_of_val(samples);
+    // SAFETY: identical to the `i16` case — `i32` is a plain integer with no
+    // padding and no invalid bit patterns, `u8` has alignment 1, and the `&mut`
+    // borrow makes the view exclusive for its lifetime.
     unsafe { std::slice::from_raw_parts_mut(samples.as_mut_ptr() as *mut u8, bytes) }
 }
 
@@ -732,6 +752,17 @@ impl RingReader {
         // `samples_per_slot * 2 == slot_bytes`, so a second typed check here
         // would assert the same fact twice.
         self.try_consume_slot_bytes(i16_samples_as_bytes_mut(out))
+    }
+
+    /// Spine-scale (`i32`) view of [`RingReader::try_consume_slot_bytes`], the
+    /// wide sibling of [`RingReader::try_consume_slot`]: it copies byte-for-byte
+    /// what the byte path copies. `out.len()` must equal
+    /// `period_frames * channels`. Valid ONLY on an S32LE geometry — on any
+    /// other format an `i32` slice of `samples_per_slot` is the wrong size for a
+    /// slot.
+    pub fn try_consume_slot_wide(&mut self, out: &mut [i32]) -> SlotRead {
+        self.map.debug_assert_s32_typed_view();
+        self.try_consume_slot_bytes(i32_samples_as_bytes_mut(out))
     }
 
     /// Try to consume exactly one slot into `out` (`out.len()` must equal

@@ -78,7 +78,16 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # RATE LOCK: snd-aloop's parameters are set per substream pair, not for
 # the whole card. Each renderer writes through a `plug:` wrapper to its
 # assigned substream and jasper-fanin opens every capture side at 48 kHz
-# S16_LE, so a renderer's native rate cannot lock another renderer.
+# S32_LE, so a renderer's native rate cannot lock another renderer.
+#
+# WIDTH: snd-aloop pins BOTH halves of a cable to one format, so the slaves
+# below and jasper-fanin's capture opens must name the same one. That width is
+# not this file's to choose — it is the wire an undeclared box resolves
+# (`JASPER_FANIN_RING_WIRE_FORMAT` defaults to S32_LE), which
+# `mixer::lane_capture_format` resolves on the reader side. This file ships
+# rather than rendering per box, so pinning the narrow rollback means deploying
+# a narrowed source; jasper-doctor's `check_fanin_asound_wiring` FAILs a sheared
+# box by name until then.
 
 # Per-renderer substream aliases. deploy/modprobe.d/snd-aloop.conf OWNS the
 # substream allocation and the reasoning behind it (8 pairs per card, pinned
@@ -94,7 +103,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   5-7 — no alias here. The owner records why they stay reserved.
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
-# gets converted to the substream's 48 kHz S16_LE via the configured
+# gets converted to the substream's 48 kHz S32_LE via the configured
 # libsamplerate converter.
 pcm.librespot_substream {
     type plug
@@ -102,7 +111,7 @@ pcm.librespot_substream {
         pcm "hw:Loopback,0,0"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 
@@ -112,7 +121,7 @@ pcm.shairport_substream {
         pcm "hw:Loopback,0,1"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 
@@ -122,7 +131,7 @@ pcm.bluealsa_substream {
         pcm "hw:Loopback,0,2"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 
@@ -132,7 +141,7 @@ pcm.correction_substream {
         pcm "hw:Loopback,0,4"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 

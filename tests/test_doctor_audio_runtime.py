@@ -74,7 +74,7 @@ pcm.librespot_substream {
         pcm "hw:Loopback,0,0"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 pcm.shairport_substream {
@@ -83,7 +83,7 @@ pcm.shairport_substream {
         pcm "hw:Loopback,0,1"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 pcm.bluealsa_substream {
@@ -92,7 +92,7 @@ pcm.bluealsa_substream {
         pcm "hw:Loopback,0,2"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 pcm.correction_substream {
@@ -101,7 +101,7 @@ pcm.correction_substream {
         pcm "hw:Loopback,0,4"
         rate 48000
         channels 2
-        format S16_LE
+        format S32_LE
     }
 }
 """
@@ -1885,7 +1885,7 @@ def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
     _patch_asound_conf(
         monkeypatch,
         _FANIN_ASOUND.replace(
-            'slave {\n        pcm "hw:Loopback,0,1"\n        rate 48000\n        channels 2\n        format S16_LE\n    }',
+            'slave {\n        pcm "hw:Loopback,0,1"\n        rate 48000\n        channels 2\n        format S32_LE\n    }',
             'slave.pcm "hw:Loopback,0,1"',
         ),
         tmp_path,
@@ -1893,6 +1893,27 @@ def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
     r = doctor.check_fanin_asound_wiring()
     assert r.status == "fail"
     assert "shairport_substream" in r.detail
+
+
+def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
+    monkeypatch, tmp_path
+):
+    """The renderer aliases are the PLAYBACK half of fan-in's aloop cables, and
+    snd-aloop pins both halves to one format. A box pinned narrow through the
+    rollback lever whose /etc/asound.conf still declares the wide wire cannot
+    have both ends open, so the deployed file is judged against the wire the box
+    actually resolves rather than a literal."""
+    _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
+    monkeypatch.setattr(
+        doctor.audio_runtime, "read_declared_ring_wire_format", lambda: "S16_LE"
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "fail"
+    assert "S16_LE" in r.detail
+    # A width shear is reported as a width shear: the lanes are wired correctly
+    # and only their width disagrees, so calling them wrong slaves would send an
+    # operator after the wrong fault.
+    assert "wrong slave" not in r.detail
 
 
 def test_fanin_asound_wiring_fails_on_legacy_renderer_dmix(monkeypatch, tmp_path):
