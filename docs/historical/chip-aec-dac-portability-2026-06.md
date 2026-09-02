@@ -57,8 +57,7 @@ production-design draft used one tool (a per-period delay line servo'd on
 | Slow motion within the chip's 192 ms tail | Nobody — the chip's adaptive filter owns it |
 | ALSA queue-occupancy jitter | Ignore (it is noise, not signal) |
 
-Two facts make this concrete (sources: CHIP-AEC-EXPERIMENT.md,
-HANDOFF-aec.md):
+Two facts make this concrete (source: HANDOFF-aec.md):
 
 1. **`snd_pcm_delay` is buffer *occupancy*, not presentation delay.** On a
    loaded Pi it is dominated by scheduler-wakeup jitter. Servoing a
@@ -334,7 +333,9 @@ often "just works" means *chip-AEC* vs *fell back to software*.
 
 ## Pointers
 
-- Lab evidence (Option D, clock coherence): [CHIP-AEC-EXPERIMENT.md](../CHIP-AEC-EXPERIMENT.md)
+- Lab evidence (Option D, clock coherence): `docs/CHIP-AEC-EXPERIMENT.md` was
+  deleted (see git history); the identity that decision now keys off is
+  recorded in [ADR-0190](../adr/0190-chip-aec-identity-keys-only-physics.md)
 - Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](../AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](../AEC-DIAG-02-observability.md)
 - DAC registry: [`jasper/audio_hardware/dac.py`](../../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../../deploy/bin/jasper-aec-reconcile)
 

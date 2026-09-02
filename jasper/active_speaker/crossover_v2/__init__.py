@@ -30,9 +30,9 @@ order — so this list is what exists, not a plan:
   had been re-deriving by hand.
 * :mod:`.frequency_view` — retained round packets translated into the neutral
   :mod:`jasper.active_speaker.frequency_view` web/LLM contract.
-* :mod:`.durable_state` — the durable crossover-v2 state document: every key it
-  carries, which of them survive into the next session, and the readers that
-  take it apart again.
+* :mod:`.durable_state` — the durable crossover-v2 state document: the phase
+  snapshot a session banks, every key it carries, which of them survive into
+  the next session, and the readers that take it apart again.
 * :mod:`.journey` — the phase walk, its transitions, and the stage capability
   declarations.
 * :mod:`.coordinator` — the round's verify-then-adopt tail, behind typed ports.

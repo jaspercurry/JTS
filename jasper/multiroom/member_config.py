@@ -19,7 +19,7 @@ An ACTIVE follower (multi-driver, distributed-active Slice 3) is not this path
 at all: it relocates Layer A onto its OWN CamillaDSP IN the bonded path, and
 that config comes from :mod:`jasper.multiroom.follower_config`.
 
-``enable_rate_adjust`` is not member policy — see ADR-0216.
+``enable_rate_adjust`` is not member policy — see ADR-0218.
 
 This module owns the decision so every config-apply path — ``/sound``,
 ``/correction``, and the grouping reconciler's bond apply

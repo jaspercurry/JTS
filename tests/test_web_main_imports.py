@@ -104,22 +104,106 @@ def test_registered_wizard_default_ports_are_socket_backed():
         )
 
 
-def test_streambox_socket_backs_only_streambox_wizards():
-    """The streambox install overwrites jasper-web.socket with this smaller
-    socket file, so its ports must match the profile-filtered registry exactly.
+# Which capability each wizard's availability follows. Named as literals so
+# moving a row between the groups — a product decision about what a tier
+# grants — cannot pass as a refactor.
+_ASSISTANT_PATHS = frozenset({
+    "/voice", "/google", "/transit", "/ha", "/weather", "/tools",
+})
+_WAKE_PATHS = frozenset({"/wake", "/wake-corpus"})
+_EVERY_TIER_PATHS = frozenset({
+    "/spotify", "/airplay", "/sources", "/wifi", "/speaker", "/sound", "/rooms",
+})
+
+
+@pytest.mark.parametrize("profile", ["full", "streambox"])
+@pytest.mark.parametrize(
+    ("grants", "expected"),
+    [
+        (frozenset(), _EVERY_TIER_PATHS),
+        (("ASSISTANT",), _EVERY_TIER_PATHS | _ASSISTANT_PATHS),
+        (("WAKE_DETECTION",), _EVERY_TIER_PATHS | _WAKE_PATHS),
+        (
+            ("ASSISTANT", "WAKE_DETECTION"),
+            _EVERY_TIER_PATHS | _ASSISTANT_PATHS | _WAKE_PATHS,
+        ),
+    ],
+)
+def test_wizard_availability_follows_the_capability_not_the_profile(
+    monkeypatch, profile, grants, expected,
+):
+    """A tier hosts exactly the wizards its capabilities grant.
+
+    The grant table is monkeypatched rather than read, so this pins the
+    derivation and not today's rows: a tier with ASSISTANT and no
+    WAKE_DETECTION — the mic-bearing-remote streambox — gets every
+    assistant wizard and none of the wake ones, whichever profile it is.
     """
+    from jasper import install_profile
     from jasper.web import __main__ as web_main
+
+    granted = frozenset(getattr(install_profile.Capability, n) for n in grants)
+    monkeypatch.setattr(
+        install_profile,
+        "PROFILE_CAPABILITIES",
+        {p: granted for p in install_profile.VALID_INSTALL_PROFILES},
+    )
+
+    assert {
+        spec.label for spec in web_main._specs_for_role(profile)
+    } == expected
+
+
+def _streambox_validator_port_arrays() -> tuple[set[int], set[int]]:
+    """(expected, forbidden) from install.sh's streambox socket validator."""
+    text = (_REPO / "deploy" / "lib" / "install" / "systemd-units.sh").read_text()
+    body = text.split("validate_streambox_web_socket() {", 1)[1].split("\n}", 1)[0]
+    arrays = []
+    for name in ("expected_ports", "forbidden_ports"):
+        match = re.search(rf"local -a {name}=\(([^)]*)\)", body, re.S)
+        assert match, f"validate_streambox_web_socket lost its {name} array"
+        arrays.append({int(tok) for tok in match.group(1).split()})
+    return arrays[0], arrays[1]
+
+
+def test_streambox_socket_validator_and_nginx_name_one_port_set():
+    """The three static streambox artefacts must agree on the wizard ports.
+
+    install.sh hard-fails the install when the socket and the validator
+    disagree, and a port bound with no nginx location (or the reverse) is a
+    502 nobody sees until someone opens that wizard. The set is every
+    non-wake wizard: these files cannot follow the grant table at runtime,
+    so they carry the assistant ports whether or not the tier holds
+    ASSISTANT yet, and the Python gate stays the thing that decides.
+    """
+    from jasper.install_profile import Capability
+    from jasper.web import __main__ as web_main
+
+    wake_ports = {
+        spec.default_port
+        for spec in web_main.WIZARD_SPECS
+        if spec.requires is Capability.WAKE_DETECTION
+    }
+    wizard_ports = {spec.default_port for spec in web_main.WIZARD_SPECS}
 
     socket_text = (_REPO / "deploy" / "jasper-web-streambox.socket").read_text()
     listen_ports = {
         int(m.group(1))
         for m in re.finditer(r"^ListenStream=127\.0\.0\.1:(\d+)$", socket_text, re.M)
     }
-    expected_ports = {
-        spec.default_port for spec in web_main._specs_for_role("streambox")
-    }
+    assert listen_ports == wizard_ports - wake_ports
 
-    assert listen_ports == expected_ports
+    expected_ports, forbidden_ports = _streambox_validator_port_arrays()
+    assert expected_ports == listen_ports
+    assert forbidden_ports == wake_ports
+    assert not (listen_ports & forbidden_ports)
+
+    nginx_text = (_REPO / "deploy" / "nginx-jasper-streambox.conf").read_text()
+    nginx_ports = {
+        int(m.group(1))
+        for m in re.finditer(r"proxy_pass http://127\.0\.0\.1:(\d+)", nginx_text)
+    }
+    assert nginx_ports & wizard_ports == listen_ports
 
 
 def test_invalid_web_profile_fails_closed():

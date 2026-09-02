@@ -53,7 +53,6 @@ from ...config import Config
 from ...env_load import load_env_files as _load_env_files
 from ...install_profile import (
     STREAMBOX_INSTALL_PROFILE,
-    install_profile_allows_voice_brain,
     install_role_for_profile,
     read_install_profile,
 )
@@ -876,7 +875,7 @@ def _local_audio_config_from_env() -> SimpleNamespace:
     )
 
 def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
-    if not install_profile_allows_voice_brain(install_profile):
+    if install_role_for_profile(install_profile) == STREAMBOX_INSTALL_PROFILE:
         return _local_audio_config_from_env()
     return Config.from_env()
 

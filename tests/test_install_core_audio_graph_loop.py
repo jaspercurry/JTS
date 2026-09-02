@@ -350,7 +350,7 @@ def test_full_install_uses_transactional_core_graph_installer():
 def test_full_install_commits_before_runtime_and_starts_both_audio_slices():
     body = _function_body(FRAGMENT.read_text(), "install_systemd_units")
     transaction = body.index("mktemp -d /tmp/jasper-full-unit-install")
-    first_full_unit = body.index("deploy/systemd/jasper-voice.service")
+    first_full_unit = body.index("install_voice_unit_files")
     reload = body.index("systemctl daemon-reload", first_full_unit)
     commit = body.index("trap - ERR", reload)
     slices = body.index(

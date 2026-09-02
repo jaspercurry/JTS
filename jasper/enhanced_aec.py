@@ -39,7 +39,7 @@ from typing import Any, Mapping
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .install_profile import (
-    install_profile_allows_voice_brain,
+    install_profile_supports_wake_detection,
     read_install_profile,
 )
 from .log_event import log_event
@@ -147,7 +147,7 @@ def install_profile_supports_enhanced_aec() -> bool:
     """Whether this install has the voice/mic/AEC consumer for the feature."""
 
     try:
-        return install_profile_allows_voice_brain(read_install_profile())
+        return install_profile_supports_wake_detection(read_install_profile())
     except ValueError:
         # An invalid product role must never authorize a root compiler job.
         return False
