@@ -1696,8 +1696,6 @@ class WakeLoop:
         text = announcement_text(timer)
         deadline = asyncio.get_event_loop().time() + 5.0
         while self._state is State.SESSION or self._output_gate.is_active:
-            if self._output_admission_refusal() is not None:
-                break
             if asyncio.get_event_loop().time() >= deadline:
                 logger.warning(
                     "timer announce: skipped (id=%s) — assistant output "
@@ -3385,11 +3383,12 @@ class WakeLoop:
     ) -> None:
         """Restore local output first; deadline-bound observers are best-effort."""
 
+        # Output admission reopens before the mic ungates so no ordering of
+        # awaits can leave a wake heard but its chirp refused (non-negotiable 6),
+        # and before meter IPC, whose adapter may be recovering from a stuck send.
+        await self._output_gate.resume_admission()
         self._set_measurement_active_local(False, trigger=trigger)
         self._content_activity.resume()
-        # Admission is the household-facing availability boundary. Reopen it
-        # before meter IPC, whose adapter may be recovering from a stuck send.
-        await self._output_gate.resume_admission()
 
         if deadline_monotonic is not None:
             # The final quarter-second is rollback reserve. Clear the volume

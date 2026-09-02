@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import pytest
+
 from jasper.audio_io import TtsPlayout
 from jasper.timers import Timer
 
@@ -77,19 +79,25 @@ async def test_play_cue_plays_normally_when_not_measuring() -> None:
     assert played == ["cant_connect"]
 
 
-async def test_play_supervisor_cue_refuses_during_measurement(caplog) -> None:
+@pytest.mark.parametrize("output_busy", [False, True])
+async def test_play_supervisor_cue_refuses_during_measurement(
+    caplog, output_busy: bool,
+) -> None:
     from jasper.voice_daemon import WakeLoop
 
     wl = WakeLoop.for_tests()
     wl._cues = _RefusingCues()
+    if output_busy:
+        assert await wl._output_gate.begin_if_idle("admin") is not None
     assert await wl.measurement_pause() == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await wl.play_supervisor_cue("cant_connect")
 
     assert result == "measurement_active"
-    assert "event=cue.skipped" in caplog.text
-    assert "reason=measurement_active" in caplog.text
+    if not output_busy:
+        assert "event=cue.skipped" in caplog.text
+        assert "reason=measurement_active" in caplog.text
     await wl.measurement_resume()
 
 
