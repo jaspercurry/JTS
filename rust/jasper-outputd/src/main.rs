@@ -29,6 +29,7 @@ use jasper_outputd::alsa_backend::{
     NegotiatedPcm, PairedCompositeSink,
 };
 use jasper_outputd::config::{BackendMode, Config, SinkMode, DAC_CONTENT_RING_SLOTS};
+use jasper_outputd::content_fill::{ContentFill, ContentFillEdge};
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::shm_ring_source::ShmRingSource;
@@ -532,6 +533,17 @@ fn run_alsa(
     // this can only attenuate.
     let zero_period = vec![0 as ProgramSample; content_period_samples];
     let dac_negotiated = sink.dac_negotiated();
+    // Which source is live is fixed for the run (the loop below consults
+    // exactly one). A box with NEITHER parks on its first period, before this
+    // ever observes anything.
+    let mut content_fill = ContentFill::new(
+        if dac_content.is_some() {
+            "dac_content"
+        } else {
+            "shm_ring"
+        },
+        dac_negotiated,
+    );
     let prime_periods = prime_periods(dac_negotiated.buffer_frames, dac_negotiated.period_frames);
     for _ in 0..prime_periods {
         sink.write_period(&zero_period)
@@ -559,11 +571,17 @@ fn run_alsa(
         // second source to consult and the arms below belong to a box with no
         // lane at all. Metrics are published BEFORE the fatal-fault `?` can
         // propagate, so `/state`'s last sample stays honest.
+        // Did THIS period carry content, or did the live source zero-fill it?
+        // Both sources answer the same question in their own vocabulary; the
+        // run of `false`s is what says the chain is deaf (#3458).
+        let mut period_served = false;
         let served_from_dac_content = match dac_content.as_mut() {
             Some(src) => {
                 let filled = src.fill_period(&mut content_buf);
-                state.mark_dac_content(src.metrics());
+                let metrics = src.metrics();
+                state.mark_dac_content(metrics);
                 filled?;
+                period_served = metrics.serving_fifo;
                 true
             }
             None => false,
@@ -585,7 +603,7 @@ fn run_alsa(
                 // last sample honest.
                 let read = src.read_period(&mut content_buf);
                 state.mark_shm_ring(src.metrics());
-                read?;
+                period_served = read? > 0;
             } else {
                 // ADR-0100: the ring-fed CamillaDSP chain is the only upstream
                 // outputd serves. A box that reaches here declared
@@ -607,6 +625,25 @@ fn run_alsa(
                 .context(FinalSinkStartupConfigError));
             }
         }
+        match content_fill.observe(period_served) {
+            Some(ContentFillEdge::Deaf { empty_periods }) => eprintln!(
+                "event=outputd.content.deaf source={} consecutive_empty_periods={} \
+                 threshold_periods={} action=emit_silence",
+                content_fill.source(),
+                empty_periods,
+                content_fill.deaf_threshold_periods(),
+            ),
+            Some(ContentFillEdge::Recovered { empty_periods }) => eprintln!(
+                "event=outputd.content.recovered source={} empty_periods={}",
+                content_fill.source(),
+                empty_periods,
+            ),
+            None => {}
+        }
+        state.mark_content_fill(
+            content_fill.consecutive_empty_periods(),
+            content_fill.deaf(),
+        );
         let trim = if dac_content.is_some() {
             state.dac_content_trim_gain()
         } else {
@@ -1044,7 +1081,12 @@ impl ReferenceSideOutputs {
             match sock.send_to(i16_bytes(&self.narrow_staging), target) {
                 Ok(_) => self.state.mark_reference_udp_active(true),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // Keep dropping — a blocking retry here would stall the
+                    // playout thread and starve the DAC. The counter is the
+                    // observable; a reader that trusts the tap's continuity
+                    // has to see it (#3509).
                     self.state.mark_reference_udp_active(true);
+                    self.state.mark_reference_udp_dropped();
                 }
                 Err(e) => {
                     self.state.mark_reference_udp_error();
