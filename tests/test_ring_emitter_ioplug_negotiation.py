@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONF_D = ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 IOPLUG_C = ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 RUST_FANIN_CONFIG = ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
+RUST_RING_LAYOUT = ROOT / "rust" / "jasper-ring" / "src" / "layout.rs"
 CAMILLADSP_TAG = "v4.1.3"
 CAMILLADSP_COMMIT = "05e9cfc"
 
@@ -80,13 +81,48 @@ def test_ioplug_geometry_is_fixed_min_equals_max():
     _ioplug_advertises_period_and_periods_fixed()
 
 
+# Anchored at column zero, because a `///` doc comment quoting a superseded
+# declaration would otherwise satisfy an unanchored search while the real
+# constant said something else.
+_RUST_SLOT_DECL_RE = re.compile(r"^pub const RING_SLOT_FRAMES: u32 = (\d+);$", re.MULTILINE)
+
+
+def _rust_declares_line(path: Path, line: str) -> bool:
+    """Does ``path`` spell ``line`` as a WHOLE top-level line?
+
+    The substring form of this check passes on a doc comment that merely quotes
+    the declaration, which is exactly the drift these pins exist to catch.
+    """
+    return line in path.read_text(encoding="utf-8").splitlines()
+
+
+def _rust_ring_slot_frames() -> int:
+    """The Rust declaration of the slot, in the crate BOTH daemons link.
+
+    `jasper-fanin` re-exports this and `jasper-outputd` reads it for the
+    dac-content lane, so it is the only Rust spelling left to pin. A SECOND
+    declaration is as much a drift as a changed one — the readers would split
+    across them — so more than one match fails here too.
+    """
+    matches = _RUST_SLOT_DECL_RE.findall(RUST_RING_LAYOUT.read_text(encoding="utf-8"))
+    assert len(matches) == 1, (
+        f"rust/jasper-ring/src/layout.rs must declare `pub const RING_SLOT_FRAMES: "
+        f"u32` exactly once at top level; found {len(matches)}"
+    )
+    return int(matches[0])
+
+
 def test_ring_a_default_slots_match_conf_d_and_ioplug_period():
     period_frames = ring_assets.ring_conf_period_frames(str(CONF_D))
     n_slots = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM, str(CONF_D))
-    rust_config = RUST_FANIN_CONFIG.read_text(encoding="utf-8")
 
     assert period_frames == _ioplug_default_period_frames() == RING_SLOT_FRAMES
-    assert f"pub const RING_SLOT_FRAMES: u32 = {RING_SLOT_FRAMES};" in rust_config
+    assert _rust_ring_slot_frames() == RING_SLOT_FRAMES
+    # fan-in must READ that declaration rather than re-spell it; a second
+    # literal here is what this pin exists to keep out.
+    assert _rust_declares_line(
+        RUST_FANIN_CONFIG, "pub use jasper_ring::RING_SLOT_FRAMES;"
+    ), "rust/jasper-fanin/src/config.rs must re-export jasper_ring::RING_SLOT_FRAMES"
     assert n_slots == DEFAULT_FANIN_RING_SLOTS == 2
     assert n_slots * period_frames == 256
 

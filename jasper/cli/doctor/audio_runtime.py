@@ -2145,7 +2145,7 @@ def check_ring_conf_floor_render() -> CheckResult:
     not: each is a concrete render failure with one remedy.
 
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
-    ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env override),
+    ``RING_SLOT_FRAMES`` (``rust/jasper-ring/src/layout.rs``, no env override),
     so only a floor that EQUALS it is renderable. A DAC declaring any other floor
     never gets a rendered conf.d, and its outputd period/buffer geometry still
     applies through ``outputd.env``. Known limit, issue #2147, so ok not warn.

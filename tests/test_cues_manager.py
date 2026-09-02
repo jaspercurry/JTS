@@ -515,3 +515,30 @@ def test_speak_text_cache_keyed_on_backend_model(tmp_path):
     )
     assert asyncio.run(mgr_b.speak_text(text)) is True
     assert backend_b.calls == [text]  # re-synthesised under the new model
+
+
+def test_play_uses_fallback_cue_when_remedy_cue_is_not_baked(tmp_path):
+    """A remedy cue is baked through the provider whose outage it announces,
+    so until it exists the wake path must still say something."""
+    tts = _FakeTtsPlayout()
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=tts,
+    )
+    mgr.regenerate(slug="cant_connect")
+    assert asyncio.run(mgr.play("provider_out_of_credit")) is True
+    assert len(tts.writes) == 1
+
+
+def test_regenerate_prunes_wavs_of_retired_slugs(tmp_path):
+    retired = tmp_path / "cant_reach_cloud-0123abcd.wav"
+    dynamic = tmp_path / "dynamic-0123abcd.wav"
+    for path in (retired, dynamic):
+        _hand_write_wav(str(path), b"\x00\x00" * 100)
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(),
+    )
+    mgr.regenerate()
+    assert not retired.exists()
+    assert dynamic.exists()

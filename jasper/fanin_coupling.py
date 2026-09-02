@@ -49,8 +49,10 @@ _VALID_COUPLINGS = VALID_COUPLINGS
 RING_PATH_ENV_VAR = "JASPER_FANIN_RING_PATH"
 DEFAULT_FANIN_RING_PATH = "/dev/shm/jts-ring/program.ring"
 RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
-# Ring A/B slot size in frames. Mirrors rust/jasper-fanin/src/config.rs
-# RING_SLOT_FRAMES and c/jts-ring-ioplug/pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD.
+# Ring A/B slot size in frames. Mirrors rust/jasper-ring/src/layout.rs
+# RING_SLOT_FRAMES (the one Rust declaration, which jasper-fanin re-exports
+# and jasper-outputd reads) and c/jts-ring-ioplug/pcm_jts_ring.c
+# JTS_RING_DEFAULT_PERIOD.
 # The conf.d period parser and contract tests pin those copies to this value.
 #
 # The Rust side is a COMPILE-TIME const with no env override — fan-in always
@@ -72,7 +74,7 @@ def ring_capacity_frames() -> int:
     CamillaDSP sets ``avail_min`` to its chunk, and ALSA refuses an
     ``avail_min`` larger than the device's buffer. It is a property of the
     TRANSPORT, not of the fitted DAC — both factors are compile-time constants
-    shared by the fan-in writer (``rust/jasper-fanin/src/config.rs``) and the
+    shared by the fan-in writer (``rust/jasper-ring/src/layout.rs``) and the
     ioplug (``c/jts-ring-ioplug``), so every box's ring is the same size.
 
     Deliberately not env-derived. ``JASPER_FANIN_RING_SLOTS`` exists, but the

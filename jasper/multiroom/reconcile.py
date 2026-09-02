@@ -4,32 +4,15 @@
 
 """Multiroom grouping reconciler — pure plan + thin systemctl entrypoint.
 
-The reconciler is the single writer of the snapcast unit state. It reads the wizard-owned
-GroupingConfig (see jasper.multiroom.config) and decides which units should
-be running:
+Single writer of the snapcast unit state. Reads the wizard-owned GroupingConfig
+(``jasper.multiroom.config``) and decides which units run; an enabled-but-INVALID
+config runs neither (never bring up a broken bond).
 
-  - solo / grouping OFF        => neither snapserver nor snapclient runs.
-  - grouping ON but INVALID    => neither runs (fail-safe: never bring up a
-                                  broken bond; the doctor surfaces the error).
-  - ON, valid, role=leader     => snapserver + snapclient (the leader hosts
-                                  the stream AND plays its own channel).
-  - ON, valid, role=follower   => snapclient only (consumes the leader's stream).
-
-After its role/data-plane work lands, it hands the role to the canonical source
+After its role/data-plane work lands it hands the role to the canonical source
 coordinator. Grouping never starts or stops source resources itself.
 
-Mirrors the jasper-aec-reconcile / jasper-wifi-guardian shape: the
-decision is a PURE, total function (`plan`) that is unit-tested with
-synthetic configs. `main()`'s branching/sequencing is also pytest-covered
-(with `_apply` and systemctl faked); only the real systemctl calls inside
-`_apply` itself need hardware validation.
-
-The argv builders (`snapserver_argv`, `snapclient_argv`) are likewise
-pure — they translate a GroupingConfig into a command line so the same
-logic can be tested without spawning snapcast.
-
-There is no resident process here: jasper-grouping-reconcile.service is
-Type=oneshot. It runs, applies the plan, and exits.
+``plan`` and the argv builders are PURE and total. jasper-grouping-reconcile.service
+is Type=oneshot — there is no resident process here.
 """
 
 from __future__ import annotations
@@ -82,33 +65,24 @@ TTS_MIX_STAGE_POST_DSP = _tts_routing.TTS_MIX_STAGE_POST_DSP
 
 SNAPSERVER_UNIT = "jasper-snapserver.service"
 SNAPCLIENT_UNIT = "jasper-snapclient.service"
-# shairport-sync is the AirPlay receiver. A FOLLOWER parks it (below); a
-# LEADER keeps it running and gets its backend latency offset re-derived
-# on bond/unbond (a bonded leader folds in the Snapcast round-trip buffer
-# — see airplay_grouping_env + main()).
+# The AirPlay receiver. A FOLLOWER parks it; a LEADER keeps it running and gets
+# its backend latency offset re-derived on bond/unbond (a bonded leader folds in
+# the Snapcast round-trip buffer — see airplay_grouping_env).
 SHAIRPORT_UNIT = "shairport-sync.service"
-# Role changes are an input to the canonical source owner. Grouping never
-# learns source units, optional accessory adapter names, or fan-in USB
-# mechanics; after its own plan lands, it asks the source coordinator to read
-# the new role and converge every source in its domain order.
-# Short manager requests (probes and reset-failed) should
-# return promptly.  Blocking starts/restarts may wait for a normal service job,
-# but remain finite when this module is run directly during install or repair,
-# outside the grouping oneshot's outer systemd timeout.
+# Short manager requests (probes, reset-failed) return promptly. Blocking
+# starts/restarts may wait for a normal service job, but must remain finite when
+# this module is run directly during install or repair, outside the grouping
+# oneshot's outer systemd timeout.
 _SYSTEMCTL_CONTROL_TIMEOUT_SEC = 5.0
 _SYSTEMCTL_BLOCKING_TIMEOUT_SEC = 60.0
-# A role handoff never restarts the source owner: it may be between ordered USB
-# fan-in/gadget steps. If an older
-# activation is already running, a blocking ``systemctl start`` is only a
-# barrier (it joins and waits; it does not interrupt), bounded just beyond the
-# target unit's own TimeoutStartSec.  A fresh activation is then queued.
+# A role handoff never RESTARTS the source owner: it may be between ordered USB
+# fan-in/gadget steps. A blocking ``systemctl start`` against a running
+# activation is only a barrier (it joins and waits), bounded just beyond the
+# target unit's own TimeoutStartSec.
 _SOURCE_RECONCILE_START_TIMEOUT_SEC = SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
 _MAX_SOURCE_RECONCILE_STARTS = 2  # drain prior pass, then run fresh role pass
-# The finite outer boundary covers the two-unit Snapcast plan, the one-time
-# Snapcast apt opt-in, and the
-# active-endpoint branch's bounded post-plan unit/hardware actions. These are
-# intentionally conservative *sequential* ceilings, not typical latency (a
-# steady-state pass normally performs no blocking work).
+# Conservative *sequential* ceilings, not typical latency: a steady-state pass
+# normally performs no blocking work.
 _MAX_PLAN_UNIT_INTENTS = 2  # snapserver + snapclient; sources have one owner
 _SNAPCAST_PROVISION_BUDGET_SEC = 420.0  # apt update 120 + install 300
 _MAX_POST_PLAN_BLOCKING_ACTIONS = 6
@@ -128,119 +102,98 @@ _RECONCILE_SYSTEMD_TIMEOUT_SEC = (
 
 # ---------- Snapcast wiring constants ----------
 
-# The FIFO the fan-in chain writes the mixed stereo program into and
-# snapserver reads from as its pipe source. Lives in snapserver's OWN
-# per-unit runtime dir (/run/jasper-snapserver/, RuntimeDirectory=
-# jasper-snapserver). A unit's RuntimeDirectory is reaped when it stops;
-# sharing runtime directories would let snapserver stopping destroy another
+# The FIFO the fan-in chain writes the mixed stereo program into and snapserver
+# reads as its pipe source. Lives in snapserver's OWN per-unit runtime dir
+# (RuntimeDirectory=jasper-snapserver): a unit's RuntimeDirectory is reaped when
+# it stops, so a shared one would let snapserver stopping destroy another
 # daemon's sockets. tmpfs-backed, recreated each boot.
 SNAPFIFO = "/run/jasper-snapserver/snapfifo"
 
-# Reconciler-owned runtime env file holding the DERIVED snapcast args
-# (the argv after argv[0], space-joined). The snapserver/snapclient
-# units pick it up through their only generated `EnvironmentFile=`. The root
-# services never import management-writable grouping.env directly.
+# Reconciler-owned runtime env file holding the DERIVED snapcast args (the argv
+# after argv[0], space-joined). The snapserver/snapclient units pick it up
+# through their only generated `EnvironmentFile=`; the root services never read
+# management-writable grouping.env directly.
 #
-# Deliberately NOT a unit RuntimeDirectory: a unit's RuntimeDirectory is
-# reaped the moment that unit stops, which would erase the args a sibling
-# unit (or a restart) still needs. This dir is owned by the reconciler
-# and persists for the boot. tmpfs-backed (/run), recreated each boot —
-# the reconciler runs at boot and on every wizard change, so it is always
-# rewritten before the units start.
+# Deliberately NOT a unit RuntimeDirectory: that is reaped the moment its unit
+# stops, which would erase args a sibling unit (or a restart) still needs.
+# tmpfs-backed (/run), so it is recreated on every boot reconcile before the
+# units start.
 ARGS_DIR = "/run/jasper-grouping"
 ARGS_FILE = ARGS_DIR + "/snapcast-args.env"
 
-# The two derived keys the units read. Mirrors the aec-reconcile
-# derived-env contract (one line per key, empty-string to clear).
+# The two derived keys the units read (one line per key, empty-string to clear).
 _SERVER_ARGS_KEY = "JASPER_SNAPSERVER_ARGS"
 _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 
-# ---------- the leader's music producer (Increment 5: CamillaDSP) ----------
+# ---------- the leader's music producer ----------
 #
 # The leader's CamillaDSP feeds the snapserver pipe (post-correction,
-# post-master_gain — the stream inherits the volume + safety ceiling),
-# applied by this reconciler via jasper.multiroom.leader_config (the
-# bonded emit + glitch-free config swap, reusing the wizards' shared
-# apply engine). The earlier outputd-as-producer machinery was removed
-# 2026-06-11. Producer liveness for runtime health reads
-# the ACTIVE CamillaDSP config (the daemon-adjacent truth: camilla's own
-# statefile names it, and the doctor's `leader pipe` check scans it) —
-# never a Python mirror of env intent, the lesson the removed
-# SNAPFIFO_PRODUCER_WIRED flag existed to patch.
+# post-master_gain — the stream inherits the volume + safety ceiling), applied by
+# this reconciler via jasper.multiroom.leader_config. Producer liveness for
+# runtime health reads the ACTIVE CamillaDSP config (camilla's own statefile
+# names it, and the doctor's `leader pipe` check scans it), never a Python mirror
+# of env intent.
 
-# ---------- the member round-trip content lane (Increment 5) ----------
+# ---------- the member round-trip content lane ----------
 #
 # Raw-PCM FIFO snapclient writes the buffered round-trip into
-# (`--player file:filename=...`, option string verified on snapclient
-# 0.31.0), read by outputd's `dac_content` lane (Increment 3) — never
-# snd-aloop, so snapclient's snd_pcm_delay can't lie (inv-2). Lives in
-# the reconciler-owned ARGS_DIR (tmpfs; the reconciler mkfifos it before
-# starting snapclient on every reconcile/boot).
+# (`--player file:filename=...`, option string verified on snapclient 0.31.0),
+# read by outputd's `dac_content` lane — never snd-aloop, so snapclient's
+# snd_pcm_delay can't lie (inv-2). tmpfs (ARGS_DIR); the reconciler mkfifos it
+# before starting snapclient on every reconcile/boot.
 MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
 
-# The active-follower endpoint STATUS file — the reconciler's fresh truth for
-# /state + the dashboard (read by jasper.multiroom.state, never os.environ,
-# because jasper-control is not restarted on a bond). Persistent (a bond
-# survives reboots). Rewritten on every reconcile so a stale file can never
-# claim an active-follower mode that is no longer current. mode 0644, no secret.
-# Reconciler-owned PERSISTENT env file the jasper-outputd unit layers
-# after jasper.env (EnvironmentFile=-). Persistent (NOT /run) so a
-# bonded speaker boots with the lane already configured — no extra
-# outputd restart at boot; mirrors the aec_mode.env pattern. The two
-# derived keys mirror Increment 3's config contract; both are written
-# as empty strings when this speaker is not an active member, so a
-# stale file can never leave the lane half-configured.
+# Reconciler-owned PERSISTENT env file the jasper-outputd unit layers after
+# jasper.env (EnvironmentFile=-). Persistent (NOT /run) so a bonded speaker boots
+# with the lane already configured — no extra outputd restart at boot. Both
+# derived keys are written as empty strings when this speaker is not an active
+# member, so a stale file can never leave the lane half-configured.
 OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 # Receiver-side wireless-sub low-pass corner (Hz). Emitted ONLY when this
-# member's channel is "sub" — outputd's "sub" ChannelPick reads it to build
-# its LR4 low-pass. ABSENT for every other channel (a non-sub member must
-# never carry it), so outputd defaults to its safe 80 Hz only if a sub
-# somehow lacks it. The single writer is outputd_grouping_env.
+# member's channel is "sub" — outputd's "sub" ChannelPick reads it to build its
+# LR4 low-pass — and ABSENT for every other channel, so outputd falls back to its
+# safe 80 Hz only if a sub somehow lacks it. Single writer: outputd_grouping_env.
 OUTPUTD_DAC_CONTENT_SUB_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ"
-# Receiver-side wireless-sub bass-management high-pass corner (Hz). Emitted
-# for non-sub MAIN members only when this bond is known to contain a sub and
-# the per-bond toggle is on. Empty everywhere else so stale env can never leave
-# a main bass-light without a sub.
+# Receiver-side wireless-sub bass-management high-pass corner (Hz). Emitted for
+# non-sub MAIN members only when this bond is known to contain a sub and the
+# per-bond toggle is on. Empty everywhere else so stale env can never leave a
+# main bass-light without a sub.
 OUTPUTD_DAC_CONTENT_HP_HZ_ENV = "JASPER_OUTPUTD_DAC_CONTENT_HP_HZ"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
 
 # Voice-side grouping route: a reconciler-owned PERSISTENT env file layered LAST
 # in jasper-voice.service. The TTS route matrix decides whether this file points
-# voice at outputd, parks voice/AEC, or omits the socket so voice falls back to
-# fan-in. Omission is intentional: present-but-empty is read as a real, invalid
-# path.
+# voice at outputd, parks voice/AEC, or OMITS the socket so voice falls back to
+# fan-in. Omission (not present-but-empty) is required: an empty value is read as
+# a real, invalid path.
 VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 VOICE_UNIT = "jasper-voice.service"
 
-# Reconciler-owned PERSISTENT env file the shairport-sync unit's
-# ExecStartPre (jasper-apply-airplay-mode) layers when deriving the AirPlay
-# backend latency offset. Holds the bonded-leader-only Snapcast round-trip
-# delay; EMPTY (no keys) for solo/follower so the offset stays
-# byte-identical to the solo value (and an empty body avoids a spurious
-# shairport restart on a fresh solo speaker — see _write_derived_env).
-# Persistent (NOT /run) so a bonded leader boots with the bonded offset
-# already derived. mode 0644, no secret.
+# Reconciler-owned PERSISTENT env file the shairport-sync unit's ExecStartPre
+# (jasper-apply-airplay-mode) layers when deriving the AirPlay backend latency
+# offset. Holds the bonded-leader-only Snapcast round-trip delay; EMPTY (no keys)
+# for solo/follower so the offset stays byte-identical to the solo value.
+# Persistent (NOT /run) so a bonded leader boots with the bonded offset already
+# derived. mode 0644, no secret.
 AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
 AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 
-# jasper-aec-reconcile is the SINGLE owner of jasper-voice +
-# jasper-aec-bridge unit state (it already parks voice when the provider
-# is unconfigured). Role changes therefore KICK it rather than touching
-# those units here — it reads the derived park flag below and
-# restarts-or-parks voice per role + provider + mic, one writer total.
+# jasper-aec-reconcile is the SINGLE owner of jasper-voice + jasper-aec-bridge
+# unit state. Role changes therefore KICK it rather than touching those units
+# here: it reads the derived park flag below and restarts-or-parks voice per
+# role + provider + mic, one writer total.
 AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 AUDIO_HARDWARE_RECONCILE = "/usr/local/sbin/jasper-audio-hardware-reconcile"
 
 # camilla#2 — the endpoint-crossover CamillaDSP instance (:1235), armed ONLY on
-# an ACTIVE LEADER. Reconciler-gated: `enable --now` on bond (after
-# the statefile is re-seeded with the re-proven driver-domain graph) and
-# `disable --now` on unbond. INERT/dormant infrastructure otherwise (PR #930).
-# It carries NO StartLimitAction=reboot, so a failed arm fails closed to silence
-# through the crossover — never reboots the household speaker (unlike the
+# an ACTIVE LEADER. Reconciler-gated: `enable --now` on bond (after the statefile
+# is re-seeded with the re-proven driver-domain graph) and `disable --now` on
+# unbond. It carries NO StartLimitAction=reboot, so a failed arm fails closed to
+# silence through the crossover — never reboots the household speaker (unlike the
 # always-on camilla#1).
 CROSSOVER_UNIT = "jasper-camilla-crossover.service"
 
@@ -250,22 +203,14 @@ CROSSOVER_UNIT = "jasper-camilla-crossover.service"
 # the release signal is the ring's own writer lock: the C ioplug's writer holds
 # an exclusive `flock` on `<ring>.writer.lock` for the life of its mapping, so a
 # NON-BLOCKING exclusive `flock` that SUCCEEDS proves no writer owns the ring.
-#
-# Why this and not the per-substream `/proc/asound/Loopback/pcm0p/sub5/status`
-# read it replaces (audio-graph consolidation #2285, P9-C): that path was
-# snd-aloop pair 5, whose PCM definitions P9-C deleted. The lock is strictly
-# the better signal independently — the kernel drops an `flock` on process exit INCLUDING
-# SIGKILL, so it has no frozen-state window, and it is the SAME primitive
-# camilla#2 contends on when it attaches. `/dev/snd/pcmC*D0p` was never usable
-# here (it covers every playback substream and reads false-busy while renderers
-# hold 0..4 or fan-in holds 7); the lock has no such conflation because it is
-# per-ring.
+# The kernel drops an `flock` on process exit INCLUDING SIGKILL, so there is no
+# frozen-state window, and it is the SAME primitive camilla#2 contends on when it
+# attaches.
 #
 # ORDERING CONSEQUENCE: a box whose ring platform never armed has no
-# `active-content.ring.writer.lock` at all, so this probe answers `unknown`
-# and the arm fails closed to solo-active with the lock path in the log line.
-# That is the ruled direction — arming without proof is the jts3 EBUSY reboot
-# loop.
+# `active-content.ring.writer.lock` at all, so this probe answers `unknown` and
+# the arm fails closed to solo-active with the lock path in the log line. Arming
+# without proof is the EBUSY reboot loop this exists to prevent.
 ACTIVE_CONTENT_WRITER_LOCK_PATH = ring_writer_lock_path(RING_ACTIVE_CONTENT_FILE)
 ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC = 0.8
 ACTIVE_CONTENT_RELEASE_POLL_SEC = 0.05
@@ -295,17 +240,12 @@ class _PcmHandleProbeResult:
         return self.state == "unknown"
 
 
-# The snapserver stream id — ONE definition: the argv builder names the
-# pipe source with it, the reconciler's binding pin re-binds persisted
-# groups to it, and the leader's runtime health checks clients against
-# it. snapcast PERSISTS group->stream assignments in server.json, so a
-# stale binding (e.g. the distro-snapserver era's "default") silently
-# mutes a bond behind green health — the 2026-06-11 bring-up incident.
+# The snapserver stream id — ONE definition: the argv builder names the pipe
+# source with it, the reconciler's binding pin re-binds persisted groups to it,
+# and the leader's runtime health checks clients against it. snapcast PERSISTS
+# group->stream assignments in server.json, so a stale binding silently mutes a
+# bond behind green health.
 SNAP_STREAM_ID = "jts"
-# (The former LEADER_CONTENT_LANE_GATE staging env was retired when this
-# lane went live: the reconciler's role wiring IS the gate now — the
-# lane activates exactly when a valid bond is configured, and the
-# off/solo path writes empty env = byte-identical outputd behavior.)
 
 
 # ---------- Plan types ----------
@@ -317,7 +257,7 @@ class UnitIntent:
 
     `desired` is one of {"start", "stop"}; `reason` is a short human-readable
     explanation for the log line. Source lifecycle verbs deliberately do not
-    exist here; ``jasper.source_intent`` owns them.
+    exist here — ``jasper.source_intent`` owns them.
     """
 
     unit: str
@@ -400,17 +340,14 @@ def plan(cfg: GroupingConfig) -> ReconcilePlan:
 def snapserver_argv(cfg: GroupingConfig) -> list[str]:
     """Build the snapserver command line from a GroupingConfig.
 
-    PURE: a deterministic function of `cfg`. snapserver reads the mixed
-    program from the SNAPFIFO pipe source and streams it with the
-    configured codec and the group/network playout buffer (cfg.buffer_ms,
-    passed as the global ``--stream.buffer``).
+    PURE: a deterministic function of `cfg`. cfg.buffer_ms is the group/network
+    playout buffer, passed as the GLOBAL ``--stream.buffer``.
     """
-    # sampleformat is PINNED (codify, don't rely on snapserver defaults):
-    # the whole chain is 48 kHz / S16 / stereo — CamillaDSP's File sink
-    # writes it, and outputd's dac_content reader assumes it. mode=create
-    # is snapcast's default for a pipe source but is pinned for the same
-    # reason: snapserver owning FIFO creation is load-bearing (it opens
-    # the read end first, so CamillaDSP's write-open cannot block).
+    # sampleformat is PINNED, not left to snapserver's default: the whole chain
+    # is 48 kHz / S16 / stereo — CamillaDSP's File sink writes it and outputd's
+    # dac_content reader assumes it. mode=create is pinned because snapserver
+    # owning FIFO creation is load-bearing: it opens the read end first, so
+    # CamillaDSP's write-open cannot block.
     source = (
         f"pipe://{SNAPFIFO}?name={SNAP_STREAM_ID}"
         f"&mode=create"
@@ -418,13 +355,10 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
         f"&codec={cfg.codec}"
     )
     # buffer_ms is the GLOBAL `--stream.buffer` flag (snapcast's end-to-end
-    # capture->playout latency), NOT a `pipe://?...&buffer_ms=` source-URL
-    # query param. snapcast's pipe-source parser reads only name/mode/
-    # sampleformat/codec/chunk_ms and SILENTLY IGNORES an unknown query
-    # key, so a `&buffer_ms=` value is inert — the bond would run
-    # snapcast's 1000 ms default regardless. Do NOT move this back into the
-    # source URL (that was the latent bug: a configured 400 ms bond
-    # actually buffered 1000 ms).
+    # capture->playout latency), NOT a `pipe://?...&buffer_ms=` source-URL query
+    # param. snapcast's pipe-source parser reads only name/mode/sampleformat/
+    # codec/chunk_ms and SILENTLY IGNORES an unknown query key, so a
+    # `&buffer_ms=` there is inert and the bond runs snapcast's 1000 ms default.
     return [
         "snapserver",
         "--stream.source",
@@ -442,38 +376,31 @@ def snapclient_argv(
 ) -> list[str]:
     """Build the snapclient command line from a GroupingConfig.
 
-    PURE: a deterministic function of `cfg` (+ the optional `player_fifo`).
+    PURE: a deterministic function of `cfg` (+ the optional player selection).
     The host is the loopback when this speaker is the leader (it runs its own
     server), otherwise the leader's address.
 
-    Channel selection (which of L/R/sub this client plays) is a later
-    CamillaDSP concern and is intentionally NOT decided here.
+    Channel selection (which of L/R/sub this client plays) is a CamillaDSP or
+    outputd concern and is intentionally NOT decided here.
 
-    ``player_fifo`` (inv-2 leader content lane — STAGED): when set, snapclient
-    writes raw PCM to that FIFO via its
-    ``file`` player instead of a default ALSA sink, so the buffered round-trip
-    feeds outputd's ``dac_content`` lane (Increment 3) rather than snd-aloop
-    (which would trip the ``snd_pcm_delay``-lies trap — inv-2) — and rather
-    than fighting outputd for the raw DAC (the observed ``Device or resource
-    busy`` failure of the pre-Increment-5 bond). ``None`` leaves the command
+    ``player_fifo``: snapclient writes raw PCM to that FIFO via its ``file``
+    player, so the buffered round-trip feeds outputd's ``dac_content`` lane
+    rather than snd-aloop (which would trip the ``snd_pcm_delay``-lies trap,
+    inv-2) or fight outputd for the raw DAC. ``None`` leaves the command
     BYTE-FOR-BYTE unchanged. The ``file:filename=`` option string was verified
-    against snapclient 0.31.0 on jts3 (``--player file:?``).
+    against snapclient 0.31.0 (``--player file:?``).
 
-    ``player_alsa_device`` (distributed-active Slice 3 — the ACTIVE endpoint,
-    follower or leader): when set, snapclient writes to that ALSA device via its
-    ``alsa`` player (``--soundcard <dev> --player alsa``). An active endpoint's
+    ``player_alsa_device`` (the ACTIVE endpoint, follower or leader): snapclient
+    writes to that ALSA device via its ``alsa`` player. An active endpoint's
     CamillaDSP runs Layer A in the bonded path and captures the SAME device —
     :data:`jasper.multiroom.grouping_ring.GROUPING_RING_PCM`, one name opened in
-    both directions. Mutually exclusive with ``player_fifo`` (active vs dumb
-    follower).
+    both directions. Mutually exclusive with ``player_fifo``.
     """
-    # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond
-    # wizard now mints it as a STABLE mDNS .local handle (the leader's
-    # JASPER_HOSTNAME, e.g. "jts3.local"), not a raw DHCP IP, so a follower
-    # survives the leader changing IP: snapclient re-resolves the name via
-    # mDNS at connect/reconnect time. A literal IPv4 is still accepted (and
-    # works) — see config.GroupingConfig.leader_addr — but the .local handle
-    # is what the wizard writes, so no reconcile change was needed for it.
+    # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond wizard
+    # mints it as a STABLE mDNS .local handle (the leader's JASPER_HOSTNAME), not
+    # a raw DHCP IP, so a follower survives the leader changing IP: snapclient
+    # re-resolves the name via mDNS at connect/reconnect time. A literal IPv4 is
+    # also accepted — see config.GroupingConfig.leader_addr.
     host = "127.0.0.1" if cfg.role == "leader" else cfg.leader_addr
     argv = [
         "snapclient",
@@ -496,48 +423,35 @@ def _assemble_args(
 ) -> dict[str, str]:
     """Derive the {key: value} the units read, from a GroupingConfig.
 
-    PURE: a deterministic function of `cfg`. Returns the two derived
-    keys (``JASPER_SNAPSERVER_ARGS`` / ``JASPER_SNAPCLIENT_ARGS``) whose
-    values are the argv AFTER argv[0] (the binary name, already in the
-    unit's ExecStart), space-joined. Both keys are always present; a key
-    is the EMPTY STRING when its unit should NOT carry derived args:
+    PURE: a deterministic function of `cfg`. Returns the two derived keys
+    (``JASPER_SNAPSERVER_ARGS`` / ``JASPER_SNAPCLIENT_ARGS``) whose values are
+    the argv AFTER argv[0] (the binary name, already in the unit's ExecStart),
+    space-joined. Both keys are ALWAYS present; a key is the EMPTY STRING when
+    its unit should not carry derived args (a follower runs no server; a
+    disabled or invalid config clears both). The units do not start in those
+    states, but clearing the derived args means a started unit can never pick up
+    STALE values.
 
-      - disabled / cfg.error  => both empty (the units won't start in
-                                 these states, but clearing the derived
-                                 args means a started unit can never pick
-                                 up stale values — mirrors aec-reconcile's
-                                 disable-clears-stale idiom).
-      - enabled, valid leader => server + client set.
-      - enabled, valid follower => server EMPTY, client set
-        (a follower runs no server).
-
-    Word-splitting safety: snapcast args are space-free (a pipe URL and
-    host/latency). We assert that here — if a builder ever emits a
-    space-containing arg, the units' unquoted ``$JASPER_SNAP*_ARGS``
-    word-splitting would mangle it, and that is a separate quoting task.
+    Word-splitting safety: snapcast args must stay space-free, asserted in
+    ``_join_args`` — the units' unquoted ``$JASPER_SNAP*_ARGS`` would mangle a
+    space-containing arg.
     """
     if not cfg.enabled or cfg.error is not None:
         return {_SERVER_ARGS_KEY: "", _CLIENT_ARGS_KEY: ""}
 
-    # argv[0] is the binary name (already in the unit's ExecStart); the
-    # units invoke `/usr/bin/snap* $ARGS`, so persist only argv[1:].
+    # The units invoke `/usr/bin/snap* $ARGS`, so persist only argv[1:].
     server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
     if active_endpoint:
-        # ACTIVE endpoint (Slice 3): snapclient writes the grouping ring; this
-        # box's CamillaDSP captures the same PCM and runs Layer A (the
-        # crossover) IN the bonded path. The dac_content FIFO lane is NOT used
-        # — camilla owns the channel-pick + split. The FIFO is right for a dumb
-        # follower, whose outputd owns the DAC, and wrong here, where CamillaDSP
-        # is in the bonded path and needs a capture device to open.
+        # snapclient writes the grouping ring; this box's CamillaDSP captures the
+        # same PCM and runs Layer A IN the bonded path, so it owns the
+        # channel-pick + split and needs a capture device rather than the FIFO.
         client = _join_args(
             snapclient_argv(cfg, player_alsa_device=GROUPING_RING_PCM)
         )
     else:
-        # DUMB member: snapclient writes the round-trip FIFO (the `file`
-        # player) — never an ALSA sink, which would fight outputd for the DAC
-        # (the observed `Device or resource busy` failure of the pre-Increment-5
-        # bond). outputd reads the FIFO via its dac_content lane (Increment 3)
-        # and picks this member's channel there.
+        # DUMB member: the round-trip FIFO (`file` player) — never an ALSA sink,
+        # which would fight outputd for the DAC. outputd reads the FIFO via its
+        # dac_content lane and picks this member's channel there.
         client = _join_args(snapclient_argv(cfg, player_fifo=MEMBER_CONTENT_FIFO))
     return {_SERVER_ARGS_KEY: server, _CLIENT_ARGS_KEY: client}
 
@@ -563,64 +477,46 @@ def outputd_grouping_env(
     """The outputd round-trip lane env derived from a GroupingConfig. PURE.
 
     A DUMB ACTIVE member (enabled + valid, either role, single-DAC) plays the
-    round-tripped stream only when the saved topology explicitly permits a
-    flat final-output graph: outputd reads ``MEMBER_CONTENT_FIFO`` and
-    picks this speaker's channel (Increment 3's ``ChannelPick``; the
-    channel-split vocabulary). Everyone else gets EMPTY strings — which
-    outputd's ``env_optional`` reads as unset, i.e. the byte-identical
-    solo loop — so a stale file can never half-configure the lane
-    (mirrors ``_assemble_args``'s disable-clears-stale idiom).
+    round-tripped stream only when the saved topology explicitly permits a flat
+    final-output graph: outputd reads ``MEMBER_CONTENT_FIFO`` and picks this
+    speaker's channel (``ChannelPick``). Everyone else gets EMPTY strings — which
+    outputd's ``env_optional`` reads as unset, i.e. the byte-identical solo loop
+    — so a stale file can never half-configure the lane.
 
     ``flat_output_allowed`` comes from the canonical output runtime contract.
     Empty, malformed, or roleful topology never arms a direct DAC bypass.
 
-    ``active_endpoint`` (distributed-active Slice 3 — the ACTIVE follower, plus
-    the active leader's own drivers): DISABLES the ``dac_content`` ChannelPick
-    on this box. CamillaDSP owns BOTH the channel-pick and the ``2->N`` split
-    (Layer A), so outputd just runs its normal active sink fed by camilla — no
-    FIFO, no ChannelPick. This is the real capability that replaces the
-    ``dac_content_lane_rejects_non_single_alsa_sink`` fail-closed: the active
-    sink is now a legitimate bonded member (via CamillaDSP, not the dac_content
-    lane).
+    ``active_endpoint`` (the ACTIVE follower, plus the active leader's own
+    drivers) DISABLES the ``dac_content`` ChannelPick on this box: CamillaDSP
+    owns both the channel-pick and the ``2->N`` split (Layer A), so outputd just
+    runs its normal active sink fed by camilla.
 
-    Active-mode TTS deliberately stays upstream of the crossover in fan-in. The
-    outputd TTS mixer is stereo-only and post-crossover; on an active lane, a
-    2-way speaker is also "2 channels", so arming that socket would send
-    full-range assistant audio to the tweeter. Active endpoints therefore clear
-    the outputd TTS socket along with the dac_content lane.
+    Active-mode TTS stays upstream of the crossover in fan-in. The outputd TTS
+    mixer is stereo-only and post-crossover; on an active lane a 2-way speaker is
+    also "2 channels", so arming that socket would send full-range assistant
+    audio to the tweeter. Active endpoints therefore clear the outputd TTS socket
+    along with the dac_content lane.
 
-    THE LANE HAS NO TRANSPORT (ADR-0100 / ADR-0178 ``grouped_dac_content_lane``,
-    #3118). It used to pin ``CONTENT_BRIDGE=direct`` here, because outputd
-    fail-closes on ``DAC_CONTENT_FIFO`` + any other bridge and the writer must
-    never emit a combination the validator rejects across all env LAYERS. Under
-    one audio transport there is no route to pin: the pin would name a bridge
-    nothing serves, so the box would park either way — with a stale declaration
-    in its env rather than a clean one. It parks at outputd's own bridge
-    requirement instead, which names the lane and the key.
+    The lane has NO transport to pin (ADR-0100 / ADR-0178
+    ``grouped_dac_content_lane``, #3118): a pin would name a bridge nothing
+    serves, so the box parks at outputd's own bridge requirement instead, which
+    names the lane and the key.
     """
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
 
     if cfg.enabled and cfg.error is None:
         if active_endpoint or not flat_output_allowed:
-            # CORNER PRECEDENCE (revision plan §6 default): an ACTIVE main is
-            # both a bonded endpoint AND an active-speaker, so it could carry the
-            # crossover corner TWICE — the wireless-sub mains high-pass here in
-            # outputd's dac_content lane, AND its own CamillaDSP active graph's
-            # bass-management high-pass (active_speaker.camilla_yaml folds the
-            # mains' lowest-driver HP at LocalSubwoofer.crossover_fc_hz). The
-            # active-speaker LOCAL config wins: this box's dac_content lane is
-            # cleared entirely (camilla owns the channel-pick + split + any
-            # crossover), so the wireless HP DEFERS. For an active main WITH a
-            # local sub, mains-HP is therefore applied exactly ONCE, in the
-            # CamillaDSP graph. KNOWN GAP for an active main WITHOUT a local
-            # sub: its Layer-A graph only folds a mains HP when
-            # preset.local_subwoofer is set, so with a wireless-only sub this
-            # clear leaves the active box's mains running FULL-RANGE (zero
-            # mains-HP) — the documented "Remaining" active-endpoint sub path;
+            # CORNER PRECEDENCE: an ACTIVE main could carry the crossover corner
+            # TWICE — the wireless-sub mains high-pass in this lane AND its own
+            # CamillaDSP Layer-A bass-management high-pass (folded at
+            # LocalSubwoofer.crossover_fc_hz). The LOCAL active-speaker config
+            # wins: the dac_content lane is cleared entirely, so the wireless HP
+            # DEFERS and mains-HP is applied exactly once.
+            # KNOWN GAP — an active main WITHOUT a local sub: its Layer-A graph
+            # folds a mains HP only when preset.local_subwoofer is set, so with a
+            # wireless-only sub this clear leaves the mains FULL-RANGE.
             # jasper.bass_management reports that state honestly to displays.
-            # Only a DUMB (passive single-DAC)
-            # member — active_endpoint=False, below — carries the wireless HP
-            # in this lane.
+            # Only a DUMB (passive single-DAC) member carries the wireless HP.
             return {
                 OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
                 OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
@@ -631,11 +527,9 @@ def outputd_grouping_env(
             }
         sub_present = config.bond_has_subwoofer(cfg)
         # The wireless-sub mains high-pass corner, applied in THIS (dumb-member)
-        # lane. Reached only for a passive single-DAC main (active endpoints
-        # returned above with this cleared — the §6 precedence). The corner is
-        # cfg.crossover_hz, the SHARED bass-management corner (jasper.camilla_emit
-        # via multiroom.config), so the sub's low-pass and this high-pass are one
-        # matched crossover, not two independent numbers.
+        # lane. cfg.crossover_hz is the SHARED bass-management corner
+        # (jasper.camilla_emit via multiroom.config), so the sub's low-pass and
+        # this high-pass are one matched crossover, not two independent numbers.
         main_highpass_hz = (
             str(cfg.crossover_hz)
             if (cfg.mains_highpass_enabled and sub_present and cfg.channel != "sub")
@@ -651,18 +545,13 @@ def outputd_grouping_env(
             # a cleared trim converges back to 0.0.
             OUTPUTD_DAC_CONTENT_TRIM_ENV: f"{cfg.trim_db:.1f}",
         }
-        # Receiver-side wireless-sub corner: emitted ONLY for channel="sub"
-        # (the LR4 low-pass corner outputd's "sub" pick applies). Absent for
-        # every other channel — a non-sub member must never carry it.
         if cfg.channel == "sub":
             env[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] = str(cfg.crossover_hz)
             # A sub plays only low-passed bass and NEVER voice. outputd mixes
             # TTS/cues AFTER the ChannelPick low-pass, so an armed TTS lane on a
-            # sub would emit FULL-RANGE speech to the subwoofer. A sub is always
-            # a follower, whose voice is parked today (nothing feeds the socket),
-            # but clear it so that hazard cannot exist by construction — same
-            # disable-clears-stale idiom as the off path below (empty = unset to
-            # outputd, so no TTS server is constructed on a sub).
+            # sub would emit FULL-RANGE speech to the subwoofer. Cleared here so
+            # that hazard cannot exist by construction (empty = unset to outputd,
+            # so no TTS server is constructed on a sub).
             env[OUTPUTD_TTS_SOCKET_ENV] = route.outputd_tts_socket
         return env
     return {
@@ -670,8 +559,7 @@ def outputd_grouping_env(
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
         OUTPUTD_TTS_SOCKET_ENV: "",
         OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
-        # Empty = unset to outputd's env_f32 (default 0.0) — the same
-        # disable-clears-stale idiom as the lane keys above.
+        # Empty = unset to outputd's env_f32 (default 0.0).
         OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
     }
 
@@ -684,29 +572,25 @@ def dac_content_lane_armed(
 ) -> bool:
     """Would :func:`outputd_grouping_env` arm the dac_content lane here? PURE.
 
-    ONE derivation, and it is the WRITER'S OWN: it asks
-    :func:`outputd_grouping_env` for the env it would write and reads the lane's
-    keys out of it rather than restating the rule — a restatement drifts the
-    first time the writer gains an input, which has already happened once
-    (``flat_output_allowed``, with the output runtime contract).
+    Asks the WRITER rather than restating its rule, so it cannot drift when the
+    writer gains an input.
 
-    EITHER transport counts, for the same reason
-    :mod:`jasper.control.transport_park` names both: one lane, two spellings.
-    Reading only the FIFO key would answer "not armed" the moment the writer
-    moves to the ring marker, and this predicate's consumer would then arm
-    ``shm_ring`` under a lane that owns the DAC.
+    EITHER transport counts (FIFO key or ring marker), as
+    :mod:`jasper.control.transport_park` also names both: one lane, two
+    spellings. Reading only the FIFO key would answer "not armed" once the writer
+    moves to the ring marker, and the consumer would then arm ``shm_ring`` under
+    a lane that owns the DAC.
 
     Its consumer is the coupling support matrix
     (:func:`jasper.audio_runtime_plan.coupling_supported_for_route`), which
     blocks ``shm_ring`` only where this lane is armed: the round-trip lane is
     itself the content source, so it and the ring are mutually exclusive by
-    construction (outputd refuses the pair). Every other bonded shape has the
-    cleared lane and nothing for the ring to strand.
+    construction (outputd refuses the pair).
 
-    It crosses module boundaries as a plain ``bool`` ON PURPOSE:
+    Crosses module boundaries as a plain ``bool`` ON PURPOSE:
     ``jasper.audio_runtime_plan`` keeps its multiroom imports lazy (it is
-    imported at module level BY ``multiroom.active_leader_config``), so
-    importing this predicate there would invert that direction into a cycle.
+    imported at module level BY ``multiroom.active_leader_config``), so importing
+    this predicate there would invert that direction into a cycle.
     """
     env = outputd_grouping_env(
         cfg,
@@ -744,11 +628,9 @@ def voice_grouping_env(
             }
         )
         if route.voice_parked:
-            # Parked routes stop voice (and the AEC stack) through the
-            # validated cross-language contract jasper-aec-reconcile gates on.
-            # The route matrix still owns any socket override separately, so
-            # active endpoints and sub followers can fail closed without
-            # duplicating those safety rules here.
+            # Parked routes stop voice (and the AEC stack) through the flag
+            # jasper-aec-reconcile gates on; the route matrix owns any socket
+            # override separately.
             env[VOICE_PARK_ENV] = "1"
         return env
     return {}
@@ -757,24 +639,20 @@ def voice_grouping_env(
 def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     """shairport's bonded-leader AirPlay latency-offset delta. PURE.
 
-    Only an ACTIVE bonded LEADER both receives AirPlay AND plays its own
-    channel through the Snapcast round-trip ("a follower of itself"), so
-    only a leader's shairport must fold the Snapcast playout buffer into
-    its backend latency offset to keep the leader's OWN output landing on
-    the AirPlay anchor (lip-sync). Everyone else — solo, follower
-    (shairport parked), invalid — gets an EMPTY dict, which clears the file
-    to the byte-identical solo offset (the disable-clears-stale idiom). An
-    empty body (no keys) also avoids a spurious shairport restart on a
-    fresh solo speaker's first reconcile (see _write_derived_env's
-    old-is-None-and-empty guard).
+    Only an ACTIVE bonded LEADER both receives AirPlay AND plays its own channel
+    through the Snapcast round-trip, so only a leader's shairport must fold the
+    Snapcast playout buffer into its backend latency offset to keep the leader's
+    OWN output landing on the AirPlay anchor (lip-sync). Everyone else — solo,
+    follower (shairport parked), invalid — gets an EMPTY dict, which clears the
+    file to the byte-identical solo offset.
 
-    The value is the Snapcast buffer in seconds — the DOMINANT new delay
-    the bonded leader's own output gains over solo. It is deliberately a
-    first-order estimate: the solo offset's Ring A / CamillaDSP / Ring B /
-    outputd terms still apply in the bonded path, and the residual
-    (CamillaDSP pipe-sink fill, the member content FIFO) is second-order
-    and acoustically calibrated alongside snapclient --latency.
-    jasper-apply-airplay-mode ADDS this to the solo-derived offset.
+    The value is the Snapcast buffer in SECONDS — the dominant new delay the
+    bonded leader's own output gains over solo, and deliberately a first-order
+    estimate: the solo offset's Ring A / CamillaDSP / Ring B / outputd terms
+    still apply in the bonded path, and the residual (CamillaDSP pipe-sink fill,
+    the member content FIFO) is second-order and acoustically calibrated
+    alongside snapclient --latency. jasper-apply-airplay-mode ADDS this to the
+    solo-derived offset.
     """
     if config.is_active_leader(cfg):
         return {AIRPLAY_BONDED_EXTRA_DELAY_ENV: f"{cfg.buffer_ms / 1000:.6f}"}
@@ -782,17 +660,12 @@ def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
 
 
 def desired_snapfifo_path(cfg: GroupingConfig) -> str:
-    """The FIFO path the leader's MUSIC PRODUCER must feed, or "" when this
-    role needs no producer. PURE.
+    """The FIFO path the leader's MUSIC PRODUCER must feed, or "" when this role
+    needs no producer. PURE.
 
-    Only a VALID LEADER hosts the synchronised stream, so only a leader
-    needs a producer feeding the snapserver FIFO. A follower *consumes*
-    the stream; a solo / off / invalid config does not stream at all. The
-    path is the reconciler's canonical ``SNAPFIFO`` (in snapserver's
-    RuntimeDirectory). The producer is the leader's CamillaDSP (Increment
-    5 — applied by this reconciler via jasper.multiroom.leader_config);
-    this predicate drives the runtime-health derive ("a leader whose
-    active config does not write the pipe is degraded").
+    Only a VALID LEADER hosts the synchronised stream. Drives the runtime-health
+    derive: a leader whose active CamillaDSP config does not write the pipe is
+    degraded.
     """
     if cfg.enabled and cfg.error is None and cfg.role == "leader":
         return SNAPFIFO
@@ -800,9 +673,8 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
 
 
 # ============================================================
-# I/O entrypoint — NOT unit-tested (validated on hardware).
-# Everything above is pure; everything below does real systemctl
-# calls. Keep that boundary crisp.
+# I/O entrypoint. Everything above is pure; everything below does real
+# systemctl calls. Keep that boundary crisp.
 # ============================================================
 
 
@@ -845,19 +717,17 @@ def _output_topology_state() -> tuple[bool | None, bool]:
 
 
 def is_active_speaker_box() -> bool:
-    """True when this speaker is a commissioned ACTIVE (multi-driver) speaker —
-    its saved output topology declares active 2-/3-way main groups. This is the
-    branch signal that splits the ACTIVE-follower path (CamillaDSP runs Layer A
-    in the bonded path) from the DUMB-follower path (outputd ChannelPick).
+    """True when this speaker's saved output topology declares active 2-/3-way
+    main groups. Splits the ACTIVE-follower path (CamillaDSP runs Layer A in the
+    bonded path) from the DUMB-follower path (outputd ChannelPick).
 
     TOTAL + fail-soft: any load/parse failure resolves to ``False`` (treat as
     passive → the safe dumb-follower path). Commissioning READINESS is NOT
     checked here — a box that declares active groups but is not yet commissioned
-    still takes the active path, where the follower apply fail-closes (no ready
-    baseline → refuse to bond) rather than silently degrading to a full-range
-    dumb follower. Legacy boolean consumers fail-soft unknown to ``False``;
-    the grouping reconciler reads :func:`_output_topology_state` directly
-    and blocks graph transitions on unknown."""
+    still takes the active path, where the follower apply fail-closes rather than
+    silently degrading to a full-range dumb follower. Boolean consumers fail-soft
+    unknown to ``False``; the reconciler reads :func:`_output_topology_state`
+    directly and blocks graph transitions on unknown."""
     return _output_topology_state()[0] is True
 
 
@@ -867,13 +737,12 @@ def box_dac_content_lane_armed(cfg: GroupingConfig) -> bool:
     For the coupling gates that hold a route mode and nothing else: a route mode
     cannot answer this, because ``route_mode_from_grouping_config`` classifies on
     ``cfg.role`` alone, so a DUMB member and an ACTIVE follower are both
-    ``active_follower``. This reads the same two topology-derived inputs the
-    writer's own caller reads and hands them to the writer's rule.
+    ``active_follower``.
 
-    The writer's OFF path is answered FIRST, before any topology read: a solo box
-    has no lane whatever the topology says, and ``_output_topology_state`` logs a
-    WARN per call on an unreadable one — journal spam from the 60 s route sampler
-    and every /state build, on a box that is not even bonded.
+    The OFF path is answered FIRST, before any topology read: a solo box has no
+    lane whatever the topology says, and ``_output_topology_state`` logs a WARN
+    per call on an unreadable one — journal spam from the 60 s route sampler and
+    every /state build, on a box that is not even bonded.
 
     UNCERTAINTY FAILS CLOSED, as worst-case INPUTS rather than a bypass: an
     unreadable topology cannot separate a dumb member (lane armed) from an active
@@ -894,11 +763,9 @@ def box_dac_content_lane_armed(cfg: GroupingConfig) -> bool:
 def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     """Tri-state truth for one ``systemctl is-*`` query.
 
-    A missing systemctl binary returns ``None`` silently; the legacy boolean
-    wrappers collapse it to safe-false, while hardware-sensitive callers can
-    preserve unknown state. Other spawn failures also return ``None`` and
-    surface one stable warning. Completed commands are classified by their
-    explicit state text, not return code alone, so a manager/D-Bus error cannot
+    A missing systemctl binary returns ``None`` silently; other spawn failures
+    return ``None`` with one warning. Completed commands are classified by their
+    explicit state TEXT, not return code alone, so a manager/D-Bus error cannot
     masquerade as disabled or inactive.
     """
     try:
@@ -962,11 +829,10 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
 def _unit_is_active(unit: str) -> bool:
     """``systemctl is-active`` truth. Only explicit ``active`` is true.
 
-    Inactive, failed, absent, transitional, or unknown reads as not-active —
-    the safe direction for the active-leader bake gate: a bake against a
-    reader-less / missing snapserver pipe must NOT proceed (it cannot release
-    the DAC, so arming camilla#2 would fight camilla#1 for it — the 2026-06-23
-    recovery loop)."""
+    Inactive, failed, absent, transitional, or unknown reads as not-active — the
+    safe direction for the active-leader bake gate: a bake against a reader-less
+    or missing snapserver pipe must NOT proceed, because it cannot release the
+    DAC and arming camilla#2 would then fight camilla#1 for it."""
     return _systemctl_unit_state("is-active", unit) is True
 
 
@@ -984,31 +850,30 @@ def _probe_active_content_pcm_once(
       - ``EWOULDBLOCK``       -> ``busy``     — a live writer still owns it.
       - anything else         -> ``unknown``  — the caller fails closed.
 
-    Three properties this probe must keep, all ruled with the design:
+    Three properties this probe must keep:
 
-    1. **Never ``O_CREAT``.** The ioplug creates the lock with ``O_CREAT`` and
-       ``fchmod``-heals the mode precisely because a wrong-mode creation by an
-       out-of-unit first creator locks the renderer out permanently (the sticky
-       directory bit stops it deleting the file). A prober that created the file
-       would be exactly that hazard. An absent lock file means no writer has ever
-       attached this ring -> ``unknown``.
+    1. **Never ``O_CREAT``.** A wrong-mode creation by an out-of-unit first
+       creator locks the renderer out permanently (the sticky directory bit stops
+       it deleting the file), which is why the ioplug ``fchmod``-heals the mode.
+       An absent lock file means no writer has ever attached this ring ->
+       ``unknown``.
     2. **Release immediately.** The probe is a BARRIER, not a lock handoff: it
        drops the lock before returning so it can never be the thing camilla#2
        contends with.
-    3. **The TOCTOU is accepted, not papered over.** camilla#1 could reattach
-       between a successful probe and camilla#2's own attach; the authority is
-       camilla#2's attach, which takes this same lock and gets ``-EBUSY`` if it
-       lost the race. Fail-closed either way, so no handoff protocol is needed.
+    3. **The TOCTOU is accepted.** camilla#1 could reattach between a successful
+       probe and camilla#2's own attach; the authority is camilla#2's attach,
+       which takes this same lock and gets ``-EBUSY`` if it lost the race.
+       Fail-closed either way, so no handoff protocol is needed.
 
     ``O_RDONLY`` is deliberate: ``flock`` needs no write access, and the smaller
     request is the one more likely to succeed against a lock file created by a
     peer under a different uid.
 
     ``lock_path=None`` resolves :data:`ACTIVE_CONTENT_WRITER_LOCK_PATH` at CALL
-    time, never as a bound default — the rule :mod:`jasper.ring_assets` states
-    on ``ring_ioplug_so_path``: a def-time binding makes a caller that repoints
-    the module constant silently probe the original path while every log line
-    still names the constant.
+    time, never as a bound default (the rule :mod:`jasper.ring_assets` states on
+    ``ring_ioplug_so_path``): a def-time binding would make a caller that
+    repoints the module constant silently probe the original path while every log
+    line still names the constant.
     """
     lock_path = ACTIVE_CONTENT_WRITER_LOCK_PATH if lock_path is None else lock_path
     try:
@@ -1040,7 +905,7 @@ def _probe_active_content_pcm_once(
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as e:
             # EWOULDBLOCK/EAGAIN — a live writer holds the ring. The ONE busy
-            # answer; every other failure is unknown, because "we could not ask"
+            # answer; every other failure is unknown, because "could not ask"
             # must not be reported as "someone is holding it".
             return _PcmHandleProbeResult(
                 "busy",
@@ -1076,12 +941,10 @@ def _wait_for_active_content_pcm_release(
 ) -> _PcmHandleProbeResult:
     """Poll until camilla#1 has positively released the active-content PCM.
 
-    Returns `busy` while a live writer still holds the ring's writer lock (and
-    on timeout), and `unknown` when the lock cannot be asked at all — absent,
+    Returns `busy` while a live writer still holds the ring's writer lock (and on
+    timeout), and `unknown` when the lock cannot be asked at all — absent,
     unopenable, or an unexpected errno. The caller arms camilla#2 ONLY on a
-    positive `released`; both `busy` and `unknown` fail closed to solo-active
-    (it logs `unknown` at WARNING since arming without proof risks the EBUSY
-    reboot loop).
+    positive `released`; both `busy` and `unknown` fail closed to solo-active.
 
     ``lock_path=None`` resolves the module constant at CALL time, for the same
     reason the single-shot probe does.
@@ -1102,9 +965,6 @@ def _wait_for_active_content_pcm_release(
             return replace(last, attempts=attempts, timeout_sec=timeout_sec)
         now = monotonic()
         if now >= deadline:
-            # Name the last busy reason in the detail — `writer_lock_held` is
-            # the ordinary one, and anything else arriving here would be a new
-            # busy branch whose identity the operator still needs.
             detail = last.detail
             detail = f"{last.reason}: {detail}" if detail else last.reason
             return _PcmHandleProbeResult(
@@ -1131,11 +991,9 @@ def _unit_absent_stderr(stderr: str) -> bool:
 def _apply(plan_: ReconcilePlan) -> int:
     """Apply a plan via systemctl. Returns a process exit code.
 
-    Intent kinds `start` / `stop` map directly to systemctl verbs. A failure
-    on one intent is logged and surfaced in
-    the exit code but does not abort the rest of the plan — a half-applied
-    bond is worse than a best-effort one. Units that do not exist on this
-    install tier are clean no-ops.
+    A failure on one intent is logged and surfaced in the exit code but does not
+    abort the rest of the plan — a half-applied bond is worse than a best-effort
+    one. Units that do not exist on this install tier are clean no-ops.
     """
     rc = 0
     for it in plan_.intents:
@@ -1208,12 +1066,11 @@ def _write_derived_env(
 ) -> tuple[bool, bool]:
     """Write a reconciler-owned derived environment file iff it changed.
 
-    Returns ``(changed, ok)``. Compare-before-write keeps the common
-    no-change reconcile from restarting its consumer (the caller refreshes the
-    consumer only on ``changed and ok`` — EnvironmentFile= is read at unit
-    start, so a content change without a restart would silently not
-    apply). Fail-soft like ``_write_args_file``; carries no secrets
-    (mode 0644)."""
+    Returns ``(changed, ok)``. Compare-before-write keeps the common no-change
+    reconcile from restarting its consumer; the caller refreshes the consumer
+    only on ``changed and ok``, because ``EnvironmentFile=`` is read at unit
+    start and a content change without a restart would silently not apply.
+    Fail-soft; carries no secrets (mode 0644)."""
     body = "".join(f"{k}={v}\n" for k, v in keys.items())
     try:
         old = Path(path).read_text()
@@ -1222,10 +1079,9 @@ def _write_derived_env(
     if old == body:
         return (False, True)
     if old is None and body == "":
-        # Nothing existed and nothing needs clearing — a fresh solo
-        # speaker's first reconcile must not count as a change (it
-        # would spuriously restart the consuming unit, e.g. a ~15 s
-        # jasper-voice restart on first boot for an empty file).
+        # Nothing existed and nothing needs clearing: a fresh solo speaker's
+        # first reconcile must not count as a change, which would spuriously
+        # restart the consuming unit (~15 s for jasper-voice) on first boot.
         return (False, True)
     try:
         atomic_io.atomic_write_text(path, body, mode=0o644)
@@ -1244,12 +1100,11 @@ def _write_derived_env(
 def _ensure_member_fifo(*, path: str = MEMBER_CONTENT_FIFO) -> bool:
     """Make sure the member round-trip FIFO exists at ``path``. Fail-soft.
 
-    tmpfs-backed (ARGS_DIR), so it must be recreated each boot — the
-    reconciler runs at boot and before starting snapclient, which writes
-    it via the `file` player. A non-FIFO squatter (a stray regular file)
-    is replaced: snapclient's file player would happily write a growing
-    regular file (a disk-filling silent failure), and outputd's
-    dac_content open would still succeed, masking it."""
+    tmpfs-backed (ARGS_DIR), so it must be recreated each boot, before starting
+    the snapclient that writes it via the `file` player. A non-FIFO squatter is
+    replaced: snapclient's file player would happily write a growing regular file
+    (a disk-filling silent failure) and outputd's dac_content open would still
+    succeed, masking it."""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         st = None
@@ -1285,23 +1140,17 @@ def _reset_failed_unit(unit: str) -> None:
     """Reset failed state before a DELIBERATE reconciler start or restart.
 
     The reconciler's restarts are control-plane CONFIG-APPLIES, not crash
-    recovery. A rapid burst of /grouping/set updates — e.g. an active-crossover
-    calibration / trim / delay sweep on the leader re-fanned to a follower —
-    legitimately re-derives the lane env many times in seconds, and each apply
-    spends a slot of the target unit's StartLimitBurst. Once that burst is
-    exhausted inside StartLimitIntervalSec, systemd escalates to
-    StartLimitAction=reboot for direct reboot-budget units (outputd / voice) or
-    Camilla's recovery budget, turning deliberate churn into recovery
-    escalation — the 2026-06-24 jts.local follower reboot (six /grouping/set
-    POSTs from the leader in 44 s tripped outputd's start-limit). reset-failed
-    clears any prior failed / start-limit parking so a config-apply restart
-    never consumes the crash-recovery budget.
-    Genuine crash loops still escalate: the daemon's own Restart= path does NOT
-    call this, so only reconciler-initiated (deliberate) restarts are exempted.
+    recovery. A rapid burst of /grouping/set updates legitimately re-derives the
+    lane env many times in seconds, and each apply spends a slot of the target
+    unit's StartLimitBurst; once that burst is exhausted inside
+    StartLimitIntervalSec, systemd escalates to StartLimitAction=reboot (outputd
+    / voice) or Camilla's recovery budget, turning deliberate churn into recovery
+    escalation. reset-failed clears any prior failed / start-limit parking so a
+    config-apply restart never consumes the crash-recovery budget. Genuine crash
+    loops still escalate: a daemon's own Restart= path does NOT call this.
 
     Fail-soft and BEST-EFFORT: a reset-failed failure must never block the
-    start/restart it precedes. Mirrors grouping_supervisor.kick_reconciler and
-    shairport_supervisor.restart_shairport, which reset-failed the same way."""
+    start/restart it precedes."""
     try:
         subprocess.run(
             ["systemctl", "reset-failed", unit],
@@ -1326,19 +1175,17 @@ def _restart_unit(
     no_block: bool = False,
     active_only: bool = False,
 ) -> bool:
-    """Restart a unit so it re-reads its grouping env. Fail-soft (a
-    failure is logged + reflected in the exit code by the caller; the
-    doctor's drift checks surface a lane left unwired).
+    """Restart a unit so it re-reads its grouping env. Fail-soft (the caller
+    reflects a failure in the exit code; the doctor's drift checks surface a lane
+    left unwired).
 
-    reset-failed FIRST (see :func:`_reset_failed_unit`) so a successful reset
-    keeps a config-apply restart from inheriting the target's accumulated
-    crash-reboot budget. The reset remains best-effort; the restart is the
-    load-bearing action.
+    reset-failed FIRST (see :func:`_reset_failed_unit`) so a config-apply restart
+    does not inherit the target's accumulated crash-reboot budget.
 
     `no_block` is for cross-owner kicks whose target owns its own downstream
-    startup graph (today: grouping -> AEC -> voice). Ordered, same-owner
-    restarts stay blocking so the reconciler can still fail loudly when an
-    apply step it owns does not land.
+    startup graph (grouping -> AEC -> voice). Ordered, same-owner restarts stay
+    blocking so the reconciler still fails loudly when an apply step it owns does
+    not land.
     """
     _reset_failed_unit(unit)
     cmd = ["systemctl"]
@@ -1383,9 +1230,9 @@ def _restart_unit(
 def _source_reconciler_activation_busy() -> bool | None:
     """Return whether the source owner has an activation that can absorb a start.
 
-    ``systemctl is-active`` does not give the distinction we need for every
-    oneshot state, so read ``ActiveState`` directly.  Unknown/probe failure is
-    returned as ``None`` and handled in the safe direction by the caller.
+    ``systemctl is-active`` does not distinguish every oneshot state, so read
+    ``ActiveState`` directly. Unknown / probe failure returns ``None``; the
+    caller handles it in the safe direction.
     """
 
     try:
@@ -1436,14 +1283,14 @@ def _source_reconciler_activation_busy() -> bool | None:
 def _converge_sources_after_role() -> bool:
     """Run a fresh source pass after grouping's role plan and await it.
 
-    A bare no-block start can join an activation that read the previous role.
-    Probe after the role apply: if an activation is already busy (or its state
-    cannot be trusted), synchronously join it as a bounded barrier, then start a
-    new pass. If it is inactive, any activation racing the final start began
-    after the probe and therefore already sees the new role. ``start`` is used
-    throughout—never ``restart``—so an ordered source transition is not
-    interrupted. The final call is blocking: grouping reports success only
-    after source park/restore reaches its terminal result.
+    A bare no-block start can join an activation that read the PREVIOUS role. So:
+    probe after the role apply; if an activation is busy (or its state cannot be
+    trusted), synchronously join it as a bounded barrier, then start a new pass.
+    If it is inactive, any activation racing the final start began after the
+    probe and therefore already sees the new role. ``start`` throughout — never
+    ``restart`` — so an ordered source transition is not interrupted. The final
+    call is blocking: grouping reports success only after source park/restore
+    reaches its terminal result.
     """
 
     unit = SOURCE_INTENT_RECONCILE_UNIT
@@ -1513,8 +1360,7 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
     Active-leader self-healing can intentionally stop camilla#2 to release the
     active-content lane. If camilla#1 previously hit StartLimit while camilla#2
     held that lane, a plain ``systemctl start`` remains parked until
-    ``reset-failed`` runs. Keep this helper narrow and explicit so the common
-    restore/restart paths retain their existing semantics.
+    ``reset-failed`` runs.
     """
     if _unit_is_active(unit):
         return True
@@ -1570,12 +1416,10 @@ def _ensure_unit_active(unit: str, *, reason: str) -> bool:
 def _run_audio_hardware_reconcile(*, reason: str) -> bool:
     """Run the audio-hardware reconciler after an active-leader graph change.
 
-    That reconciler is the single writer of /var/lib/jasper/outputd.env. The
-    active-leader bake changes camilla#1 from the solo active baseline to the
-    program-bake pipe, and the freshly seeded camilla#2 statefile names the
-    endpoint graph. Outputd must then switch from the passive stereo lane to the
-    active-content lane BEFORE camilla#2 is armed, or camilla#2 can fight an
-    existing opener for the exclusive active-content playback PCM.
+    That reconciler is the single writer of /var/lib/jasper/outputd.env. Outputd
+    must switch from the passive stereo lane to the active-content lane BEFORE
+    camilla#2 is armed, or camilla#2 can fight an existing opener for the
+    exclusive active-content playback PCM.
     """
     try:
         subprocess.run(
@@ -1606,11 +1450,10 @@ def _run_audio_hardware_reconcile(*, reason: str) -> bool:
 
 
 def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
-    """Run ``systemctl <verb...> jasper-camilla-crossover.service`` for the
-    active-leader camilla#2 arm/teardown. Fail-soft (logged + reflected in the
-    exit code; the doctor's active-leader crossover-unit check surfaces a unit
-    left un-armed). camilla#2 carries NO StartLimitAction=reboot, so a failed
-    arm fails closed to silence — never reboots the speaker."""
+    """Run ``systemctl <verb...>`` against camilla#2 for the active-leader
+    arm/teardown. Fail-soft (the doctor's active-leader crossover-unit check
+    surfaces a unit left un-armed). camilla#2 carries NO
+    StartLimitAction=reboot, so a failed arm fails closed to silence."""
     try:
         subprocess.run(
             ["systemctl", *verb, CROSSOVER_UNIT],
@@ -1641,11 +1484,11 @@ def _systemctl_crossover_unit(*verb: str, action: str) -> bool:
 
 
 def _arm_crossover_unit() -> bool:
-    """``systemctl enable --now`` camilla#2 (the endpoint-crossover instance) for
-    an active leader. Idempotent (enabling/starting an already-armed unit is a
-    no-op). The crossover statefile MUST be re-seeded with the re-proven
-    driver-domain graph BEFORE this (the caller orders it) so a cold start never
-    loads a flat statefile (full-range to a tweeter)."""
+    """``systemctl enable --now`` camilla#2 for an active leader. Idempotent.
+
+    The crossover statefile MUST be re-seeded with the re-proven driver-domain
+    graph BEFORE this (the caller orders it) so a cold start never loads a flat
+    statefile — full-range to a tweeter."""
     return _systemctl_crossover_unit("enable", "--now", action="armed")
 
 
@@ -1667,18 +1510,22 @@ def _write_follower_status(
 ) -> bool:
     """Publish the effective-role authorization fact and UI status.
 
-    I/O failures are contained and returned as ``False``. Safety-sensitive
-    callers must abort before granting local sources; status-only refresh paths
-    may continue with the previous fail-safe fact. Rewritten every reconcile so
-    the surface is fresh truth. ``active_follower`` = this box runs its local
-    Layer-A crossover on the bonded stream as a FOLLOWER; ``active_leader`` = it
-    runs that crossover (camilla#2) as the bond LEADER (and also bakes the wire
-    on camilla#1); ``blocked_reason`` (non-empty) = an active-endpoint transition
-    was REFUSED and either fell back to solo active or preserved the existing
-    graph because ownership could not be changed safely (invariant 5
-    fail-closed). Every payload carries the current Linux boot ID. An attempted
-    grant without a valid boot ID is rewritten as a deny and returns ``False``;
-    persistent grants must never survive into a later boot as fresh truth.
+    Rewritten every reconcile so the surface is fresh truth; read by
+    jasper.multiroom.state rather than os.environ, because jasper-control is not
+    restarted on a bond. I/O failures are contained and returned as ``False``:
+    safety-sensitive callers must abort before granting local sources, while
+    status-only refresh paths may continue with the previous fail-safe fact.
+
+    ``active_follower`` = this box runs its local Layer-A crossover on the bonded
+    stream as a FOLLOWER; ``active_leader`` = it runs that crossover (camilla#2)
+    as the bond LEADER and also bakes the wire on camilla#1; ``blocked_reason``
+    (non-empty) = an active-endpoint transition was REFUSED and either fell back
+    to solo active or preserved the existing graph because ownership could not be
+    changed safely (invariant 5 fail-closed).
+
+    Every payload carries the current Linux boot ID. An attempted grant without a
+    valid boot ID is rewritten as a deny and returns ``False``: a persistent
+    grant must never survive into a later boot as fresh truth.
     """
     read_boot_id = boot_id_reader or read_current_boot_id
     try:
@@ -1694,9 +1541,9 @@ def _write_follower_status(
     grant_fresh = not (local_sources_allowed is True and not boot_id)
     if not grant_fresh:
         # A persistent grant without a current boot identity could be trusted
-        # after reboot. Publish an explicit deny instead and make the caller's
-        # attempted grant fail so grouping retries rather than reporting a
-        # source-unpark transition that did not become authoritative.
+        # after reboot: publish an explicit deny and fail the caller's grant so
+        # grouping retries rather than reporting a source-unpark transition that
+        # never became authoritative.
         local_sources_allowed = False
         log_event(
             logger,
@@ -1738,16 +1585,9 @@ def _restart_outputd() -> bool:
 def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
     """Atomically write the derived snapcast args to ``path``. Fail-soft.
 
-    Delegates the atomic tempfile+rename mechanics to
-    ``atomic_io.atomic_write_text`` (makedirs the parent, write a temp file
-    in the SAME dir, ``chmod 0644`` BEFORE the rename so the published file
-    never has a wider permission window, then ``os.replace``). One
-    ``KEY=value`` line per key, order preserved.
-
-    Returns True on success, False on any failure. NEVER raises — a lost
-    args write must not crash the reconcile path (the plan still
-    start/stops units; the units would fall back to their own defaults).
-    The file carries no secrets, so mode 0644 (matches grouping.env).
+    One ``KEY=value`` line per key, order preserved. Returns True on success,
+    False on any failure; NEVER raises — a lost args write must not crash the
+    reconcile path. Carries no secrets, so mode 0644 (matches grouping.env).
     """
     body = "".join(f"{k}={v}\n" for k, v in keys.items())
     try:
@@ -1767,59 +1607,32 @@ def _write_args_file(keys: dict[str, str], *, path: str = ARGS_FILE) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """systemd ExecStart entrypoint for jasper-grouping-reconcile.service.
 
-    Loads the wizard-owned config fresh, computes the pure plan, ASSEMBLES
-    and PERSISTS the derived snapcast args, logs the decision, and applies
-    the plan via systemctl. Returns a process exit code.
+    Loads the wizard-owned config fresh, computes the pure plan, persists the
+    derived env files, and applies the plan via systemctl. Returns a process exit
+    code.
 
-    Order matters: the args file is written BEFORE `_apply`, so a unit
-    that `_apply` starts reads fresh args (its `EnvironmentFile=` is read
-    at unit start). The args persistence mirrors jasper-aec-reconcile's
-    derived-env pattern — assemble the concrete `JASPER_SNAPSERVER_ARGS`
-    / `JASPER_SNAPCLIENT_ARGS` from the config (argv after the binary
-    name, space-joined), atomically write them to a reconciler-owned
-    runtime env file (``ARGS_FILE``) the units layer on top of
-    grouping.env, and clear (empty-string, not delete the key) the args
-    when a producer should not run — so a started unit can never pick up
-    stale args.
-
-    SCOPE (Increment 5): the FULL bonded dataplane. Beyond the
-    snapcast args this also (a) writes the outputd round-trip lane env
-    (FIFO + channel pick + the PR-2 TTS socket) and restarts outputd
-    only on change, (b) creates the member content FIFO, (c) flips
-    voice's TTS socket to outputd while bonded (grouping-voice.env,
-    restart-on-change; the doctor's `TTS lane` check guards the two
-    files' agreement), and (d) drives the CamillaDSP config swap
-    through jasper.multiroom.leader_config — the bonded pipe config on
-    an active leader, the solo restore otherwise, and (e) re-derives
-    shairport's AirPlay backend latency offset for a bonded leader
-    (grouping-airplay.env + restart-on-change) so the leader's own
-    output lands on the AirPlay anchor.
-
-    `--reason` is a free-text trigger source (systemd / wizard / manual)
-    echoed into the structured log for correlation, mirroring
-    jasper-aec-reconcile. Unknown args are ignored so a future caller
-    adding a flag can't crash the reconcile path.
+    `--reason` is a free-text trigger source echoed into the structured log for
+    correlation. Unknown args are ignored so a future caller adding a flag cannot
+    crash the reconcile path.
 
     ORDER (load-bearing):
 
-      1. Derived files (snapcast args + outputd lane env) + the member
-         FIFO — before any unit work, so everything a started unit
-         reads is fresh.
-      2. CamillaDSP solo RESTORE when this speaker is not an active
-         leader (a no-op on the common solo reconcile) — BEFORE units
-         stop, so the pipe's writer leaves before its reader.
+      1. Derived files (snapcast args + outputd lane env) + the member FIFO —
+         before any unit work, so everything a started unit reads is fresh
+         (``EnvironmentFile=`` is read at unit start).
+      2. CamillaDSP solo RESTORE when this speaker is not an active leader —
+         BEFORE units stop, so the pipe's writer leaves before its reader.
       3. outputd restart, only when the lane env CHANGED.
-      4. The unit plan (stops before starts, as always).
-      5. CamillaDSP bonded APPLY when this speaker is an active leader —
-         LAST, after snapserver started, so the pipe's reader exists
-         before CamillaDSP's File sink opens it for write (a FIFO
-         write-open blocks until a reader exists).
+      4. The unit plan (stops before starts).
+      5. CamillaDSP bonded APPLY when this speaker is an active leader — LAST,
+         after snapserver started, so the pipe's reader exists before
+         CamillaDSP's File sink opens it for write (a FIFO write-open blocks
+         until a reader exists).
 
     Camilla apply/restore failures are caught and logged
-    (event=multiroom.reconcile.camilla_failed) — the reconcile still
-    manages units, and the doctor's `leader pipe` / runtime-health
-    surfaces carry the unapplied state. They flip the exit code, so the
-    oneshot unit shows failed.
+    (event=multiroom.reconcile.camilla_failed): the reconcile still manages
+    units, the doctor's `leader pipe` / runtime-health surfaces carry the
+    unapplied state, and the exit code flips so the oneshot unit shows failed.
     """
     parser = argparse.ArgumentParser(prog="jasper.multiroom.reconcile")
     parser.add_argument("--reason", default="manual")
@@ -1845,24 +1658,21 @@ def main(argv: list[str] | None = None) -> int:
     decision = plan(cfg)
     active = cfg.enabled and cfg.error is None
     active_leader = active and cfg.role == "leader"
-    # An ACTIVE (multi-driver) follower relocates Layer A onto its own
-    # CamillaDSP in the bonded path (distributed-active Slice 3); a DUMB
-    # (single-DAC) follower uses outputd's dac_content ChannelPick. The box's
-    # saved topology decides which path this reconcile takes.
+    # An ACTIVE (multi-driver) follower relocates Layer A onto its own CamillaDSP
+    # in the bonded path; a DUMB (single-DAC) follower uses outputd's dac_content
+    # ChannelPick. The saved topology decides which path this reconcile takes.
     active_box_state, flat_output_allowed = _output_topology_state()
     box_is_active = active_box_state is True
     active_follower = active and cfg.role == "follower" and box_is_active
-    # An ACTIVE leader is brains + an endpoint: camilla#1 bakes the program
-    # domain to the wire AND camilla#2 runs this box's own Layer-A crossover on
-    # the round-tripped stream (two CamillaDSP). A PASSIVE leader keeps
-    # the single-camilla pipe bake (jasper.multiroom.leader_config).
-    # ``active_leader`` (valid leader, either kind) is unchanged; these split it.
+    # An ACTIVE leader is brains + endpoint: camilla#1 bakes the program domain
+    # to the wire AND camilla#2 runs this box's own Layer-A crossover on the
+    # round-tripped stream. A PASSIVE leader keeps the single-camilla pipe bake.
     active_speaker_leader = active_leader and box_is_active
     passive_leader = active_leader and not box_is_active
     # Both active endpoints (the follower AND the active leader's own drivers)
     # capture the grouping ring and run a camilla-owned channel-pick + split, so
     # they SHARE the snapclient-writes-the-ring + outputd-dac_content-disabled
-    # wiring (the active leader ALSO bakes the wire + hosts the stream).
+    # wiring.
     active_endpoint = active_follower or active_speaker_leader
     log_event(
         logger,
@@ -1926,14 +1736,12 @@ def main(argv: list[str] | None = None) -> int:
             _restart_outputd()
         return 1
 
-    # Ring-armed box: REFUSE a bond the armed ring would silence — subject and
-    # mechanism in `dac_content_lane_armed` above (P2, audit finding 3). The
-    # SYMMETRIC half of the coupling support matrix, and it asks that matrix now
-    # instead of hand-rolling its own rule — the two encoded DIFFERENT rules and
-    # coincided only because this one was stricter. Fail-SAFE to solo (the box
-    # keeps playing its own content) and surface the matrix's reason. Placed
-    # BEFORE snapcast provision / any bond wiring; the request stays in the wizard
-    # config, so disarming the ring lets the next reconcile bond.
+    # Ring-armed box: REFUSE a bond the armed ring would silence — the SYMMETRIC
+    # half of the coupling support matrix, asked of that matrix rather than
+    # restated here. Fail-SAFE to solo (the box keeps playing its own content)
+    # and surface the matrix's reason. Placed BEFORE snapcast provision / any
+    # bond wiring; the request stays in the wizard config, so disarming the ring
+    # lets the next reconcile bond.
     if active:
         from jasper.audio_runtime_plan import (
             GROUPED_SHM_RING_MECHANISM,
@@ -1952,8 +1760,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         if not coupling_support.supported:
-            # The matrix's token AND its mechanism string; only the ACTION is
-            # this side's — here the coupling is untouched and the BOND is
+            # The matrix owns the token and the mechanism string; only the ACTION
+            # is this side's — here the coupling is untouched and the BOND is
             # refused.
             endpoint_block_reason = coupling_support.reason
             log_event(
@@ -1972,16 +1780,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             fall_back_to_solo()
 
-    # Grouping prerequisite: ensure the snapcast binaries are installed — the
-    # "grouping opt-in's job" install.sh ships the units for but never installs
-    # (jasper.multiroom.provision). Runs BEFORE the active-endpoint gate so the
-    # active-leader precheck's snapcast check sees a fresh install. Gated on
-    # `active` (a valid enabled bond); a present install is a fast no-op. TOTAL +
-    # fail-soft: a failed install is logged + surfaced via
-    # /state.grouping.provision (the /rooms wizard shows "Installing Snapcast…")
-    # + the doctor, and flips rc so the oneshot shows failed — but never raises,
-    # and the snap units simply fail to start (the box stays solo-safe, never
-    # wedged; the next reconcile retries).
+    # Grouping prerequisite: install.sh ships the snapcast units but never the
+    # binaries — that is the grouping opt-in's job (jasper.multiroom.provision).
+    # Runs BEFORE the active-endpoint gate so the active-leader precheck's
+    # snapcast check sees a fresh install. TOTAL + fail-soft: a failed install is
+    # surfaced via /state.grouping.provision + the doctor and flips rc, but never
+    # raises — the snap units simply fail to start, the box stays solo-safe, and
+    # the next reconcile retries.
     if active:
         from .provision import ensure_snapcast_installed
 
@@ -2004,12 +1809,11 @@ def main(argv: list[str] | None = None) -> int:
     # Active-ENDPOINT readiness GATE (fail-safe to SOLO). Build + re-prove the
     # driver-domain graph BEFORE tearing down the solo path — for a follower its
     # one CamillaDSP, for an active leader BOTH camilla#2's driver-domain graph
-    # AND camilla#1's program bake. If it can't be made safe (bad channel / not
-    # commissioned / graph fails re-proof), do NOT bond: fall back to solo active
-    # so the box keeps playing its own content (self-recovery, AGENTS.md
-    # resilience) instead of half-parking silent. This is invariant 5's "refuses
-    # to bond" — the unsafe graph never reaches the DACs. The actual CamillaDSP
-    # applies happen later, after snapcast is up.
+    # AND camilla#1's program bake. If it cannot be made safe (bad channel, not
+    # commissioned, graph fails re-proof), do NOT bond: fall back to solo active
+    # so the box keeps playing its own content instead of half-parking silent.
+    # This is invariant 5's "refuses to bond" — the unsafe graph never reaches
+    # the DACs. The actual CamillaDSP applies happen later, after snapcast is up.
     if active_endpoint:
         try:
             if active_speaker_leader:
@@ -2026,8 +1830,7 @@ def main(argv: list[str] | None = None) -> int:
                 "reason",
                 "active_endpoint_precheck_error",
             )
-            # Distinct event per role (the follower name is documented);
-            # both literals stay greppable.
+            # Distinct event per role; both literals stay greppable.
             blocked_event = (
                 "multiroom.reconcile.active_leader_blocked"
                 if active_speaker_leader
@@ -2041,10 +1844,9 @@ def main(argv: list[str] | None = None) -> int:
                 level=logging.ERROR,
             )
             # Fail-safe to solo for the rest of this reconcile: treat exactly
-            # like an invalid bond (plan stops snapcast + restores renderers).
-            # Reset EVERY role flag — including active_leader, which gates the
-            # step-6 stream-binding pin — so a refused bond never partially
-            # behaves like a leader/endpoint.
+            # like an invalid bond. Reset EVERY role flag — including
+            # active_leader, which gates the step-6 stream-binding pin — so a
+            # refused bond never partially behaves like a leader/endpoint.
             fall_back_to_solo()
 
     # A solo-active box needs positive ownership proof BEFORE any role-derived
@@ -2099,9 +1901,9 @@ def main(argv: list[str] | None = None) -> int:
                     "crossover_inactive_state_unproven",
                 )
 
-    # Endpoint status for /state + the dashboard (fresh truth every reconcile):
-    # active-follower / active-leader mode, or the fail-closed block reason if
-    # the bond was refused and we fell back to solo active.
+    # Endpoint status for /state + the dashboard: active-follower /
+    # active-leader mode, or the fail-closed block reason if the bond was refused
+    # and this reconcile fell back to solo active.
     status_block_reason = endpoint_block_reason
     if transitioning_from_parked_role and not status_block_reason:
         status_block_reason = "role_transition_in_progress"
@@ -2138,9 +1940,8 @@ def main(argv: list[str] | None = None) -> int:
         set=",".join(set_keys) or "(none)",
     )
 
-    # Paths passed explicitly (module globals read at CALL time) so the
-    # test harness can redirect them; a def-time default would pin the
-    # production path.
+    # Paths passed explicitly (module globals read at CALL time); a def-time
+    # default would pin the production path.
     outputd_env = outputd_grouping_env(
         cfg,
         active_endpoint=active_endpoint,
@@ -2163,9 +1964,8 @@ def main(argv: list[str] | None = None) -> int:
     if not env_ok:
         rc = 1
     # The member content FIFO feeds the DUMB follower's dac_content lane. An
-    # active ENDPOINT (follower or active leader) takes the grouping ring
-    # instead — the ioplug creates its file at open and the install leaves it
-    # alone on purpose (deploy/lib/install/ring-platform.sh) — so skip it.
+    # active ENDPOINT takes the grouping ring instead, whose file the ioplug
+    # creates at open (deploy/lib/install/ring-platform.sh leaves it alone).
     if (
         active
         and not active_endpoint
@@ -2174,11 +1974,9 @@ def main(argv: list[str] | None = None) -> int:
         rc = 1
 
     # 2. CamillaDSP solo RESTORE — unwind a prior bond before units tear down.
-    #    A box that will APPLY a bonded config below (active leader/follower)
-    #    skips restore. An ACTIVE box restores its ACTIVE baseline (Layer A
-    #    intact — NEVER a passive graph, which would be full-range to a tweeter);
-    #    a passive box uses the leader-stash restore. All branches are a no-op on
-    #    the common solo reconcile.
+    #    A box that will APPLY a bonded config below skips restore. An ACTIVE box
+    #    restores its ACTIVE baseline, Layer A intact — NEVER a passive graph,
+    #    which would be full-range to a tweeter.
     solo_restore_ok = True
     if active_leader or active_follower:
         pass
@@ -2254,13 +2052,12 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
 
     # 3. outputd picks up the lane env only at unit start. For an active leader,
-    # defer that restart until after camilla#1's program-bake graph is live and
-    # camilla#2's statefile has been seeded with the re-proven endpoint graph.
-    # The audio-hardware reconciler needs that graph pair as evidence to switch
-    # outputd from the passive stereo lane to the active-content lane before
-    # camilla#2 is armed. Restarting here would read the grouping TTS env but
-    # still use the solo baseline, re-opening the passive lane that camilla#2
-    # needs.
+    # defer that restart until camilla#1's program-bake graph is live and
+    # camilla#2's statefile is seeded with the re-proven endpoint graph: the
+    # audio-hardware reconciler needs that graph pair as evidence to switch
+    # outputd to the active-content lane before camilla#2 is armed. Restarting
+    # here would read the grouping TTS env but still use the solo baseline,
+    # re-opening the passive lane camilla#2 needs.
     defer_outputd_restart = active_speaker_leader
     outputd_restart_ok = True
     if env_changed and env_ok and not defer_outputd_restart:
@@ -2268,14 +2065,12 @@ def main(argv: list[str] | None = None) -> int:
         if not outputd_restart_ok:
             rc = 1
 
-    # 3b. Voice's grouping-derived env (PR-2 TTS socket flip + the PR-B
-    # park flag): written + kick-on-change only — a voice restart costs
-    # ~10-15 s and must happen only on a real bond/unbond, never on the
-    # routine no-change reconcile. The kick goes to jasper-aec-reconcile,
-    # NOT jasper-voice directly: that script is the single owner of the
-    # voice/bridge units and decides restart-vs-park from the flag plus
-    # its own provider + mic gates (writer/validator coherence — two
-    # writers of one unit's state was the jts3 boot-loop class).
+    # 3b. Voice's grouping-derived env (TTS socket flip + park flag): written +
+    # kick-on-change only — a voice restart costs ~10-15 s and must happen only
+    # on a real bond/unbond, never on the routine no-change reconcile. The kick
+    # goes to jasper-aec-reconcile, NOT jasper-voice directly: that script is the
+    # single owner of the voice/bridge units and decides restart-vs-park from
+    # this flag plus its own provider + mic gates.
     voice_env = voice_grouping_env(cfg, active_endpoint=active_endpoint)
     voice_changed, voice_ok = _write_derived_env(
         voice_env,
@@ -2306,13 +2101,10 @@ def main(argv: list[str] | None = None) -> int:
     ):
         rc = 1
 
-    # 3c. shairport's bonded-leader AirPlay offset delta
-    # (grouping-airplay.env): written + restart-on-change. A bonded leader
-    # folds the Snapcast round-trip buffer into its backend latency offset
-    # so its OWN output lands on the AirPlay anchor (lip-sync); solo and
-    # follower clear it to the byte-identical solo offset. The re-derivation
-    # itself happens in shairport's ExecStartPre (jasper-apply-airplay-mode
-    # reads this file), so the restart in step 4b is what applies it.
+    # 3c. shairport's bonded-leader AirPlay offset delta: written +
+    # restart-on-change. The re-derivation itself happens in shairport's
+    # ExecStartPre (jasper-apply-airplay-mode reads this file), so the restart in
+    # step 4b is what applies it.
     airplay_env = airplay_grouping_env(cfg)
     airplay_changed, airplay_ok = _write_derived_env(
         airplay_env,
@@ -2334,23 +2126,17 @@ def main(argv: list[str] | None = None) -> int:
     apply_rc = _apply(decision)
     rc = max(rc, apply_rc)
 
-    # 4b. Re-derive shairport's backend latency offset on a bond/unbond
-    # that changed it. shairport's ExecStartPre runs
-    # jasper-apply-airplay-mode, which reads grouping-airplay.env, so a
-    # restart re-derives the offset (bonded leader: solo terms + Snapcast
-    # buffer; unbonded: the unchanged solo value). Skip a bonded FOLLOWER —
-    # the plan PARKED its shairport (stopped) and restarting would un-park
-    # it; a follower receives no AirPlay anyway. A leader keeps shairport
-    # running (the plan does not touch it); a solo/unbonded speaker only
-    # reaches here on the bonded->solo transition (airplay_changed). One
-    # restart, only on a real offset change — never on the steady-state
-    # solo reconcile.
+    # 4b. Re-derive shairport's backend latency offset on a bond/unbond that
+    # changed it: a restart runs the ExecStartPre that reads
+    # grouping-airplay.env. Skip a bonded FOLLOWER — the plan PARKED its
+    # shairport and restarting would un-park it; a follower receives no AirPlay
+    # anyway. One restart, only on a real offset change.
     is_bonded_follower = config.local_sources_parked(cfg)
     airplay_refresh_ok = True
     if airplay_changed and airplay_ok and not is_bonded_follower:
-        # AirPlay may be household-Off.  A plain restart ignores unit
-        # enablement and would resurrect it after a leader bond/unbond; refresh
-        # only a receiver that is already active.
+        # AirPlay may be household-Off. A plain restart ignores unit enablement
+        # and would resurrect it after a leader bond/unbond; refresh only a
+        # receiver that is already active.
         airplay_refresh_ok = _restart_unit(SHAIRPORT_UNIT, active_only=True)
         if not airplay_refresh_ok:
             rc = 1
@@ -2378,19 +2164,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             rc = 1
     elif active_speaker_leader:
-        # Active leader = two CamillaDSP: camilla#1 bakes the program domain to the
-        # wire, camilla#2 runs this box's own Layer-A crossover on the round-trip.
-        #
-        # WIRE-UP GUARD (2026-06-23 JTS5 incident — the single top-of-path
-        # precondition). The two-instance setup is viable ONLY if the wire is up.
-        # camilla#1's bake writes a File/FIFO sink that needs snapserver as its
-        # reader, and ONLY a successful bake moves camilla#1 off the DAC so
-        # camilla#2 can take it. If snapserver did not start (no Snapcast
-        # installed, or a failed start in step 4 — the precheck snapcast gate
-        # catches a missing binary, this catches a failed start), bail here and
-        # STAY SOLO-ACTIVE: camilla#1 keeps the DAC on its safe solo baseline,
-        # camilla#2 stays un-armed. Otherwise the two instances fight for the DAC
-        # and camilla#1 exhausts its recovery budget.
+        # WIRE-UP GUARD — the single top-of-path precondition. The two-instance
+        # setup is viable ONLY if the wire is up: camilla#1's bake writes a
+        # File/FIFO sink that needs snapserver as its reader, and ONLY a
+        # successful bake moves camilla#1 off the DAC so camilla#2 can take it.
+        # If snapserver did not start, bail here and STAY SOLO-ACTIVE (camilla#1
+        # keeps the DAC on its safe solo baseline, camilla#2 un-armed) —
+        # otherwise the two instances fight for the DAC and camilla#1 exhausts
+        # its recovery budget.
         if not _unit_is_active(SNAPSERVER_UNIT):
             log_event(
                 logger,
@@ -2410,15 +2191,10 @@ def main(argv: list[str] | None = None) -> int:
             # camilla#2 statefile is RE-SEEDED with the re-proven driver-domain
             # graph before audio-hardware reconcile sizes outputd's active lane.
             # Only if that bake and outputd env handoff succeed, and camilla#1 has
-            # provably released the DAC, is camilla#2 armed onto it. This is the
-            # never-flat guarantee: the crossover guard repairs a dead pipe, not a
-            # flat statefile. camilla#2 is disabled before the bake and later
-            # started from that statefile, so trim-only rewrites are picked up by
-            # process start rather than relying on an idempotent systemd no-op.
-            # camilla#2 runs the active follower's clock seam unchanged — same
-            # capture (the grouping ring), same per-sink rate-adjust
-            # resolution — so the leader adds no clock topology the follower
-            # does not already have. No outputd-summer yet.
+            # provably released the DAC, is camilla#2 armed onto it — the
+            # never-flat guarantee. camilla#2 is disabled before the bake and
+            # later started from that statefile, so trim-only rewrites are picked
+            # up by process start rather than by an idempotent systemd no-op.
             bake_ok = False
             if not _disable_crossover_unit():
                 rc = 1
@@ -2456,12 +2232,12 @@ def main(argv: list[str] | None = None) -> int:
                         level=logging.ERROR,
                     )
                     rc = 1
-            # Arm camilla#2 (systemctl enable --now) ONLY when the bake provably
-            # moved camilla#1 off the active-content PCM, outputd re-converged
-            # to the active lane, and the exclusive handle positively released.
-            # A successful CamillaDSP config reload is not enough: the transport
-            # can lag the actual close, and arming camilla#2 into that window
-            # races EBUSY against camilla#1's recovery-budget unit.
+            # Arm camilla#2 ONLY when the bake provably moved camilla#1 off the
+            # active-content PCM, outputd re-converged to the active lane, and
+            # the exclusive handle positively released. A successful CamillaDSP
+            # config reload is not enough: the transport can lag the actual
+            # close, and arming into that window races EBUSY against camilla#1's
+            # recovery-budget unit.
             if bake_ok:
                 if _unit_is_active(CROSSOVER_UNIT):
                     log_event(
@@ -2487,16 +2263,11 @@ def main(argv: list[str] | None = None) -> int:
                         level=logging.WARNING if probe.unknown else logging.INFO,
                     )
                     if not probe.released:
-                        # Arm camilla#2 ONLY on a POSITIVE release proof. `busy`
-                        # (a live writer still holds the ring, or the wait timed
-                        # out) and `unknown` (the writer lock could not be asked
-                        # — absent, unopenable, unexpected errno) both fail
-                        # closed to solo-active. Arming without proof is the
-                        # exact jts3 EBUSY reboot-loop this barrier exists to
-                        # prevent, so `unknown` is never a path we arm through.
-                        # See ACTIVE_CONTENT_WRITER_LOCK_PATH for which boxes
-                        # can reach `unknown` and why blocking is the honest
-                        # answer there.
+                        # `busy` and `unknown` both fail closed to solo-active:
+                        # arming without positive proof is the EBUSY reboot loop
+                        # this barrier exists to prevent. See
+                        # ACTIVE_CONTENT_WRITER_LOCK_PATH for which boxes reach
+                        # `unknown` and why blocking is the honest answer there.
                         endpoint_block_reason = (
                             "active_content_pcm_busy"
                             if probe.busy
@@ -2581,12 +2352,10 @@ def main(argv: list[str] | None = None) -> int:
     if active_leader and not active_leader_arm_blocked:
         # 6. The stream-binding pin (ANY leader hosts the stream; runs after the
         # camilla apply so snapserver has had its longest warm-up): re-bind every
-        # PERSISTED snapcast group to our stream. A stale server.json binding (the
-        # distro-snapserver era's "default") silently mutes the whole bond behind
-        # green health — the 2026-06-11 bring-up incident. The ensure retries
-        # internally; an unreachable snapserver flips the exit code (a bond whose
-        # bindings cannot be verified is a degraded bond) and the runtime health
-        # shows it.
+        # PERSISTED snapcast group to our stream, because a stale server.json
+        # binding silently mutes the whole bond behind green health. The ensure
+        # retries internally; an unreachable snapserver flips the exit code (a
+        # bond whose bindings cannot be verified is a degraded bond).
         from .snapcast_rpc import ensure_groups_on_stream
 
         report = ensure_groups_on_stream(SNAP_STREAM_ID)
@@ -2603,12 +2372,11 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
 
     # 5b. Active FOLLOWER CamillaDSP swap LAST (snapclient is up → the grouping
-    #     ring has its writer, so CamillaDSP locks immediately). The graph
-    #     was already built + re-proven by the readiness gate above, so this is
-    #     just the glitch-free swap. The graph is the re-proven driver-domain
-    #     baseline, so no capture content (stream / silence / garbage) can ever
-    #     produce a full-range driver feed. A swap failure here keeps CamillaDSP
-    #     on its prior safe solo-active graph; the next reconcile retries.
+    #     ring has its writer, so CamillaDSP locks immediately). The graph was
+    #     built + re-proven by the readiness gate above, so no capture content
+    #     (stream / silence / garbage) can produce a full-range driver feed. A
+    #     swap failure here keeps CamillaDSP on its prior safe solo-active graph;
+    #     the next reconcile retries.
     if active_follower:
         try:
             from .follower_config import apply_prebuilt_follower_config_sync
@@ -2631,10 +2399,10 @@ def main(argv: list[str] | None = None) -> int:
             rc = 1
 
     # A requested follower may have been refused and safely resolved to solo.
-    # Publish that effective permission only after every load-bearing solo
-    # transition has succeeded. Until this point the earlier status explicitly
+    # Publish that effective permission only AFTER every load-bearing solo
+    # transition has succeeded: until this point the earlier status explicitly
     # denies local sources, so a concurrent systemd start cannot enter while the
-    # old follower graph is still live. Any failed restore/file/unit step keeps
+    # old follower graph is still live. Any failed restore/file/unit step leaves
     # the fail-safe deny in place for the next reconcile to repair.
     source_grant_pending = refused_follower_fallback or transitioning_from_parked_role
     if source_grant_pending:
@@ -2651,11 +2419,11 @@ def main(argv: list[str] | None = None) -> int:
                 apply_rc == 0,
             )
         )
-        # A refused follower intentionally returns nonzero for the rejected
-        # bond even after its safe solo fallback landed. An ordinary
+        # A refused follower intentionally returns nonzero for the rejected bond
+        # even after its safe solo fallback landed. An ordinary
         # follower->solo/leader transition has no such expected error: every
-        # later role-specific step must also have succeeded before sources can
-        # be granted.
+        # later role-specific step must also have succeeded before sources can be
+        # granted.
         if transitioning_from_parked_role and not refused_follower_fallback:
             transition_landed = transition_landed and rc == 0
         if transition_landed:
@@ -2698,10 +2466,8 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     # 7. Hand the completed role to the one source owner. It reads grouping
-    # permission fresh and performs follower park or solo/leader restore for
-    # all sources, including USB's arm -> advertise -> start sequence. Draining
-    # an older activation before queueing a fresh one prevents coalescing a pass
-    # that observed the prior role; ``start`` never interrupts ordered work.
+    # permission fresh and performs follower park or solo/leader restore for all
+    # sources, including USB's arm -> advertise -> start sequence.
     if not _converge_sources_after_role():
         rc = 1
 

@@ -40,6 +40,7 @@ from .generator import (
     cue_hash,
     cue_path,
     dynamic_text_path,
+    prune_retired,
     prune_stale,
     write_cue,
     write_dynamic_text,
@@ -238,6 +239,8 @@ class AudioCueManager:
                 )
                 continue
             written.append(cue.slug)
+        if slug is None:
+            prune_retired(self._sounds_dir, {c.slug for c in CUES})
         if failed:
             logger.warning(
                 "cue regenerate: %d/%d cue(s) failed and were skipped "
@@ -271,6 +274,11 @@ class AudioCueManager:
         path = self.expected_path(cue)
         if not os.path.isfile(path):
             stale = self._find_any_cached(cue)
+            if stale is None and cue.fallback is not None:
+                log_event(
+                    logger, "cue.play_fallback", slug=slug, fallback=cue.fallback,
+                )
+                return await self.play(cue.fallback)
             if stale is None:
                 logger.warning(
                     "cue play: no cached file for %s and no stale "

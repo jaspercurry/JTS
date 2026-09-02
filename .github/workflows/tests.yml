@@ -182,7 +182,7 @@ jobs:
     # The 8 warning-level findings present when the error-only gate
     # landed (3×SC2034, 2×SC2155, 2×SC1090, 1×SC2010) were fixed
     # file-by-file before this tightened to warning. Extending the
-    # selection to the whole deploy tree + capture-page (2026-07)
+    # selection to the whole deploy tree (2026-07)
     # surfaced 1×SC2164 in the usbsink gadget teardown script (a
     # failed cd would have run relative-path rm/rmdir as root from
     # the wrong CWD on a teardown-race path); the composite-gadget
@@ -200,7 +200,7 @@ jobs:
 
       - name: bash -n + shellcheck (warning severity)
         # Select tracked shell files across the whole deploy tree (plus
-        # scripts, firmware, and capture-page) by shebang/extension. The
+        # scripts and firmware) by shebang/extension. The
         # shebang/extension filter is the discriminator: install.sh copies
         # deploy content onto production speakers, so any shell file added
         # anywhere under deploy/ should auto-gate — enumerating deploy
@@ -209,8 +209,7 @@ jobs:
         # entry points (deploy/bin's librespot event hook + jasper-deploy-
         # health, deploy/usbsink's uac2_name_patch.py) and never matches
         # shebang-less configs/units/assets; it keeps shebang-less .sh
-        # source libraries and scripts/use; capture-page carries the
-        # Pages-bundle build entry point. shellcheck is preinstalled on
+        # source libraries and scripts/use. shellcheck is preinstalled on
         # ubuntu-latest runners.
         run: |
           set -euo pipefail
@@ -230,7 +229,7 @@ jobs:
             esac
             shell_files+=("$f")
             bash -n "$f"
-          done < <(git ls-files deploy scripts firmware capture-page)
+          done < <(git ls-files deploy scripts firmware)
           # Floor 95: losing a whole pathspec (scripts ~66 files,
           # deploy ~37) lands well under it; small-path losses are
           # what the required pins below catch.
@@ -239,7 +238,7 @@ jobs:
             printf 'selected: %s\n' "${shell_files[@]}" >&2
             exit 1
           fi
-          for required in deploy/usbsink/jasper-usbgadget-up capture-page/build.sh; do
+          for required in deploy/usbsink/jasper-usbgadget-up; do
             found=false
             for f in "${shell_files[@]}"; do
               if [[ "$f" == "$required" ]]; then
@@ -418,7 +417,6 @@ jobs:
           node scripts/check-peq-parity.mjs
           node scripts/check-balance-trim-parity.mjs
           node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js
-          node tests/js/capture_level_events_test.mjs capture-page/js/level-events.js
           node scripts/check-sensitivity-trim-parity.mjs
 
   rust:

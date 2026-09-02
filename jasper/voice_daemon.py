@@ -1453,6 +1453,9 @@ class WakeLoop:
             def last_failure_detail(self) -> str | None:
                 return None
 
+            def wake_cue(self) -> str:
+                return "cant_connect"
+
             def supports_server_vad(self) -> bool:
                 return False
 
@@ -1670,9 +1673,8 @@ class WakeLoop:
         in flight: TtsPlayout has one active output stream (the
         outputd/fan-in TTS IPC connection), so layering an escalation
         cue on top of an active TTS turn would garble both. Suppressing
-        the cue mid-session is the safe
-        default — if the connection is wedged, the next wake event
-        will fire `cant_connect` reactively anyway.
+        the cue mid-session is the safe default — if the connection is
+        wedged, the next wake event fires the same cue reactively anyway.
 
         A measurement window needs no check of its own here: the shared
         admission answer names it even when output happens to be busy too,
@@ -4031,8 +4033,8 @@ class WakeLoop:
         3. **Chirp + begin turn + drain**: existing wake flow.
 
         On error in step 3: play a failure cue, cleanup, clear buffer,
-        return to WAKE. The cue is honest about cause — `cant_connect`
-        only when the live connection is genuinely paused, otherwise
+        return to WAKE. The cue is honest about cause — a connection
+        cue only when the live connection is genuinely paused, otherwise
         `internal_error` (an unexpected throw here is almost always a
         local problem, not connectivity). The `_acquiring` flag flips
         back to False in the finally so the loop returns to wake
@@ -4083,7 +4085,7 @@ class WakeLoop:
                 )
                 await self._telemetry_stage("gate_blocked")
                 await self._telemetry_outcome("gate_blocked", "connection_paused")
-                await self._play_cue("cant_connect")
+                await self._play_cue(self._connection.wake_cue())
                 return
 
             # Step 3: existing chirp + acquire + drain flow.
@@ -4117,17 +4119,8 @@ class WakeLoop:
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
             await self._telemetry_outcome("session_failed", str(e)[:200])
-            # Be honest about WHY we couldn't serve. The conn_paused gate
-            # above already played cant_connect for the expected
-            # connection-down case and returned, so reaching this
-            # catch-all means the connection looked healthy and something
-            # ELSE broke during turn-open — almost always local/internal
-            # (a failed state write, a disk error), NOT connectivity.
-            # Saying "I can't connect, I'll keep trying" there is a false
-            # alarm (the 2026-06-19 incident). Only claim a connection
-            # problem if the connection actually dropped into
-            # paused/failed mid-acquire; otherwise play the honest,
-            # low-alarm internal-error cue.
+            # A connection cue here is a false alarm unless the connection
+            # actually dropped mid-acquire; see the internal_error CueDef.
             try:
                 if self._turn_output_episode is not None:
                     await self._cleanup_after_failed_begin()
@@ -4137,7 +4130,7 @@ class WakeLoop:
                     cleanup_error,
                 )
             if self._connection.is_paused():
-                await self._play_cue("cant_connect")
+                await self._play_cue(self._connection.wake_cue())
             else:
                 await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
             self._acquire_buffer.clear()

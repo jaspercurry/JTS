@@ -15,9 +15,9 @@ re-review (2026-07-24) found none of these ran in any automated lane: the CI
 only, no assertions executed) — an unexecuted test cannot catch the
 regression it was written for.
 
-Bridging them through pytest (mirroring ``tests/test_capture_page_js.py``)
-keeps them covered by the existing Python CI matrix with no extra CI-workflow
-wiring — the pytest lane already runs in CI via ``scripts/test-merge``.
+Bridging them through pytest keeps them covered by the existing Python CI
+matrix with no extra CI-workflow wiring — the pytest lane already runs in
+CI via ``scripts/test-merge``.
 
 ``_HARNESSES`` is discovered by glob, not a hardcoded list: a future
 ``crossover_*_test.mjs`` file is picked up automatically, closing the exact

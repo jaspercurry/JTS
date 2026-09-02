@@ -4,20 +4,30 @@
 
 """A broken cloud connection is announced once, and only when a human must act.
 
-Covers `is_transient` (which failures retrying can fix), `OutageTracker`
-(the once-per-outage edge trigger), and one end-to-end pass through the
+Covers `is_transient` (which failures retrying can fix),
+`is_network_down` (whether the household's own link is the fault),
+`outage_cue` (which pre-baked remedy a failure names), `OutageTracker`
+(the once-per-remedy-per-outage edge trigger and the network cue's
+consecutive-failure debounce), and one end-to-end pass through the
 Gemini supervisor's reconnect loop. See ADR-0215.
 """
 from __future__ import annotations
 
 import asyncio
+import errno
+import socket
 
 import pytest
 
 from jasper.voice._supervisor import (
-    ESCALATION_CUE_SLUG,
+    NEEDS_ATTENTION_CUE_SLUG,
+    NETWORK_DOWN_ATTEMPTS,
+    NETWORK_DOWN_CUE_SLUG,
+    OUT_OF_CREDIT_CUE_SLUG,
     OutageTracker,
+    is_network_down,
     is_transient,
+    outage_cue,
 )
 from tests.test_failure_detail import _Rejected
 
@@ -46,6 +56,25 @@ class _OtherTerminal(Exception):
 class _Status:
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code
+
+
+# Captured verbatim from the live xAI 403 that motivated ADR-0215.
+_CREDIT_BODY = (
+    b'{"error":"Your team has either used all available credits or reached'
+    b' its monthly spending limit."}'
+)
+
+
+def _dns() -> OSError:
+    """The shape a DNS failure reaches the supervisor as in production."""
+    return OSError(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+
+def _wrapped(inner: BaseException) -> Exception:
+    """The shape an SDK raises when it re-raises `from` a network error."""
+    outer = RuntimeError("sdk connect failed")
+    outer.__cause__ = inner
+    return outer
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +106,94 @@ def test_is_transient_classifies_by_who_must_act(
 
 
 # ---------------------------------------------------------------------------
+# is_network_down
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "down"),
+    [
+        (_dns(), True),
+        (OSError(socket.EAI_NONAME, "Name or service not known"), True),
+        (OSError(errno.ENETUNREACH, "Network is unreachable"), True),
+        (_wrapped(_dns()), True),
+        (
+            OSError(
+                "Multiple exceptions: "
+                f"[Errno {errno.ENETUNREACH}] Connect call failed ('1.2.3.4', 443), "
+                f"[Errno {errno.ENETUNREACH}] Connect call failed ('::1', 443)"
+            ),
+            True,
+        ),
+        (ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"), False),
+        (OSError("no errno"), False),
+        (TimeoutError(), False),
+        (_Rejected(500, b""), False),
+    ],
+    ids=[
+        "dns-eai-again",
+        "dns-eai-noname",
+        "no-route",
+        "wrapped-by-sdk",
+        "dual-stack-folded-by-asyncio",
+        "refused",
+        "errno-less",
+        "timeout",
+        "server-error",
+    ],
+)
+def test_is_network_down_only_for_a_missing_link(
+    exc: BaseException, down: bool,
+) -> None:
+    """Only a DNS or routing errno means the household's own link is the
+    fault; a refusal, a reset or a timeout is an ordinary blip."""
+    assert is_network_down(exc) is down
+
+
+# ---------------------------------------------------------------------------
+# outage_cue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "cue"),
+    [
+        (_Rejected(403, b""), NEEDS_ATTENTION_CUE_SLUG),
+        (_Rejected(403, _CREDIT_BODY), OUT_OF_CREDIT_CUE_SLUG),
+        (_Rejected(401, b""), NEEDS_ATTENTION_CUE_SLUG),
+        (_Rejected(429, b""), None),
+        (OSError("network blip"), None),
+        (_dns(), NETWORK_DOWN_CUE_SLUG),
+        (ValueError("bad config"), NEEDS_ATTENTION_CUE_SLUG),
+    ],
+    ids=[
+        "rejected-no-body",
+        "rejected-out-of-credit",
+        "bad-key",
+        "rate-limited",
+        "network-blip",
+        "network-down",
+        "local-config",
+    ],
+)
+def test_outage_cue_names_the_remedy(
+    exc: BaseException, cue: str | None,
+) -> None:
+    """The provider's own rejection text picks between the two terminal
+    cues, a missing link names the network, and an ordinary transient
+    failure names no remedy at all."""
+    assert outage_cue(exc) == cue
+
+
+def test_outage_cue_scans_past_the_display_limit() -> None:
+    """Classification reads the whole rejection body, not the clipped
+    string `/state` shows: a marker beyond FAILURE_DETAIL_LIMIT still
+    names the remedy."""
+    body = b"x" * 400 + b' "used all available credits"'
+    assert outage_cue(_Rejected(403, body)) == OUT_OF_CREDIT_CUE_SLUG
+
+
+# ---------------------------------------------------------------------------
 # OutageTracker
 # ---------------------------------------------------------------------------
 
@@ -94,24 +211,51 @@ async def _drive(tracker: OutageTracker, events: list[object]) -> None:
 @pytest.mark.parametrize(
     ("events", "expected"),
     [
-        ([_Terminal()], 1),
-        ([OSError("blip"), OSError("blip again")], 0),
-        ([_Terminal(), _Terminal()], 1),
-        ([_Terminal(), _OtherTerminal()], 1),
-        ([_Terminal(), None, _Terminal()], 2),
-        ([_Terminal(), OSError("blip"), _Terminal()], 1),
+        ([_Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
+        ([OSError("blip"), OSError("blip again")], []),
+        ([_Terminal(), _Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
+        ([_Terminal(), _OtherTerminal()], [NEEDS_ATTENTION_CUE_SLUG]),
+        (
+            [_Terminal(), _Rejected(403, _CREDIT_BODY)],
+            [NEEDS_ATTENTION_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG],
+        ),
+        (
+            [_Rejected(403, _CREDIT_BODY), _Rejected(403, _CREDIT_BODY)],
+            [OUT_OF_CREDIT_CUE_SLUG],
+        ),
+        ([_Terminal(), None, _Terminal()], [NEEDS_ATTENTION_CUE_SLUG] * 2),
+        ([_Terminal(), OSError("blip"), _Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
+        ([_dns()] * (NETWORK_DOWN_ATTEMPTS - 1), []),
+        ([_dns()] * NETWORK_DOWN_ATTEMPTS, [NETWORK_DOWN_CUE_SLUG]),
+        (
+            [*[_dns()] * NETWORK_DOWN_ATTEMPTS, None,
+             *[_dns()] * NETWORK_DOWN_ATTEMPTS],
+            [NETWORK_DOWN_CUE_SLUG] * 2,
+        ),
+        (
+            [*[_dns()] * NETWORK_DOWN_ATTEMPTS, _Terminal()],
+            [NETWORK_DOWN_CUE_SLUG, NEEDS_ATTENTION_CUE_SLUG],
+        ),
+        ([_dns(), _dns(), _Terminal()], [NEEDS_ATTENTION_CUE_SLUG]),
     ],
     ids=[
         "terminal-speaks",
         "transient-silent",
         "same-outage-speaks-once",
-        "changed-terminal-class-still-one-outage",
+        "same-remedy-different-status-speaks-once",
+        "changed-remedy-mid-outage-re-announces",
+        "same-remedy-twice-speaks-once",
         "recovery-rearms",
         "transient-mid-outage-does-not-rearm",
+        "dropped-link-retries-in-silence",
+        "network-down-speaks-on-the-threshold",
+        "recovery-rearms-the-network-cue",
+        "wifi-back-into-a-blocked-account-speaks-both",
+        "network-below-threshold-never-spoke",
     ],
 )
-async def test_escalation_speaks_once_per_outage(
-    events: list[object], expected: int,
+async def test_escalation_speaks_once_per_remedy_per_outage(
+    events: list[object], expected: list[str],
 ) -> None:
     calls: list[str] = []
 
@@ -121,7 +265,51 @@ async def test_escalation_speaks_once_per_outage(
     tracker = OutageTracker()
     tracker.set_callback(cb)
     await _drive(tracker, events)
-    assert calls == [ESCALATION_CUE_SLUG] * expected
+    assert calls == expected
+
+
+async def test_cue_tracks_the_latest_failure() -> None:
+    """`cue` is what the wake path would play right now: the current
+    remedy, and nothing once a retry might still fix it. The network
+    cue's announcement debounce delays the proactive cue, not this
+    answer — `wake_cue` names the network on the very first failure."""
+    calls: list[str] = []
+
+    async def cb(slug: str) -> None:
+        calls.append(slug)
+
+    tracker = OutageTracker()
+    tracker.set_callback(cb)
+    await _drive(tracker, [_Terminal()])
+    assert tracker.cue == NEEDS_ATTENTION_CUE_SLUG
+
+    await _drive(tracker, [OSError("blip")])
+    assert tracker.cue is None
+
+    await _drive(tracker, [_dns()])
+    assert tracker.wake_cue == NETWORK_DOWN_CUE_SLUG
+    assert calls == [NEEDS_ATTENTION_CUE_SLUG]
+
+    await _drive(tracker, [_Rejected(403, _CREDIT_BODY), None])
+    assert tracker.cue is None
+    assert tracker.detail is None
+
+
+async def test_a_transient_failure_restarts_the_network_streak() -> None:
+    """Only *consecutive* network failures reach the threshold, so a
+    link that flaps back to an ordinary error has to earn it again."""
+    calls: list[str] = []
+
+    async def cb(slug: str) -> None:
+        calls.append(slug)
+
+    tracker = OutageTracker()
+    tracker.set_callback(cb)
+    await _drive(tracker, [_dns(), RuntimeError("reset"), *[_dns()] * 3])
+    assert calls == []
+
+    await _drive(tracker, [_dns()])
+    assert calls == [NETWORK_DOWN_CUE_SLUG]
 
 
 async def test_held_cue_is_dropped_when_the_outage_ended_first() -> None:
@@ -185,7 +373,7 @@ async def test_supervisor_speaks_once_then_recovers_silently() -> None:
 
         await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
         await asyncio.sleep(0.05)
-        assert cue_calls == [ESCALATION_CUE_SLUG]
+        assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG]
         assert conn.last_failure_detail() is None
     finally:
         await conn.stop()

@@ -45,7 +45,7 @@ from pathlib import Path
 import pytest
 
 from jasper import renderer_lanes, ring_assets
-from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE
+from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
     GROUPING_RING_CONF_D,
@@ -390,19 +390,22 @@ def test_the_governor_is_armed_from_prepare_and_not_from_start():
     )
 
 
-def test_the_grouping_ring_slot_is_one_camilladsp_chunk():
-    """One slot per chunk — the relationship every other ring in the tree ships.
+def test_the_grouping_ring_slot_is_one_ring_slot():
+    """The chunk this ring's period reads is itself the box's ring slot.
 
-    This is the contract that replaces a runtime clamp: the ring path's
-    CamillaDSP chunk is :data:`jasper.fanin_coupling.RING_CAMILLA_CHUNKSIZE`,
-    so pinning the grouping ring's slot to it makes the disagreement checkable
-    at merge instead of correctable at emit.
+    ``GROUPING_RING_PERIOD_FRAMES`` reads
+    :data:`jasper.fanin_coupling.RING_CAMILLA_CHUNKSIZE`, and that chunk is a
+    separate declaration whose whole justification is that one chunk is one
+    :data:`jasper.fanin_coupling.RING_SLOT_FRAMES` slot — a link the two have
+    only by value. Moving the slot without moving the chunk would leave this
+    ring's geometry derived for a chunk that spans a different number of slots,
+    which the emitter cannot see.
     """
-    assert GROUPING_RING_PERIOD_FRAMES == RING_CAMILLA_CHUNKSIZE, (
-        f"the grouping ring's slot ({GROUPING_RING_PERIOD_FRAMES}) and the ring "
-        f"path's CamillaDSP chunk ({RING_CAMILLA_CHUNKSIZE}) have to be one "
-        "number; changing either alone re-introduces a chunk that spans a "
-        "different number of slots than the geometry was derived for"
+    assert GROUPING_RING_PERIOD_FRAMES == RING_SLOT_FRAMES, (
+        f"the grouping ring's slot ({GROUPING_RING_PERIOD_FRAMES}, the ring "
+        f"path's CamillaDSP chunk) and the ring slot ({RING_SLOT_FRAMES}) have "
+        "to be one number; changing either alone re-introduces a chunk that "
+        "spans a different number of slots than the geometry was derived for"
     )
 
 

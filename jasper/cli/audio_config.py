@@ -185,7 +185,7 @@ def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
     values on the command line.
 
     Why the second condition: Ring A's slot size is fan-in's COMPILE-TIME
-    ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env override).
+    ``RING_SLOT_FRAMES`` (``rust/jasper-ring/src/layout.rs``, no env override).
     Rendering any other period would make CamillaDSP's ioplug attach against a
     geometry fan-in never builds — a hard ``RING_ATTACH_FATAL`` that CRASHES
     shm_ring at arm instead of refusing it. So a non-matching floor is REFUSED

@@ -37,6 +37,10 @@ class CueDef:
     slug: str
     template: str
     description: str
+    # Played instead while this cue has no baked WAV: cues are
+    # synthesised through the provider whose outage they announce.
+    # Remove once cues are baked by a local TTS that needs no provider.
+    fallback: str | None = None
 
 
 CUES: tuple[CueDef, ...] = (
@@ -58,7 +62,10 @@ CUES: tuple[CueDef, ...] = (
         ),
         description=(
             "Played when wake fires while the voice backend is in "
-            "reconnect / paused-for-backoff state."
+            "reconnect / paused-for-backoff state for a TRANSIENT "
+            "reason. A terminal outage plays the provider_* cue naming "
+            "its remedy instead — 'I'll keep trying' is a false promise "
+            "there (ADR-0215)."
         ),
     ),
     CueDef(
@@ -80,23 +87,46 @@ CUES: tuple[CueDef, ...] = (
         ),
     ),
     CueDef(
-        slug="cant_reach_cloud",
+        slug="provider_out_of_credit",
         template=(
-            "Heads up — I'm having trouble reaching the cloud and "
-            "I'll keep trying. You might want to check on me at "
+            "My AI service is out of credit. Please check me at "
             "{hostname}."
         ),
         description=(
-            "Proactive cue fired by the connection supervisor on the "
-            "first terminal failure of an outage — one retrying cannot "
-            "fix, such as the provider rejecting the key or the account "
-            "being out of credit. Transient failures retry in silence. "
-            "Spoken once per outage; a successful reconnect re-arms it "
-            "silently. Distinguished from cant_connect: that one is "
-            "reactive to a wake event during a paused window. This one "
-            "fires without a wake event so the user knows the speaker "
-            "is broken even when they haven't tried to use it."
+            "Names the remedy for a terminal connection failure the "
+            "household fixes by topping up. Chosen when the rejection "
+            "body names credit, quota or billing (ADR-0215)."
         ),
+        fallback="cant_connect",
+    ),
+    CueDef(
+        slug="provider_needs_attention",
+        template=(
+            "My AI service needs attention. Please check me at "
+            "{hostname}."
+        ),
+        description=(
+            "Names the remedy for a terminal connection failure needing "
+            "a look at the setup — a rejected key, a missing model, a "
+            "malformed config. Chosen for every terminal failure the "
+            "rejection body does not blame on credit (ADR-0215)."
+        ),
+        fallback="cant_connect",
+    ),
+    CueDef(
+        slug="network_down",
+        template=(
+            "I can't reach the network. Please check the Wi-Fi or "
+            "troubleshoot at {hostname}."
+        ),
+        description=(
+            "Names the remedy when the household's own link is down — a "
+            "DNS or route failure carrying no HTTP status. Names the URL "
+            "by the owner's call even though the page may be unreachable; "
+            "\"or\" keeps it an option rather than an instruction "
+            "(ADR-0215)."
+        ),
+        fallback="cant_connect",
     ),
     CueDef(
         slug="research_failed",

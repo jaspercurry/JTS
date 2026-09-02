@@ -35,7 +35,7 @@ import os
 import time
 import wave
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Collection, Protocol
 
 from .registry import CueDef
 
@@ -92,6 +92,9 @@ WAV_SAMPLE_WIDTH = 2       # 16-bit signed little-endian
 # safety net.
 TTS_MAX_ATTEMPTS = 5
 TTS_RETRY_BACKOFF_SEC = 0.4
+
+# Filename prefix of `speak_text`'s cache — arbitrary text, not a cue.
+_DYNAMIC_PREFIX = "dynamic"
 
 
 def render_template(cue: CueDef, hostname: str) -> str:
@@ -489,7 +492,7 @@ def dynamic_text_path(
     sounds_dir: str, text: str, voice: str, model: str = TTS_MODEL,
 ) -> str:
     h = dynamic_text_hash(text, voice, model)
-    return os.path.join(sounds_dir, f"dynamic-{h}.wav")
+    return os.path.join(sounds_dir, f"{_DYNAMIC_PREFIX}-{h}.wav")
 
 
 def write_dynamic_text(
@@ -517,26 +520,45 @@ def write_dynamic_text(
     return path
 
 
+def _prune_where(sounds_dir: str, doomed: Callable[[str], bool]) -> int:
+    """Unlink every filename in `sounds_dir` the predicate condemns.
+    Returns the count removed."""
+    if not os.path.isdir(sounds_dir):
+        return 0
+    removed = 0
+    for entry in os.listdir(sounds_dir):
+        if not doomed(entry):
+            continue
+        try:
+            os.unlink(os.path.join(sounds_dir, entry))
+            removed += 1
+            logger.info("cue: pruned %s", entry)
+        except OSError as e:
+            logger.warning("cue: could not prune %s: %s", entry, e)
+    return removed
+
+
+def prune_retired(sounds_dir: str, known_slugs: Collection[str]) -> int:
+    """Remove `<slug>-<hash>.wav` files whose slug left the registry.
+    `dynamic-*` is `speak_text`'s cache, not a cue. Returns the count."""
+    def doomed(entry: str) -> bool:
+        if not entry.endswith(".wav"):
+            return False
+        slug, sep, _ = entry[:-4].rpartition("-")
+        return bool(sep) and slug not in known_slugs and slug != _DYNAMIC_PREFIX
+
+    return _prune_where(sounds_dir, doomed)
+
+
 def prune_stale(sounds_dir: str, cue: CueDef, keep_hash: str) -> int:
     """Remove any `<slug>-*.wav` files in `sounds_dir` whose hash
     doesn't match `keep_hash`. Called after a successful write so
     a hostname/template/voice change cleans up after itself.
     Returns the count of files removed."""
-    if not os.path.isdir(sounds_dir):
-        return 0
-    prefix = f"{cue.slug}-"
-    keep_filename = f"{cue.slug}-{keep_hash}.wav"
-    removed = 0
-    for entry in os.listdir(sounds_dir):
-        if (
-            entry.startswith(prefix)
-            and entry.endswith(".wav")
-            and entry != keep_filename
-        ):
-            try:
-                os.unlink(os.path.join(sounds_dir, entry))
-                removed += 1
-                logger.info("cue: pruned stale %s", entry)
-            except OSError as e:
-                logger.warning("cue: could not prune %s: %s", entry, e)
-    return removed
+    keep = f"{cue.slug}-{keep_hash}.wav"
+    return _prune_where(
+        sounds_dir,
+        lambda e: (
+            e.startswith(f"{cue.slug}-") and e.endswith(".wav") and e != keep
+        ),
+    )

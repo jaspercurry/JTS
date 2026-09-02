@@ -20,16 +20,47 @@ handling (Gemini's 409 / 1008) and resumption-handle logic. Those stay in
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import re
+import socket
 from typing import Awaitable, Callable
 
 from ..log_event import log_event
+from ..os_fault import root_os_error
 from ..secret_redaction import redact_secrets
 from .session import CuePlayer
 
 logger = logging.getLogger(__name__)
 
-ESCALATION_CUE_SLUG = "cant_reach_cloud"
+OUT_OF_CREDIT_CUE_SLUG = "provider_out_of_credit"
+NEEDS_ATTENTION_CUE_SLUG = "provider_needs_attention"
+CANT_CONNECT_CUE_SLUG = "cant_connect"
+NETWORK_DOWN_CUE_SLUG = "network_down"
+
+# On the default 1/2/4/8 s ±25 % schedule (jasper/backoff.py) the fourth
+# attempt lands ~15 s after the drop: past a Wi-Fi roam or a DHCP renew,
+# still ahead of a rebooting router coming back.
+NETWORK_DOWN_ATTEMPTS = 4
+
+# The link itself is gone: name resolution failed, or no route to the
+# provider. Everything else an unreachable host produces — refused,
+# reset, timed out, TLS — is an ordinary blip and stays silent.
+_NETWORK_DOWN_ERRNOS = frozenset({
+    socket.EAI_AGAIN, socket.EAI_NONAME,
+    errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+})
+
+# asyncio folds a dual-stack connect that failed on every address into one
+# errno-less OSError("Multiple exceptions: [Errno 101] ..., [Errno 101] ...").
+_FOLDED_ERRNO = re.compile(r"\[Errno (-?\d+)\]")
+
+# Markers that a rejection body blames the account's balance rather than its
+# configuration: the xAI 403 reads "used all available credits or reached its
+# monthly spending limit"; OpenAI sends `insufficient_quota`.
+_OUT_OF_CREDIT_MARKERS = (
+    "credit", "quota", "billing", "spending limit", "payment",
+)
 
 # Cap on the cause string stored and logged. Comfortably fits a provider's
 # JSON error body; short enough that an HTML error page cannot flood the
@@ -43,16 +74,16 @@ FAILURE_DETAIL_LIMIT = 300
 _SCAN_LIMIT = FAILURE_DETAIL_LIMIT * 4
 
 
-def failure_detail(exc: BaseException) -> str:
-    """A one-line, secret-free cause for logs and ``/state``.
+def _rejection_text(exc: BaseException) -> str:
+    """The provider's own reason, redacted and collapsed, untruncated.
 
     ``str(exc)`` discards the part that matters: websockets renders a
     refused handshake as a bare "server rejected WebSocket connection:
     HTTP 403" while ``.response.body`` holds the reason a household can
     act on. Prefer the body; fall back to ``str(exc)`` otherwise.
 
-    Redaction precedes truncation so a clipped tail cannot leave half a
-    credential behind.
+    Redaction precedes any truncation by a caller so a clipped tail
+    cannot leave half a credential behind.
     """
     response = getattr(exc, "response", None)
     body = getattr(response, "body", None)
@@ -63,7 +94,12 @@ def failure_detail(exc: BaseException) -> str:
         text = f"HTTP {status}: {body}" if status else body
     else:
         text = str(exc)
-    text = " ".join(redact_secrets(text[:_SCAN_LIMIT]).split())
+    return " ".join(redact_secrets(text[:_SCAN_LIMIT]).split())
+
+
+def failure_detail(exc: BaseException) -> str:
+    """A one-line, secret-free cause for logs and ``/state``."""
+    text = _rejection_text(exc)
     if len(text) > FAILURE_DETAIL_LIMIT:
         text = text[:FAILURE_DETAIL_LIMIT - 3] + "..."
     return text
@@ -124,20 +160,66 @@ async def survive_terminal_initial_connect(connect: Awaitable[None]) -> bool:
     return False
 
 
+def is_network_down(exc: BaseException) -> bool:
+    """Whether this failure is the household's own link being down.
+
+    A DNS or routing error carries no HTTP status, so nothing upstream
+    can tell it apart from a provider blip — only its ``errno`` can. The
+    remedy is the Wi-Fi rather than the account, so it earns a cue of
+    its own even though retrying may still fix it. See ADR-0215."""
+    fault = root_os_error(exc)
+    if fault is None:
+        return False
+    if fault.errno is None:
+        codes = {int(code) for code in _FOLDED_ERRNO.findall(str(fault))}
+        return not codes.isdisjoint(_NETWORK_DOWN_ERRNOS)
+    return fault.errno in _NETWORK_DOWN_ERRNOS
+
+
+def outage_cue(exc: BaseException) -> str | None:
+    """Which pre-baked cue names the remedy for this failure.
+
+    ``None`` while retrying can still fix it, except for a network-down
+    failure: that keeps retrying and still names a remedy. Otherwise the
+    provider's own rejection text decides between "out of credit" and
+    the catch-all "needs attention". See ADR-0215."""
+    if is_network_down(exc):
+        return NETWORK_DOWN_CUE_SLUG
+    if is_transient(exc):
+        return None
+    lowered = _rejection_text(exc).lower()
+    if any(marker in lowered for marker in _OUT_OF_CREDIT_MARKERS):
+        return OUT_OF_CREDIT_CUE_SLUG
+    return NEEDS_ATTENTION_CUE_SLUG
+
+
 class OutageTracker:
     """Track the current outage for a connection.
 
-    Holds its redacted cause for logs and ``/state``, and whether it has
-    been announced. The announcement is edge-triggered: the cue fires on
-    the first terminal failure after the connection last worked, never on
-    a timer, and a recovery re-arms it silently. One instance per
-    connection. See ADR-0215."""
+    Holds its redacted cause for logs and ``/state``, and the cue that
+    names the remedy. The announcement is edge-triggered: the cue fires
+    on the first terminal failure after the connection last worked,
+    never on a timer, a recovery re-arms it silently, and a remedy that
+    changes mid-outage is announced again. The network-down cue alone
+    waits for ``NETWORK_DOWN_ATTEMPTS`` consecutive failures, so a
+    dropped link that comes back never speaks; ``cue`` is current from
+    the first one either way, because the wake path reads it. One
+    instance per connection. See ADR-0215."""
 
     def __init__(self) -> None:
         self.detail: str | None = None
-        self._announced = False
+        self.cue: str | None = None
+        self._announced: str | None = None
+        self._network_streak = 0
         self._held = False
         self._cb: CuePlayer | None = None
+
+    @property
+    def wake_cue(self) -> str:
+        """The cue to play for a wake while the connection is paused: the
+        remedy if this outage is terminal, else the generic connection
+        voice."""
+        return self.cue or CANT_CONNECT_CUE_SLUG
 
     def set_callback(self, cb: CuePlayer | None) -> None:
         """None keeps the edge and its log line but plays nothing.
@@ -151,6 +233,12 @@ class OutageTracker:
             self._announce()
 
     def _announce(self) -> None:
+        cue = self.cue
+        if cue is None:
+            # The outage ended (or turned transient) before a player
+            # existed: there is nothing left to announce.
+            self._held = False
+            return
         if self._cb is None:
             self._held = True
             return
@@ -158,20 +246,30 @@ class OutageTracker:
         # Fire-and-forget: cue playback must not stall the reconnect
         # cadence.
         asyncio.create_task(
-            self._cb(ESCALATION_CUE_SLUG),
+            self._cb(cue),
             name="jasper-supervisor-escalation-cue",
         )
 
     def on_failure(self, exc: BaseException) -> None:
         """Record a failed session open, announcing a terminal one once."""
         self.detail = failure_detail(exc)
-        if is_transient(exc) or self._announced:
+        # Latest failure wins, so a transient failure after a terminal
+        # one reads as transient again.
+        cue = outage_cue(exc)
+        self.cue = cue
+        if cue == NETWORK_DOWN_CUE_SLUG:
+            self._network_streak += 1
+        else:
+            self._network_streak = 0
+        if cue is None or cue == self._announced:
             return
-        self._announced = True
+        if self._network_streak and self._network_streak < NETWORK_DOWN_ATTEMPTS:
+            return
+        self._announced = cue
         log_event(
             logger,
-            "voice.connection.terminal_failure",
-            cue=ESCALATION_CUE_SLUG,
+            "voice.connection.outage",
+            cue=cue,
             exc=type(exc).__name__,
             level=logging.WARNING,
         )
@@ -180,7 +278,9 @@ class OutageTracker:
     def on_recovery(self) -> None:
         """A session opened: clear the outage and re-arm, silently."""
         self.detail = None
-        self._announced = False
+        self.cue = None
+        self._announced = None
+        self._network_streak = 0
         self._held = False
 
 

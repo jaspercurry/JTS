@@ -3157,7 +3157,7 @@ def test_render_subcommand_refuses_a_floor_the_ring_slot_cannot_carry(
     capsys,
 ) -> None:
     # Ring A's slot is fan-in's COMPILE-TIME RING_SLOT_FRAMES (128, no env
-    # override): rust/jasper-fanin/src/config.rs pins it and mixer.rs creates
+    # override): rust/jasper-ring/src/layout.rs pins it and mixer.rs creates
     # the ring with it. Rendering a non-128 period into pcm.jts_ring_capture
     # would make CamillaDSP's ioplug attach expect N against fan-in's 128-frame
     # ring — a hard RING_ATTACH_FATAL geometry error that CRASHES shm_ring at

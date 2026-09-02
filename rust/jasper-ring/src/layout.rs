@@ -48,6 +48,19 @@ pub const SAMPLE_FORMAT_S32LE: u32 = 2;
 /// Bytes per sample for [`SAMPLE_FORMAT_S16LE`].
 pub const S16LE_BYTES_PER_SAMPLE: usize = 2;
 
+/// Frames in one ring slot — the slot size every JTS ring is built at, and the
+/// one both daemons that link this crate read instead of spelling their own.
+///
+/// A compile-time constant with no env override: fan-in always creates Ring A
+/// with it (`jasper_fanin::config::RING_SLOT_FRAMES` re-exports this), outputd's
+/// dac-content lane takes its `period_frames` from it, the C ioplug's
+/// `JTS_RING_DEFAULT_PERIOD` (`c/jts-ring-ioplug/pcm_jts_ring.c`) is the same
+/// number, and the shipped `deploy/alsa/conf.d` blocks declare it. The Python
+/// declaration `jasper.fanin_coupling.RING_SLOT_FRAMES` is what every remaining
+/// spelling is pinned against, by the Python contract tests. Making the slot
+/// derivable from a DAC's declared floor is issue #2147.
+pub const RING_SLOT_FRAMES: u32 = 128;
+
 /// Prototype floor / ceiling on `n_slots`: 2 (ping-pong) through 16. 3 is the
 /// documented degraded widening; the ceiling is 16 so the ALSA playback
 /// buffer (`n_slots * period_frames`) can clear

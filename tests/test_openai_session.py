@@ -24,7 +24,7 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
-from jasper.voice._supervisor import ESCALATION_CUE_SLUG
+from jasper.voice._supervisor import NEEDS_ATTENTION_CUE_SLUG
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
@@ -1625,13 +1625,25 @@ async def test_reconnect_escalation_cue_fires_once_per_outage():
 
     try:
         await _outage(_Terminal, opens=2)
-        assert cue_calls == [ESCALATION_CUE_SLUG]
+        assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG]
+        # Recovered: no remedy outstanding.
+        assert conn._outage.cue is None
 
         await _outage(_Terminal, opens=3)
-        assert cue_calls == [ESCALATION_CUE_SLUG] * 2
+        assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG] * 2
 
         await _outage(lambda: RuntimeError("transient"), opens=4)
-        assert cue_calls == [ESCALATION_CUE_SLUG] * 2
+        assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG] * 2
+
+        # An outage that never recovers keeps naming its remedy, so a
+        # wake landing in the paused window plays it.
+        factory.next_exceptions = [_Terminal() for _ in range(8)]
+        factory.conns[-1].feed_error(_Drop("active socket dropped"))
+        await _wait_until(
+            lambda: conn._state is ConnectionState.FAILED, timeout=3.0,
+        )
+        assert conn.wake_cue() == NEEDS_ATTENTION_CUE_SLUG
+        assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG] * 3
     finally:
         await conn.stop()
     assert conn._state is ConnectionState.CLOSED
@@ -1705,13 +1717,13 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         assert isinstance(conn.last_failure_detail(), str)
 
         conn.set_failure_escalation_cb(cue_cb)
-        await _wait_until(lambda: cue_calls == [ESCALATION_CUE_SLUG])
+        await _wait_until(lambda: cue_calls == [NEEDS_ATTENTION_CUE_SLUG])
         await _wait_until(
             lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
         )
         assert not conn.is_paused()
         assert conn.last_failure_detail() is None
-        assert cue_calls == [ESCALATION_CUE_SLUG]
+        assert cue_calls == [NEEDS_ATTENTION_CUE_SLUG]
     finally:
         await conn.stop()
 

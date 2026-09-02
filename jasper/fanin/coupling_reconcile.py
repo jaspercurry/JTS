@@ -4,9 +4,9 @@
 
 """Ordered convergence of the fan-in -> CamillaDSP ring coupling.
 
-WHY THIS EXISTS — the three audio daemons must come up in a specific order.
 :mod:`jasper.fanin_coupling` owns the *vocabulary* (the flag, the ring device
-names, the emit kwargs); this module owns the *convergence* across all three.
+names, the emit kwargs); this module owns the *convergence* across the three
+audio daemons.
 
 ONE TRANSPORT (ADR-0100). fan-in writes Ring A (program.ring) that CamillaDSP
 captures via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to
@@ -18,18 +18,15 @@ coherent state: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring`` (fanin.env) AND
 (outputd.env). ``_outputd_actions`` is the single writer of that pair.
 
 NO FALLBACK. A pass writes the ring state and, when something moved, converges
-the daemons in the order hardware validated — outputd (the post-DSP ring's
-reader) first, fan-in (the Ring A writer) second, CamillaDSP (which attaches to
-both) last. A step that fails reports ``ok=False`` and the box PARKS visibly:
-doctor FAIL, ``/state``, the web banner, all naming the class through
-:mod:`jasper.control.transport_park`. Recovery from a bad deploy is
+the daemons in the order :func:`_converge_ring` documents. A step that fails
+reports ``ok=False`` and the box PARKS visibly through
+:mod:`jasper.control.transport_park`; recovery from a bad deploy is
 ``git revert`` + redeploy (ADR-0100).
 
-SINGLE WRITER. This module is the sole writer of the topology keys it owns:
-``JASPER_FANIN_CAMILLA_COUPLING`` in ``/var/lib/jasper/fanin.env`` and the Ring B
-bridge keys in ``/var/lib/jasper/outputd.env``. The order-preserving single-key
-helpers (:mod:`jasper.env_file`) leave neighboring operator/reconciler lines
-intact.
+SINGLE WRITER of the topology keys it owns: ``JASPER_FANIN_CAMILLA_COUPLING``
+in ``/var/lib/jasper/fanin.env`` and the Ring B bridge keys in
+``/var/lib/jasper/outputd.env``. The order-preserving single-key helpers
+(:mod:`jasper.env_file`) leave neighboring operator/reconciler lines intact.
 
 NOT a per-tick hot path. A pass whose env and ring geometry are already coherent
 re-confirms CamillaDSP only and bounces nothing — a real convergence restarts the
@@ -74,7 +71,7 @@ from jasper.fanin_coupling import (
 )
 from jasper.log_event import log_event
 
-# Compatibility re-exports; removed in a later Wave 6 slice once external import sites move (see #3116).
+# Compatibility re-exports, pending the external import sites moving (#3116).
 from jasper.fanin.ring_health import (
     FANIN_ENV_PATH as FANIN_ENV_PATH,
     JASPER_ENV_PATH as JASPER_ENV_PATH,
@@ -118,10 +115,10 @@ logger = logging.getLogger(__name__)
 FANIN_UNIT = "jasper-fanin.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 CAMILLA_UNIT = "jasper-camilla.service"
-# Not part of the ordered audio-graph bounce. jasper-voice is restarted by this
+# NOT part of the ordered audio-graph bounce. jasper-voice is restarted by this
 # module for exactly ONE reason: a coupling flip changed the box's resolved
-# ASSISTANT wire width, which voice resolves once at start (U2 PR-2). See
-# :func:`_restart_voice_for_assistant_width`.
+# ASSISTANT wire width, which voice resolves once at start. See
+# :func:`_try_restart_voice`.
 VOICE_UNIT = "jasper-voice.service"
 # Root oneshot that re-detects output hardware and re-emits the route floor
 # actions into outputd.env. It is the single writer of
@@ -130,10 +127,9 @@ VOICE_UNIT = "jasper-voice.service"
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 # Legacy env key of a deleted coupling (the Camilla -> outputd File playback
-# pipe outputd read under it). Retained ONLY so ``_outputd_actions`` can UNSET a
-# stale value off a migrating box's outputd.env (nothing writes it anymore; a
-# stale value is inert but swept for cleanliness). Not vocabulary — a one-way
-# migration sweep target.
+# pipe). Nothing writes it; retained ONLY so ``_outputd_actions`` can UNSET a
+# stale value off a migrating box's outputd.env. A one-way migration sweep
+# target, not vocabulary.
 _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 
 # Cross-invocation serialization of the reconcile ENTRY verbs (#1233 follow-up).
@@ -158,9 +154,9 @@ class CouplingResult:
 
     ``ok`` is True only when the env write AND every daemon op the pass needed
     succeeded (or there was nothing to do). ``changed`` is True when the
-    persisted env actually moved. ``detail`` carries the failure's reason for the
-    log/CLI — and it is the PARK's text: nothing is rolled back, so a caller
-    reading ``ok=False`` is reading a box that is not playing.
+    persisted env actually moved. ``detail`` carries the failure's reason and is
+    the PARK's text: nothing is rolled back, so ``ok=False`` means a box that is
+    not playing.
     """
 
     ok: bool
@@ -171,26 +167,18 @@ class CouplingResult:
     detail: str = ""
 
 
-# A DELIBERATE restart must not spend a daemon's CRASH-recovery start budget.
-# Every restart this reconciler issues is a control-plane config-apply (a source
-# toggle, a deploy, a boot pass) — never crash recovery. systemd counts them in
-# the same StartLimitBurst window anyway, and jasper-fanin / jasper-outputd
-# escalate an exhausted window straight to StartLimitAction=reboot (jasper-camilla
-# parks instead, via its recovery handler). Issue #2175: pressing the /bluetooth/
-# power toggle rebooted a Zero 2 W, because EVERY source transaction asks this
-# owner to converge and a desired-On USB source that cannot compose re-arms then
-# disarms fan-in on each pass — five fan-in starts inside 300 s, and PID 1
-# rebooted the speaker. ``systemctl reset-failed`` clears the failed latch AND
+# A DELIBERATE restart must not spend a daemon's CRASH-recovery start budget
+# (ADR-0103, #2175): every restart this reconciler issues is a config-apply, but
+# systemd counts it in the same StartLimitBurst window, and jasper-fanin /
+# jasper-outputd escalate an exhausted window straight to
+# StartLimitAction=reboot. ``systemctl reset-failed`` clears the failed latch AND
 # the start rate counter, so a config-apply restart starts from a clean budget.
 # Genuine crash loops still escalate: a daemon's own Restart= path never reaches
-# this code, so only reconciler-initiated starts are exempted.
-# Same fix and same rationale as jasper.multiroom.reconcile._reset_failed_unit
-# (the 2026-06-24 follower reboot: six /grouping/set POSTs in 44 s tripped
-# outputd's start-limit) — this module was the remaining audio-graph reconciler
-# without it. The units below are exactly the long-running daemons this module
-# bounces; the oneshot owners it starts have no crash budget to protect
-# (jasper-fanin-coupling-auto pins StartLimitIntervalSec=0 for that reason) and
-# are START_ONLY_UNITS in the broker, which would deny ``reset-failed`` anyway.
+# this code.
+# The units below are exactly the long-running daemons this module bounces; the
+# oneshot owners it starts have no crash budget to protect
+# (jasper-fanin-coupling-auto pins StartLimitIntervalSec=0) and are
+# START_ONLY_UNITS in the broker, which would deny ``reset-failed`` anyway.
 _START_BUDGET_VERBS = frozenset({"start", "restart", "try-restart"})
 _CRASH_BUDGET_UNITS = frozenset({FANIN_UNIT, OUTPUTD_UNIT, CAMILLA_UNIT})
 # Mirrors restart_broker._RESET_TIMEOUT_SEC (which owns the bound
@@ -213,8 +201,7 @@ def _restart_unit(
     for a kick whose completion the caller does not wait on.
 
     A start-consuming verb on a crash-budget daemon goes through
-    :func:`restart_broker.reset_then_manage`, so this deliberate apply cannot
-    walk the target into StartLimitAction=reboot (see the block comment above).
+    :func:`restart_broker.reset_then_manage` (see the block comment above).
     Guarded lazy import: a missing/broken control package degrades to a reported
     failure, never an exception out of the reconcile that would defeat the
     fail-safe ladder.
@@ -245,10 +232,9 @@ def _restart_fanin(reason: str) -> tuple[bool, str]:
 
     RESIDUAL, stated: fan-in's legal restart is its manager-default 90 s start
     plus a 5 s stop, so this 8 s bound is legally short and a genuinely slow
-    restart would be misreported. Measured restarts are 0.4-1.0 s, which is why
-    it stays here on the no-evidence/record principle instead of being inflated —
-    but :data:`_CAMILLA_START_TIMEOUT_SEC` budgets fan-in as a dependency
-    precisely because a truncation here can leave it activating.
+    restart is misreported. Measured restarts are 0.4-1.0 s. A truncation here
+    can leave fan-in activating, which is why
+    :data:`_CAMILLA_START_TIMEOUT_SEC` budgets it as a dependency.
     """
     return _restart_unit(FANIN_UNIT, reason=reason, timeout=8.0)
 
@@ -263,9 +249,8 @@ def _try_restart_voice(reason: str) -> tuple[bool, str]:
     start either one. ``try-restart`` is a no-op on an inactive unit.
 
     Not in ``_CRASH_BUDGET_UNITS``: this fires only on an actual width
-    TRANSITION — at most once per coupling flip, which is itself an operator or
-    deploy event — so it cannot walk the start-limit window the way the
-    per-transaction fan-in bounces could.
+    TRANSITION — at most once per coupling flip — so it cannot walk the
+    start-limit window the way the per-transaction fan-in bounces could.
     """
     return _restart_unit(VOICE_UNIT, verb="try-restart", reason=reason, timeout=8.0)
 
@@ -274,16 +259,15 @@ def _assistant_width_token(env_path: str | Path) -> str:
     """The box's resolved ASSISTANT wire width, from the persisted files.
 
     Read through :func:`jasper.fanin_coupling.assistant_wire_is_wide` — the same
-    one rule ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls and
+    rule ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls and
     ``jasper-voice`` resolves at start — so this observes the transition voice
-    would observe, rather than a second opinion about it.
+    would observe.
 
     BOTH halves come from ``env_path`` when it declares them, and only then fall
     back to the standard ``jasper.env`` -> ``fanin.env`` chain (where the format
-    key may legitimately live in the base file). With the default path those are
-    the same read; with an explicit one — the CLI's ``--env-path``, and every
-    test — reading the coupling from the caller's file and the format from a
-    module constant would make the predicate only accidentally coherent.
+    key may legitimately live in the base file). With an explicit path, reading
+    the coupling from the caller's file and the format from a module constant
+    would make the predicate only accidentally coherent.
     """
     from jasper.fanin_coupling import (
         RING_WIRE_FORMAT,
@@ -325,50 +309,30 @@ def _assistant_width_token(env_path: str | Path) -> str:
 
 # How long a blocking START of jasper-camilla may take.
 #
-# jasper-camilla.service is Type=simple, so its own start job completes once the
-# best-effort ExecStartPre pipe-guard has run and ExecStart has forked. But it
-# declares Requires= AND After= jasper-audio-hardware-reconcile.service, a
-# Type=oneshot whose RemainAfterExit is unset (so: no). That reconciler is
-# therefore inactive between runs and RE-RUNS IN FULL on every camilla start,
-# and PID 1 holds camilla's start job until the oneshot reports terminal.
+# jasper-camilla.service is Type=simple, but it declares Requires= AND After=
+# jasper-audio-hardware-reconcile.service, a Type=oneshot whose RemainAfterExit
+# is unset. That reconciler is therefore inactive between runs and RE-RUNS IN
+# FULL on every camilla start, with PID 1 holding camilla's start job until the
+# oneshot reports terminal. On a Pi Zero 2 W a camilla restart measures ~30 s,
+# of which the re-queued reconciler is ~26 s; on a Pi 5, ~4 s.
 #
-# Measured on jts4 (Pi Zero 2 W, 2026-08-21, three sequential samples, anchored
-# Stopping -> Started): camilla restart wall times 30.245 / 28.621 / 28.664 s, of
-# which the re-queued reconciler accounted for 25.5-26.0 s CPU across four
-# instances. The same restart on jts.local (a Pi 5) takes 4.202 s. Against the
-# 8 s bound this call shipped with, a still-running start was reported as failed
-# on every pass, and the failure was traced verbatim four times:
-# camilla_resume_failed -> auto_usb_combo_fanin_restart_failed ->
-# jasper-fanin-coupling-auto exits 1 -> source-intent's usbsink step fails ->
-# both reconcilers land `failed`.
-#
-# ALL THREE PULLED DEPENDENCIES ARE TERMS, not just the oneshot. An earlier
-# revision excluded fan-in and outputd on the grounds that the caller reaches
-# this start only after a blocking fan-in restart returned READY=1. That premise
-# is false three ways, all in this file: the ``camilla_pause_failed`` branch of
-# :func:`_restart_fanin_coordinated` starts camilla with no fan-in restart having
-# run at all; the ordinary resume runs UNCONDITIONALLY, including when
-# ``do_restart()`` returned not-ok (its own comment says "ALWAYS resume camilla,
-# even if the fan-in restart failed"), and a failed or client-truncated restart
-# is precisely fan-in inactive-or-activating; and :func:`reconcile_auto` runs
-# ``reconcile_coupling`` BEFORE the coordinated restart, so the spine's outputd
-# and fan-in restarts — each bounded at 8 s against a legal 95 s — precede this
-# start and can leave either dependency activating. The conditions are
-# correlated: a failed fan-in restart IS fan-in down.
-#
-# So the dependency term is the CRITICAL PATH through what camilla pulls, which
-# is not simply the largest of the three: jasper-audio-hardware-reconcile
-# declares ``Before=jasper-outputd.service``, so those two run in series while
-# fan-in runs alongside them.
+# ALL THREE PULLED DEPENDENCIES ARE TERMS, not just the oneshot: fan-in and
+# outputd can be inactive-or-activating when this start runs — the
+# ``camilla_pause_failed`` branch of :func:`_restart_fanin_coordinated` starts
+# camilla with no fan-in restart having run, the ordinary resume runs even when
+# ``do_restart()`` returned not-ok, and :func:`reconcile_auto` runs the spine's
+# own 8 s-bounded restarts first. So the dependency term is the CRITICAL PATH
+# through what camilla pulls, not the largest of the three:
+# jasper-audio-hardware-reconcile declares ``Before=jasper-outputd.service``, so
+# those two run in series while fan-in runs alongside them.
 #
 #     hw-reconcile 50 -> outputd 95   = 145   (serialised by that Before=)
 #     fan-in 95                       =  95   (unordered w.r.t. both)
 #     critical path                   = 145
 #
-# Declared ceilings set the value; the measurement is only what falsifies the old
-# one. Pinned to the shipped units — including that ordering edge — by
-# tests/test_fanin_coupling_reconcile.py, so adding an edge that lengthens the
-# path fails rather than silently under-bounding this call.
+# Declared ceilings set the value. Pinned to the shipped units — including that
+# ordering edge — by tests/test_fanin_coupling_reconcile.py, so adding an edge
+# that lengthens the path fails rather than silently under-bounding this call.
 _CAMILLA_REQUEUED_RECONCILE_START_SEC = 50.0  # its declared TimeoutStartSec
 # jasper-fanin and jasper-outputd each declare no TimeoutStartSec= override, so
 # each takes the manager default, plus its RestartSec when in restart backoff.
@@ -384,9 +348,8 @@ _CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC = max(
 )
 # The manager's DefaultTimeoutStartSec: jasper-camilla.service declares no
 # TimeoutStartSec= override, so this is the ceiling PID 1 applies to its start.
-# A mirror of a MANAGER default cannot be pinned to a unit file, so this one
-# drifts silently if DefaultTimeoutStartSec is ever changed — ledgered, not
-# guarded.
+# A mirror of a MANAGER default cannot be pinned to a unit file, so it drifts
+# silently if DefaultTimeoutStartSec is ever changed — ledgered, not guarded.
 _CAMILLA_OWN_START_SEC = _SYSTEMD_DEFAULT_TIMEOUT_START_SEC
 _DAEMON_OP_CLIENT_MARGIN_SEC = 1.0
 _CAMILLA_START_TIMEOUT_SEC = (
@@ -403,27 +366,16 @@ def _stop_camilla(reason: str) -> tuple[bool, str]:
     restart so it exits cleanly instead of hitting the RLIMIT_RTTIME SIGKILL its
     ring-ioplug capture reader triggers when fan-in's writer detaches (see
     :func:`_restart_fanin_coordinated`). ``jasper-camilla.service`` is already a
-    broker ``MANAGED_UNITS`` member (and polkit-granted for ``manage-units``, which
-    covers stop/start) — no new grant is needed for this.
+    broker ``MANAGED_UNITS`` member (polkit-granted for ``manage-units``, which
+    covers stop/start) — no new grant is needed.
 
     The 8 s bound is deliberately NOT the start bound's derivation: a stop does
     not pull ``Requires=``, so the critical-path dependency term that dominates
-    :data:`_CAMILLA_START_TIMEOUT_SEC` cannot apply here at all. What is left is
-    camilla's own stop, measured at 23-30 ms on jts4 — roughly 300x of headroom
-    under this bound.
-
-    Being honest about what the abort does and does not buy: taking the
-    ``camilla_pause_failed`` branch avoids the RTTIME-SIGKILL shape, because the
-    fan-in restart that causes it is skipped. It does NOT avoid the reconciler
-    failure — that branch still returns ``ok=False``, which becomes
-    ``AutoResult(ok=False)``, exit 1, and the same rollback any other failure
-    triggers. The bound stands on the measurement and on skipping the SIGKILL,
-    not on a cascade that does not exist.
+    :data:`_CAMILLA_START_TIMEOUT_SEC` cannot apply. What is left is camilla's
+    own stop, measured at 23-30 ms.
 
     RESIDUAL, stated: camilla's legal stop ceiling is the manager default (90 s),
-    so a stop that genuinely took longer than 8 s would be misreported here. No
-    sample is anywhere near that, so this stays on the no-evidence/record
-    principle rather than being inflated.
+    so a stop that genuinely took longer than 8 s is misreported here.
     """
     return _restart_unit(CAMILLA_UNIT, verb="stop", reason=reason, timeout=8.0)
 
@@ -431,9 +383,9 @@ def _stop_camilla(reason: str) -> tuple[bool, str]:
 def _start_camilla(reason: str) -> tuple[bool, str]:
     """Start jasper-camilla through the broker after fan-in is back up. (ok, detail).
 
-    Mirrors the fan-in -> camilla order ``jasper-camilla-recover`` already proves
-    works: fan-in's ring/pipe writer must be re-attached before CamillaDSP re-opens
-    its capture, so this runs AFTER the ``Type=notify`` fan-in restart has returned.
+    Mirrors the fan-in -> camilla order ``jasper-camilla-recover`` uses: fan-in's
+    ring/pipe writer must be re-attached before CamillaDSP re-opens its capture,
+    so this runs AFTER the ``Type=notify`` fan-in restart has returned.
 
     Bounded by :data:`_CAMILLA_START_TIMEOUT_SEC`, which carries the re-queued
     hardware-reconciler oneshot camilla ``Requires=``; see that constant.
@@ -447,36 +399,28 @@ def _start_camilla(reason: str) -> tuple[bool, str]:
 def _restart_outputd(reason: str) -> tuple[bool, str]:
     """Restart jasper-outputd through the broker. (ok, detail).
 
-    Same residual as :func:`_restart_fanin`: legally 95 s, bounded at 8 s, kept
-    there because measured restarts are 0.4-1.0 s and nothing has been observed
-    truncating. It is budgeted as a camilla start dependency for the same reason.
+    Same residual as :func:`_restart_fanin`: legally 95 s, bounded at 8 s
+    against measured 0.4-1.0 s restarts, and budgeted as a camilla start
+    dependency for the same reason.
     """
     return _restart_unit(OUTPUTD_UNIT, reason=reason, timeout=8.0)
 
 
-# How long a blocking start of the audio-hardware reconciler may take.
+# How long a blocking start of the audio-hardware reconciler may take. The two
+# callers have different stakes, so they pass different bounds.
 #
-# The ENDPOINT-CONVERGENCE kick (``jasper.fanin.converge``) keeps the 15 s bound
-# it shipped with — the same one the topology save/reset/repin wizard surfaces
-# use (``jasper.output_topology_runtime.trigger_reconcile``) — because a
-# timeout there costs only a delayed marker re-derivation, which the next
+# The ENDPOINT-CONVERGENCE kick (``jasper.fanin.converge``) keeps 15 s — the
+# same bound the topology save/reset/repin wizard surfaces use
+# (``jasper.output_topology_runtime.trigger_reconcile``) — because a timeout
+# there costs only a delayed marker re-derivation, which the next
 # udev/boot/deploy event converges anyway.
 #
-# The CONTENT-FORMAT converge gets real headroom instead, and the reason is a
-# measured one: on jts4 (Pi Zero 2 W) a full reconciler pass takes on the order
-# of the old bound itself, so 15 s left approximately zero margin on the slowest
-# board in the fleet — and a timeout there is not a delayed nicety, it refuses
-# the whole convergence (see :func:`_converge_ring`). 60 s is four times the
-# observed duration.
-#
-# THE BUDGET THIS SPENDS IS THE CALLER UNIT'S, not the broker's. The broker's
-# ``_EXEC_TIMEOUT_CEILING_SEC`` (120 s) only CLAMPS a larger request; it sets no
-# value and 60 s is nowhere near it. The binding limit is the ``Type=oneshot``
+# The CONTENT-FORMAT converge gets 60 s, roughly four times a full reconciler
+# pass on a Pi Zero 2 W, because a timeout there refuses the whole convergence
+# (see :func:`_converge_ring`). The budget it spends is the caller unit's — the
 # ``deploy/systemd/jasper-fanin-coupling-auto.service`` ceiling, which is
-# :data:`COUPLING_AUTO_TIMEOUT_START_SEC` below, which carries this converge as
-# an enumerated term rather than as an accepted overrun. Trimming 60 s to fit a
-# smaller ceiling would instead make the ordinary first convergence time out on
-# the slowest board, which is the failure this constant exists to prevent.
+# :data:`COUPLING_AUTO_TIMEOUT_START_SEC` below and carries this converge as an
+# enumerated term.
 _HARDWARE_RECONCILE_TIMEOUT_SEC = 15.0
 _KICK_ACCEPT_TIMEOUT_SEC = 5.0  # `--no-block` returns in ms; bounds the accept.
 _CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
@@ -496,20 +440,10 @@ _CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
 #     socket timeout is converted to exactly that). So one op can legally cost
 #     twice its timeout plus the socket margin.
 #
-# THE CEILING IS SIZED FOR A LIVE BROKER, and that is a decision, not an
-# oversight. The doubling fires only on ``BrokerUnavailable`` — jasper-control's
-# broker socket dead — which is an independently loud, already-degraded mode
-# (dashboard and /state down, doctor red), not this system's legal operating
-# envelope. The two failure semantics are also not the same: a client bound
-# shorter than a succeeding operation LIES, misreporting success as failure and
-# firing a destructive rollback (that is the #2790 class, and it is what the
-# camilla bound above fixes). A ceiling that kills an already-degraded, unusually
-# slow pass TELLS THE TRUTH: the unit is visibly failed, the journal says so, and
-# the next trigger retries. A ceiling stretched to cover the broker-dead worst
-# would instead hide every real wedge for the length of that ceiling, which is
-# blindness rather than conservatism.
-#
-# The broker-dead figure is therefore computed once, disclosed as
+# THE CEILING IS SIZED FOR A LIVE BROKER, deliberately: the doubling fires only
+# on ``BrokerUnavailable``, an independently loud already-degraded mode, and
+# stretching the ceiling to cover it would hide every real wedge for that
+# length. The broker-dead figure is computed once, disclosed as
 # :data:`COUPLING_AUTO_BROKER_DEAD_WORST_SEC`, and never used in the arithmetic.
 _BROKER_SOCKET_MARGIN_SEC = 5.0  # restart_broker._CLIENT_SOCKET_MARGIN_SEC
 
@@ -544,9 +478,9 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
 
     The coupling half and the USB-combo half are ADDITIVE, in that order:
     :func:`reconcile_auto` delegates the convergence to ``reconcile_coupling``
-    and only THEN, when the combo changed and the convergence did not already
-    bounce fan-in, runs the coordinated restart. Fan-in is restarted TWICE across
-    that path — once by the convergence spine, once by the combo coordination.
+    and only THEN runs the coordinated restart, so fan-in is restarted TWICE
+    across the worst path — once by the convergence spine, once by the combo
+    coordination.
     """
 
     def op(timeout: float, reset_failed: bool) -> float:
@@ -568,9 +502,8 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
         _COUPLING_AUTO_NON_DAEMON_WORK_SEC
         + op(_HARDWARE_RECONCILE_TIMEOUT_SEC, False)  # endpoint-convergence kick
         + spine
-        # An assistant-width TRANSITION inside the pass try-restarts voice. Not a
-        # crash-budget unit, so no reset preamble; bounded, so it is enumerated
-        # rather than being left for the headroom to absorb silently.
+        # An assistant-width TRANSITION inside the pass try-restarts voice. Not
+        # a crash-budget unit, so no reset preamble.
         + op(8.0, False)
         + combo
         + op(_KICK_ACCEPT_TIMEOUT_SEC, False)  # grouping re-bake kick
@@ -580,19 +513,14 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
 COUPLING_AUTO_ENUMERATED_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead=False)
 # DISCLOSED RESIDUAL, deliberately not an input above: under a dead broker AND
 # maximally slow hardware, a pass can reach this instead and will be killed at
-# the ceiling mid-heal. It retries on the next trigger, and full recovery expects
-# the broker back; the fail-closed usbsink rollback can recur in that window.
-# That is acceptable because the mode itself already demands operator attention.
+# the ceiling mid-heal. It retries on the next trigger, and the fail-closed
+# usbsink rollback can recur in that window.
 COUPLING_AUTO_BROKER_DEAD_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead=True)
 # THE UNQUANTIFIED TERM, stated rather than hidden: a pass also runs
 # :func:`_reconcile_camilla`, and that calls
 # ``asyncio.run(reconcile_current_dsp())`` with NO timeout of its own. No finite
-# ceiling covers an unbounded term, so this headroom is a courtesy and the
-# disclosure is the honesty — bounding that call is tracked on ledger issue
-# #2802. It grew when the loopback recovery ladder was deleted (ADR-0100): the
-# enumerated worst dropped by that ladder's ops and the shipped
-# ``TimeoutStartSec`` is held where it was, so the deletion spends its saving on
-# the unbounded term rather than tightening a ceiling nothing asked to tighten.
+# ceiling covers an unbounded term, so this headroom is a courtesy; bounding that
+# call is tracked on ledger issue #2802.
 _COUPLING_AUTO_CEILING_HEADROOM_SEC = 270.0
 COUPLING_AUTO_TIMEOUT_START_SEC = (
     COUPLING_AUTO_ENUMERATED_WORST_SEC + _COUPLING_AUTO_CEILING_HEADROOM_SEC
@@ -631,17 +559,15 @@ def _reconcile_camilla(
     --check`` before loading and fail-closes on an invalid config, so a failure
     here leaves the previously-loaded config running.
 
-    ONE ``skipped`` IS ACCEPTED, on direct proof only. A
-    mid-commission roleful box boots from the all-muted staged startup anchor,
-    which the carrier correctly refuses to host EQ on
-    (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`) — so every arm of the
-    fleet-typical composite failed here, with the graph left unchanged.
-    :func:`ring_endpoint_anchor_converged` proves from
-    the artifacts on disk that the graph IS that anchor and IS already at the
-    ring endpoint at the box's wire; only then is the step converged, with its
-    own detail so the outcome is never confused with a re-emit. Every other
-    ``skipped`` — a different refusal code, a commissioning load, an anchor that
-    is not coherent — fails exactly as before.
+    ONE ``skipped`` IS ACCEPTED, on direct proof only. A mid-commission roleful
+    box boots from the all-muted staged startup anchor, which the carrier
+    refuses to host EQ on (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`).
+    :func:`ring_endpoint_anchor_converged` proves from the artifacts on disk
+    that the graph IS that anchor and IS already at the ring endpoint at the
+    box's wire; only then is the step converged, with its own detail so the
+    outcome is never confused with a re-emit. Every other ``skipped`` — a
+    different refusal code, a commissioning load, an anchor that is not coherent
+    — fails.
 
     NO acceptance here survives a payload that came over the STATEFILE
     (``transport=statefile``, #2664). That payload's ``current_config_path`` is
@@ -659,45 +585,26 @@ def _reconcile_camilla(
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
         return False, f"camilla reconcile raised: {e}"
     status = payload.get("status")
-    # THE ONE PLACE this rung decides a statefile answer is not good enough.
-    # ``transport`` names which reader answered "which graph is loaded". Since
-    # #2664 the reconcile COMPLETES over the statefile when CamillaDSP is down —
-    # it converges the graph the box will boot, which is the right outcome for a
-    # deploy, and the wrong one to accept here. This rung's contract is "re-emit
-    # AND LOAD", and over the statefile CamillaDSP loaded nothing because it is
-    # not running.
-    #
-    # Ahead of every acceptance on purpose. Before #2664 all three were protected
-    # for free: ``reconcile_current_dsp`` RAISED with the daemon down and the
-    # except above turned that into ``(False, …)``. Guarding only the anchor
-    # branch would leave the two common ones — a commissioned box and a flat box
-    # both answer ``reconciled`` — reporting success about a dead daemon.
-    #
-    # This does NOT slow #2664's own heal: install performs that through the
-    # ``jasper-sound`` CLI, which never enters this function, and by the time the
-    # coupling pass runs, camilla has been restarted and the websocket path is
-    # taken.
+    # ``transport`` names which reader answered "which graph is loaded"; ahead of
+    # every acceptance because a commissioned box and a flat box both answer
+    # ``reconciled``, so guarding only the anchor branch would let those two
+    # report success about a dead daemon.
     if payload.get("transport") == "statefile":
         return False, f"camilla down: reconcile converged over the statefile ({status})"
     if status in ("reconciled", "unchanged"):
         return True, str(status)
-    # A "skipped" reconcile means the ring config was NOT loaded, and applying it
-    # is the whole point of the pass — so it fails, with the one proven exception
-    # below.
+    # A "skipped" reconcile means the ring config was NOT loaded, so it fails —
+    # with the one proven exception below.
     refusal = str(payload.get("reason") or "")
     if status == "skipped" and refusal == CARRIER_TRANSIENT_ACTIVE_REFUSAL:
         # Keyed on the ONE refusal this acceptance is about, not on "skipped"
         # generally: a refusal code added later is a shape nobody proved
-        # convergent, so it keeps failing until someone decides otherwise.
-        # The DAEMON's own answer to "which graph is loaded", not the
-        # statefile's. ``reconcile_current_dsp`` obtained it from
-        # ``cam.get_config_file_path`` over CamillaDSP's websocket and carries
-        # it in this very payload; the statefile is a durable pointer with
-        # several other writers and can name a graph the running daemon does
-        # not hold. Proving identity against the weaker reader would let a
-        # statefile moved mid-arm report ``converged_anchor`` while CamillaDSP
-        # still writes the lane the ring replaced — the #2364 silence class,
-        # arrived at from the other side.
+        # convergent. ``current_config_path`` is the DAEMON's own answer
+        # (``cam.get_config_file_path`` over CamillaDSP's websocket), not the
+        # statefile's — the statefile has several other writers and can name a
+        # graph the running daemon does not hold, which would let one moved
+        # mid-arm report ``converged_anchor`` while CamillaDSP still writes the
+        # lane the ring replaced (the #2364 silence class).
         converged, anchor_detail = ring_endpoint_anchor_converged(
             loaded_config_path=payload.get("current_config_path")
         )
@@ -725,9 +632,8 @@ class _CoordinatedFaninRestart:
     """Outcome of a CamillaDSP-coordinated fan-in restart.
 
     ``fanin_restarted`` is whether fan-in actually restarted;
-    ``camilla_stopped`` / ``camilla_started`` record the pause/resume outcomes for
-    the log + result. ``ok`` is True only when every step the chosen path needed
-    succeeded.
+    ``camilla_stopped`` / ``camilla_started`` record the pause/resume outcomes.
+    ``ok`` is True only when every step the chosen path needed succeeded.
     """
 
     ok: bool
@@ -747,55 +653,44 @@ def _restart_fanin_coordinated(
 ) -> _CoordinatedFaninRestart:
     """Restart fan-in without collaterally SIGKILLing CamillaDSP.
 
-    THE BUG (evidence-confirmed on jts.local, four timing fingerprints incl. a
-    controlled repro): while the fan-in-written ``shm_ring`` coupling is live,
-    CamillaDSP captures the transport via the
-    ``jts_ring_capture`` ioplug. A bare fan-in *process* restart detaches the ring
-    WRITER; the ioplug capture reader then busy-spins ~100% of a core, and
-    camilladsp (``SCHED_FIFO``, ``LimitRTTIME=200000`` us in
-    ``jasper-camilla.service``) hits the kernel ``RLIMIT_RTTIME`` hard SIGKILL
-    ~213 ms later -> ``Restart=always`` start-limit -> ``OnFailure=
-    jasper-camilla-recover`` -> a full core-graph bounce.
+    THE HAZARD this guards: while the fan-in-written ``shm_ring`` coupling is
+    live, CamillaDSP captures the transport via the ``jts_ring_capture`` ioplug,
+    and a bare fan-in *process* restart detaches the ring WRITER. An unpaced
+    capture reader busy-spins on that, and camilladsp (``SCHED_FIFO``,
+    ``LimitRTTIME=200000`` us in ``jasper-camilla.service``) takes the kernel's
+    ``RLIMIT_RTTIME`` hard SIGKILL ~213 ms later -> ``Restart=always``
+    start-limit -> ``OnFailure=jasper-camilla-recover`` -> a core-graph bounce.
 
     So this pauses CamillaDSP with a clean SIGTERM FIRST, restarts fan-in, waits
     for it to come back (the ``Type=notify`` blocking broker restart returns only
-    after fan-in re-attaches its ring writer + ``sd_notify`` READY=1 — that is the
-    "wait fan-in up" step), then resumes CamillaDSP -- mirroring the fan-in ->
-    camilla order ``deploy/bin/jasper-camilla-recover`` already proves works.
-    camilladsp then exits cleanly on SIGTERM instead of an RTTIME-SIGKILL: no
-    start-limit, no OnFailure, no core-graph bounce -- one intentional brief camilla
-    restart replacing today's kill cascade.
+    after fan-in re-attaches its ring writer + ``sd_notify`` READY=1), then
+    resumes CamillaDSP — the fan-in -> camilla order
+    ``deploy/bin/jasper-camilla-recover`` uses.
 
-    FAILURE HONESTY: if CamillaDSP cannot be STOPPED it may still be running on the
-    ring, so we do NOT restart fan-in (restarting it is exactly what SIGKILLs a
-    running camilla) -- we ensure camilla is running (a ``start`` is a no-op if it
-    never stopped) and abort, ``ok=False``. If the fan-in restart fails AFTER camilla
-    was stopped, we STILL start camilla back -- never leave the DSP stopped forever
-    (the chosen safe direction). Either way ``OnFailure=jasper-camilla-recover``
-    stays the backstop for a resume that also fails; nothing here disables it.
+    FAILURE HONESTY: if CamillaDSP cannot be STOPPED it may still be running on
+    the ring, so we do NOT restart fan-in and instead ensure camilla is running
+    (a ``start`` is a no-op if it never stopped) and abort, ``ok=False``. If the
+    fan-in restart fails AFTER camilla was stopped, we STILL start camilla back
+    — never leave the DSP stopped forever. Either way
+    ``OnFailure=jasper-camilla-recover`` stays the backstop for a resume that
+    also fails; nothing here disables it.
 
     (Stopping camilla is safe for jasper-outputd even though camilla is outputd's
     Ring B writer: outputd's reader is DAC-clocked -- an absent writer yields paced
     silence, not a busy-spin -- so only the camilla side needs coordination.)
 
-    SCOPE: this coordinates DELIBERATE Python-side fan-in restarts — today
-    only this module's own caller, :func:`reconcile_auto`'s auto USB-combo
-    restart. The public out-of-module entry point this docstring used to
-    describe, ``coordinated_fanin_restart``, was deleted in P5c: its sole
-    caller (the adaptive output-buffer arm) was deleted with it, and its
-    ok-flattening-on-resume-failure behavior had no remaining consumer to
-    justify keeping. Since the ring-ioplug
-    capture-reader pacing fix (PR #1271, ``c/jts-ring-ioplug/``), RTTIME safety
-    no longer depends on this coordination: an UNCOORDINATED fan-in death (a
-    crash / OOM-kill / an external ``systemctl restart jasper-fanin``) degrades
-    to <=2 s of paced silence while camilla blocks on the reader's timerfd —
-    no spin, no SIGKILL. The coordination is kept for the gap-free UX (a clean
-    camilla stop/start beats a silence window plus resync).
+    SCOPE: DELIBERATE Python-side fan-in restarts only — today just
+    :func:`reconcile_auto`'s USB-combo restart. RTTIME safety no longer rests on
+    this coordination: the ring-ioplug capture reader now paces itself
+    (``c/jts-ring-ioplug/``), so an UNCOORDINATED fan-in death (crash, OOM-kill,
+    an external ``systemctl restart jasper-fanin``) degrades to <=2 s of paced
+    silence while camilla blocks on the reader's timerfd. The coordination is
+    kept for the gap-free UX.
     """
     stop_ok, stop_detail = do_stop_camilla()
     if not stop_ok:
-        # Camilla could not be paused -> it may still be on the ring. Do NOT restart
-        # fan-in (that is what SIGKILLs it). Ensure camilla is running and abort.
+        # Camilla could not be paused -> it may still be on the ring, so do NOT
+        # restart fan-in. Ensure camilla is running and abort.
         start_ok, start_detail = do_start_camilla()
         log_event(
             logger,
@@ -827,8 +722,8 @@ def _restart_fanin_coordinated(
         phase=phase,
     )
     fan_ok, fan_detail = do_restart()
-    # ALWAYS resume camilla, even if the fan-in restart failed -- never leave the DSP
-    # stopped forever (OnFailure/recover is the backstop if this resume also fails).
+    # ALWAYS resume camilla, even if the fan-in restart failed — never leave the
+    # DSP stopped forever (OnFailure/recover backstops a failed resume).
     start_ok, start_detail = do_start_camilla()
     log_event(
         logger,
@@ -874,8 +769,7 @@ def reconcile_coupling(
     """Converge the box onto the ring, then bound the two transients it can open.
 
     The convergence itself is :func:`_converge_ring`; this wrapper adds the two
-    things that must happen AROUND it rather than inside, and wraps rather than
-    threading them through because the inner function has several exits.
+    things that must happen AROUND it rather than inside.
 
     THE BONDED LEADER'S BAKED CAPTURE. A bonded ACTIVE leader's camilla#1 carries
     the coupling's capture device, baked at BOND time; nothing else re-derives it
@@ -888,17 +782,14 @@ def reconcile_coupling(
     resolves it ONCE at start — it is not restarted by the ordered audio-graph
     bounce. So a pass that moves the coupling can leave voice speaking the old
     width into a fan-in that now expects the other one. That is converted
-    losslessly and logged (``event=fanin.tts_wire_width_mismatch``), never a
-    level error — but without this it is a STANDING disagreement, not a
-    transient, and nothing in the system would ever end it. Comparing the
+    losslessly and logged (``event=fanin.tts_wire_width_mismatch``), but without
+    this it is a STANDING disagreement rather than a transient. Comparing the
     resolved width across the pass and issuing one ``try-restart`` makes the
     window the length of a convergence.
 
-    Both reads are file-fresh and go through the same rule voice uses, so the
-    comparison sees the transition voice would see. The restart is best-effort: a
-    failure is logged and never changes the pass's verdict, because the coupling
-    IS converged either way and the remaining exposure is a precision difference
-    the reader already handles.
+    Both reads are file-fresh and go through the same rule voice uses. The
+    restart is best-effort: a failure is logged and never changes the pass's
+    verdict, because the coupling IS converged either way.
     """
     before = _assistant_width_token(env_path)
     result = _converge_ring(
@@ -916,11 +807,10 @@ def reconcile_coupling(
         # voice here would be the one daemon op an apply=False pass performed.
         return result
     if result.changed and result.ok:
-        # FIRE-AND-FORGET: the re-bake routinely outruns any wait this side could
-        # justify (TimeoutStartSec=6346) and killing the client would not cancel
-        # the queued job, so waiting could only manufacture a WARN for work that
-        # succeeded. `ok` is "systemd ACCEPTED the job" — logged because a drifted
-        # unit name would otherwise make this a SILENT no-op.
+        # FIRE-AND-FORGET: the re-bake outruns any wait this side could justify
+        # (TimeoutStartSec=6346) and killing the client would not cancel the
+        # queued job. `ok` is "systemd ACCEPTED the job" — logged because a
+        # drifted unit name would otherwise make this a SILENT no-op.
         kicked, kick_detail = _restart_unit(
             GROUPING_RECONCILE_UNIT, verb="start", reason=reason,
             no_block=True, timeout=_KICK_ACCEPT_TIMEOUT_SEC,
@@ -975,7 +865,7 @@ def _converge_ring(
        ``JASPER_OUTPUTD_CONTENT_FORMAT``, so outputd is restarted against the
        ring's own wire rather than a stale one. This step FAILS the pass: without
        it outputd comes up asking for a width CamillaDSP's ioplug does not
-       attach, which is a hard ``attach_fatal`` (jts4, 2026-08-14).
+       attach, which is a hard ``attach_fatal``.
     2. jasper-outputd — the post-DSP ring's READER — first,
     3. jasper-fanin — the Ring A WRITER — second,
     4. CamillaDSP last, because it attaches to both.
@@ -1014,9 +904,9 @@ def _converge_ring(
     )
     # Did this pass CONVERGE the ring-path/marker pair? Compared as RESOLVED
     # values so first-writing an absent key (which resolves to the same default)
-    # is not mistaken for a heal — only a real move counts. The pair is crossed
-    # for a bounded window by construction (its two halves have two writers), so
-    # logging the heal is what keeps that window observable instead of silent.
+    # is not mistaken for a heal. The pair is crossed for a bounded window by
+    # construction (its two halves have two writers), so logging the heal is
+    # what keeps that window observable.
     ring_path_before = resolve_outputd_ring_path(
         read_value(outputd_snapshot.text, OUTPUTD_RING_PATH_ENV_VAR)
     )
@@ -1068,12 +958,10 @@ def _converge_ring(
         )
         return CouplingResult(ok=True, changed=changed)
 
-    # GEOMETRY HEALS, every pass — not only when the coupling-flip WRITE
-    # moves. A box already on the ring with a stale slot count or a stale
-    # on-disk ring must still be healed, or it stays broken with a doctor
-    # that tells the operator to run a reconcile that heals nothing. Both
-    # are write-on-change, so a coherent box pays a few small reads and
-    # still takes the no-bounce path below.
+    # GEOMETRY HEALS, every pass — not only when the coupling-flip WRITE moves.
+    # A box already on the ring with a stale slot count or a stale on-disk ring
+    # must still be healed. Both are write-on-change, so a coherent box pays a
+    # few small reads and still takes the no-bounce path below.
     fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(
         fanin_snapshot, reason
     )
@@ -1162,10 +1050,8 @@ def _converge_ring(
         reconciled_camilla=cam_ok,
         # The camilla step has two success shapes, and the operator's stdout line
         # prints ``detail`` only when it is non-empty. An ORDINARY re-emit stays
-        # silent there — byte-identical for every applied-baseline box — while the
-        # anchor-converged acceptance says so, because "the ring config was
-        # loaded" and "the graph was already the anchor at the ring" are different
-        # facts and only one of them wrote anything.
+        # silent there; the anchor-converged acceptance says so, because only one
+        # of the two wrote anything.
         detail=(
             detail
             or (
@@ -1182,11 +1068,10 @@ class AutoResult:
     """Outcome of one unattended (``--auto``) pass.
 
     ``combo_armed`` is whether the USB combo resolved on, ``usb_combo_changed``
-    records whether the fan-in combo keys moved, ``coupling_result`` is the
-    delegated :class:`CouplingResult`, and ``restarted_fanin_for_combo`` is True
-    when a combo-only change forced an extra fan-in restart (the ring
-    convergence did not bounce it). ``ok`` reflects the delegated convergence
-    plus the combo restart.
+    whether the fan-in combo keys moved, ``coupling_result`` the delegated
+    :class:`CouplingResult`, and ``restarted_fanin_for_combo`` True when a
+    combo-only change forced an extra fan-in restart. ``ok`` reflects the
+    delegated convergence plus that restart.
     """
 
     ok: bool
@@ -1227,14 +1112,12 @@ def reconcile_auto(
        feature keys and preset floor into fanin.env (explicit values, never
        unset, defeating jasper.env precedence). Idempotent — a second pass with
        the same inputs writes nothing.
-    2. Delegate the ring convergence to :func:`reconcile_coupling`. There is no
-       coupling DECISION left to make: the ring is the only transport, and a box
-       it cannot serve parks under its own name
-       (:mod:`jasper.control.transport_park`) rather than resolving a second
-       route. A combo-only change that took the no-bounce path issues one extra
-       CamillaDSP-coordinated fan-in restart
-       (:func:`_restart_fanin_coordinated`): camilla is paused before and resumed
-       after, so the fan-in restart cannot RTTIME-SIGKILL it.
+    2. Delegate the ring convergence to :func:`reconcile_coupling`. The ring is
+       the only transport (ADR-0100), and a box it cannot serve parks under its
+       own name (:mod:`jasper.control.transport_park`) rather than resolving a
+       second route. A combo-only change that took the no-bounce path issues one
+       extra CamillaDSP-coordinated fan-in restart
+       (:func:`_restart_fanin_coordinated`), so it cannot RTTIME-SIGKILL camilla.
 
     If canonical USB intent is malformed or unreadable, the pass narrows itself
     to the safety action: resolve effective USB intent False, run the same
@@ -1243,11 +1126,10 @@ def reconcile_auto(
     unit state must never authorize capture when canonical intent cannot be
     proved valid.
 
-    ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla``
-    / ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` are
-    injectable for tests; ``gadget_present=None`` reads the resolved USB hardware
-    capability and ``usb_intent_enabled=None`` reads canonical source intent plus
-    current local-source role permission.
+    Every ``DaemonOp`` argument plus ``gadget_present`` / ``usb_intent_enabled``
+    is injectable for tests; ``gadget_present=None`` reads the resolved USB
+    hardware capability and ``usb_intent_enabled=None`` reads canonical source
+    intent plus current local-source role permission.
     """
     fanin_snapshot = _read_snapshot(env_path)
     gadget = (
@@ -1258,11 +1140,10 @@ def reconcile_auto(
         try:
             usb_intent = usbsink_effectively_enabled()
         except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
-            # The source coordinator has already failed the malformed USB source
-            # closed, but a previously armed fan-in process can still retain its
-            # DIRECT lane until this owner writes + applies the explicit-off combo
-            # plan. Treat the unreadable preference as effective False, complete
-            # the ordinary ordered write below, and only then return failure.
+            # A previously armed fan-in process retains its DIRECT lane until
+            # this owner writes + applies the explicit-off combo plan. Treat the
+            # unreadable preference as effective False, complete the ordinary
+            # ordered write below, and only then return failure.
             usb_intent = False
             usb_intent_failure = f"USB source intent invalid or unreadable: {exc}"[:500]
             log_event(
@@ -1363,7 +1244,7 @@ def reconcile_auto(
 
     # If the fan-in combo changed but the ring convergence did NOT restart fan-in
     # (a combo-only change on an already-coherent box takes the no-bounce path),
-    # the new combo won't be live until fan-in restarts. Issue one —
+    # the new combo is not live until fan-in restarts. Issue one —
     # CamillaDSP-coordinated so it cannot RTTIME-SIGKILL camilla off the ring.
     restarted_for_combo = False
     if apply and combo_changed and not coupling_result.restarted_fanin:
@@ -1454,10 +1335,8 @@ def reconcile_auto(
 # The carrier's refusal reason for a roleful box's TRANSIENT boot graph — the
 # startup anchor and the commissioning load (``jasper.sound.graph_carrier``'s
 # ``_ActiveGraphCarrier.reemit`` raises ``CarrierCannotHostEq`` with exactly this
-# code). Spelled here rather than imported because that module raises a bare
-# literal and this module already keys on ``reconcile_current_dsp``'s status
-# vocabulary the same way; ``tests/test_ring_anchor_arm_acceptance.py`` pins the
-# two spellings against the real exception so a rename fails loudly instead of
+# code, as a bare literal). ``tests/test_ring_anchor_arm_acceptance.py`` pins the
+# two spellings against the real exception, so a rename fails loudly instead of
 # silently turning the acceptance below into dead code.
 CARRIER_TRANSIENT_ACTIVE_REFUSAL = "eq_on_active_not_wired"
 
@@ -1481,18 +1360,9 @@ def ring_topology_ready_strict() -> tuple[bool, str]:
 def ring_roleful_unattended_ready() -> tuple[bool, str]:
     """May an unattended pass MOVE a ROLEFUL box's graph? Fail-closed, two arms.
 
-    THE NARROWING, not a deletion. This gate used to refuse every roleful box
-    unconditionally. It still refuses by DEFAULT, and now admits exactly two
-    proven graph shapes. The safety argument for admitting them, the C-B2 hazard
-    it is argued against, and the counter-weight that #2534 turned this gate's
-    safe branch into the silent branch are NOT restated here — they are §4.7 of
-    ``captures/CONVERGENCE-DESIGN-PROPOSAL-2026-08-15.md``, decided by the owner
-    as §12 decision 1 (narrow the gate). Read them there; a second copy here
-    would be one more thing to drift.
-
-    The two arms, and note that both are about the GRAPH's provenance — never
-    about the box's topology SHAPE, which :func:`ring_topology_ready` already
-    owns one gate later:
+    It refuses by DEFAULT and admits exactly two proven graph shapes. Both arms
+    are about the GRAPH's provenance — never about the box's topology SHAPE,
+    which :func:`ring_topology_ready` owns one gate later:
 
     1. **A hardware-fingerprint-matched applied baseline** —
        :func:`~jasper.active_speaker.baseline_profile.applied_baseline_hardware_match`,
@@ -1505,24 +1375,21 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
        in a wired terminal mute (:func:`_anchor_is_all_muted`). It emits silence,
        so it cannot be a hearing event on any hardware.
 
-    SCOPE, held deliberately narrow. Arm 1 is the fingerprint compare ONLY.
-    Applied-record DIVERGENCE — ``applied_profile_displacement`` — is phase 0c's
-    question and is NOT asked here; do not pull it forward into this gate.
+    SCOPE, held deliberately narrow: arm 1 is the fingerprint compare ONLY.
+    Applied-record DIVERGENCE (``applied_profile_displacement``) is another
+    gate's question and is NOT asked here.
 
     Everything else refuses, fail-CLOSED: an unreadable topology, no applied
     record and no anchor, a stale fingerprint, an anchor that is not terminally
-    muted. The refusal names the runnable arm so a refused box has a way out
-    rather than a verdict.
+    muted. The refusal names the runnable arm so a refused box has a way out.
 
     A CORRUPT applied record is caught HERE rather than left to the caller.
     ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
-    own loader catches, but a non-UTF-8 byte — the documented SD-card /
-    power-cut truncation — raises ``UnicodeDecodeError`` straight past it. The
-    caller's own ``except`` would turn that into a refusal with no remediation
-    in it, which would make this the one refusal in this gate that leaves an
-    operator without a way out. The local catch keeps every refusal the same
-    shape. The SHARED loader is deliberately not widened — it has other callers
-    whose contracts are theirs.
+    own loader catches, but a non-UTF-8 byte — the SD-card / power-cut
+    truncation — raises ``UnicodeDecodeError`` straight past it, and the
+    caller's ``except`` would turn that into the one refusal in this gate
+    carrying no remediation. The SHARED loader is deliberately not widened; it
+    has other callers whose contracts are theirs.
     """
     from jasper.active_speaker.baseline_profile import (
         applied_baseline_hardware_match,
@@ -1598,16 +1465,14 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
 
 # THE ring preflights, in ONE order.
 #
-# ORDER IS A DIAGNOSTIC DECISION. Each gate sits ahead of the gates whose
-# answers would be MEANINGLESS or MISLEADING without it: topology eligibility
-# first, because a box that resolves no ring width makes the wire question
-# ill-posed (``resolve_ring_wire`` falls back to the shipped stereo declaration
-# there, so a wire mismatch would name the wrong defect on a roleful box); asset
-# presence before the two gates that READ those assets; capability before width,
-# because a plugin that cannot parse the wire's fields is a blunter refusal than
-# any per-end disagreement. ``ring_edge_width`` ran first while it was a zero-I/O
-# check over two constants; it now reads the conf.d and both env files, so
-# "cheapest first" no longer describes it.
+# ORDER IS A DIAGNOSTIC DECISION, not cost. Each gate sits ahead of the gates
+# whose answers would be MEANINGLESS or MISLEADING without it: topology
+# eligibility first, because a box that resolves no ring width makes the wire
+# question ill-posed (``resolve_ring_wire`` falls back to the shipped stereo
+# declaration there, so a wire mismatch would name the wrong defect on a roleful
+# box); asset presence before the two gates that READ those assets; capability
+# before width, because a plugin that cannot parse the wire's fields is a
+# blunter refusal than any per-end disagreement.
 _SHARED_RING_PREFLIGHTS: tuple[tuple[str, RingGate], ...] = (
     ("ring_topology", ring_topology_ready_strict),
     ("ring_assets", ring_assets_ready),
@@ -1625,7 +1490,7 @@ def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
     a transport decision: the ring is the only transport (ADR-0100) and a box
     that fails them parks under its own name rather than resolving a route.
 
-    The order is :data:`_SHARED_RING_PREFLIGHTS`' and is documented there; this
+    The order is :data:`_SHARED_RING_PREFLIGHTS`' (documented there); this
     prepends ``ring_roleful_unattended``, the coarser question, because its
     refusal is the one an operator of a crossover box needs to read.
     """
@@ -1644,10 +1509,10 @@ def _migrate_stale_fanin_ring_slots(
     the conf.d ``jts_ring_capture`` ``n_slots`` is a coherent operator override and
     stays. It writes the key into the later-loaded reconciler file ONLY when the
     shipped conf.d pins the current product default but an earlier env layer or
-    fanin.env carries an env-only mismatch (the field residue is old default
-    ``8``; any mismatched env-only value is incoherent without a matching conf.d).
-    Writing the coherent value is deliberate: simply deleting from fanin.env can
-    expose a stale value in ``/etc/jasper/jasper.env`` on the next systemd start.
+    fanin.env carries an env-only mismatch (any mismatched env-only value is
+    incoherent without a matching conf.d). Writing the coherent value rather than
+    deleting the key is deliberate: deleting from fanin.env can expose a stale
+    value in ``/etc/jasper/jasper.env`` on the next systemd start.
 
     Returns the current snapshot and whether the key actually moved — the
     caller converges the daemons on a heal, because fan-in creates Ring A with
@@ -1661,11 +1526,9 @@ def _migrate_stale_fanin_ring_slots(
     IT DOES NOT CONVERGE A BOX SHEARED ON AN AXIS IT DOES NOT OWN. This writes
     ONE axis — the Ring-A slot count. If the box also disagrees about the WIRE
     (fan-in's declared format vs the conf.d's), converging the slots would make
-    the geometry look repaired while the ring still cannot attach, and the
-    operator would read a ``stale_ring_slots_overridden`` line as progress. So
-    the wire is read first and a shear there DECLINES the write. Declining costs
-    nothing: the slots value it would have written is still writable on the next
-    pass, once the wire agrees.
+    the geometry look repaired while the ring still cannot attach, so the wire is
+    read first and a shear there DECLINES the write. Declining costs nothing: the
+    slots value is still writable on the next pass, once the wire agrees.
 
     IMPORTANT: this runs AFTER the coupling write, so the passed
     ``fanin_snapshot`` is the PRE-write snapshot; the file is re-read fresh here
@@ -1773,15 +1636,13 @@ def _migrate_stale_fanin_ring_slots(
 def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     """Delete on-disk ring files whose geometry != the expected one. Did any go?
 
-    A ring file left over from a PRIOR geometry (e.g. an 8-slot program.ring from
-    before the 2-slot default shipped) is a
-    create-or-ATTACH ``open()`` error for the writer: ``RingWriter::create_or_attach``
-    validates the existing header's geometry against the requested one and bails on
-    a mismatch. The files live on tmpfs (``/dev/shm``) — pure transport state,
-    recreated by the writer on its next start, NOT user data — so deleting a
-    geometry-mismatched file is safe and lets the writer re-create it fresh. The
-    caller converges the daemons when this returns True, because a deleted file
-    is only re-created by the writer coming back.
+    A ring file left over from a PRIOR geometry is a create-or-ATTACH ``open()``
+    error for the writer: ``RingWriter::create_or_attach`` validates the existing
+    header's geometry against the requested one and bails on a mismatch. The
+    files live on tmpfs (``/dev/shm``) — pure transport state, recreated by the
+    writer on its next start, NOT user data — so deleting a geometry-mismatched
+    file is safe. The caller converges the daemons when this returns True,
+    because a deleted file is only re-created by the writer coming back.
 
     Only deletes a file whose header is VALID (carries the ``JRIN`` magic) AND
     whose geometry differs from what fan-in / the conf.d will create, on ANY of
@@ -1790,13 +1651,11 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     is :func:`jasper.ring_assets.ring_header_matches_conf`, shared with the
     doctor so the two cannot mean different things by "coherent".
 
-    THE FORMAT AXIS IS WHAT MAKES THE ROLLBACK LEVER ONE-SHOT. While this guard
-    was blind to ``sample_format``, forcing the wire narrow again
-    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) left the WIDE ring file on disk,
-    the writer rejected it at attach as a config-class fault, and the box parked
-    until someone ran ``rm`` by hand — so the lever worked once and then needed
-    an operator. Clearing a format-mismatched file here is what lets the lever be
-    pulled and released.
+    THE FORMAT AXIS IS WHAT MAKES THE WIRE ROLLBACK LEVER REPEATABLE. Forcing the
+    wire narrow again (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) leaves the WIDE
+    ring file on disk, which the writer rejects at attach as a config-class
+    fault; clearing a format-mismatched file here is what saves the operator an
+    ``rm`` by hand.
 
     A magic-less / absent / correct-geometry file is left untouched (the writer
     reclaims a magic-less file itself; a correct file is reused). Best-effort: a
@@ -1820,8 +1679,7 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
 
     # Expected Ring-A slot count: the conf.d is the attach authority for what the
     # ioplug expects; fall back to fan-in's resolved env if the conf.d is
-    # unreadable. The stale-file guard's job is to clear a file that will NOT
-    # attach, so compare on-disk against the value the ioplug attaches with.
+    # unreadable. Compare on-disk against the value the ioplug attaches with.
     try:
         fanin_slots = resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
     except ValueError:
@@ -1834,13 +1692,10 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     for path, pcm_name, expected_slots in (
         (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, expected_a),
         (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
-        # The ACTIVE ring is judged like the other two, against ITS OWN conf.d
-        # block — which is the axis that matters here, because the active block
-        # is the one whose CHANNELS legitimately differ per box. A stale
-        # active-content.ring from a prior commissioned width is exactly the
-        # create-or-attach fault this guard exists to clear, and unlike Ring B it
-        # can go stale without anything else changing (a re-commission that moves
-        # a 2-way to a 3-way moves only this file's width).
+        # The ACTIVE ring is judged against ITS OWN conf.d block, which is the
+        # one whose CHANNELS legitimately differ per box. Unlike Ring B it can go
+        # stale without anything else changing: a re-commission from a 2-way to a
+        # 3-way moves only this file's width.
         (RING_ACTIVE_CONTENT_FILE, RING_ACTIVE_CONF_PCM, None),
     ):
         verdict = ring_header_matches_conf(
@@ -1909,26 +1764,24 @@ def _outputd_ring_path_for(outputd_text: str) -> str:
 
     The marker is read from the outputd.env TEXT the caller is reconciling
     rather than from the file on disk, so the path written and the marker
-    written are read from one snapshot; a second file read could straddle a
+    written come from one snapshot; a second file read could straddle a
     concurrent hardware reconcile and emit a crossed pair.
 
-    Note the asymmetry, which is deliberate: an operator's custom path is
-    honoured on the STEREO ring and ignored on the ACTIVE one. There is exactly
-    one legal active-ring file — outputd's allowlist compares against that named
-    constant — so "preserving" a custom value there would only ever produce the
-    crossed pair the allowlist refuses.
+    The asymmetry is deliberate: an operator's custom path is honoured on the
+    STEREO ring and ignored on the ACTIVE one. There is exactly one legal
+    active-ring file — outputd's allowlist compares against that named constant
+    — so "preserving" a custom value there could only produce the crossed pair
+    the allowlist refuses.
 
     TOTAL INTO THE LEGAL SET, in BOTH directions. The armed branch discards
     whatever the key held; the unarmed branch must equally refuse to CARRY
     FORWARD the active ring's own file, because the allowlist is a biconditional
     — that file may be read only by an armed endpoint, exactly as an armed
-    endpoint may read only that file. Preserve-anything on the unarmed side made
-    the disarm direction STICKY: a box whose marker was cleared while the
-    coupling stayed ``shm_ring`` (the active-lane decision losing its hardware
-    proof) kept pointing outputd at a ring whose only writer had just been
-    stood down, and every later pass preserved it again, so the projection
-    never caught up with its source. Falling back to the stereo default here is
-    what makes every crossed pair one pass from healed, whichever half moved.
+    endpoint may read only that file. Preserving it on the unarmed side makes the
+    disarm direction STICKY (a box whose marker cleared while the coupling stayed
+    ``shm_ring`` keeps pointing outputd at a ring whose only writer stood down,
+    and every later pass preserves it again). Falling back to the stereo default
+    is what makes every crossed pair one pass from healed, whichever half moved.
     """
     from jasper.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
@@ -1959,15 +1812,14 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     """The COMPLETE set of reconciler-owned outputd.env actions for the ring.
 
     Sets ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP ring's
-    path/slots — content.ring, or active-content.ring on an armed roleful box
-    (see the convergence note below). The two rings move together: fan-in's Ring
-    A capture (fanin.env) and outputd's post-DSP ring bridge (here) are ONE
-    coupling, and a split leaves one end reading or writing a ring nobody serves.
+    path/slots — content.ring, or active-content.ring on an armed roleful box.
+    The two rings move together: fan-in's Ring A capture (fanin.env) and
+    outputd's post-DSP ring bridge (here) are ONE coupling, and a split leaves
+    one end reading or writing a ring nobody serves.
 
-    It also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key (a
-    deleted coupling's outputd content source) — a one-way migration sweep so a
-    box that once armed it converges clean on its next reconcile (nothing writes
-    the key anymore).
+    It also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key — a
+    one-way migration sweep so a box that once armed it converges clean on its
+    next reconcile.
 
     **The ring PATH converges from the endpoint MARKER, it is not preserved.**
     outputd enforces a biconditional between the two — the active ring file may
@@ -1975,21 +1827,19 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     read only that file. The marker is the FACT (written by
     ``jasper-audio-hardware-reconcile`` from the accepted active-lane decision)
     and the path is its PROJECTION, derived here by
-    :func:`_outputd_ring_path_for`. Deriving rather than preserving is what makes
-    the pair coherent by construction: a preserve-else-stereo default would write
-    the full-range Ring B path onto an armed box, and outputd would then refuse
-    the pair at startup.
+    :func:`_outputd_ring_path_for`. A preserve-else-stereo default would write
+    the full-range Ring B path onto an armed box, and outputd would refuse the
+    pair at startup.
 
     THIS RUNS ON EVERY PASS, before the transition-vs-confirm split, so it is
-    also the pair's RECOVERY: whichever half moved last, one pass of this
-    reconciler converges the other. That matters because the two halves have
-    different writers and cannot move in one write — the marker's writer runs
-    first (``jasper-audio-hardware-reconcile``, ``Before=jasper-outputd``) and
-    kicks ``jasper-fanin-coupling-auto.service``, which runs this. Between those
-    two the pair is legitimately crossed;
+    also the pair's RECOVERY: whichever half moved last, one pass converges the
+    other. The two halves have different writers and cannot move in one write —
+    the marker's writer runs first (``jasper-audio-hardware-reconcile``,
+    ``Before=jasper-outputd``) and kicks ``jasper-fanin-coupling-auto.service``,
+    which runs this. Between those two the pair is legitimately crossed;
     :func:`jasper.audio_runtime_plan.transport_coherence_report` reports that
     window as the first-arm waypoint (a note) rather than a contradiction,
-    because a refusal there can only fire while the projection is stale and
+    because a refusal there could only fire while the projection is stale and
     would block the writer that converges it.
     """
     return (
@@ -2030,12 +1880,10 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
 
     Mirrors :func:`_outputd_actions`: the in-process env must carry the SAME
     content-source keys the files now carry so the immediate camilla re-emit names
-    the right devices for any reader. The legacy pipe key is popped as the same
-    one-way migration sweep.
-
-    The ring PATH is taken from :func:`_outputd_ring_path_for`, the same single
-    derivation the persisted write uses, so the in-process env can never carry a
-    different ring than the file just written.
+    the right devices for any reader. The ring PATH comes from
+    :func:`_outputd_ring_path_for`, the same single derivation the persisted
+    write uses, so the in-process env can never carry a different ring than the
+    file just written.
     """
     os.environ[COUPLING_ENV_VAR] = COUPLING_SHM_RING
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
@@ -2081,11 +1929,11 @@ def _acquire_entry_lock(
     CLI-vs-CLI pairs.
 
     Bounded wait, never open-ended: contention past ``timeout_seconds`` returns
-    ``contended`` and the caller reacts before any env write or daemon op (no
-    partial state to unwind). ``--auto`` / explicit abort through
-    :func:`_handle_entry_lock_contention`. The wait absorbs the common fast
-    confirm-path ``--auto`` holder; a genuinely long transition in flight is the
-    case that SHOULD abort rather than stack.
+    ``contended`` and the caller aborts through
+    :func:`_handle_entry_lock_contention` before any env write or daemon op (no
+    partial state to unwind). The wait absorbs the common fast confirm-path
+    ``--auto`` holder; a genuinely long transition in flight SHOULD abort rather
+    than stack.
 
     Fail-open on an unopenable lock file (missing /run on a dev host, a
     non-root probe): a broken lock path must not brick reconciles — proceed
@@ -2198,10 +2046,9 @@ def main(argv: "list[str] | None" = None) -> int:
     if not any(_modes):
         parser.error("give an explicit coupling or --auto")
 
-    # Serialize the WHOLE pass against the sibling entry verbs (the two oneshot
-    # units + install.sh / operator CLI runs) — see _acquire_entry_lock. On
-    # contention past the bounded wait, do NOT touch env or daemons; the verb
-    # decides how loud (below).
+    # Serialize the WHOLE pass against the sibling entry verbs — see
+    # _acquire_entry_lock. On contention past the bounded wait, do NOT touch env
+    # or daemons.
     lock = _acquire_entry_lock(
         ENTRY_LOCK_PATH,
         timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
@@ -2217,10 +2064,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
 
 def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
-    """Abort an apply verb that could not acquire the coupling entry lock.
-
-    Both verbs wanted to apply a change and could not, so they abort loudly.
-    """
+    """Abort an apply verb that could not acquire the coupling entry lock."""
     log_event(
         logger,
         "fanin.coupling_reconcile",
@@ -2247,9 +2091,8 @@ def _run_entry_verb(args) -> int:
     # load) BEFORE reconciling, so the camilla reconcile this triggers emits with
     # the persisted JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} etc. — not their
     # defaults. Without this, arming a coupling from a bare CLI/install shell
-    # would silently RESET a tuned chunksize back to 1024 (same class caught on
-    # JTS 2026-06-27). setdefault semantics keep an explicit shell override
-    # winning. Mirrors jasper.cli.sound.
+    # silently RESETS a tuned chunksize back to 1024. setdefault semantics keep
+    # an explicit shell override winning. Mirrors jasper.cli.sound.
     from jasper.env_load import load_env_files
 
     load_env_files()
@@ -2262,16 +2105,13 @@ def _run_entry_verb(args) -> int:
     if args.auto and not args.no_apply:
         from jasper.fanin.converge import converge_active_endpoint
 
-        # Guarded because this step runs BEFORE everything the pass has always
-        # done: a convergence that cannot even decide must cost the box its
-        # convergence, never its reconcile.
-        #
-        # NARROW, and derived rather than defensive. The reachable raise is a
-        # corrupt fanin.env — ``_read_snapshot`` catches ``OSError`` only, so a
-        # non-UTF-8 byte arrives as ``UnicodeDecodeError``, a ``ValueError`` —
-        # and its file reads can throw ``OSError``. Anything outside that pair
-        # is a bug, and swallowing bugs here would hide them behind a box that
-        # merely stopped converging.
+        # Guarded because this step runs BEFORE the rest of the pass: a
+        # convergence that cannot even decide must cost the box its convergence,
+        # never its reconcile. The catch is NARROW and derived — the reachable
+        # raise is a corrupt fanin.env (``_read_snapshot`` catches ``OSError``
+        # only, so a non-UTF-8 byte arrives as ``UnicodeDecodeError``, a
+        # ``ValueError``) plus ``OSError`` from its file reads. Anything outside
+        # that pair is a bug and must not be swallowed here.
         try:
             converge_active_endpoint(reason=args.reason)
         except (OSError, ValueError) as exc:
