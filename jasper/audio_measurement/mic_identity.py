@@ -119,7 +119,13 @@ SUPPORTED_MODELS: dict[str, dict[str, Any]] = {
         "label": "miniDSP UMIK-1",
         "tier": "reference",
         "sign_convention": "response",
-        "usb_ids": (),  # not measured by this project
+        # Deliberately none: the UMIK-1 enumerates as 0d8c:0134, C-Media's
+        # generic "USB PnP Audio Device" pair shared with uncalibrated USB
+        # mics, so vid:pid would admit a stranger to the stored calibration
+        # (the wrong-mic incident class); and its stream is S24_3LE, which
+        # the S32_LE-only wired recorder cannot open. Resolving it needs the
+        # USB product string ("Umik-1 ...") and a per-model capture format.
+        "usb_ids": (),
     },
     "minidsp_umik2": {
         "provider": "minidsp",
