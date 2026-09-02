@@ -360,12 +360,12 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     )
     monkeypatch.setattr(
         doctor.renderers,
-        "_systemd_user_for",
-        lambda unit: {
+        "_systemd_unit_user",
+        lambda unit: ({
             "shairport-sync.service": "shairport-sync",
             "librespot.service": "pi",
             "bluealsa-aplay.service": None,  # root
-        }[unit],
+        }[unit], "loaded"),
     )
     monkeypatch.setattr(
         doctor.renderers,
@@ -420,8 +420,15 @@ _IDLE_RING_LANE_STDERR = (
     "published_slots=19 drop_no_reader=0 full_waits=0\n"
 )
 
-_OWNED_CGROUP = "0::/system.slice/librespot.service\n"
+# The REAL shape on a JTS box: renderer units declare `Slice=jts-audio.slice`,
+# so an owner's cgroup is NOT under /system.slice/ and nothing may assume it is.
+_OWNED_CGROUP = "0::/jts.slice/jts-audio.slice/librespot.service\n"
 _STRAY_CGROUP = "0::/user.slice/user-1000.slice/session-1461.scope\n"
+# A same-named unit run by a per-user manager must not satisfy the gate.
+_USER_MANAGER_CGROUP = (
+    "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+    "librespot.service\n"
+)
 
 
 # Captured on jts3: aplay's own refusal for an snd-aloop substream that
@@ -444,6 +451,8 @@ class _FakeProcPath:
         self._text = text
 
     def read_text(self):
+        if isinstance(self._text, BaseException):
+            raise self._text
         return self._text
 
 
@@ -473,6 +482,40 @@ _PROBE_ROWS = [
             "writer_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16\n",
         ),
         _OWNED_CGROUP, _OUTCOME.BUSY, "ok",
+    ),
+    # Split across two lines, neither half complete: the two markers must be
+    # required TOGETHER on ONE line, not merely both present somewhere.
+    (
+        "ring-marker-split-across-lines", _RING,
+        (
+            1,
+            "ALSA lib pcm_jts_ring.c:383:(jts_ring_prepare) jts_ring: "
+            "writer_open(\n/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16\n",
+        ),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # The ring's CAPTURE half refuses with the same errno and the same gloss
+    # (`pcm_jts_ring.c:758`). It is not this playback probe bouncing off the
+    # writer lock, so `rc=-16` alone must not carry a busy verdict.
+    (
+        "reader-open-refusal-is-not-our-busy", _RING,
+        (
+            1,
+            "ALSA lib pcm_jts_ring.c:759:(jts_ring_capture_prepare) jts_ring: "
+            "reader_open(/dev/shm/jts-ring/lane-spotify.ring) failed rc=-16 "
+            "(ring already has a live reader — EBUSY)\n",
+        ),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
+    # The ownership gate is fail-closed: an unreadable cgroup proves nothing.
+    (
+        "cgroup-unreadable", _RING, (1, _BUSY_RING_LANE_STDERR),
+        PermissionError(13, "Permission denied"), _OUTCOME.BUSY, "fail",
+    ),
+    # A same-named unit under a per-user manager is not the system unit.
+    (
+        "user-manager-impostor", _RING, (1, _BUSY_RING_LANE_STDERR),
+        _USER_MANAGER_CGROUP, _OUTCOME.BUSY, "fail",
     ),
     # The SAME ioplug line with a different errno is NOT busy: `writer_open`
     # prints it for every refusal and only glosses -EBUSY, so a geometry shear
@@ -571,6 +614,12 @@ _PROBE_ROWS = [
         subprocess.TimeoutExpired(cmd=["timeout", "aplay"], timeout=4.0),
         _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
     ),
+    # A fork that cannot allocate on a 1 GB Pi must fail this renderer, not
+    # escape as an exception and crash the whole check.
+    (
+        "fork-enomem", _RING, OSError(12, "Cannot allocate memory"),
+        _OWNED_CGROUP, _OUTCOME.FAILED, "fail",
+    ),
 ]
 
 
@@ -593,7 +642,9 @@ def test_probe_verdict_and_check_status(
     monkeypatch.setattr(
         doctor.renderers, "_renderer_device_librespot", lambda: device
     )
-    monkeypatch.setattr(doctor.renderers, "_systemd_user_for", lambda unit: "pi")
+    monkeypatch.setattr(
+        doctor.renderers, "_systemd_unit_user", lambda unit: ("pi", "loaded")
+    )
     monkeypatch.setattr(
         doctor.renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
     )
@@ -627,6 +678,7 @@ def test_probe_verdict_and_check_status(
     # Non-negotiable #5's command, pinned as a list rather than as source text.
     assert argv[0] == [
         "sudo", "-n", "-u", "pi",
+        "env", "LC_ALL=C",
         "timeout", doctor.renderers._PROBE_TIMEOUT_SEC,
         "aplay", "-q",
         "-s", doctor.renderers._PROBE_FRAMES,
@@ -635,6 +687,55 @@ def test_probe_verdict_and_check_status(
         "/dev/zero",
     ]
     assert doctor.check_renderer_device_resolvable().status == expect_status
+
+
+def test_ownership_gate_refuses_an_empty_unit(monkeypatch):
+    """`"/" in cgroup` matches everything, so an empty unit must fail closed.
+
+    Unreachable through the check today (the unit names are module constants),
+    which is why the guard needs its own pin. The cgroup read is stubbed with
+    a cgroup that WOULD match: reading the host's real /proc would pass on a
+    machine that has none, pinning nothing."""
+    monkeypatch.setattr(
+        doctor.renderers, "Path", lambda arg: _FakeProcPath(_OWNED_CGROUP)
+    )
+    owned, _ = doctor.renderers._cgroup_owner_is_unit(1, "")
+    assert owned is False
+
+
+@pytest.mark.parametrize(
+    ("load_state", "expect_status"),
+    [("not-found", "fail"), ("masked", "fail"), ("loaded", "ok")],
+)
+def test_absent_unit_is_not_a_root_probe(monkeypatch, load_state, expect_status):
+    """An unloaded unit must fail, not silently degrade to a root probe.
+
+    `systemctl show <unit> -p User` exits 0 with an EMPTY User= for a unit that
+    does not exist, which is indistinguishable from the genuine root case
+    (bluealsa-aplay really runs as root). Only LoadState separates them, so a
+    renamed or uninstalled renderer would otherwise be probed as root and pass
+    — the check claiming "as the unit's real User=" with no unit behind it."""
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(
+        doctor.renderers, "_renderer_device_librespot", lambda: "librespot_ring_lane"
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_resolve_systemd_env_vars", lambda dev, unit: dev
+    )
+    monkeypatch.setattr(
+        doctor.renderers, "_systemd_unit_user", lambda unit: (None, load_state)
+    )
+    probed: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None):
+        probed.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor.renderers, "_run", fake_run)
+    assert doctor.check_renderer_device_resolvable().status == expect_status
+    # An unloaded unit must not even be probed.
+    assert bool(probed) is (load_state == "loaded")
 
 
 def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
@@ -653,12 +754,12 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     )
     monkeypatch.setattr(
         doctor.renderers,
-        "_systemd_user_for",
-        lambda unit: {
+        "_systemd_unit_user",
+        lambda unit: ({
             "shairport-sync.service": "shairport-sync",
             "librespot.service": "pi",
             "bluealsa-aplay.service": None,
-        }[unit],
+        }[unit], "loaded"),
     )
 
     # Simulate the bug: as shairport-sync user, the open fails with
@@ -692,7 +793,9 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
     monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+        doctor.renderers,
+        "_systemd_unit_user",
+        lambda unit: ("shairport-sync", "loaded"),
     )
     monkeypatch.setattr(
         doctor.renderers,
@@ -713,7 +816,9 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
     monkeypatch.setattr(doctor.renderers, "_renderer_device_librespot", lambda: None)
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(
-        doctor.renderers, "_systemd_user_for", lambda unit: "shairport-sync"
+        doctor.renderers,
+        "_systemd_unit_user",
+        lambda unit: ("shairport-sync", "loaded"),
     )
     monkeypatch.setattr(
         doctor.renderers,
@@ -757,12 +862,12 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     )
     monkeypatch.setattr(
         doctor.renderers,
-        "_systemd_user_for",
-        lambda unit: {
+        "_systemd_unit_user",
+        lambda unit: ({
             "shairport-sync.service": "shairport-sync",
             "librespot.service": "pi",
             "bluealsa-aplay.service": None,
-        }[unit],
+        }[unit], "loaded"),
     )
 
     # Mock _resolve_systemd_env_vars to simulate systemd returning
