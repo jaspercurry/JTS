@@ -424,6 +424,9 @@ def test_hid_accessory_unit_files_actually_install(tmp_path):
     assert {path.name for path in systemd_dir.iterdir()} == {
         "jasper-input.service",
         "jasper-accessory-reconcile.service",
+        # The watcher that turns an unprivileged request file into a pass.
+        # Without the file on disk `enable --now` exits 1 under set -e.
+        "jasper-accessory-reconcile.path",
         "jasper-wiim-remote-mic.service",
         "jasper-wiim-remote-ce.service",
     }
@@ -447,6 +450,7 @@ def test_streambox_install_and_runtime_cover_the_accessory_bridge():
     assert "jasper-input.service" in runtime
     assert "systemctl restart jasper-input.service" in runtime
     assert "jasper-accessory-reconcile --reason install" in runtime
+    assert "systemctl enable --now jasper-accessory-reconcile.path" in runtime
 
 
 def test_streambox_keeps_coupling_auto_for_usb_direct_capture():

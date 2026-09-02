@@ -830,6 +830,9 @@ def test_full_profile_main_requires_input_and_observes_voice_aec(
     queried = stub_systemctl.read_text(encoding="utf-8").splitlines()
     assert "profile=full" in output
     assert "jasper-input.service" in queried
+    # A .path unit reports active while it waits; a missing one drops every
+    # accessory refresh request, and nothing else on the box notices.
+    assert "jasper-accessory-reconcile.path" in queried
     assert "jasper-voice.service" in queried
     assert "jasper-aec-bridge.service" in queried
     assert "deploy health passed" in output
@@ -1049,6 +1052,7 @@ def test_streambox_profiles_skip_parked_brain_units(
     # The HID accessory bridge is NOT a brain unit: a streambox runs it, so
     # health must check it rather than excuse it.
     assert any("jasper-input.service" in line for line in queried)
+    assert any("jasper-accessory-reconcile.path" in line for line in queried)
     assert "deploy health passed: 0 failure(s), 0 warning(s)" in output
 
 

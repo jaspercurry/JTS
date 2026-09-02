@@ -123,48 +123,29 @@ def test_overrides_arg_wins(tmp_path, monkeypatch):
 # ---------- numeric parsing ----------
 
 
-def test_arb_window_default(tmp_path, monkeypatch):
-    _clear_peer_env(monkeypatch)
-    cfg = load_config(
-        env_file=str(tmp_path / "peering.env"),
-        peer_id_file=str(tmp_path / "peer_id"),
-    )
-    assert cfg.arb_window_ms == DEFAULT_ARB_WINDOW_MS
-
-
-def test_arb_window_custom(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        pytest.param(None, DEFAULT_ARB_WINDOW_MS, id="arb_window_default"),
+        pytest.param("200", 200, id="arb_window_custom"),
+        # Values outside the safe range get clamped, not rejected.
+        pytest.param("10000", 500, id="arb_window_clamped"),  # high clamp
+        # A malformed numeric must fall through to default, not crash.
+        pytest.param(
+            "banana", DEFAULT_ARB_WINDOW_MS, id="arb_window_garbage_falls_through"
+        ),
+    ],
+)
+def test_arb_window(env_value, expected, tmp_path, monkeypatch):
     _clear_peer_env(monkeypatch)
     env_file = tmp_path / "peering.env"
-    env_file.write_text("JASPER_PEER_ARB_WINDOW_MS=200\n")
+    if env_value is not None:
+        env_file.write_text(f"JASPER_PEER_ARB_WINDOW_MS={env_value}\n")
     cfg = load_config(
         env_file=str(env_file),
         peer_id_file=str(tmp_path / "peer_id"),
     )
-    assert cfg.arb_window_ms == 200
-
-
-def test_arb_window_clamped(tmp_path, monkeypatch):
-    """Values outside the safe range get clamped, not rejected."""
-    _clear_peer_env(monkeypatch)
-    env_file = tmp_path / "peering.env"
-    env_file.write_text("JASPER_PEER_ARB_WINDOW_MS=10000\n")
-    cfg = load_config(
-        env_file=str(env_file),
-        peer_id_file=str(tmp_path / "peer_id"),
-    )
-    assert cfg.arb_window_ms == 500  # high clamp
-
-
-def test_arb_window_garbage_falls_through(tmp_path, monkeypatch):
-    """A malformed numeric must fall through to default, not crash."""
-    _clear_peer_env(monkeypatch)
-    env_file = tmp_path / "peering.env"
-    env_file.write_text("JASPER_PEER_ARB_WINDOW_MS=banana\n")
-    cfg = load_config(
-        env_file=str(env_file),
-        peer_id_file=str(tmp_path / "peer_id"),
-    )
-    assert cfg.arb_window_ms == DEFAULT_ARB_WINDOW_MS
+    assert cfg.arb_window_ms == expected
 
 
 def test_break_threshold_default(tmp_path, monkeypatch):

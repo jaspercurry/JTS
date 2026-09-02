@@ -11,7 +11,9 @@ writes.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -43,6 +45,12 @@ def _fake_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         bin_dir / "fake-systemctl",
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {calls}\n"
+        # $PPID is the script under test. The sleep keeps this child in the
+        # foreground while the signal lands, so the abort is deterministic.
+        'if [[ -n "${FAKE_SYSTEMCTL_SIGTERM:-}" && "$*" == ${FAKE_SYSTEMCTL_SIGTERM} ]]; then\n'
+        '    kill -TERM "$PPID"\n'
+        "    sleep 1\n"
+        "fi\n"
         'if [[ -n "${FAKE_SYSTEMCTL_FAIL:-}" && "$*" == ${FAKE_SYSTEMCTL_FAIL} ]]; then\n'
         "    exit 1\n"
         "fi\n"
@@ -157,7 +165,7 @@ def test_dying_after_fork_takes_the_park_leg_instead_of_recovered(tmp_path: Path
     call_text = calls.read_text(encoding="utf-8")
     assert "show -p NRestarts --value jasper-camilla.service" in call_text
     # Camilla is already known-dead; restarting outputd behind it would be
-    # pointless busywork inside the handler's tight 45s TimeoutStartSec.
+    # pointless busywork inside the handler's TimeoutStartSec.
     assert "restart jasper-outputd.service" not in call_text
 
     record = tmp_path / "run" / "jasper-camilla-recover.state"
@@ -191,13 +199,15 @@ def test_inconclusive_liveness_probe_still_declares_recovered(tmp_path: Path):
 # The failed-recovery floor (#2564): park once, stay parked, clear on recovery
 # --------------------------------------------------------------------------
 
-def _run(env: dict[str, str], reason: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    env: dict[str, str], reason: str, timeout: float = 10,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(SCRIPT), "--reason", reason],
         env=env,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=timeout,
     )
 
 
@@ -298,3 +308,77 @@ def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     assert result.status == "fail"
     assert snapshot["action"] in result.detail
     assert snapshot["re_arm"] in result.detail
+
+
+# --------------------------------------------------------------------------
+# The abort floor: eleven units stopped, then killed before the restore
+# --------------------------------------------------------------------------
+
+def _restore_tail(calls: Path) -> list[str]:
+    """The systemctl argv recorded after the last core-graph park stop."""
+    lines = calls.read_text(encoding="utf-8").splitlines()
+    last_stop = max(
+        index for index, line in enumerate(lines) if line.startswith("stop ")
+    )
+    return lines[last_stop + 1:]
+
+
+def _fake_env_in(parent: Path, name: str) -> tuple[dict[str, str], Path]:
+    child = parent / name
+    child.mkdir()
+    return _fake_env(child)
+
+
+def test_sigterm_during_the_park_still_restores_the_core_graph(tmp_path: Path):
+    """A systemd kill after the stop loop must not leave the speaker deaf.
+
+    A clean ``systemctl stop`` disarms Restart=, so the eleven parked units
+    stay down and jasper-camilla.service cannot reach `failed` to re-trigger
+    OnFailure=. The trap's restore must be the SAME ladder the happy path
+    runs, so this compares the two tails rather than restating the sequence.
+    """
+    happy_env, happy_calls = _fake_env_in(tmp_path, "happy")
+    assert _run(happy_env, "happy").returncode == 0
+
+    env, calls = _fake_env_in(tmp_path, "killed")
+    env["FAKE_SYSTEMCTL_SIGTERM"] = "stop jasper-mux.service"
+
+    result = _run(env, "killed")
+
+    assert result.returncode == -signal.SIGTERM
+    assert "event=camilla.recover.aborted stage=park_units_stop" in result.stderr
+    assert _restore_tail(calls) == _restore_tail(happy_calls)
+
+
+def test_happy_path_issues_the_restore_exactly_once(tmp_path: Path):
+    """Trap + body must not both run the ladder."""
+    env, calls = _fake_env(tmp_path)
+
+    result = _run(env, "once")
+
+    assert result.returncode == 0
+    lines = calls.read_text(encoding="utf-8").splitlines()
+    assert lines.count("restart jasper-fanin.service") == 1
+    assert lines.count("start jasper-camilla.service") == 1
+    assert lines.count("restart jasper-outputd.service") == 1
+    assert "event=camilla.recover.aborted" not in result.stderr
+
+
+def test_a_hung_capture_cannot_spend_the_restore_budget(tmp_path: Path):
+    """Evidence is bounded so it can never cost the graph its restore.
+
+    On the 2026-09-02 jts4 OOM incident one capture ran 19s of the handler's
+    then-45s TimeoutStartSec and the kill landed before any unit was
+    restarted.
+    """
+    env, calls = _fake_env(tmp_path)
+    _write_exe(tmp_path / "bin" / "lsof", "#!/usr/bin/env bash\nsleep 30\n")
+
+    started = time.monotonic()
+    result = _run(env, "hung-capture", timeout=25)
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0
+    assert elapsed < 20
+    assert "restart jasper-outputd.service" in _restore_tail(calls)
+    assert "event=camilla.recover.recovered action=core_graph_restarted" in result.stderr

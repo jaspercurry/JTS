@@ -169,9 +169,12 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
     "jasper-usbgadget.service": sum(_USB_GADGET_START_DEPENDENCY_SEC.values()),
 }
 # Owner oneshots are different: a synchronous ``systemctl start`` may join and
-# wait for their full Type=oneshot activation. Bluetooth deliberately starts
-# the accessory owner twice (old-pass barrier + guaranteed-fresh pass); USB
-# starts coupling once. Their 5-second margin includes broker/client overhead.
+# wait for their full Type=oneshot activation. USB starts coupling once.
+# Bluetooth no longer starts the accessory owner at all — it publishes a
+# request file (jasper.accessories.reconcile.request_reconcile) — so that entry
+# and the two accessory barriers below are unspent headroom in the budget, not
+# a bound this coordinator can reach. Their 5-second margin includes
+# broker/client overhead.
 # Each value mirrors its target's shipped TimeoutStartSec and is pinned to it by
 # tests/test_source_intent_systemd.py: the coupling entry read 125.0 against a
 # target raised to 210 s in #2651, so a client could report timeout with 85 s of
@@ -213,8 +216,9 @@ def _unit_action_timeout_sec(unit: str, verb: str) -> float:
 # transaction brings nqptp up), Spotify, the Bluetooth control plane plus three
 # runtime units, a USB gadget recompose, and USB standby start. The complete
 # outer budget below also includes every enablement pre/action/post sequence,
-# state-probe overhead, the two accessory/one coupling owner barriers, bounded
-# BlueZ/RF-kill work, direct-lane settling, and failed-USB rollback.
+# state-probe overhead, one coupling owner barrier (plus retained accessory
+# headroom — see _OWNER_UNIT_ACTION_TIMEOUT_SEC), bounded BlueZ/RF-kill work,
+# direct-lane settling, and failed-USB rollback.
 _WORST_CASE_ORDINARY_START_ACTIONS = (
     ("shairport-sync.service", "start"),
     ("librespot.service", "start"),
@@ -1519,21 +1523,11 @@ def _reconcile_bluetooth(
 
     def reconcile_accessories() -> None:
         # Optional Bluetooth accessories own their own adapter-unit registry.
-        # Ask that owner to converge after the radio/source intent changes;
-        # keep its concrete units out of this source lifecycle coordinator.
-        if not ops.unit_available(_ACCESSORY_RECONCILE_UNIT):
-            return
-        # A voice-start boot transaction may already be activating this
-        # oneshot. The first start can therefore join a pass that read the old
-        # intent; a second start after it completes guarantees one fresh pass
-        # began after this coordinator changed the radio/source state.
-        for _ in range(2):
-            rc, detail = ops.run_unit(_ACCESSORY_RECONCILE_UNIT, "start")
-            _check_result(
-                rc,
-                detail,
-                f"systemctl start {_ACCESSORY_RECONCILE_UNIT}",
-            )
+        # Request a fresh pass; the owner's freshness barrier is the request
+        # file it claims — see jasper.accessories.reconcile.request_reconcile.
+        from jasper.accessories.reconcile import request_reconcile
+
+        request_reconcile("source-intent")
 
     if desired and not allowed:
         # Parking suppresses local playback/advertising, not the shared radio.

@@ -236,6 +236,12 @@ install_hid_accessory_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
+    # How every unprivileged requester (the Bluetooth wizard, the source-intent
+    # coordinator) asks for a pass: touch a request file, no systemd privilege.
+    # Without this watcher every request is silently dropped until reboot.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.path" \
+        "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
     # WiiM Remote 2 BLE microphone adapter. Button events still flow through
     # jasper-input; this companion daemon only decodes the remote's GATT voice
     # report into the wiim_remote_2 manual mic UDP source.
@@ -361,6 +367,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+            "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
         )
         if [[ -x /usr/bin/snapserver ]]; then
             verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
@@ -1163,6 +1170,9 @@ start_streambox_runtime_units() {
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
         jasper-control.service jasper-source-intent-reconcile.service \
         jasper-accessory-reconcile.service jasper-input.service
+    # --now: enable alone only arms the watcher for the NEXT boot, and every
+    # accessory refresh requested before then would be dropped on the floor.
+    systemctl enable --now jasper-accessory-reconcile.path
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
@@ -1681,6 +1691,9 @@ install_systemd_units() {
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
+    # --now: enable alone only arms the watcher for the NEXT boot, and every
+    # accessory refresh requested before then would be dropped on the floor.
+    systemctl enable --now jasper-accessory-reconcile.path
     # Boot retries durable opt-in once. The path unit handles later successful
     # deploys asynchronously after build.txt is published; neither is awaited
     # by install.sh, so an enhancement failure cannot fail the core deploy.

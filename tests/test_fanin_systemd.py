@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from tests.systemd_unit_helpers import (
     assignments_for as _assignments_for,
     value_for as _value_for,
@@ -38,69 +40,43 @@ def test_unit_file_exists():
     )
 
 
-def test_type_notify_for_sd_notify_contract():
-    """`Type=notify` is required for the sd_notify-based heartbeat.
-    With Type=simple systemd doesn't wait for READY=1 and the
-    WATCHDOG=1 pings have no effect — silently disabling Tier 2."""
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        # With Type=simple systemd ignores READY=1/WATCHDOG=1 — silently
+        # disabling Tier 2.
+        pytest.param("Type", "notify", id="type_notify_for_sd_notify_contract"),
+        # Matches the project-wide Tier 2 cadence (camilla, aec-bridge, voice,
+        # control all use this value).
+        pytest.param("WatchdogSec", "30s", id="watchdog_sec_set"),
+        # A daemon with blocked I/O sits on SIGTERM for systemd's default 90s
+        # and corrupts kernel ALSA state before SIGKILL fires. 5s escalates fast.
+        pytest.param("TimeoutStopSec", "5s", id="timeout_stop_sec_short"),
+        # Covers exit-nonzero + signal + watchdog timeout without restarting on
+        # a clean signal-shutdown (Restart=always would).
+        pytest.param("Restart", "on-failure", id="restart_on_failure"),
+        # T5.1 escalation on repeated wedges. Not reboot-force — clean reboot
+        # lets zram dirty pages sync on a 1 GB Pi.
+        pytest.param(
+            "StartLimitAction", "reboot", id="start_limit_action_reboot"
+        ),
+        # -800 sits between Camilla (-900, silence-critical) and the AEC
+        # bridge (-700, capture-critical) on the OOM kill ladder.
+        pytest.param(
+            "OOMScoreAdjust",
+            "-800",
+            id="oom_score_adj_between_camilla_and_aec_bridge",
+        ),
+        # Stage 2 audio-protection cgroup (MemorySwapMax=0) shields the work
+        # loop's pages from zram decompression jitter on a 1 GB Pi 5.
+        pytest.param("Slice", "jts-audio.slice", id="slice_assignment"),
+    ],
+)
+def test_unit_field_value(key, expected):
     unit = _read_unit()
-    assert _value_for(unit, "Type") == "notify", (
-        "jasper-fanin.service must declare Type=notify so systemd "
-        "honors the sd_notify watchdog contract."
-    )
-
-
-def test_watchdog_sec_set():
-    """`WatchdogSec=30s` matches the project-wide Tier 2 cadence
-    (jasper-camilla, jasper-aec-bridge, jasper-voice, jasper-control
-    all use this value)."""
-    unit = _read_unit()
-    val = _value_for(unit, "WatchdogSec")
-    assert val == "30s", (
-        f"jasper-fanin.service must declare WatchdogSec=30s "
-        f"(matching the project-wide Tier 2 cadence); got {val!r}"
-    )
-
-
-def test_timeout_stop_sec_short():
-    """`TimeoutStopSec=5s` is load-bearing — the 2026-05-11 snd-aloop
-    wedge taught us that a daemon with blocked I/O sits on SIGTERM
-    for systemd's default 90s and corrupts kernel ALSA state by the
-    time SIGKILL fires. 5s escalates fast."""
-    unit = _read_unit()
-    val = _value_for(unit, "TimeoutStopSec")
-    assert val == "5s", (
-        f"jasper-fanin.service must declare TimeoutStopSec=5s "
-        f"to escalate to SIGKILL fast on a wedged daemon. Got {val!r}"
-    )
-
-
-def test_restart_on_failure():
-    """`Restart=on-failure` covers exit nonzero + signal termination
-    + watchdog timeout. `Restart=always` is too aggressive (would
-    restart on clean signal-shutdown); `Restart=on-watchdog` misses
-    the alsa_open-failed case."""
-    unit = _read_unit()
-    val = _value_for(unit, "Restart")
-    assert val == "on-failure", (
-        f"jasper-fanin.service must declare Restart=on-failure "
-        f"so wedge + crash + non-zero-exit all trigger restart. "
-        f"Got {val!r}"
-    )
-
-
-def test_start_limit_action_reboot():
-    """T5.1 escalation: if the daemon hits StartLimitBurst within
-    StartLimitIntervalSec, systemd cleanly reboots. Critical for
-    audio-path daemons — if jasper-fanin is wedging repeatedly,
-    something structural is wrong; a clean reboot beats a flapping
-    restart loop."""
-    unit = _read_unit()
-    val = _value_for(unit, "StartLimitAction")
-    assert val == "reboot", (
-        f"jasper-fanin.service must declare StartLimitAction=reboot "
-        f"(T5.1 escalation). Not 'reboot-force' — clean reboot is "
-        f"important on 1 GB Pi with zram active (dirty pages must "
-        f"sync). Got {val!r}"
+    val = _value_for(unit, key)
+    assert val == expected, (
+        f"jasper-fanin.service must declare {key}={expected}. Got {val!r}"
     )
 
 
@@ -140,33 +116,6 @@ def test_ring_config_class_failures_park_instead_of_rebooting():
         "an exit-78 park must stay FAILED (visible on /state + doctor), "
         "matching jasper-outputd's precedent"
     )
-
-def test_oom_score_adj_between_camilla_and_aec_bridge():
-    """OOM ladder slot. -800 sits between jasper-camilla (-900,
-    silence-critical) and jasper-aec-bridge (-700, capture-critical).
-    fan-in is the upstream source of the music signal both
-    consume; killing it preferentially over Camilla makes sense."""
-    unit = _read_unit()
-    val = _value_for(unit, "OOMScoreAdjust")
-    assert val == "-800", (
-        f"jasper-fanin.service OOMScoreAdjust must be -800 "
-        f"(between Camilla's -900 and AEC bridge's -700). "
-        f"Got {val!r}"
-    )
-
-
-def test_slice_assignment():
-    """`Slice=jts-audio.slice` puts the daemon in the Stage 2
-    audio-protection cgroup with MemorySwapMax=0. Audio jitter
-    from zram decompression latency is the dominant risk on a
-    1 GB Pi 5; this membership shields the work loop's pages."""
-    unit = _read_unit()
-    val = _value_for(unit, "Slice")
-    assert val == "jts-audio.slice", (
-        f"jasper-fanin.service must declare Slice=jts-audio.slice "
-        f"(Stage 2 audio-protection cgroup). Got {val!r}"
-    )
-
 
 def test_sched_fifo_and_mlockall_settings():
     """Real-time scheduling: SCHED_FIFO at priority 30 +
