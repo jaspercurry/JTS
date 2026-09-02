@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, seven subcommands — each a thin argparse wrapper over
+One console script, eight subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. This module reads banked round directories (the
 tree ``scripts/bank-crossover-round.sh`` produces), calls the product view,
@@ -31,6 +31,15 @@ Subcommands:
 * ``repeat <round-dir> [<round-dir> ...]`` — session-to-session spread of
   the pooled honest figures (the stop criterion). Writes
   ``<first-round-dir>/repeatability.json``.
+* ``repeat-floor <round-dir> <round-dir> [...] --out PATH`` — the same
+  spread, banked as the durable record the evidence packet's
+  ``in_capture_repeat_floor`` reads and derives the stopping plateau/benefit
+  margin from. The rounds must be touched-nothing fixed-pose repeats. This
+  tool only WRITES the record where ``--out`` says (required: it runs on a
+  laptop over banked directories, and the speaker's own path is not a
+  default it can assume); the operator then places that file at the
+  on-speaker path, from which ``bank-crossover-round.sh`` pulls it beside
+  every later round as ``repeat-floor.json``.
 * ``agreement <round-dir>`` — per-position sign/magnitude testimony for
   every feature in the trusted sweep, built from the same per-seat curves
   ``per-seat`` computes. Writes ``<round-dir>/agreement.json``.
@@ -44,9 +53,10 @@ Subcommands:
   ``<round-dir>/audibility_co_metrics.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
-(``-`` for stdout), and prints a one-line human summary to stderr either
-way. Exit ``0`` on success, ``1`` when a round directory could not be read
-into a comparable view (:class:`~jasper.active_speaker.crossover_v2.round_views.RoundViewsError`).
+(``-`` for stdout, except ``repeat-floor``, whose record is published
+atomically by its owning module and so requires a real path), and prints a
+one-line human summary to stderr either way. Exit ``0`` on success, ``1``
+when a round directory could not be read into a comparable view (:class:`~jasper.active_speaker.crossover_v2.round_views.RoundViewsError`).
 """
 
 from __future__ import annotations
@@ -59,6 +69,7 @@ from typing import Any, Sequence
 
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
+    BankedRound,
     RoundViewsError,
     agreement_table,
     audibility_co_metrics,
@@ -67,6 +78,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     frozen_reference_grade,
     load_banked_round,
     per_seat_curves,
+    repeat_floor_provenance,
     repeatability_spread,
     verify_pose_curve,
 )
@@ -76,6 +88,13 @@ from jasper.active_speaker.measurement_archive import (
     load_measurement,
 )
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
+from jasper.active_speaker.repeat_floor import (
+    DEFAULT_STATE_PATH as _REPEAT_FLOOR_DEFAULT_PATH,
+    SHIPPED_POOL_METRIC,
+    derive_repeat_floor,
+    stopping_thresholds,
+    write_repeat_floor,
+)
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
 
 EXIT_OK = 0
@@ -218,21 +237,57 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_rounds(round_dirs: Sequence[str]) -> list[tuple[str, BankedRound]]:
+    """The (label, round) pairs both repeat verbs grade, labelled by the
+    directory the operator named."""
+    return [(round_dir, load_banked_round(Path(round_dir))) for round_dir in round_dirs]
+
+
 def _cmd_repeat(args: argparse.Namespace) -> int:
     try:
-        rounds = [(round_dir, load_banked_round(Path(round_dir))) for round_dir in args.round_dirs]
-        result = repeatability_spread(rounds)
+        result = repeatability_spread(_load_rounds(args.round_dirs))
     except _ROUND_READ_ERRORS as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     default_path = Path(args.round_dirs[0]) / "repeatability.json"
     written = _write_json(result.to_dict(), args.out, default_path)
-    shipped = next((m for m in result.metrics if m.name == "shipped_linear_pool_db"), None)
+    shipped = next((m for m in result.metrics if m.name == SHIPPED_POOL_METRIC), None)
     spread = shipped.spread() if shipped else None
     print(
         f"repeatability: {len(result.round_labels)} round(s); "
-        f"shipped_linear_pool_db spread={spread}"
+        f"{SHIPPED_POOL_METRIC} spread={spread}"
         f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
+def _record_path(value: str) -> Path:
+    """``--out`` for a verb that publishes a file: ``-`` is not a path."""
+    if value == "-":
+        raise argparse.ArgumentTypeError("repeat-floor publishes a file; '-' is not a path")
+    return Path(value)
+
+
+def _cmd_repeat_floor(args: argparse.Namespace) -> int:
+    path = args.out
+    try:
+        rounds = _load_rounds(args.round_dirs)
+        payload = derive_repeat_floor(
+            repeatability_spread(rounds),
+            rounds=[
+                repeat_floor_provenance(round_dir, banked) for round_dir, banked in rounds
+            ],
+        )
+        record = write_repeat_floor(payload, state_path=path)
+    except _ROUND_READ_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    thresholds = stopping_thresholds(record)
+    aggregate = record["metrics"][SHIPPED_POOL_METRIC]
+    print(
+        f"repeat-floor: {record['n_repeats']} round(s); {SHIPPED_POOL_METRIC} "
+        f"sd={aggregate['sd_db']:.4g} dB; thresholds={thresholds} -> {path}",
         file=sys.stderr,
     )
     return EXIT_OK
@@ -369,15 +424,16 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "The round-grading comparison views: entry-state grading, "
             "frozen-reference grading, per-seat curves, session-to-session "
-            "repeatability, per-seat agreement, audibility co-metrics, and "
-            "the shared frequency view — over banked rounds."
+            "repeatability and the banked repeat floor, per-seat agreement, "
+            "audibility co-metrics, and the shared frequency view — over "
+            "banked rounds."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "WHEN NOT TO USE\n"
-            "  - frozen/repeat need MULTIPLE round directories (a baseline\n"
-            "    plus a target, or two-or-more rounds); entry/per-seat/\n"
-            "    agreement grade a single round\n"
+            "  - frozen/repeat/repeat-floor need MULTIPLE round directories\n"
+            "    (a baseline plus a target, or two-or-more rounds);\n"
+            "    entry/per-seat/agreement grade a single round\n"
             "  - to classify a feature's likely CAUSE -- that is\n"
             "    jasper-classify-features; this tool grades curves, not\n"
             "    defects\n"
@@ -419,6 +475,24 @@ def build_parser() -> argparse.ArgumentParser:
     repeat.add_argument("round_dirs", nargs="+", help="two or more banked round directories")
     repeat.add_argument("--out", default=None, help="write the result here (- for stdout)")
     repeat.set_defaults(func=_cmd_repeat)
+
+    repeat_floor = sub.add_parser(
+        "repeat-floor", help="bank the repeat spread as the floor the evidence packet reads",
+    )
+    repeat_floor.add_argument(
+        "round_dirs", nargs="+",
+        help="two or more TOUCHED-NOTHING fixed-pose repeat round directories",
+    )
+    repeat_floor.add_argument(
+        "--out", required=True, type=_record_path,
+        help=(
+            "where to write the record; place it on the speaker at "
+            f"{_REPEAT_FLOOR_DEFAULT_PATH} so bank-crossover-round.sh pulls it "
+            "beside every later round, or beside a banked round as "
+            "repeat-floor.json"
+        ),
+    )
+    repeat_floor.set_defaults(func=_cmd_repeat_floor)
 
     agreement = sub.add_parser("agreement", help="per-seat sign/magnitude testimony for every feature")
     agreement.add_argument("round_dir", help="banked round directory")

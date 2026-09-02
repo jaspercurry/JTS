@@ -17,7 +17,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    REPEAT_FLOOR_UNMEASURED,
+    REPEAT_FLOOR_UNREADABLE,
+    REPEAT_FLOOR_UNUSABLE,
     STRUCTURAL_HISTORY_AXES,
     build_crossover_evidence_packet,
     round_artifact_dir,
@@ -28,7 +34,17 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
 )
+from jasper.active_speaker.crossover_v2.round_evidence import (
+    ITERATION_PLATEAU_DB,
+    MEASURED_BENEFIT_MARGIN_DB,
+)
 from jasper.active_speaker.linearization_envelope import MIC_TIERS
+from jasper.active_speaker.repeat_floor import (
+    REPEAT_FLOOR_KIND,
+    SCHEMA_VERSION as REPEAT_FLOOR_SCHEMA_VERSION,
+    SHIPPED_POOL_METRIC,
+    write_repeat_floor,
+)
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
@@ -68,13 +84,114 @@ def test_cross_seat_component_points_at_the_positions_block_it_mirrors(tmp_path)
     assert "per_bin_sigma_db" not in entry
 
 
+def _floor_record() -> dict[str, Any]:
+    """One banked record, written through the REAL writer by every test below."""
+    return {
+        "artifact_schema_version": REPEAT_FLOOR_SCHEMA_VERSION,
+        "kind": REPEAT_FLOOR_KIND,
+        "measured_at": "2026-09-01T00:00:00Z",
+        "n_repeats": 3,
+        "aggregate_metric": SHIPPED_POOL_METRIC,
+        "rounds": [
+            {"label": "r1", "bundle_session_id": "sess1",
+             "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
+             "started_at": 1.0},
+            {"label": "r2", "bundle_session_id": "sess2",
+             "graph_fingerprint": "gf1", "mic_calibration_id": "cal1",
+             "started_at": 2.0},
+            {"label": "r3", "bundle_session_id": "sess3",
+             "graph_fingerprint": None, "mic_calibration_id": "cal1",
+             "started_at": 3.0},
+        ],
+        "metrics": {
+            SHIPPED_POOL_METRIC: {
+                "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
+                "min_db": 0.5, "max_db": 1.5,
+                "pairwise_abs_delta_p95_db": 0.4,
+                "pairwise_abs_delta_median_db": 0.3,
+            },
+        },
+        "note": "test vector",
+    }
+
+
 def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is False
+    assert entry["absence"] == REPEAT_FLOOR_UNMEASURED
     assert "E2" in entry["reason"]
+    # Absent means the consumers fall back to the two constants that
+    # self-describe as assumptions, and the packet says which source it used.
+    assert entry["thresholds"]["source"] == "codified_assumption"
+    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
+    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
+
+
+def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_path):
+    """A record that exists but carries no finite aggregate p95 is a floor that
+    cannot be read, not a floor nobody measured — unavailable either way, and
+    the thresholds fall back rather than deriving from a non-number."""
+    session, _ = _bundle(tmp_path)
+    floor_path = tmp_path / "repeat-floor.json"
+    write_repeat_floor(
+        {**_floor_record(), "metrics": {SHIPPED_POOL_METRIC: {
+            "n": 3, "mean_db": 1.0, "sd_db": 0.5, "range_db": 1.0,
+            "min_db": 0.5, "max_db": 1.5,
+            "pairwise_abs_delta_p95_db": float("nan"),
+            "pairwise_abs_delta_median_db": 0.3,
+        }}},
+        state_path=floor_path,
+    )
+    packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
+    entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
+
+    assert entry["kind"] == UNCERTAINTY_RANDOM
+    assert entry["available"] is False
+    assert entry["absence"] == REPEAT_FLOOR_UNUSABLE
+    assert entry["thresholds"]["source"] == "codified_assumption"
+    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
+    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
+
+
+@pytest.mark.parametrize("on_disk", ["{not json", "{}"], ids=["not-json", "not-a-floor"])
+def test_repeat_floor_file_that_is_not_a_record_is_unreadable_not_unmeasured(
+    tmp_path, on_disk
+):
+    """A file that is there but is not a floor is a re-copy errand, never an
+    invitation to run E2 again."""
+    session, _ = _bundle(tmp_path)
+    floor_path = tmp_path / "repeat-floor.json"
+    floor_path.write_text(on_disk)
+    packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
+    entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
+    assert entry["available"] is False
+    assert entry["absence"] == REPEAT_FLOOR_UNREADABLE
+    assert entry["thresholds"]["source"] == "codified_assumption"
+
+
+def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
+    session, _ = _bundle(tmp_path)
+    floor_path = tmp_path / "repeat-floor.json"
+    record = write_repeat_floor(_floor_record(), state_path=floor_path)
+    packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
+    entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
+    p95 = record["metrics"][SHIPPED_POOL_METRIC]["pairwise_abs_delta_p95_db"]
+
+    assert entry["kind"] == UNCERTAINTY_RANDOM
+    assert entry["available"] is True
+    assert entry["absence"] is None
+    assert entry["n_repeats"] == record["n_repeats"]
+    assert entry["aggregate_metric"] == SHIPPED_POOL_METRIC
+    assert entry["bundle_session_ids"] == ["sess1", "sess2", "sess3"]
+    assert entry["graph_fingerprints"] == ["gf1"]
+    assert entry["thresholds"]["source"] == "banked_repeat_floor"
+    assert entry["thresholds"]["margin_db"] == pytest.approx(
+        CLAIM_FLOOR_P95_MULTIPLE * p95
+    )
+    assert entry["thresholds"]["plateau_db"] == pytest.approx(p95)
 
 
 def test_gate_leakage_is_absent_when_no_capture_carries_a_gate_number(tmp_path):

@@ -558,6 +558,35 @@ def test_per_seat_curves_normalises_by_median_not_mean(tmp_path):
     assert seat.normalized_db[baseline_idx] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
+    """The side file reaches the packet exactly as applied-profile.json does:
+    present, the accuracy budget's repeat-floor component is available."""
+    from jasper.active_speaker.crossover_v2.round_views import repeat_floor_provenance
+    from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat_floor
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    component = "in_capture_repeat_floor"
+    absent = load_banked_round(round_dir)
+    assert absent.packet["accuracy_budget"]["components"][component]["available"] is False
+
+    # The record the REAL deriver banks from two repeats, never a hand-typed one.
+    twin = _make_round_dir(
+        tmp_path, "r2", position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=0.2))},
+    )
+    rounds = [(str(path), load_banked_round(path)) for path in (round_dir, twin)]
+    write_repeat_floor(
+        derive_repeat_floor(
+            repeatability_spread(rounds),
+            rounds=[repeat_floor_provenance(label, banked) for label, banked in rounds],
+        ),
+        state_path=round_dir / "repeat-floor.json",
+    )
+    present = load_banked_round(round_dir)
+    assert present.packet["accuracy_budget"]["components"][component]["available"] is True
+
+
 # --------------------------------------------------------------------------- #
 # View 3 — repeatability_spread
 # --------------------------------------------------------------------------- #
@@ -987,6 +1016,69 @@ def test_cli_frequency_rejects_a_json_document_without_curves(tmp_path, capsys):
 
     assert main(["frequency", str(source)]) == 1
     assert "no usable frequency-response curves" in capsys.readouterr().err
+
+
+def test_cli_repeat_floor_writes_the_banked_record(tmp_path):
+    from jasper.active_speaker.repeat_floor import REPEAT_FLOOR_KIND, SCHEMA_VERSION
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    out = tmp_path / "repeat-floor.json"
+    assert main(["repeat-floor", str(r1), str(r2), "--out", str(out)]) == 0
+    payload = json.loads(out.read_text())
+    assert payload["kind"] == REPEAT_FLOOR_KIND
+    assert payload["artifact_schema_version"] == SCHEMA_VERSION
+    assert payload["n_repeats"] == 2
+    assert [row["label"] for row in payload["rounds"]] == ["r1", "r2"]
+
+
+def test_cli_repeat_floor_refuses_stdout_as_a_destination(tmp_path, monkeypatch):
+    from jasper.cli.round_views import main
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["repeat-floor", "r1", "r2", "--out", "-"])
+    assert not (tmp_path / "-").exists()
+
+
+def test_cli_repeat_floor_refuses_a_single_round(tmp_path, capsys):
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    assert main(["repeat-floor", str(r1), "--out", str(tmp_path / "out.json")]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_repeat_floor_exits_error_when_the_record_cannot_be_written(tmp_path, capsys):
+    """The record is written INSIDE the guarded block: an unwritable --out is
+    the same "could not be done" exit every other verb gives, not a traceback."""
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    r2 = _make_round_dir(
+        tmp_path, "r2",
+        position_curves={"cloud_verify_02": ("onax", _flat_curve(ripple_db=1.2))},
+    )
+    # A directory component that is a FILE: the write fails as an OSError for
+    # any uid, unlike a chmod-based unwritable directory (root ignores it).
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    assert main(["repeat-floor", str(r1), str(r2), "--out", str(blocker / "x.json")]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_repeat_floor_requires_an_explicit_out(tmp_path):
+    """No default path: this tool runs on a laptop over banked directories and
+    cannot assume the speaker's own state path."""
+    from jasper.cli.round_views import main
+
+    r1 = _make_round_dir(tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())})
+    with pytest.raises(SystemExit):
+        main(["repeat-floor", str(r1), str(r1)])
 
 
 def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):

@@ -140,6 +140,7 @@ from jasper.audio_measurement.evidence_identity import (
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
+from ..repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
 from .contracts import POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
 from .record_index import bundle_measurements
@@ -169,6 +170,7 @@ from .feature_classification import (
     read_feature_verdicts,
 )
 from .operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
+from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
@@ -770,8 +772,9 @@ _CROSS_SEAT_SIGMA_UNCERTAINTY: dict[str, dict[str, str]] = {
             "curve carries, which averaging repeats into each member would. "
             "Which of the two dominates cannot be read off this round — "
             "separating them needs a repeat spread "
-            "measured at a FIXED pose, which is calibration experiment E2 and "
-            "has not been run. So it is published as a spread whose kind is not "
+            "measured at a FIXED pose, which is the banked repeat floor "
+            "(accuracy_budget.in_capture_repeat_floor), available on a rig "
+            "that banked one. So it is published as a spread whose kind is not "
             "yet separable, never as a random or a systematic one: calling it "
             "either would be exactly the pooling these labels exist to prevent"
         ),
@@ -990,8 +993,8 @@ def _cross_seat_sigma_block(
                 "answer: the two kinds are never pooled into one number, and "
                 "where a measurement can only yield a pooled one it says so and "
                 "names what would separate it — here, a repeat spread at a "
-                "fixed pose (calibration experiment E2), which has not been "
-                "measured"
+                "fixed pose, which is the banked repeat floor "
+                "(accuracy_budget.in_capture_repeat_floor)"
             ),
         },
         "note": (
@@ -2049,6 +2052,102 @@ def _read_candidate(round_dir: Path) -> dict[str, Any]:
     return _mapping(raw)
 
 
+def _unmeasured_repeat_floor(absence: str, reason: str) -> dict[str, Any]:
+    """The shared shape for every absence — thresholds falling back to the two
+    ``round_evidence`` constants that self-describe as assumptions. ``absence``
+    is the closed vocabulary a reader keys on; ``reason`` is for a human."""
+    return {
+        "kind": UNCERTAINTY_RANDOM,
+        "available": False,
+        "absence": absence,
+        "reason": reason,
+        "thresholds": {
+            "source": "codified_assumption",
+            "margin_db": MEASURED_BENEFIT_MARGIN_DB,
+            "plateau_db": ITERATION_PLATEAU_DB,
+            "note": (
+                "both self-described assumptions in round_evidence.py, "
+                "awaiting exactly this measurement"
+            ),
+        },
+    }
+
+
+#: Why the repeat floor is not available: never measured, a file that is not
+#: a readable record, or a record whose aggregate row cannot yield thresholds.
+#: Three different errands (run E2 / re-copy the file / re-bank it), so the
+#: packet names which rather than one shared reason.
+REPEAT_FLOOR_UNMEASURED = "unmeasured"
+REPEAT_FLOOR_UNREADABLE = "unreadable"
+REPEAT_FLOOR_UNUSABLE = "unusable"
+
+
+def _repeat_floor_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
+    """The banked floor, or why there is none — ``source_absent`` when no file
+    was there to read, the read failure otherwise (same rule as
+    :func:`_applied_profile_source`)."""
+    if path is None:
+        return None, "source_absent"
+    record = load_repeat_floor(state_path=path)
+    if record is not None:
+        return record, ""
+    _, reason = _read_json(path)
+    return None, reason or f"not a {REPEAT_FLOOR_KIND} record"
+
+
+def _repeat_floor_component(
+    record: dict[str, Any] | None, read_reason: str
+) -> dict[str, Any]:
+    """The RANDOM repeat floor as banked, or one of three honest absences."""
+    if record is None and read_reason == "source_absent":
+        return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNMEASURED,
+            "unmeasured -- no banked repeat floor; calibration experiment "
+            "E2 (N touched-nothing fixed-pose repeat rounds through "
+            "jasper-round-views repeat-floor; docs/tuning-master-plan.md, "
+            "Calibration experiments)",
+        )
+    if record is None:
+        return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNREADABLE,
+            f"banked repeat floor could not be read ({read_reason}); re-copy "
+            "it, or re-bank it with jasper-round-views repeat-floor",
+        )
+    thresholds = stopping_thresholds(record)
+    if thresholds is None:
+        return _unmeasured_repeat_floor(
+            REPEAT_FLOOR_UNUSABLE,
+            f"banked repeat floor carries no usable {record.get('aggregate_metric')} "
+            "row (a finite, positive pairwise_abs_delta_p95_db and a finite "
+            "pairwise_abs_delta_median_db); re-bank it with "
+            "jasper-round-views repeat-floor",
+        )
+    rows = [row for row in record.get("rounds") or [] if isinstance(row, Mapping)]
+    return {
+        "kind": UNCERTAINTY_RANDOM,
+        "available": True,
+        "absence": None,
+        "source": (
+            "repeat-floor.json (jts_active_speaker_repeat_floor, written by "
+            "jasper-round-views repeat-floor)"
+        ),
+        "n_repeats": record.get("n_repeats"),
+        "measured_at": record.get("measured_at"),
+        "bundle_session_ids": [row.get("bundle_session_id") for row in rows],
+        "graph_fingerprints": sorted(
+            {
+                str(row["graph_fingerprint"])
+                for row in rows
+                if row.get("graph_fingerprint") is not None
+            }
+        ),
+        "aggregate_metric": record.get("aggregate_metric"),
+        "metrics": record.get("metrics"),
+        "thresholds": {"source": "banked_repeat_floor", **thresholds},
+        "reason": "",
+    }
+
+
 #: Ticket 6.5's own bound: the components this block juxtaposes, and why
 #: neither of the two policy constants below is restated as a new table.
 #: :mod:`~jasper.active_speaker.linearization_envelope` is the ONE place the
@@ -2065,6 +2164,8 @@ def _accuracy_budget_block(
     reflections: dict[str, Any],
     verify: dict[str, Any],
     round_dir: Path | None,
+    repeat_floor: dict[str, Any] | None,
+    repeat_floor_reason: str,
 ) -> dict[str, Any]:
     """Random beside systematic (ADR-0202) — juxtaposed, never pooled.
 
@@ -2082,12 +2183,12 @@ def _accuracy_budget_block(
     * ``cross_seat_position_spread`` — UNSEPARATED. Points at
       ``positions.cross_seat_sigma`` rather than re-embedding its per-bin
       array (this block adds no second copy of a figure already published).
-    * ``in_capture_repeat_floor`` — RANDOM, and always ``available=False``
-      today: this round's own repeat-sweep magnitude sigma is not banked
-      anywhere the packet reads (the flat campaign's 0.04 dB median is a
-      one-off comparison of two independent VERIFY rounds, not a durable
-      field), and the master plan's own calibration experiment for it
-      (E2) has not run. Unmeasured, never defaulted to 0.0.
+    * ``in_capture_repeat_floor`` — RANDOM, read from the banked repeat
+      floor (:mod:`jasper.active_speaker.repeat_floor`) when the rig has one
+      and honestly ``available=False`` when it has not. Its ``thresholds``
+      name their own source: the floor's own derivation, or the two
+      ``round_evidence`` constants that self-describe as assumptions.
+      Unmeasured, never defaulted to 0.0.
     * ``gate_leakage`` — SYSTEMATIC (a bias a single capture's window bakes
       in; more captures at the SAME pose do not shrink it). Points at the
       reflections/positions/verify gate-disclosure numbers ticket 1.5
@@ -2154,14 +2255,9 @@ def _accuracy_budget_block(
                     "duplicated here"
                 ),
             },
-            "in_capture_repeat_floor": {
-                "kind": UNCERTAINTY_RANDOM,
-                "available": False,
-                "reason": (
-                    "unmeasured -- experiment E2 pending "
-                    "(docs/tuning-master-plan.md, Calibration experiments)"
-                ),
-            },
+            "in_capture_repeat_floor": _repeat_floor_component(
+                repeat_floor, repeat_floor_reason
+            ),
             "gate_leakage": {
                 "kind": UNCERTAINTY_SYSTEMATIC,
                 "available": gate_available,
@@ -2994,6 +3090,7 @@ def build_crossover_evidence_packet(
     state_path: Path | None = None,
     driver_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
+    repeat_floor_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -3023,6 +3120,13 @@ def build_crossover_evidence_packet(
     posture and same reason: OPTIONAL, absence reported. A packet without it
     cannot say where each driver's own band starts and ends, so the per-driver
     prescription class has no bound to be checked against and refuses by name.
+
+    ``repeat_floor_path`` is the banked repeat floor
+    (``active_speaker_repeat_floor.json``), the measured random noise the
+    accuracy budget's ``in_capture_repeat_floor`` reports and derives the
+    stopping plateau/benefit margin from. Same posture, same reason: OPTIONAL,
+    absence reported. A packet without it says the floor is unmeasured and
+    falls back to the two codified assumptions, naming which it used.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
@@ -3062,6 +3166,7 @@ def build_crossover_evidence_packet(
     applied_profile, applied_profile_reason = _applied_profile_source(
         applied_profile_path
     )
+    repeat_floor, repeat_floor_reason = _repeat_floor_source(repeat_floor_path)
 
     draft_raw: Any = None
     draft_reason = "no driver design draft was supplied"
@@ -3206,6 +3311,8 @@ def build_crossover_evidence_packet(
             reflections=reflections,
             verify=verify,
             round_dir=round_dir,
+            repeat_floor=repeat_floor,
+            repeat_floor_reason=repeat_floor_reason,
         ),
         # Ticket 6.6, widened by #3484: every structural axis's recent
         # per-round history, so a monotonic walk (a re-solved trim drifting

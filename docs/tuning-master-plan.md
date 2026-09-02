@@ -723,14 +723,14 @@ priors measured.
     into the guide, never duplicated. The doctrine is untouched as the
     authority. One front door: the guide states the reading order. (M)
 6.16 σ_repeat gets a durable home, now that E2 has run (2026-08-31, jts3,
-    in-band 0.03–0.17 dB at a fixed pose). 6.5's accuracy budget hardwires
-    `in_capture_repeat_floor` to `available=False` with reason "experiment
-    E2 pending" (`evidence_packet.py`); that reason is now stale, and the
-    component reads as unmeasured on a program that has measured it. Bank
-    the round's own repeat σ where the packet reads it and let the
-    component report the banked figure — still honestly unavailable on a
-    round that took no repeat sweep. A pointer, not a design: which
-    artifact holds it is the ticket's first question. (S)
+    in-band 0.03–0.17 dB at a fixed pose): **DONE.**
+    `jasper.active_speaker.repeat_floor` is the single-writer record;
+    `jasper-round-views repeat-floor` writes it from N touched-nothing
+    repeat rounds through the existing `repeatability_spread` view, and
+    6.5's `in_capture_repeat_floor` reports it — with `thresholds.source`
+    saying whether the plateau/margin are that derivation or the two
+    codified assumptions. Still honestly unavailable on a rig that banked
+    no repeats. (S)
 
 ## The operator session, end to end
 
@@ -753,8 +753,13 @@ workflow engine to fight.
   round-evidence constants `MEASURED_BENEFIT_MARGIN_DB` (0.5) and
   `ITERATION_PLATEAU_DB` (0.25), both self-described assumptions awaiting
   exactly this study, reconcile against E2's numbers. **First run: 2026-08-31,
-  jts3 — in-band σ_repeat 0.03–0.17 dB at a fixed pose.** The figure exists;
-  what it does not yet have is a durable home the packet can read (ticket 6.16).
+  jts3 — in-band σ_repeat 0.03–0.17 dB at a fixed pose.** Its durable home is
+  the banked repeat floor. `jasper-round-views repeat-floor <repeat rounds>
+  --out PATH` writes the record; place that file on the speaker at
+  `/var/lib/jasper/active_speaker_repeat_floor.json`, from which
+  `bank-crossover-round.sh` pulls it beside every later round as
+  `repeat-floor.json`. The packet's `in_capture_repeat_floor` reads it and
+  derives the stopping plateau and benefit margin from it.
 - **E1 — lobe-tilt resolution:** inject +0.1/+0.2/+0.5 ms delay errors on a
   known-good alignment; vertical polar at 5° steps; adopt the coarsest step
   that shows a monotonic tilt at 0.2 ms.

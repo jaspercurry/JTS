@@ -171,13 +171,12 @@ __all__ = [
 #:   :data:`~jasper.active_speaker.attempts_loop.CLAIM_FLOOR_P95_MULTIPLE`
 #:   (2×); applied to that study's pooled-rms arm it would land near 0.05 dB.
 #:
-#: **TODO(#2291, Definition-of-Done hardware run — owner: the jts3 pass on the
-#: DoD runbook):** capture the same at-the-mark VERIFY program twice in a row
-#: against an unchanged graph, difference the two pooled
-#: :func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` values,
-#: repeat, and set this to 2× that distribution's p95 through the same house
-#: rule. Until that run exists this value is an assumption wearing its own
-#: name, which is the point of the name.
+#: **This is the fallback.** When a rig has banked a repeat floor
+#: (:mod:`jasper.active_speaker.repeat_floor`),
+#: :func:`~jasper.active_speaker.repeat_floor.stopping_thresholds` derives the
+#: margin from its measured p95 through that same house rule and the packet
+#: reports which source it used. Until then this value is an assumption
+#: wearing its own name, which is the point of the name.
 MEASURED_BENEFIT_MARGIN_DB = 0.5
 
 #: How much the flattening series must still be moving to be worth a round.
@@ -199,11 +198,12 @@ MEASURED_BENEFIT_MARGIN_DB = 0.5
 #: numbers are still assumptions wearing their own names, and the same
 #: hardware run that calibrates the margin is what should calibrate this.
 #:
-#: **TODO(#2602, Definition-of-Done hardware run):** the margin above owes a
-#: repeatability study (same program, unchanged graph, twice). Difference the
-#: same two objectives across those repeats and set this to the movement that
-#: study cannot distinguish from noise. Until then, 0.25 dB is the ruling's
-#: figure and nothing more.
+#: **This is the fallback.** A banked repeat floor
+#: (:mod:`jasper.active_speaker.repeat_floor`) supplies the measured plateau —
+#: its aggregate pairwise p95 — through the same
+#: :func:`~jasper.active_speaker.repeat_floor.stopping_thresholds` that derives
+#: the margin, so the halving above survives by construction. Until then,
+#: 0.25 dB is the ruling's figure and nothing more.
 ITERATION_PLATEAU_DB = 0.25
 
 #: How many measurement+correction rounds one series may run.

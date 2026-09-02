@@ -52,6 +52,7 @@ the only transform left anywhere here is the ``fraction=1`` residual
       state.json                     crossover-v2 flow state (optional)
       design-draft.json              active-speaker design draft (optional)
       applied-profile.json           applied baseline profile SSOT (optional)
+      repeat-floor.json              banked repeat floor (optional)
 
 It comes in TWO shapes, because the two-stage flow banks one bundle per stage:
 a MEASURE round (per-driver solos, the entry baseline, the lateral walk; no
@@ -112,12 +113,14 @@ from jasper.active_speaker.flat_spec_views import (
     _exclusion_mask,
     _pool,
 )
+from jasper.active_speaker.repeat_floor import SHIPPED_POOL_METRIC
 from jasper.active_speaker.crossover_v2 import forward_model
 from jasper.active_speaker.crossover_v2.contracts import DESIGN_AXIS_DEG
 from jasper.active_speaker.crossover_v2.durable_state import (
     verify_measured_curve_from_state,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    _mapping,
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
 )
@@ -154,6 +157,7 @@ __all__ = [
     "load_banked_round",
     "per_seat_curves",
     "pooled_window_horizontal",
+    "repeat_floor_provenance",
     "repeatability_spread",
     "verify_pose_curve",
 ]
@@ -187,6 +191,11 @@ _STATE_FILENAME = "state.json"
 #: It answers "what was the speaker playing when this round was banked", which
 #: the flow state cannot (see ``evidence_packet._incumbent_block``).
 _APPLIED_PROFILE_FILENAME = "applied-profile.json"
+
+#: The banked repeat floor the same script drops beside the bundle, so the
+#: packet's ``in_capture_repeat_floor`` reads a measured number on a rig that
+#: ran the repeats (:mod:`jasper.active_speaker.repeat_floor`).
+_REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 
 
 class RoundViewsError(ValueError):
@@ -308,12 +317,16 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     state_path = round_dir / _STATE_FILENAME
     draft_path = round_dir / "design-draft.json"
     applied_path = round_dir / _APPLIED_PROFILE_FILENAME
+    repeat_floor_path = round_dir / _REPEAT_FLOOR_FILENAME
     try:
         packet = build_crossover_evidence_packet(
             session_dir,
             state_path=state_path if state_path.is_file() else None,
             driver_draft_path=draft_path if draft_path.is_file() else None,
             applied_profile_path=applied_path if applied_path.is_file() else None,
+            repeat_floor_path=(
+                repeat_floor_path if repeat_floor_path.is_file() else None
+            ),
         )
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
@@ -1123,7 +1136,7 @@ def repeatability_spread(
             linear_pooled[label] = float(residual.rms_db)
 
     labels = tuple(label for label, _banked in rounds)
-    metrics = [RepeatabilityMetric("shipped_linear_pool_db", dict(linear_pooled))]
+    metrics = [RepeatabilityMetric(SHIPPED_POOL_METRIC, dict(linear_pooled))]
     for role in sorted(role_pooled):
         metrics.append(RepeatabilityMetric(f"{role}_linear_pooled_db", dict(role_pooled[role])))
     for role in sorted(log_role_pooled):
@@ -1135,6 +1148,21 @@ def repeatability_spread(
     return RepeatabilityResult(
         round_labels=labels, metrics=tuple(metrics), per_position=tuple(per_position_metrics)
     )
+
+
+def repeat_floor_provenance(label: str, banked: BankedRound) -> dict[str, Any]:
+    """One record row naming what produced a repeat — the packet fields a
+    floor cites. Basename only: the record leaves this laptop and a local
+    path is nobody's provenance."""
+    session = _mapping(banked.packet.get("session"))
+    identity = _mapping(banked.packet.get("identity"))
+    return {
+        "label": Path(label).name,
+        "bundle_session_id": session.get("bundle_session_id"),
+        "graph_fingerprint": identity.get("graph_fingerprint"),
+        "mic_calibration_id": _mapping(identity.get("mic")).get("calibration_id"),
+        "started_at": session.get("started_at"),
+    }
 
 
 # --------------------------------------------------------------------------- #

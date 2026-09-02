@@ -32,10 +32,11 @@ runs the first and then the second.
 intended flow: run ``packet`` on the box, hand the file to whoever writes the
 prescription, then run ``propose``/``stage`` against the same file. Rebuilding
 the packet a second time is what used to make staging a fingerprint dance — a
-rebuild on another machine resolves ``--drivers`` and ``--applied-profile``
-against whatever THAT machine has, so it fingerprints differently and the
-document written against the first one is refused against the second, leaving an
-operator to paste a fingerprint across by hand. Nothing here re-stamps a
+rebuild on another machine resolves ``--drivers``, ``--applied-profile`` and
+``--repeat-floor`` against whatever THAT machine has, so it fingerprints
+differently and the document written against the first one is refused
+against the second, leaving an operator to paste a fingerprint across by
+hand. Nothing here re-stamps a
 fingerprint and nothing ever will: the echo is provenance, and a tool that
 rewrote it would make every accepted prescription unprovable. What ``--packet``
 removes is the second packet, so the echo matches by construction.
@@ -69,6 +70,9 @@ from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker.baseline_profile import (
     DEFAULT_STATE_PATH as _APPLIED_PROFILE_DEFAULT_PATH,
+)
+from jasper.active_speaker.repeat_floor import (
+    DEFAULT_STATE_PATH as _REPEAT_FLOOR_DEFAULT_PATH,
 )
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
@@ -180,11 +184,12 @@ def _read_packet_file(path: Path) -> dict[str, Any]:
 
     The whole point of the flag: a packet emitted on the speaker and a packet
     rebuilt on a laptop fingerprint differently, because the rebuild resolves
-    ``--drivers``/``--applied-profile`` against whatever that machine has. So
-    the answer to a packet was either re-fingerprinted by hand — provenance
-    laundering, and the one thing the echo exists to prevent — or judged against
-    evidence it was not written for. Reading the FILE removes the second packet
-    entirely; the fingerprint then matches by construction.
+    ``--drivers``/``--applied-profile``/``--repeat-floor`` against whatever
+    that machine has. So the answer to a packet was either re-fingerprinted
+    by hand — provenance laundering, and the one thing the echo exists to
+    prevent — or judged against evidence it was not written for. Reading the
+    FILE removes the second packet entirely; the fingerprint then matches by
+    construction.
 
     Every ``packet_*`` reader the gate uses takes the packet as a VALUE and
     tolerates any shape, so a file that parses is a usable evidence source and
@@ -230,6 +235,7 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
         applied_profile_path=Path(
             args.applied_profile or _APPLIED_PROFILE_DEFAULT_PATH
         ),
+        repeat_floor_path=Path(args.repeat_floor or _REPEAT_FLOOR_DEFAULT_PATH),
     )
 
 
@@ -239,6 +245,7 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
 _REBUILD_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
     ("--drivers", "drivers"),
     ("--applied-profile", "applied_profile"),
+    ("--repeat-floor", "repeat_floor"),
 )
 
 
@@ -1329,22 +1336,33 @@ _APPLIED_PROFILE_HELP = (
 )
 
 
+#: What ``--repeat-floor`` is, defaulted on the same terms as the two above.
+#: Without it the accuracy budget reports the repeat floor unmeasured and the
+#: stopping thresholds fall back to the codified assumptions, saying so.
+_REPEAT_FLOOR_HELP = (
+    "the banked repeat floor JSON — this rig's measured touched-nothing "
+    f"repeat spread. Defaults to {_REPEAT_FLOOR_DEFAULT_PATH}. Without a "
+    "readable file there, the packet's in_capture_repeat_floor reads "
+    "unavailable and its plateau/margin are the codified assumptions"
+)
+
+
 #: What ``--packet`` is, and why it exists. The packet a laptop rebuilds is not
-#: the packet the speaker emitted — the rebuild resolves ``--drivers`` and
-#: ``--applied-profile`` against whatever THAT machine has — so the two
-#: fingerprint differently and a document answering one is refused against the
-#: other. Emitting once and judging against the file removes the second packet
-#: rather than teaching anything to re-stamp a fingerprint, which would make the
-#: echo worthless as provenance.
+#: the packet the speaker emitted — the rebuild resolves ``--drivers``,
+#: ``--applied-profile`` and ``--repeat-floor`` against whatever THAT machine
+#: has — so the two fingerprint differently and a document answering one is
+#: refused against the other. Emitting once and judging against the file
+#: removes the second packet rather than teaching anything to re-stamp a
+#: fingerprint, which would make the echo worthless as provenance.
 _PACKET_HELP = (
     "an evidence packet JSON file (what `packet` emitted), used AS this "
     "round's evidence instead of rebuilding one. Emit the packet ONCE on the "
     "speaker, hand that file to whoever writes the prescription, then judge "
     "the answer against the SAME file: the fingerprint the document echoes "
     "matches by construction and nobody copies one by hand. The rebuild inputs "
-    "(the session_dir positional, --drivers, --applied-profile) are refused "
-    "beside it; `stage` still takes --state, which it reads for the round "
-    "ordinal rather than as evidence"
+    "(the session_dir positional, --drivers, --applied-profile, "
+    "--repeat-floor) are refused beside it; `stage` still takes --state, "
+    "which it reads for the round ordinal rather than as evidence"
 )
 
 
@@ -1387,6 +1405,7 @@ def _add_evidence_args(
     # named the flag from one who did not.
     parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
     parser.add_argument("--applied-profile", default=None, help=_APPLIED_PROFILE_HELP)
+    parser.add_argument("--repeat-floor", default=None, help=_REPEAT_FLOOR_HELP)
     if packet_source:
         parser.add_argument("--packet", default=None, help=_PACKET_HELP)
     else:
@@ -1422,15 +1441,17 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "  The fingerprint the document echoes is the file's, so it\n"
             "  matches by construction. Rebuilding the packet on another\n"
-            "  machine resolves --drivers/--applied-profile against THAT\n"
-            "  machine and fingerprints differently, which is what used to\n"
-            "  send an operator copying a fingerprint across by hand.\n"
+            "  machine resolves --drivers/--applied-profile/--repeat-floor\n"
+            "  against THAT machine and fingerprints differently, which is\n"
+            "  what used to send an operator copying a fingerprint across\n"
+            "  by hand.\n"
             "\n"
             "EXIT CODES\n"
             "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
             "     read the evidence, even a partial one\n"
             "  1  EXIT_EVIDENCE_UNREADABLE -- the bundle, --state,\n"
-            "     --drivers, or --applied-profile could not be read\n"
+            "     --drivers, --applied-profile, or --repeat-floor could not\n"
+            "     be read\n"
             "  2  EXIT_REFUSED -- propose's or stage's gate refused the\n"
             "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"
             "     and as JSON with --json\n"
