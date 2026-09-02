@@ -679,7 +679,10 @@ def _readiness_recommendation(status: str, checks: Mapping[str, Mapping[str, Any
     ]
     if runtime_unknown:
         return "fix_runtime_observability_before_hardware_validation"
-    measured = checks.get("measured_drift_delay", {})
+    # The readiness snapshot never emits "measured_drift_delay" (it never
+    # plays calibration audio); treat its absence the same as not_run so
+    # this stays gated behind an explicit hardware run either way.
+    measured = checks.get("measured_drift_delay", {"status": "not_run"})
     if measured.get("status") in {"not_run", "unknown"}:
         return "run_hardware_validation"
     if status == "pass":
@@ -1104,23 +1107,6 @@ def _bridge_stats_check(stats: Mapping[str, Any] | None, now: datetime) -> dict[
             observed=observed,
         )
     return _check("pass", summary="AEC bridge counters are clean.", observed=observed)
-
-
-def _measured_drift_delay_check() -> dict[str, JsonValue]:
-    """Always not_run: this readiness snapshot never plays calibration
-    audio or opens capture streams, so no run has produced a drift or
-    delay measurement to report. The bridge stopped emitting a drift
-    log signature in PR #157 (2026-05-19), so there is nothing left to
-    count even if a run did happen to read the journal."""
-    return _check(
-        "not_run",
-        summary=(
-            "Drift and fixed delay were not measured. This readiness snapshot "
-            "does not play calibration audio or open capture streams."
-        ),
-        observed=None,
-        expected={"hardware_validation": "operator-controlled playback/capture run"},
-    )
 
 
 def _as_int(value: Any) -> int | None:
@@ -1701,7 +1687,6 @@ def build_chip_aec_readiness_artifact(
         "dac_reference": _dac_reference_check(outputd_status),
         "wake_legs": _wake_legs_check(runtime, voice_wake_legs),
         "bridge_counters": _bridge_stats_check(bridge_stats, now),
-        "measured_drift_delay": _measured_drift_delay_check(),
     }
     status = _rollup_status(checks)
     return make_artifact(
