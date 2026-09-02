@@ -15,10 +15,8 @@ from __future__ import annotations
 import datetime
 import errno
 import logging
-import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_identity import (
@@ -61,7 +59,6 @@ from .commissioning_receipt import (
 )
 from .commissioning_run import (
     DEFAULT_STATE_PATH,
-    CommissioningAttemptHandle,
     CommissioningLiveMutation,
     CommissioningRunConflict,
     CommissioningRunHandle,
@@ -70,9 +67,7 @@ from .commissioning_run import (
 )
 
 if TYPE_CHECKING:
-    from jasper.audio_measurement.null_walk import NullWalkSpec
-
-    from .commissioning_evidence import RegionEvidencePlan, RegionEvidenceTarget
+    from .commissioning_evidence import RegionEvidencePlan
 
 POST_APPLY_CAPTURE_SOURCE = "active_speaker_post_apply_verification"
 _PASS_VERDICT = "blend_ok"
@@ -164,66 +159,6 @@ def _bundle_forensics(bundle_dir: Path) -> tuple[str | None, str | None, str | N
         _present(mic.get("calibration_id")),
         _present(mic.get("calibration_sha256")),
     )
-
-
-@dataclass(frozen=True, slots=True)
-class PostApplyCaptureOperation:
-    """One server-issued repeat for an exact topology target."""
-
-    plan_fingerprint: str
-    target: RegionEvidenceTarget
-    required_target: RequiredVerificationTarget
-    attempt: CommissioningAttemptHandle
-    placement_fingerprint: str
-    driver_target_fingerprints: tuple[str, str]
-    lower_channels: tuple[int, ...]
-    upper_channels: tuple[int, ...]
-    capture_ordinal: int
-    commissioning_context_fingerprint: str
-    issuance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    evidence_kind: Literal["normal"] = "normal"
-    relative_delay_us: None = None
-    null_walk_spec: NullWalkSpec | None = None
-    fingerprint: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        if self.attempt.target_fingerprint != self.required_target.target_fingerprint:
-            raise CommissioningVerificationError(
-                "verification_attempt_stale",
-                "post-apply attempt does not equal its required topology target",
-            )
-        if self.placement_fingerprint != self.required_target.placement_fingerprint:
-            raise CommissioningVerificationError(
-                "verification_placement_stale",
-                "post-apply placement does not equal its required target",
-            )
-        if not 1 <= self.capture_ordinal <= POST_APPLY_REQUIRED_REPEATS:
-            raise CommissioningVerificationError(
-                "verification_ordinal_invalid", "post-apply repeat is outside its bound"
-            )
-        object.__setattr__(
-            self,
-            "fingerprint",
-            json_fingerprint(
-                {
-                    "schema_version": 1,
-                    "kind": "jts_active_post_apply_capture_operation",
-                    "plan_fingerprint": self.plan_fingerprint,
-                    "region_target_fingerprint": self.target.fingerprint,
-                    "required_target_fingerprint": self.required_target.fingerprint,
-                    "attempt_id": self.attempt.attempt_id,
-                    "capture_ordinal": self.capture_ordinal,
-                    "commissioning_context_fingerprint": (
-                        self.commissioning_context_fingerprint
-                    ),
-                    "issuance_id": self.issuance_id,
-                }
-            ),
-        )
-
-    @property
-    def target_fingerprint(self) -> str:
-        return self.required_target.target_fingerprint
 
 
 class CommissioningVerificationService:
