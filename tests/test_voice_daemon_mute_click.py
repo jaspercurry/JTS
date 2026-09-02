@@ -90,7 +90,11 @@ async def test_mute_click_uses_matched_cue_path():
         method="synthetic_generated",
     )
     tts = _FakeTts()
-    wl = WakeLoop.for_tests()
+    # STATED, not inherited: the bake width comes from `tts_wire_is_wide()`,
+    # which reads the box's own fanin.env — absent on a test runner, and an
+    # undeclared box is WIDE since #3655. The flag asserted below is this
+    # value, so the test must declare it rather than read the host's.
+    wl = WakeLoop.for_tests(_earcon_wide=False)
     wl._tts = tts
     wl._mute_click_on_pcm = b"on"
     wl._mute_click_off_pcm = b"off"
@@ -106,7 +110,7 @@ async def test_mute_click_uses_matched_cue_path():
                 "segment_kind": "cue",
                 "source_profile": profile,
                 # The earcon bake's width travels with its bytes. This
-                # WakeLoop is built narrow, so the flag reads False.
+                # WakeLoop is DECLARED narrow above, so the flag reads False.
                 "pcm_wide": False,
             },
         )
@@ -128,7 +132,8 @@ async def test_listening_chirp_uses_matched_chirp_path():
         method="synthetic_generated",
     )
     tts = _FakeTts()
-    wl = WakeLoop.for_tests()
+    # STATED, not inherited — see the mute-click test above.
+    wl = WakeLoop.for_tests(_earcon_wide=False)
     wl._tts = tts
     wl._chirp_on_pcm = b"wake"
     wl._chirp_off_pcm = b"end"

@@ -680,13 +680,18 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
         output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=1.0,
+        # STATED, not inherited: the S16 mute-click bytes below are 10 bytes,
+        # which an S32 wire cannot frame at all. `tts_wire_is_wide()` reads the
+        # box's fanin.env — absent on a test runner, and an undeclared box is
+        # WIDE since #3655 — so the width has to be declared here.
+        wire_wide=False,
     )
     stream = _FailSecondWrite()
     tts._stream = stream  # type: ignore[assignment]
     tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
         _allow_test_measurement_meter
     )
-    wl = WakeLoop.for_tests()
+    wl = WakeLoop.for_tests(_earcon_wide=False)
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
     wl._mute_click_on_pcm = b"\x01\x00" * 5
@@ -749,12 +754,17 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
         output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=1.0,
+        # STATED, not inherited: the S16 mute-click bytes below are 10 bytes,
+        # which an S32 wire cannot frame at all. `tts_wire_is_wide()` reads the
+        # box's fanin.env — absent on a test runner, and an undeclared box is
+        # WIDE since #3655 — so the width has to be declared here.
+        wire_wide=False,
     )
     tts._stream = _BlockingWrite()  # type: ignore[assignment]
     tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
         _allow_test_measurement_meter
     )
-    wl = WakeLoop.for_tests()
+    wl = WakeLoop.for_tests(_earcon_wide=False)
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
     wl._mute_click_on_pcm = b"\x01\x00" * 5
