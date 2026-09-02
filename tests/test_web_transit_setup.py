@@ -16,6 +16,7 @@ hardware-free.
 from __future__ import annotations
 
 import http
+import logging
 import stat
 import urllib.parse
 
@@ -522,12 +523,26 @@ def test_bus_card_scrubs_key_from_error_banner():
     assert "key=***" in html_out
 
 
+def _assert_one_scrubbed_warning(caplog) -> None:
+    # Positive pin: the warning IS emitted, carrying the masked URL, so a
+    # silently dropped log line cannot pass this as "nothing leaked".
+    records = [
+        r
+        for r in caplog.records
+        if r.name == transit_setup.logger.name and r.levelno == logging.WARNING
+    ]
+    (record,) = records
+    message = record.getMessage()
+    assert transit_setup.scrub_secrets(_LEAKY_URL) in message
+    assert _SECRET_KEY not in message
+
+
 def test_bus_card_scrubs_key_from_log(caplog):
     provider = _fake_bus_provider(RuntimeError(f"boom {_LEAKY_URL}"))
     state = {**NYC_STATE, "JASPER_MTA_BUSTIME_KEY": _SECRET_KEY}
     with caplog.at_level("WARNING"):
         transit_setup._bus_card_html(provider, state)
-    assert _SECRET_KEY not in caplog.text
+    _assert_one_scrubbed_warning(caplog)
 
 
 def test_apply_save_scrubs_key_from_probe_log(caplog):
@@ -535,7 +550,7 @@ def test_apply_save_scrubs_key_from_probe_log(caplog):
     form = {"nyc_bus_key": _SECRET_KEY}
     with caplog.at_level("WARNING"):
         _current, error = transit_setup._apply_save(form, {}, bus_provider=provider)
-    assert _SECRET_KEY not in caplog.text
+    _assert_one_scrubbed_warning(caplog)
     # The user-facing error is a generic "probe failed", never the raw key.
     assert error and _SECRET_KEY not in error
 
