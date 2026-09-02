@@ -668,6 +668,11 @@ own numbering, so resolve a code against the tool that produced it.
 | `jasper-arm-walk` | `0`, `3`–`15`, plus `129` / `130` / `143` (parked by SIGHUP / SIGINT / SIGTERM) | `EXIT_NAMES` in `jasper/active_speaker/arm_walk.py` |
 | `jasper-crossover-prescriber` | `0`–`3` | `EXIT_OK` / `EXIT_EVIDENCE_UNREADABLE` / `EXIT_REFUSED` / `EXIT_STAGE_FAILED` |
 | `scripts/bank-crossover-round.sh` | `0`, `3`, `4` | its own header block |
+| `jasper-gate-sweep` | `0`–`2` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_INPUT` in `jasper/cli/gate_sweep.py` |
+| `jasper-close-reference` | `0`–`2` | same three names in `jasper/cli/close_reference.py` |
+| `jasper-declare-geometry` | `0`–`3` | `EXIT_OK` / `EXIT_REFUSED` / `EXIT_NOT_FOUND` / `EXIT_WRITE_FAILED` in `jasper/cli/declare_geometry.py` |
+| `jasper-classify-features` | `0`–`3` (`1`/`2` inverted vs. the other tools here) | `EXIT_OK` / `EXIT_ROUND_UNREADABLE` / `EXIT_REFUSED` / `EXIT_WRITE_FAILED` in `jasper/cli/classify_features.py` |
+| `jasper-round-views` | `0`, `1` | `EXIT_OK` / `EXIT_ERROR` in `jasper/cli/round_views.py` |
 
 Three traps worth knowing before you branch on a number:
 

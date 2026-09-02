@@ -14,23 +14,19 @@ frame.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import uuid
 from pathlib import Path
 
 import numpy as np
 import pytest
-from scipy.io import wavfile
-from scipy.signal import fftconvolve
 
 from jasper.active_speaker.crossover_v2.close_reference import (
-    GATE_SOURCE_DECLARED,
     REFUSE_GATE_NOT_POSITIVE,
     REFUSE_NO_CAPTURE,
     VERDICT_UNRESOLVED,
 )
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_PROGRAM_UNMATCHED
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.sweep import synchronized_swept_sine
 from jasper.cli.close_reference import (
@@ -40,18 +36,10 @@ from jasper.cli.close_reference import (
     build_parser,
     main,
 )
+from tests.crossover_v2_fixtures import CAPTURE_RATE as SAMPLE_RATE, bank_capture_round
 
-SAMPLE_RATE = 48000
 EXIT_OK = 0
 EXIT_REFUSED = 1
-
-
-def _write_wav(path: Path, samples: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    peak = float(np.max(np.abs(samples))) or 1.0
-    wavfile.write(
-        path, SAMPLE_RATE, (samples / peak * 0.9 * 32767).astype(np.int16)
-    )
 
 
 def _ir(distance_m: float) -> np.ndarray:
@@ -64,35 +52,26 @@ def _ir(distance_m: float) -> np.ndarray:
 
 
 def _round(root: Path, distance_m: float, *, take_id: str = "verify_01_a01") -> Path:
-    """A banked round holding one on-axis summed capture and its program."""
-    bundle = root / "bundle" / "0123456789ab"
-    program_path = bundle / "crossover_v2" / "wired-fixture" / "verify_program.wav"
+    """A banked round holding one on-axis summed capture and its program.
+
+    A narrow, short program: the comparison this suite drives is graded over
+    the band the sidecar declares, and 0.4 s keeps the door's tests quick. It
+    is written near full scale so the deconvolution's own quantization floor
+    sits well under the residuals the report states.
+    """
     sweep, _meta = synchronized_swept_sine(
         f1=100.0, f2=8000.0, duration_approx_s=0.4, sample_rate=SAMPLE_RATE
     )
-    _write_wav(program_path, np.asarray(sweep, dtype=np.float64))
-    program_bytes = program_path.read_bytes()
-
-    stem = f"summed_{take_id}_{uuid.uuid4().hex}"
-    wav = bundle / "summed" / f"{stem}.wav"
-    program_pcm = wavfile.read(program_path)[1].astype(np.float64) / 32768.0
-    _write_wav(wav, fftconvolve(program_pcm, _ir(distance_m)))
-    (bundle / "summed" / f"{stem}.json").write_text(json.dumps({
-        "position_id": take_id,
-        "phase": "verify",
-        "position_deg": 0,
-        "vertical_deg": 0,
-        "mark_distance_m": 1.0,
-        "wav_path": f"summed/{stem}.wav",
-        "curves": [{"role": "summed", "band_hz": [100.0, 8000.0]}],
-        "provenance": {
-            "stimulus": {
-                "phase": "verify",
-                "wav_sha256": hashlib.sha256(program_bytes).hexdigest(),
-            }
-        },
-    }))
-    return root
+    program = np.asarray(sweep, dtype=np.float64)
+    return bank_capture_round(
+        root,
+        [_ir(distance_m)],
+        program=0.9 * program / float(np.max(np.abs(program))),
+        phase="verify",
+        capture_ids=[take_id],
+        positions_deg=[0.0],
+        radiated_band_hz=(100.0, 8000.0),
+    )
 
 
 @pytest.fixture
@@ -138,13 +117,8 @@ def test_compare_publishes_its_frame_and_its_binding(rounds, tmp_path, capsys):
 def test_an_ungraded_band_publishes_null_not_a_non_json_constant(
     rounds, tmp_path, capsys
 ):
-    """A strict parser has to be able to read the report.
-
-    The comparison band stops at fc/2, so the top spec band grades nothing —
-    and the ``NaN``/``-Infinity`` those absent numbers used to carry are not
-    JSON. ``parse_constant`` is the strict reader standing in here: it fires
-    on exactly the tokens a non-Python parser rejects.
-    """
+    """An ungraded band publishes ``null``, never a non-JSON constant --
+    ``parse_constant`` fires on exactly the tokens a strict reader rejects."""
     out = tmp_path / "report.json"
     assert main(_compare_argv(rounds, out)) == EXIT_OK
     capsys.readouterr()
@@ -184,7 +158,7 @@ def test_an_ungraded_band_publishes_null_not_a_non_json_constant(
     ],
 )
 def test_the_driver_diameter_takes_one_unit_or_the_other(argv):
-    """Both units used to be accepted, with mm silently beating in."""
+    """Naming both units is a usage error, not a silent precedence rule."""
     with pytest.raises(SystemExit) as excinfo:
         build_parser().parse_args(argv)
     assert excinfo.value.code == 2
@@ -222,8 +196,8 @@ def test_an_unbindable_capture_is_a_refusal_not_a_traceback(
 def test_a_non_positive_gate_refuses_by_name_before_the_strict_writer_sees_it(
     rounds, tmp_path, capsys
 ):
-    """A 0 or negative ``--far-gate-ms`` used to reach ``f_trusted_floor_hz``
-    as ``+inf`` and crash the strict JSON write; it must refuse first."""
+    """A non-positive ``--far-gate-ms`` refuses by name, before an ``+inf``
+    trusted floor can reach the strict JSON writer."""
     argv = _compare_argv(rounds, tmp_path / "report.json") + ["--far-gate-ms", "0"]
     assert main(argv) == EXIT_REFUSED
     payload = json.loads(capsys.readouterr().out)
@@ -244,7 +218,7 @@ def test_a_declared_geometry_sets_each_windows_gate(rounds, tmp_path, capsys):
     report = json.loads(out.read_text())["close_reference"]
     windows = {window["name"]: window for window in report["windows"]}
     assert {window["gate_source"] for window in windows.values()} == {
-        GATE_SOURCE_DECLARED
+        gating.ENTANGLEMENT_SOURCE_DECLARED
     }
     for window in windows.values():
         assert window["gate_ms"] == pytest.approx(window["declared_clean_window_ms"])

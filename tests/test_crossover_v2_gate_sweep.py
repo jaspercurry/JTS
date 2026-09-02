@@ -15,8 +15,6 @@ No hardware, no banked captures, no network.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -41,9 +39,12 @@ from jasper.active_speaker.crossover_v2.round_captures import (
     RoundCapturesRefused,
     discover_captures,
 )
-from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
+from tests.crossover_v2_fixtures import (
+    CAPTURE_AZIMUTHS_DEG as AZIMUTHS_DEG,
+    CAPTURE_RATE as RATE,
+    bank_capture_round,
+)
 
-RATE = 48_000
 PEAK_IDX = 480
 IR_LEN = 9600
 #: The band-0 feature every fixture carries, so the band's worst bin is a
@@ -55,7 +56,6 @@ FEATURE_HZ = 800.0
 FEATURE_DEPTH_DB = -4.5
 FEATURE_Q = 8.0
 LATE_COPY_GAIN = 0.20
-AZIMUTHS_DEG = (-22.0, -7.0, 0.0, 7.0, 22.0)
 LOW_BAND = 0  # SPEC_BANDS[0] == 250-2000 Hz
 #: A named bin that is resolution-valid at 20 ms and not at 5 ms.
 ANCHOR_UNRESOLVED_HZ = 300.0
@@ -78,60 +78,6 @@ def _pose_ir(index: int, *, late_copy_ms: float | None) -> np.ndarray:
     return np.asarray(lfilter(b, a, ir), dtype=np.float64)
 
 
-def _write_round(
-    root: Path,
-    irs: list[np.ndarray],
-    *,
-    radiated_band_hz: tuple[float, float] = (150.0, 20000.0),
-) -> Path:
-    """A banked-round-shaped directory whose captures are known convolutions.
-
-    Two programs are written and the sidecars declare the CLOUD one's hash
-    while their ``provenance.stimulus.phase`` says ``verify`` — the live
-    mislabel #3504 documents. A consumer that trusted the label would
-    deconvolve against the wrong sweep.
-    """
-    bundle = root / "bundle" / "b0"
-    programs = bundle / "crossover_v2" / "wired-test"
-    summed = bundle / "summed"
-    programs.mkdir(parents=True)
-    summed.mkdir(parents=True)
-
-    played, _ = synchronized_swept_sine(duration_approx_s=1.0, sample_rate=RATE)
-    other, _ = synchronized_swept_sine(f1=30.0, duration_approx_s=1.0, sample_rate=RATE)
-    write_sweep_wav(programs / "cloud_verify_program.wav", played, RATE)
-    write_sweep_wav(programs / "verify_program.wav", other, RATE)
-    played_sha = hashlib.sha256(
-        (programs / "cloud_verify_program.wav").read_bytes()
-    ).hexdigest()
-
-    for index, ir in enumerate(irs):
-        capture = np.convolve(played.astype(np.float64), ir)
-        capture = 0.5 * capture / float(np.max(np.abs(capture)))
-        stem = f"summed_cloud_verify_{index:02d}"
-        write_sweep_wav(summed / f"{stem}.wav", capture.astype(np.float32), RATE)
-        (summed / f"{stem}.json").write_text(
-            json.dumps(
-                {
-                    "position_id": f"cloud_verify_{index:02d}",
-                    "phase": "cloud_verify",
-                    "wav_path": f"summed/{stem}.wav",
-                    "position_deg": AZIMUTHS_DEG[index % len(AZIMUTHS_DEG)],
-                    "vertical_deg": 0.0,
-                    "mark_distance_m": 1.0,
-                    "curves": [{"role": "summed", "band_hz": list(radiated_band_hz)}],
-                    "provenance": {
-                        "stimulus": {
-                            "phase": "verify",
-                            "wav_sha256": played_sha,
-                        }
-                    },
-                }
-            )
-        )
-    return root
-
-
 def _low_band(report: dict) -> dict:
     band = report["bands"][LOW_BAND]
     assert band["band_hz"] == [250.0, 2000.0]
@@ -141,7 +87,7 @@ def _low_band(report: dict) -> dict:
 @pytest.fixture(scope="module")
 def common_mode_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Every pose sees the SAME late arrival."""
-    root = _write_round(
+    root = bank_capture_round(
         tmp_path_factory.mktemp("common"),
         [_pose_ir(i, late_copy_ms=8.0) for i in range(len(AZIMUTHS_DEG))],
     )
@@ -151,7 +97,7 @@ def common_mode_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
 @pytest.fixture(scope="module")
 def pose_varying_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Each pose sees the late arrival at its own delay."""
-    root = _write_round(
+    root = bank_capture_round(
         tmp_path_factory.mktemp("varying"),
         [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(len(AZIMUTHS_DEG))],
     )
@@ -161,7 +107,7 @@ def pose_varying_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
 @pytest.fixture(scope="module")
 def direct_only_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """No late arrival at all: whatever the long rung adds is the window."""
-    root = _write_round(
+    root = bank_capture_round(
         tmp_path_factory.mktemp("direct"),
         [_pose_ir(i, late_copy_ms=None) for i in range(len(AZIMUTHS_DEG))],
     )
@@ -176,7 +122,7 @@ def anchored_reports(tmp_path_factory: pytest.TempPathFactory) -> tuple[dict, di
     20 ms one, so it leaves exactly one resolution-valid rung and exercises
     the null-reason branch a named bin can land in.
     """
-    root = _write_round(
+    root = bank_capture_round(
         tmp_path_factory.mktemp("anchored"),
         [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
     )
@@ -196,7 +142,7 @@ def in_memory_round(
     The stripped copies carry no WAV, no program and no phase — a number that
     moved with those would be a number the engine had no business reading.
     """
-    root = _write_round(
+    root = bank_capture_round(
         tmp_path_factory.mktemp("in_memory"),
         [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
     )
@@ -281,7 +227,7 @@ def test_resolution_masks_gate_the_sensitivity_not_the_table(tmp_path: Path) -> 
     The table itself still publishes every value with its cycles count: a
     read that cannot be trusted is flagged, never silently dropped.
     """
-    root = _write_round(tmp_path, [_pose_ir(i, late_copy_ms=None) for i in range(3)])
+    root = bank_capture_round(tmp_path, [_pose_ir(i, late_copy_ms=None) for i in range(3)])
     report = sweep_round(root, rungs_ms=(1.0, 2.0))
     band = _low_band(report)
 
@@ -307,7 +253,7 @@ def test_a_graded_band_narrower_than_the_grid_nulls_by_name(
     so the argmax that picks the worst bin has nothing to pick from. That is
     a named null, never a crash.
     """
-    root = _write_round(
+    root = bank_capture_round(
         tmp_path,
         [_pose_ir(i, late_copy_ms=8.0) for i in range(3)],
         radiated_band_hz=(radiated_lo_hz, 20000.0),

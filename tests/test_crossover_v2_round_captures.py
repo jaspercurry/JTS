@@ -13,8 +13,6 @@ answers; what is pinned here is the loader.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 import numpy as np
@@ -25,66 +23,26 @@ from jasper.active_speaker.crossover_v2.round_captures import (
     RoundCapturesRefused,
     discover_captures,
 )
-from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
+from tests.crossover_v2_fixtures import CAPTURE_RATE as RATE, bank_capture_round
 
-RATE = 48_000
 PEAK_IDX = 480
 IR_LEN = 4800
 PLAYED_PROGRAM = "cloud_verify_program.wav"
 
 
-def _write_round(
-    root: Path,
-    *,
-    poses: int = 2,
-    declared_sha: str | None = None,
-    vertical_deg: float = 0.0,
-    distance_m: float | None = 1.0,
-    curves: bool = True,
-) -> Path:
-    """A banked-round-shaped directory whose captures are known convolutions.
+def _write_round(root: Path, *, poses: int = 2, curves: bool = True, **kwargs) -> Path:
+    """This suite's round: every pose a bare delta, so only the BINDING varies.
 
-    Two programs are written and the sidecars declare the CLOUD one's hash
-    while their ``provenance.stimulus.phase`` says ``verify`` — the live
-    mislabel #3504 documents. A consumer that trusted the label would
-    deconvolve against the wrong sweep.
+    ``curves=False`` banks a round with no declared radiated band.
     """
-    bundle = root / "bundle" / "b0"
-    programs = bundle / "crossover_v2" / "wired-test"
-    summed = bundle / "summed"
-    programs.mkdir(parents=True)
-    summed.mkdir(parents=True)
-
-    played, _ = synchronized_swept_sine(duration_approx_s=1.0, sample_rate=RATE)
-    other, _ = synchronized_swept_sine(f1=30.0, duration_approx_s=1.0, sample_rate=RATE)
-    write_sweep_wav(programs / PLAYED_PROGRAM, played, RATE)
-    write_sweep_wav(programs / "verify_program.wav", other, RATE)
-    played_sha = hashlib.sha256((programs / PLAYED_PROGRAM).read_bytes()).hexdigest()
-
     ir = np.zeros(IR_LEN, dtype=np.float64)
     ir[PEAK_IDX] = 1.0
-    for index in range(poses):
-        capture = np.convolve(played.astype(np.float64), ir)
-        capture = 0.5 * capture / float(np.max(np.abs(capture)))
-        stem = f"summed_cloud_verify_{index:02d}"
-        write_sweep_wav(summed / f"{stem}.wav", capture.astype(np.float32), RATE)
-        doc = {
-            "position_id": f"cloud_verify_{index:02d}",
-            "phase": "cloud_verify",
-            "position_deg": float(index * 7),
-            "vertical_deg": vertical_deg,
-            "mark_distance_m": distance_m,
-            "provenance": {
-                "stimulus": {
-                    "phase": "verify",
-                    "wav_sha256": declared_sha or played_sha,
-                }
-            },
-        }
-        if curves:
-            doc["curves"] = [{"role": "summed", "band_hz": [150.0, 20000.0]}]
-        (summed / f"{stem}.json").write_text(json.dumps(doc))
-    return root
+    return bank_capture_round(
+        root,
+        [ir] * poses,
+        radiated_band_hz=(150.0, 20000.0) if curves else None,
+        **kwargs,
+    )
 
 
 def test_a_capture_binds_to_the_program_its_bytes_name(tmp_path: Path) -> None:

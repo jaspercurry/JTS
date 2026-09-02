@@ -824,12 +824,12 @@ def test_a_gate_record_carries_the_declared_room_floor_and_says_it_is_declared(
 
 
 def test_two_seats_of_one_rig_publish_different_floors_for_their_distances(tmp_path):
-    """The owner ruling that distance is per CAPTURE, not per rig.
+    """The floor is evaluated per CAPTURE, not once per rig.
 
     Same declared heights, two capture distances: the nearer seat's bounce
-    arrives LATER relative to its direct sound, so its floor is lower. A floor
-    evaluated once per rig would print one number on both rows and hide the
-    fact that the seats are not equally trustworthy down low.
+    arrives LATER relative to its direct sound, so its floor is lower. One
+    number on both rows would hide that the seats are not equally trustworthy
+    down low.
     """
     from jasper.active_speaker.crossover_v2_flow import _gate_record
     from jasper.audio_measurement import gating

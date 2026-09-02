@@ -17,12 +17,15 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import round_captures
 from jasper.cli import gate_sweep as cli
-from tests.test_crossover_v2_gate_sweep import _pose_ir, _write_round
+from tests.crossover_v2_fixtures import bank_capture_round
+from tests.test_crossover_v2_gate_sweep import _pose_ir
 
 
 @pytest.fixture
 def round_dir(tmp_path: Path) -> Path:
-    return _write_round(tmp_path, [_pose_ir(i, late_copy_ms=8.0) for i in range(3)])
+    return bank_capture_round(
+        tmp_path, [_pose_ir(i, late_copy_ms=8.0) for i in range(3)]
+    )
 
 
 def test_a_swept_round_writes_its_report_beside_the_round(
