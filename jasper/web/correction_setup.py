@@ -38,12 +38,10 @@ import asyncio
 import concurrent.futures
 import hashlib
 import inspect
-import json
 import logging
 import math
 import os
 import re
-import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -51,17 +49,14 @@ from contextlib import (
     AbstractContextManager,
     ExitStack,
 )
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from jasper.active_speaker.crossover_v2.capture_source import (
-    SOURCE_RELAY,
-    SOURCE_WIRED,
-)
+from jasper.active_speaker.crossover_v2.capture_source import SOURCE_WIRED
 from jasper.audio_measurement import room_boundary
 
 from ..log_event import log_event
@@ -69,10 +64,6 @@ from ..transition_log import TransitionLog
 from . import correction_room_flow, correction_tuning
 from ._systemd import no_hold
 
-if TYPE_CHECKING:
-    from jasper.capture_relay.client import RelayClient
-    from jasper.capture_relay.correction_adapter import RelayCapture
-    from jasper.capture_relay.session import PiCaptureSession
 from ._common import (
     JsonBodyError,
     begin_request,
@@ -109,9 +100,6 @@ MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_SYNC_WAV_BODY_BYTES = 2 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/room", "/balance", "/sync"})
-_RETURN_HOST_RE = re.compile(
-    r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$"
-)
 
 
 class BadRequest(ValueError):
@@ -135,25 +123,23 @@ _session = None  # type: ignore[var-annotated]
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 
-# Active phone-mic-relay capture surfaced in /status: {tap_link, status} or None.
-# Set by POST /relay/capture, updated by its background runner. Guarded by
-# _session_lock (same single-session scope).
+# The measurement capture in flight, surfaced in /status, or None. Claimed by
+# the route that opens a session and updated by its background runner. Guarded
+# by _session_lock (same single-session scope).
 _relay_capture: dict[str, Any] | None = None
 _relay_stop_request: Callable[[], None] | None = None
-# The active session's position gate, or None — set for either GATED shape
-# (the remote commission tier, and a hand-walked round on the wired source).
+# The active session's position gate, or None — set for a GATED round (the
+# remote commission tier, and a hand-walked round).
 # Same lifecycle as ``_relay_stop_request``: set when the slot is claimed,
 # dropped the moment the slot leaves an in-flight status — which is what stops a
 # finished session from still advertising a position it is waiting for, and
 # stops a late driver POST from releasing a gate nobody is holding.
 _relay_position_gate: Any | None = None
-# The active WIRED session's completion signal (#2662 W2b), or None — the
-# local stand-in for the phone's authenticated complete-capture-set event,
-# set by the wired session's driver/wizard POST. Same claimed-with-the-slot,
+# The active session's all-spots-measured signal, or None — set by the
+# session's driver/wizard POST. Same claimed-with-the-slot,
 # dropped-when-not-in-flight lifecycle as the two above.
 _relay_complete_request: Callable[[], None] | None = None
-# The active WIRED session's per-take RETAKE signal, or None — the local
-# stand-in for the phone's ``begin_capture {retake: true}``. Same
+# The active session's per-take RETAKE signal, or None. Same
 # claimed-with-the-slot, dropped-when-not-in-flight lifecycle as the three
 # above, which is what stops a POST arriving after the walk from re-opening a
 # slot nothing is holding.
@@ -164,33 +150,6 @@ _RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
     "committing",
     "stopping",
 }
-# Bound the foreground relay registration so a slow/unreachable relay fails fast
-# rather than hanging the request thread for RelayClient's 15 s default.
-_RELAY_REGISTER_TIMEOUT_S = 10.0
-# Repeating one host event is safe, but distinct progress and terminal events
-# must preserve order in the relay's last-write-wins slot. One transient relay
-# 5xx or socket timeout must not abort a guarded level walk, while retries stay
-# tightly bounded so a dead relay still reaches the existing restore/Stop path.
-_RELAY_HOST_EVENT_ATTEMPTS = 2
-_RELAY_HOST_EVENT_RETRY_DELAY_S = 0.25
-# Keep bounded level-control calls in submission order even after the awaiting
-# coroutine reaches its wall-clock deadline.  A timed-out write stays in this
-# single-worker queue, so an older progress event cannot complete after a newer
-# terminal event and replace it in the relay's last-write-wins slot.
-_RELAY_LEVEL_CONTROL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="correction-relay-control",
-)
-# Level-ramp status and Room host events share one serialized pump. Give those
-# small control requests a separate WAN timeout: one retried level event plus
-# the next status read can then block for at most 4.75 s, comfortably inside
-# the ramp's default 8 s feed-loss guard. Registration retains its wider 10 s
-# budget.
-_RELAY_CONTROL_TIMEOUT_S = 1.5
-_RELAY_LEVEL_PUMP_MAX_BLOCK_S = (
-    (_RELAY_HOST_EVENT_ATTEMPTS + 1) * _RELAY_CONTROL_TIMEOUT_S
-    + _RELAY_HOST_EVENT_RETRY_DELAY_S
-)
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
@@ -332,200 +291,18 @@ def _household_level_door() -> Any:
     return _no_owner
 
 
-_ROOM_RELAY_RETURN_PATH = "/correction/room/"
-# Require a short rolling ambient window before the Pi starts the level tone.
-# A single USB-mic startup block is too noisy to become the trust-floor SSOT;
-# ten 200 ms samples gives a stable two-second median while keeping setup
-# bounded and well inside the relay's rolling three-second sample window.
-_RELAY_LEVEL_AMBIENT_MIN_SAMPLES = 10
-_ROOM_SWEEP_PHONE_FAILURE = "the speaker could not complete this measurement"
 
 
-async def _run_relay_control_request(
-    call: Callable[..., Any],
-    *args: Any,
-    hard_timeout_s: float | None = None,
-    preserve_write_order: bool = False,
-) -> Any:
-    """Run one blocking relay request with an optional wall-clock deadline."""
-
-    executor = _RELAY_LEVEL_CONTROL_EXECUTOR if hard_timeout_s is not None else None
-    request = asyncio.get_running_loop().run_in_executor(executor, call, *args)
-    if hard_timeout_s is None:
-        return await request
-    done, _pending = await asyncio.wait(
-        {request},
-        timeout=hard_timeout_s,
-    )
-    if not done:
-        # A running thread cannot be killed safely, but the level-control pump
-        # must not wait for it.  Preserve writes in the FIFO executor so every
-        # newer event runs after this one; queued status reads are safe to drop.
-        if preserve_write_order:
-            request.add_done_callback(_consume_relay_control_result)
-        else:
-            request.cancel()
-        raise asyncio.TimeoutError
-    return request.result()
 
 
-def _consume_relay_control_result(request: asyncio.Future[Any]) -> None:
-    """Retrieve a detached ordered write result after its caller timed out."""
-
-    if request.cancelled():
-        return
-    request.exception()
 
 
-async def _post_relay_host_event(
-    client: Any,
-    pi_session: Any,
-    payload: Mapping[str, Any],
-    *,
-    hard_timeout_s: float | None = None,
-) -> None:
-    """Publish one idempotent host event with one bounded transient retry."""
-
-    from jasper.capture_relay.client import RelayError
-
-    for attempt in range(1, _RELAY_HOST_EVENT_ATTEMPTS + 1):
-        try:
-            await _run_relay_control_request(
-                client.post_host_event,
-                pi_session.session_id,
-                pi_session.pull_token,
-                payload,
-                hard_timeout_s=hard_timeout_s,
-                preserve_write_order=hard_timeout_s is not None,
-            )
-            return
-        except RelayError as exc:
-            retryable = exc.status == 429 or exc.status >= 500
-            if not retryable or attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
-                raise
-        except OSError:
-            if attempt >= _RELAY_HOST_EVENT_ATTEMPTS:
-                raise
-        log_event(
-            logger,
-            "capture_relay.host_event_retry",
-            level=logging.WARNING,
-            session_id=pi_session.session_id,
-            attempt=attempt,
-        )
-        await asyncio.sleep(_RELAY_HOST_EVENT_RETRY_DELAY_S)
 
 
-def _bounded_relay_control_client(client: Any) -> Any:
-    """Clone the production relay client onto the narrow control deadline."""
-
-    from jasper.capture_relay.client import RelayClient
-
-    return (
-        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
-        if isinstance(client, RelayClient)
-        else client  # injected deterministic test double
-    )
 
 
-async def _post_room_sweep_host_event(
-    control_client: Any,
-    pi_session: Any,
-    payload: Mapping[str, Any],
-) -> None:
-    """Publish ordered Room progress without discarding ambiguous captures."""
-
-    from jasper.capture_relay.client import RelayError
-
-    try:
-        await _post_relay_host_event(
-            control_client,
-            pi_session,
-            payload,
-            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-        )
-        return
-    except RelayError as exc:
-        # The Worker rejects 4xx before committing the event. A final 4xx
-        # (including 429 after the bounded retry) is therefore definitive:
-        # do not play a sweep whose recorder session is gone or unauthorized.
-        if exc.status < 500:
-            raise
-        reason = f"RelayError:{exc.status}"
-    except (asyncio.TimeoutError, OSError) as exc:
-        # The request may have committed before its response timed out. Its
-        # detached write remains ordered, and run_capture's ready blob is the
-        # authoritative completion signal. Do not discard a valid WAV merely
-        # because this progress acknowledgement is unconfirmed.
-        reason = type(exc).__name__
-    log_event(
-        logger,
-        "capture_relay.room_sweep_host_event",
-        level=logging.WARNING,
-        session_id=pi_session.session_id,
-        phase=payload.get("phase"),
-        result="unconfirmed",
-        reason=reason,
-    )
 
 
-def _assert_room_relay_alignment_policy(pi_session: Any) -> None:
-    """Keep Room relay captures observe-only until a gate is calibrated.
-
-    ``PiCaptureSession`` always carries the registered spec. A few focused tests
-    inject a transport-only namespace without one, so absence means "no policy
-    assertion" for that test seam. A real room spec that advertises a hard gate
-    must fail closed here instead of silently accepting an ungated capture.
-    """
-    spec = getattr(pi_session, "spec", None)
-    validity = getattr(spec, "validity", None)
-    if bool(getattr(validity, "require_alignment", False)):
-        raise RuntimeError(
-            "room_sweep requested a hard alignment gate, but Room alignment "
-            "is observation-only until its threshold is fleet-calibrated"
-        )
-
-
-def _log_room_relay_alignment(
-    sess: Any,
-    pi_session: Any,
-    *,
-    capture_kind: str,
-) -> None:
-    """Emit Room's existing direct-arrival proxy as rollout evidence."""
-    report: Any
-    if capture_kind == "measurement":
-        captures = getattr(sess, "capture_quality", ())
-        report = captures[-1] if captures else None
-    elif capture_kind == "repeat":
-        report = getattr(sess, "repeat_quality", None)
-    else:
-        report = getattr(sess, "verify_quality", None)
-    direct = report.get("direct_arrival") if isinstance(report, Mapping) else None
-    direct_report: Mapping[str, Any] | None = (
-        direct if isinstance(direct, Mapping) else None
-    )
-    available = bool(direct_report and direct_report.get("available"))
-    value = (
-        direct_report.get("direct_to_pre_arrival_db")
-        if available and direct_report is not None
-        else None
-    )
-    reason = None
-    if not available:
-        reason = direct_report.get("reason") if direct_report else "unavailable"
-    log_event(
-        logger,
-        "capture_relay.alignment",
-        session_id=getattr(pi_session, "session_id", ""),
-        capture_kind=capture_kind,
-        metric="direct_to_pre_arrival_db",
-        mode="observe",
-        required=False,
-        available=available,
-        value_db=value,
-        reason=reason,
-    )
 
 
 def _crossover_volume_safety_refusal() -> dict[str, str]:
@@ -552,9 +329,6 @@ _POST_ROUTES = frozenset({
     "/upload-noise",
     "/upload-capture",
     "/local-capture/setup",
-    "/relay/level-match",
-    "/relay/capture",
-    "/relay/verify",
     "/calibration/fetch",
     "/calibration/upload",
     "/apply",
@@ -623,17 +397,16 @@ def _get_relay_capture() -> dict[str, Any] | None:
         return dict(_relay_capture) if _relay_capture else None
 
 
-def _get_relay_capture_for(*kind_prefixes: str) -> dict[str, Any] | None:
-    """Return relay state only to the flow that owns it.
+def _get_relay_capture_for(kind_prefix: str) -> dict[str, Any] | None:
+    """Return capture state only to the flow that owns it.
 
-    The process has one hardware-safe relay slot, but room, sync, and crossover
-    pages must never render one another's phone link or waiting state.
+    The process has one hardware-safe capture slot; a page must never render
+    another flow's waiting state.
     """
     relay = _get_relay_capture()
     if relay is None:
         return None
-    kind = str(relay.get("kind") or "")
-    if not any(kind.startswith(prefix) for prefix in kind_prefixes):
+    if not str(relay.get("kind") or "").startswith(kind_prefix):
         return None
     # A gated session's live position hold, merged in here rather than pushed
     # into the slot by the gate: the gate owns the fact and this is a read, so
@@ -696,10 +469,9 @@ def _begin_relay_capture(
     position_gate: Any | None = None,
     request_complete: Callable[[], None] | None = None,
     request_retake: Callable[[], None] | None = None,
-    local: bool = False,
 ) -> bool:
-    """Atomically claim the single relay-capture slot. Returns False if one is
-    already in flight (so a double-tap can't spawn two relay sessions + a file
+    """Atomically claim the single capture slot. Returns False if one is
+    already in flight (so a double-tap can't spawn two sessions + a file
     race for one position — mirrors /autolevel's "already in progress" guard).
     The slot is released by `_set_relay_capture(None)` on a failed open, or by the
     background runner setting `complete`/`failed`."""
@@ -711,17 +483,14 @@ def _begin_relay_capture(
             and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
         ):
             return False
-        # WHICH transport is running, published for the whole in-flight life of
-        # the slot (``_publish_relay_waiting`` carries it forward). A wired
-        # session has no ``tap_link`` by construction, so without this the
-        # browser cannot tell "no link yet" from "no link ever" and sat on
-        # "Creating the measurement link…" for the whole round; it is also what
-        # tells the closing screen whose move the all-spots-measured confirm is
-        # (#2881). The vocabulary is the capture seam's own, not a second one.
+        # WHICH provider is answering, published for the whole in-flight life
+        # of the slot (``_publish_relay_waiting`` carries it forward) and read
+        # by the status envelope and the wizard. The vocabulary is the capture
+        # seam's own, not a second one.
         _relay_capture = {
             "status": "starting",
             "kind": kind_label,
-            "source": SOURCE_WIRED if local else SOURCE_RELAY,
+            "source": SOURCE_WIRED,
         }
         _relay_stop_request = request_stop
         _relay_position_gate = position_gate
@@ -730,8 +499,8 @@ def _begin_relay_capture(
         return True
 
 
-def _publish_relay_waiting(kind_label: str, tap_link: str) -> dict[str, Any]:
-    """Publish a registered link without overwriting a concurrent Stop."""
+def _publish_relay_waiting(kind_label: str) -> dict[str, Any]:
+    """Open the capture window without overwriting a concurrent Stop."""
 
     global _relay_capture
     with _session_lock:
@@ -741,16 +510,16 @@ def _publish_relay_waiting(kind_label: str, tap_link: str) -> dict[str, Any]:
             or relay.get("kind") != kind_label
             or relay.get("status") not in {"starting", "stopping"}
         ):
-            raise RuntimeError("phone capture ownership changed during registration")
+            raise RuntimeError("capture ownership changed while the session opened")
         status = "awaiting_phone" if relay.get("status") == "starting" else "stopping"
-        _relay_capture = {**relay, "tap_link": tap_link, "status": status}
+        _relay_capture = {**relay, "status": status}
         return dict(_relay_capture)
 
 
-def _request_relay_stop(*kind_prefixes: str) -> dict[str, Any]:
-    """Signal the active matching relay owner and expose Stop as in progress.
+def _request_relay_stop(kind_prefix: str) -> dict[str, Any]:
+    """Signal the active matching capture owner and expose Stop as in progress.
 
-    The owner publishes ``stopped`` only after its transport worker, audio
+    The owner publishes ``stopped`` only after its capture worker, audio
     player, and rollback have all drained. Keeping ``stopping`` in the global
     slot prevents a second run from entering during cleanup.
     """
@@ -759,13 +528,12 @@ def _request_relay_stop(*kind_prefixes: str) -> dict[str, Any]:
     with _session_lock:
         relay = _relay_capture
         if relay is None or relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
-            raise ValueError("no matching phone capture is running")
-        kind = str(relay.get("kind") or "")
-        if not any(kind.startswith(prefix) for prefix in kind_prefixes):
-            raise ValueError("no matching phone capture is running")
+            raise ValueError("no matching capture is running")
+        if not str(relay.get("kind") or "").startswith(kind_prefix):
+            raise ValueError("no matching capture is running")
         callback = _relay_stop_request
         if callback is None:
-            raise RuntimeError("this phone capture cannot be stopped safely")
+            raise RuntimeError("this capture cannot be stopped safely")
         try:
             # Request callbacks are deliberately non-blocking signals. Fire
             # one under the same lock as the public state so another tab can
@@ -796,11 +564,11 @@ def _begin_relay_commit(kind_label: str) -> bool:
     with _session_lock:
         relay = _relay_capture
         if relay is None or relay.get("kind") != kind_label:
-            raise RuntimeError("phone capture ownership changed before evidence commit")
+            raise RuntimeError("capture ownership changed before evidence commit")
         if relay.get("status") == "stopping":
             return False
         if relay.get("status") not in _RELAY_STOPPABLE_STATUSES | {"finishing"}:
-            raise RuntimeError("phone capture is not ready to commit evidence")
+            raise RuntimeError("capture is not ready to commit evidence")
         _relay_capture = {**relay, "status": "committing"}
         _relay_stop_request = None
         return True
@@ -818,11 +586,11 @@ def _begin_relay_finishing(kind_label: str) -> bool:
     with _session_lock:
         relay = _relay_capture
         if relay is None or relay.get("kind") != kind_label:
-            raise RuntimeError("phone capture ownership changed before upload")
+            raise RuntimeError("capture ownership changed before it was stored")
         if relay.get("status") == "stopping":
             return False
         if relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
-            raise RuntimeError("phone capture is not ready to finish")
+            raise RuntimeError("capture is not ready to finish")
         _relay_capture = {**relay, "status": "finishing"}
         _relay_stop_request = None
         return True
@@ -830,188 +598,82 @@ def _begin_relay_finishing(kind_label: str) -> bool:
 
 @dataclass(frozen=True)
 class RelayCaptureKind:
-    """Per-flow plug for the generic relay orchestrator (`_run_relay_capture`).
+    """Per-flow plug for the generic capture orchestrator (`_run_relay_capture`).
 
-    Each measurement flow (room sweep, sync, crossover, …) injects only what is
-    flow-specific — how to mint+register its relay capture, and how to run it +
-    consume the verified WAV (play its stimulus on `armed`, then analyze). The
-    orchestrator owns everything common: the single-slot re-entrancy guard,
-    bounded registration, the `/status.relay` holder, and the background-task
-    lifecycle. Adding a kind is a descriptor, not a fourth copy of the handler.
+    Each measurement flow injects only what is flow-specific — how to mint its
+    capture session, and how to run it + consume the recorded WAV (play its
+    stimulus, then analyze). The orchestrator owns everything common: the
+    single-slot re-entrancy guard, the `/status.relay` holder, and the
+    background-task lifecycle. Adding a kind is a descriptor, not a second copy
+    of the handler.
 
-    `open(client, relay_base, capture_origin, return_url) -> RelayCapture`
-    mints+registers the kind's `capture_spec`; `run_and_consume(client,
-    pi_session)` awaits the phone capture (with the kind's stimulus as the
-    `on_armed` callback) and feeds the verified WAV to the kind's existing
-    analysis seam.
+    ``open()`` mints the kind's session; ``run_and_consume(pi_session)`` walks
+    it and feeds each recorded WAV to the kind's analysis seam.
     """
 
     label: str
-    #: ``RelayClient | None`` because a LOCAL kind receives ``None`` (#2662
-    #: W2b — see ``local`` below); every relay kind still gets a real client.
-    open: Callable[[RelayClient | None, str, str, str], "RelayCapture"]
-    run_and_consume: Callable[
-        [RelayClient | None, PiCaptureSession], Awaitable[None]
-    ]
+    open: Callable[[], Any]
+    run_and_consume: Callable[[Any], Awaitable[None]]
     request_stop: Callable[[], None] | None = None
     #: A gated session's position gate, or None — the remote tier's, or a
-    #: hand-walked wired round's (#2879). Only the crossover
-    #: v2 kinds ever set it; every other flow leaves it unset and is untouched.
+    #: hand-walked round's (#2879). Only the crossover v2 kinds ever set it;
+    #: every other flow leaves it unset and is untouched.
     position_gate: Any | None = None
-    #: True for a LOCAL (wired) kind (#2662 W2b): the orchestrator then
-    #: constructs no RelayClient — there is no relay session, no tap link,
-    #: and no network dependency; ``open``/``run_and_consume`` receive
-    #: ``None`` for the client and ignore it.
-    local: bool = False
-    #: The wired session's completion signal (work order D1), or None. Routed
-    #: to POST /crossover/v2/complete via the slot, with the same lifecycle
+    #: The session's all-spots-measured signal, or None. Routed to
+    #: POST /crossover/v2/complete via the slot, with the same lifecycle
     #: as ``request_stop``.
     request_complete: Callable[[], None] | None = None
-    #: The wired session's per-take retake signal, or None. Routed to
+    #: The session's per-take retake signal, or None. Routed to
     #: POST /crossover/v2/retake via the slot, same lifecycle again.
     request_retake: Callable[[], None] | None = None
 
 
-def _require_relay_client(client: "RelayClient | None") -> "RelayClient":
-    """Narrow the seam's ``RelayClient | None`` inside a RELAY kind's closure.
-
-    Only a LOCAL (wired) kind receives ``None`` (#2662 W2b), and a local
-    kind never enters these closures — the orchestrator builds a real client
-    for every non-local kind — so ``None`` here is a wiring defect. Failing
-    loudly at the closure boundary beats an ``AttributeError`` deep inside a
-    relay helper.
-    """
-    if client is None:
-        raise RuntimeError(
-            "this relay capture kind was invoked without a relay client"
-        )
-    return client
 
 
-def _request_local_return_url(
-    handler: BaseHTTPRequestHandler | None,
-    path: str,
-) -> str:
-    """Build the local Pi URL the phone should return to after upload.
-
-    The POST has already passed `guard_mutating_request`, but this helper still
-    rejects host-shaped surprises before embedding the value in the public capture
-    spec. Prefer the exact Host the user's browser reached (`jts5.local`,
-    `jts5.local:port`, or a LAN IP); fall back to the configured hostname for
-    tests/non-browser callers.
-    """
-    raw_host = ""
-    if handler is not None:
-        raw_host = str(handler.headers.get("Host") or "").strip().rstrip(".")
-    fallback_host = str(os.environ.get("JASPER_HOSTNAME") or "jts.local").strip()
-    fallback_host = re.sub(r"^https?://", "", fallback_host).strip("/").rstrip(".")
-    host = raw_host if _RETURN_HOST_RE.match(raw_host) else fallback_host
-    if not _RETURN_HOST_RE.match(host):
-        host = "jts.local"
-    clean_path = path if path.startswith("/") else f"/{path}"
-    return f"http://{host}{clean_path}"
 
 
-def _relay_failure_reason(exc: BaseException) -> str:
-    """The stable log ``reason=`` for a relay-capture-lifecycle failure.
-
-    ``LevelMatchRefused`` (jasper.correction.level_match) carries the ramp's
-    own terminal code (e.g. ``agc_suspected``) — every refusal names its
-    reason, never a bare exception class. Every other exception keeps the
-    prior behavior: the exception class name.
-    """
-    from jasper.correction.level_match import LevelMatchRefused
-
-    if isinstance(exc, LevelMatchRefused):
-        return exc.code
-    return type(exc).__name__
 
 
 def _relay_failure_message(exc: BaseException) -> str:
-    """The phone/operator-facing text for a relay-capture-lifecycle failure.
-
-    ``LevelMatchRefused`` carries pre-translated homeowner copy (see
-    ``jasper.correction.level_match.describe_ramp_refusal``), so it needs no
-    special-case branch here: it falls straight through to the generic
-    ``str(exc)`` return below and still reads honestly. Hardware run 20
-    (2026-07-17, jts3) is why that is a requirement on the RAISE SITE and not
-    a catch-site fixup -- a refusal whose ``str(exc)`` is a raw
-    ``"...code=... band=...Hz"`` diagnostic leaks verbatim onto the wizard's
-    relay status line through this exact fallback. Any new refusal type
-    reaching this function owes its household copy at the raise site.
-
-    A bare socket/HTTP read timeout (Python's ``socket.timeout`` --
-    ``TimeoutError`` since 3.10 -- whose message is the literal programmer
-    string "The read operation timed out") means the phone relay connection
-    died mid-measurement; hardware run 19 surfaced that exact string
-    unchanged on the wizard's status line
-    (``deploy/assets/correction/js/crossover/main.js``'s ``renderRelay``
-    just echoes ``relay.error``). Route it through the same kind of honest,
-    actionable copy every other refusal gets instead.
-
-    ``CapturePageIncompatible``'s ``str(exc)`` is the raw protocol
-    diagnostic ("capture page is incompatible with this speaker (expected
-    protocol 3, observed 2, build ...)") -- right for the journal (the
-    ``event=capture_relay.page_incompatible`` log already carries the same
-    fields), wrong for the household surface. Map it to the one action that
-    fixes it: reload the phone page so it serves the current build.
+    """The household-facing text for a capture-lifecycle failure.
 
     ``CrossoverV2LocalSeamError`` (W6 hardware run 3 finding G) wraps a bare
-    ``OSError`` raised by the v2 crossover's LOCAL play/DSP seam -- e.g. the
-    DSP writer lock's ``os.open`` hitting a read-only ``config_dir``
-    (finding F), which surfaced the raw
+    ``OSError`` raised by the v2 crossover's play/DSP seam -- e.g. the DSP
+    writer lock's ``os.open`` hitting a read-only ``config_dir`` (finding F),
+    which surfaced the raw
     ``"[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"``
-    string on the wizard's relay status line via the generic ``str(exc)``
-    fallback below. Its household copy comes from the SAME
+    string on the wizard's status line via the generic ``str(exc)`` fallback
+    below. Its household copy comes from the SAME
     ``REASON_REGISTRY[REASON_INTERNAL_ERROR]`` text the v2 envelope itself
     renders for an internal error, so the two surfaces never say different
-    things about the same failure. The raw exception string still reaches
-    the journal unchanged -- this function only shapes what the household
-    sees; ``event=capture_relay.adapter_failed`` above logs with
-    ``exc_info=True`` regardless of the mapped message.
+    things about the same failure.
 
     The PROGRAM family -- ``ProgramPlaybackError`` (incl.
     ``ProgramPlaybackRefused``), ``ProgramAdmissionError``,
-    ``CrossoverV2FlowError`` -- is the leak issue #1820 filed. It had no branch
-    here at all, so ``ProgramPlaybackRefused``'s ``str(exc)``, built at its
-    raise site by joining raw enum values
+    ``CrossoverV2FlowError`` -- is the leak issue #1820 filed:
+    ``ProgramPlaybackRefused``'s ``str(exc)``, built at its raise site by
+    joining raw enum values
     (``"program re-admission refused: program_profile_not_confirmed"``),
-    reached the wizard's relay status line verbatim -- violating
+    reached the wizard's status line verbatim -- violating
     ``crossover_v2_flow``'s own written contract that a bare reason code never
     reaches the household. It routes through
     ``jasper.web.correction_crossover_v2.classify_program_failure``, the SAME
-    classifier the v2 session runner's cleanup arm uses to pick the phone's
-    failure screen, so the operator wizard and the phone name the same refusal
-    with the same sentence. The raw string still reaches the journal via the
-    ``exc_info=True`` log above.
+    classifier the v2 session runner's cleanup arm uses to pick the failure
+    screen, so both surfaces name the same refusal with the same sentence.
 
-    Every other exception falls back to ``str(exc)`` unchanged (prior
-    behavior) -- not evidenced as a wizard-facing problem, so left alone
-    per "scope fixes to the observed-broken path."
+    The raw exception string still reaches the journal unchanged --
+    ``event=correction.capture_failed`` logs with ``exc_info=True`` regardless
+    of the mapped message. Every other exception falls back to ``str(exc)``.
     """
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_INTERNAL_ERROR,
         REASON_REGISTRY,
     )
-    from jasper.capture_relay.session import CapturePageIncompatible
-    from jasper.correction.level_match import LevelMatchRefused
     from jasper.web.correction_crossover_v2 import (
         CrossoverV2LocalSeamError,
         classify_program_failure,
     )
 
-    if isinstance(exc, LevelMatchRefused):
-        return exc.user_message
-    if isinstance(exc, CapturePageIncompatible):
-        return (
-            "The measurement page is out of date for this speaker. "
-            "Close that tab and open a fresh link from this page."
-        )
-    if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
-        return (
-            "The connection to the measurement page timed out mid-measurement. "
-            "Reopen the link and try this step again."
-        )
     if isinstance(exc, CrossoverV2LocalSeamError):
         return REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     classified = classify_program_failure(exc)
@@ -1022,75 +684,46 @@ def _relay_failure_message(exc: BaseException) -> str:
 
 def _run_relay_capture(
     kind: RelayCaptureKind,
-    relay_base: str,
     *,
-    return_url: str,
     idle_hold: Callable[[str], AbstractContextManager[Any]],
 ) -> dict[str, Any]:
-    """Own the common relay-capture lifecycle for any kind. The caller has already
-    gated on the relay being configured and run the kind's own state/calibration
-    prechecks; this claims the slot, registers, spawns the background runner, and
-    surfaces the tap-link. Mirrors the room handler's prior inline body so room
-    behavior is unchanged — kinds just differ by their injected open/run.
+    """Own the common capture lifecycle for any kind. The caller has already run
+    the kind's own state/calibration prechecks; this claims the slot, mints the
+    session, and spawns the background runner.
 
     ``idle_hold`` — REQUIRED, no default. This function's job is spawning work
     that outlives its caller's HTTP request, and the socket-activated process
     `os._exit(0)`s after ~600 s with nothing inbound. On 2026-07-29 (JTS3,
-    issue #1854) that killed a crossover-v2 session mid-verify: its operator
-    WAS the phone, which had moved to the capture origin, so the wizard saw no
-    inbound traffic for the whole measurement. Whether this kind's runner needs
-    the process kept alive is a decision each call site owns and states:
+    issue #1854) that killed a crossover-v2 session mid-verify, because the
+    wizard saw no inbound traffic for the whole measurement. Whether this
+    kind's runner needs the process kept alive is a decision each call site
+    owns and states:
 
     * pass the process's real hold (``_systemd.IdleShutdownTracker.hold``, from
       ``main`` through the handler cfg) when the runner must survive an idle
-      window — long walks, phone-driven sessions, anything whose only traffic
-      is outbound;
+      window — long walks, anything whose only traffic is outbound;
     * pass ``_systemd.no_hold`` when it must not, or need not.
 
     A real hold is taken here, on the request thread BEFORE the runner is
     scheduled, and released in the runner's own ``finally``, so no window
     exists in either direction."""
-    from jasper.capture_relay import correction_adapter
-    from jasper.capture_relay.client import RelayClient
-    from jasper.capture_relay.health import relay_registration_token_from_env
-
     if not _begin_relay_capture(
         kind.label,
         request_stop=kind.request_stop,
         position_gate=kind.position_gate,
         request_complete=kind.request_complete,
         request_retake=kind.request_retake,
-        local=kind.local,
     ):
-        # Name the ACTUAL holder rather than assuming phone-mic relay: a wired
-        # (local) capture claims this same single slot (#2662 W2b), so a box
-        # with no phone in the loop at all could see this refusal read as one.
-        # A race between this read and the failed claim above can only ever
-        # widen to the generic relay wording below, never misreport a wired
-        # holder as something else.
         holder = _get_relay_capture()
-        if holder is not None and holder.get("source") == SOURCE_WIRED:
-            raise ValueError(
-                f"a wired capture ({holder.get('kind')}) already holds the "
-                "measurement slot; finish or cancel it before starting another"
-            )
-        raise ValueError("a phone-mic relay capture is already in progress")
-    capture_origin = correction_adapter.capture_origin_from_env()
+        raise ValueError(
+            f"a capture ({holder.get('kind') if holder else 'unknown'}) already "
+            "holds the measurement slot; finish or cancel it before starting "
+            "another"
+        )
     spawned = False
     session_hold = ExitStack()
     try:
-        # Register in the foreground (the session must exist before the phone opens
-        # the tap-link), bounded so a slow/unreachable relay fails fast.
-        # A LOCAL (wired) kind talks to no relay at all (#2662 W2b): no client
-        # exists, and its `open` mints the session in-process.
-        client = None
-        if not kind.local:
-            client = RelayClient(
-                relay_base,
-                timeout=_RELAY_REGISTER_TIMEOUT_S,
-                registration_token=relay_registration_token_from_env(),
-            )
-        rc = kind.open(client, relay_base, capture_origin, return_url)
+        rc = kind.open()
 
         async def _run() -> None:
             from jasper.active_speaker.crossover_v2.capture_source import (
@@ -1098,7 +731,7 @@ def _run_relay_capture(
             )
 
             try:
-                await kind.run_and_consume(client, rc.pi_session)
+                await kind.run_and_consume(rc.pi_session)
                 relay = _get_relay_capture()
                 if (
                     relay is not None
@@ -1106,38 +739,31 @@ def _run_relay_capture(
                     and relay.get("status") == "stopping"
                 ):
                     raise CaptureStopped("capture stopped")
-                _set_relay_capture(
-                    {"tap_link": rc.tap_link, "status": "complete", "kind": kind.label}
-                )
+                _set_relay_capture({"status": "complete", "kind": kind.label})
             except (asyncio.CancelledError, CaptureStopped):
                 _set_relay_capture({
-                    "tap_link": rc.tap_link,
                     "status": "stopped",
                     "kind": kind.label,
                     "error": "Measurement stopped safely.",
                 })
                 log_event(
                     logger,
-                    "capture_relay.adapter_stopped",
+                    "correction.capture_stopped",
                     kind=kind.label,
                 )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
-                # run_capture already logs event=capture_relay.failed with a
-                # traceback; this outer net also flips /status.relay to failed and
-                # carries the operator-facing reason (e.g. a device/calibration
-                # mismatch, or the ramp's own translated refusal — see
-                # _relay_failure_reason/_relay_failure_message) so the jts3/jts5
+                # This outer net flips /status.relay to failed and carries the
+                # household-facing reason (see _relay_failure_message) so the
                 # status page can show why.
                 log_event(
                     logger,
-                    "capture_relay.adapter_failed",
+                    "correction.capture_failed",
                     level=logging.WARNING,
                     exc_info=True,
                     kind=kind.label,
-                    reason=_relay_failure_reason(exc),
+                    reason=type(exc).__name__,
                 )
                 _set_relay_capture({
-                    "tap_link": rc.tap_link,
                     "status": "failed",
                     "kind": kind.label,
                     "error": _relay_failure_message(exc),
@@ -1149,35 +775,17 @@ def _run_relay_capture(
                 # session is genuinely over.
                 session_hold.close()
 
-        waiting = _publish_relay_waiting(kind.label, rc.tap_link)
-        session_hold.enter_context(idle_hold(f"relay:{kind.label}"))
+        waiting = _publish_relay_waiting(kind.label)
+        session_hold.enter_context(idle_hold(f"capture:{kind.label}"))
         asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
         spawned = True
-        return {"tap_link": rc.tap_link, "status": waiting["status"]}
+        return {"status": waiting["status"]}
     finally:
         if not spawned:
             session_hold.close()  # nothing will run to release it
             _set_relay_capture(None)  # release the slot on any early failure
 
 
-def _require_relay_base() -> str:
-    """Return the configured relay origin, or raise the gated-off ValueError.
-
-    Called FIRST by every relay endpoint so an operator can still set
-    JASPER_CAPTURE_RELAY_BASE=disabled/off/0/none and keep the on-Pi flow
-    byte-identical. Fresh installs seed https://relay.jasper.tech because phone
-    microphone access needs a publicly trusted HTTPS capture page. Also narrows
-    the value from str|None to str for the register call."""
-    from jasper.capture_relay.health import relay_base_from_env
-
-    relay_base = relay_base_from_env()
-    if relay_base is None:
-        raise ValueError(
-            "phone-mic relay capture is not configured — set "
-            "JASPER_CAPTURE_RELAY_BASE (and deploy the relay + capture page), or "
-            "use the on-Pi /correction/ capture flow"
-        )
-    return relay_base
 
 
 _start_in_progress = False
@@ -1674,97 +1282,6 @@ def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None
     _run_async(sess.state_changed_from(from_state), timeout=6.0)
 
 
-def _run_relay_measurement_sweep(
-    sess: Any,
-    cam: Any,
-    *,
-    client: RelayClient,
-    pi_session: PiCaptureSession,
-    repeat: bool = False,
-) -> None:
-    """Play one relay-triggered Room sweep and publish progress to the phone.
-
-    The old relay flow relied on a fixed phone-side recording window. The phone
-    now records until it sees ``phase=sweep_complete`` from the Pi, then keeps
-    the spec's post-roll. This function therefore blocks until the actual sweep
-    path returns, while still using the same measurement_window and
-    MeasurementSession transition code as the local browser flow.
-    """
-    from jasper.correction import coordinator, playback
-
-    control_client = _bounded_relay_control_client(client)
-
-    async def _host_event(phase: str, **extra: Any) -> None:
-        payload = {
-            "phase": phase,
-            "position": (
-                1
-                if repeat
-                else int(getattr(sess, "current_position", 0)) + 1
-            ),
-            "total_positions": int(getattr(sess, "total_positions", 1)),
-            "capture_kind": "repeat" if repeat else "measurement",
-            **extra,
-        }
-        await _post_room_sweep_host_event(
-            control_client,
-            pi_session,
-            payload,
-        )
-
-    async def _run_sweep() -> None:
-        async def _runtime_probe() -> dict[str, Any] | None:
-            return await cam.get_runtime_status(best_effort=True)
-
-        async with coordinator.measurement_window():
-            if not await sess.ensure_level_match_volume(
-                _assert_level_match_level
-            ):
-                raise RuntimeError(
-                    "the saved measurement level is unavailable; run the level "
-                    "check again"
-                )
-            try:
-                await _host_event("sweep_started")
-                prepare = (
-                    sess.prepare_and_play_repeat_sweep
-                    if repeat
-                    else sess.prepare_and_play_sweep
-                )
-                await prepare(
-                    playback.play_sweep,
-                    runtime_probe_async=_runtime_probe,
-                )
-                await _host_event("sweep_complete")
-            finally:
-                # The renderers resume when measurement_window exits. Restore
-                # the household listening volume before that boundary, on every
-                # success and failure path.
-                await sess.restore_level_match_volume(_household_level_door())
-
-    try:
-        _run_async(
-            _run_session_background_audio(sess, _run_sweep),
-            timeout=90.0,
-        )
-    except (concurrent.futures.TimeoutError, RuntimeError, OSError, ValueError):
-        try:
-            _run_async(
-                _host_event(
-                    "sweep_failed",
-                    error=_ROOM_SWEEP_PHONE_FAILURE,
-                    error_code="room_sweep_unavailable",
-                ),
-                timeout=_RELAY_LEVEL_PUMP_MAX_BLOCK_S + 1.0,
-            )
-        except (
-            concurrent.futures.TimeoutError,
-            RuntimeError,
-            OSError,
-            ValueError,
-        ):
-            logger.debug("could not publish relay sweep failure", exc_info=True)
-        raise
 
 
 def _schedule_repeat_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
@@ -1979,49 +1496,8 @@ def _stored_calibration_identity_refused(
     return True
 
 
-def _relay_device_calibration_block(
-    mic_calibration: Any, device: dict[str, Any] | None
-) -> str | None:
-    """Whether to REFUSE a phone-relay capture because a loaded mic calibration
-    can't be trusted for the mic the phone actually used.
-
-    A relay capture is recorded by whatever input the phone selected — its
-    built-in mic, OR a USB-C measurement mic plugged into the phone. A loaded
-    vendor calibration curve is valid only for that USB measurement mic, never the
-    phone's built-in. We can't know which until the phone arms a recording, so
-    this runs before playback and again post-capture against the phone-reported
-    `device` (the same built-in-vs-USB decision the same-origin browser flow
-    makes via `_calibration_device_mismatch`):
-
-      - no calibration loaded            → allow (nothing to mis-apply);
-      - calibration loaded, no device    → refuse (can't verify the mic — an older
-                                            capture page, or a non-compliant client);
-      - calibration loaded, device given → defer to `_calibration_device_mismatch`
-                                            (refuse a built-in-mic label, allow the
-                                            USB measurement mic the curve is for).
-
-    Returns a refusal message, or None to allow. The calibration itself is applied
-    Pi-side in the owning analysis path; this only gates whether the capture
-    is trustworthy to analyze.
-    """
-    if mic_calibration is None:
-        return None
-    label = (device or {}).get("label") or (device or {}).get("browser_label")
-    if not label:
-        return (
-            "a measurement-mic calibration is loaded, but the measurement page "
-            "didn't report which mic it used — update the capture page, or remove "
-            "the calibration to measure with the built-in mic"
-        )
-    return _calibration_device_mismatch(mic_calibration, device)
 
 
-@dataclass(frozen=True)
-class _RelayLevelIdentity:
-    """Mic + calibration identity acquired by the automatic level check."""
-
-    calibration_id: str
-    device_key: str
 
 
 @dataclass(frozen=True)
@@ -2046,146 +1522,20 @@ class _BoundRelayCalibration:
     saved: bool = False
 
 
-@dataclass(frozen=True)
-class _RelaySetupBinding:
-    """Pi-validated identity for one guided microphone setup.
-
-    ``calibration`` rides along but is deliberately ``compare=False``: binding
-    EQUALITY means "same setup identity + digest" and is what
-    `_run_relay_level_match` uses to reject a mutated setup mid-run. Letting the
-    resolved calibration into that comparison would make a second level match
-    under an unchanged binding read as "the microphone setup changed".
-    """
-
-    binding_id: str
-    sha256: str
-    calibration: _BoundRelayCalibration | None = field(default=None, compare=False)
 
 
-def _setup_digest(setup: dict[str, Any]) -> str:
-    raw = json.dumps(
-        setup,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
 
 
-def _validated_relay_setup_binding(
-    setup: dict[str, Any],
-    identity: dict[str, Any] | None,
-    *,
-    expected_binding_id: str,
-) -> _RelaySetupBinding:
-    """Validate a full setup without mutating the current measurement owner."""
-    if not isinstance(identity, dict):
-        raise ValueError("the measurement page did not provide a setup identity")
-    binding_id = str(identity.get("binding_id") or "")
-    digest = str(identity.get("sha256") or "").lower()
-    if identity.get("schema") != 1 or binding_id != expected_binding_id:
-        raise ValueError("this setup belongs to a different measurement run")
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError("the setup identity is malformed")
-    if not secrets.compare_digest(digest, _setup_digest(setup)):
-        raise ValueError("the setup identity does not match its contents")
-    return _RelaySetupBinding(binding_id=binding_id, sha256=digest)
 
 
-def _bind_relay_setup(
-    owner: Any,
-    setup: dict[str, Any],
-    identity: dict[str, Any] | None,
-    *,
-    expected_binding_id: str,
-) -> _RelaySetupBinding:
-    """Validate the full one-time setup and freeze its compact identity."""
-    binding = _validated_relay_setup_binding(
-        setup,
-        identity,
-        expected_binding_id=expected_binding_id,
-    )
-    owner.relay_setup_binding = binding
-    return binding
 
 
-def _assert_relay_setup_binding(
-    owner: Any,
-    compact_setup: dict[str, Any] | None,
-    *,
-    expected_binding_id: str,
-) -> None:
-    """Refuse stale/mutated follow-up links without resending raw setup."""
-    claim = (
-        compact_setup.get("binding")
-        if isinstance(compact_setup, dict)
-        else None
-    )
-    bound = getattr(owner, "relay_setup_binding", None)
-    if not isinstance(bound, _RelaySetupBinding):
-        raise ValueError("the microphone setup is no longer active; run level check")
-    if not isinstance(claim, dict) or claim.get("schema") != 1:
-        raise ValueError("the measurement page did not provide the frozen mic setup")
-    if (
-        str(claim.get("binding_id") or "") != expected_binding_id
-        or str(claim.get("binding_id") or "") != bound.binding_id
-        or not secrets.compare_digest(
-            str(claim.get("sha256") or "").lower(), bound.sha256
-        )
-    ):
-        raise ValueError("the microphone setup changed; run the level check again")
 
 
-def _relay_device_key(device: dict[str, Any] | None) -> str:
-    values = dict(device or {})
-    return str(
-        values.get("actual_device_id_hash")
-        or values.get("device_id_hash")
-        or values.get("label")
-        or values.get("browser_label")
-        or ""
-    ).casefold()
 
 
-def _relay_level_identity(sess: Any) -> _RelayLevelIdentity:
-    device = dict(getattr(sess, "input_device", None) or {})
-    return _RelayLevelIdentity(
-        calibration_id=str(
-            getattr(
-                getattr(sess, "mic_calibration", None), "calibration_id", ""
-            )
-            or ""
-        ),
-        device_key=_relay_device_key(device),
-    )
 
 
-def _assert_relay_level_identity(
-    sess: Any,
-    expected: _RelayLevelIdentity,
-    *,
-    device: dict[str, Any] | None = None,
-) -> None:
-    """Refuse a sweep if its mic/calibration differs from its level check."""
-    current = _relay_level_identity(sess)
-    if current.calibration_id != expected.calibration_id:
-        raise ValueError(
-            "the microphone calibration changed after level matching; run the "
-            "level check again"
-        )
-    if device is None:
-        return
-    actual = _sanitize_input_device(device) or {}
-    actual_key = _relay_device_key(actual)
-    if expected.device_key and not actual_key:
-        raise ValueError(
-            "the measurement page did not identify the microphone used for "
-            "the sweep; run the level check again"
-        )
-    if expected.device_key and actual_key != expected.device_key:
-        raise ValueError(
-            "the microphone changed after level matching; select the same "
-            "microphone or run the level check again"
-        )
 
 
 async def _read_room_correction_readiness_with_graph(
@@ -3556,96 +2906,10 @@ def _resolve_relay_calibration(
     raise ValueError(f"unknown calibration mode: {mode}")
 
 
-def _apply_relay_setup_to_session(
-    sess: Any,
-    setup: dict[str, Any] | None,
-    *,
-    device: Mapping[str, Any] | None = None,
-) -> None:
-    """Apply phone microphone/calibration setup without changing Room policy.
-
-    ``device`` is this capture's REALIZED input device as the phone reported
-    it, threaded into `_relay_calibration_from_setup` exactly as
-    `correction_crossover_v2.resolve_relay_calibration` does, so a
-    ``mode="stored"`` re-confirm carrying a DIFFERENT mic's calibration is
-    refused rather than applied blind (issue #1660). Callers that have no
-    realized device to offer (the default) keep the previous behavior; the
-    BOUND relay flows bind through `_bind_relay_calibration` instead and
-    re-decide per level match in `_apply_bound_calibration_for_device`.
-    """
-    if not isinstance(setup, dict):
-        return
-    if isinstance(setup.get("calibration"), dict):
-        sess.mic_calibration = _relay_calibration_from_setup(setup, device=device)
 
 
-def _bind_relay_calibration(
-    sess: Any, setup: dict[str, Any] | None, binding: _RelaySetupBinding
-) -> _RelaySetupBinding:
-    """Resolve a BOUND setup's calibration and carry it ON the binding.
-
-    Called once per binding, from the `setup_validate` handshake, and returns
-    the binding to store. The realized capture device is not in that payload —
-    the phone declares only ``{setup_validate, setup_token, setup,
-    setup_identity}`` — so nothing is persisted here and no identity decision
-    is made here. Both wait for `_apply_bound_calibration_for_device`, which
-    runs on every level match under this binding once the phone reports the mic
-    that actually recorded.
-
-    The resolved calibration rides the binding rather than a sibling session
-    attribute so it has exactly the binding's lifetime: the crossover lease's
-    reset already clears `relay_setup_binding`, which must not be able to leave
-    a calibration behind it.
-
-    ``sess.mic_calibration`` is still assigned so the session is never left
-    describing a calibration the household did not choose; the per-match
-    decision then confirms or drops it before any sweep can run.
-    """
-    if not isinstance(setup, dict) or not isinstance(setup.get("calibration"), dict):
-        return binding
-    bound = _resolve_relay_calibration(setup)
-    sess.mic_calibration = bound.record if bound is not None else None
-    return replace(binding, calibration=bound)
 
 
-def _apply_bound_calibration_for_device(
-    sess: Any, device: Mapping[str, Any] | None
-) -> None:
-    """Decide THIS level match's calibration, now that the realized mic is known.
-
-    The one decision point for every level match under a setup binding. A
-    session runs several — the shipped Retry level check and Check verification
-    level routes both re-enter `_run_relay_level_match` against the SAME
-    binding — and each must judge its own realized microphone rather than
-    inherit whatever the first match applied (issue #1660). So this is keyed on
-    the binding's own calibration, not on anything local to one match:
-
-    - identity refused → drop the curve, never persist (the analysis degrades
-      to annotated-uncalibrated; the capture is never blocked);
-    - otherwise → apply it, and persist the household mic on the FIRST match
-      that gets this far, so `event=correction.household_mic_saved` never
-      fires for a mic nobody has seen yet, and never re-fires per retry.
-
-    Because the decision re-runs per match, a refused match followed by a
-    correct-mic retry re-applies the calibration on its own.
-    """
-    binding = getattr(sess, "relay_setup_binding", None)
-    if not isinstance(binding, _RelaySetupBinding):
-        return
-    bound = binding.calibration
-    if not isinstance(bound, _BoundRelayCalibration):
-        return
-    if bound.mode == "stored" and _stored_calibration_identity_refused(
-        bound.record, device
-    ):
-        sess.mic_calibration = None
-        return
-    sess.mic_calibration = bound.record
-    if not bound.saved:
-        _save_household_mic(bound.record, serial=bound.serial)
-        sess.relay_setup_binding = replace(
-            binding, calibration=replace(bound, saved=True)
-        )
 
 
 def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -3662,10 +2926,6 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     snap["current_correction"] = current_config.get("current_correction")
     snap["current_correction_presentation"] = presentation
     snap["last_dsp_apply"] = last_dsp_apply_state()
-    # Active phone-mic-relay capture, when one is in flight (tap-link + status).
-    # None on the default on-Pi flow, so the page only shows the relay UI when the
-    # operator has enabled it.
-    snap["relay"] = _get_relay_capture_for("room_", "level_ramp:room")
     return snap
 
 
@@ -4070,1049 +3330,27 @@ def _handle_upload_capture(
     }
 
 
-def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /relay/capture: capture the current position via the cloud relay (the
-    phone runs the capture page on jasper.tech) instead of a same-origin browser
-    upload.
-
-    The relay remains config-gated, but is the fresh-install Room default when
-    configured. It mints a relay session, returns the phone tap-link, and runs
-    the capture in the background: when the phone is recording (it drops
-    `armed`), the Pi first verifies the level-check microphone identity and then
-    plays the sweep through the SAME measurement_window()/
-    prepare_and_play_sweep path the browser flow uses (loud-output safety +
-    renderer/voice pause preserved). It then pulls + decrypts + verifies and
-    feeds the WAV into the normal position or same-seat repeat seam at the
-    identical 48 kHz / mono / 32 MB boundary as a same-origin upload.
-
-    ON-DEVICE: the background sweep playback and the real measurement cannot be
-    exercised hardware-free — only the config gate, the state guard, and the seam
-    wiring are unit-tested. The relay Worker + capture page must be deployed and
-    the phone must reach jasper.tech. Audible failure cues await a
-    jasper-web -> jasper-voice cue bridge; until then failures surface on the
-    capture page, on the jts.local status page (`relay.status`), and in
-    `event=capture_relay.*` logs. This is the integration point the
-    docs/phone-mic-relay-plan.md adapter step describes.
-    """
-    from jasper.capture_relay import correction_adapter
-    from jasper.correction.session import SessionState
-
-    relay_base = _require_relay_base()  # gated off until configured; inert otherwise
-
-    sess = _get_or_create_session()
-    if sess is None:
-        raise RuntimeError("no session — POST /start first")
-    # A relay capture owns either the next distinct position or the automatic
-    # main-seat trust repeat. Freeze that mode before background work starts.
-    if sess.state not in {
-        SessionState.NEEDS_NOISE_CAPTURE,
-        SessionState.NEEDS_REPEAT_CAPTURE,
-    }:
-        raise ValueError(
-            "relay capture starts a measurement position or trust repeat; got "
-            f"{sess.state.value}"
-        )
-    is_repeat = sess.state == SessionState.NEEDS_REPEAT_CAPTURE
-    level_identity = _relay_level_identity(sess)
-    if not level_identity.device_key:
-        raise ValueError(
-            "the level check did not identify its microphone; run it again"
-        )
-
-    def _open(
-        client: RelayClient | None,
-        base: str,
-        capture_origin: str,
-        return_url: str,
-    ) -> RelayCapture:
-        client = _require_relay_client(client)
-        return correction_adapter.open_room_sweep_capture(
-            client,
-            position=1 if is_repeat else sess.current_position + 1,
-            total_positions=sess.total_positions,
-            relay_base=base,
-            capture_origin=capture_origin,
-            return_url=return_url,
-            guided_setup=False,
-            presentation_variant="trust_repeat" if is_repeat else "",
-        )
-
-    async def _run_and_consume(
-        client: RelayClient | None, pi_session: PiCaptureSession
-    ) -> None:
-        client = _require_relay_client(client)
-        _assert_room_relay_alignment_policy(pi_session)
-        # On `armed` (phone recording), play the sweep through the SAME
-        # measurement_window()/prepare_and_play_sweep path the browser flow uses
-        # (loud-output safety + renderer/voice pause preserved). run_capture's
-        # default 120 s timeout is intentionally ~ the AWAITING_CAPTURE watchdog;
-        # keep them aligned if either constant changes.
-        capture_path = (
-            sess.repeat_capture_path_for_position(0)
-            if is_repeat
-            else sess.capture_path_for_position(sess.current_position)
-        )
-
-        def _on_armed(state: Any) -> None:
-            try:
-                device = state.device if isinstance(state.device, dict) else None
-                _assert_relay_level_identity(
-                    sess,
-                    level_identity,
-                    device=device,
-                )
-                calibration_block = _relay_device_calibration_block(
-                    sess.mic_calibration,
-                    device,
-                )
-                if calibration_block is not None:
-                    raise ValueError(calibration_block)
-                if state.noise_floor:
-                    try:
-                        sess.noise_floor_db = float(
-                            state.noise_floor.get("rms_dbfs")
-                        )
-                    except (TypeError, ValueError):
-                        logger.debug(
-                            "relay noise_floor ignored: %r",
-                            state.noise_floor,
-                        )
-            except (RuntimeError, ValueError):
-                try:
-                    client.post_host_event(
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {
-                            "phase": "sweep_failed",
-                            "error": _ROOM_SWEEP_PHONE_FAILURE,
-                            "error_code": "room_sweep_unavailable",
-                        },
-                    )
-                except (RuntimeError, OSError, ValueError):
-                    logger.debug("relay setup failure event failed", exc_info=True)
-                raise
-            _run_relay_measurement_sweep(
-                sess,
-                _camilla(),
-                client=client,
-                pi_session=pi_session,
-                repeat=is_repeat,
-            )
-
-        try:
-            result = await asyncio.to_thread(
-                correction_adapter.run_and_store,
-                client,
-                pi_session,
-                capture_path,
-                on_armed=_on_armed,
-            )
-            # Device-aware calibration gate (the phone's mic is known only now):
-            # refuse a loaded vendor curve on the phone's built-in mic, allow it
-            # for the matching USB measurement mic.
-            block = _relay_device_calibration_block(
-                sess.mic_calibration, result.device
-            )
-            if block is not None:
-                raise ValueError(block)
-            _assert_relay_level_identity(
-                sess, level_identity, device=result.device
-            )
-            if result.noise_floor:
-                try:
-                    rms_raw = result.noise_floor.get("rms_dbfs")
-                    if rms_raw is None:
-                        raise ValueError
-                    sess.noise_floor_db = float(rms_raw)
-                except (TypeError, ValueError):
-                    logger.debug(
-                        "relay noise_floor ignored: %r",
-                        result.noise_floor,
-                    )
-            if is_repeat:
-                await sess.on_repeat_capture_uploaded(capture_path)
-            else:
-                await sess.on_capture_uploaded(capture_path)
-            _log_room_relay_alignment(
-                sess,
-                pi_session,
-                capture_kind="repeat" if is_repeat else "measurement",
-            )
-        finally:
-            # Idempotent backstop for failures before the armed/sweep window.
-            await sess.restore_level_match_volume(_household_level_door())
-
-    kind = RelayCaptureKind(
-        label="room_repeat" if is_repeat else "room_sweep",
-        open=_open,
-        run_and_consume=_run_and_consume,
-    )
-    relay = _run_relay_capture(
-        kind,
-        relay_base,
-        return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
-        # One capture, bounded by run_capture's own timeouts: it cannot sit
-        # through a 600 s inbound-idle window the way a multi-position cloud
-        # does, so no hold; reviewed and deliberately left unheld by #1860.
-        idle_hold=no_hold,
-    )
-    return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
 
-def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /relay/verify: record and analyze the real post-apply response."""
-    from jasper.capture_relay import correction_adapter
-    from jasper.capture_relay.spec import build_room_sweep_spec
-    from jasper.correction.session import SessionState
-
-    relay_base = _require_relay_base()
-    sess = _get_or_create_session()
-    if sess.state not in {SessionState.APPLIED, SessionState.VERIFIED}:
-        raise ValueError("verification requires an applied room correction")
-    last = sess.level_match_snapshot().get("last")
-    ramp = last.get("ramp") if isinstance(last, dict) else None
-    if not (
-        isinstance(ramp, dict)
-        and ramp.get("state") == "locked"
-    ):
-        raise ValueError("check the listening-position level before verification")
-    level_identity = _relay_level_identity(sess)
-    if not level_identity.device_key:
-        raise ValueError(
-            "the level check did not identify its microphone; run it again"
-        )
-
-    def _open(
-        client: RelayClient | None,
-        base: str,
-        capture_origin: str,
-        return_url: str,
-    ) -> RelayCapture:
-        client = _require_relay_client(client)
-        return correction_adapter.open_capture(
-            client,
-            build_room_sweep_spec(
-                position=1,
-                total_positions=1,
-                guided_setup=False,
-            ),
-            relay_base=base,
-            capture_origin=capture_origin,
-            return_url=return_url,
-        )
-
-    async def _run_and_consume(
-        client: RelayClient | None, pi_session: PiCaptureSession
-    ) -> None:
-        client = _require_relay_client(client)
-        from jasper.capture_relay.session import purge, run_capture
-        from jasper.correction import coordinator, playback
-
-        _assert_room_relay_alignment_policy(pi_session)
-        cam = _camilla()
-        capture_path = sess.verify_capture_path()
-        control_client = _bounded_relay_control_client(client)
-
-        async def _play_verify() -> None:
-            async def _runtime_probe() -> dict[str, Any] | None:
-                return await cam.get_runtime_status(best_effort=True)
-
-            async with coordinator.measurement_window():
-                if not await sess.ensure_level_match_volume(
-                    _assert_level_match_level
-                ):
-                    raise RuntimeError(
-                        "the verification level is no longer active; run the "
-                        "level check again"
-                    )
-                try:
-                    await _post_room_sweep_host_event(
-                        control_client,
-                        pi_session,
-                        {
-                            "phase": "sweep_started",
-                            "position": 1,
-                            "total_positions": 1,
-                            "capture_kind": "verify",
-                        },
-                    )
-                    await sess.start_verify_sweep(
-                        playback.play_sweep,
-                        runtime_probe_async=_runtime_probe,
-                    )
-                    await _post_room_sweep_host_event(
-                        control_client,
-                        pi_session,
-                        {
-                            "phase": "sweep_complete",
-                            "position": 1,
-                            "total_positions": 1,
-                            "capture_kind": "verify",
-                        },
-                    )
-                finally:
-                    await sess.restore_level_match_volume(_household_level_door())
-
-        def _on_armed(state: Any) -> None:
-            try:
-                device = state.device if isinstance(state.device, dict) else None
-                _assert_relay_level_identity(
-                    sess,
-                    level_identity,
-                    device=device,
-                )
-                calibration_block = _relay_device_calibration_block(
-                    sess.mic_calibration,
-                    device,
-                )
-                if calibration_block is not None:
-                    raise ValueError(calibration_block)
-            except (RuntimeError, ValueError):
-                try:
-                    client.post_host_event(
-                        pi_session.session_id,
-                        pi_session.pull_token,
-                        {
-                            "phase": "sweep_failed",
-                            "error": _ROOM_SWEEP_PHONE_FAILURE,
-                            "error_code": "room_sweep_unavailable",
-                        },
-                    )
-                except (RuntimeError, OSError, ValueError):
-                    logger.debug(
-                        "relay verify failure event failed",
-                        exc_info=True,
-                    )
-                raise
-            _run_async(
-                _run_session_background_audio(sess, _play_verify),
-                timeout=90.0,
-            )
-
-        try:
-            result = await asyncio.to_thread(
-                run_capture,
-                client,
-                pi_session,
-                on_armed=_on_armed,
-            )
-            block = _relay_device_calibration_block(
-                sess.mic_calibration, result.device
-            )
-            if block is not None:
-                raise ValueError(block)
-            _assert_relay_level_identity(
-                sess, level_identity, device=result.device
-            )
-            capture_path.parent.mkdir(parents=True, exist_ok=True)
-            capture_path.write_bytes(result.wav)
-            await sess.on_verify_capture_uploaded(capture_path)
-            _log_room_relay_alignment(
-                sess,
-                pi_session,
-                capture_kind="verify",
-            )
-            await asyncio.to_thread(_maybe_auto_revert, sess)
-        finally:
-            try:
-                await asyncio.to_thread(purge, client, pi_session)
-            except (OSError, RuntimeError, ValueError):
-                logger.debug("verify relay purge failed", exc_info=True)
-            await sess.restore_level_match_volume(_household_level_door())
-
-    relay = _run_relay_capture(
-        RelayCaptureKind(
-            label="room_verify",
-            open=_open,
-            run_and_consume=_run_and_consume,
-        ),
-        relay_base,
-        return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
-        # One capture, bounded by run_capture's own timeouts: it cannot sit
-        # through a 600 s inbound-idle window the way a multi-position cloud
-        # does, so no hold; reviewed and deliberately left unheld by #1860.
-        idle_hold=no_hold,
-    )
-    return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
 
-async def _run_relay_level_match(
-    sess: Any,
-    client: Any,
-    pi_session: Any,
-    *,
-    geometry: str,
-    run_token: str,
-    setup_binding_id: str = "",
-    context_id: str | None = None,
-    tone_frequency_hz: float = 1000.0,
-    prepare_tone: Callable[[], Any] | None = None,
-    restore_tone: Callable[[Any], Any] | None = None,
-    expected_level_identity: _RelayLevelIdentity | None = None,
-    reuse_noise_floor: bool = True,
-    stop_requested: Callable[[], bool] | None = None,
-    stop_lock: Any = None,
-    begin_commit: Callable[[], bool] | None = None,
-) -> None:
-    """Run one relay-fed level match without blocking the correction loop.
-
-    ``MeasurementSession`` owns the level state and volume lease.  This adapter
-    owns only transport: one cached status snapshot plus a serialized outbound
-    host-event queue.  The ramp never performs a blocking relay request from its
-    control loop and never gains a direct reference to the relay client.
-    """
-    from jasper.active_speaker.crossover_v2.capture_source import (
-        CaptureFailed,
-        CaptureStopped,
-    )
-    from jasper.capture_relay.integrity import CaptureIntegrityError
-    from jasper.capture_relay.session import (
-        CAPTURE_INCOMPATIBLE_USER_MESSAGE,
-        PhoneEventVerifier,
-        purge,
-    )
-    from jasper.correction import coordinator, playback
-    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
-
-    cached_status: dict[str, Any] = {}
-    outbound: list[dict[str, Any]] = []
-    stop_pump = asyncio.Event()
-    pump_error: list[Exception] = []
-    level_task: asyncio.Task[Any] | None = None
-    stop_lock = stop_lock or threading.Lock()
-    event_verifier = PhoneEventVerifier(pi_session)
-    from jasper.capture_relay.client import RelayClient
-
-    control_client = (
-        client.with_timeout(_RELAY_CONTROL_TIMEOUT_S)
-        if isinstance(client, RelayClient)
-        else client  # injected deterministic test double
-    )
-
-    def _read_status() -> dict[str, Any]:
-        return dict(cached_status)
-
-    def _queue_host_event(payload: dict[str, Any]) -> None:
-        outbound.append(dict(payload))
-
-    async def _pump() -> None:
-        unhealthy = False
-        host_event_unconfirmed = False
-        while not stop_pump.is_set():
-            if stop_requested is not None and stop_requested():
-                cancel_level_match = getattr(sess, "cancel_level_match", None)
-                try:
-                    cancelled = False
-                    if callable(cancel_level_match):
-                        cancelled = bool(await cancel_level_match())
-                    if not cancelled and level_task is not None:
-                        level_task.cancel()
-                except (OSError, RuntimeError, ValueError) as exc:
-                    pump_error.append(exc)
-                else:
-                    pump_error.append(CaptureStopped("capture stopped"))
-                stop_pump.set()
-                return
-            try:
-                # Publish at most one queued event before refreshing status.
-                # Together with the narrow control client this keeps the real
-                # elapsed retry+status budget below feed_timeout_s.
-                if outbound:
-                    payload = outbound.pop(0)
-                    try:
-                        await _post_relay_host_event(
-                            control_client,
-                            pi_session,
-                            payload,
-                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-                        )
-                    except (OSError, RuntimeError, ValueError) as exc:
-                        # A response timeout is ambiguous: the ordered write may
-                        # already have committed. Status is the live microphone
-                        # feed, so it must still get its turn this iteration;
-                        # otherwise repeated slow acknowledgements alone can
-                        # manufacture an eight-second feed-loss failure.
-                        if not host_event_unconfirmed:
-                            log_event(
-                                logger,
-                                "capture_relay.level_host_event",
-                                level=logging.WARNING,
-                                session_id=pi_session.session_id,
-                                result="unconfirmed",
-                                reason=type(exc).__name__,
-                            )
-                        host_event_unconfirmed = True
-                    else:
-                        if host_event_unconfirmed:
-                            log_event(
-                                logger,
-                                "capture_relay.level_host_event",
-                                session_id=pi_session.session_id,
-                                result="recovered",
-                            )
-                        host_event_unconfirmed = False
-                fresh = await _run_relay_control_request(
-                    control_client.status,
-                    pi_session.session_id,
-                    pi_session.pull_token,
-                    hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-                )
-                if isinstance(fresh, dict):
-                    verified_event = event_verifier.verify(fresh.get("event"))
-                    fresh = {**fresh, "event": verified_event}
-                    cached_status.clear()
-                    cached_status.update(fresh)
-                if unhealthy:
-                    unhealthy = False
-                    logger.info("relay status pump recovered during level match")
-            except CaptureIntegrityError as exc:
-                log_event(
-                    logger,
-                    "capture_relay.phone_event_integrity_failed",
-                    level=logging.WARNING,
-                    session_id=pi_session.session_id,
-                    kind=pi_session.spec.kind,
-                    reason=str(exc),
-                )
-                try:
-                    await _post_relay_host_event(
-                        control_client,
-                        pi_session,
-                        {
-                            "phase": "capture_incompatible",
-                            # Friendly household-facing copy (W6.10 blocker #4e) —
-                            # the raw "integrity check failed" is developer jargon.
-                            "error": CAPTURE_INCOMPATIBLE_USER_MESSAGE,
-                        },
-                        hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-                    )
-                except (OSError, RuntimeError, ValueError):
-                    logger.warning(
-                        "could not publish level-match integrity failure",
-                        exc_info=True,
-                    )
-                pump_error.append(
-                    CaptureFailed("capture control integrity check failed")
-                )
-                stop_pump.set()
-                return
-            except (OSError, RuntimeError, ValueError):
-                if not unhealthy:
-                    unhealthy = True
-                    logger.warning(
-                        "relay status pump failed during level match "
-                        "(latched until recovery)",
-                        exc_info=True,
-                    )
-            try:
-                await asyncio.wait_for(stop_pump.wait(), timeout=0.25)
-            except asyncio.TimeoutError:
-                pass
-
-    pump_task = asyncio.create_task(_pump())
-    cam = _camilla()
-    player = None
-    setup_tokens_seen: set[str] = set()
-    page_compatible = False
-    try:
-        async with coordinator.measurement_window():
-            from jasper.correction.level_match import parse_level_batch
-
-            # The phone starts its meter before the Pi starts the tone. Build a
-            # deduplicated token-scoped ambient window so ordinary room noise
-            # cannot satisfy the tone target and repeated relay polls cannot
-            # manufacture sample count.
-            initial_noise_floor = (
-                getattr(sess, "noise_floor_db", None)
-                if reuse_noise_floor
-                else None
-            )
-            ambient_samples: dict[tuple[int, int], float] = {}
-            # The relay runner starts when the link is minted, not when the
-            # household opens it. Give the sequential setup + Start tap a
-            # human-scale bounded window; the ramp itself owns its much shorter
-            # acoustic safety timeout once samples begin.
-            deadline = asyncio.get_running_loop().time() + 480.0
-            while True:
-                if pump_error:
-                    raise pump_error[0]
-                event = cached_status.get("event")
-                if isinstance(event, dict) and not page_compatible and any(
-                    key in event
-                    for key in ("setup_validate", "level_refused", "level_batch")
-                ):
-                    from jasper.capture_relay.session import (
-                        CapturePageIncompatible,
-                        validate_capture_page,
-                    )
-
-                    try:
-                        validate_capture_page(
-                            event.get("capture_page"), pi_session.spec
-                        )
-                    except CapturePageIncompatible:
-                        log_event(
-                            logger,
-                            "capture_relay.page_incompatible",
-                            level=logging.WARNING,
-                            session_id=pi_session.session_id,
-                            expected_protocol=pi_session.spec.capture_protocol_version,
-                            observed_protocol=(event.get("capture_page") or {}).get(
-                                "capture_protocol_version"
-                            ),
-                            observed_build=(event.get("capture_page") or {}).get(
-                                "capture_page_build"
-                            ),
-                        )
-                        raise
-                    page_compatible = True
-                    log_event(
-                        logger,
-                        "capture_relay.page_compatible",
-                        session_id=pi_session.session_id,
-                        protocol=pi_session.spec.capture_protocol_version,
-                        page_build=(event.get("capture_page") or {}).get(
-                            "capture_page_build"
-                        ),
-                    )
-                if isinstance(event, dict) and event.get("setup_validate"):
-                    setup_token = str(event.get("setup_token") or "")
-                    if setup_token and setup_token not in setup_tokens_seen:
-                        setup_tokens_seen.add(setup_token)
-                        setup = event.get("setup")
-                        try:
-                            if not isinstance(setup, dict):
-                                raise ValueError("the setup is missing")
-                            if setup_binding_id:
-                                candidate_binding = _validated_relay_setup_binding(
-                                    setup,
-                                    event.get("setup_identity"),
-                                    expected_binding_id=setup_binding_id,
-                                )
-                                existing_binding = getattr(
-                                    sess, "relay_setup_binding", None
-                                )
-                                if (
-                                    existing_binding is not None
-                                    and candidate_binding != existing_binding
-                                ):
-                                    raise ValueError(
-                                        "the microphone setup changed; run the "
-                                        "level check again"
-                                    )
-                                if existing_binding is None:
-                                    previous_calibration = getattr(
-                                        sess, "mic_calibration", None
-                                    )
-                                    try:
-                                        # This payload declares no device, so
-                                        # the calibration is only RESOLVED here
-                                        # — the identity decision and the
-                                        # household-mic write both wait for the
-                                        # realized mic on the first level batch.
-                                        candidate_binding = _bind_relay_calibration(
-                                            sess, setup, candidate_binding
-                                        )
-                                    except (RuntimeError, ValueError):
-                                        sess.mic_calibration = previous_calibration
-                                        raise
-                                    sess.relay_setup_binding = candidate_binding
-                            else:
-                                _apply_relay_setup_to_session(sess, setup)
-                        except (RuntimeError, ValueError) as exc:
-                            response = {
-                                "phase": "setup_validation_failed",
-                                "setup_token": setup_token,
-                                "error": str(exc),
-                            }
-                        else:
-                            response = {
-                                "phase": "setup_validated",
-                                "setup_token": setup_token,
-                            }
-                        await _post_relay_host_event(
-                            control_client,
-                            pi_session,
-                            response,
-                            hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-                        )
-                        if response["phase"] == "setup_validation_failed":
-                            raise ValueError(str(response["error"]))
-                refusal = (
-                    event.get("level_refused")
-                    if isinstance(event, dict)
-                    else None
-                )
-                if (
-                    isinstance(refusal, dict)
-                    and str(refusal.get("run_token") or "") == run_token
-                ):
-                    reason = str(refusal.get("reason") or "unsupported_microphone")
-                    if reason == "agc_not_proven_off":
-                        raise RuntimeError(
-                            "this browser cannot prove automatic microphone gain "
-                            "is disabled; use a supported browser or USB measurement "
-                            "microphone"
-                        )
-                    raise RuntimeError(
-                        f"the measurement page refused the level check: {reason}"
-                    )
-                samples = parse_level_batch(
-                    event if isinstance(event, dict) else {},
-                    run_token=run_token,
-                )
-                if samples:
-                    batch = (
-                        event.get("level_batch") if isinstance(event, dict) else None
-                    )
-                    context = (
-                        batch.get("context") if isinstance(batch, dict) else None
-                    )
-                    if isinstance(context, dict):
-                        setup = context.get("setup")
-                        device = context.get("device")
-                        if setup_binding_id:
-                            _assert_relay_setup_binding(
-                                sess,
-                                setup if isinstance(setup, dict) else None,
-                                expected_binding_id=setup_binding_id,
-                            )
-                        elif isinstance(setup, dict):
-                            _apply_relay_setup_to_session(
-                                sess,
-                                setup,
-                                device=device if isinstance(device, Mapping) else None,
-                            )
-                        if isinstance(device, dict):
-                            candidate_device = _sanitize_input_device(device)
-                            if (
-                                expected_level_identity is not None
-                                and _relay_device_key(candidate_device)
-                                != expected_level_identity.device_key
-                            ):
-                                raise ValueError(
-                                    "the microphone changed between driver level "
-                                    "checks; use the same microphone"
-                                )
-                            sess.input_device = candidate_device
-                            # The realized mic is authoritative only here: the
-                            # `setup_validate` payload declares no device, and
-                            # any label the phone held earlier was a prediction
-                            # of what the household would record with. So the
-                            # BOUND flows make their one calibration decision
-                            # now — every level match, not just the one that
-                            # minted the binding (#1660).
-                            _apply_bound_calibration_for_device(
-                                sess, candidate_device
-                            )
-                    if (
-                        expected_level_identity is not None
-                        and _relay_level_identity(sess).calibration_id
-                        != expected_level_identity.calibration_id
-                    ):
-                        raise ValueError(
-                            "the microphone calibration changed between driver "
-                            "level checks; run the level check again"
-                        )
-                    mismatch = _relay_device_calibration_block(
-                        getattr(sess, "mic_calibration", None),
-                        getattr(sess, "input_device", None),
-                    )
-                    if mismatch is not None:
-                        raise ValueError(mismatch)
-                    if initial_noise_floor is None:
-                        for sample in samples:
-                            value = float(sample.rms_dbfs)
-                            if math.isfinite(value):
-                                ambient_samples.setdefault(
-                                    (int(sample.seq), int(sample.t_client_ms)),
-                                    value,
-                                )
-                        if (
-                            len(ambient_samples)
-                            < _RELAY_LEVEL_AMBIENT_MIN_SAMPLES
-                        ):
-                            await asyncio.sleep(0.1)
-                            continue
-                        ordered = sorted(ambient_samples.values())
-                        initial_noise_floor = ordered[len(ordered) // 2]
-                        sess.noise_floor_db = initial_noise_floor
-                        log_event(
-                            logger,
-                            "correction.level_match_ambient_baseline",
-                            session_id=getattr(sess, "session_id", None),
-                            geometry=geometry,
-                            sample_count=len(ordered),
-                            rms_dbfs=f"{initial_noise_floor:.1f}",
-                            spread_db=f"{ordered[-1] - ordered[0]:.1f}",
-                        )
-                    break
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise RuntimeError(
-                        "the measurement page did not provide an ambient level baseline"
-                    )
-                await asyncio.sleep(0.1)
-
-            from jasper.audio_measurement.excitation import (
-                AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
-            )
-
-            if stop_requested is not None and stop_requested():
-                raise CaptureStopped("capture stopped")
-            prepared_tone = await prepare_tone() if prepare_tone is not None else None
-            try:
-                if pump_error:
-                    raise pump_error[0]
-                if stop_requested is not None and stop_requested():
-                    raise CaptureStopped("capture stopped")
-                tone_wav = playback._ensure_tone_wav(
-                    freq_hz=tone_frequency_hz,
-                    duration_s=90.0,
-                    dbfs=AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
-                    sample_rate=48000,
-                )
-                player = playback.TonePlayer(tone_wav)
-                from jasper.camilla import CamillaUnavailable
-
-                async def _get_volume() -> float:
-                    try:
-                        value = await cam.get_volume_db(best_effort=False)
-                    except CamillaUnavailable as exc:
-                        raise RuntimeError(
-                            "CamillaDSP is unavailable during crossover leveling"
-                        ) from exc
-                    if value is None:
-                        raise RuntimeError(
-                            "CamillaDSP did not report the measurement volume"
-                        )
-                    return float(value)
-
-                async def _set_volume(db: float) -> None:
-                    # The ramp's writes ARE the level-match claim: the first
-                    # takes it, the rest move it. The owner's doors do not
-                    # raise (FADER_IO_ERRORS), so the CamillaUnavailable arm
-                    # this replaced has no counterpart -- a level that cannot
-                    # be established comes back as False.
-                    if not await _assert_level_match_level(db):
-                        raise RuntimeError(
-                            "CamillaDSP rejected the measurement volume"
-                        )
-
-                with stop_lock:
-                    if stop_requested is not None and stop_requested():
-                        raise CaptureStopped("capture stopped")
-                    level_ports: dict[str, Any] = {}
-                    if context_id is not None:
-                        # CrossoverLevelLease owns a profile-scoped continuation;
-                        # Room's explicit session port does not accept this key.
-                        level_ports["context_id"] = context_id
-                    level_task = asyncio.create_task(
-                        sess.run_level_match(
-                            geometry,
-                            get_main_volume_db=_get_volume,
-                            set_main_volume_db=_set_volume,
-                            play_continuous_tone=player.play,
-                            cancel_tone=player.cancel,
-                            read_status=_read_status,
-                            post_host_event=_queue_host_event,
-                            noise_floor_dbfs=initial_noise_floor,
-                            run_token=run_token,
-                            **level_ports,
-                        )
-                    )
-                try:
-                    outcome = await level_task
-                except asyncio.CancelledError:
-                    if stop_requested is not None and stop_requested():
-                        raise CaptureStopped("capture stopped") from None
-                    raise
-            finally:
-                if restore_tone is not None and prepared_tone is not None:
-                    await restore_tone(prepared_tone)
-
-        if stop_requested is not None and stop_requested():
-            raise CaptureStopped("capture stopped")
-        if not outcome.locked:
-            raise LevelMatchRefused(
-                describe_ramp_refusal(outcome.ramp.error, outcome.ramp.error_detail)
-            )
-        mismatch = _relay_device_calibration_block(
-            getattr(sess, "mic_calibration", None),
-            getattr(sess, "input_device", None),
-        )
-        if mismatch is not None:
-            restore_level_match = getattr(sess, "restore_level_match_volume", None)
-            if callable(restore_level_match):
-                await restore_level_match(_household_level_door())
-            raise ValueError(mismatch)
-        if begin_commit is not None and not begin_commit():
-            raise CaptureStopped("capture stopped")
-    except (
-        OSError,
-        RuntimeError,
-        ValueError,
-        asyncio.TimeoutError,
-        concurrent.futures.TimeoutError,
-    ) as exc:
-        # Failures before the tone/ramp starts used to disappear when the relay
-        # session was purged, leaving the phone waiting on an empty slot. Publish
-        # the same terminal shape as the ramp and leave a short observation
-        # window before cleanup.
-        try:
-            terminal_state = (
-                "cancelled" if isinstance(exc, CaptureStopped) else "error"
-            )
-            await _post_relay_host_event(
-                control_client,
-                pi_session,
-                {
-                    "ramp": {
-                        "state": terminal_state,
-                        "terminal": True,
-                        "run_token": run_token,
-                        "error": _relay_failure_message(exc),
-                    }
-                },
-                hard_timeout_s=_RELAY_CONTROL_TIMEOUT_S,
-            )
-            await asyncio.sleep(0.75)
-        except (OSError, RuntimeError, ValueError):
-            logger.warning(
-                "could not publish terminal level-match failure",
-                exc_info=True,
-            )
-        raise
-    finally:
-        if player is not None:
-            player.cancel()
-        # Let the serialized pump flush the ramp's final queued state before
-        # stopping it. This is bounded; relay TTL remains the cleanup backstop.
-        flush_deadline = asyncio.get_running_loop().time() + 1.0
-        while outbound and asyncio.get_running_loop().time() < flush_deadline:
-            await asyncio.sleep(0.05)
-        stop_pump.set()
-        await pump_task
-        try:
-            await asyncio.to_thread(purge, client, pi_session)
-        except (OSError, RuntimeError, ValueError):
-            logger.debug("level-match relay purge failed", exc_info=True)
 
 
-def _handle_relay_level_match(
-    handler: BaseHTTPRequestHandler,
-    *,
-    idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
-) -> dict[str, Any]:
-    """POST /relay/level-match: lock the listening-position measurement level.
-
-    The room session must already have loaded its topology-preserving
-    measurement baseline via ``/start``.  The returned tap-link opens the
-    trusted phone page, where mic/calibration setup precedes the meter-only
-    ramp.  No WAV is uploaded by this relay kind.
-
-    ``idle_hold`` is ``main``'s ``IdleShutdownTracker.hold`` — this kind runs
-    the human-paced ramp in ``_run_relay_level_match`` (suspending the room
-    session's own capture-timeout watchdog for the duration), which can
-    outlive the 600 s inbound-idle window the single-capture room kinds
-    cannot (issue #1860).
-    """
-    from jasper.capture_relay import correction_adapter
-    from jasper.capture_relay.spec import build_level_ramp_spec
-    from jasper.correction.level_match import MicGeometry
-    from jasper.correction.session import SessionState
-
-    relay_base = _require_relay_base()
-    sess = _get_or_create_session()
-    allowed_states = {
-        SessionState.NEEDS_NOISE_CAPTURE,
-        SessionState.APPLIED,
-        SessionState.VERIFIED,
-    }
-    if sess.state not in allowed_states:
-        raise ValueError(
-            "level matching must run immediately before a room or verification sweep"
-        )
-    run_token = secrets.token_urlsafe(18)
-    setup_binding_id = str(sess.session_id)
-
-    def _open(
-        client: RelayClient | None,
-        base: str,
-        capture_origin: str,
-        return_url: str,
-    ) -> RelayCapture:
-        client = _require_relay_client(client)
-        return correction_adapter.open_capture(
-            client,
-            build_level_ramp_spec(
-                geometry_label=(
-                    "main listening position for verification"
-                    if sess.state in {SessionState.APPLIED, SessionState.VERIFIED}
-                    else "main listening position"
-                ),
-                run_token=run_token,
-                setup_binding_id=setup_binding_id,
-                setup_collect_positions=False,
-                default_setup_calibration=_default_setup_calibration_for_spec(),
-            ),
-            relay_base=base,
-            capture_origin=capture_origin,
-            return_url=return_url,
-        )
-
-    async def _run(client: RelayClient | None, pi_session: PiCaptureSession) -> None:
-        # NEEDS_NOISE_CAPTURE normally has a short local-browser upload
-        # watchdog. Relay mic permission, calibration, placement, and gradual
-        # level matching are deliberately human-paced, so pause that watchdog
-        # only for this sub-flow. Restore a fresh bound afterward; the relay
-        # capture adapter remains bounded and an abandoned next capture still
-        # self-recovers without operator cleanup.
-        sess.suspend_capture_timeout()
-        try:
-            await _run_session_background_audio(
-                sess,
-                lambda: _run_relay_level_match(
-                    sess,
-                    client,
-                    pi_session,
-                    geometry=MicGeometry.LISTENING_POSITION.value,
-                    run_token=run_token,
-                    setup_binding_id=setup_binding_id,
-                ),
-            )
-        finally:
-            sess.resume_capture_timeout()
-
-    relay = _run_relay_capture(
-        RelayCaptureKind(label="level_ramp:room", open=_open, run_and_consume=_run),
-        relay_base,
-        return_url=_request_local_return_url(handler, _ROOM_RELAY_RETURN_PATH),
-        # A human-paced level ramp through _run_relay_level_match, NOT a single
-        # capture: each control op is bounded by _RELAY_CONTROL_TIMEOUT_S but the
-        # ramp as a whole leans on the relay TTL (``DEFAULT_TTL_S``) as its
-        # backstop, so unlike the single-capture kinds it CAN outlive an
-        # inbound-idle window. Held since #1860 — main's real tracker, threaded
-        # through the handler cfg exactly like the crossover-v2 kinds.
-        idle_hold=idle_hold,
-    )
-    return {"session_id": sess.session_id, "state": sess.state.value, "relay": relay}
 
 
 def _handle_crossover_relay_cancel() -> dict[str, Any]:
-    """Stop Crossover relay work and keep its slot until cleanup completes.
+    """Stop Crossover capture work and keep its slot until cleanup completes.
 
-    The Stop button is already hidden once the rendered relay status turns
-    terminal (crossover/main.js's ``RELAY_STOPPABLE`` gate), but a poll-cycle
-    race can still let a click reach the server after the relay finished on
-    its own (the phone completed, or another tab already stopped it).
-    ``_request_relay_stop`` raises a diagnostic message for that case; map it
-    to a plain-language sentence here rather than leaking it to the page.
+    The Stop button is already hidden once the rendered status turns terminal
+    (crossover/main.js's ``RELAY_STOPPABLE`` gate), but a poll-cycle race can
+    still let a click reach the server after the capture finished on its own
+    (it completed, or another tab already stopped it). ``_request_relay_stop``
+    raises a diagnostic message for that case; map it to a plain-language
+    sentence here rather than leaking it to the page.
     """
 
     try:
-        relay = _request_relay_stop(
-            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
-        )
+        relay = _request_relay_stop("crossover_v2:")
     except ValueError:
         raise ValueError(
             "This measurement already stopped — nothing more to do here."
@@ -5273,18 +3511,10 @@ def _handle_crossover_v2_relay(
         run_and_consume=prepared.run_and_consume,
         request_stop=prepared.request_stop,
         position_gate=prepared.position_gate,
-        local=True,
         request_complete=prepared.request_complete,
         request_retake=prepared.request_retake,
     )
-    return {
-        "relay": _run_relay_capture(
-            kind,
-            "",
-            return_url=_request_local_return_url(handler, "/correction/crossover/"),
-            idle_hold=idle_hold,
-        )
-    }
+    return {"relay": _run_relay_capture(kind, idle_hold=idle_hold)}
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -5342,7 +3572,7 @@ def _handle_crossover_v2_decline(
 
     return correction_crossover_flow.handle_v2_decline(
         raw,
-        relay=_get_relay_capture_for("crossover_sweep:", "level_ramp:crossover"),
+        relay=_get_relay_capture_for("crossover_v2:"),
     )
 
 
@@ -5359,16 +3589,14 @@ def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """
 
     try:
-        _request_relay_stop(
-            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
-        )
+        _request_relay_stop("crossover_v2:")
     except ValueError:
         pass
 
     from . import correction_crossover_flow
 
     return correction_crossover_flow.handle_reset(
-        relay=_get_relay_capture_for("crossover_sweep:", "level_ramp:crossover"),
+        relay=_get_relay_capture_for("crossover_v2:"),
     )
 
 
@@ -6726,9 +4954,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # force-drained here (cheap in-memory stale check first).
                     _enforce_session_volume_ceiling(v2host)
                     return correction_crossover_flow.handle_status(
-                        relay=_get_relay_capture_for(
-                            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
-                        ),
+                        relay=_get_relay_capture_for("crossover_v2:"),
                     )
 
                 self._serve_json_route(path, _crossover_status)
@@ -6742,9 +4968,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # so it promptly drains a walked-away or slow-driver session.
                     _enforce_session_volume_ceiling(v2host)
                     return correction_crossover_flow.handle_envelope(
-                        relay=_get_relay_capture_for(
-                            "crossover_sweep:", "crossover_v2:", "level_ramp:crossover"
-                        ),
+                        relay=_get_relay_capture_for("crossover_v2:"),
                     )
 
                 self._serve_json_route(path, _crossover_envelope)
@@ -6980,61 +5204,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_client_error(str(e))
                     except RequestConflict as e:
                         self._send_client_error(str(e), status=409)
-                    return
-                if path == "/relay/capture":
-                    from jasper.correction import failures
-                    try:
-                        self._send_json(_handle_relay_capture(self))
-                    except (OSError, RuntimeError, ValueError) as e:
-                        self._send_room_failure(
-                            failures.public_failure(
-                                failures.PHONE_CAPTURE_UNAVAILABLE,
-                            ),
-                            diagnostic=str(e),
-                            status=(
-                                HTTPStatus.CONFLICT
-                                if isinstance(e, ValueError)
-                                else HTTPStatus.SERVICE_UNAVAILABLE
-                            ),
-                        )
-                    return
-                if path == "/relay/level-match":
-                    from jasper.correction import failures
-                    try:
-                        self._send_json(
-                            _handle_relay_level_match(
-                                self, idle_hold=cfg["idle_hold"],
-                            )
-                        )
-                    except (OSError, RuntimeError, ValueError) as e:
-                        self._send_room_failure(
-                            failures.public_failure(
-                                failures.PHONE_CAPTURE_UNAVAILABLE,
-                            ),
-                            diagnostic=str(e),
-                            status=(
-                                HTTPStatus.CONFLICT
-                                if isinstance(e, ValueError)
-                                else HTTPStatus.SERVICE_UNAVAILABLE
-                            ),
-                        )
-                    return
-                if path == "/relay/verify":
-                    from jasper.correction import failures
-                    try:
-                        self._send_json(_handle_relay_verify(self))
-                    except (OSError, RuntimeError, ValueError) as e:
-                        self._send_room_failure(
-                            failures.public_failure(
-                                failures.PHONE_CAPTURE_UNAVAILABLE,
-                            ),
-                            diagnostic=str(e),
-                            status=(
-                                HTTPStatus.CONFLICT
-                                if isinstance(e, ValueError)
-                                else HTTPStatus.SERVICE_UNAVAILABLE
-                            ),
-                        )
                     return
                 if path == "/calibration/fetch":
                     try:
