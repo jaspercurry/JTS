@@ -504,12 +504,18 @@ def test_to_dict_round_trip_stability_keys_and_types():
             "n_valid_rungs",
             "gate_sensitivity_note",
             "gate_sensitivity_detail",
+            # #3564: the ladder's own room/speaker verdict at that same bin,
+            # beside the numbers it was read from.
+            "gate_window_verdict",
+            "gate_window_verdict_reasons",
         }
         assert band_dict["gate_sensitivity_db"] is None
         assert band_dict["sigma_growth_ratio"] is None
         assert band_dict["n_valid_rungs"] is None
         assert band_dict["gate_sensitivity_note"] is None
         assert band_dict["gate_sensitivity_detail"] is None
+        assert band_dict["gate_window_verdict"] is None
+        assert band_dict["gate_window_verdict_reasons"] is None
         for key in (
             "f_lo_hz",
             "f_hi_hz",
@@ -571,7 +577,7 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
     """
     import dataclasses
 
-    assert len(dataclasses.fields(BandResult)) == 22
+    assert len(dataclasses.fields(BandResult)) == 24
     assert len(dataclasses.fields(FlatSpecReport)) == 13
 
     band = BandResult(
@@ -584,6 +590,8 @@ def test_from_dict_round_trips_and_field_count_is_pinned():
         gate_sensitivity_db=-1.25, sigma_growth_ratio=2.4, n_valid_rungs=5,
         gate_sensitivity_note="short_rung_sigma_is_zero",
         gate_sensitivity_detail={"reason": "round_no_captures", "round_dir": "/r"},
+        gate_window_verdict="moved",
+        gate_window_verdict_reasons=("sigma_growth", "depth_delta"),
     )
     report = FlatSpecReport(
         reference_db=-20.0, bands=(band,), overall_passed=False,
@@ -1553,8 +1561,8 @@ def test_a_pre_3495_document_rehydrates_as_unknown_and_unmarked():
 
 def test_a_pre_gate_sweep_document_rehydrates_as_never_swept():
     """A banked report predating the gate fields must read as NOT MEASURED --
-    no numbers and no note -- never as a round whose worst bins were swept
-    and found window-invariant.
+    no numbers, no verdict and no note -- never as a round whose worst bins
+    were swept and found window-invariant.
     """
     report = evaluate_flat_spec(_FREQS_HZ, _flat_db())
     raw = report.to_dict()
@@ -1565,6 +1573,8 @@ def test_a_pre_gate_sweep_document_rehydrates_as_never_swept():
             "sigma_growth_ratio",
             "n_valid_rungs",
             "gate_sensitivity_note",
+            "gate_window_verdict",
+            "gate_window_verdict_reasons",
         ):
             del band[key]
 
@@ -1574,6 +1584,8 @@ def test_a_pre_gate_sweep_document_rehydrates_as_never_swept():
     assert all(band.sigma_growth_ratio is None for band in older.bands)
     assert all(band.n_valid_rungs is None for band in older.bands)
     assert all(band.gate_sensitivity_note is None for band in older.bands)
+    assert all(band.gate_window_verdict is None for band in older.bands)
+    assert all(band.gate_window_verdict_reasons is None for band in older.bands)
     assert older.overall_passed == report.overall_passed
 
 

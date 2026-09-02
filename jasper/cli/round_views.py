@@ -394,12 +394,21 @@ def _cmd_co_metrics(args: argparse.Namespace) -> int:
 
 def _band_sweep_line(band: Any) -> str:
     """One band's gate read as the operator reads it: which band, then whether
-    that band's own worst bin is the room or the speaker."""
+    that band's own worst bin is the room or the speaker.
+
+    ``gate_window_verdict`` is ``None`` only when the ladder never ran on this
+    band; a ladder that ran and still could not call it stamps
+    ``"unresolved"`` rather than nothing, and that is told apart from "never
+    swept" here too.
+    """
     label = f"{band.f_lo_hz:g}-{band.f_hi_hz:g} Hz"
-    if band.sigma_growth_ratio is None:
+    verdict = band.gate_window_verdict
+    if verdict is None:
         return f"{label} NOT SWEPT ({band.gate_sensitivity_note})"
+    if band.sigma_growth_ratio is None:
+        return f"{label} {verdict.upper()} ({band.gate_sensitivity_note})"
     return (
-        f"{label} @{band.max_deviation_hz:.1f} Hz "
+        f"{label} @{band.max_deviation_hz:.1f} Hz {verdict.upper()} "
         f"sigma x{band.sigma_growth_ratio:.2f} over {band.n_valid_rungs} rung(s), "
         f"window {band.gate_sensitivity_db:+.2f} dB"
     )
