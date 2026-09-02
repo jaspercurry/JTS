@@ -51,6 +51,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     spec_with_gate_sensitivity,
     verify_pose_curve,
 )
+from jasper.active_speaker.crossover_v2.gate_sweep import ROUTE_SIGMA_GROWTH, WINDOW_MOVED
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
@@ -1921,12 +1922,19 @@ def test_the_spec_verdict_carries_the_sweep_at_each_bands_worst_bin(swept_low_ba
     assert type(low.gate_sensitivity_db) is float
     assert type(low.n_valid_rungs) is int
 
+    # The room/speaker call itself: this round's varying late-reflection copy
+    # per pose is exactly the across-pose-sigma-growth signature (#3495), so
+    # the ladder calls it MOVED via the sigma-growth route.
+    assert low.gate_window_verdict == WINDOW_MOVED
+    assert ROUTE_SIGMA_GROWTH in low.gate_window_verdict_reasons
+    assert type(low.gate_window_verdict_reasons) is tuple
+
     assert stamped.gate_sweep_frame is not None
     assert stamped.gate_sweep_frame["rungs_ms"] == list(SWEEP_RUNGS_MS)
 
 
 def test_stamping_the_sweep_moves_no_grade(swept_low_band):
-    """Disclosure only. Strip the six new fields and the report is the one
+    """Disclosure only. Strip the eight new fields and the report is the one
     `evaluate_flat_spec` produced, band for band and verdict for verdict.
     """
     from dataclasses import replace
@@ -1939,7 +1947,8 @@ def test_stamping_the_sweep_moves_no_grade(swept_low_band):
             replace(
                 band, gate_sensitivity_db=None, sigma_growth_ratio=None,
                 n_valid_rungs=None, gate_sensitivity_note=None,
-                gate_sensitivity_detail=None,
+                gate_sensitivity_detail=None, gate_window_verdict=None,
+                gate_window_verdict_reasons=None,
             )
             for band in stamped.bands
         ),

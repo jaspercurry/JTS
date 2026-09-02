@@ -404,9 +404,13 @@ def _stamped_band(
 ) -> flat_spec.BandResult:
     """One band plus the ladder's read at its own worst bin, or the reason why not.
 
-    ``n_valid_rungs`` is stamped whenever the ladder RAN, including on a null:
-    it is the denominator behind the two numbers beside it, and a reader
-    weighing ``insufficient_valid_rungs`` needs to see how few.
+    ``n_valid_rungs`` and ``gate_window_verdict`` are stamped whenever the
+    ladder RAN, including on a null: the former is the denominator behind the
+    two numbers beside it, and the latter is ``"unresolved"`` rather than
+    absent -- a reader weighing ``insufficient_valid_rungs`` needs to see how
+    few rungs, and a reader checking room-vs-speaker needs to see that the
+    ladder ran and still could not call it, not mistake silence for "never
+    swept".
 
     ``detail`` carries only beside a capture-refusal note -- the two
     ``RoundCapturesRefused`` buckets -- and is ``None`` for every other note,
@@ -425,6 +429,8 @@ def _stamped_band(
         ),
         n_valid_rungs=int(feature["n_valid_rungs"]),
         gate_sensitivity_note=feature.get("sensitivity_null_reason"),
+        gate_window_verdict=feature["window_verdict"],
+        gate_window_verdict_reasons=tuple(feature["window_verdict_reasons"]),
     )
 
 
@@ -439,10 +445,10 @@ def spec_with_gate_sensitivity(
     ``jasper-gate-sweep --at-hz <bin>`` apart and a reader had to remember to
     cross them, so the answer travelled only as far as whoever ran the second
     command. Now each :class:`~jasper.active_speaker.flat_spec.BandResult`
-    carries the ladder's headline at its own
-    ``max_deviation_hz`` and the report carries the frame those numbers are
-    stated in. **Disclosure only: no grade moves** — every field the evaluator
-    set comes back untouched.
+    carries the ladder's headline — including its ``window_verdict``, as
+    ``gate_window_verdict`` — at its own ``max_deviation_hz``, and the report
+    carries the frame those numbers are stated in. **Disclosure only: no
+    grade moves** — every field the evaluator set comes back untouched.
 
     **Why this reads a BANKED round rather than the live combine.** The cloud
     pipeline's seam (``spatial.assemble_cloud_group_result``) has the graded
