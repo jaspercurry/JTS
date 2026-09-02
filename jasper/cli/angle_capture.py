@@ -81,7 +81,6 @@ from jasper.active_speaker.seat_level_reference import (
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH as DECLARED_GEOMETRY_PATH,
     DeclaredGeometry,
-    GeometryFieldError,
 )
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
@@ -164,40 +163,16 @@ _REGIME_STOPS: dict[str, tuple[str, ...]] = {
 def _declared_on_the_box() -> DeclaredGeometry | None:
     """The box's standing declaration (``jasper-declare-geometry set``), if any.
 
-    The flags below are the one-off override; this is the answer a household
-    already gave once. An unreadable file reads as absent rather than refusing
-    the walk -- ``jasper-declare-geometry show`` is where a damaged
-    declaration is diagnosed.
+    Shown so the operator sees what the round will bank: the evidence packet
+    reads this same file when the session banks, so nothing is carried from
+    here. An unreadable file reads as absent rather than refusing the walk --
+    ``jasper-declare-geometry show`` is where a damaged declaration is
+    diagnosed.
     """
     try:
         return DeclaredGeometry.load(DECLARED_GEOMETRY_PATH)
     except (OSError, ValueError):
         return None
-
-
-def _declared_geometry(args: argparse.Namespace) -> DeclaredGeometry | None:
-    """The household's tape measure -- all three distances, or none of them.
-
-    All-or-nothing because the entanglement floor the toolbox derives needs
-    the whole triangle: two of the three would bank a geometry no reader can
-    use, which is worse than banking none. The ceiling is genuinely optional
-    (a floor bounce is bounded without it) but is not a geometry on its own.
-    """
-    stated = (args.speaker_height_m, args.mic_height_m, args.distance_m)
-    parser: argparse.ArgumentParser = args.parser
-    if all(value is None for value in stated):
-        if args.ceiling_height_m is not None:
-            parser.error(
-                "--ceiling-height-m goes with --speaker-height-m, "
-                "--mic-height-m and --distance-m"
-            )
-        return _declared_on_the_box()
-    if any(value is None for value in stated):
-        parser.error(
-            "--speaker-height-m, --mic-height-m and --distance-m are "
-            "stated together or not at all"
-        )
-    return DeclaredGeometry(*stated, args.ceiling_height_m)
 
 
 def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
@@ -209,7 +184,6 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
         "delayed_role": args.delayed_role,
         "delay_us": args.delay_us,
         "level_matched": args.level_matched,
-        "declared_geometry": _declared_geometry(args),
     }
 
 
@@ -346,7 +320,6 @@ def _walk_payload(
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
-        "declared_geometry": request.declared_geometry_record(),
         "stops": [
             {
                 "index": stop.index,
@@ -417,13 +390,15 @@ def _print_walk(payload: dict[str, Any]) -> None:
             f"  delay: {payload['delay_us']:g} us on "
             f"{payload['delayed_role']!r}"
         )
-    geometry = payload["declared_geometry"]
-    if geometry:
-        # Only when stated: a walk nobody was asked about must not print a
-        # room the household never measured.
+    geometry = _declared_on_the_box()
+    if geometry is not None:
+        # What the packet will bank, read from the same file it reads. Printed
+        # only when the household declared one, which most have not.
         print(
             "  declared geometry (m): "
-            + ", ".join(f"{key} {value:g}" for key, value in geometry.items())
+            + ", ".join(
+                f"{key} {value:g}" for key, value in geometry.to_dict().items()
+            )
         )
     announced = payload["announced_indexes"]
     print(
@@ -498,7 +473,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
         return _refuse(exc, as_json=args.json, reason=exc.code)
-    except (CrossoverV2FlowError, GeometryFieldError) as exc:
+    except CrossoverV2FlowError as exc:
         return _refuse(exc, as_json=args.json)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
     # exists to show an operator what is missing before they commit to it.
@@ -517,7 +492,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
         return _refuse(exc, as_json=args.json, reason=exc.code)
-    except (CrossoverV2FlowError, GeometryFieldError) as exc:
+    except CrossoverV2FlowError as exc:
         return _refuse(exc, as_json=args.json)
     # The methodology levels the seat before anything measures, so a level this
     # door cannot resolve names the step the operator skipped rather than
@@ -701,33 +676,6 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "form. A flag and not a number: the trims are resolved on the box "
             "from its banked evidence when the session adopts the walk, and a "
             "box with none refuses the walk rather than measuring unmatched"
-        ),
-    )
-    # The driving LLM asks the household these once, in metres, and passes
-    # them here; nothing in the session computes from them -- they ride onto
-    # the banked evidence for the offline toolbox step that does.
-    for flag, what in (
-        ("--speaker-height-m", "the driver acoustic centre off the floor"),
-        ("--mic-height-m", "the microphone capsule off the floor"),
-        ("--distance-m", "speaker to microphone, along the design axis"),
-    ):
-        parser.add_argument(
-            flag,
-            type=float,
-            help=(
-                f"declared room geometry in METRES: {what}. Ask the household "
-                "once with a tape measure and state all three together; the "
-                "banked session carries them for the offline reader. Omit all "
-                "three to use whatever `jasper-declare-geometry set` stored "
-                "on this box"
-            ),
-        )
-    parser.add_argument(
-        "--ceiling-height-m",
-        type=float,
-        help=(
-            "declared room geometry in METRES: floor to ceiling. Optional, "
-            "and only alongside the three distances above"
         ),
     )
     parser.add_argument(

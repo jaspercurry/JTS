@@ -174,8 +174,6 @@ from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
-    "DECLARED_GEOMETRY_ARTIFACT",
-    "DECLARED_GEOMETRY_KIND",
     "HARMONICS_ARTIFACT",
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
@@ -323,21 +321,6 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: writer would have to travel back the other way. The packet owns the names of
 #: the artifacts it reads; :mod:`.feature_classifier` takes the same direction.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
-
-#: The household's own tape measure (#3498), banked by the session that took
-#: the walk it was stated on. Optional and reported absent: the reflection
-#: finder is structurally blind on this rig class, so this human answer is the
-#: only source for the room's entanglement floor -- but most sessions never
-#: asked. Named here on the same rule as the two above: the packet owns the
-#: names of the artifacts it reads, and ``correction_crossover_v2`` writes it.
-DECLARED_GEOMETRY_ARTIFACT = "declared_geometry.json"
-
-DECLARED_GEOMETRY_KIND = "jts_active_speaker_declared_geometry"
-
-#: What that artifact carries ABOUT ITSELF rather than about the room.
-#: Subtracted rather than allow-listing the measurements, so a distance the
-#: writer later adds reaches the reader without a second edit here.
-DECLARED_GEOMETRY_ENVELOPE_FIELDS = frozenset({"schema_version", "kind"})
 
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns.
@@ -590,20 +573,30 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _declared_geometry_block(raw: Any, reason: str) -> dict[str, Any]:
-    """The banked room, in metres, or WHICH absence this is.
+def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
+    """The household's own tape measure, in metres, or WHICH absence this is.
 
-    An artifact that never arrived (nobody was asked, which is most sessions),
-    one this install could not read, and one carrying nothing but its own
-    envelope are three different facts about the round. Collapsing them to a
-    single ``None`` is the reading defect :func:`_absence` exists to fix, so
-    the reason travels here on exactly the terms the sibling blocks state it.
+    Read from the path the CALLER resolved -- a banked round's frozen sibling,
+    or the live speaker's own SSOT file -- on the same terms as the four
+    documents beside it. ``None`` is a round that banked no declaration.
+
+    A household that never declared one (most of them) and a declaration this
+    install could not read are two different facts about the round, kept apart
+    on exactly the terms the sibling blocks state them.
     """
-    room = {
-        key: value for key, value in _mapping(raw).items()
-        if key not in DECLARED_GEOMETRY_ENVELOPE_FIELDS
-    }
-    return room or _absence(reason, False, DECLARED_GEOMETRY_ARTIFACT)
+    from jasper.audio_measurement.measurement_geometry import (
+        load_declared_geometry,
+    )
+
+    if path is None:
+        return _absence("source_absent", False, "declared_geometry")
+    try:
+        geometry = load_declared_geometry(path)
+    except (OSError, ValueError) as exc:
+        return _absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry")
+    if geometry is None:
+        return _absence("source_absent", False, "declared_geometry")
+    return geometry.to_dict()
 
 
 def _ordinal(value: Any) -> int:
@@ -3243,6 +3236,7 @@ def build_crossover_evidence_packet(
     driver_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
     repeat_floor_path: Path | None = None,
+    declared_geometry_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -3280,6 +3274,16 @@ def build_crossover_evidence_packet(
     absence reported. A packet without it says the floor is unmeasured and
     falls back to the two codified assumptions, naming which it used.
 
+    ``declared_geometry_path`` is the household's declared rig geometry
+    (``measurement_geometry.json``), the only viable source for the room's
+    entanglement floor. Same posture, same reason: OPTIONAL, absence reported.
+    It is INJECTED rather than defaulted to the on-box SSOT path for the
+    reason ``state_path`` is: this packet is rebuilt by every reader, and a
+    path resolved here would make a banked round's room — and its
+    ``packet_fingerprint`` — depend on whatever the READING machine happens to
+    have declared. ``None`` is "this round banked none", which is the
+    ``source_absent`` absence.
+
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
     unreadable artifact is reported inside the packet, because a partially
@@ -3297,9 +3301,6 @@ def build_crossover_evidence_packet(
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
-    geometry_raw, geometry_reason = _read_json(
-        round_dir / DECLARED_GEOMETRY_ARTIFACT
-    )
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
     findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
     classification_raw, classification_reason = _read_json(
@@ -3382,12 +3383,7 @@ def build_crossover_evidence_packet(
             "state": info_raw.get("state"),
             "started_at": info_raw.get("started_at"),
             "round_id": receipt.get("round_id"),
-            # The household's own tape measure, in metres, or an ``_absence``
-            # naming why there is none. The envelope keys are dropped: what a
-            # reader wants is the room, not the wrapper it arrived in.
-            "declared_geometry": _declared_geometry_block(
-                geometry_raw, geometry_reason
-            ),
+            "declared_geometry": _declared_geometry_block(declared_geometry_path),
             "note": (
                 "bundle_session_id and relay_session_id are different id "
                 "namespaces; the round artifacts are filed under the relay id"

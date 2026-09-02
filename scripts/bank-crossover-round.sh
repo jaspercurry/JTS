@@ -43,6 +43,10 @@
 #                           touched-nothing repeat spread, which the evidence
 #                           packet's in_capture_repeat_floor reads
 #                           (/var/lib/jasper/active_speaker_repeat_floor.json)
+#   declared-geometry.json  the household's declared rig geometry, which the
+#                           packet's session.declared_geometry reports and the
+#                           offline entanglement floor is derived from
+#                           (/var/lib/jasper/measurement_geometry.json)
 #   journal/<unit>.log      journal window for the units that speak during a
 #                           round, plus journal/combined.log
 #   power.txt               vcgencmd get_throttled + under-voltage grep counts
@@ -192,6 +196,16 @@ applied_profile_status="$(pull_optional applied-profile /var/lib/jasper/active_s
 repeat_floor_status="$(pull_optional repeat-floor /var/lib/jasper/active_speaker_repeat_floor.json repeat-floor.json)"
 
 # --------------------------------------------------------------------- #
+# 3d. Declared rig geometry — the household's own tape measure, the only
+#     viable source for the room's entanglement floor on this rig class.
+#     Frozen HERE because the packet is rebuilt by every reader: a round
+#     read on another machine must report the room the SPEAKER declared,
+#     not that machine's. NOT part of the round's identity — reported,
+#     not gated.
+# --------------------------------------------------------------------- #
+declared_geometry_status="$(pull_optional declared-geometry /var/lib/jasper/measurement_geometry.json declared-geometry.json)"
+
+# --------------------------------------------------------------------- #
 # 4. Journal window — the units that speak during a crossover-v2 round.
 #    Same per-unit + combined shape as fetch-pi-logs.sh, scoped to this
 #    round's units instead of the whole install.
@@ -245,6 +259,7 @@ echo "  state:           $state_status" >&2
 echo "  design-draft:    $design_draft_status" >&2
 echo "  applied-profile: $applied_profile_status" >&2
 echo "  repeat-floor:    $repeat_floor_status" >&2
+echo "  declared-geom:   $declared_geometry_status" >&2
 echo "  journal:         $journal_status" >&2
 
 if (( bundle_ok == 0 )) || (( state_ok == 0 )); then

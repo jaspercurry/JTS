@@ -1874,6 +1874,7 @@ def _banked_for_sweep(round_dir: Path, report) -> BankedRound:
             design_draft_path=None,
             applied_profile_path=None,
             repeat_floor_path=None,
+            declared_geometry_path=None,
             banked=True,
         ),
         positions=(),

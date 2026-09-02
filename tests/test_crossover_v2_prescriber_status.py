@@ -187,6 +187,7 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
         "driver_draft_path": round_inputs_mod.DRIVERS_DEFAULT_PATH,
         "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
         "repeat_floor_path": round_inputs_mod.REPEAT_FLOOR_DEFAULT_PATH,
+        "declared_geometry_path": round_inputs_mod.DECLARED_GEOMETRY_DEFAULT_PATH,
     }
 
 
