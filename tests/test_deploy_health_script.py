@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.machinery
 import importlib.util
 import json
@@ -564,8 +565,9 @@ def test_source_intent_reader_enforces_byte_cap_and_strict_utf8(
         health._source_expectations_with_fingerprint(intent)
 
     intent.write_bytes(b"\xff")
-    with pytest.raises(RuntimeError, match="cannot decode.*UTF-8"):
+    with pytest.raises(RuntimeError) as raised:
         health._source_expectations_with_fingerprint(intent)
+    assert isinstance(raised.value.__cause__, UnicodeError)
 
 
 def test_source_intent_reader_refuses_symlink_and_fifo_without_blocking(
@@ -575,8 +577,10 @@ def test_source_intent_reader_refuses_symlink_and_fifo_without_blocking(
     target.write_text(f"{health.AIRPLAY_INTENT_KEY}=enabled\n", encoding="utf-8")
     intent = tmp_path / "source_intent.env"
     intent.symlink_to(target)
-    with pytest.raises(RuntimeError, match="cannot read"):
+    with pytest.raises(RuntimeError) as raised:
         health._source_expectations_with_fingerprint(intent)
+    assert isinstance(raised.value.__cause__, OSError)
+    assert raised.value.__cause__.errno == errno.ELOOP
     assert target.read_text(encoding="utf-8").endswith("=enabled\n")
 
     intent.unlink()

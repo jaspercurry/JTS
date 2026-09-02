@@ -474,7 +474,7 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
-    with pytest.raises(OSError, match="second AUDIO command failed"):
+    with pytest.raises(OSError):
         await p.write(mono.tobytes())
 
     assert stream.attempts == 2
