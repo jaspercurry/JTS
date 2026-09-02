@@ -39,7 +39,10 @@ from jasper.correction.session import (
 )
 from ._async_wait import wait_signalled
 from .correction_session_fixtures import (
+    default_bass_profile_summary,
     make_measurement_session as _make_session,
+    seed_prior_sound_config,
+    stateful_camilla_stub,
 )
 
 
@@ -789,7 +792,12 @@ async def test_repeat_and_verify_analysis_offloaded_to_worker_thread(
     async def fake_play(path, **kw):
         pass
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await sess.prepare_and_play_sweep(fake_play)
@@ -809,7 +817,11 @@ async def test_repeat_and_verify_analysis_offloaded_to_worker_thread(
     assert sess.state == SessionState.READY
 
     # Verify path → on_verify_capture_uploaded (to_thread smooth).
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     await sess.start_verify_sweep(fake_play)
     verify_path = sess.verify_capture_path()
     verify_path.parent.mkdir(parents=True, exist_ok=True)
@@ -996,11 +1008,20 @@ async def test_session_full_flow_synthetic_room(tmp_path: Path):
     # and the YAML was written.
     apply_calls: list[str] = []
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_set_config(path: str) -> bool:
         apply_calls.append(path)
+        note_loaded(path)
         return True
 
-    await sess.apply(fake_set_config)
+    await sess.apply(
+        fake_set_config,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     assert sess.state == SessionState.APPLIED
     assert sess.config_path is not None
     assert sess.config_path.exists()
@@ -1030,7 +1051,15 @@ async def test_session_apply_failure_transitions_to_failed(tmp_path: Path):
     async def reject_config(path: str) -> bool:
         return False
 
-    await sess.apply(reject_config)
+    camilla_get_config, _note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
+    await sess.apply(
+        reject_config,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     assert sess.state == SessionState.FAILED
     assert sess.error is not None and "rejected" in sess.error.lower()
 
@@ -1041,8 +1070,11 @@ async def test_session_apply_from_wrong_state_raises(tmp_path: Path):
     async def stub(path: str) -> bool:
         return True
 
+    async def unused_get_config() -> str:
+        raise AssertionError("apply() must reject the state before reading config")
+
     with pytest.raises(RuntimeError, match="cannot apply"):
-        await sess.apply(stub)
+        await sess.apply(stub, camilla_get_config=unused_get_config)
 
 
 async def test_session_snapshot_shape(tmp_path: Path):
@@ -1557,37 +1589,6 @@ async def _run_verify(sess, verify_room_gain_db: float) -> None:
     await sess.on_verify_capture_uploaded(verify_path)
 
 
-async def test_carrierless_apply_refuses_a_layout_it_cannot_width_match(
-    tmp_path: Path, monkeypatch
-):
-    """#2185's width hole, gated. The no-getter compatibility branch emits a
-    plain 2-channel graph with no mutes and no fold, so on a MONO layout its
-    second channel would reach an output the household never declared. It now
-    refuses instead, typed, rather than relying on having no production caller.
-    """
-    from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
-    from jasper.output_topology import save_output_topology
-    from tests.test_active_speaker_runtime_contract import _full_range_mono
-
-    save_output_topology(
-        _full_range_mono(), tmp_path / "output_topology.json"
-    )
-    sess = _make_session(tmp_path)
-
-    async def fake_camilla(path: str) -> bool:
-        return True
-
-    await _measure_one_position(sess, room_gain_db=8.0)
-    assert sess.state == SessionState.READY
-
-    # The session unwraps its DspApplyError and re-raises the typed cause, so
-    # this is what the wizard's own `except CorrectionRuntimeSafetyError` sees.
-    with pytest.raises(CorrectionRuntimeSafetyError):
-        await sess.apply(fake_camilla)
-
-    assert sess.state == SessionState.FAILED
-
-
 async def test_verify_populates_acceptance_verdict_and_position1_basis(
     tmp_path: Path,
 ):
@@ -1595,7 +1596,12 @@ async def test_verify_populates_acceptance_verdict_and_position1_basis(
     computed against the retained position-1 curve."""
     sess = _make_session(tmp_path)
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await _measure_one_position(sess, room_gain_db=8.0)
@@ -1603,7 +1609,11 @@ async def test_verify_populates_acceptance_verdict_and_position1_basis(
     # Position-1 curve is retained as the matched basis.
     assert sess.position1_curve is not None
 
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     # A near-flat verify (mode corrected) → the verdict should be present and
     # is not a revert.
     await _run_verify(sess, verify_room_gain_db=0.5)
@@ -1624,19 +1634,26 @@ async def test_confirmatory_remeasure_concordance_and_auto_revert(
     sess = _make_session(tmp_path)
 
     reset_targets: list[str] = []
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
 
     async def fake_camilla(path: str) -> bool:
         reset_targets.append(path)
+        note_loaded(path)
         return True
 
     # Measure a nearly-flat room, then a verify that measures a big NEW mode
     # (a genuinely-regressed result). Because the before is flat-ish and the
     # verify has a strong 80 Hz mode, this is a clear regression.
     await _measure_one_position(sess, room_gain_db=0.5)
-    # Compatibility apply path (no config getter) — the topology-aware carrier
-    # rejects tmp stub graphs; this test targets the verdict/auto-revert loop,
-    # not the carrier. auto_revert is driven with an explicit target below.
-    await sess.apply(fake_camilla)
+    # auto_revert is driven with an explicit target below, so the getter's
+    # real prior-config capture doesn't matter for this test.
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
 
     await _run_verify(sess, verify_room_gain_db=20.0)
     assert sess.state == SessionState.VERIFIED
@@ -1686,11 +1703,20 @@ async def test_clean_confirmatory_verify_clears_the_concordance_flag(
     its own confirmatory re-measure."""
     sess = _make_session(tmp_path)
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await _measure_one_position(sess, room_gain_db=0.5)
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
 
     # Verify 1: clear regression → pending confirmation.
     await _run_verify(sess, verify_room_gain_db=20.0)
@@ -1716,14 +1742,23 @@ async def test_auto_revert_camilla_reject_records_failed_outcome(
     reset() fails the session loudly) — auto_revert never claims success."""
     sess = _make_session(tmp_path)
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla_ok(path: str) -> bool:
+        note_loaded(path)
         return True
 
     async def fake_camilla_reject(path: str) -> bool:
         return False
 
     await _measure_one_position(sess, room_gain_db=0.5)
-    await sess.apply(fake_camilla_ok)
+    await sess.apply(
+        fake_camilla_ok,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     await _run_verify(sess, verify_room_gain_db=20.0)  # pending
     await _run_verify(sess, verify_room_gain_db=20.0)  # confirmed → revert
     assert sess.acceptance_verdict == "revert"
@@ -1743,21 +1778,25 @@ async def test_auto_revert_falls_back_to_pre_apply_config(tmp_path: Path):
     apply() path captured."""
     sess = _make_session(tmp_path)
 
-    prior = "/etc/camilladsp/prior-graph.yml"
+    prior_path = seed_prior_sound_config(sess)
+    camilla_get_config, note_loaded = stateful_camilla_stub(prior_path)
 
     async def fake_set(path: str) -> bool:
         fake_set.calls.append(path)
+        note_loaded(path)
         return True
 
     fake_set.calls = []  # type: ignore[attr-defined]
 
     await _measure_one_position(sess, room_gain_db=0.5)
-    await sess.apply(fake_set)  # compatibility path (no topology-aware carrier)
-    # Simulate what the getter-driven apply() records on the real web path: the
-    # pre-swap graph. (Driving the getter path here would exercise the
-    # topology-aware carrier, which rejects tmp stub graphs — a separate,
-    # already-tested concern; this test is about the auto-revert FALLBACK.)
-    sess.pre_apply_config_path = prior
+    await sess.apply(
+        fake_set,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
+    # apply() records the pre-swap graph the getter reported.
+    prior = str(prior_path)
+    assert sess.pre_apply_config_path == prior
 
     await _run_verify(sess, verify_room_gain_db=20.0)  # regressed
     await _run_verify(sess, verify_room_gain_db=20.0)  # confirmed
@@ -1774,11 +1813,20 @@ async def test_acceptance_verdict_lands_in_result_json(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.save_bundles = True
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await _measure_one_position(sess, room_gain_db=8.0)
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     await _run_verify(sess, verify_room_gain_db=0.5)
 
     result_path = sess.bundle_dir / "result.json"
@@ -1812,11 +1860,20 @@ async def test_verify_accept_discloses_quality_warning_when_verify_snr_warned(
     """
     sess = _make_session(tmp_path)
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await _measure_one_position(sess, room_gain_db=10.0)
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     # A noise floor this close to the verify capture's own level forces a
     # deeply negative estimated SNR (well under acceptance.SNR_WARN_DB),
     # regardless of the synthetic capture's exact RMS — see
@@ -1861,11 +1918,20 @@ async def test_verify_accept_discloses_quality_warning_when_verify_snr_unavailab
     """
     sess = _make_session(tmp_path)
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await _measure_one_position(sess, room_gain_db=10.0)
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     await _run_verify(sess, verify_room_gain_db=0.0)  # noise_floor_db never set
 
     assert sess.state == SessionState.VERIFIED
@@ -1902,11 +1968,20 @@ async def test_verify_accept_survives_ok_verify_snr(tmp_path: Path):
     """
     sess = _make_session(tmp_path)
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await _measure_one_position(sess, room_gain_db=10.0)
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     sess.noise_floor_db = -45.08
     await _run_verify(sess, verify_room_gain_db=0.0)
 
@@ -1970,7 +2045,12 @@ async def test_multi_position_verify_judges_against_position1_not_average(
     measured_curve, produces "accept" here and fails."""
     sess = _make_session(tmp_path)
 
+    camilla_get_config, note_loaded = stateful_camilla_stub(
+        seed_prior_sound_config(sess)
+    )
+
     async def fake_camilla(path: str) -> bool:
+        note_loaded(path)
         return True
 
     await _measure_positions(sess, [2.0, 14.0, 14.0])
@@ -1983,7 +2063,11 @@ async def test_multi_position_verify_judges_against_position1_not_average(
     assert np.allclose(pos1, sess.position_magnitudes[0])
     assert not np.allclose(pos1, avg)
 
-    await sess.apply(fake_camilla)
+    await sess.apply(
+        fake_camilla,
+        camilla_get_config=camilla_get_config,
+        prepare_guard=default_bass_profile_summary,
+    )
     await _run_verify(sess, verify_room_gain_db=2.0)  # seat-1 room, unchanged
 
     assert isinstance(sess.acceptance, dict)
