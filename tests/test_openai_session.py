@@ -24,14 +24,10 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
-from jasper.voice._supervisor import (
-    ESCALATION_CUE_SLUG,
-    ESCALATION_REPEAT_THRESHOLD,
-)
+from jasper.voice._supervisor import ESCALATION_CUE_SLUG
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
-    _is_transient,
     _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
@@ -192,28 +188,6 @@ def test_upsample_state_continuity_across_chunks():
     out1, s1 = _upsample_16k_to_24k(pcm, None)
     out2, _ = _upsample_16k_to_24k(pcm, s1)
     assert len(out1) + len(out2) >= 3700
-
-
-def test_is_transient_classifies_correctly():
-    """Auth/config errors don't retry; network/5xx do."""
-    class _Auth:
-        status_code = 401
-    class _Conflict:
-        status_code = 409
-    class _RateLimit:
-        status_code = 429
-    class _ServerError:
-        status_code = 502
-
-    assert _is_transient(_Auth()) is False
-    assert _is_transient(_Conflict()) is True
-    assert _is_transient(_RateLimit()) is True
-    assert _is_transient(_ServerError()) is True
-    # Generic errors with no status: assume transient.
-    assert _is_transient(OSError("network blip")) is True
-    # Local-validation errors: never retry.
-    assert _is_transient(ValueError("bad config")) is False
-    assert _is_transient(TypeError("wrong shape")) is False
 
 
 def test_invalid_noise_reduction_rejected_at_construction():
@@ -1613,25 +1587,21 @@ async def test_reconnect_with_backoff_eventually_succeeds():
         await conn.stop()
 
 
-async def test_reconnect_escalation_cue_rate_limits_and_resets_after_success():
-    """The OpenAI loop, not only the shared/Gemini helpers, must append
-    failure fingerprints and drive the proactive cue callback.
+async def test_reconnect_escalation_cue_fires_once_per_outage():
+    """The OpenAI loop, not only the shared helpers, drives the cue.
 
-    ESCALATION_REPEAT_THRESHOLD identical reopen failures trigger one cue; the
-    next attempt succeeds and clears the consecutive-failure buffer. A second
-    identical outage inside the one-hour window must recover without replaying
-    the cue.
+    A terminal reopen failure speaks once however many times it repeats
+    within the outage; a recovery re-arms so the next outage speaks
+    again; a transient outage stays silent.
     """
-    conn, factory = _make_conn(
-        backoff_schedule=(0.0,) * (ESCALATION_REPEAT_THRESHOLD + 1)
-    )
-    cue_calls: list[tuple[str, int]] = []
+    conn, factory = _make_conn(backoff_schedule=(0.0,) * 4)
+    cue_calls: list[str] = []
 
     async def cue_cb(slug: str) -> None:
-        cue_calls.append((slug, len(conn._recent_failure_fingerprints)))
+        cue_calls.append(slug)
 
-    class _IdenticalFailure(Exception):
-        pass
+    class _Terminal(Exception):
+        status_code = 403
 
     class _Drop(Exception):
         pass
@@ -1639,48 +1609,29 @@ async def test_reconnect_escalation_cue_rate_limits_and_resets_after_success():
     conn.set_failure_escalation_cb(cue_cb)
     registry = ToolRegistry()
     await conn.start(registry, "system")
-    try:
-        factory.next_exceptions = [
-            _IdenticalFailure("same reopen failure")
-            for _ in range(ESCALATION_REPEAT_THRESHOLD)
-        ]
+
+    async def _outage(exc_factory, opens: int) -> None:
+        factory.next_exceptions = [exc_factory(), exc_factory()]
         factory.conns[-1].feed_error(_Drop("active socket dropped"))
-
-        await _wait_until(lambda: len(cue_calls) == 1, timeout=3.0)
         await _wait_until(
             lambda: (
-                len(factory.conns) >= 2
+                len(factory.conns) >= opens
                 and conn._state is ConnectionState.CONNECTED
             ),
             timeout=3.0,
         )
-        assert cue_calls == [
-            (ESCALATION_CUE_SLUG, ESCALATION_REPEAT_THRESHOLD)
-        ]
-        assert len(conn._recent_failure_fingerprints) == 0
-        first_escalation_at = conn._last_escalation_at
-
-        factory.next_exceptions = [
-            _IdenticalFailure("same reopen failure")
-            for _ in range(ESCALATION_REPEAT_THRESHOLD)
-        ]
-        factory.conns[-1].feed_error(_Drop("active socket dropped again"))
-
-        await _wait_until(
-            lambda: (
-                len(factory.conns) >= 3
-                and conn._state is ConnectionState.CONNECTED
-            ),
-            timeout=3.0,
-        )
-        # The callback is fire-and-forget. Give an erroneously scheduled
-        # second task an event-loop turn before asserting the rate limit.
+        # The cue is fire-and-forget; give a spurious task a turn to run.
         await asyncio.sleep(0.05)
-        assert cue_calls == [
-            (ESCALATION_CUE_SLUG, ESCALATION_REPEAT_THRESHOLD)
-        ]
-        assert conn._last_escalation_at == first_escalation_at
-        assert len(conn._recent_failure_fingerprints) == 0
+
+    try:
+        await _outage(_Terminal, opens=2)
+        assert cue_calls == [ESCALATION_CUE_SLUG]
+
+        await _outage(_Terminal, opens=3)
+        assert cue_calls == [ESCALATION_CUE_SLUG] * 2
+
+        await _outage(lambda: RuntimeError("transient"), opens=4)
+        assert cue_calls == [ESCALATION_CUE_SLUG] * 2
     finally:
         await conn.stop()
     assert conn._state is ConnectionState.CLOSED
@@ -1889,7 +1840,7 @@ def _make_conn_with_clock(
     if fail_exc is None:
         # Mirrors the production stack trace seen on 2026-05-23:
         # OSError [Errno -3] Temporary failure in name resolution.
-        # OSError has no `status_code`, so `_is_transient` falls
+        # OSError has no `status_code`, so `is_transient` falls
         # through to the no-status path and returns True.
         fail_exc = OSError(-3, "Temporary failure in name resolution")
     factory = _FakeConnectFactory()
@@ -1986,7 +1937,7 @@ async def test_initial_connect_exhausts_budget_and_raises():
 
 async def test_initial_connect_non_transient_error_raises_immediately():
     """Auth errors (and other non-transient failures per
-    ``_is_transient``) must NOT consume the budget — they propagate
+    ``is_transient``) must NOT consume the budget — they propagate
     on the first attempt, no sleep, no retry. Preserves the original
     behaviour from before the budget refactor (was covered by
     ``test_non_transient_initial_connect_error_propagates`` against
