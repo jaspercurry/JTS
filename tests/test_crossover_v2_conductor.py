@@ -6345,34 +6345,6 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
         )
 
 
-def test_cloud_plan_stays_inside_the_relay_spec_byte_budgets():
-    """The relay caps the opaque spec at 64 KiB and each entry's screen at
-    4 KiB (`capture_relay.spec`). A 16-entry plan of product copy is nowhere
-    near either, but the margin is what makes prompt edits safe, so measure it
-    rather than assume it."""
-    import json
-    import re
-    from pathlib import Path
-
-    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES
-
-    # The 64 KiB spec cap lives in the deployed Worker, not in Python — read it
-    # from the source of truth rather than restating it here.
-    worker = Path(__file__).resolve().parents[1] / "relay" / "src" / "worker.js"
-    match = re.search(
-        r"const MAX_SPEC_BYTES = (\d+) \* 1024;", worker.read_text(encoding="utf-8")
-    )
-    assert match is not None, "relay worker no longer declares MAX_SPEC_BYTES"
-    max_spec_bytes = int(match.group(1)) * 1024
-
-    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding="b" * 24)
-    raw = json.dumps(spec.to_dict(), separators=(",", ":")).encode("utf-8")
-    assert len(raw) < max_spec_bytes // 4
-    for entry in spec.capture_plan.entries:
-        encoded = json.dumps(entry.screen, separators=(",", ":")).encode("utf-8")
-        assert len(encoded) < MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES // 4
-
-
 # --- W6.1 Finding A: cap-aware CHECK / MEASURE / VERIFY composition -------------
 #
 # The conductor fixture (CAPS) knew the caps, but the fake play seam never ran

@@ -174,7 +174,6 @@ deploy/            install.sh + lib/install/, systemd units, nginx confs,
 scripts/           Laptop-side operator tools (deploy, logs, diagnostics)
 tests/             Hardware-free pytest suite; voice_eval/ makes paid calls
 docs/              ADRs, designs, research archive
-relay/             Cloudflare Worker dead-drop relay for that page
 release/           first-party-arm64 artifact contract + BUILD-INFO schema
 experiments/       Lab spikes — except usb-turntable/, which is production
                      (turntable-driven speaker measurement) despite the path
