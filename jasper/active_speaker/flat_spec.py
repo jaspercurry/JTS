@@ -163,6 +163,32 @@ class BandResult:
         unknown marks nothing) -- ``min(entanglement_floor_hz,
         graded_hi_hz)``, or ``None``. Disclosure only: the grade above is
         computed exactly as it was without it.
+      gate_sensitivity_db: the gate sweep's null-model-corrected delta at
+        THIS band's ``max_deviation_hz`` -- how much of the worst bin's depth
+        arrived with the analysis window rather than with the speaker
+        (:mod:`~jasper.active_speaker.crossover_v2.gate_sweep`'s
+        ``corrected_delta_db``). ``None`` whenever
+        ``gate_sensitivity_note`` says why there is no number.
+      sigma_growth_ratio: across-pose sigma at the longest resolution-valid
+        rung over the shortest one, at the same bin. The room/speaker
+        discriminator: it is sigma that GROWS with window length that says
+        room, never sigma that is merely large (#3495).
+      n_valid_rungs: how many ladder rungs were resolution-valid at that bin
+        -- the denominator behind the two numbers above. Present whenever the
+        ladder ran, including when it then declined to publish a ratio.
+      gate_sensitivity_note: WHY the three fields above are ``None``, or
+        ``None`` when they carry numbers. Two vocabularies, deliberately
+        distinguishable: a bare slug is the ladder's own refusal
+        (``gate_sweep.NULL_*``), a ``not_swept_`` prefix means the ladder
+        never ran on this band
+        (:mod:`~jasper.active_speaker.crossover_v2.round_views`).
+
+    The four gate fields are DISCLOSURE ONLY and are stamped after the fact,
+    by a reader that holds the round's captures as well as its verdict
+    (:func:`~jasper.active_speaker.crossover_v2.round_views.spec_with_gate_sensitivity`).
+    Nothing in this module computes them, no grade reads them, and a report
+    that never met a sweep carries them as ``None`` -- which is why they
+    default rather than being required.
 
     For every non-excluded bin ``i`` in the band the two readings decompose
     exactly::
@@ -201,6 +227,14 @@ class BandResult:
     graded_hi_hz: float | None = None
     max_at_graded_edge: bool | None = None
     room_entangled_below_hz: float | None = None
+    # Defaulted for a DIFFERENT reason than the fields above: nothing in this
+    # module ever fills these in. They are stamped afterwards by a reader
+    # holding the round's captures as well as its verdict, so `None` here is
+    # "no sweep has read this report", not "this document is old".
+    gate_sensitivity_db: float | None = None
+    sigma_growth_ratio: float | None = None
+    n_valid_rungs: int | None = None
+    gate_sensitivity_note: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -221,6 +255,10 @@ class BandResult:
             "graded_hi_hz": self.graded_hi_hz,
             "max_at_graded_edge": self.max_at_graded_edge,
             "room_entangled_below_hz": self.room_entangled_below_hz,
+            "gate_sensitivity_db": self.gate_sensitivity_db,
+            "sigma_growth_ratio": self.sigma_growth_ratio,
+            "n_valid_rungs": self.n_valid_rungs,
+            "gate_sensitivity_note": self.gate_sensitivity_note,
         }
 
     @classmethod
@@ -234,8 +272,8 @@ class BandResult:
         rehydrating a plausible-looking ``None``. (Several of them are
         legitimately ``None`` on an unevaluable band, which ``raw["..."]``
         preserves; the hardening is against the KEY being absent.) Only the
-        seven dataclass-defaulted fields, ``level_deviation_db`` through
-        ``room_entangled_below_hz``, are read with :meth:`dict.get`, so a document
+        dataclass-defaulted fields, ``level_deviation_db`` through
+        ``gate_sensitivity_note``, are read with :meth:`dict.get`, so a document
         without them rehydrates with the same ``None`` a hand-built report
         would carry.
         """
@@ -257,6 +295,10 @@ class BandResult:
             graded_hi_hz=raw.get("graded_hi_hz"),
             max_at_graded_edge=raw.get("max_at_graded_edge"),
             room_entangled_below_hz=raw.get("room_entangled_below_hz"),
+            gate_sensitivity_db=raw.get("gate_sensitivity_db"),
+            sigma_growth_ratio=raw.get("sigma_growth_ratio"),
+            n_valid_rungs=raw.get("n_valid_rungs"),
+            gate_sensitivity_note=raw.get("gate_sensitivity_note"),
         )
 
 
@@ -301,6 +343,16 @@ class FlatSpecReport:
     (:func:`jasper.audio_measurement.gating.f_entanglement_floor_hz`; unknown
     marks nothing), echoed the way the clamps above are but clamping nothing:
     what they mark is :attr:`BandResult.room_entangled_below_hz`.
+
+    ``gate_sweep_frame`` is the frame every band's four gate fields are
+    stated in
+    (:func:`~jasper.active_speaker.crossover_v2.gate_sweep.frame_descriptor`
+    -- window shape, ladder, smoothing, grid, resolution bars). It travels
+    WITH the numbers because one capture and one feature read a materially
+    different depth under each defensible frame (#3495), so a sensitivity
+    without its frame is the frame's number rather than the room's. ``None``
+    on every report no sweep ever stamped, which is every report this module
+    builds: nothing here fills it in.
     """
 
     reference_db: float
@@ -320,6 +372,7 @@ class FlatSpecReport:
     )
     entanglement_floor_hz: float | None = None
     entanglement_floor_source: str = gating.ENTANGLEMENT_SOURCE_UNKNOWN
+    gate_sweep_frame: dict[str, Any] | None = None
 
     @property
     def frame_kwargs(self) -> dict[str, Any]:
@@ -355,6 +408,7 @@ class FlatSpecReport:
             "graded_band_hz": list(self.graded_band_hz),
             "entanglement_floor_hz": self.entanglement_floor_hz,
             "entanglement_floor_source": self.entanglement_floor_source,
+            "gate_sweep_frame": self.gate_sweep_frame,
         }
 
     @classmethod
@@ -366,8 +420,13 @@ class FlatSpecReport:
         ``excluded_intervals`` is read with hard indexing, so a document
         missing it raises rather than rehydrating an empty tuple that reads
         as "nothing was excluded" when the truth is "the field was lost". The
-        four clamp fields and the two entanglement fields are read with
-        :meth:`dict.get` and fall back to the dataclass defaults.
+        four clamp fields, the two entanglement fields and ``gate_sweep_frame``
+        are read with :meth:`dict.get` and fall back to the dataclass defaults.
+
+        ``gate_sweep_frame`` rehydrates only from a mapping; anything else in
+        that key -- a scalar, a list, a stray ``true`` -- becomes ``None``
+        rather than a "frame" no reader can index, since a frame that cannot
+        be read is the same evidence as no frame at all.
 
         The two entanglement fields are read as a PAIR, through
         :meth:`~jasper.audio_measurement.gating.EntanglementFloor.coerce` --
@@ -384,6 +443,8 @@ class FlatSpecReport:
         graded_band = raw.get("graded_band_hz")
         if graded_band is not None:
             kwargs["graded_band_hz"] = (float(graded_band[0]), float(graded_band[1]))
+        raw_frame = raw.get("gate_sweep_frame")
+        gate_sweep_frame = dict(raw_frame) if isinstance(raw_frame, Mapping) else None
         entanglement = gating.EntanglementFloor.coerce(
             raw.get("entanglement_floor_hz"), raw.get("entanglement_floor_source")
         )
@@ -398,6 +459,7 @@ class FlatSpecReport:
             smoothing_fraction=int(raw["smoothing_fraction"]),
             trusted_floor_hz=raw.get("trusted_floor_hz"),
             trusted_ceiling_hz=raw.get("trusted_ceiling_hz"),
+            gate_sweep_frame=gate_sweep_frame,
             entanglement_floor_hz=entanglement.hz,
             entanglement_floor_source=entanglement.source,
             **kwargs,

@@ -40,10 +40,15 @@ from jasper.active_speaker.crossover_v2.round_views import (
     entry_state_grade,
     forward_model_verify_delta,
     frozen_reference_grade,
+    BankedRound,
+    NOT_SWEPT_BAND_NOT_EVALUABLE,
+    NOT_SWEPT_CAPTURES_UNREADABLE,
+    NOT_SWEPT_SINGLE_POSE,
     load_banked_round,
     per_seat_curves,
     pooled_window_horizontal,
     repeatability_spread,
+    spec_with_gate_sensitivity,
     verify_pose_curve,
 )
 from jasper.active_speaker import flat_spec
@@ -53,6 +58,15 @@ from tests.crossover_v2_banked_round import (
     SOLO_BAND_HZ,
     bank_measure_round,
     bank_verify_round,
+)
+# The gate sweep's own synthetic round builder, reused rather than copied: it
+# writes real capture WAVs whose impulse responses are known in advance, which
+# is the only fixture shape ``discover_captures`` can deconvolve. A second copy
+# here would be a second place for the round's on-disk shape to drift.
+from tests.test_crossover_v2_gate_sweep import (
+    FEATURE_HZ,
+    _pose_ir,
+    _write_round,
 )
 
 #: A live session bundle resolves its three non-bundle inputs to the on-speaker
@@ -1830,3 +1844,147 @@ def test_cli_co_metrics_writes_the_result(tmp_path):
     assert payload["on_axis"]["sm_r2"] == pytest.approx(1.0, abs=1e-9)
     assert payload["pooled_window"] is None
     assert payload["pooled_window_reason"]
+
+
+# --------------------------------------------------------------------------- #
+# the gate ladder, stamped onto the round's own spec verdict
+# --------------------------------------------------------------------------- #
+
+#: Two rungs, not the default seven: this suite is proving the wiring, and the
+#: ladder's own physics is measured in ``test_crossover_v2_gate_sweep.py``.
+SWEEP_RUNGS_MS = (5.0, 20.0)
+
+
+def _curve_dipping_at(hz: float, *, depth_db: float = -3.0) -> np.ndarray:
+    """A flat curve with its single worst bin at the grid bin nearest ``hz``."""
+    curve = np.full(GRID.shape, REFERENCE_DB, dtype=float)
+    curve[int(np.argmin(np.abs(GRID - hz)))] += depth_db
+    return curve
+
+
+def _banked_for_sweep(round_dir: Path, report) -> BankedRound:
+    """One round's captures and one round's verdict, as the function takes them.
+
+    Built directly rather than through :func:`load_banked_round`: the captures
+    the sweep reads and the evidence packet the loader parses live in two
+    different trees under ``bundle/``, and only one session directory may.
+    """
+    return BankedRound(
+        round_dir=round_dir,
+        inputs=round_inputs_mod.RoundInputs(
+            session_dir=round_dir,
+            state_path=None,
+            design_draft_path=None,
+            applied_profile_path=None,
+            repeat_floor_path=None,
+            banked=True,
+        ),
+        positions=(),
+        curve_grid_hz=GRID,
+        report=report,
+        packet={},
+    )
+
+
+@pytest.fixture(scope="module")
+def swept_low_band(tmp_path_factory):
+    """A three-pose round whose graded low band is worst at the feature the
+    captures actually carry, swept and stamped."""
+    round_dir = _write_round(
+        tmp_path_factory.mktemp("swept"),
+        [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
+    )
+    report = evaluate_flat_spec(
+        GRID, _curve_dipping_at(FEATURE_HZ), np.zeros(GRID.shape, dtype=bool),
+    )
+    stamped = spec_with_gate_sensitivity(
+        _banked_for_sweep(round_dir, report), rungs_ms=SWEEP_RUNGS_MS,
+    )
+    return report, stamped
+
+
+def test_the_spec_verdict_carries_the_sweep_at_each_bands_worst_bin(swept_low_band):
+    """The verdict names the bin and the ladder answers at THAT bin, with the
+    frame those numbers are only meaningful inside."""
+    report, stamped = swept_low_band
+
+    low = stamped.bands[0]
+    assert low.max_deviation_hz == report.bands[0].max_deviation_hz
+    assert low.gate_sensitivity_note is None
+    assert np.isfinite(low.sigma_growth_ratio)
+    assert np.isfinite(low.gate_sensitivity_db)
+    assert low.n_valid_rungs == len(SWEEP_RUNGS_MS)
+    # Real builtins, never `np.float64`/`np.int64`: this report is persisted
+    # through `json.dumps`, which the numpy scalars silently break.
+    assert type(low.sigma_growth_ratio) is float
+    assert type(low.gate_sensitivity_db) is float
+    assert type(low.n_valid_rungs) is int
+
+    assert stamped.gate_sweep_frame is not None
+    assert stamped.gate_sweep_frame["rungs_ms"] == list(SWEEP_RUNGS_MS)
+
+
+def test_stamping_the_sweep_moves_no_grade(swept_low_band):
+    """Disclosure only. Strip the five new fields and the report is the one
+    `evaluate_flat_spec` produced, band for band and verdict for verdict.
+    """
+    from dataclasses import replace
+
+    report, stamped = swept_low_band
+
+    stripped = replace(
+        stamped,
+        bands=tuple(
+            replace(
+                band, gate_sensitivity_db=None, sigma_growth_ratio=None,
+                n_valid_rungs=None, gate_sensitivity_note=None,
+            )
+            for band in stamped.bands
+        ),
+        gate_sweep_frame=None,
+    )
+    assert stripped == report
+
+
+def test_a_single_pose_round_is_named_as_not_swept(tmp_path):
+    """Across-pose sigma has no meaning on one pose, so there is no number and
+    the reason says which kind of nothing it is."""
+    round_dir = _write_round(tmp_path, [_pose_ir(0, late_copy_ms=8.0)])
+    report = evaluate_flat_spec(
+        GRID, _curve_dipping_at(FEATURE_HZ), np.zeros(GRID.shape, dtype=bool),
+    )
+
+    stamped = spec_with_gate_sensitivity(
+        _banked_for_sweep(round_dir, report), rungs_ms=SWEEP_RUNGS_MS,
+    )
+
+    assert all(band.sigma_growth_ratio is None for band in stamped.bands)
+    assert all(band.n_valid_rungs is None for band in stamped.bands)
+    assert all(
+        band.gate_sensitivity_note == NOT_SWEPT_SINGLE_POSE
+        for band in stamped.bands
+    )
+    assert stamped.gate_sweep_frame is None
+
+
+def test_a_band_with_no_worst_bin_is_told_apart_from_a_round_with_no_captures(
+    tmp_path,
+):
+    """Two different kinds of nothing, and a reader must not read either as the
+    other. The captures are never opened for the band that has no bin to ask
+    about, and an unreadable round is still a graded round.
+    """
+    report = evaluate_flat_spec(
+        GRID, _curve_dipping_at(FEATURE_HZ), np.zeros(GRID.shape, dtype=bool),
+        trusted_ceiling_hz=8000.0,
+    )
+    assert report.bands[-1].max_deviation_hz is None  # the ceiling took it whole
+
+    stamped = spec_with_gate_sensitivity(
+        _banked_for_sweep(tmp_path, report), rungs_ms=SWEEP_RUNGS_MS,
+    )
+
+    assert stamped.bands[-1].gate_sensitivity_note == NOT_SWEPT_BAND_NOT_EVALUABLE
+    assert stamped.bands[0].gate_sensitivity_note == NOT_SWEPT_CAPTURES_UNREADABLE
+    assert stamped.gate_sweep_frame is None
+    assert stamped.overall_passed == report.overall_passed

@@ -958,6 +958,22 @@ entangled sub-span, `null` when the band sits wholly above the floor. The band
 still grades and still passes or fails exactly as it did; what the field adds is
 the reservation on how far up that verdict is a claim about the speaker.
 
+**Room or speaker, at the band's own worst bin.** A spec report stamped by
+`round_views.spec_with_gate_sensitivity` carries four more fields per band and
+one on the report itself. All five are disclosure — no grade moves — and every
+one is `null` on a report nothing stamped.
+
+| Field | What it says |
+|---|---|
+| `sigma_growth_ratio` | across-pose sigma at the longest resolution-valid rung over the shortest, at that band's `max_deviation_hz`. **Growth is what says room**; a big but window-invariant spread is directivity (#3495), so read `> 1` as room-ward and `≈ 1` as the speaker's own. |
+| `gate_sensitivity_db` | how much of that bin's depth the analysis window contributed, null-model corrected. |
+| `n_valid_rungs` | how many ladder rungs were resolution-valid at that bin — the denominator behind the two above. Present even when they are `null`. |
+| `gate_sensitivity_note` | why there is no number. **Read this first.** A `not_swept_` prefix means the ladder never ran (`not_swept_single_pose`, `not_swept_band_not_evaluable`, `not_swept_captures_unreadable`, `not_swept_bin_outside_analysis_grid`); a bare slug is the ladder's own refusal after running (`insufficient_valid_rungs`, `short_rung_sigma_is_zero`). Not measured is not the same as measured and inconclusive. |
+| `gate_sweep_frame` | *(on the report)* the window shape, ladder, smoothing, grid and resolution bars every number above is stated in. One capture and one feature read a different depth under each defensible frame, so a sensitivity quoted without this one is the frame's number, not the room's. |
+
+Only `jasper-gate-sweep --at-hz <bin>` still answers for a bin the verdict did
+not flag; the flagged one is already on the report.
+
 **The reflector path is the ladder's tau times the speed of sound.** The
 `reflections` block publishes `reflector_path_distance_m` alongside the
 `tau_ladder_us` it converted and the `speed_of_sound_m_s` it used, so the

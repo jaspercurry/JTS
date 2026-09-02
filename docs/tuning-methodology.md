@@ -583,6 +583,20 @@ thresholds are unreachable at the geometric first bounce on this rig class, so
 saying nothing is there. What to do about a feature caught between the two
 floors is §6a: the instruments there are physical, not a longer window.
 
+**The spec verdict now carries that window-invariance read at its own worst
+bin.** Each band publishes `sigma_growth_ratio` (across-pose sigma at the
+longest resolution-valid rung over the shortest — growth is what says *room*,
+never size), `gate_sensitivity_db` (the null-model-corrected depth the window
+contributed), `n_valid_rungs`, and `gate_sensitivity_note` when there is no
+number; the report carries `gate_sweep_frame`, without which none of them
+reproduces. They are DISCLOSURE — no grade moves — and they are stamped from
+the round's raw captures, not from the pipeline's already-gated ones, which is
+why the reader that stamps them is offline
+(`round_views.spec_with_gate_sensitivity`). Read `gate_sensitivity_note` first:
+a `not_swept_` prefix means the ladder never ran, a bare slug means it ran and
+declined. `jasper-gate-sweep --at-hz` is now only for a bin the verdict did
+*not* flag.
+
 **Prefer cuts; keep boosts modest and probe-verified.** The realization probe
 (`classify_delta_probe`) grades realized against commanded — `matched`,
 `model_error`, `level_dependent_shortfall` and five more. **Trust it over any

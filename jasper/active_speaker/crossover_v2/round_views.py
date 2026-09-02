@@ -34,6 +34,12 @@ from the seam that already owns it:
 * :mod:`~jasper.active_speaker.crossover_v2.durable_state` reads the round's
   banked VERIFY curve (this module never parses ``verify_priors`` by hand).
 
+* :mod:`~jasper.active_speaker.crossover_v2.gate_sweep` reads one bin through
+  a ladder of gate windows over the same round's captures
+  (:func:`~jasper.active_speaker.crossover_v2.round_captures.discover_captures`);
+  :func:`spec_with_gate_sensitivity` stamps that answer onto the round's own
+  spec bands and computes none of it.
+
 **This module performs no DSP of its own.** It did, in one place: the VERIFY
 pose was the one curve a round did not carry pre-computed, so
 :func:`verify_pose_curve` deconvolved, gated, smoothed and resampled its raw
@@ -98,7 +104,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -128,7 +134,20 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     load_round_pose_curves,
 )
+from jasper.active_speaker.crossover_v2.gate_sweep import (
+    DEFAULT_RUNGS_MS,
+    GRID_HI_HZ,
+    GRID_LO_HZ,
+    REFUSE_SINGLE_POSE,
+    analysis_grid,
+    frame_descriptor,
+    sweep_features,
+)
 from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
+from jasper.active_speaker.crossover_v2.round_captures import (
+    RoundCapturesRefused,
+    discover_captures,
+)
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundInputs,
     RoundViewsError,
@@ -140,6 +159,10 @@ from jasper.audio_measurement.olive_metrics import nbd_and_sm
 __all__ = [
     "AGREEMENT_DISSENT_MAX",
     "AGREEMENT_TESTIFY_MIN",
+    "NOT_SWEPT_BAND_NOT_EVALUABLE",
+    "NOT_SWEPT_BIN_OFF_ANALYSIS_GRID",
+    "NOT_SWEPT_CAPTURES_UNREADABLE",
+    "NOT_SWEPT_SINGLE_POSE",
     "AgreementFeature",
     "AudibilityCoMetrics",
     "AudibilityMetrics",
@@ -166,6 +189,7 @@ __all__ = [
     "pooled_window_horizontal",
     "repeat_floor_provenance",
     "repeatability_spread",
+    "spec_with_gate_sensitivity",
     "verify_pose_curve",
 ]
 
@@ -345,6 +369,153 @@ def load_banked_round(round_dir: Path) -> BankedRound:
         curve_grid_hz=grid,
         report=report,
         packet=packet,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The room/speaker read, stamped onto the round's own spec verdict
+# --------------------------------------------------------------------------- #
+
+
+#: Why a band carries no gate sensitivity when the LADDER NEVER RAN on it.
+#: The ``not_swept_`` prefix is what tells these apart from the sweep's own
+#: refusals (``gate_sweep.NULL_*``), which mean the ladder ran and then
+#: declined to publish; both land in the one
+#: :attr:`~jasper.active_speaker.flat_spec.BandResult.gate_sensitivity_note`
+#: field, and conflating "not measured" with "measured, inconclusive" is the
+#: read this vocabulary exists to prevent.
+NOT_SWEPT_SINGLE_POSE = "not_swept_single_pose"
+NOT_SWEPT_BAND_NOT_EVALUABLE = "not_swept_band_not_evaluable"
+#: Every ``RoundCapturesRefused`` the ladder can raise EXCEPT the single-pose
+#: one: no captures, no programs, a capture that will not bind to its bytes, a
+#: missing radiated band, and a radiated band that does not reach the sweep's
+#: reference band. They are one word here because the answer is the same —
+#: this round's captures did not become curves — and the refusal itself
+#: carries the detail.
+NOT_SWEPT_CAPTURES_UNREADABLE = "not_swept_captures_unreadable"
+NOT_SWEPT_BIN_OFF_ANALYSIS_GRID = "not_swept_bin_outside_analysis_grid"
+
+
+def _stamped_band(
+    band: flat_spec.BandResult,
+    feature: Mapping[str, Any] | None,
+    note: str | None,
+) -> flat_spec.BandResult:
+    """One band plus the ladder's read at its own worst bin, or the reason why not.
+
+    ``n_valid_rungs`` is stamped whenever the ladder RAN, including on a null:
+    it is the denominator behind the two numbers beside it, and a reader
+    weighing ``insufficient_valid_rungs`` needs to see how few.
+    """
+    if feature is None:
+        return replace(band, gate_sensitivity_note=note)
+    sensitivity = feature.get("sensitivity")
+    return replace(
+        band,
+        gate_sensitivity_db=(
+            None if sensitivity is None else float(sensitivity["corrected_delta_db"])
+        ),
+        sigma_growth_ratio=(
+            None if sensitivity is None else float(sensitivity["sigma_growth_ratio"])
+        ),
+        n_valid_rungs=int(feature["n_valid_rungs"]),
+        gate_sensitivity_note=feature.get("sensitivity_null_reason"),
+    )
+
+
+def spec_with_gate_sensitivity(
+    banked: BankedRound, *, rungs_ms: Sequence[float] = DEFAULT_RUNGS_MS,
+) -> FlatSpecReport:
+    """The round's graded spec, with "room or speaker" answered at every band's
+    own worst bin.
+
+    The spec verdict names the bin; :mod:`.gate_sweep` says whether that bin
+    moves with the analysis window. Before this the two lived one
+    ``jasper-gate-sweep --at-hz <bin>`` apart and a reader had to remember to
+    cross them, so the answer travelled only as far as whoever ran the second
+    command. Now each :class:`~jasper.active_speaker.flat_spec.BandResult`
+    carries the ladder's headline at its own
+    ``max_deviation_hz`` and the report carries the frame those numbers are
+    stated in. **Disclosure only: no grade moves** — every field the evaluator
+    set comes back untouched.
+
+    **Why this reads a BANKED round rather than the live combine.** The cloud
+    pipeline's seam (``spatial.assemble_cloud_group_result``) has the graded
+    curve but not the impulse responses: ``CombinedResponse`` keeps each
+    position's magnitude and echo diagnostic and drops the ``ir`` that
+    ``detect_echo`` consumed. Reaching one there means the IR behind
+    ``DriverResponse.complex_tf``, and that IR has ALREADY been through
+    ``deconv.direct_arrival_window`` and the adaptive reflection gate, whose
+    search stops at ``gating.SEARCH_T_MAX_MS`` — 7 ms. The ladder's 9, 12 and
+    20 ms rungs would then read a window that was closed before they got
+    there, and ``sigma_growth_ratio`` would come back at ~1.0 by
+    construction: "it is the speaker", fabricated, on every band. A banked
+    round's ``summed_*.wav`` is the raw capture, deconvolved here against its
+    own program (:func:`~.round_captures.discover_captures`), and only that
+    IR can answer what a longer window admits.
+
+    Cost is one ladder pass over the round's captures: the round door's own
+    ``discover_captures`` decode/deconvolve, then ONE
+    :func:`~.gate_sweep.sweep_features` call at up to three bins. A band with
+    no ``max_deviation_hz`` to name is skipped rather than swept, and a report
+    that names none at all costs nothing — the captures are never read.
+
+    Every way there can be no number is named in
+    ``gate_sensitivity_note`` and none of them raises: a round whose
+    captures cannot be read is a round with an ungraded window, not an
+    ungraded spec.
+    """
+    report = banked.graded_report
+    targets: list[tuple[int, float]] = []
+    notes: dict[int, str] = {}
+    for index, band in enumerate(report.bands):
+        worst_hz = band.max_deviation_hz
+        if worst_hz is None:
+            notes[index] = NOT_SWEPT_BAND_NOT_EVALUABLE
+        elif not GRID_LO_HZ <= float(worst_hz) <= GRID_HI_HZ:
+            # Named per band rather than allowed to raise: ``sweep_features``
+            # rejects the whole CALL on one off-grid bin, which would cost
+            # every other band its answer.
+            notes[index] = NOT_SWEPT_BIN_OFF_ANALYSIS_GRID
+        else:
+            targets.append((index, float(worst_hz)))
+
+    features: dict[int, Mapping[str, Any]] = {}
+    frame: dict[str, Any] | None = None
+    if targets:
+        rungs = tuple(sorted(float(rung) for rung in rungs_ms))
+        try:
+            swept = sweep_features(
+                discover_captures(banked.round_dir),
+                rungs_ms=rungs,
+                at_hz=[hz for _index, hz in targets],
+            )
+        except RoundCapturesRefused as exc:
+            # The engine's own bar, echoed rather than re-judged: it refuses
+            # fewer than two captures, and this names that refusal apart from
+            # a round whose captures would not read at all.
+            refused = (
+                NOT_SWEPT_SINGLE_POSE
+                if exc.reason == REFUSE_SINGLE_POSE
+                else NOT_SWEPT_CAPTURES_UNREADABLE
+            )
+            notes.update({index: refused for index, _hz in targets})
+        else:
+            # Positional, never keyed by frequency: two bands asking about one
+            # bin is a coincidence, not a reason to share an answer.
+            features = {
+                index: feature
+                for (index, _hz), feature in zip(targets, swept, strict=True)
+            }
+            frame = frame_descriptor(rungs, analysis_grid())
+
+    return replace(
+        report,
+        bands=tuple(
+            _stamped_band(band, features.get(index), notes.get(index))
+            for index, band in enumerate(report.bands)
+        ),
+        gate_sweep_frame=frame,
     )
 
 
