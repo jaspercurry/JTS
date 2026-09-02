@@ -2789,7 +2789,7 @@ def _radiated_band_hz(segment: Any) -> tuple[float, float] | None:
     """The band a sweep segment actually drove, for the gate's disclosure.
 
     A call-site seam, not policy: the band POLICY (intersecting this with
-    the gate's trusted floor) belongs to
+    the caller's gate floor) belongs to
     :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz`.
     This only reads what the excitation program already declares, and
     returns ``None`` for a segment that declares no sweep bounds so the
@@ -3128,15 +3128,19 @@ def branch_snr_band_hz(
 def crossover_region_band_hz(
     fc_hz: float,
     *,
-    trusted_floor_hz: float | None,
+    validity_floor_hz: float | None,
     radiated_band_hz: tuple[float, float] | None,
 ) -> tuple[float, float] | None:
     """The crossover region a SUMMED capture can be judged over, or ``None``.
 
     ``[Fc/ρ, Fc·ρ]`` intersected with
-    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz` — this
-    capture's own gate-derived trusted floor and the band its stimulus actually
-    radiated, so the floor is always the evidence's own and never a literal.
+    :func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz` over
+    this capture's own gate VALIDITY floor (``1/T``,
+    :func:`~jasper.audio_measurement.gating.f_valid_floor_hz`) and the band its
+    stimulus actually radiated, so the floor is always the evidence's own and
+    never a literal. Not the trusted floor (``2.5/T``): that one is disclosed
+    beside a verdict and never bounds this one
+    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
     ``None`` when that intersection is empty: no band this capture supports, so
     no number is invented for one.
 
@@ -3167,11 +3171,11 @@ def crossover_region_band_hz(
     """
     if not math.isfinite(fc_hz) or fc_hz <= 0.0:
         return None
-    trusted = gate_disclosure.evaluation_band_hz(trusted_floor_hz, radiated_band_hz)
-    if trusted is None:
+    band = gate_disclosure.evaluation_band_hz(validity_floor_hz, radiated_band_hz)
+    if band is None:
         return None
-    lo = max(fc_hz / OVERLAP_OCTAVE_RATIO, trusted[0])
-    hi = min(fc_hz * OVERLAP_OCTAVE_RATIO, trusted[1])
+    lo = max(fc_hz / OVERLAP_OCTAVE_RATIO, band[0])
+    hi = min(fc_hz * OVERLAP_OCTAVE_RATIO, band[1])
     return (lo, hi) if lo < hi else None
 
 
@@ -6025,7 +6029,7 @@ def _verify_absolute_result(
         return {"not_evaluated": ABSOLUTE_NO_TARGET}
     band = crossover_region_band_hz(
         fc_hz,
-        trusted_floor_hz=summed.validity_floor_hz,
+        validity_floor_hz=summed.validity_floor_hz,
         radiated_band_hz=_radiated_band_hz(segment),
     )
     if band is None:

@@ -117,7 +117,7 @@ def test_the_region_is_the_summed_bands_owner_not_the_per_branch_ones():
     """
 
     summed = crossover_region_band_hz(
-        SERIES1_FC_HZ, trusted_floor_hz=100.0, radiated_band_hz=(100.0, 20000.0),
+        SERIES1_FC_HZ, validity_floor_hz=100.0, radiated_band_hz=(100.0, 20000.0),
     )
     per_branch = overlap_band_hz(
         SERIES1_FC_HZ,
