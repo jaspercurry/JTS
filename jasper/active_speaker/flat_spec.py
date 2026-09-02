@@ -622,11 +622,9 @@ def evaluate_flat_spec(
             ascending, :data:`REFERENCE_BAND_HZ` left with zero
             non-excluded bins (no reference level is computable), or any
             non-finite (NaN/Inf) value in ``freqs_hz`` or
-            ``spec_smoothed_db``; and for any entanglement floor/source pair
+            ``spec_smoothed_db``; and for any floor/source pair
             :class:`~jasper.audio_measurement.gating.EntanglementFloor`
-            refuses -- a word outside the vocabulary, a pair disagreeing about
-            whether a floor is known, or a floor that is not a positive,
-            finite frequency.
+            refuses.
     """
     # THE validation of the pair, and deliberately not a local one: the rule
     # binding a floor to its provenance lives in the type, so this seam gets

@@ -2746,7 +2746,7 @@ def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
 
 
 def cloud_entanglement_floor_hz(
-    per_position: Sequence[tuple[float | None, str]],
+    per_position: Sequence[tuple[Any, Any]],
 ) -> EntanglementFloor:
     """The group's ROOM floor and its provenance — the WORST of its positions'.
 
@@ -3035,7 +3035,7 @@ def assemble_cloud_group_result(
             [
                 (
                     row.get("gate_entanglement_floor_hz"),
-                    str(row.get("gate_entanglement_floor_source") or ""),
+                    row.get("gate_entanglement_floor_source"),
                 )
                 for row in position_records
             ]

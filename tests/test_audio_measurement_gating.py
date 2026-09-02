@@ -1022,20 +1022,21 @@ def test_the_measured_entanglement_word_is_the_gate_bound_word():
 
 
 # ---- the floor/provenance invariant, in its ONE home (#3522) --------------
-# Before this type, four seams derived "a floor is known iff its source is not
-# unknown" four ways. Every pin on the RULE lives here now; each seam keeps
-# only a pin that it still reaches this rule.
+# Every pin on the RULE lives here now; each seam keeps only a pin that it
+# still reaches this rule.
 
 
-#: Pairs that cannot both be true. Shared by the two tests below on purpose:
-#: the lenient door's contract IS "everything the strict one refuses", so
-#: stating the cases twice would let the two drift apart.
+#: Pairs that cannot both be true. The test below checks both doors against
+#: every row here on purpose: the lenient one's contract IS "everything the
+#: strict one refuses", so pinning them from two different lists would let
+#: the two drift apart.
 _IMPOSSIBLE_PAIRS = [
     # Outside the vocabulary: a fourth word no consumer can read.
     (1000.0, "measured"),
     (1000.0, ""),
     (1000.0, 3),
     (1000.0, ["unknown"]),
+    (1000.0, {"source": "declared_geometry"}),
     (None, "declared"),
     # Inside it, but the pair disagrees about whether a floor is known.
     (1000.0, gating.ENTANGLEMENT_SOURCE_UNKNOWN),
@@ -1050,16 +1051,6 @@ _IMPOSSIBLE_PAIRS = [
 ]
 
 
-@pytest.mark.parametrize(("hz", "source"), _IMPOSSIBLE_PAIRS)
-def test_an_entanglement_floor_refuses_a_pair_that_cannot_be_true(hz, source):
-    """A floor is known EXACTLY when its source is not ``unknown``, and a
-    known floor is a finite, positive frequency. Constructing the value is
-    where that is enforced, so a call site cannot publish a number nobody can
-    read or a provenance for a number that is not there."""
-    with pytest.raises(ValueError):
-        gating.EntanglementFloor(hz, source)
-
-
 @pytest.mark.parametrize(
     ("hz", "source"),
     # Plus the two shapes only a document reaches: a floor that is not a
@@ -1067,14 +1058,11 @@ def test_an_entanglement_floor_refuses_a_pair_that_cannot_be_true(hz, source):
     _IMPOSSIBLE_PAIRS
     + [("not a number", gating.ENTANGLEMENT_SOURCE_DECLARED), (1000.0, None)],
 )
-def test_coerce_turns_anything_a_document_can_carry_into_unknown(hz, source):
-    """The ONE lenient door, for persisted pairs. A document is not a call
-    site: it was written by a build that may not have had the field, so
-    everything the constructor refuses becomes ``(None, unknown)`` here rather
-    than raising -- and never a floor kept without its provenance."""
-    coerced = gating.EntanglementFloor.coerce(hz, source)
-    assert coerced == gating.EntanglementFloor.unknown()
-    assert (coerced.hz, coerced.source) == (None, gating.ENTANGLEMENT_SOURCE_UNKNOWN)
+def test_a_pair_that_cannot_be_true_raises_strictly_and_coerces_to_unknown(hz, source):
+    """See :class:`gating.EntanglementFloor`'s docstring for the invariant."""
+    with pytest.raises((TypeError, ValueError)):
+        gating.EntanglementFloor(hz, source)
+    assert gating.EntanglementFloor.coerce(hz, source) == gating.EntanglementFloor.unknown()
 
 
 def test_coerce_keeps_a_pair_that_agrees_and_types_the_number():

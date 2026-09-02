@@ -439,8 +439,7 @@ class EntanglementFloor:
     its source is not :data:`ENTANGLEMENT_SOURCE_UNKNOWN`, and a known floor
     is a finite, positive frequency. Constructing this type is the only place
     that rule is enforced, so a seam wanting it enforced builds one rather
-    than re-deriving the check — before #3522 four seams derived it four
-    ways, and a pair that disagrees is unreadable at every one of them.
+    than re-deriving the check.
 
     Strict by default: a call site handing over a pair that cannot be true
     has a bug, and :meth:`coerce` is the ONE lenient door, for persisted data.
@@ -461,6 +460,10 @@ class EntanglementFloor:
                 "a known floor names where it came from, and an unknown one "
                 "carries no number"
             )
+        if self.hz is not None:
+            if isinstance(self.hz, bool):
+                raise TypeError(f"floor must be a frequency, not a bool (got {self.hz!r})")
+            object.__setattr__(self, "hz", float(self.hz))
         if self.hz is not None and not (math.isfinite(self.hz) and self.hz > 0.0):
             raise ValueError(f"floor must be finite and positive (got {self.hz!r})")
 

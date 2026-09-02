@@ -362,16 +362,21 @@ def _entanglement_floor(
         reports_arrival
         and source_of_bound == gating.FLOOR_MEASURED
         and measured_s is not None
-        and measured_s > 0.0
     ):
-        return gating.EntanglementFloor.from_bounce_s(
-            measured_s, gating.ENTANGLEMENT_SOURCE_MEASURED
-        )
+        try:
+            return gating.EntanglementFloor.from_bounce_s(
+                measured_s, gating.ENTANGLEMENT_SOURCE_MEASURED
+            )
+        except (TypeError, ValueError):
+            pass
     declared_s = _finite(declared_first_bounce_s)
-    if declared_s is not None and declared_s > 0.0:
-        return gating.EntanglementFloor.from_bounce_s(
-            declared_s, gating.ENTANGLEMENT_SOURCE_DECLARED
-        )
+    if declared_s is not None:
+        try:
+            return gating.EntanglementFloor.from_bounce_s(
+                declared_s, gating.ENTANGLEMENT_SOURCE_DECLARED
+            )
+        except (TypeError, ValueError):
+            pass
     return gating.EntanglementFloor.unknown()
 
 
