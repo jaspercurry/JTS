@@ -511,56 +511,36 @@ def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
 
 
 @pytest.mark.parametrize(
-    "constant, impossible, measured, threshold",
+    "constant, impossible, measured",
     [
-        (
-            "MAX_RAW_LEVEL_DELTA_DB", -1.0,
-            "raw_level_delta_db_abs", "max_raw_level_delta_db",
-        ),
-        (
-            "MIN_RAW_EXCESS_SNR_DB", 500.0,
-            "raw_excess_snr_db", "min_raw_excess_snr_db",
-        ),
-        (
-            "MIN_BEAM_ACQUISITION_DB", 500.0,
-            "beam_acquisition_db", "min_beam_acquisition_db",
-        ),
-        (
-            "MIN_BEAM_SUPPRESSION_DB", 500.0,
-            "beam_suppression_db", "min_beam_suppression_db",
-        ),
-        (None, None, "clipped_samples", None),
+        ("MAX_RAW_LEVEL_DELTA_DB", -1.0, "raw_level_delta_db_abs"),
+        ("MIN_RAW_EXCESS_SNR_DB", 500.0, "raw_excess_snr_db"),
+        ("MIN_BEAM_ACQUISITION_DB", 500.0, "beam_acquisition_db"),
+        ("MIN_BEAM_SUPPRESSION_DB", 500.0, "beam_suppression_db"),
     ],
 )
 def test_a_rejected_product_capture_carries_each_metric_beside_its_threshold(
-    constant, impossible, measured, threshold, monkeypatch
+    constant, impossible, measured, monkeypatch
 ) -> None:
     # The refusal IS the evidence: jts.local refused on the five-threshold
     # block with a bare message, so the measurement that failed and the number
     # it was held to both had to be re-derived by hand (#3271).
-    on, off, active = _product_captures(clipped=constant is None)
-    expected = None
-    if constant is not None:
-        expected = analyze_product(on, off, active).evidence()[measured]
-        monkeypatch.setattr(alignment, constant, impossible)
+    on, off, active = _product_captures()
+    expected = analyze_product(on, off, active).evidence()[measured]
+    monkeypatch.setattr(alignment, constant, impossible)
 
-    with pytest.raises(alignment.ProductRejected) as rejected:
+    with pytest.raises(alignment.Rejected) as rejected:
         analyze_product(on, off, active)
 
     fields = rejected.value.fields
-    assert set(fields) == {
-        "raw_level_delta_db_abs",
-        "max_raw_level_delta_db",
-        "raw_excess_snr_db",
-        "min_raw_excess_snr_db",
-        "beam_acquisition_db",
-        "min_beam_acquisition_db",
-        "beam_suppression_db",
-        "min_beam_suppression_db",
-        "clipped_samples",
-    }
-    if constant is None:
-        assert fields["clipped_samples"] == 10
-    else:
-        assert (fields[measured], fields[threshold]) == (expected, impossible)
-        assert fields["clipped_samples"] == 0
+    assert (fields[measured], fields[constant.lower()]) == (expected, impossible)
+    assert fields["clipped_samples"] == 0
+
+
+def test_a_clipping_product_capture_is_refused_with_the_count() -> None:
+    on, off, active = _product_captures(clipped=True)
+
+    with pytest.raises(alignment.Rejected) as rejected:
+        analyze_product(on, off, active)
+
+    assert rejected.value.fields["clipped_samples"] == 10

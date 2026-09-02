@@ -16,8 +16,8 @@ from jasper.chip_aec_alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
     MicTiming,
-    ProductRejected,
     ProductResult,
+    Rejected,
     TimingRejected,
     TimingResult,
     artifact_from_dict,
@@ -322,8 +322,9 @@ class _ProductRejectingIO(_FakeIO):
 
     def product(self, _dev, _hardware, _delay, _stimulus, _active, directory):
         super().product(_dev, _hardware, _delay, _stimulus, _active, directory)
-        raise ProductRejected(
-            ProductResult(0.2, 15.84, (6.2, 24.24), (12.33, 9.76), 0)
+        raise Rejected(
+            "product",
+            ProductResult(0.2, 15.84, (6.2, 24.24), (12.33, 9.76), 0).evidence(),
         )
 
 

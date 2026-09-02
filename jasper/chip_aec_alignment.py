@@ -546,8 +546,10 @@ class TimingResult:
         return {
             "lag": self.lag,
             "peak": round(self.peak, 4),
+            "min_timing_peak": MIN_TIMING_PEAK,
             "peak_height": round(self.peak_height, 4),
             "peak_ratio": round(self.peak_ratio, 4),
+            "min_peak_ratio": MIN_PEAK_RATIO,
             "competitor_lag": self.competitor_lag,
             "competitor_offset_ms": round(self.competitor_offset_ms, 2),
             "competitor_height": round(self.competitor_height, 4),
@@ -557,7 +559,7 @@ class TimingResult:
         }
 
 
-class _Rejected(ValueError):
+class Rejected(ValueError):
     """A capture an objective gate refused, carrying why."""
 
     def __init__(self, label: str, fields: dict[str, Any]) -> None:
@@ -568,7 +570,7 @@ class _Rejected(ValueError):
         )
 
 
-class TimingRejected(_Rejected):
+class TimingRejected(Rejected):
     def __init__(self, result: TimingResult, *, at_edge: bool) -> None:
         self.result = result
         super().__init__("timing", {**result.evidence(), "at_edge": at_edge})
@@ -642,8 +644,6 @@ class ProductResult:
     clipped_samples: int
 
     def evidence(self) -> dict[str, Any]:
-        """Each measured value beside the fixed threshold it was held to."""
-
         return {
             "raw_level_delta_db_abs": round(abs(self.raw_level_delta_db), 3),
             "max_raw_level_delta_db": MAX_RAW_LEVEL_DELTA_DB,
@@ -659,12 +659,6 @@ class ProductResult:
             "min_beam_suppression_db": MIN_BEAM_SUPPRESSION_DB,
             "clipped_samples": self.clipped_samples,
         }
-
-
-class ProductRejected(_Rejected):
-    def __init__(self, result: ProductResult) -> None:
-        self.result = result
-        super().__init__("product", result.evidence())
 
 
 def _power(values: np.ndarray) -> float:
@@ -750,7 +744,7 @@ def analyze_product(
         or min(result.beam_suppression_db) < MIN_BEAM_SUPPRESSION_DB
         or result.clipped_samples
     ):
-        raise ProductRejected(result)
+        raise Rejected("product", result.evidence())
     return result
 
 

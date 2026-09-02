@@ -16,11 +16,11 @@ import sys
 import tempfile
 import time
 import wave
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Any, NoReturn
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -55,6 +55,7 @@ from jasper.mics import xvf3800
 from jasper.route_latency.status_socket import read_status_socket
 
 logger = logging.getLogger("jasper.aec_commission")
+_T = TypeVar("_T")
 MARKER = Path("/run/jasper-chip-aec-commission/active")
 # Last-run outcome for status surfaces (/aec `commission`, the wake page).
 # Same shape family as jasper.cli.xvf_firmware_update's STATE_PATH record.
@@ -196,55 +197,43 @@ def _retain_rejected_captures(directory: Path, root: Path) -> Path | None:
     return destination if moved else None
 
 
-def _reject(
-    rejection: ValueError, directory: Path, rejection_dir: Path,
-    *, gate: str, phase: str,
-) -> NoReturn:
-    """Retain the captures, journal the fields, then refuse the run.
+def _guarded(
+    call: Callable[[], _T], directory: Path, rejection_dir: Path,
+    *, gate: str, phase: str = "",
+) -> _T:
+    """Every analyzer ValueError lands here, not only the gate verdicts: a
+    refusal carrying no fields is the one whose captures matter most."""
 
-    Every analyzer ValueError lands here, not only the gate verdicts: a
-    refusal carrying no fields is the one whose captures matter most.
-    """
-
-    retained = _retain_rejected_captures(directory, rejection_dir)
-    log_event(
-        logger,
-        f"chip_aec_commission.{gate}_rejected",
-        phase=phase,
-        retained_captures=retained,
-        **getattr(rejection, "fields", {}),
-        level=logging.ERROR,
-    )
-    raise CommissioningError(
-        f"{rejection} phase={phase} retained_captures={retained}"
-    ) from rejection
-
-
-def _timing_evidence(
-    io, dev, hardware: Hardware, delay: int, stimulus: Path,
-    reference: np.ndarray, directory: Path, label: str, rejection_dir: Path,
-) -> tuple[MicTiming, ...]:
+    phase = phase or gate
     try:
-        return tuple(
-            MicTiming(
-                mic,
-                delay,
-                io.timing(dev, hardware, mic, stimulus, reference, directory, label),
-            )
-            for mic in range(4)
+        return call()
+    except ValueError as rejection:
+        retained = _retain_rejected_captures(directory, rejection_dir)
+        log_event(
+            logger,
+            f"chip_aec_commission.{gate}_rejected",
+            phase=phase,
+            retained_captures=retained,
+            **getattr(rejection, "fields", {}),
+            level=logging.ERROR,
         )
-    except ValueError as rejection:
-        _reject(rejection, directory, rejection_dir, gate="timing", phase=label)
+        raise CommissioningError(
+            f"{rejection} phase={phase} retained_captures={retained}"
+        ) from rejection
 
 
-def _product_evidence(
+def _timing_trials(
     io, dev, hardware: Hardware, delay: int, stimulus: Path,
-    active: np.ndarray, directory: Path, rejection_dir: Path,
-) -> ProductResult:
-    try:
-        return io.product(dev, hardware, delay, stimulus, active, directory)
-    except ValueError as rejection:
-        _reject(rejection, directory, rejection_dir, gate="product", phase="product")
+    reference: np.ndarray, directory: Path, label: str,
+) -> tuple[MicTiming, ...]:
+    return tuple(
+        MicTiming(
+            mic,
+            delay,
+            io.timing(dev, hardware, mic, stimulus, reference, directory, label),
+        )
+        for mic in range(4)
+    )
 
 
 def _writer_counters(window: QueueWindow) -> tuple[int, ...]:
@@ -281,9 +270,12 @@ def _commission(
             if io.convergence(dev) != 0:
                 raise CommissioningError("volatile reset did not clear convergence")
             io.warmup(hardware, stimulus, directory)
-            initial = _timing_evidence(
-                io, dev, hardware, INITIAL_SYS_DELAY, stimulus,
-                reference, directory, "initial", rejection_dir,
+            initial = _guarded(
+                lambda: _timing_trials(
+                    io, dev, hardware, INITIAL_SYS_DELAY, stimulus,
+                    reference, directory, "initial",
+                ),
+                directory, rejection_dir, gate="timing", phase="initial",
             )
             choice = choose_delay(initial)
             log_event(
@@ -296,9 +288,12 @@ def _commission(
 
             before = io.queue(hardware)
             io.apply(dev, hardware, choice.sys_delay, arm=False)
-            final = _timing_evidence(
-                io, dev, hardware, choice.sys_delay, stimulus,
-                reference, directory, "final", rejection_dir,
+            final = _guarded(
+                lambda: _timing_trials(
+                    io, dev, hardware, choice.sys_delay, stimulus,
+                    reference, directory, "final",
+                ),
+                directory, rejection_dir, gate="timing", phase="final",
             )
             after = io.queue(hardware)
             if len({_writer_counters(window) for window in (initial_queue, before, after)}) != 1:
@@ -313,9 +308,11 @@ def _commission(
             io.adapt(stimulus, directory)
             if io.convergence(dev) != 1:
                 raise CommissioningError("AEC convergence did not transition 0 to 1")
-            product = _product_evidence(
-                io, dev, hardware, choice.sys_delay, stimulus, active, directory,
-                rejection_dir,
+            product = _guarded(
+                lambda: io.product(
+                    dev, hardware, choice.sys_delay, stimulus, active, directory
+                ),
+                directory, rejection_dir, gate="product",
             )
             artifact = AlignmentArtifact(
                 identity, choice.sys_delay + queue_median, choice.sys_delay
