@@ -280,18 +280,15 @@ def test_a_harvested_entry_round_trips_into_the_registry_it_is_pasted_into(
     assert shipped.for_identity(replace(_identity(), output_id="different_dac")) is None
 
 
-def test_a_malformed_artifact_is_not_merely_a_superseded_one() -> None:
-    # The exact-field-set check still rejects an artifact missing the
-    # commissioned SYS_DELAY. Only a recognisable OLDER SCHEMA earns
-    # ArtifactSchemaSuperseded, which hands its banked K out to be applied —
-    # a shape nobody can validate must not reach that path.
+def test_a_malformed_artifact_is_rejected() -> None:
+    # The exact-field-set check rejects an artifact missing the commissioned
+    # SYS_DELAY.
     artifact = AlignmentArtifact(_identity(), 245, -38)
     older = artifact.to_dict()
     del older["sys_delay"]
 
-    with pytest.raises(ValueError) as invalid:
+    with pytest.raises(ValueError):
         artifact_from_dict(older)
-    assert not isinstance(invalid.value, alignment.ArtifactSchemaSuperseded)
 
     with pytest.raises(ValueError, match="out of range"):
         AlignmentArtifact(_identity(), 245, xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1)
@@ -301,31 +298,19 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
     artifact = AlignmentArtifact(_identity(), 245, -38)
     assert artifact_from_dict(artifact.to_dict()) == artifact
 
-    # An older schema still banks a usable K, so it is handed out for boot to
-    # apply and disclose rather than parking the box on a version number.
+    # An older schema predates a key this build requires to compare the
+    # commissioned identity, so it is refused like any other unreadable
+    # artifact — `resolve_banked_alignment` falls back to the shipped table.
     legacy = artifact.to_dict() | {"schema": 1}
-    with pytest.raises(alignment.ArtifactSchemaSuperseded) as superseded:
+    with pytest.raises(ValueError):
         artifact_from_dict(legacy)
-    assert (superseded.value.k_samples, superseded.value.sys_delay) == (245, -38)
-
-    # ...but only when what it banked survives the same checks the current
-    # schema applies.
-    unusable = artifact.to_dict() | {
-        "schema": 1,
-        "sys_delay": xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1,
-    }
-    with pytest.raises(ValueError) as invalid:
-        artifact_from_dict(unusable)
-    assert not isinstance(invalid.value, alignment.ArtifactSchemaSuperseded)
 
     # A schema from the FUTURE is what a rollback leaves behind
-    # (JASPER_DEPLOY_ALLOW_DOWNGRADE). This build cannot know what its K means,
-    # so it refuses rather than applying it under a false "predates" message —
-    # and a non-integer schema is not an ordering at all.
+    # (JASPER_DEPLOY_ALLOW_DOWNGRADE), and a non-integer schema is not an
+    # ordering at all — both are refused the same way.
     for schema in (alignment.ARTIFACT_SCHEMA + 1, "3", 3.0, None):
-        with pytest.raises(ValueError) as newer:
+        with pytest.raises(ValueError):
             artifact_from_dict(artifact.to_dict() | {"schema": schema})
-        assert not isinstance(newer.value, alignment.ArtifactSchemaSuperseded)
 
     # Same schema, mangled identity field-set: a shape this build DOES claim to
     # read but cannot, so it stays a hard refusal too.
@@ -333,15 +318,13 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
     mangled["identity"] = {
         name: v for name, v in mangled["identity"].items() if name != "output_format"
     }
-    with pytest.raises(ValueError) as broken:
+    with pytest.raises(ValueError):
         artifact_from_dict(mangled)
-    assert not isinstance(broken.value, alignment.ArtifactSchemaSuperseded)
 
     expanded = json.loads(json.dumps(artifact.to_dict()))
     expanded["timing_trials"] = [1, 2, 3]
-    with pytest.raises(ValueError) as extra:
+    with pytest.raises(ValueError):
         artifact_from_dict(expanded)
-    assert not isinstance(extra.value, alignment.ArtifactSchemaSuperseded)
 
 
 @pytest.mark.parametrize(

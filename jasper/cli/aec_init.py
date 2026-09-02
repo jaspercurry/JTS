@@ -41,7 +41,6 @@ from jasper.chip_aec_alignment import (
     PER_UNIT_IDENTITY_FIELDS,
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
-    ArtifactSchemaSuperseded,
     QueueMovedFromCommissioned,
     identity_divergence,
     load_artifact,
@@ -1014,10 +1013,6 @@ def resolve_banked_alignment(
         k_samples = artifact.k_samples
         commissioned_sys_delay = artifact.sys_delay
         commissioned_identity = artifact.identity
-    except ArtifactSchemaSuperseded as exc:
-        k_samples = exc.k_samples
-        commissioned_sys_delay = exc.sys_delay
-        disclosed.append(str(exc))
     except (OSError, ValueError) as exc:
         # Nothing banked on this box. ADR-0101 (#2984): if the shipped table
         # knows this hardware class, run from the proof measured on a sibling;
