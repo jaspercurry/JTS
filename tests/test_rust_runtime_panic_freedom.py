@@ -72,12 +72,6 @@ static-source twin (same technique as ``tests/test_outputd_wiring.py``):
   was removed, or its key text changed) also fails, so each list only
   shrinks.
 
-``rust/jasper-dual-dac-lab`` is deliberately out of scope: unlike every crate
-in ``RUNTIME_CRATES`` below, it is not a ``path = "../..."`` Cargo dependency
-of either daemon at all -- it has its own standalone binary target and is
-never linked into ``jasper-fanin`` or ``jasper-outputd``. It is a lab
-measurement tool, not code that ships.
-
 ``jasper-ring``, ``jasper-resampler``, ``jasper-clock``, and
 ``jasper-host-clock`` ARE real ``path`` dependencies of one or both daemons
 and are scanned here for the same reason the daemons' own crates are:
@@ -113,9 +107,9 @@ trusting a name):
   BOTH daemons (``jasper-fanin/Cargo.toml``, ``jasper-outputd/Cargo.toml``)
   and its env-parsing helpers (``env_str``, ``env_parse``) run on every
   daemon startup to read config -- it was a real gap against this section's
-  own inclusion criterion, not a deliberate exclusion like
-  ``jasper-dual-dac-lab`` above. Its only panic-family constructs are
-  ``assert!``/``assert_eq!`` calls inside ``#[cfg(test)] mod tests``, so
+  own inclusion criterion, not a deliberate exclusion. Its only panic-family
+  constructs are ``assert!``/``assert_eq!`` calls inside ``#[cfg(test)] mod
+  tests``, so
   adding it needed no new ``ALLOWED_EXPECTS``/``ALLOWED_ASSERTS`` entries.
 """
 from __future__ import annotations
