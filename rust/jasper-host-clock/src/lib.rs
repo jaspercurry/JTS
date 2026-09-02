@@ -97,7 +97,9 @@
 //! A tick with [`Obs::steady`] false is NOT measured, so `fill_frames`,
 //! `fill_slope_ppm`, `fill_variance`, `correction_ppm` and `dll.*` hold their
 //! previous values — a soak reading them as live would mistake a hold for a
-//! flat trace. The status fragment's `hold` object tells the two apart.
+//! flat trace. The status fragment's `hold` object tells the two apart; it
+//! counts only while a session is active, since an idle lane is not playing at
+//! all and has no declared ramp to hold for.
 //!
 //! # Cross-platform conditions
 //!
@@ -1151,6 +1153,7 @@ impl HostClock {
         // correction estimator stays at 0 there and only ever moves in CORRECTION
         // mode (fan-in combo).
         let divergence = (obs.capture_frames as i64) - (obs.playback_frames as i64);
+        let session = obs.host_connected && obs.playing && !obs.preempted;
         if obs.steady {
             self.slope.update(
                 divergence,
@@ -1161,13 +1164,20 @@ impl HostClock {
             self.hold_ticks = 0;
         } else {
             self.slope.hold();
-            self.hold_ticks = self.hold_ticks.saturating_add(1);
+            // Only counted inside a session. Idle, `steady` is false because
+            // nothing is playing — not because a ramp was declared — so an
+            // ungated counter reports a stuck refill hold forever on a box that
+            // has never had a session.
+            self.hold_ticks = if session {
+                self.hold_ticks.saturating_add(1)
+            } else {
+                0
+            };
         }
         // Cache the smoothed correction ppm for the status fragment (additive;
         // 0 in FILL mode). The L0 servo reads the same value below.
         self.last_correction_ppm = self.slope.correction_mean_ppm();
 
-        let session = obs.host_connected && obs.playing && !obs.preempted;
         let mut actions = Vec::new();
 
         // ---- Session-edge transitions (highest priority) --------------------
@@ -2628,6 +2638,37 @@ mod tests {
             held_cmd,
             "a measured tick must move the servo"
         );
+    }
+
+    /// `hold` is a SESSION fact. An idle lane is not playing, so `steady` is
+    /// false forever and an ungated counter reports an active refill hold on a
+    /// box that has never had a session.
+    #[test]
+    fn hold_is_reported_only_inside_a_session() {
+        for (label, session, steady, active, ticks) in [
+            ("idle", false, false, false, 0u64),
+            ("session_steady", true, true, false, 0),
+            ("session_not_steady", true, false, true, 30),
+        ] {
+            let mut hc = HostClock::new(correction_cfg());
+            hc.startup_neutralize();
+            let mut cap = hc_cap_start();
+            let mut play = cap;
+            for t in 1u64..=30 {
+                cap += 48_000;
+                play += 48_000;
+                let o = obs_steady(session, session, 384.0, cap, play, steady);
+                hc.tick(o, t * 1000);
+            }
+            let parsed: serde_json::Value = serde_json::from_str(&hc.status_fragment()).unwrap();
+            assert_eq!(parsed["hold"]["active"].as_bool(), Some(active), "{label}");
+            assert_eq!(parsed["hold"]["ticks"].as_u64(), Some(ticks), "{label}");
+            assert_eq!(
+                parsed["hold"]["reason"].as_str(),
+                if active { Some("not_steady") } else { None },
+                "{label}"
+            );
+        }
     }
 
     /// The hold is scoped to the servo and the estimators — it must NOT reach
