@@ -239,7 +239,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     measurement_setup_invalid: {text: "The measurement setup changed. Review the microphone choices and try again.", retryable: true},
     speaker_measurement_unsafe: {text: "The speaker is not ready to measure safely. Review speaker setup, then try again.", retryable: false},
     microphone_setup_unavailable: {text: "The saved microphone setup is unavailable. Choose the microphone again.", retryable: true},
-    phone_capture_unavailable: {text: "The measurement page could not be opened. Try again or use this device.", retryable: true},
     measurement_stopped: {text: "Measurement stopped.", retryable: true},
     test_signal_unavailable: {text: "The speaker could not play the test sound. Try again.", retryable: true},
     measurement_analysis_failed: {text: "The speaker could not finish this measurement. Try measuring again.", retryable: true},

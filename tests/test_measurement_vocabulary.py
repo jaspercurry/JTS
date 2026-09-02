@@ -123,7 +123,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # --- Wire / protocol vocabulary. Renaming these is a relay protocol change,
     # not a copy change, and both sides of the transport already agree on them.
     "awaiting_phone": "relay session state on the wire",
-    "phone_capture_unavailable": "failure code in the /correction/ code table",
     "phone_feed_lost": "canonical snake_case refusal code (reason= log key)",
     "phone_never_armed": "canonical snake_case refusal code",
     "cancelled_before_phone_armed": "canonical snake_case refusal code",
@@ -381,7 +380,6 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
         REASON_VERIFY_LEVEL_SHIFT,
     )
     from jasper.capture_relay.session import CAPTURE_INCOMPATIBLE_USER_MESSAGE
-    from jasper.correction.failures import PHONE_CAPTURE_UNAVAILABLE, public_failure
 
     assert "microphone" in REASON_REGISTRY[REASON_SNR_FLOOR].message
     # R4 owns the noun here; #1924's routing half (the remedy clause) landed
@@ -389,7 +387,6 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
     # halves of the sentence have to survive, so this keeps asserting the noun.
     assert "microphone" in REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
     assert "measurement page" in CAPTURE_INCOMPATIBLE_USER_MESSAGE
-    assert "measurement page" in public_failure(PHONE_CAPTURE_UNAVAILABLE)["text"]
 
 
 def test_the_fixed_axis_placement_copy_keeps_the_conditional_aim():
