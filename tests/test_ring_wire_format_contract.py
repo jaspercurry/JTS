@@ -420,14 +420,25 @@ def test_the_two_languages_reach_the_same_assistant_width_verdict(monkeypatch) -
     ), "a declared-wide box that never armed the ring writes fan-in's narrow aloop lane"
 
 
-# `Config::program_wire_is_wide` passes the TRANSPORT half as a literal.
+# `Config::program_wire_is_wide` passes the TRANSPORT half as a literal. Matched
+# inside that function's BODY only (see `_program_wire_is_wide_body`): an
+# unbounded search would keep matching after the call moved to a sibling method,
+# which is the drift this pin exists to catch.
 _PROGRAM_WIRE_COUPLING_RE = re.compile(
-    r"pub fn program_wire_is_wide\(&self\) -> bool \{.*?"
     r"from_box_declaration\(\s*"
     r"matches!\(self\.ring_wire_format, RingWireFormat::S32Le\)\s*,\s*"
     r"(?P<coupling>\w+)\s*,",
     re.S,
 )
+
+
+def _program_wire_is_wide_body(source: str) -> str:
+    """That method's own text, delimited the way :func:`_from_env_value_body` is."""
+    start = source.index("pub fn program_wire_is_wide(")
+    end = source.find("\n    pub fn ", start + 1)
+    if end == -1:  # last method in the impl block
+        end = source.index("\n}", start)
+    return source[start:end]
 
 
 # ``None`` is not in this list: at the VALUE level it means "not supplied" and
@@ -451,12 +462,15 @@ def test_an_undeclared_coupling_is_the_ring_on_both_sides(coupling) -> None:
     """
     from jasper.fanin_coupling import assistant_wire_is_wide
 
-    match = _PROGRAM_WIRE_COUPLING_RE.search(_config_rs())
-    assert match, (
-        "could not locate Config::program_wire_is_wide's transport argument in "
-        f"{_FANIN_CONFIG_RS} — if it was reshaped, re-point this contract"
+    body = _program_wire_is_wide_body(_config_rs())
+    matches = list(_PROGRAM_WIRE_COUPLING_RE.finditer(body))
+    assert len(matches) == 1, (
+        "expected exactly one from_box_declaration call in "
+        f"Config::program_wire_is_wide ({_FANIN_CONFIG_RS}), found "
+        f"{len(matches)} — if it was reshaped or moved, re-point this contract "
+        "rather than deleting it"
     )
-    assert match.group("coupling") == "true", (
+    assert matches[0].group("coupling") == "true", (
         "the daemon no longer asserts the transport half unconditionally; the "
         "Python mirror below is pinned to that literal"
     )

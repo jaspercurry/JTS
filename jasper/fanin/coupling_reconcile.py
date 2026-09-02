@@ -282,7 +282,12 @@ def _assistant_width_token(env_path: str | Path) -> str:
     try:
         try:
             text = Path(env_path).read_text(encoding="utf-8")
-        except OSError:
+        except FileNotFoundError:
+            # NO FILE is a declaration of nothing on both halves — the
+            # ``EnvironmentFile=-`` state `persisted_coupling_feeds_ring` reads
+            # as the ring, with the format falling back to the chain below. A
+            # file that EXISTS but cannot be read is different and is NOT caught
+            # here: it falls to the narrow `except` below.
             text = ""
         raw_format = read_value(text, RING_WIRE_FORMAT_ENV_VAR)
         wire_format = (
@@ -303,7 +308,8 @@ def _assistant_width_token(env_path: str | Path) -> str:
     except (OSError, ValueError):
         # An unreadable/typo'd declaration is fan-in's fault to report (it parks
         # at exit 78). Resolving narrow here matches what jasper-voice resolves
-        # in the same situation, so the comparison stays honest.
+        # in the same situation (`jasper.audio_io.tts_wire_is_wide` catches the
+        # same two and returns False), so the comparison stays honest.
         return RING_WIRE_FORMAT
     return RING_WIRE_FORMAT_WIDE if wide else RING_WIRE_FORMAT
 
@@ -792,6 +798,8 @@ def reconcile_coupling(
     restart is best-effort: a failure is logged and never changes the pass's
     verdict, because the coupling IS converged either way.
     """
+    # REMOVE once no box carries a refused coupling token: since #3655 that is
+    # the only `before` state whose width this pass can move.
     before = _assistant_width_token(env_path)
     result = _converge_ring(
         reason=reason,

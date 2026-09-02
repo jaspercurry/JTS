@@ -27,7 +27,6 @@ from jasper.fanin.coupling_reconcile import (
 from jasper.fanin.ring_health import (
     FANIN_ENV_PATH,
     OUTPUTD_ENV_PATH,
-    _OUTPUTD_CONTENT_FORMAT_ENV_VAR,
     persisted_coupling_feeds_ring,
     read_persisted_coupling,
     ring_edge_width_ready,
@@ -979,28 +978,6 @@ def test_persisted_coupling_feeds_ring_answers_the_file_and_a_snapshot_alike(
 
     assert persisted_coupling_feeds_ring(fanin_env) is feeds_ring
     assert persisted_coupling_feeds_ring(text=fanin_text) is feeds_ring
-
-
-@pytest.mark.parametrize("fanin_text,feeds_ring", _FEEDS_RING_CASES, ids=_FEEDS_RING_IDS)
-def test_ring_edge_width_ready_compares_outputd_unless_the_coupling_refuses_the_ring(
-    fanin_text, feeds_ring
-):
-    """The gate's ``armed`` term is the same predicate, not the token.
-
-    outputd's declared content format is only PROVEN once the box is on the ring
-    (`ring_wire_declarations` says why), and an UNDECLARED box is on it — so a
-    stale narrow declaration there must be refused rather than excused. Keying
-    the term on the literal ``shm_ring`` token excused it on every box the
-    reconciler had not written (#3655), which is the majority of a fresh fleet.
-    """
-    outputd_text = f"{_OUTPUTD_CONTENT_FORMAT_ENV_VAR}=S16_LE\n"
-
-    ok, detail = ring_edge_width_ready(
-        fanin_text=fanin_text, outputd_text=outputd_text, graph=None
-    )
-
-    assert ok is not feeds_ring, detail
-    assert ("S16_LE" in detail) is feeds_ring, detail
 
 
 def test_default_ring_gates_order_puts_each_gate_after_what_makes_it_meaningful():

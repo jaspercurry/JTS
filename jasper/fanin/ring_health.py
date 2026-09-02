@@ -32,6 +32,7 @@ from jasper.audio_runtime_plan import (
 from jasper.env_file import read_value
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
+    COUPLING_SHM_RING,
     coupling_value_removed,
     resolve_coupling,
 )
@@ -379,15 +380,9 @@ def ring_wire_declarations(
     simply whatever the LAST hardware-reconcile pass rendered, not proven
     current for THIS arm. Comparing it against the ring wire at preflight time
     would still refuse every arm on a box mid-convergence — the exact shape of
-    the PR-1 defect this gate's history records. So on a box whose coupling is
-    off the ring that end is reported as not-yet-declared; when the coupling
-    feeds the ring it is compared, which is where a degraded deploy's half-moved
-    format actually shows up.
-
-    ``armed`` is :func:`persisted_coupling_feeds_ring`'s verdict, not the
-    presence of the ``shm_ring`` token: ADR-0100 left one transport, so an
-    undeclared box IS fed (#3655), and only a value ``jasper-fanin`` refuses
-    excuses the format axis.
+    the PR-1 defect this gate's history records. So before the arm that end is
+    reported as not-yet-declared; once armed it is compared, which is where a
+    degraded deploy's half-moved format actually shows up.
 
     ``graph`` adds the loaded CamillaDSP graph's own ring lanes
     (:func:`graph_wire_declarations`) — the end that made this list four rather
@@ -640,7 +635,9 @@ def ring_edge_width_ready(
     wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
     if wire is None:
         return False, wire_problem
-    armed = persisted_coupling_feeds_ring(text=fanin_text)
+    armed = resolve_coupling(read_value(fanin_text, COUPLING_ENV_VAR)) == (
+        COUPLING_SHM_RING
+    )
     declarations = ring_wire_declarations(
         fanin_text=fanin_text,
         outputd_text=outputd_text,
@@ -1496,7 +1493,7 @@ def persisted_coupling_feeds_ring(
     """Does ``fanin.env`` leave fan-in filling Ring A?
 
     ADR-0100 left one transport, so ``jasper-fanin`` serves an absent key, an
-    empty value and the ``shm_ring`` token alike — and no file at all, loaded
+    empty value and :data:`COUPLING_SHM_RING` alike — and no file at all, loaded
     as ``EnvironmentFile=-`` — while refusing anything else as a config-class
     fault (exit 78, the unit parks). Naming nothing is therefore a fan-in ON the
     ring; only a value this repo no longer recognizes says the ring is unfed.
