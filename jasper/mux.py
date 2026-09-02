@@ -127,6 +127,7 @@ USBSINK_FANIN_LABEL = SOURCE_TO_FANIN_LABEL[Source.USBSINK]
 FANIN_TEST_LABELS = frozenset({"correction"})
 FANIN_TEST_OWNERS = frozenset({
     "active-speaker-commissioning",
+    "chip-aec-commission",
     "correction-measurement",
     "doctor-aec-probe",
     "jasper-measure",
