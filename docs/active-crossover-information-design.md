@@ -127,10 +127,10 @@
 > `/correction/crossover/relay-cancel`. While cancellation and exact cleanup are
 > in flight, the server envelope reports `stopping` and withholds forward
 > actions; terminal `stopped` appears only after the owning worker has drained.
-> The subsequent phone-upload and persistence phases are visibly non-stoppable.
+> The subsequent persistence phase is visibly non-stoppable.
 > User Stop is cancellation, not a measurement failure or failure-cue event.
-> The exact boundary and operational mechanics are canonical in the
-> crossover relay-cancel handler itself.
+> The exact boundary and operational mechanics are canonical in the handler
+> behind that route.
 
 ## Product goal
 
