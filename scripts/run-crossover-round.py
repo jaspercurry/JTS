@@ -254,6 +254,11 @@ EXIT_FINGERPRINT = 11
 #: rather than EXIT_WALK: "walk_failed" on the summary line reads as the arm
 #: misbehaving, and a dropped link is not the arm's doing.
 EXIT_SSH_TRANSPORT = 12
+#: Nothing named the speaker this round is for. sysexits EX_CONFIG, the same
+#: code ``scripts/_lib.sh`` refuses with, because it is the same refusal: on a
+#: multi-speaker LAN a guessed ``jts.local`` measures whichever box claimed the
+#: name (#3498).
+EXIT_CONFIG = 78
 
 EXIT_NAMES: Mapping[int, str] = {
     EXIT_OK: "ok",
@@ -267,7 +272,12 @@ EXIT_NAMES: Mapping[int, str] = {
     EXIT_APPLY: "apply_failed",
     EXIT_FINGERPRINT: "fingerprint_mismatch",
     EXIT_SSH_TRANSPORT: "ssh_transport_failed",
+    EXIT_CONFIG: "no_target",
 }
+
+
+class NoTarget(RuntimeError):
+    """Nothing names the speaker: ``_lib.sh`` refused and no export answers."""
 
 
 # --------------------------------------------------------------------------- #
@@ -340,6 +350,14 @@ class Target:
         return f"http://{self.host}"
 
 
+#: ``_lib.sh``'s ``JTS_TARGET_FROM`` in the trail's own words.
+_LIB_TARGET_SOURCES: Mapping[str, str] = {
+    "caller": "your export",
+    "file": ".env.local",
+    "identity": "this box's identity.env",
+}
+
+
 def resolve_target(hostname_override: str | None = None,
                    trail: Trail | None = None) -> Target:
     """The speaker, with the caller's own exports winning.
@@ -350,33 +368,40 @@ def resolve_target(hostname_override: str | None = None,
     still read here so the trail can name WHERE each half came from, and so a
     ``_lib.sh`` that could not run at all falls back to them rather than to
     the default speaker.
+
+    Raises :class:`NoTarget` when neither answers: a round measures ONE
+    speaker, and there is no honest guess at which (#3498).
     """
     caller_host = os.environ.get("PI_HOST") or ""
     caller_user = os.environ.get("PI_USER") or ""
     caller_hostname = os.environ.get("JASPER_HOSTNAME") or ""
-    lib_host = lib_user = lib_hostname = ""
-    # A resolution that did not happen is REPORTED, never absorbed: the
-    # fallbacks below are `jts.local`/`pi`, and silently measuring the default
-    # speaker because a `bash` was missing or `_lib.sh` blew up is the quiet
-    # wrong-Pi ending this whole file is trying to make impossible.
+    caller_target = caller_host or caller_hostname
+    lib_host = lib_user = lib_hostname = lib_from = ""
+    # A resolution that did not happen is REPORTED, never absorbed: measuring
+    # the default speaker because a `bash` was missing or `_lib.sh` blew up is
+    # the quiet wrong-Pi ending this whole file is trying to make impossible.
     detail = ""
     try:
-        lib_host, lib_user, lib_hostname = _pi_target.resolve_lib_target()
+        lib_host, lib_user, lib_hostname, lib_from = (
+            _pi_target.resolve_lib_target())
     except _pi_target.LibTargetError as exc:
         detail = str(exc)
     if detail and trail is not None:
         trail.emit(
             "resolve_target", ok=False, detail=detail,
-            using=("the caller's own exports" if caller_host
-                   else "the built-in jts.local default"),
+            using="the caller's own exports" if caller_target else "nothing",
+        )
+    if detail and not caller_target:
+        raise NoTarget(
+            "no target speaker: nothing names the box this round would "
+            "measure. Export PI_HOST=<host> or JASPER_HOSTNAME=<name>, or run "
+            "scripts/onboard.sh <host> / scripts/use <host> for this checkout"
         )
 
-    env_local = (REPO_ROOT / ".env.local").exists()
-    # Where a value came from when the library answered but the file does not
-    # exist: `_lib.sh` answered from this box's own identity.env or supplied
-    # `pi` itself, so calling that ".env.local" would name a file the operator
-    # could go look for and not find.
-    lib_source = ".env.local" if env_local else "the built-in default"
+    # `_lib.sh` names its own source, so the trail can name a file the
+    # operator could actually go look at rather than guess one from whether
+    # `.env.local` happens to exist.
+    lib_source = _LIB_TARGET_SOURCES.get(lib_from, "the built-in default")
 
     def _pick(override: str, caller: str, lib: str, default: str) -> tuple[str, str]:
         for value, source in ((override, "--hostname"), (caller, "your export"),
@@ -388,8 +413,9 @@ def resolve_target(hostname_override: str | None = None,
     # One record, the same way _lib.sh resolves it: a lone exported
     # JASPER_HOSTNAME supplies the ssh target too, so it is YOUR export the
     # target came from — not the .env.local the library happened to read.
-    host, host_source = _pick(
-        "", caller_host or caller_hostname, lib_host, "jts.local")
+    # No default: the refusal above leaves the caller or `_lib.sh` as the only
+    # two ways to get here, and both name a host.
+    host, host_source = _pick("", caller_target, lib_host, "")
     user, user_source = _pick("", caller_user, lib_user, "pi")
     hostname, hostname_source = _pick(
         hostname_override or "", caller_hostname, lib_hostname, host)
@@ -1404,17 +1430,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     # The trail opens FIRST: resolving which speaker this is can itself fail,
     # and that failure is the first thing worth a row.
     trail = Trail(args.trail)
-    target = resolve_target(args.hostname, trail)
-    wizard = WizardClient(
-        base_url=args.base_url or target.base_url, host_header=target.hostname
-    )
     try:
+        target = resolve_target(args.hostname, trail)
+        wizard = WizardClient(
+            base_url=args.base_url or target.base_url, host_header=target.hostname
+        )
         if args.apply is not None:
             trail.emit("target", host=target.ssh_target, hostname=target.hostname,
                        base_url=args.base_url or target.base_url, stage="apply")
             code = apply_candidate(wizard, args.apply, trail)
         else:
             code = run_round(args, target, wizard, trail)
+    except NoTarget as exc:
+        print(exc, file=sys.stderr)
+        code = EXIT_CONFIG
     finally:
         trail.close()
     print(
