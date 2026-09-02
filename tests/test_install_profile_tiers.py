@@ -628,3 +628,113 @@ def test_streambox_resolves_coupling_after_grouping_during_install():
     assert body.index("reconcile_grouping_state") < body.index(
         "resolve_fanin_coupling_default"
     )
+
+
+# ---------- assistant unit on the streambox profile (ADR-0214) -----------
+
+
+def test_voice_unit_file_actually_installs(tmp_path: Path):
+    """Run the streambox installer's voice helper for real; assert it lands.
+
+    The accessory reconciler issues `systemctl start jasper-voice.service`
+    when a mic-bearing remote pairs. That exits 1 on a box whose unit file
+    was never written, and a streambox converted from a full install carries
+    the file from the earlier profile -- which is exactly how a fresh-box
+    gap ships unnoticed.
+    """
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail\n'
+            'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
+            "install_voice_unit_files\n",
+        ],
+        env={
+            **os.environ,
+            "REPO_DIR": str(REPO_ROOT),
+            "SYSTEMD_DIR": str(systemd_dir),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {path.name for path in systemd_dir.iterdir()} == {
+        "jasper-voice.service",
+    }
+
+
+def test_streambox_stages_the_voice_unit_without_boot_enabling_it():
+    """Staged, never enabled: the reconciler owns when the assistant runs.
+
+    Structural rather than executed for the same reason as the accessory
+    bridge above: install_streambox_systemd_units writes outside SYSTEMD_DIR
+    and start_streambox_runtime_units drives /opt and /usr/local binaries,
+    so neither can run unprivileged.
+
+    Boot-enabling would leave a remote-less streambox running an assistant
+    it has no microphone for, which is the state ADR-0214 exists to prevent.
+    """
+    install_path = _installer_function_body("install_streambox_systemd_units")
+    assert "install_voice_unit_files" in install_path
+
+    runtime = _installer_function_body("start_streambox_runtime_units")
+    assert "jasper-voice.service" not in runtime
+
+
+def test_streambox_parking_clears_the_stale_voice_input_marker(tmp_path: Path):
+    """Parking the marker's writer must also drop the marker.
+
+    jasper-voice.service carries
+    ConditionPathExists=!/var/lib/jasper/voice-input-absent and only
+    jasper-aec-reconcile -- parked here -- ever removes it. Left behind, every
+    start the accessory reconciler issues for a paired mic remote
+    condition-fails silently: the unit reports success and nothing runs.
+    """
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    marker = state_dir / "voice-input-absent"
+    marker.write_text("", encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    fake_systemctl = bin_dir / "systemctl"
+    fake_systemctl.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>{shlex.quote(str(calls))}\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail\n'
+            'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
+            "park_streambox_brain_units\n",
+        ],
+        env={
+            **os.environ,
+            "REPO_DIR": str(REPO_ROOT),
+            "SYSTEMD_DIR": str(tmp_path / "systemd"),
+            "STATE_DIR": str(state_dir),
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    # Harness self-check: a driver that died while sourcing would leave the
+    # marker untouched for the wrong reason.
+    assert calls.exists() and calls.read_text(encoding="utf-8").strip(), (
+        f"parking never reached systemctl; stderr={result.stderr!r}"
+    )
+    assert not marker.exists()

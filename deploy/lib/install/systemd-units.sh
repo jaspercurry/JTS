@@ -258,6 +258,18 @@ install_hid_accessory_unit_files() {
 }
 
 
+# Staged on streambox but never boot-enabled: jasper-accessory-reconcile starts
+# and stops jasper-voice as a mic-bearing remote pairs and unpairs, and
+# `systemctl start` on a unit whose file was never installed exits 1. The full
+# profile stages the same file inside its own rollback transaction below.
+# See docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+install_voice_unit_files() {
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
+        "${SYSTEMD_DIR}/jasper-voice.service"
+}
+
+
 install_streambox_web_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web-streambox.service" \
@@ -349,6 +361,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
             "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
+            "${SYSTEMD_DIR}/jasper-voice.service"
         )
         if [[ -x /usr/bin/snapserver ]]; then
             verify_units+=("${SYSTEMD_DIR}/jasper-snapserver.service")
@@ -1076,6 +1089,11 @@ park_streambox_brain_units() {
     done
     systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
         >/dev/null 2>&1 || true
+    # The marker's only writer (jasper-aec-reconcile) is parked above, so a
+    # stale one would condition-fail every jasper-voice start the accessory
+    # reconciler issues for a paired mic remote.
+    # See docs/adr/0214-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    rm -f "${STATE_DIR}/voice-input-absent"
 }
 
 enable_streambox_web_sockets() {
@@ -1213,6 +1231,7 @@ install_streambox_systemd_units() {
     install_renderer_source_unit_files
     install_streambox_audio_slices
     install_hid_accessory_unit_files
+    install_voice_unit_files
     install_audio_output_recovery_unit_files
     park_streambox_brain_units
 

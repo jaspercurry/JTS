@@ -451,6 +451,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      (/etc/tmpfiles.d/jts-ring.conf). Placing them opens nothing.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
+   - Create, then re-assert ownership and modes on, the
+     /var/lib/jasper-secrets compartment holding the assistant provider
+     API keys jasper-voice reads, relocating any operator-seeded key out
+     of the broad /etc/jasper/jasper.env.
    - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
      integration-secret compartment holding the HA token and Spotify
      credentials/caches (streambox keeps only the Spotify side active,
@@ -2183,6 +2187,7 @@ main() {
         render_outputd_cutover_config
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
+        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
         reassert_intsecrets_compartment_perms  # WS1 Phase 4b: streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
