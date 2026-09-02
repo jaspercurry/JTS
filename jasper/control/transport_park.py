@@ -17,8 +17,8 @@ and the ``/system`` page renders one row per park —
 [ADR-0187](../../docs/adr/0187-park-presentation-is-the-system-screen-only.md):
 no banner, a browser learns about a park on the system screen and nowhere
 else. That ADR supersedes ADR-0178's presentation clause only; its classes
-and bars stand. The household audio card still speaks for a LIVE (ring-only)
-park, because that box is silent and the household must be told.
+and bars stand. The household audio card still speaks for a live park,
+because that box is silent and the household must be told.
 
 **Eligibility is read, never restated.** ``ring_channels_for_topology`` /
 ``active_ring_channels_for_topology`` in
@@ -148,27 +148,6 @@ class _Assessment:
     #: gives it its meaning and scopes it to NON-composite sinks. Operator-only:
     #: NOT a park, NOT a household claim.
     endpoint_armed_without_active_modes: bool
-
-
-def ring_only_transport() -> bool:
-    """Is the ring the only central transport on this tree yet?
-
-    DERIVED from the coupling vocabulary rather than carried as a flag, so the
-    transport-deletion slice flips this by deleting the loopback coupling —
-    there is no second edit to forget and no dead knob left behind. While
-    ``loopback`` is still a legal coupling, a box in one of the four classes
-    still has a working route and must not be reported as silent.
-
-    A fan-in COUPLING vocabulary correctly gates a CONTENT-BRIDGE park
-    (``grouped_dac_content_lane``) because
-    :func:`jasper.audio_runtime_plan.coupling_supported_for_route` already
-    joins the two: it blocks the ``shm_ring`` coupling exactly where the
-    dac_content lane is armed, so "loopback is gone" and "the armed lane has
-    nowhere left to run" are one fact seen from two ends.
-    """
-    from ..fanin_coupling import COUPLING_SHM_RING, VALID_COUPLINGS
-
-    return set(VALID_COUPLINGS) == {COUPLING_SHM_RING}
 
 
 def _endpoint_graph_refusal() -> str | None:
@@ -414,8 +393,6 @@ def classify(
 def snapshot(
     topology: "OutputTopology | None" = None,
     env: Mapping[str, str] | None = None,
-    *,
-    ring_only: bool | None = None,
 ) -> dict[str, Any]:
     """Fail-soft park verdict for jasper-doctor, ``/state`` and the web card.
 
@@ -424,16 +401,8 @@ def snapshot(
     ``{"status": "ok", "parked": False, "parks": []}``
         The ring resolves a geometry for this box, or it is not configured yet.
 
-    ``{"status": "pending", "parked": False, "parks": [...]}``
-        This box is in one or more of the four classes, but the loopback route
-        still exists and still carries it. Disclosed to the OPERATOR (doctor
-        warn, ``/state``) and deliberately NOT to the household: the speaker
-        plays, and the household surface must not call a working speaker
-        silent. This is the fleet inventory the transport deletion needs.
-
     ``{"status": "parked", "parked": True, "parks": [...]}``
-        Ring-only, and no ring serves this box: it emits NOTHING. Loud on
-        every surface.
+        No ring serves this box: it emits NOTHING. Loud on every surface.
 
     ``{"status": "unclassified", "parked": False, "parks": []}``
         Configured, no ring geometry of either kind, and none of the four
@@ -468,14 +437,12 @@ def snapshot(
 
     Never raises.
     """
-    resolved_ring_only = ring_only_transport() if ring_only is None else ring_only
     try:
         assessment = _assess(topology, env)
     except Exception as exc:  # noqa: BLE001 - a park reader must not raise here
         return {
             "status": "unavailable",
             "parked": False,
-            "ring_only": resolved_ring_only,
             "parks": [],
             "unproven_endpoint": False,
             "converge_refused": None,
@@ -485,7 +452,7 @@ def snapshot(
 
     parks = assessment.parks
     if parks:
-        status = "parked" if resolved_ring_only else "pending"
+        status = "parked"
     elif assessment.ring_unresolved:
         status = "unclassified"
     else:
@@ -494,7 +461,6 @@ def snapshot(
     return {
         "status": status,
         "parked": status == "parked",
-        "ring_only": resolved_ring_only,
         "parks": [park.to_dict() for park in parks],
         "unproven_endpoint": assessment.unproven_endpoint,
         "converge_refused": assessment.converge_refused,

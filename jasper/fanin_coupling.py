@@ -35,9 +35,7 @@ COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 # normalizer MUST agree with this token.
 COUPLING_SHM_RING = "shm_ring"
 # THE transport, spelled once. Public so other planners (e.g.
-# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token,
-# and so :func:`jasper.control.transport_park.ring_only_transport` can DERIVE
-# "the ring is the only route" rather than carry a second flag for it.
+# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token.
 # ``_VALID_COUPLINGS`` stays as the backward-compatible private alias.
 VALID_COUPLINGS = frozenset({COUPLING_SHM_RING})
 _VALID_COUPLINGS = VALID_COUPLINGS

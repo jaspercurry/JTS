@@ -3824,15 +3824,9 @@ def check_ring_transport_park() -> CheckResult:
     """No topology this box declares is one the ring cannot serve (ADR-0178).
 
     ADR-0100 makes ``shm_ring`` the only central transport; ADR-0178 names the
-    four shapes it cannot carry and the tracked issue each waits on. Severity
-    follows whether the loopback route still exists:
-
-    * ring-only and parked — the speaker emits NOTHING and no automatic path
-      recovers it, which is the ``fail`` definition the rest of the doctor
-      uses for a park;
-    * loopback still legal — ``warn``. The box plays today; the disclosure is
-      the inventory of what the transport deletion will park, named issue by
-      issue so the operator can clear them before it lands, not after.
+    four shapes it cannot carry and the tracked issue each waits on. A parked
+    box emits NOTHING and no automatic path recovers it, which is the
+    ``fail`` definition the rest of the doctor uses for a park.
 
     The classification, the issue numbers and the remedy text all come from
     ``jasper.control.transport_park`` — the same reader
@@ -3943,18 +3937,10 @@ def check_ring_transport_park() -> CheckResult:
             part = f"{part}. REMEDY: {remedy}"
         named.append(part)
 
-    if status == "parked":
-        return CheckResult(
-            label,
-            "fail",
-            "PARKED — no ring serves this box, so it emits nothing: "
-            + "; ".join(named),
-        )
     return CheckResult(
         label,
-        "warn",
-        "this box plays on the loopback route today, but the ring cannot "
-        "serve it — it parks when the loopback route is deleted: "
+        "fail",
+        "PARKED — no ring serves this box, so it emits nothing: "
         + "; ".join(named),
     )
 
