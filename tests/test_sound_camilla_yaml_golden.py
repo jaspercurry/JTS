@@ -146,7 +146,7 @@ def test_emit_sound_config_byte_identical_goldens(regenerate_goldens):
     if regenerate_goldens:
         FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
         for name in GOLDEN_CASES:
-            (FIXTURE_DIR / f"{name}.yml").write_text(_emit(name))
+            (FIXTURE_DIR / f"{name}.yml").write_text(_emit(name), encoding="utf-8")
         pytest.fail(
             f"regenerated {len(GOLDEN_CASES)} goldens under {FIXTURE_DIR}; "
             "review `git diff` and re-run without --regenerate-goldens"
@@ -154,5 +154,5 @@ def test_emit_sound_config_byte_identical_goldens(regenerate_goldens):
     missing = [n for n in GOLDEN_CASES if not (FIXTURE_DIR / f"{n}.yml").exists()]
     assert not missing, f"missing golden fixtures: {missing} (regenerate)"
     for name in GOLDEN_CASES:
-        expected = (FIXTURE_DIR / f"{name}.yml").read_text()
+        expected = (FIXTURE_DIR / f"{name}.yml").read_text(encoding="utf-8")
         assert _emit(name) == expected, f"golden mismatch for {name!r}"
