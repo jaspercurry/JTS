@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.crossover_v2 import round_captures
 from jasper.cli import gate_sweep as cli
 from tests.test_crossover_v2_gate_sweep import _pose_ir, _write_round
 
@@ -53,7 +54,7 @@ def test_a_refusal_is_an_output_naming_the_missing_input(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "refused"
-    assert payload["reason"] == "gate_sweep_no_captures"
+    assert payload["reason"] == round_captures.REFUSE_NO_CAPTURES
 
 
 def test_a_ladder_of_one_rung_is_an_input_error(

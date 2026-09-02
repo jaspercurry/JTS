@@ -35,9 +35,9 @@ from typing import Any
 
 from jasper.active_speaker.crossover_v2.gate_sweep import (
     DEFAULT_RUNGS_MS,
-    GateSweepRefused,
     sweep_round,
 )
+from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 
 from ._logging import configure_verbose_logging
 from ._refusal import refused
@@ -75,7 +75,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     try:
         report = sweep_round(round_dir, rungs_ms=args.rungs_ms, at_hz=args.at_hz or ())
-    except GateSweepRefused as exc:
+    except RoundCapturesRefused as exc:
         return _refused(exc.reason, json.dumps(exc.detail, sort_keys=True, default=str))
     out = Path(args.out) if args.out else round_dir / DEFAULT_OUT_NAME
     out.parent.mkdir(parents=True, exist_ok=True)

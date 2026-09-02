@@ -28,10 +28,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     add_delayed_copy,
     biquad_peaking,
 )
-from jasper.active_speaker.crossover_v2.gate_sweep import (
-    GateSweepRefused,
-    sweep_round,
-)
+from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
 
 RATE = 48_000
@@ -73,9 +70,6 @@ def _write_round(
     root: Path,
     irs: list[np.ndarray],
     *,
-    declared_sha: str | None = None,
-    vertical_deg: float = 0.0,
-    distance_m: float | None = 1.0,
     radiated_band_hz: tuple[float, float] = (150.0, 20000.0),
 ) -> Path:
     """A banked-round-shaped directory whose captures are known convolutions.
@@ -111,13 +105,13 @@ def _write_round(
                     "phase": "cloud_verify",
                     "wav_path": f"summed/{stem}.wav",
                     "position_deg": AZIMUTHS_DEG[index % len(AZIMUTHS_DEG)],
-                    "vertical_deg": vertical_deg,
-                    "mark_distance_m": distance_m,
+                    "vertical_deg": 0.0,
+                    "mark_distance_m": 1.0,
                     "curves": [{"role": "summed", "band_hz": list(radiated_band_hz)}],
                     "provenance": {
                         "stimulus": {
                             "phase": "verify",
-                            "wav_sha256": declared_sha or played_sha,
+                            "wav_sha256": played_sha,
                         }
                     },
                 }
@@ -245,35 +239,6 @@ def test_null_model_recovers_the_windows_own_bias(direct_only_report: dict) -> N
     assert fit["depth_db"] < 0.0
 
 
-def test_program_is_bound_by_content_hash_not_by_the_phase_label(
-    common_mode_report: dict,
-) -> None:
-    """#3504: every sidecar's declared stimulus PHASE points at the wrong WAV."""
-    assert {pose["program_wav"] for pose in common_mode_report["poses"]} == {
-        "cloud_verify_program.wav"
-    }
-
-
-def test_a_hash_no_program_matches_is_refused_by_name(tmp_path: Path) -> None:
-    """An unmatched capture refuses; it is never bound to a plausible program."""
-    root = _write_round(
-        tmp_path,
-        [_pose_ir(i, late_copy_ms=None) for i in range(2)],
-        declared_sha="0" * 64,
-    )
-    with pytest.raises(GateSweepRefused) as excinfo:
-        sweep_round(root)
-    assert excinfo.value.reason == gate_sweep.REFUSE_PROGRAM_UNMATCHED
-    assert excinfo.value.detail["declared_stimulus_sha256"] == "0" * 64
-    assert "cloud_verify_program.wav" in excinfo.value.detail["programs_present"]
-
-
-def test_a_round_with_no_captures_refuses_by_name(tmp_path: Path) -> None:
-    with pytest.raises(GateSweepRefused) as excinfo:
-        sweep_round(tmp_path)
-    assert excinfo.value.reason == gate_sweep.REFUSE_NO_CAPTURES
-
-
 def test_resolution_masks_gate_the_sensitivity_not_the_table(tmp_path: Path) -> None:
     """Too few resolution-valid rungs nulls the sensitivity, by name.
 
@@ -316,27 +281,6 @@ def test_a_graded_band_narrower_than_the_grid_nulls_by_name(
         band["sensitivity_null_reason"] == gate_sweep.NULL_BAND_BELOW_GRID_RESOLUTION
     )
     assert "worst_bin_hz" not in band
-
-
-def test_poses_are_keyed_on_the_full_declared_pose(tmp_path: Path) -> None:
-    """#3503: same azimuth, different height, is a DIFFERENT pose."""
-    ground = _write_round(
-        tmp_path / "ground",
-        [_pose_ir(i, late_copy_ms=None) for i in range(2)],
-        vertical_deg=0.0,
-    )
-    raised = _write_round(
-        tmp_path / "raised",
-        [_pose_ir(i, late_copy_ms=None) for i in range(2)],
-        vertical_deg=12.0,
-        distance_m=None,
-    )
-    ground_keys = [pose["pose_key"] for pose in sweep_round(ground)["poses"]]
-    raised_keys = [pose["pose_key"] for pose in sweep_round(raised)["poses"]]
-
-    assert len(set(ground_keys)) == 2
-    assert not set(ground_keys) & set(raised_keys)
-    assert all(key.endswith("_dna") for key in raised_keys)
 
 
 def test_the_frame_every_number_is_stated_in_is_published(
