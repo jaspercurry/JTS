@@ -20,10 +20,14 @@ handling (Gemini's 409 / 1008) and resumption-handle logic. Those stay in
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import re
+import socket
 from typing import Callable
 
 from ..log_event import log_event
+from ..os_fault import root_os_error
 from ..secret_redaction import redact_secrets
 from .session import CuePlayer
 
@@ -32,6 +36,24 @@ logger = logging.getLogger(__name__)
 OUT_OF_CREDIT_CUE_SLUG = "provider_out_of_credit"
 NEEDS_ATTENTION_CUE_SLUG = "provider_needs_attention"
 CANT_CONNECT_CUE_SLUG = "cant_connect"
+NETWORK_DOWN_CUE_SLUG = "network_down"
+
+# On the default 1/2/4/8 s ±25 % schedule (jasper/backoff.py) the fourth
+# attempt lands ~15 s after the drop: past a Wi-Fi roam or a DHCP renew,
+# still ahead of a rebooting router coming back.
+NETWORK_DOWN_ATTEMPTS = 4
+
+# The link itself is gone: name resolution failed, or no route to the
+# provider. Everything else an unreachable host produces — refused,
+# reset, timed out, TLS — is an ordinary blip and stays silent.
+_NETWORK_DOWN_ERRNOS = frozenset({
+    socket.EAI_AGAIN, socket.EAI_NONAME,
+    errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+})
+
+# asyncio folds a dual-stack connect that failed on every address into one
+# errno-less OSError("Multiple exceptions: [Errno 101] ..., [Errno 101] ...").
+_FOLDED_ERRNO = re.compile(r"\[Errno (-?\d+)\]")
 
 # Markers that a rejection body blames the account's balance rather than its
 # configuration: the xAI 403 reads "used all available credits or reached its
@@ -116,12 +138,31 @@ def is_transient(exc: BaseException) -> bool:
     return True
 
 
+def is_network_down(exc: BaseException) -> bool:
+    """Whether this failure is the household's own link being down.
+
+    A DNS or routing error carries no HTTP status, so nothing upstream
+    can tell it apart from a provider blip — only its ``errno`` can. The
+    remedy is the Wi-Fi rather than the account, so it earns a cue of
+    its own even though retrying may still fix it. See ADR-0215."""
+    fault = root_os_error(exc)
+    if fault is None:
+        return False
+    if fault.errno is None:
+        codes = {int(code) for code in _FOLDED_ERRNO.findall(str(fault))}
+        return not codes.isdisjoint(_NETWORK_DOWN_ERRNOS)
+    return fault.errno in _NETWORK_DOWN_ERRNOS
+
+
 def outage_cue(exc: BaseException) -> str | None:
     """Which pre-baked cue names the remedy for this failure.
 
-    ``None`` while retrying can still fix it. Otherwise the provider's
-    own rejection text decides between "out of credit" and the
-    catch-all "needs attention". See ADR-0215."""
+    ``None`` while retrying can still fix it, except for a network-down
+    failure: that keeps retrying and still names a remedy. Otherwise the
+    provider's own rejection text decides between "out of credit" and
+    the catch-all "needs attention". See ADR-0215."""
+    if is_network_down(exc):
+        return NETWORK_DOWN_CUE_SLUG
     if is_transient(exc):
         return None
     lowered = _rejection_text(exc).lower()
@@ -137,13 +178,17 @@ class OutageTracker:
     names the remedy. The announcement is edge-triggered: the cue fires
     on the first terminal failure after the connection last worked,
     never on a timer, a recovery re-arms it silently, and a remedy that
-    changes mid-outage is announced again. One instance per connection.
-    See ADR-0215."""
+    changes mid-outage is announced again. The network-down cue alone
+    waits for ``NETWORK_DOWN_ATTEMPTS`` consecutive failures, so a
+    dropped link that comes back never speaks; ``cue`` is current from
+    the first one either way, because the wake path reads it. One
+    instance per connection. See ADR-0215."""
 
     def __init__(self) -> None:
         self.detail: str | None = None
         self.cue: str | None = None
         self._announced: str | None = None
+        self._network_streak = 0
         self._cb: CuePlayer | None = None
 
     @property
@@ -162,14 +207,21 @@ class OutageTracker:
         self.detail = failure_detail(exc)
         # Latest failure wins, so a transient failure after a terminal
         # one reads as transient again.
-        self.cue = outage_cue(exc)
-        if self.cue is None or self.cue == self._announced:
+        cue = outage_cue(exc)
+        self.cue = cue
+        if cue == NETWORK_DOWN_CUE_SLUG:
+            self._network_streak += 1
+        else:
+            self._network_streak = 0
+        if cue is None or cue == self._announced:
             return
-        self._announced = self.cue
+        if self._network_streak and self._network_streak < NETWORK_DOWN_ATTEMPTS:
+            return
+        self._announced = cue
         log_event(
             logger,
-            "voice.connection.terminal_failure",
-            cue=self.cue,
+            "voice.connection.outage",
+            cue=cue,
             exc=type(exc).__name__,
             level=logging.WARNING,
         )
@@ -178,7 +230,7 @@ class OutageTracker:
         # Fire-and-forget: cue playback must not stall the reconnect
         # cadence.
         asyncio.create_task(
-            self._cb(self.cue),
+            self._cb(cue),
             name="jasper-supervisor-escalation-cue",
         )
 
@@ -187,6 +239,7 @@ class OutageTracker:
         self.detail = None
         self.cue = None
         self._announced = None
+        self._network_streak = 0
 
 
 class DeferredReconnect:
