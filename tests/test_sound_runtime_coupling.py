@@ -180,4 +180,3 @@ def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
     kwargs = coupling_capture_kwargs_from_env()
     assert kwargs["capture_device"] == "jts_ring_capture"
     assert kwargs["playback_device"] == "jts_ring_playback"
-    assert kwargs["enable_rate_adjust"] is False

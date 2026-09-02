@@ -1372,17 +1372,59 @@ def test_base_flat_no_coupling_kwargs_is_byte_identical(tmp_path):
 def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     # shm_ring at the chokepoint: the base-flat (stereo host) reemit flips capture
     # to the Ring A ioplug device and playback to the Ring B ioplug device.
+    # The member kwargs are the SOLO shape member_camilla_kwargs() returns, so
+    # the rate-adjust answer below is the one a solo box actually emits.
+    from jasper.camilla_config_contract import parse_camilla_devices_config
+
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
         SoundProfile(enabled=False),
         profile_id="x",
-        member_kwargs={},
+        member_kwargs={"enable_rate_adjust": False, "playback_pipe_path": None},
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
-    assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
-    assert f'device: "{RING_PLAYBACK_DEVICE}"' in cfg
+    devices = parse_camilla_devices_config(cfg)
+    assert devices["capture_device"] == RING_CAPTURE_DEVICE
+    assert devices["playback_device"] == RING_PLAYBACK_DEVICE
+    assert devices["enable_rate_adjust"] is False
     assert "type: AsyncSinc" not in cfg
-    assert "enable_rate_adjust: false" in cfg
+
+
+def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path):
+    """The COMMISSIONED stereo box's devices block, end to end.
+
+    jts.local (Apple dongle, solo) runs chunk 256 / target 1536 over the ring:
+    its DacProfile floor, which already fits the ring's capacity and so is
+    passed through, NOT the certified 128/128 an end-to-end ring graph carries.
+    Moving an ordinary stereo graph onto that pair is a retune, so this pins the
+    whole block rather than one field.
+    """
+    from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
+    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.multiroom.member_config import member_camilla_kwargs
+
+    from .doctor_test_support import record_active_dac
+
+    record_active_dac(APPLE_USB_C_DONGLE_ID)
+
+    carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
+    cfg = carrier.reemit(
+        SoundProfile(enabled=False),
+        profile_id="x",
+        member_kwargs=member_camilla_kwargs(path=str(tmp_path / "grouping.env")),
+        fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
+    ).yaml
+
+    expected = {
+        "chunksize": 256,
+        "target_level": 1536,
+        "queuelimit": 4,
+        "enable_rate_adjust": False,
+        "capture_device": RING_CAPTURE_DEVICE,
+        "playback_device": RING_PLAYBACK_DEVICE,
+    }
+    devices = parse_camilla_devices_config(cfg)
+    assert {key: devices.get(key) for key in expected} == expected
 
 
 def test_shm_ring_coupling_keeps_the_capture_half_for_a_grouped_pipe_sink(tmp_path):

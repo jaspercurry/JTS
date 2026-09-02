@@ -24,7 +24,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -107,10 +108,49 @@ def ring_capacity_frames() -> int:
     """
 
     return RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
+
+
 RING_CAMILLA_CHUNKSIZE = 128
 RING_CAMILLA_TARGET_LEVEL = 128
 RING_CAMILLA_QUEUELIMIT = 1
 RING_CAMILLA_ENABLE_RATE_ADJUST = False
+
+
+class RingCamillaGeometry(TypedDict):
+    """The four CamillaDSP latency fields :data:`RING_CAMILLA_GEOMETRY` fills."""
+
+    chunksize: int
+    target_level: int
+    queuelimit: int
+    enable_rate_adjust: bool
+
+
+# The geometry a graph built END-TO-END on the ring passes EXPLICITLY: the
+# ACTIVE ring's per-driver graph (``active_emit_devices``) and the flat boot
+# graph (``emit_flat_outputd_cutover_config``). Certified together — chunk 128
+# is one ring slot and queuelimit 1 makes the slot handshake blocking, which is
+# also why rate_adjust is off (nothing for the rate controller to steer).
+#
+# NOT the fallback for an ordinary sound/correction graph. Those carry the box's
+# own floor clamped to the ring's capacity
+# (``camilla_config_contract.resolve_camilla_latency_for_devices``) — jts.local
+# runs 256/1536 across this ring — so moving them onto this pair is a retune
+# with a listening test, not a refactor.
+#
+# ``MappingProxyType`` so a caller cannot retune every ring box by mutating it;
+# the cast is what keeps ``**RING_CAMILLA_GEOMETRY`` per-key typed at the two
+# emitters.
+RING_CAMILLA_GEOMETRY: Final[RingCamillaGeometry] = cast(
+    RingCamillaGeometry,
+    MappingProxyType(
+        {
+            "chunksize": RING_CAMILLA_CHUNKSIZE,
+            "target_level": RING_CAMILLA_TARGET_LEVEL,
+            "queuelimit": RING_CAMILLA_QUEUELIMIT,
+            "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
+        }
+    ),
+)
 
 # Ring A capture device. CamillaDSP captures it as an ALSA device named by the
 # ioplug conf.d block (``deploy/alsa/conf.d/60-jts-ring.conf``). Pinned here so
@@ -730,10 +770,14 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
     of four. (outputd widens a narrow consumed slot onto its own i32 program
     spine after the copy, on its side of the ring.) The resolution is taken with
     NO topology — the shipped geometry — because nothing this function emits is
-    per-topology: the devices are fixed and the format is one per box. The ring
-    graph carries its own low-latency CamillaDSP geometry: chunk 128 / target
-    128 / queue 1 / rate_adjust off, coupled to the 2-slot Ring A default (chunk
-    256 would span the whole buffer).
+    per-topology: the devices are fixed and the format is one per box.
+
+    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is not a fact about the
+    transport devices: it is resolved per graph by
+    ``camilla_config_contract.resolve_camilla_latency_for_devices`` (the box's
+    floor, clamped to :func:`ring_capacity_frames` at a ring end), and only a
+    graph built end-to-end on the ring passes :data:`RING_CAMILLA_GEOMETRY`
+    instead.
 
     **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
     exists. CAPTURE is topology-INVARIANT — Ring A's device is fixed, its
@@ -751,10 +795,6 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
         "capture_format": wire.sample_format,
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": wire.sample_format,
-        "chunksize": RING_CAMILLA_CHUNKSIZE,
-        "target_level": RING_CAMILLA_TARGET_LEVEL,
-        "queuelimit": RING_CAMILLA_QUEUELIMIT,
-        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
     }
 
 
@@ -830,10 +870,14 @@ def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool
     True therefore means the SINK is already owned, so the callers that branch on
     it drop the coupling's PLAYBACK half ONLY: the capture half is still threaded
     through :func:`capture_half`, or a bonded leader's live camilla#1 re-emits
-    onto the tap an armed ring took fan-in off. The solo defaults return False →
-    both halves apply. Mirrors ``jasper.multiroom.member_config``'s
-    leader-vs-solo distinction without importing it (this module stays
-    import-cheap for the socket-activated emitters).
+    onto the tap an armed ring took fan-in off. The SOLO defaults also return
+    True — they carry ``enable_rate_adjust=False`` for their own reason (Ring B
+    is an ioplug CamillaDSP cannot actuate rate_adjust on) — and the sink they
+    drop is the one they would have emitted: ``emit_sound_config`` defaults
+    ``playback_device`` to :data:`RING_PLAYBACK_DEVICE` already. Mirrors
+    ``jasper.multiroom.member_config``'s leader-vs-solo distinction without
+    importing it (this module stays import-cheap for the socket-activated
+    emitters).
     """
     if not member_kwargs:
         return False

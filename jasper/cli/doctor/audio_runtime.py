@@ -1191,14 +1191,23 @@ def check_audio_runtime_plan() -> CheckResult:
     from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
 
     plan = build_audio_runtime_plan_from_system()
+    # Policy vs observation: see AudioRuntimePlan.camilla_emitted. This check
+    # reports the difference, never judges it — the `camilla ring chunk` check
+    # owns the over-capacity failure.
+    emitted = plan.camilla_emitted
     summary = (
         f"profile={plan.profile_id}, route={plan.route_mode}, "
         f"route_profile={plan.route_profile.route_id}, "
         f"route_hash={plan.route_config_hash}, "
         f"coupling={plan.setting('JASPER_FANIN_CAMILLA_COUPLING').value}, "
-        f"camilla={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
+        f"camilla_policy={plan.setting('JASPER_CAMILLA_CHUNKSIZE').value}/"
         f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
-        f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
+        + (
+            f"camilla_emitted={emitted.chunksize}/{emitted.target_level}, "
+            if emitted is not None
+            else "camilla_emitted=unread, "
+        )
+        + f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
         f"{plan.setting('JASPER_OUTPUTD_DAC_BUFFER_FRAMES').value}, "
         f"fanin={plan.setting('JASPER_FANIN_INPUT_BUFFER_FRAMES').value}"
     )

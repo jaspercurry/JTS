@@ -63,9 +63,6 @@ from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
-    RING_CAMILLA_CHUNKSIZE,
-    RING_CAMILLA_QUEUELIMIT,
-    RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
     coupling_capture_kwargs_from_env,
 )
@@ -94,7 +91,13 @@ def test_plan_uses_dac_profile_floor_as_intended_source():
     assert plan.warnings == ()
 
 
-def test_shm_ring_plan_uses_effective_ring_camilla_geometry():
+def test_shm_ring_plan_keeps_the_dac_floor_as_the_camilla_policy():
+    """The coupling does not rewrite the POLICY settings.
+
+    jts.local runs the Apple floor (256/1536) across the ring healthily, so a
+    plan that answered the certified ring pair here would describe a geometry no
+    ordinary graph on the box emits.
+    """
     plan = build_audio_runtime_plan(
         profile_id=APPLE_USB_C_DONGLE_ID,
         route_mode="solo",
@@ -107,14 +110,64 @@ def test_shm_ring_plan_uses_effective_ring_camilla_geometry():
 
     chunksize = plan.setting("JASPER_CAMILLA_CHUNKSIZE")
     target = plan.setting("JASPER_CAMILLA_TARGET_LEVEL")
-    assert chunksize.value == RING_CAMILLA_CHUNKSIZE
-    assert chunksize.source_kind == "route_policy"
-    assert "shm_ring" in chunksize.source
-    assert any("under shm_ring" in warning for warning in chunksize.warnings)
-    assert target.value == RING_CAMILLA_TARGET_LEVEL
-    assert target.source_kind == "route_policy"
-    assert "shm_ring" in target.source
-    assert any("under shm_ring" in warning for warning in target.warnings)
+    assert (chunksize.value, target.value) == (256, 1536)
+    assert chunksize.source_kind == "device_profile"
+    assert target.source_kind == "device_profile"
+    assert chunksize.warnings == ()
+    assert target.warnings == ()
+
+
+def test_plan_reports_the_emitted_geometry_the_config_declares(tmp_path):
+    """POLICY and EMITTED are two facts, and the plan reports both.
+
+    The settings answer what an emitter's fallback would read; camilla_emitted
+    is a read of the config the statefile names. They differ whenever a graph
+    passes its geometry explicitly or the ring's capacity clamps a floor.
+    """
+    config = tmp_path / "sound_current.yml"
+    config.write_text(
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  chunksize: 256\n"
+        "  target_level: 1536\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        '    device: "jts_ring_capture"\n'
+        "  playback:\n"
+        "    type: Alsa\n"
+        '    device: "jts_ring_playback"\n'
+    )
+
+    plan = build_audio_runtime_plan(
+        route_mode="solo",
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={
+            "JASPER_CAMILLA_CHUNKSIZE": "1024",
+            "JASPER_CAMILLA_TARGET_LEVEL": "2048",
+        },
+        correction_config_path=str(config),
+    )
+
+    assert plan.setting("JASPER_CAMILLA_CHUNKSIZE").value == 1024
+    assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == 2048
+    emitted = plan.camilla_emitted
+    assert emitted is not None
+    assert emitted.to_dict() == {
+        "config_path": str(config),
+        "chunksize": 256,
+        "target_level": 1536,
+        "capture_device": "jts_ring_capture",
+        "playback_device": "jts_ring_playback",
+    }
+    assert plan.to_dict()["camilla_emitted"] == emitted.to_dict()
+    # No config to read is reported as no observation, never as a guess.
+    assert (
+        build_audio_runtime_plan(
+            route_mode="solo",
+            fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        ).camilla_emitted
+        is None
+    )
 
 
 def test_operator_env_wins_but_duplicate_generated_home_warns():
@@ -842,7 +895,9 @@ def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
 
     assert merged["capture_device"] == "jts_ring_capture"
     assert merged["playback_device"] == "jts_ring_playback"
-    assert merged["enable_rate_adjust"] is False
+    # The coupling carries the DEVICE axis only, so the caller's own
+    # rate-adjust choice survives the merge untouched.
+    assert merged["enable_rate_adjust"] is True
     assert base == {"enable_rate_adjust": True, "playback_pipe_path": None}
 
 
@@ -1513,10 +1568,11 @@ def test_transport_topology_for_shm_ring_names_both_ring_devices():
     assert topo["fanin_to_camilla"]["camilla_capture_device"] == "jts_ring_capture"
     assert topo["camilla_to_outputd"]["transport"] == "shm_ring"
     assert topo["camilla_to_outputd"]["camilla_playback_device"] == "jts_ring_playback"
-    assert topo["camilla"]["chunksize"] == RING_CAMILLA_CHUNKSIZE
-    assert topo["camilla"]["target_level"] == RING_CAMILLA_TARGET_LEVEL
-    assert topo["camilla"]["queuelimit"] == RING_CAMILLA_QUEUELIMIT
-    assert topo["camilla"]["enable_rate_adjust"] is False
+    # The transport shape names DEVICES, never a latency geometry: one answer
+    # for every ring box cannot describe a per-box chunk/target. The plan
+    # answers that axis twice instead (settings = policy, camilla_emitted =
+    # what the loaded config declares).
+    assert set(topo["camilla"]) == {"capture_resampler"}
     assert topo["outputd_content_source"] == "shm_ring"
 
 
