@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -34,9 +34,7 @@ from jasper.chip_aec_alignment import (
     MAX_CENTER_ERROR,
     MIN_EDGE_MARGIN,
     MicTiming,
-    ProductRejected,
     ProductResult,
-    TimingRejected,
     analyze_product,
     analyze_timing,
     choose_delay,
@@ -168,13 +166,15 @@ def _retain_rejected_captures(directory: Path, root: Path) -> Path | None:
     destination = root / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     moved = 0
     try:
-        destination.mkdir(parents=True, exist_ok=True)
-        captures = [
+        captures = sorted(
             capture
             for pattern in REJECTED_CAPTURE_GLOBS
             for capture in directory.glob(pattern)
-        ]
-        for capture in sorted(captures):
+        )
+        if not captures:
+            return None
+        destination.mkdir(parents=True, exist_ok=True)
+        for capture in captures:
             shutil.move(capture, destination / capture.name)
             moved += 1
         # Never a prune candidate: the box has no RTC, so a restored or stepped
@@ -196,6 +196,30 @@ def _retain_rejected_captures(directory: Path, root: Path) -> Path | None:
     return destination if moved else None
 
 
+def _reject(
+    rejection: ValueError, directory: Path, rejection_dir: Path,
+    *, gate: str, phase: str,
+) -> NoReturn:
+    """Retain the captures, journal the fields, then refuse the run.
+
+    Every analyzer ValueError lands here, not only the gate verdicts: a
+    refusal carrying no fields is the one whose captures matter most.
+    """
+
+    retained = _retain_rejected_captures(directory, rejection_dir)
+    log_event(
+        logger,
+        f"chip_aec_commission.{gate}_rejected",
+        phase=phase,
+        retained_captures=retained,
+        **getattr(rejection, "fields", {}),
+        level=logging.ERROR,
+    )
+    raise CommissioningError(
+        f"{rejection} phase={phase} retained_captures={retained}"
+    ) from rejection
+
+
 def _timing_evidence(
     io, dev, hardware: Hardware, delay: int, stimulus: Path,
     reference: np.ndarray, directory: Path, label: str, rejection_dir: Path,
@@ -209,19 +233,8 @@ def _timing_evidence(
             )
             for mic in range(4)
         )
-    except TimingRejected as rejection:
-        retained = _retain_rejected_captures(directory, rejection_dir)
-        log_event(
-            logger,
-            "chip_aec_commission.timing_rejected",
-            phase=label,
-            retained_captures=str(retained),
-            **rejection.fields,
-            level=logging.ERROR,
-        )
-        raise CommissioningError(
-            f"{rejection} phase={label} retained_captures={retained}"
-        ) from rejection
+    except ValueError as rejection:
+        _reject(rejection, directory, rejection_dir, gate="timing", phase=label)
 
 
 def _product_evidence(
@@ -230,18 +243,8 @@ def _product_evidence(
 ) -> ProductResult:
     try:
         return io.product(dev, hardware, delay, stimulus, active, directory)
-    except ProductRejected as rejection:
-        retained = _retain_rejected_captures(directory, rejection_dir)
-        log_event(
-            logger,
-            "chip_aec_commission.product_rejected",
-            retained_captures=str(retained),
-            **rejection.fields,
-            level=logging.ERROR,
-        )
-        raise CommissioningError(
-            f"{rejection} retained_captures={retained}"
-        ) from rejection
+    except ValueError as rejection:
+        _reject(rejection, directory, rejection_dir, gate="product", phase="product")
 
 
 def _writer_counters(window: QueueWindow) -> tuple[int, ...]:
@@ -688,8 +691,10 @@ class SystemIO:
         log_event(
             logger,
             "chip_aec_commission.product_capture",
-            aec_on_rms_dbfs=round(dbfs_rms(on), 2),
-            aec_off_rms_dbfs=round(dbfs_rms(off), 2),
+            beam_on_rms_dbfs=round(dbfs_rms(on[:, :2]), 2),
+            beam_off_rms_dbfs=round(dbfs_rms(off[:, :2]), 2),
+            raw_on_rms_dbfs=round(dbfs_rms(on[:, 2:]), 2),
+            raw_off_rms_dbfs=round(dbfs_rms(off[:, 2:]), 2),
         )
         return analyze_product(on, off, active)
 

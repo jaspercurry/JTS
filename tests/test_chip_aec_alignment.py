@@ -515,7 +515,7 @@ def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
     [
         (
             "MAX_RAW_LEVEL_DELTA_DB", -1.0,
-            "raw_level_delta_db", "max_raw_level_delta_db",
+            "raw_level_delta_db_abs", "max_raw_level_delta_db",
         ),
         (
             "MIN_RAW_EXCESS_SNR_DB", 500.0,
@@ -549,7 +549,7 @@ def test_a_rejected_product_capture_carries_each_metric_beside_its_threshold(
 
     fields = rejected.value.fields
     assert set(fields) == {
-        "raw_level_delta_db",
+        "raw_level_delta_db_abs",
         "max_raw_level_delta_db",
         "raw_excess_snr_db",
         "min_raw_excess_snr_db",

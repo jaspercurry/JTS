@@ -16,6 +16,7 @@ from jasper.chip_aec_alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
     MicTiming,
+    ProductRejected,
     ProductResult,
     TimingRejected,
     TimingResult,
@@ -138,7 +139,9 @@ class _FakeIO:
     def adapt(self, _stimulus, _directory) -> None:
         self.events.append("adapted")
 
-    def product(self, *_args):
+    def product(self, _dev, _hardware, _delay, _stimulus, _active, directory):
+        for name in ("aec-on.wav", "aec-off.wav"):
+            (directory / name).write_bytes(b"RIFF")
         if self.fail_product:
             raise ValueError("suppression failed")
         return ProductResult(0.0, 15.84, (26.67, 24.24), (12.33, 9.76), 0)
@@ -237,14 +240,16 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     io = _FakeIO(fail_product=True)
     marker = tmp_path / "active"
     artifact_path = tmp_path / "alignment.json"
+    rejections = tmp_path / "rejections"
     artifact_path.write_text("old-known-good\n")
 
-    with pytest.raises(ValueError, match="suppression"):
+    with pytest.raises(aec_commission.CommissioningError):
         aec_commission.run_commissioning(
             io,
             marker_path=marker,
             artifact_path=artifact_path,
             state_path=tmp_path / "commission-state.json",
+            rejection_dir=rejections,
             effective_uid=0,
         )
 
@@ -257,7 +262,14 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     # rejected run must be visible on the page, not only in the journal.
     outcome = json.loads((tmp_path / "commission-state.json").read_text())
     assert outcome["state"] == "failed"
-    assert outcome["detail"] == "suppression failed"
+    # A refusal the analyzer raised without evidence fields is exactly the one
+    # whose captures have to survive, and the record has to name where.
+    retained = sorted(rejections.iterdir())
+    assert sorted(path.name for path in retained[0].iterdir()) == [
+        "aec-off.wav",
+        "aec-on.wav",
+    ]
+    assert str(retained[0]) in outcome["detail"]
 
 
 class _RejectingIO(_FakeIO):
@@ -302,6 +314,57 @@ def test_a_timing_rejection_retains_its_captures_and_reports_both_arrivals(
     ):
         assert field in caplog.text, field
         assert field in str(rejected.value), field
+    assert json.loads((tmp_path / "commission-state.json").read_text())["state"] == "failed"
+
+
+class _ProductRejectingIO(_FakeIO):
+    """`_FakeIO` whose product pair is captured and then refused by the gate."""
+
+    def product(self, _dev, _hardware, _delay, _stimulus, _active, directory):
+        super().product(_dev, _hardware, _delay, _stimulus, _active, directory)
+        raise ProductRejected(
+            ProductResult(0.2, 15.84, (6.2, 24.24), (12.33, 9.76), 0)
+        )
+
+
+def test_a_product_rejection_retains_its_pair_and_reports_the_threshold(
+    tmp_path: Path, caplog
+) -> None:
+    # The five-threshold block refused with a bare message, so the run that
+    # passed timing and converged left neither the measurement, the number it
+    # was held to, nor the two captures behind (#3271).
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    rejections = tmp_path / "rejections"
+
+    with pytest.raises(aec_commission.CommissioningError) as rejected:
+        aec_commission.run_commissioning(
+            _ProductRejectingIO(),
+            marker_path=tmp_path / "active",
+            artifact_path=tmp_path / "alignment.json",
+            state_path=tmp_path / "commission-state.json",
+            rejection_dir=rejections,
+            effective_uid=0,
+        )
+
+    retained = sorted(rejections.iterdir())
+    assert sorted(path.name for path in retained[0].iterdir()) == [
+        "aec-off.wav",
+        "aec-on.wav",
+    ]
+    # The measurement that failed and the number it was held to, in the
+    # operator-facing refusal and the journal alike.
+    for field in (
+        "beam_suppression_db=(6.2, 24.24)",
+        "min_beam_suppression_db=10.0",
+        f"retained_captures={retained[0]}",
+    ):
+        assert field in str(rejected.value), field
+    for field in (
+        "event=chip_aec_commission.product_rejected",
+        "phase=product",
+        "min_beam_suppression_db=10.0",
+    ):
+        assert field in caplog.text, field
     assert json.loads((tmp_path / "commission-state.json").read_text())["state"] == "failed"
 
 

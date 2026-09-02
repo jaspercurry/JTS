@@ -557,16 +557,21 @@ class TimingResult:
         }
 
 
-class TimingRejected(ValueError):
-    """A timing capture the objective gate refused, carrying why."""
+class _Rejected(ValueError):
+    """A capture an objective gate refused, carrying why."""
 
+    def __init__(self, label: str, fields: dict[str, Any]) -> None:
+        self.fields = fields
+        super().__init__(
+            f"{label} rejected: "
+            + " ".join(f"{name}={value}" for name, value in fields.items())
+        )
+
+
+class TimingRejected(_Rejected):
     def __init__(self, result: TimingResult, *, at_edge: bool) -> None:
         self.result = result
-        self.fields: dict[str, Any] = {**result.evidence(), "at_edge": at_edge}
-        super().__init__(
-            "timing rejected: "
-            + " ".join(f"{name}={value}" for name, value in self.fields.items())
-        )
+        super().__init__("timing", {**result.evidence(), "at_edge": at_edge})
 
 
 def _bandpass(values: np.ndarray) -> np.ndarray:
@@ -640,7 +645,7 @@ class ProductResult:
         """Each measured value beside the fixed threshold it was held to."""
 
         return {
-            "raw_level_delta_db": round(self.raw_level_delta_db, 3),
+            "raw_level_delta_db_abs": round(abs(self.raw_level_delta_db), 3),
             "max_raw_level_delta_db": MAX_RAW_LEVEL_DELTA_DB,
             "raw_excess_snr_db": round(self.minimum_raw_excess_snr_db, 2),
             "min_raw_excess_snr_db": MIN_RAW_EXCESS_SNR_DB,
@@ -656,16 +661,10 @@ class ProductResult:
         }
 
 
-class ProductRejected(ValueError):
-    """A product capture the fixed thresholds refused, carrying why."""
-
+class ProductRejected(_Rejected):
     def __init__(self, result: ProductResult) -> None:
         self.result = result
-        self.fields: dict[str, Any] = result.evidence()
-        super().__init__(
-            "product rejected: "
-            + " ".join(f"{name}={value}" for name, value in self.fields.items())
-        )
+        super().__init__("product", result.evidence())
 
 
 def _power(values: np.ndarray) -> float:
