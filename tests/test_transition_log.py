@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from jasper.transition_log import TransitionLog, os_fault_cause
+from jasper.transition_log import TransitionLog
 
 
 def _log(clock, **kwargs):
@@ -52,17 +52,3 @@ def test_the_gate_is_bounded_by_max_keys():
         gate.should_log(f"k{index}", "sig")
 
     assert gate.tracked() == 3
-
-
-def test_os_fault_cause_names_the_deepest_errno_and_path():
-    inner = PermissionError(13, "Permission denied", "/var/lib/jasper/x.lock")
-    wrapper = RuntimeError("state is unreadable")
-    wrapper.__cause__ = inner
-
-    cause = os_fault_cause(wrapper)
-
-    assert cause == "PermissionError:EACCES:/var/lib/jasper/x.lock"
-
-
-def test_os_fault_cause_falls_back_to_the_class_without_an_os_error():
-    assert os_fault_cause(ValueError("not an os error")) == "ValueError"

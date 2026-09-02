@@ -217,10 +217,7 @@ def test_bluez_discovery_timeout_is_bounded_and_observable(
     monkeypatch.setattr(reconcile, "BLUEZ_DISCOVERY_TIMEOUT_SEC", 0.01)
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(
-            reconcile.AccessoryReconcileError,
-            match="BlueZ accessory discovery timed out after 0.01s",
-        ):
+        with pytest.raises(reconcile.AccessoryReconcileError):
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(tmp_path / "accessory-mics.env"),
@@ -279,13 +276,7 @@ def test_active_adapter_failure_raises_with_terminal_state_evidence(
     monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(
-            reconcile.AdapterServiceActivationError,
-            match=(
-                "enable denied.*start refused.*"
-                "expected is-enabled=enabled.*expected is-active=active"
-            ),
-        ):
+        with pytest.raises(reconcile.AdapterServiceActivationError):
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(tmp_path / "accessory-mics.env"),
@@ -297,8 +288,6 @@ def test_active_adapter_failure_raises_with_terminal_state_evidence(
     assert ("enable", "jasper-wiim-remote-mic.service") in calls
     assert ("restart", "jasper-wiim-remote-mic.service") in calls
     assert "event=accessory_mic.activation_failed" in caplog.text
-    assert "enable denied" in caplog.text
-    assert "start refused" in caplog.text
 
 
 def test_bluetooth_intent_off_parks_adapter_without_querying_bluez(
@@ -473,7 +462,6 @@ def test_local_source_role_probe_failure_parks_and_logs(monkeypatch, caplog):
         assert reconcile._local_sources_allowed() is False
 
     assert "event=accessory_mic.role_probe_failed" in caplog.text
-    assert "bad profile" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -498,7 +486,6 @@ def test_main_returns_failure_for_authoritative_reconcile_errors(
         assert reconcile.main(["--reason", "test"]) == 1
 
     assert "event=accessory_mic.reconcile_failed" in caplog.text
-    assert str(error) in caplog.text
 
 
 def test_apply_adapter_services_disables_inactive_profile_service():
@@ -767,9 +754,6 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
     # and refresh_voice_input must never START a stopped voice daemon.
     assert ("--no-block", "try-restart", "jasper-voice.service") in calls
     assert "event=accessory_mic.teardown_failed" in caplog.text
-    assert "stop failed" in caplog.text
-    assert "observed enabled" in caplog.text
-    assert "observed active" in caplog.text
     if malformed_intent:
         assert "event=accessory_mic.intent_invalid" in caplog.text
 

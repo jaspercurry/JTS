@@ -4,31 +4,22 @@
 
 """Where one round's evidence inputs are, for the two shapes a round comes in.
 
-A round's evidence packet is built from five things: the commissioning bundle,
-and four files that live OUTSIDE it — the crossover-v2 flow state, the design
-draft, the applied baseline profile, and the banked repeat floor. Where those
-five are depends on
-whether the round is still on the speaker or has been banked:
+A round's evidence packet is built from the commissioning bundle plus five
+files that live OUTSIDE it: the crossover-v2 flow state, the design draft, the
+applied baseline profile, the repeat floor and the declared rig geometry.
 
-* **live**, on the box: the bundle IS the session directory under
-  ``/var/lib/jasper/active_speaker/sessions/<id>``, and the other four are the
-  on-Pi SSOT files their owning modules declare — read here from those owners,
-  never re-spelled. The flow state is the one of the three that is a RECORD OF
-  ONE SESSION rather than of the speaker, and a dozen session directories are
-  retained against one state file, so it is handed over only to the session it
-  names (:func:`_live_state_path`).
-* **banked**, by ``scripts/bank-crossover-round.sh``: the bundle is copied to
-  ``<round-dir>/bundle/<session>/`` and the same four are frozen beside it
-  under fixed names.
+* **live**, on the box: the bundle IS the session directory, and the five are
+  the on-Pi SSOT files their owning modules declare — read here from those
+  owners, never re-spelled. The flow state is a record of ONE SESSION and a
+  dozen session directories are retained against one state file, so it is
+  handed to the session it names alone (:func:`_live_state_path`).
+* **banked**: the bundle is copied to ``<round-dir>/bundle/<session>/`` and
+  the five are frozen beside it under the fixed names below.
 
-Two readers wanted the same answer and had a shape each —
-:func:`~.round_views.load_banked_round` took only a banked tree,
-``jasper-crossover-prescriber`` only a live directory (#3498, #2882) — so the
-shape is decided HERE, once, and both consume it. :attr:`RoundInputs.banked`
-travels with the paths because it is the one thing a reader cannot re-derive
-from them: a banked round's four siblings are frozen copies of what the
-speaker was wearing, a live round's are the speaker's current files and move
-under the reader.
+:attr:`RoundInputs.banked` travels with the paths because it is the one thing
+a reader cannot re-derive from them: a banked round's five siblings are frozen
+copies of what the speaker was wearing, a live round's are the speaker's
+current files and move under the reader.
 """
 
 from __future__ import annotations
@@ -51,6 +42,9 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.design_draft import (
     DEFAULT_DESIGN_DRAFT_PATH as DRIVERS_DEFAULT_PATH,
 )
+from jasper.audio_measurement.measurement_geometry import (
+    DEFAULT_PATH as _DECLARED_GEOMETRY_DEFAULT_PATH,
+)
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
 )
@@ -58,6 +52,8 @@ from jasper.active_speaker.repeat_floor import (
 __all__ = [
     "APPLIED_PROFILE_DEFAULT_PATH",
     "APPLIED_PROFILE_FILENAME",
+    "DECLARED_GEOMETRY_DEFAULT_PATH",
+    "DECLARED_GEOMETRY_FILENAME",
     "DESIGN_DRAFT_FILENAME",
     "DRIVERS_DEFAULT_PATH",
     "REPEAT_FLOOR_DEFAULT_PATH",
@@ -66,21 +62,26 @@ __all__ = [
     "RoundViewsError",
     "STATE_DEFAULT_PATH",
     "STATE_FILENAME",
-    "STATE_NOT_THIS_SESSION",
     "STATE_SESSION_UNKNOWN",
     "round_inputs",
 ]
 
-#: The four names ``bank-crossover-round.sh`` writes beside the copied bundle.
+#: The five names ``bank-crossover-round.sh`` writes beside the copied bundle.
 STATE_FILENAME = "state.json"
 DESIGN_DRAFT_FILENAME = "design-draft.json"
 APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
+DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 
-#: Why a LIVE session resolves to no flow state. Codes rather than prose: they
-#: are what a reader decides on, and they reach an operator through the
-#: ``verify_pose.reason`` field the views already publish.
-STATE_NOT_THIS_SESSION = "state_not_this_session"
+#: The household's declared rig geometry, whose single writer is
+#: ``jasper-declare-geometry set``. Aliased here like the four above so the
+#: banked copy and the live path have one owner.
+DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
+
+#: Why a LIVE session resolves to no flow state. A code rather than prose: it
+#: is what a reader decides on, and it reaches an operator through the
+#: ``verify_pose.reason`` field the views already publish. One slug for every
+#: such case — no consumer has ever told them apart.
 STATE_SESSION_UNKNOWN = "state_session_unknown"
 
 
@@ -96,9 +97,9 @@ class RoundViewsError(CrossoverEvidencePacketError):
 
 @dataclass(frozen=True)
 class RoundInputs:
-    """The five paths one round's evidence packet is built from.
+    """The six paths one round's evidence packet is built from.
 
-    The four optional paths are ``None`` for a banked round that did not bank
+    The five optional paths are ``None`` for a banked round that did not bank
     that sibling, and :attr:`state_path` is also ``None`` for a live round
     whose flow state belongs to a different session
     (:func:`_live_state_path`) — absence the packet builder already reports
@@ -112,6 +113,7 @@ class RoundInputs:
     design_draft_path: Path | None
     applied_profile_path: Path | None
     repeat_floor_path: Path | None
+    declared_geometry_path: Path | None
     banked: bool
     state_reason: str = ""
 
@@ -145,7 +147,7 @@ def _live_state_path(session_dir: Path) -> tuple[Path | None, str]:
     if not isinstance(session_id, str) or not session_id:
         return None, STATE_SESSION_UNKNOWN
     if session_id != round_dir.name:
-        return None, STATE_NOT_THIS_SESSION
+        return None, STATE_SESSION_UNKNOWN
     return STATE_DEFAULT_PATH, ""
 
 
@@ -177,6 +179,7 @@ def round_inputs(path: Path) -> RoundInputs:
             design_draft_path=_sibling(path, DESIGN_DRAFT_FILENAME),
             applied_profile_path=_sibling(path, APPLIED_PROFILE_FILENAME),
             repeat_floor_path=_sibling(path, REPEAT_FLOOR_FILENAME),
+            declared_geometry_path=_sibling(path, DECLARED_GEOMETRY_FILENAME),
             banked=True,
         )
     if (path / "info.json").is_file():
@@ -187,6 +190,7 @@ def round_inputs(path: Path) -> RoundInputs:
             design_draft_path=DRIVERS_DEFAULT_PATH,
             applied_profile_path=APPLIED_PROFILE_DEFAULT_PATH,
             repeat_floor_path=REPEAT_FLOOR_DEFAULT_PATH,
+            declared_geometry_path=DECLARED_GEOMETRY_DEFAULT_PATH,
             banked=False,
             state_reason=state_reason,
         )

@@ -29,8 +29,6 @@ from jasper.audio_measurement.null_walk import (
     NullWalkError,
     NullWalkSpec,
 )
-from jasper.bass_alignment import SUB_MAINS_DELAY_WALK_SCOPE, sub_mains_delay_walk_spec
-
 POSITIVE_IDENTITY_FILTER = "positive_lane_identity"
 NEGATIVE_IDENTITY_FILTER = "negative_lane_identity"
 
@@ -197,34 +195,9 @@ def _confirm(
     return confirm_delay_candidate(snapshot, candidate, readback, **kwargs)
 
 
-@pytest.mark.parametrize("consumer", ["active_crossover", "bass_management"])
-def test_named_consumers_share_typed_lane_content_proof(consumer: str):
-    if consumer == "active_crossover":
-        spec = _active_spec()
-        snapshot = _snapshot(spec)
-    else:
-        spec = sub_mains_delay_walk_spec(
-            corner_hz=5000.0,
-            sub_path_minus_mains_m=0.0,
-        )
-        snapshot = _snapshot(
-            spec,
-            scope=SUB_MAINS_DELAY_WALK_SCOPE,
-            topology_id="bass-topology",
-            graph=_graph("bass_positive_delay", "bass_negative_delay"),
-            positive_lane=DelayLaneBinding(
-                spec.positive_delay_target,
-                "bass_positive_delay",
-                POSITIVE_IDENTITY_FILTER,
-                (0,),
-            ),
-            negative_lane=DelayLaneBinding(
-                spec.negative_delay_target,
-                "bass_negative_delay",
-                NEGATIVE_IDENTITY_FILTER,
-                (1,),
-            ),
-        )
+def test_named_consumers_share_typed_lane_content_proof():
+    spec = _active_spec()
+    snapshot = _snapshot(spec)
 
     candidate = spec.dsp_candidate(100.0)
     normalized = yaml.safe_load(
@@ -232,7 +205,7 @@ def test_named_consumers_share_typed_lane_content_proof(consumer: str):
     )
     confirmation = _confirm(snapshot, candidate, normalized)
 
-    assert confirmation.scope == consumer
+    assert confirmation.scope == "active_crossover"
     assert confirmation.readback_relative_delay_us == pytest.approx(100.0)
     assert confirmation.delay_filter == snapshot.positive_lane.filter_name
     assert confirmation.effective_delay_us == pytest.approx(100.0)

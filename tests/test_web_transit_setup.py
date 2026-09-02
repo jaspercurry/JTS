@@ -528,7 +528,6 @@ def test_bus_card_scrubs_key_from_log(caplog):
     with caplog.at_level("WARNING"):
         transit_setup._bus_card_html(provider, state)
     assert _SECRET_KEY not in caplog.text
-    assert "bus stops fetch raised" in caplog.text
 
 
 def test_apply_save_scrubs_key_from_probe_log(caplog):

@@ -24,7 +24,12 @@ from jasper.active_speaker.camilla_yaml import (
 )
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.bass_extension.bench import activation, bundle
-from jasper.bass_extension.bench.context import build_measured_context
+from jasper.bass_extension.bench.context import (
+    DETECTOR_REFERENCE,
+    LIMITER_DOMAIN_MAX_DBFS,
+    LIMITER_DOMAIN_MIN_DBFS,
+    limiter_domain_fingerprint,
+)
 from jasper.bass_extension.bench.manifest import STIMULUS_ROLES, author_campaign_manifest
 from jasper.bass_extension.bench.runner import (
     BenchAborted,
@@ -325,21 +330,34 @@ def _deps(controller: FakeController, executor: FakeExecutor, stop: Stop) -> Ben
     )
 
 
-def _context(*target_ids: str) -> dict[str, Any]:
-    return build_measured_context(
-        target_family_fingerprint=_sha("family"),
-        target_order=[(tid, _target_fp(tid)) for tid in target_ids],
-        driver_safety_fingerprint=_sha("ds"),
-        margin_policy_fingerprint=_sha("mp"),
-        transparency_policy_fingerprint=_sha("tp"),
-        natural_graph_fingerprint=_sha("natural-graph"),
-        baseline_limiter_clip_limit_dbfs=BASELINE,
-        camilladsp_build_id="build",
-        owner_channels=[2],
-        sample_rate_hz=48_000,
-        limiter_name=LIMITER_NAME,
-        tap_implementation_id="tap",
-    )
+def _context(
+    *target_ids: str,
+    camilladsp_build_id: str = "build",
+    tap_implementation_id: str = "tap",
+) -> dict[str, Any]:
+    return {
+        "target_family_fingerprint": _sha("family"),
+        "target_order": [
+            {"target_id": tid, "target_fingerprint": _target_fp(tid)}
+            for tid in target_ids
+        ],
+        "driver_safety_fingerprint": _sha("ds"),
+        "margin_policy_fingerprint": _sha("mp"),
+        "transparency_policy_fingerprint": _sha("tp"),
+        "natural_graph_fingerprint": _sha("natural-graph"),
+        "baseline_limiter_clip_limit_dbfs": BASELINE,
+        "limiter_domain_min_dbfs": LIMITER_DOMAIN_MIN_DBFS,
+        "limiter_domain_max_dbfs": LIMITER_DOMAIN_MAX_DBFS,
+        "limiter_domain_fingerprint": limiter_domain_fingerprint(),
+        "camilladsp_build_id": camilladsp_build_id,
+        "owner_channels": [2],
+        "sample_rate_hz": 48_000,
+        "limiter_name": LIMITER_NAME,
+        "limiter_type": "Limiter",
+        "soft_clip": True,
+        "tap_implementation_id": tap_implementation_id,
+        "detector_reference": DETECTOR_REFERENCE,
+    }
 
 
 def _targets(*target_ids: str) -> list[TargetPlan]:
@@ -569,18 +587,9 @@ async def test_round_trip_with_the_real_tap_implementation_id_fingerprint(
     stop = Stop()
     deps = _deps(controller, FakeExecutor({"deep": [-20.0]}), stop)
     sink = BundleSink(tmp_path / "bundle", bundle_id="tap-id")
-    context = build_measured_context(
-        target_family_fingerprint=_sha("family"),
-        target_order=[("deep", _target_fp("deep"))],
-        driver_safety_fingerprint=_sha("ds"),
-        margin_policy_fingerprint=_sha("mp"),
-        transparency_policy_fingerprint=_sha("tp"),
-        natural_graph_fingerprint=_sha("natural-graph"),
-        baseline_limiter_clip_limit_dbfs=BASELINE,
+    context = _context(
+        "deep",
         camilladsp_build_id=binary.camilladsp_build_id,
-        owner_channels=[2],
-        sample_rate_hz=48_000,
-        limiter_name=LIMITER_NAME,
         tap_implementation_id=tap_id,
     )
     emitted = await run_campaign(

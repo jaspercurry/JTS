@@ -45,7 +45,6 @@ SHARED_COMMISSION_TONE_HELPERS = (
     "_commission_tone_signal_plan",
     "_commission_tone_target_key",
     "_commission_tone_wav_path",
-    "_config_paths_match",
     "_summed_playback_with_issue",
 )
 
@@ -338,7 +337,7 @@ def test_driver_signal_plan_identical_across_surfaces(monkeypatch):
         "allowed_band": {"highpass_hz": 80.0, "lowpass_hz": 400.0},
     }
 
-    def _fake_driver_test_signal_plan(preset, role, *, driver_style=None):
+    def _fake_driver_test_signal_plan(preset, role, **_kwargs):
         return dict(sentinel_plan)
 
     # Patch the lazy import target the shared helper reaches for.

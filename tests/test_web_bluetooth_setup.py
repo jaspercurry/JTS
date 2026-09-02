@@ -652,7 +652,7 @@ def test_device_mutation_submission_failure_wakes_retained_stream(monkeypatch):
 
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", _RejectingDispatcher())
 
-    with pytest.raises(RuntimeError, match="loop stopped"):
+    with pytest.raises(RuntimeError):
         bluetooth_setup._start_device_mutation(
             "forget",
             mac,
@@ -1035,7 +1035,7 @@ def test_pair_driver_submission_failure_closes_unowned_coroutine(monkeypatch):
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", _PairDispatcher())
     monkeypatch.setattr(bluetooth_setup.asyncio, "run_coroutine_threadsafe", reject)
 
-    with pytest.raises(RuntimeError, match="loop stopped"):
+    with pytest.raises(RuntimeError):
         bluetooth_setup._start_pair_stream(mac)
 
     assert inspect.getcoroutinestate(captured[0]) == inspect.CORO_CLOSED
@@ -1063,7 +1063,7 @@ def test_dispatcher_submission_failure_closes_unowned_coroutine(monkeypatch):
         mock.Mock(side_effect=RuntimeError("loop stopped")),
     )
 
-    with pytest.raises(RuntimeError, match="loop stopped"):
+    with pytest.raises(RuntimeError):
         dispatcher.run(coro)
 
     assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED

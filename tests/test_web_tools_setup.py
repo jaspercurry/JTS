@@ -35,7 +35,6 @@ import pytest
 from jasper.tool_prompt_overrides import read_prompt_overrides
 from jasper.tool_state import (
     ToolState,
-    read_disabled_tools,
     read_tool_state,
     write_tool_state,
 )
@@ -413,7 +412,7 @@ def test_post_toggle_disable_stages_without_restart(tmp_path, monkeypatch):
     }
     # A toggle NEVER restarts — that's Apply's job.
     assert restarted["n"] == 0
-    assert read_disabled_tools(str(state)) == frozenset({"spotify_play"})
+    assert read_tool_state(str(state)).disabled_tools == frozenset({"spotify_play"})
 
 
 def test_post_toggle_enable_removes_from_disabled_set(tmp_path, monkeypatch):
@@ -431,7 +430,7 @@ def test_post_toggle_enable_removes_from_disabled_set(tmp_path, monkeypatch):
     )
     h.do_POST()
     assert h.status == 200
-    assert read_disabled_tools(str(state)) == frozenset({"get_weather"})
+    assert read_tool_state(str(state)).disabled_tools == frozenset({"get_weather"})
 
 
 def test_post_toggle_pack_stages_pack_without_restart(tmp_path, monkeypatch):
@@ -641,7 +640,7 @@ def test_post_toggle_no_op_does_not_rewrite(tmp_path, monkeypatch):
     h.do_POST()
     assert h.status == 200
     assert calls["n"] == 0  # no-op: never rewrote the file
-    assert read_disabled_tools(str(state)) == frozenset({"spotify_play"})
+    assert read_tool_state(str(state)).disabled_tools == frozenset({"spotify_play"})
 
 
 def test_post_prompt_override_and_reset_stage_without_restart(tmp_path, monkeypatch):
@@ -907,7 +906,7 @@ def test_concurrent_toggles_do_not_lose_updates(tmp_path, monkeypatch):
     for t in threads:
         t.join()
 
-    assert read_disabled_tools(str(state)) == frozenset(names)
+    assert read_tool_state(str(state)).disabled_tools == frozenset(names)
 
 
 # --- GET /catalog.json overlay ---------------------------------------------

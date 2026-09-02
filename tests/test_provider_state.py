@@ -21,7 +21,6 @@ from jasper.voice.provider_state import (
     read_active_model,
     read_active_model_from_env_files,
     read_active_provider,
-    read_active_provider_and_model,
     read_barge_in_enabled,
     resolve_active_provider,
     resolve_barge_in_enabled,
@@ -44,7 +43,6 @@ def test_reads_configured_provider_and_model(tmp_path):
     )
     assert read_active_provider(path) == "openai"
     assert read_active_model("openai", path) == "gpt-realtime-2"
-    assert read_active_provider_and_model(path) == ("openai", "gpt-realtime-2")
     state = read_active_provider_state(path)
     assert state.configured
     assert state.status == "configured"
@@ -56,15 +54,16 @@ def test_unset_provider_has_no_default(tmp_path):
     # The whole point: unset == unconfigured, NEVER a guessed provider.
     path = _write(tmp_path, "# nothing configured yet\n")
     assert read_active_provider(path) == ""
-    assert read_active_provider_and_model(path) == ("", None)
-    assert read_active_provider_state(path).status == "unset"
+    state = read_active_provider_state(path)
+    assert (state.provider, state.model) == ("", None)
+    assert state.status == "unset"
 
 
 def test_invalid_provider_value_rejected(tmp_path):
     path = _write(tmp_path, "JASPER_VOICE_PROVIDER=bogus\n")
     assert read_active_provider(path) == ""
-    assert read_active_provider_and_model(path) == ("", None)
     state = read_active_provider_state(path)
+    assert (state.provider, state.model) == ("", None)
     assert state.status == "invalid"
     assert state.raw_provider == "bogus"
 
@@ -72,8 +71,9 @@ def test_invalid_provider_value_rejected(tmp_path):
 def test_missing_file_is_unconfigured(tmp_path):
     path = str(tmp_path / "does-not-exist.env")
     assert read_active_provider(path) == ""
-    assert read_active_provider_and_model(path) == ("", None)
-    assert read_active_provider_state(path).status == "missing"
+    state = read_active_provider_state(path)
+    assert (state.provider, state.model) == ("", None)
+    assert state.status == "missing"
 
 
 def test_unreadable_file_is_not_reported_as_plain_unset(monkeypatch, tmp_path):
@@ -97,9 +97,9 @@ def test_model_falls_back_to_catalog_default(tmp_path):
     # Provider set but model not pinned → catalog default for that
     # provider (matches what jasper-voice resolves).
     path = _write(tmp_path, "JASPER_VOICE_PROVIDER=gemini\n")
-    provider, model = read_active_provider_and_model(path)
-    assert provider == "gemini"
-    assert model == default_model_id("gemini")
+    state = read_active_provider_state(path)
+    assert state.provider == "gemini"
+    assert state.model == default_model_id("gemini")
 
 
 def test_read_active_model_unknown_provider_is_none(tmp_path):

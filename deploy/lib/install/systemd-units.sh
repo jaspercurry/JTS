@@ -213,6 +213,45 @@ _rollback_full_unit_install_transaction() {
     echo "  ERROR: rolled back the incomplete full-profile unit generation" >&2
 }
 
+# Bluetooth accessory units, shared by BOTH install profiles. A paired remote
+# is renderer-side: its buttons reach jasper-control, which runs on either
+# profile, and its optional mic rides the accessory path (udp:9892) rather
+# than the AEC bridge's local-array path. The AEC units below stay
+# full-profile only, deliberately.
+install_hid_accessory_unit_files() {
+    # jasper-input: third-party HID accessory bridge (Anticater VK-01
+    # volume knob today; future macro pads / foot pedals). Reads
+    # /dev/input/event* via python-evdev, translates known devices'
+    # key events into HTTP calls against jasper-control. Always-on
+    # like jasper-mux — idle cost is negligible if no accessory is
+    # attached. See jasper/accessories/.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-input.service" \
+        "${SYSTEMD_DIR}/jasper-input.service"
+    # Optional accessory mic profiles are activated by this root oneshot:
+    # it reads BlueZ's paired-device state, writes
+    # /var/lib/jasper/accessory-mics.env for jasper-voice, and owns the
+    # matching adapter unit state. This keeps rare remotes from imposing
+    # resident cost on every speaker.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
+    # WiiM Remote 2 BLE microphone adapter. Button events still flow through
+    # jasper-input; this companion daemon only decodes the remote's GATT voice
+    # report into the wiim_remote_2 manual mic UDP source.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-mic.service" \
+        "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
+    # Root oneshot the adapter kicks (through jasper-control's restart broker)
+    # on every reconnect: it reserves BLE connection-event length on the live
+    # remote link. BlueZ hardcodes that to 0, which starves the mic to ~24% of
+    # realtime on a Pi Zero 2 W. Never enabled; started on demand only.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-ce.service" \
+        "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
+}
+
+
 install_streambox_web_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web-streambox.service" \
@@ -1017,10 +1056,14 @@ park_streambox_brain_units() {
     # Both full and streambox profiles run the same renderer/fan-in graph and USB
     # Audio Input needs its direct lane on either profile, so coupling and its
     # bounded health timer deliberately remain outside this parking list.
+    #
+    # jasper-input is out for the same reason: it translates HID key events into
+    # jasper-control HTTP calls, and jasper-control runs on both profiles. A
+    # streambox with a paired volume remote must keep its buttons.
     local brain_unit
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
-        jasper-aec-reconcile.service jasper-input.service \
+        jasper-aec-reconcile.service \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
     done
@@ -1098,7 +1141,8 @@ start_streambox_runtime_units() {
     local unit
     systemctl enable jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
-        jasper-control.service jasper-source-intent-reconcile.service
+        jasper-control.service jasper-source-intent-reconcile.service \
+        jasper-accessory-reconcile.service jasper-input.service
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
     /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || \
@@ -1139,6 +1183,14 @@ start_streambox_runtime_units() {
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
     systemctl restart jasper-control.service
+    # Enabling only arms these for the NEXT boot; deploy health checks this
+    # boot. Mirrors the full path: restart the bridge so an already-paired
+    # remote picks up new code, then let the reconciler bring up the optional
+    # mic units a paired remote needs. Ordered after jasper-control, which is
+    # what the bridge posts key events to.
+    systemctl restart jasper-input.service 2>/dev/null || true
+    /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
+        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 }
 
 install_streambox_systemd_units() {
@@ -1150,6 +1202,7 @@ install_streambox_systemd_units() {
     install_grouping_unit_files
     install_renderer_source_unit_files
     install_streambox_audio_slices
+    install_hid_accessory_unit_files
     install_audio_output_recovery_unit_files
     park_streambox_brain_units
 
@@ -1234,36 +1287,7 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-chat-web.socket" \
         "${SYSTEMD_DIR}/jasper-chat-web.socket"
-    # jasper-input: third-party HID accessory bridge (Anticater VK-01
-    # volume knob today; future macro pads / foot pedals). Reads
-    # /dev/input/event* via python-evdev, translates known devices'
-    # key events into HTTP calls against jasper-control. Always-on
-    # like jasper-mux — idle cost is negligible if no accessory is
-    # attached. See jasper/accessories/.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-input.service" \
-        "${SYSTEMD_DIR}/jasper-input.service"
-    # Optional accessory mic profiles are activated by this root oneshot:
-    # it reads BlueZ's paired-device state, writes
-    # /var/lib/jasper/accessory-mics.env for jasper-voice, and owns the
-    # matching adapter unit state. This keeps rare remotes from imposing
-    # resident cost on every speaker.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
-    # WiiM Remote 2 BLE microphone adapter. Button events still flow through
-    # jasper-input; this companion daemon only decodes the remote's GATT voice
-    # report into the wiim_remote_2 manual mic UDP source.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-mic.service" \
-        "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
-    # Root oneshot the adapter kicks (through jasper-control's restart broker)
-    # on every reconnect: it reserves BLE connection-event length on the live
-    # remote link. BlueZ hardcodes that to 0, which starves the mic to ~24% of
-    # realtime on a Pi Zero 2 W. Never enabled; started on demand only.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-ce.service" \
-        "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
+    install_hid_accessory_unit_files
     # AEC bridge + boot-time chip init + reconciler. The reconciler is
     # the policy layer that keeps JASPER_MIC_DEVICE, AEC services, and
     # the currently attached mic hardware in sync.

@@ -15,10 +15,10 @@ the compiled ioplug ``.so``, the conf.d PCM definitions
   probe (also open-probes the PCMs; that lives in the doctor because it needs
   ``arecord``/``aplay``).
 - ``jasper.fanin.coupling_reconcile`` — the ``shm_ring`` **activation gate**: the
-  reconciler refuses to ARM the ring coupling when an asset is missing and
-  fail-safes to loopback, so a half-installed ring platform can never strand the
-  realtime path (the ioplug would fail to resolve and CamillaDSP would crash-loop
-  on its statefile). Presence-only here — an open-probe from the reconciler could
+  reconciler refuses to ARM the ring coupling when an asset is missing, so a
+  half-installed ring platform can never strand the realtime path (the ioplug
+  would fail to resolve and CamillaDSP would crash-loop on its statefile).
+  Presence-only here — an open-probe from the reconciler could
   disturb a live arm, and the doctor already owns the deep probe.
 - ``jasper.cli.audio_config render-ring-conf-wire`` — the per-box conf.d
   **renderer** the output-hardware reconciler shells into. It reuses this

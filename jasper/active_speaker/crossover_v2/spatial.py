@@ -74,7 +74,6 @@ from jasper.audio_measurement.gating import (
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
-    RoleBand,
 )
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
@@ -2095,22 +2094,6 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> CloudVerdict:
 # imports THIS one). Kept as an independent constant rather than a shared one
 # for that reason; if the two ever need to diverge, they now can.
 CLOUD_CURVE_MAX_JSON_POINTS = 512
-
-
-def _composed_swept_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
-    """The summed system's swept band -- the union of every declared
-    ``RoleBand.band`` -- PR-4's contract-derived ``signal_band_hz``.
-
-    No existing function composes across roles (each ``RoleBand.band`` is one
-    driver's own excitation-ceiling band, from
-    ``excitation_safety_plan.resolve_driver_excitation_ceilings``); this is
-    that composition, added here because it is session-owned wiring policy
-    (which roles participate in the passband), not a pure-DSP concern that
-    belongs in ``spatial_combine`` or ``program.py``.
-    """
-    lo = min(float(r.band.lower_hz) for r in roles)
-    hi = max(float(r.band.upper_hz) for r in roles)
-    return (lo, hi)
 
 
 @dataclass(frozen=True)

@@ -711,7 +711,7 @@ def _outputd_stability_inputs() -> dict:
     }
 
 
-def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
+def test_chip_aec_readiness_snapshot_uses_schema_helper_and_passes():
     artifact = audio_validation.build_chip_aec_readiness_artifact(
         **_active_chip_inputs(),
     )
@@ -719,7 +719,7 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert isinstance(artifact, ValidationArtifact)
     assert artifact.schema_version == audio_validation.CURRENT_SCHEMA_VERSION
     assert artifact.profile == "xvf_chip_aec"
-    assert artifact.status == "warn"
+    assert artifact.status == "pass"
     assert artifact.mic_id == "xvf3800"
     assert artifact.dac_id == "apple_usb_c_dongle"
     assert artifact.checks["runtime_identity"]["status"] == "pass"
@@ -731,7 +731,9 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_without_full_pass():
     assert artifact.checks["dac_support"]["status"] == "pass"
     assert artifact.checks["dac_reference"]["status"] == "pass"
     assert artifact.checks["wake_legs"]["status"] == "pass"
-    assert artifact.checks["measured_drift_delay"]["status"] == "not_run"
+    assert "measured_drift_delay" not in artifact.checks
+    # The readiness recommendation stays gated behind an explicit hardware
+    # run even though every readiness check passes.
     assert artifact.recommendation == "run_hardware_validation"
     assert "readiness_snapshot" in artifact.notes[0]
 
@@ -899,7 +901,7 @@ def test_chip_aec_readiness_unknown_runtime_recommends_observability_fix():
     )
 
 
-def test_chip_aec_hardware_validation_passive_evidence_warns_until_drift_probe():
+def test_chip_aec_hardware_validation_clean_passive_evidence_still_recommends_drift_probe():
     inputs = _active_chip_inputs()
     artifact = audio_validation.build_chip_aec_hardware_validation_artifact(
         **inputs,
@@ -919,12 +921,14 @@ def test_chip_aec_hardware_validation_passive_evidence_warns_until_drift_probe()
         duration_seconds=10,
     )
 
-    assert artifact.status == "warn"
+    assert artifact.status == "pass"
     assert artifact.checks["outputd_reference_health"]["status"] == "pass"
     assert artifact.checks["bridge_counter_window"]["status"] == "pass"
     assert artifact.checks["chip_profile_readback"]["status"] == "pass"
     assert artifact.checks["chip_convergence"]["status"] == "pass"
-    assert artifact.checks["measured_drift_delay"]["status"] == "not_run"
+    assert "measured_drift_delay" not in artifact.checks
+    # The hardware recommendation stays gated behind an explicit drift/delay
+    # probe even though every sampled check passes.
     assert artifact.recommendation == "run_drift_delay_validation"
     assert "No playback stimulus was generated." in artifact.notes
     assert "No XVF chip settings were written or persisted." in artifact.notes
@@ -1407,13 +1411,13 @@ def test_latest_artifact_summary_reads_timestamped_artifacts(tmp_path):
 
     assert path.name != "latest.json"
     assert summary["state"] == "current"
-    assert summary["status"] == "warn"
+    assert summary["status"] == "pass"
     assert summary["artifact_path"] == str(path)
     assert summary["hardware"] == {
         "mic_id": "xvf3800",
         "dac_id": "apple_usb_c_dongle",
     }
-    assert summary["check_statuses"]["measured_drift_delay"] == "not_run"
+    assert "measured_drift_delay" not in summary["check_statuses"]
 
 
 def test_latest_artifact_summary_prefers_latest_pointer(tmp_path):
@@ -1430,7 +1434,7 @@ def test_latest_artifact_summary_prefers_latest_pointer(tmp_path):
     )
 
     assert summary["artifact_path"] == str(latest_path)
-    assert summary["status"] == "warn"
+    assert summary["status"] == "pass"
     assert "reason" not in summary
 
 

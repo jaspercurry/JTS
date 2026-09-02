@@ -136,26 +136,6 @@ def test_load_env_files_shell_wins_over_files(monkeypatch, tmp_path: Path):
     assert os_environ_get("JASPER_VOICE_PROVIDER") == "openai"
 
 
-def test_subprocess_env_with_fresh_files_overrides_stale_daemon_env(tmp_path: Path):
-    """Long-lived daemons launching subprocesses need fresh wizard-file
-    truth, not the process env captured when the daemon started."""
-    from jasper.env_load import subprocess_env_with_fresh_files
-
-    operator = tmp_path / "jasper.env"
-    operator.write_text("JASPER_VOICE_PROVIDER=gemini\n")
-    wizard = tmp_path / "voice_provider.env"
-    wizard.write_text("JASPER_VOICE_PROVIDER=openai\nOPENAI_API_KEY=sk-fresh\n")
-
-    env = subprocess_env_with_fresh_files(
-        base={"PATH": "/bin", "JASPER_VOICE_PROVIDER": "gemini"},
-        paths=(str(operator), str(wizard)),
-    )
-
-    assert env["PATH"] == "/bin"
-    assert env["JASPER_VOICE_PROVIDER"] == "openai"
-    assert env["OPENAI_API_KEY"] == "sk-fresh"
-
-
 def os_environ_get(name: str) -> str | None:
     import os
 

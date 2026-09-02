@@ -4,82 +4,33 @@
 
 """Capture a stated set of ANGLES, in a stated stimulus regime, by a stated mover.
 
-The composition this module owns is
-``{per-driver | summed} x {angles} x {arm | human-guided}``, and it exists
-because two of those three axes were already clean while the third had no input
-port at all:
-
-* **The program axis was clean.**
-  :func:`~jasper.active_speaker.crossover_v2.programs.program_for_phase`
-  dispatches by object identity, and the per-driver program is one composed
-  object -- ``build_measure_program``'s interleaved woofer/tweeter schedule, both
-  drivers in ONE capture on channels 0 and 1, so they share an exact common time
-  origin. This module selects that same object; it does not compose a second
-  per-driver shape.
-* **The mover axis was clean.** The flow states an advance policy
-  (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.externally_positioned`
-  -- a machine advances, so every entry auto-begins) separately from a pose
-  statement
-  (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.positions_gated`
-  -- poses are stated as bearings and every begin is held until somebody reports
-  the microphone in place), and ``_positioned_prompt`` restates a pose's copy as
-  that angle. Both a driver and a person can hold the second without the first.
-* **The angle axis was welded.** Degrees were DERIVED and never REQUESTED:
-  :func:`position_angle_deg` reads a bearing off a pose's ``offset_cm``, and the
-  only pose table that reaches the per-driver program off the design axis is
-  ``LATERAL_POSE_PROMPTS`` -- a fixed six-row tuple derived from two hard-coded
-  cm offsets, behind an import-time length guard. There was no way to ask for
-  45 deg, and no way to ask for a summed capture at an angle at all.
-
-**So the one new primitive here is the INVERSE of the existing derivation**
-(:func:`pose_at_angle`), and everything else is composition over shipped parts.
-Degrees become an input that round-trips exactly through the cm-primary
-representation the evidence sidecar, the ``wide`` rule and the attribution stage
-already read, so an angle-requested capture banks in the same shape as a
+Composes ``{per-driver | summed} x {angles} x {arm | human-guided}`` over
+shipped parts. The one new primitive is :func:`pose_at_angle`, the INVERSE of
+:func:`position_angle_deg`: degrees round-trip exactly through the cm-primary
+representation the evidence sidecar, the ``wide`` rule and the attribution
+stage already read, so an angle-requested capture banks in the same shape as a
 hand-walked one and stays comparable with it.
 
-**What this is NOT, stated because the distinction is load-bearing.**  These
-poses are FORWARD-MODEL INPUT and never a pose-ratio statistic.  The two are
-different consumers with different validity arguments:
+These poses are FORWARD-MODEL INPUT, never a pose-ratio statistic: the
+lateral-walk statistic was retired as invalidated (PR #2717, #2711), and the
+P2 complex-summation model consumes each angle's transfer function directly.
 
-* The **lateral-walk STATISTIC** was paused on 2026-08-18
-  ([PR #2717](https://github.com/jaspercurry/JTS/pull/2717)) because the
-  statistic itself was invalidated -- a max-over-poses reduction that ranked
-  below its own repeat noise, and whose argmax pose is frequently the zero-offset
-  closing repeat.  It was retired with the corner hunt it fed; a redesign would
-  have to clear that four-point bar
-  ([#2711](https://github.com/jaspercurry/JTS/issues/2711)).
-* **Per-driver responses at angles** -- the P2 crossover search's
-  complex-summation model, which predicts a candidate's summed response from the
-  per-driver complex responses -- need no pose-ratio statistic at all.  The model
-  consumes each angle's complex transfer function directly.  The pose-ratio
-  cancellation that invalidated the statistic is a property of the REDUCTION,
-  not of the captures, and PR #2717's own evidence says so in as many words:
-  "The poses are clean; it is the max-over-poses reduction into one scalar that
-  cannot separate candidates."
-
-This module therefore **never constructs**
-:data:`~jasper.active_speaker.crossover_v2.journey.PHASE_LATERAL`: it returns
-poses and refusals, and the session host is what tags indexes with a phase.  A
-taken walk runs as the session's lateral group and so does reach
-``_close_lateral_walk``, whose close publishes nothing.
+This module never constructs :data:`~.crossover_v2.journey.PHASE_LATERAL` --
+it returns poses and refusals, and the session host tags indexes with a phase.
 
 Dependency direction: a sibling of :mod:`jasper.active_speaker.crossover_v2_flow`
-that imports FROM it, the same direction
-:mod:`jasper.active_speaker.crossover_envelope_v2` already takes.  It is
-deliberately NOT under ``jasper/active_speaker/crossover_v2/``, whose modules
-forbid importing the flow.
+that imports FROM it. Deliberately NOT under ``jasper/active_speaker/crossover_v2/``,
+whose modules forbid importing the flow.
 """
 
 from __future__ import annotations
 
 import math
 import numbers
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
@@ -140,7 +91,6 @@ __all__ = [
     "program_for_stop",
     "index_phase_map",
     "announced_indexes",
-    "WALK_DISTANCE_UNSUPPORTED",
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
@@ -153,7 +103,6 @@ __all__ = [
     "WALK_LEVEL_MATCH_NO_EVIDENCE",
     "WALK_LEVEL_MATCH_NEEDS_WIRED",
     "WALK_CANDIDATE_NOT_MEASURABLE",
-    "WALK_CANDIDATE_CORNER_MISMATCH",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -373,14 +322,6 @@ class AngleCaptureRequest:
     adopts this walk. An operator who could state numbers here could measure
     one speaker through another's level match.
 
-    ``declared_geometry`` is the household's own tape measure -- the toolbox's
-    own :class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`,
-    which is also what ``jasper-declare-geometry`` stores and what derives the
-    room's ``entanglement_floor_hz``. Carried and never judged here: the
-    operator states it once at ``stage`` and it rides onto the session's banked
-    evidence. ``None`` is every walk nobody was asked about, which is most of
-    them.
-
     ``program`` is PROVENANCE, not geometry: the name of the
     :class:`~.measurement_programs.MeasurementProgram` these stops came from
     (``"baseline/express"``, ``"spot"``), or ``""`` for a free-form walk
@@ -409,7 +350,6 @@ class AngleCaptureRequest:
     delay_us: float = 0.0
     level_matched: bool = False
     program: str = ""
-    declared_geometry: DeclaredGeometry | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -459,16 +399,6 @@ class AngleCaptureRequest:
         not that one.
         """
         return self.mover == MOVER_ARM
-
-    def declared_geometry_record(self) -> dict[str, float] | None:
-        """The tape measure as every writer banks it, or ``None`` for none.
-
-        One owner for the "or nothing": the spool document and the CLI's plan
-        JSON both carry this field, and two spellings of one conditional are
-        two places for the null to drift.
-        """
-        geometry = self.declared_geometry
-        return geometry.to_dict() if geometry is not None else None
 
 
 # --------------------------------------------------------------------------- #
@@ -615,7 +545,6 @@ def request_for_program(
     delayed_role: str = "",
     delay_us: float = 0.0,
     level_matched: bool = False,
-    declared_geometry: DeclaredGeometry | None = None,
 ) -> AngleCaptureRequest:
     """The walk one named program asks for, in the table's own order.
 
@@ -626,9 +555,8 @@ def request_for_program(
     repeats cost captures and no travel.
 
     The graph flags are passed through untouched -- a program states POSE
-    geometry and nothing else, so the reverse-null, the confirmation delay, the
-    level match and the household's declared room geometry stay the caller's to
-    state (and the spec's to judge).
+    geometry and nothing else, so the reverse-null, the confirmation delay and
+    the level match stay the caller's to state (and the spec's to judge).
 
     ``candidates`` expands POSE-MAJOR, CANDIDATE-MINOR: the variants at one
     pose are ADJACENT stops, so the microphone still moves once per distinct
@@ -639,13 +567,6 @@ def request_for_program(
     pose beyond the stated mover's envelope, in the vocabulary this module
     shares with the session.
     """
-    if program.mark_distance_m != MARK_DISTANCE_M:
-        raise LateralWalkRefused(
-            WALK_DISTANCE_UNSUPPORTED,
-            f"program {program.program_id}/{program.size} measures at "
-            f"{program.mark_distance_m} m and this walk derives every pose at "
-            f"{MARK_DISTANCE_M} m",
-        )
     return AngleCaptureRequest(
         stops=tuple(
             AngleStop(
@@ -664,7 +585,6 @@ def request_for_program(
         delayed_role=delayed_role,
         delay_us=delay_us,
         level_matched=level_matched,
-        declared_geometry=declared_geometry,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.
         program=(
@@ -680,22 +600,11 @@ def walk_price(
 ) -> dict[str, int]:
     """What this walk costs the person holding the microphone.
 
-    Derived from the stops rather than read off a program, so a named walk and
-    a free-form one are priced by one rule wherever the price is stated -- the
-    CLI's receipt and the page's tier chooser read this one function.
-    ``mic_moves`` counts DISTINCT poses because repeats stay at one bearing;
-    ``ceiling_min`` prices the SESSION that takes the walk, whose capture
-    target is the plan's base entries PLUS these stops, rounded UP to whole
-    minutes so the printed number is never under the real ceiling. The base is
-    :func:`stage1_base_entries` -- the SAME count the adoption site hands the
-    take as ``base_entries`` -- so flipping a ``STAGE1_INCLUDES_*`` flag moves
-    the stated price with the session rather than leaving it under-priced.
-
-    ``plan_shape`` names WHICH session: base entries are a property of the
-    resolved shape, so a chooser offering the same walk on two tier cards
-    prices each card against that tier's own shape. ``None`` keeps the default
-    shape, which is what a surface pricing a walk before any tier is chosen
-    has.
+    ``ceiling_min`` prices the SESSION that takes the walk -- the plan's base
+    entries plus these stops -- rounded UP to whole minutes so the printed
+    number is never under the real ceiling. ``plan_shape`` names WHICH session,
+    because base entries are a property of the resolved shape; ``None`` is the
+    default shape, for a surface pricing a walk before any tier is chosen.
     """
     return {
         "mic_moves": len({(s.angle_deg, s.elevation_deg) for s in request.stops}),
@@ -746,26 +655,14 @@ class ResolvedStop:
 def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) -> dict[str, str]:
     """One stop's advance policy and, for an arm, its target position.
 
-    Mirrors ``_entry_advance`` / ``_entry_policy`` for a request-shaped walk:
-    a hand-guided stop is a tap (the person's own settle signal), an arm-driven
-    one auto-begins behind the cancelable countdown AND declares the angle the
-    position gate must wait for. The two arm behaviours are emitted together
-    because a countdown without the gate fires into an arm still in motion.
+    The two arm behaviours are emitted together because a countdown without the
+    gate fires into an arm still in motion. A hand-guided stop declares no
+    target: whether its begins are HELD is the SESSION's fact
+    (:attr:`V2PlanShape.positions_gated`), which this seam cannot see.
 
-    **This is the REQUEST's own preview, which is why a hand-guided stop
-    declares no target here.** Whether a walk's begins are HELD is the
-    SESSION's fact, not the request's -- a person's walk is gated when the
-    session hosting it is (:attr:`V2PlanShape.positions_gated`), and that
-    session builds its own entries through ``_entry_policy`` off its own shape.
-    Guessing a target from the mover alone would be a second answer to a
-    question this seam cannot see. The one consumer of this bag is
-    ``jasper-angle-capture plan``'s dry run.
-
-    The angle is re-read off the POSE through the shipped
-    :func:`position_angle_deg` rather than copied from the request, so the
-    number the gate acts on is the number the banked pose carries. A copy taken
-    from the request would be a second source for one fact, and the round trip
-    is exactly what would hide a defect in it.
+    The angle is re-read off the POSE through :func:`position_angle_deg` rather
+    than copied from the request, so the number the gate acts on is the number
+    the banked pose carries.
     """
     if not request.externally_positioned:
         return {"auto_advance": AUTO_ADVANCE_TAP}
@@ -780,11 +677,9 @@ def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) ->
 def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
     """The whole request, resolved into indexed stops in running order.
 
-    This is the seam: everything above is a statement of intent and everything
-    below consumes shipped machinery. Each stop resolves to the pose its angle
-    names, the program object its regime names, and the advance policy its mover
-    names -- three independent axes composed once, here, so no caller has to
-    know how any of the three is implemented.
+    The seam: each stop resolves to the pose its angle names, the program
+    object its regime names, and the advance policy its mover names -- three
+    independent axes composed once, here.
     """
     resolved: list[ResolvedStop] = []
     for offset, stop in enumerate(request.stops):
@@ -845,13 +740,6 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
     """
     return {stop.index: stop.program_phase for stop in resolve_request(request)}
 
-
-#: A program row names a mark distance this walk cannot honour. The walk's
-#: geometry is derived at :data:`MARK_DISTANCE_M` and only there
-#: (:func:`pose_at_angle`, and the prompt copy that states the distance), so a
-#: row naming another one is refused rather than silently measured at 1 m.
-#: The close-reference row lifts this when the engine learns distance.
-WALK_DISTANCE_UNSUPPORTED = "walk_distance_unsupported"
 
 #: A stop is not per-driver. A session lateral group plays MEASURE's per-driver
 #: object at every pose, so a summed stop would be measured as something else.
@@ -953,15 +841,7 @@ WALK_LEVEL_MATCH_NEEDS_WIRED = "walk_level_match_needs_wired"
 #: loosened check here.
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 
-#: A stop names a banked candidate minted against a different crossover corner
-#: than the one this speaker carries. The walk plays the candidate's ALIGNMENT
-#: over the speaker's own corner, so measuring one against the other would
-#: bank a take under a fingerprint whose corner never played. The detail names
-#: the axis that differs.
-WALK_CANDIDATE_CORNER_MISMATCH = "walk_candidate_corner_mismatch"
-
 WALK_REFUSAL_REASONS = frozenset({
-    WALK_DISTANCE_UNSUPPORTED,
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
@@ -974,7 +854,6 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_LEVEL_MATCH_NO_EVIDENCE,
     WALK_LEVEL_MATCH_NEEDS_WIRED,
     WALK_CANDIDATE_NOT_MEASURABLE,
-    WALK_CANDIDATE_CORNER_MISMATCH,
 })
 
 
@@ -999,31 +878,14 @@ class LateralWalkRefused(CrossoverV2FlowError):
         self.detail = detail
 
 
-def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, Any]:
+def candidate_measure_axes(candidate: Any) -> dict[str, Any]:
     """The :class:`MeasureSpec` axes a banked candidate implies, or a refusal.
 
     A stop plays the per-driver MEASURE graph, which omits crossover,
     linearization and the applied delays by contract, so the only thing a
-    candidate can change about a stop is the ALIGNMENT it was minted with --
-    which branch rides flipped, and which carries the confirmation delay.
-    Returns exactly those keyword arguments, so the caller builds one spec and
-    this function names no fields the spec does not have.
-
-    The axes come back NORMALISED to what that spec accepts, so a candidate
-    the model allowed cannot reach it as a pair it refuses:
-    :data:`WALK_CANDIDATE_NOT_MEASURABLE` for a branch outside
-    :data:`~.crossover_v2.contracts.DRIVER_ROLES` (named by axis), and a
-    zero delay stated with no branch.
-
-    Raises :data:`WALK_CANDIDATE_NOT_MEASURABLE` for a candidate whose
-    linearization EQ this graph cannot play, and
-    :data:`WALK_CANDIDATE_CORNER_MISMATCH` for one minted against another
-    corner.
-
-    ``preset`` is the SPEAKER's own capture preset, which only the adopting
-    session holds; ``None`` asks the candidate-only half, the same split
-    :data:`WALK_POLARITY_NEEDS_WIRED` already uses for the session facts this
-    module cannot read.
+    candidate can change about a stop is the ALIGNMENT it was minted with.
+    The axes come back NORMALISED to what that spec accepts; anything the
+    graph cannot play refuses as :data:`WALK_CANDIDATE_NOT_MEASURABLE`.
     """
     from .crossover_alignment import POLARITY_INVERT
     from .crossover_declaration import preset_crossover_geometry
@@ -1038,37 +900,11 @@ def candidate_measure_axes(candidate: Any, *, preset: Any = None) -> dict[str, A
     minted = preset_crossover_geometry(getattr(candidate, "source_preset", None))
     if minted is None:
         raise LateralWalkRefused(
-            WALK_CANDIDATE_CORNER_MISMATCH,
+            WALK_CANDIDATE_NOT_MEASURABLE,
             f"banked candidate {fingerprint} declares no single readable "
-            "crossover to measure it against",
+            "crossover, so the branch its alignment flips cannot be named",
         )
-    roles, geometry = minted
-    if preset is not None:
-        carried = preset_crossover_geometry(preset)
-        if carried is None:
-            raise LateralWalkRefused(
-                WALK_CANDIDATE_CORNER_MISMATCH,
-                "this speaker declares no single readable crossover to "
-                f"compare banked candidate {fingerprint} against",
-            )
-        carried_roles, carried_geometry = carried
-        # Every axis judged through ``matches`` and never through a second
-        # tolerance: one axis at a time is swapped for the speaker's own value,
-        # so an axis that differs is exactly one the comparator itself rejects.
-        differing = tuple(
-            axis
-            for axis in ("fc_hz", "filter_type", "slope_db_per_octave")
-            if not geometry.matches(
-                replace(geometry, **{axis: getattr(carried_geometry, axis)})
-            )
-        )
-        if carried_roles != roles or differing:
-            named = ", ".join(differing) or "between_roles"
-            raise LateralWalkRefused(
-                WALK_CANDIDATE_CORNER_MISMATCH,
-                f"banked candidate {fingerprint} was minted against another "
-                f"crossover; {named} differs from this speaker's",
-            )
+    roles, _geometry = minted
     alignment = getattr(candidate, "alignment", None)
     inverted = getattr(alignment, "polarity", None) == POLARITY_INVERT
     # The candidate's convention is the region's UPPER driver relative to its

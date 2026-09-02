@@ -156,20 +156,18 @@ def _alsa_linking_crates() -> dict[str, str]:
 
 
 def test_alsa_linking_crates_share_one_version() -> None:
-    """All four libasound-linking crates must pin the same `alsa` version.
+    """Every libasound-linking crate must pin the same `alsa` version.
 
     They talk to the same libasound on the same Pi and share the same wrapper
     API, so a split pin means one of them is being type-checked against an API
-    the others do not have. It drifted silently once already (issue #2266):
-    jasper-outputd reached 0.12 while jasper-fanin and jasper-host-clock sat on
-    0.11 and the lab runner on 0.9 — three minor versions apart, with two false
-    manifest comments each asserting a parity that no longer held. A comment
-    cannot fail; this can.
+    the others do not have. It drifted silently once already (issue #2266),
+    behind manifest comments each asserting a parity that no longer held. A
+    comment cannot fail; this can.
     """
 
     crates = _alsa_linking_crates()
 
-    assert len(crates) == 4, f"expected 4 alsa-linking crates, found {crates}"
+    assert len(crates) == 3, f"expected 3 alsa-linking crates, found {crates}"
     assert len(set(crates.values())) == 1, (
         f"alsa version split across crates: {crates}"
     )

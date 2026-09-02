@@ -65,6 +65,7 @@ from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
+    MEASURE_PAIR_SINGLE_DRIVER,
     AlignmentEstimate,
     CrossoverCandidate,
     DriftEstimate,
@@ -104,6 +105,28 @@ def _roles() -> list[RoleBand]:
 
 def _preset() -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_two_way_preset())
+
+
+# --- the 1-way (subless passive main) shape ------------------------------------
+#
+# One amp channel, one declaration, no crossover region and no local sub: its
+# MEASURE is ONE routed solo, so no upper role and no corner exist anywhere.
+
+WAY1_BAND = FrequencyBand(45.0, 18000.0)
+
+
+def _roles_way1() -> list[RoleBand]:
+    return [RoleBand("full_range", 0, WAY1_BAND)]
+
+
+def _one_way_preset() -> ActiveSpeakerPreset:
+    """The preset the PRODUCTION resolver answers for a subless passive box."""
+    from jasper.active_speaker import commission_wiring
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return commission_wiring.resolve_capture_preset(
+        mono_output_topology(mode="full_range_passive")
+    )
 
 
 # --- fake analyses -------------------------------------------------------------
@@ -633,19 +656,27 @@ def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
     )
 
 
-def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
+def _conductor(
+    fakes: FakeSeams,
+    *,
+    roles_bands: list[RoleBand] | None = None,
+    fc_hz: float | None = FC_HZ,
+    driver_caps_dbfs: Mapping[str, float] | None = None,
+    driver_spacing_m: float = 0.15,
+    **kwargs,
+) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
     supplied_baseline = "measure_entry_baseline" in kwargs
     conductor = CrossoverV2Session(
         session_id=SESSION,
         source_preset=source_preset,
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
+        roles_bands=_roles() if roles_bands is None else roles_bands,
+        fc_hz=fc_hz,
+        driver_caps_dbfs=CAPS if driver_caps_dbfs is None else driver_caps_dbfs,
         session_volume_db=SESSION_VOLUME_DB,
         seams=seams,
-        driver_spacing_m=0.15,
+        driver_spacing_m=driver_spacing_m,
         **kwargs,
     )
     # A session that walks ``PHASE_ENTRY_BASELINE`` is stage ONE: it captures
@@ -658,6 +689,21 @@ def _conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     ):
         conductor._measure_entry_baseline = _fixture_entry_baseline(conductor)
     return conductor
+
+
+def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
+    """:func:`_conductor`'s 1-way twin. ``fc_hz`` is None rather than a stand-in
+    corner and ``driver_spacing_m`` 0.0 rather than omitted: a passive main has
+    no corner, and parallax is a woofer-to-tweeter geometry."""
+    return _conductor(
+        fakes,
+        roles_bands=_roles_way1(),
+        fc_hz=None,
+        driver_caps_dbfs={"full_range": 0.0},
+        driver_spacing_m=0.0,
+        source_preset=kwargs.pop("source_preset", _one_way_preset()),
+        **kwargs,
+    )
 
 
 def _attempt_floor() -> FloorStats:
@@ -1727,6 +1773,42 @@ def _eligible_measure_analysis(
         predicted_sum=_fixture_raw_predicted_sum(
             woofer_db=woofer_db, tweeter_db=tweeter_db, trim_db=trim_db,
         ),
+        glitch_detected=False,
+    )
+
+
+def _way1_measure_analysis(program) -> ProgramAnalysis:
+    """:func:`_eligible_measure_analysis`'s 1-way twin: every inter-driver field
+    absent with a name, as ``_analyze_measure`` returns for a one-role program.
+    ``predicted_sum`` is not one of them — one branch sums to itself.
+
+    The branch carries one dip a lift would target and one bump a cut would
+    remove, on a FLAT baseline rather than :func:`_fixture_branch_db`'s tilt:
+    the tilt exists for the ripple-optimal trim solve a lone branch never runs,
+    and broadband it would spend the whole lift budget on an HF-tail request
+    the envelope refuses, leaving a cut-only round looking like a decision
+    rather than an absence of material.
+    """
+    freqs = _LINEARIZABLE_FREQS_HZ
+    magnitude_db = (
+        -5.0 * np.exp(-0.5 * ((np.log2(freqs / 400.0) / 0.3) ** 2))
+        + 3.0 * np.exp(-0.5 * ((np.log2(freqs / 4000.0) / 0.25) ** 2))
+    )
+    solo = _linearizable_response("full_range", magnitude_db, n_repeats=2)
+    return ProgramAnalysis(
+        phase="measure",
+        program_id=program.program_id,
+        locations=(_loc("sweep_w"), _loc("sweep_w_rep")),
+        drift=DriftEstimate(
+            epsilon_ppm=5.0, max_residual_samples=0.1, glitch_detected=False,
+        ),
+        mic_tier="reference",
+        driver_responses=(solo,),
+        alignment=None,
+        candidate=None,
+        measure_pair_not_evaluated=MEASURE_PAIR_SINGLE_DRIVER,
+        linearity_ok=True,
+        predicted_sum=(solo.freqs_hz, solo.magnitude_db),
         glitch_detected=False,
     )
 

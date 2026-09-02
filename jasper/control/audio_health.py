@@ -494,13 +494,10 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     return _transport_state(
         # The plan's own resolved COUPLING, never its transport topology NAME.
         # `transport_coherence_report` takes a coupling TOKEN and re-derives the
-        # shape itself (from that token plus outputd's endpoint marker), so a
-        # shape name handed in here goes through `resolve_coupling`, whose
-        # deliberate fail-SAFE maps everything outside {loopback, shm_ring} to
-        # loopback. Two of the three shape names alias their coupling token
-        # (TRANSPORT_LOOPBACK, TRANSPORT_SHM_RING), so the substitution looked
-        # right until the third arrived: on an armed roleful box the shape is
-        # `shm_ring_active`, which silently resolved to loopback and told a
+        # shape itself (from that token plus outputd's bridge and endpoint
+        # marker), so a shape NAME handed in here would be read as a token that
+        # names no transport. On an armed roleful box the shape is
+        # `shm_ring_active`, which is not a coupling, and the substitution told a
         # demonstrably-playing speaker it was parked (#2376) while `/state`'s own
         # coupling surface reported the ring armed and live. This reads the fact
         # doctor reads — the persisted coupling — resolved once, by the same plan
@@ -714,13 +711,8 @@ def _transport_park_signal(
 ) -> dict[str, Any] | None:
     """Return the signal path for a LIVE transport park, or ``None``.
 
-    Only ``status="parked"`` reaches the household: that is the ring-only
-    state where no transport serves this box and it emits nothing. A
-    ``"pending"`` verdict — the box is in one of ADR-0178's four classes but
-    the loopback route still carries it — is an OPERATOR fact and stops at
-    jasper-doctor and ``/state``. Telling a household its playing speaker is
-    parked would be the confusion ADR-0100 exists to prevent, pointed the
-    wrong way.
+    Only ``status="parked"`` reaches the household: that is the state where
+    no transport serves this box and it emits nothing.
 
     Presentation only, exactly like :func:`_parked_signal`: the incident rows
     :func:`_state_issues` writes from the same snapshot keep one row per park
@@ -759,8 +751,7 @@ def _stopped_dsp_signal(
 
     :func:`_signal_path` structurally CANNOT see this.  It reads only fan-in
     and outputd, and both are built to keep looping when the stage between
-    them disappears: fan-in's default `loopback` coupling is timer-paced
-    ("structurally immune"), `shm_ring`
+    them disappears: fan-in's `shm_ring` coupling
     free-run-drops on an absent reader rather than blocking, outputd reads its
     content lane nonblocking and zero-fills ("absent content becomes silence.
     This keeps the final output loop alive"), and BOTH `last_progress_age_ms`

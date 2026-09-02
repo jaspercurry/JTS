@@ -658,7 +658,7 @@ def _rollup_status(checks: Mapping[str, Mapping[str, Any]]) -> str:
     return "pass"
 
 
-def _readiness_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]]) -> str:
+def _readiness_recommendation(checks: Mapping[str, Mapping[str, Any]]) -> str:
     failed = [name for name, check in checks.items() if check.get("status") == "fail"]
     if "mic_detected" in failed:
         return "use_software_aec3_until_xvf_6ch_available"
@@ -673,18 +673,11 @@ def _readiness_recommendation(status: str, checks: Mapping[str, Mapping[str, Any
     runtime_unknown = [
         name
         for name, check in checks.items()
-        if name != "measured_drift_delay"
-        and check.get("required", True)
-        and check.get("status") in {"unknown", "not_run"}
+        if check.get("required", True) and check.get("status") in {"unknown", "not_run"}
     ]
     if runtime_unknown:
         return "fix_runtime_observability_before_hardware_validation"
-    measured = checks.get("measured_drift_delay", {})
-    if measured.get("status") in {"not_run", "unknown"}:
-        return "run_hardware_validation"
-    if status == "pass":
-        return "chip_aec_validated"
-    return "review_audio_validation_warnings"
+    return "run_hardware_validation"
 
 
 def _dac_details(
@@ -1106,23 +1099,6 @@ def _bridge_stats_check(stats: Mapping[str, Any] | None, now: datetime) -> dict[
     return _check("pass", summary="AEC bridge counters are clean.", observed=observed)
 
 
-def _measured_drift_delay_check() -> dict[str, JsonValue]:
-    """Always not_run: this readiness snapshot never plays calibration
-    audio or opens capture streams, so no run has produced a drift or
-    delay measurement to report. The bridge stopped emitting a drift
-    log signature in PR #157 (2026-05-19), so there is nothing left to
-    count even if a run did happen to read the journal."""
-    return _check(
-        "not_run",
-        summary=(
-            "Drift and fixed delay were not measured. This readiness snapshot "
-            "does not play calibration audio or open capture streams."
-        ),
-        observed=None,
-        expected={"hardware_validation": "operator-controlled playback/capture run"},
-    )
-
-
 def _as_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return int(value)
@@ -1343,27 +1319,6 @@ def _bridge_counter_window_check(
     )
 
 
-def _hardware_drift_delay_check(
-    *,
-    bridge_window_check: Mapping[str, JsonValue],
-    duration_seconds: float,
-) -> dict[str, JsonValue]:
-    observed = {
-        "duration_seconds": round(duration_seconds, 3),
-        "bridge_window_status": bridge_window_check.get("status"),
-        "bridge_window_observed": bridge_window_check.get("observed"),
-    }
-    return _check(
-        "not_run",
-        summary=(
-            "Fixed delay and long-window clock drift were not directly measured. "
-            "This runner only records passive bridge/reference stability evidence."
-        ),
-        observed=observed,
-        expected={"operator_probe": "explicit playback/capture drift-delay run"},
-    )
-
-
 def _expected_chip_readback(system_env: Mapping[str, str]) -> dict[str, list[int]]:
     raw_delay = (
         system_env.get("JASPER_AEC_CHIP_SYS_DELAY")
@@ -1548,7 +1503,7 @@ def _chip_convergence_check(
     )
 
 
-def _hardware_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]]) -> str:
+def _hardware_recommendation(checks: Mapping[str, Mapping[str, Any]]) -> str:
     readiness_names = {
         "runtime_identity",
         "runtime_profile",
@@ -1559,17 +1514,12 @@ def _hardware_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]
         "dac_reference",
         "wake_legs",
         "bridge_counters",
-        "measured_drift_delay",
     }
     readiness_checks = {
         name: check for name, check in checks.items() if name in readiness_names
     }
-    readiness = _readiness_recommendation(status, readiness_checks)
-    if readiness not in {
-        "run_hardware_validation",
-        "chip_aec_validated",
-        "review_audio_validation_warnings",
-    }:
+    readiness = _readiness_recommendation(readiness_checks)
+    if readiness != "run_hardware_validation":
         return readiness
     if checks.get("outputd_reference_health", {}).get("status") == "fail":
         return "fix_outputd_reference_health_before_chip_validation"
@@ -1581,18 +1531,7 @@ def _hardware_recommendation(status: str, checks: Mapping[str, Mapping[str, Any]
         return "review_outputd_reference_health_before_chip_validation"
     if checks.get("bridge_counter_window", {}).get("status") in {"unknown", "not_run", "warn"}:
         return "review_aec_bridge_reference_stability"
-    if checks.get("measured_drift_delay", {}).get("status") in {"not_run", "unknown"}:
-        return "run_drift_delay_validation"
-    if checks.get("chip_convergence", {}).get("status") in {
-        "unknown",
-        "not_run",
-        "not_observed",
-        "warn",
-    }:
-        return "review_chip_convergence_or_run_long_window"
-    if status == "pass":
-        return "chip_aec_measured_validated"
-    return "review_audio_validation_warnings"
+    return "run_drift_delay_validation"
 
 
 def _outputd_stability_recommendation(
@@ -1701,7 +1640,6 @@ def build_chip_aec_readiness_artifact(
         "dac_reference": _dac_reference_check(outputd_status),
         "wake_legs": _wake_legs_check(runtime, voice_wake_legs),
         "bridge_counters": _bridge_stats_check(bridge_stats, now),
-        "measured_drift_delay": _measured_drift_delay_check(),
     }
     status = _rollup_status(checks)
     return make_artifact(
@@ -1711,7 +1649,7 @@ def build_chip_aec_readiness_artifact(
         profile=profile,
         status=status,
         checks=checks,
-        recommendation=_readiness_recommendation(status, checks),
+        recommendation=_readiness_recommendation(checks),
         notes=(
             f"{READINESS_SNAPSHOT_KIND}: runtime readiness only",
             "No playback stimulus was generated.",
@@ -1893,10 +1831,6 @@ def build_chip_aec_hardware_validation_artifact(
     )
     checks["outputd_reference_health"] = outputd_health
     checks["bridge_counter_window"] = bridge_window
-    checks["measured_drift_delay"] = _hardware_drift_delay_check(
-        bridge_window_check=bridge_window,
-        duration_seconds=duration_seconds,
-    )
     skip_chip = chip_probe_skipped or not (
         _profile_runtime_ready(checks)
         and outputd_health.get("status") == "pass"
@@ -1955,7 +1889,7 @@ def build_chip_aec_hardware_validation_artifact(
         profile=profile,
         status=status,
         checks=checks,
-        recommendation=_hardware_recommendation(status, checks),
+        recommendation=_hardware_recommendation(checks),
         notes=notes,
         errors=tuple(errors),
     )

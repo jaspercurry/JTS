@@ -261,13 +261,11 @@ CROSSOVER_UNIT = "jasper-camilla-crossover.service"
 # hold 0..4 or fan-in holds 7); the lock has no such conflation because it is
 # per-ring.
 #
-# ORDERING CONSEQUENCE, stated because it is live between P9-C's PRs: a box
-# whose active lane is still snd-aloop (the `loopback` coupling, or a box whose
-# ring platform never armed) has no `active-content.ring.writer.lock` at all, so
-# this probe answers `unknown` and the arm fails closed to solo-active with the
-# lock path in the log line. That is the ruled direction — arming without proof
-# is the jts3 EBUSY reboot loop — and it resolves when P9-C's lane-5 deletion
-# makes the ACTIVE lane a ring on every box.
+# ORDERING CONSEQUENCE: a box whose ring platform never armed has no
+# `active-content.ring.writer.lock` at all, so this probe answers `unknown`
+# and the arm fails closed to solo-active with the lock path in the log line.
+# That is the ruled direction — arming without proof is the jts3 EBUSY reboot
+# loop.
 ACTIVE_CONTENT_WRITER_LOCK_PATH = ring_writer_lock_path(RING_ACTIVE_CONTENT_FILE)
 ACTIVE_CONTENT_RELEASE_TIMEOUT_SEC = 0.8
 ACTIVE_CONTENT_RELEASE_POLL_SEC = 0.05
@@ -1955,9 +1953,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not coupling_support.supported:
             # The matrix's token AND its mechanism string; only the ACTION is
-            # this side's, because the matrix's own detail ends in "keeping the
-            # coupling on loopback" — the coupling reconciler's action. Here the
-            # coupling is untouched and the BOND is refused.
+            # this side's — here the coupling is untouched and the BOND is
+            # refused.
             endpoint_block_reason = coupling_support.reason
             log_event(
                 logger,

@@ -71,6 +71,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
 
 from .topology_prescription import candidate_topology
@@ -664,32 +665,6 @@ def _delta_prior_from_state(
         np.asarray(freqs, dtype=float),
         np.asarray(delta, dtype=float),
     )
-
-
-def _finite(value: Any) -> float | None:
-    """Mirrors ``crossover_envelope_v2._finite``'s guard (reject bool,
-    reject non-numeric, reject NaN/inf) — N1 (2026-07-24 review follow-up):
-    this module and that one stay symmetric about what counts as a
-    displayable number, rather than one layer trusting a raw ``float(v)``
-    the other layer would refuse. The twin mirrors the ``OverflowError``
-    guard below since #1947 routed the session clock through it, so the
-    symmetry is now complete in both directions; #2470 still owns folding
-    the two bodies into one.
-
-    Never raises. An unbounded JSON integer (``10 ** 400``) makes
-    ``float()`` raise ``OverflowError`` rather than returning ``inf`` —
-    this runs on every :func:`crossover_v2_status_block` read (the
-    wizard's poll path), so an escaping conversion would be a 500 on a
-    plain page load, the same hazard :func:`_household_findings_status`
-    already guards against, and the same fallback (#2245).
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if number == number and abs(number) != float("inf") else None
 
 
 def _candidate_headroom_cost_db(linearization: Any) -> float:

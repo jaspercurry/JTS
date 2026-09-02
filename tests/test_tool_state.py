@@ -15,15 +15,13 @@ import stat
 
 from jasper.tool_state import (
     ToolState,
-    read_disabled_packs,
-    read_setup_enabled_packs,
-    read_disabled_tools,
+    read_tool_state,
     write_tool_state,
 )
 
 
 def test_missing_file_is_none_disabled(tmp_path):
-    assert read_disabled_tools(tmp_path / "absent.env") == frozenset()
+    assert read_tool_state(tmp_path / "absent.env").disabled_tools == frozenset()
 
 
 def test_malformed_files_are_none_disabled(tmp_path, caplog):
@@ -31,7 +29,7 @@ def test_malformed_files_are_none_disabled(tmp_path, caplog):
     for body in ("garbage with no equals\n", "SOME_OTHER_KEY=a,b\n", "######\n", ""):
         p = tmp_path / "tool_state.env"
         p.write_text(body)
-        assert read_disabled_tools(p) == frozenset()
+        assert read_tool_state(p).disabled_tools == frozenset()
 
 
 def test_unreadable_path_is_none_disabled_and_warns(tmp_path, caplog):
@@ -39,7 +37,7 @@ def test_unreadable_path_is_none_disabled_and_warns(tmp_path, caplog):
     d = tmp_path / "as_dir.env"
     d.mkdir()
     with caplog.at_level("WARNING"):
-        assert read_disabled_tools(d) == frozenset()
+        assert read_tool_state(d).disabled_tools == frozenset()
     assert any("tool_state" in r.message for r in caplog.records)
 
 
@@ -50,7 +48,7 @@ def test_non_utf8_file_is_none_disabled_and_warns(tmp_path, caplog):
     p = tmp_path / "tool_state.env"
     p.write_bytes(b"JASPER_DISABLED_TOOLS=\xff\xfe\x80bad\n")
     with caplog.at_level("WARNING"):
-        assert read_disabled_tools(p) == frozenset()
+        assert read_tool_state(p).disabled_tools == frozenset()
     assert any("tool_state" in r.message for r in caplog.records)
 
 
@@ -61,9 +59,10 @@ def test_parse_trims_whitespace_and_drops_empties(tmp_path):
         "JASPER_ENABLED_SETUP_TOOL_PACKS=home-assistant, gmail\n"
         "JASPER_DISABLED_TOOLS=a,b , c\n"
     )
-    assert read_disabled_tools(p) == {"a", "b", "c"}
-    assert read_disabled_packs(p) == {"spotify", "google"}
-    assert read_setup_enabled_packs(p) == {"home-assistant", "gmail"}
+    state = read_tool_state(p)
+    assert state.disabled_tools == {"a", "b", "c"}
+    assert state.disabled_packs == {"spotify", "google"}
+    assert state.setup_enabled_packs == {"home-assistant", "gmail"}
 
 
 def test_parse_handles_quotes_comments_blanks(tmp_path):
@@ -73,7 +72,7 @@ def test_parse_handles_quotes_comments_blanks(tmp_path):
         "\n"
         'JASPER_DISABLED_TOOLS="spotify_play, get_weather"\n'
     )
-    assert read_disabled_tools(p) == {"spotify_play", "get_weather"}
+    assert read_tool_state(p).disabled_tools == {"spotify_play", "get_weather"}
 
 
 def test_round_trip_sorted_deterministic_and_mode_0644(tmp_path):
@@ -86,9 +85,10 @@ def test_round_trip_sorted_deterministic_and_mode_0644(tmp_path):
             setup_enabled_packs=frozenset({"home-assistant"}),
         ),
     )
-    assert read_disabled_tools(p) == {"a", "b"}
-    assert read_disabled_packs(p) == {"spotify"}
-    assert read_setup_enabled_packs(p) == {"home-assistant"}
+    state = read_tool_state(p)
+    assert state.disabled_tools == {"a", "b"}
+    assert state.disabled_packs == {"spotify"}
+    assert state.setup_enabled_packs == {"home-assistant"}
     # Deterministic, sorted, comma-joined content.
     assert p.read_text() == (
         "JASPER_DISABLED_TOOL_PACKS=spotify\n"

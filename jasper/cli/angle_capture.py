@@ -4,62 +4,31 @@
 
 """State one angle walk, see exactly what it will run, and leave it for a session.
 
-The operator's door onto
-:mod:`jasper.active_speaker.angle_capture` (#2732) -- the seam that resolves
-``{per-driver | summed} x {angles} x {arm | human-guided}`` onto the shipped
-program, pose and gate machinery, and that shipped with no way for anybody to
-state a request.
+The operator's door onto :mod:`jasper.active_speaker.angle_capture` (#2732).
+``plan`` prints the walk a request resolves to and writes nothing; ``stage``
+runs the SAME resolution and banks the request where the next measurement
+session takes it, once
+(:mod:`jasper.active_speaker.angle_capture_spool`). Neither runs a capture,
+opens a session, plays anything, or moves a microphone.
 
-Two verbs, and deliberately nothing between them:
+``--program`` names a row of :mod:`jasper.active_speaker.measurement_programs`,
+which owns the geometry; ``--angles`` is the escape hatch for a bearing no
+program names.
 
-* ``plan`` reads a request and prints the walk it resolves to -- every stop's
-  index, angle, pose, program, advance policy and banking shape. It writes
-  nothing and touches no state, so it is the safe thing to run first and the
-  thing to paste into a session log.
-* ``stage`` runs the SAME resolution and then banks the request where the next
-  measurement session will take it
-  (:mod:`jasper.active_speaker.angle_capture_spool`).
+**Angles are parsed, never coerced.** A field is handed to
+:class:`~jasper.active_speaker.angle_capture.AngleStop` as an ``int`` only when
+written as a whole number; anything else passes through unchanged so the seam
+refuses it. ``int("0.4")`` raises but ``int(0.4)`` is ``0``, and an angle
+truncated to zero is an ON-AXIS capture nobody asked for. There is no second
+validator here.
 
-``plan`` is the dry run of ``stage`` rather than a different question -- the
-same constructors, the same refusals, the same resolved walk -- which is the
-shape ``jasper-crossover-prescriber``'s ``propose``/``stage`` pair already
-establishes for this operator, and for the same reason: a staging verb with a
-laxer check would be the second, weaker reader these designs exist to avoid.
+**Exit codes are part of the contract**: ``0`` accepted, ``2`` the request was
+refused (fix the request), ``3`` an accepted request could not be banked (fix
+the speaker's filesystem). A refusal prints its machine-readable reason on
+stdout as JSON when asked, and the human sentence on stderr either way.
 
-**Two doors onto one seam, and they are not equals.** ``--program baseline
---size express`` names a row of
-:mod:`jasper.active_speaker.measurement_programs`, which owns the geometry; that
-is the door a driver uses, and the receipt it prints is the price, the handoff
-URL and how to tell the walk landed. ``--angles`` is the operator escape hatch
-for a bearing no program names.
-
-**Angles are parsed, never coerced.** ``--angles 0,7,-7,22,-22`` is split and
-each field handed to :class:`~jasper.active_speaker.angle_capture.AngleStop`
-as an ``int`` **only when it is written as a whole number**; anything else
-(``7.5``, ``0.4``, ``+7 deg``) is passed through unchanged so the seam's own
-``_validated_angle`` refuses it in its own words. That matters more than it
-looks: ``int("0.4")`` raises, but ``int(0.4)`` is ``0``, and an angle silently
-truncated to zero is an ON-AXIS capture the operator never asked for. There is
-no second validator here -- bounds, whole-degree-ness, the regime vocabulary and
-the mover vocabulary are all the seam's.
-
-**Exit codes are part of the contract**, because the caller of this tool is
-often a script: ``0`` accepted, ``2`` the request was refused (a bad angle, an
-unknown regime or mover, or a measurement session already holding the speaker),
-``3`` an accepted request could not be banked. A refusal is not a crash -- it is
-the door working -- so it prints the machine-readable reason on stdout as JSON
-when asked, and the human sentence on stderr either way. ``3`` is its own code
-rather than folded into ``2`` because the two send an operator to different
-places: ``2`` means fix the request, ``3`` means fix the speaker's filesystem.
-
-**What this tool does NOT do, stated plainly rather than implied.** It does not
-run a capture, open a session, play anything, or move a microphone. ``stage``
-places a request; the next measurement session takes it, once. ``plan`` is the
-dry run -- the only way to see what a stated walk resolves to, in the units the
-session will use -- and ``stage`` gives the request a durable, single-use home
-instead of a shell variable. What a taken walk then does, and what it
-deliberately does not publish, is ``docs/testing-tooling.md``
-("Angle-walk door").
+What a taken walk then does, and what it deliberately does not publish, is
+``docs/testing-tooling.md`` ("Angle-walk door").
 """
 
 from __future__ import annotations
@@ -68,7 +37,7 @@ import argparse
 import json
 import logging
 import sys
-from typing import Any, NamedTuple, Sequence
+from typing import Any, Sequence
 
 from ._logging import CLI_LOG_FORMAT
 
@@ -83,7 +52,6 @@ from jasper.active_speaker.angle_capture import (
     AngleStop,
     announced_indexes,
     candidate_measure_axes,
-    position_angle_deg,
     request_for_program,
     resolve_request,
     walk_price,
@@ -104,16 +72,15 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_NORMAL,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
-from jasper.active_speaker.measurement_level import (
+from jasper.active_speaker.measurement_programs import MeasurementProgram
+from jasper.active_speaker.seat_level_reference import (
     LevelUnresolved,
     ResolvedLevel,
-    resolve_program_level,
+    resolve_anchor_level,
 )
-from jasper.active_speaker.measurement_programs import MeasurementProgram
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH as DECLARED_GEOMETRY_PATH,
     DeclaredGeometry,
-    GeometryFieldError,
 )
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
@@ -196,40 +163,16 @@ _REGIME_STOPS: dict[str, tuple[str, ...]] = {
 def _declared_on_the_box() -> DeclaredGeometry | None:
     """The box's standing declaration (``jasper-declare-geometry set``), if any.
 
-    The flags below are the one-off override; this is the answer a household
-    already gave once. An unreadable file reads as absent rather than refusing
-    the walk -- ``jasper-declare-geometry show`` is where a damaged
-    declaration is diagnosed.
+    Shown so the operator sees what the round will bank: the evidence packet
+    reads this same file when the session banks, so nothing is carried from
+    here. An unreadable file reads as absent rather than refusing the walk --
+    ``jasper-declare-geometry show`` is where a damaged declaration is
+    diagnosed.
     """
     try:
         return DeclaredGeometry.load(DECLARED_GEOMETRY_PATH)
     except (OSError, ValueError):
         return None
-
-
-def _declared_geometry(args: argparse.Namespace) -> DeclaredGeometry | None:
-    """The household's tape measure -- all three distances, or none of them.
-
-    All-or-nothing because the entanglement floor the toolbox derives needs
-    the whole triangle: two of the three would bank a geometry no reader can
-    use, which is worse than banking none. The ceiling is genuinely optional
-    (a floor bounce is bounded without it) but is not a geometry on its own.
-    """
-    stated = (args.speaker_height_m, args.mic_height_m, args.distance_m)
-    parser: argparse.ArgumentParser = args.parser
-    if all(value is None for value in stated):
-        if args.ceiling_height_m is not None:
-            parser.error(
-                "--ceiling-height-m goes with --speaker-height-m, "
-                "--mic-height-m and --distance-m"
-            )
-        return _declared_on_the_box()
-    if any(value is None for value in stated):
-        parser.error(
-            "--speaker-height-m, --mic-height-m and --distance-m are "
-            "stated together or not at all"
-        )
-    return DeclaredGeometry(*stated, args.ceiling_height_m)
 
 
 def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
@@ -241,7 +184,6 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
         "delayed_role": args.delayed_role,
         "delay_us": args.delay_us,
         "level_matched": args.level_matched,
-        "declared_geometry": _declared_geometry(args),
     }
 
 
@@ -253,9 +195,7 @@ def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
     candidate may VARY is the seam's
     (:func:`~jasper.active_speaker.angle_capture.candidate_measure_axes`),
     asked here so a walk no session could play is refused at staging instead of
-    at the open. The speaker's own corner is not compared here -- only the
-    adopting session holds that preset, exactly as the wired-source refusals
-    are the session's.
+    at the open.
     """
     fingerprints = tuple(
         field.strip()
@@ -288,19 +228,7 @@ def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
     return measurement_programs.program(args.program, args.size)
 
 
-class _Stated(NamedTuple):
-    """The stated walk, and the program row it came from (``None`` free-form).
-
-    The row is carried alongside rather than read back off ``request.program``:
-    that field is an identity STRING, and ``spot`` is not a registry row, so
-    there is nothing to look the level statement back up in.
-    """
-
-    request: AngleCaptureRequest
-    program: MeasurementProgram | None
-
-
-def _build_request(args: argparse.Namespace) -> _Stated:
+def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     """The request the operator stated, through the seam's own constructors.
 
     Two doors, one seam. ``--program`` hands a
@@ -314,12 +242,10 @@ def _build_request(args: argparse.Namespace) -> _Stated:
     ``AngleCaptureRequest``, which every route goes through.
     """
     if args.program:
-        program = _chosen_program(args)
-        return _Stated(
-            request_for_program(
-                program, candidates=_resolved_candidates(args), **_graph_flags(args)
-            ),
-            program,
+        return request_for_program(
+            _chosen_program(args),
+            candidates=_resolved_candidates(args),
+            **_graph_flags(args),
         )
     if args.candidates:
         args.parser.error(
@@ -327,22 +253,17 @@ def _build_request(args: argparse.Namespace) -> _Stated:
             "no candidate cycle"
         )
     regimes = _REGIME_STOPS[args.regime or REGIME_PER_DRIVER]
-    return _Stated(
-        AngleCaptureRequest(
-            stops=tuple(
-                AngleStop(angle, regime)
-                for angle in _parse_angles(args.angles)
-                for regime in regimes
-            ),
-            **_graph_flags(args),
+    return AngleCaptureRequest(
+        stops=tuple(
+            AngleStop(angle, regime)
+            for angle in _parse_angles(args.angles)
+            for regime in regimes
         ),
-        None,
+        **_graph_flags(args),
     )
 
 
-def _resolved_level(
-    program: MeasurementProgram | None,
-) -> ResolvedLevel | LevelUnresolved:
+def _resolved_level() -> ResolvedLevel | LevelUnresolved:
     """This walk's absolute level, or the refusal that stops it being knowable.
 
     Resolved ONCE per verb and carried as the object it is: ``plan`` prints the
@@ -350,7 +271,7 @@ def _resolved_level(
     verb rebuilds one from the receipt it just flattened.
     """
     try:
-        return resolve_program_level(program)
+        return resolve_anchor_level()
     except LevelUnresolved as exc:
         return exc
 
@@ -367,7 +288,6 @@ def _level_block(level: ResolvedLevel | LevelUnresolved) -> dict[str, Any]:
         "resolved": True,
         "target_db_spl": round(level.target_db_spl, 2),
         "anchor_db_spl": round(level.anchor_db_spl, 2),
-        "level_re_anchor_db": level.level_re_anchor_db,
         "reference_volume_db": round(level.reference_volume_db, 2),
         "mic_serial": level.mic_serial,
     }
@@ -379,19 +299,12 @@ def _walk_payload(
     """The resolved walk, as one JSON-able document.
 
     Everything here is READ off the seam -- ``resolve_request`` for the stops,
-    ``position_angle_deg`` for the round-tripped bearing, ``announced_indexes``
-    for the prelude -- so this function states nothing the session would not.
+    ``announced_indexes`` for the prelude -- so this function states nothing
+    the session would not.
 
     ``program``, ``price``, ``level`` and ``handoff_url`` are the RECEIPT: what
     was asked for, what it drives at, what it costs the household, and where
     they run it. Everything else is the resolved walk.
-
-    ``banks_as`` is the receipt shape each stop produces: the fields of
-    ``spatial.cloud_position_record`` this walk DETERMINES, and no others. The
-    rest of that record (``captured_at``, ``wav_sha256``, the gate disclosure,
-    the ripple) is measured, so a planner that printed placeholders for them
-    would be inventing evidence. ``position_id`` and ``take_id`` are likewise
-    absent: they are minted at consume time against the real attempt number.
     """
     stops = resolve_request(request)
     return {
@@ -407,7 +320,6 @@ def _walk_payload(
         "delayed_role": request.delayed_role,
         "delay_us": request.delay_us,
         "level_matched": request.level_matched,
-        "declared_geometry": request.declared_geometry_record(),
         "stops": [
             {
                 "index": stop.index,
@@ -416,15 +328,6 @@ def _walk_payload(
                 "regime": stop.regime,
                 "program_phase": stop.program_phase,
                 "prompt": stop.prompt.text,
-                "banks_as": {
-                    # The pose, in the cm-primary units every shipped consumer
-                    # reads, plus the bearing read BACK off it -- the round trip
-                    # the seam asserts, printed so an operator can see it held.
-                    "offset_cm": round(float(stop.prompt.offset_cm), 3),
-                    "role": stop.prompt.role,
-                    "wide": bool(stop.prompt.wide),
-                    "position_angle_deg": position_angle_deg(stop.prompt),
-                },
                 "screen": dict(stop.screen),
             }
             for stop in stops
@@ -456,19 +359,10 @@ def _print_walk(payload: dict[str, Any]) -> None:
         )
     )
     for stop in payload["stops"]:
-        banks = stop["banks_as"]
         gate = stop["screen"].get("position_deg")
-        # The pose is printed as its cm magnitude AND as the bearing read back
-        # off it, because those are two different facts and only the second
-        # carries the side: ``offset_cm`` is a distance, so +7 and -7 are the
-        # same 12.28 cm, and a line that showed only the distance would look
-        # like a duplicated row for a walk that is nothing of the kind.
         print(
             f"  {stop['index']:>2}. {stop['angle_deg']:>+4d} deg  "
             f"{stop['regime']:<10}  plays {stop['program_phase']:<12} "
-            f"pose {banks['offset_cm']:>6.2f} cm "
-            f"({banks['position_angle_deg']:>+3d} deg back) "
-            f"{banks['role']}{' wide' if banks['wide'] else '    '}  "
             f"advance {stop['screen']['auto_advance']}"
             + (f"  gate {gate} deg" if gate is not None else "")
             # Only when raised: ``offset_cm`` is horizontal, so a vertical pose
@@ -496,13 +390,15 @@ def _print_walk(payload: dict[str, Any]) -> None:
             f"  delay: {payload['delay_us']:g} us on "
             f"{payload['delayed_role']!r}"
         )
-    geometry = payload["declared_geometry"]
-    if geometry:
-        # Only when stated: a walk nobody was asked about must not print a
-        # room the household never measured.
+    geometry = _declared_on_the_box()
+    if geometry is not None:
+        # What the packet will bank, read from the same file it reads. Printed
+        # only when the household declared one, which most have not.
         print(
             "  declared geometry (m): "
-            + ", ".join(f"{key} {value:g}" for key, value in geometry.items())
+            + ", ".join(
+                f"{key} {value:g}" for key, value in geometry.to_dict().items()
+            )
         )
     announced = payload["announced_indexes"]
     print(
@@ -528,8 +424,8 @@ def _print_walk(payload: dict[str, Any]) -> None:
         "  level: "
         + (
             f"{level['target_db_spl']:.1f} dB SPL at the mic (anchor "
-            f"{level['anchor_db_spl']:.1f} {level['level_re_anchor_db']:+.1f} re "
-            f"anchor; reference volume {level['reference_volume_db']:.1f} dB; "
+            f"{level['anchor_db_spl']:.1f}; reference volume "
+            f"{level['reference_volume_db']:.1f} dB; "
             f"mic {level['mic_serial']})"
             if level["resolved"]
             else f"unresolved -- {level['reason']}: {level['detail']}"
@@ -572,16 +468,16 @@ def _refuse(exc: Exception, *, as_json: bool, reason: str | None = None) -> int:
 
 def _cmd_plan(args: argparse.Namespace) -> int:
     try:
-        stated = _build_request(args)
+        request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
         return _refuse(exc, as_json=args.json, reason=exc.code)
-    except (CrossoverV2FlowError, GeometryFieldError) as exc:
+    except CrossoverV2FlowError as exc:
         return _refuse(exc, as_json=args.json)
     # An unresolved level is PRINTED here and refused by ``stage``: the dry run
     # exists to show an operator what is missing before they commit to it.
-    payload = _walk_payload(stated.request, _resolved_level(stated.program))
+    payload = _walk_payload(request, _resolved_level())
     if args.json:
         print(json.dumps({"ok": True, **payload}, indent=2))
     else:
@@ -591,23 +487,23 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 def _cmd_stage(args: argparse.Namespace) -> int:
     try:
-        stated = _build_request(args)
+        request = _build_request(args)
     except measurement_programs.UnknownProgramError as exc:
         return _refuse(exc, as_json=args.json, reason=UNKNOWN_PROGRAM)
     except CandidateBankRefusal as exc:
         return _refuse(exc, as_json=args.json, reason=exc.code)
-    except (CrossoverV2FlowError, GeometryFieldError) as exc:
+    except CrossoverV2FlowError as exc:
         return _refuse(exc, as_json=args.json)
     # The methodology levels the seat before anything measures, so a level this
     # door cannot resolve names the step the operator skipped rather than
     # staging a walk whose captures nobody could read absolutely. It is not
     # written to the spool -- nothing downstream reads a level yet.
-    level = _resolved_level(stated.program)
+    level = _resolved_level()
     if isinstance(level, LevelUnresolved):
         return _refuse(level, as_json=args.json)
-    payload = _walk_payload(stated.request, level)
+    payload = _walk_payload(request, level)
     try:
-        path = stage_angle_request(stated.request)
+        path = stage_angle_request(request)
     except AngleRequestRefused as exc:
         return _refuse(exc, as_json=args.json)
     except OSError as exc:
@@ -780,33 +676,6 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "form. A flag and not a number: the trims are resolved on the box "
             "from its banked evidence when the session adopts the walk, and a "
             "box with none refuses the walk rather than measuring unmatched"
-        ),
-    )
-    # The driving LLM asks the household these once, in metres, and passes
-    # them here; nothing in the session computes from them -- they ride onto
-    # the banked evidence for the offline toolbox step that does.
-    for flag, what in (
-        ("--speaker-height-m", "the driver acoustic centre off the floor"),
-        ("--mic-height-m", "the microphone capsule off the floor"),
-        ("--distance-m", "speaker to microphone, along the design axis"),
-    ):
-        parser.add_argument(
-            flag,
-            type=float,
-            help=(
-                f"declared room geometry in METRES: {what}. Ask the household "
-                "once with a tape measure and state all three together; the "
-                "banked session carries them for the offline reader. Omit all "
-                "three to use whatever `jasper-declare-geometry set` stored "
-                "on this box"
-            ),
-        )
-    parser.add_argument(
-        "--ceiling-height-m",
-        type=float,
-        help=(
-            "declared room geometry in METRES: floor to ceiling. Optional, "
-            "and only alongside the three distances above"
         ),
     )
     parser.add_argument(

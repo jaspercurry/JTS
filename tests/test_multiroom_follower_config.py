@@ -178,10 +178,9 @@ def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(fc, "_write_stash", write_stash_while_locked)
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
+    asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
     applied = asyncio.run(
-        fc.apply_active_follower_config(
-            _cfg("left"), camilla_factory=lambda: cam, validate=_valid_config,
-        )
+        fc.apply_prebuilt_follower_config(camilla_factory=lambda: cam)
     )
 
     # The driver-domain config was emitted, re-proven, and loaded into CamillaDSP.
@@ -265,12 +264,9 @@ def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> No
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     asyncio.run(
-        fc.apply_active_follower_config(
-            _cfg("right", trim_db=-2.5),
-            camilla_factory=lambda: cam,
-            validate=_valid_config,
-        )
+        fc.precheck_active_follower(_cfg("right", trim_db=-2.5), validate=_valid_config)
     )
+    asyncio.run(fc.apply_prebuilt_follower_config(camilla_factory=lambda: cam))
 
     yaml = Path(fc.FOLLOWER_CONFIG_PATH).read_text(encoding="utf-8")
     assert "# pair_trim_db=2.500" in yaml
@@ -289,11 +285,7 @@ def test_apply_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     with pytest.raises(fc.ActiveFollowerError) as exc:
-        asyncio.run(
-            fc.apply_active_follower_config(
-                _cfg("left"), camilla_factory=lambda: cam, validate=_valid_config,
-            )
-        )
+        asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
     assert exc.value.reason == "baseline_not_ready"
     assert cam.loaded == []  # no full-range (or any) emit reached CamillaDSP
 
@@ -323,11 +315,7 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     with pytest.raises(fc.ActiveFollowerError) as exc:
-        asyncio.run(
-            fc.apply_active_follower_config(
-                _cfg("right"), camilla_factory=lambda: cam, validate=_valid_config,
-            )
-        )
+        asyncio.run(fc.precheck_active_follower(_cfg("right"), validate=_valid_config))
     assert exc.value.reason == "graph_unprovable"
     assert cam.loaded == []
 
@@ -361,11 +349,7 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     with pytest.raises(fc.ActiveFollowerError) as exc:
-        asyncio.run(
-            fc.apply_active_follower_config(
-                _cfg("left"), camilla_factory=lambda: cam, validate=_valid_config,
-            )
-        )
+        asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
     assert exc.value.reason == "driver_domain_emit_refused"
     assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
     assert cam.loaded == []  # no unprotected-tweeter emit reached CamillaDSP
@@ -414,11 +398,7 @@ def test_typod_ring_wire_refusal_surfaces_as_follower_error(
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     with pytest.raises(fc.ActiveFollowerError) as exc:
-        asyncio.run(
-            fc.apply_active_follower_config(
-                _cfg("left"), camilla_factory=lambda: cam, validate=_valid_config,
-            )
-        )
+        asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
     assert exc.value.reason == "driver_domain_emit_refused"
     assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
     # NON-DEGENERATE: this is the WIRE refusal, not some other emit-gate refusal

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 from dbus_next import Variant
@@ -283,6 +284,210 @@ def test_no_code_agent_trusts_only_bonded_devices(authorization, paired):
     asyncio.run(_agent_call(agent, method, "/dev", *extra_args))
 
     assert calls == ([("Trusted", True)] if paired else [])
+
+
+class _FakeManagedProps:
+    def __init__(self, writes: list[tuple[str, bool]], path: str) -> None:
+        self._writes = writes
+        self._path = path
+
+    async def call_set(self, _iface: str, key: str, value) -> None:
+        self._writes.append((self._path, bool(value.value)))
+
+
+class _FakeManagedBus:
+    """Enough ObjectManager to exercise untrust_unbonded's own decision."""
+
+    def __init__(self, managed: dict, writes: list[tuple[str, bool]]) -> None:
+        self._managed = managed
+        self.writes = writes
+
+    async def introspect(self, _service: str, _path: str):
+        return object()
+
+    def get_proxy_object(self, _service: str, path: str, _intro):
+        managed = self._managed
+        writes = self.writes
+
+        class _Obj:
+            def get_interface(self, name: str):
+                if name == "org.freedesktop.DBus.ObjectManager":
+                    class _OM:
+                        async def call_get_managed_objects(self):
+                            return managed
+                    return _OM()
+                return _FakeManagedProps(writes, path)
+
+        return _Obj()
+
+    def disconnect(self) -> None:
+        return None
+
+
+def _device(paired: bool, trusted: bool, address: str) -> dict:
+    return {
+        "org.bluez.Device1": {
+            "Paired": Variant("b", paired),
+            "Trusted": Variant("b", trusted),
+            "Address": Variant("s", address),
+        },
+    }
+
+
+def test_untrust_unbonded_drops_only_trusted_and_unpaired(monkeypatch):
+    """The sweep's own decision, not a stand-in for it.
+
+    Faking the sweep function pins the caller but leaves this predicate free:
+    inverting the Paired test would untrust every healthy remote on the box
+    and no bluetooth test would notice.
+    """
+    writes: list[tuple[str, bool]] = []
+    managed = {
+        "/org/bluez/hci0/dev_AA": _device(False, True, "AA"),   # strand -> drop
+        "/org/bluez/hci0/dev_BB": _device(True, True, "BB"),    # healthy -> keep
+        "/org/bluez/hci0/dev_CC": _device(False, False, "CC"),  # already off
+        "/org/bluez/hci1/dev_DD": _device(False, True, "DD"),   # other adapter
+    }
+    bus = _FakeManagedBus(managed, writes)
+
+    @contextlib.asynccontextmanager
+    async def fake_bus():
+        yield bus
+
+    monkeypatch.setattr(adapter, "_system_bus", fake_bus)
+
+    dropped = asyncio.run(adapter.untrust_unbonded("hci0"))
+
+    assert dropped == ("AA",)
+    assert writes == [("/org/bluez/hci0/dev_AA", False)]
+
+
+def test_unbonded_trust_sweep_drops_and_reports(caplog):
+    """Trust must not outlive the bond.
+
+    Granting trust only to a bonded device is not enough: a pairing that was
+    never bonded disappears on the next disconnect and leaves the trust
+    behind, which is what strands a remote. The sweep also heals a device
+    stranded before that guard existed.
+    """
+    async def sweep():
+        return ("CA:AC:04:04:09:D7",)
+
+    with caplog.at_level("INFO"):
+        dropped = asyncio.run(
+            no_code_agent._sweep_unbonded_trust_once(sweep=sweep),
+        )
+
+    assert dropped == ("CA:AC:04:04:09:D7",)
+    assert any(
+        "bluetooth_agent.untrusted_unbonded" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_unbonded_trust_sweep_survives_a_failing_probe():
+    """A sweep that cannot read BlueZ must not kill the agent's poll loop."""
+    async def sweep():
+        raise RuntimeError("bluez unreachable")
+
+    assert asyncio.run(
+        no_code_agent._sweep_unbonded_trust_once(sweep=sweep),
+    ) == ()
+
+
+def test_floor_watch_runs_the_unbonded_trust_sweep():
+    """The sweep must run from the agent's existing poll, not just exist.
+
+    Tested separately from the sweep itself: an isolated sweep test stays
+    green when the call site is deleted, which leaves a stranded device
+    un-healed with nothing failing.
+    """
+    swept = 0
+
+    async def read_state():
+        return {"pairable": False, "discoverable": False}
+
+    async def close_pairing_window(_value):
+        raise AssertionError("must not close a window it did not open")
+
+    stop = asyncio.Event()
+
+    async def sweep():
+        nonlocal swept
+        swept += 1
+        stop.set()
+        return ()
+
+    async def scenario():
+        # Bounded on purpose: a watch that never calls the sweep leaves `stop`
+        # unset and would otherwise spin forever instead of failing.
+        await asyncio.wait_for(
+            no_code_agent._pairable_floor_watch(
+                stop,
+                interval=0.01,
+                read_state=read_state,
+                close_pairing_window=close_pairing_window,
+                sweep=sweep,
+            ),
+            timeout=2.0,
+        )
+
+    try:
+        asyncio.run(scenario())
+    except asyncio.TimeoutError:
+        pass
+
+    assert swept == 1
+
+
+def test_floor_needs_two_observations_before_closing_a_window():
+    """A single observation would lower the bondable flag mid-pair.
+
+    An outbound pair raises Pairable for the whole Pair() call -- up to its
+    60 s timeout on a remote that needs a button press -- from a different
+    process, and reads pairable-without-discoverable the entire time. Closing
+    on the first sighting makes the bond silently not form, which is the
+    defect this watch would cause rather than catch.
+    """
+    closes: list[bool] = []
+    stop = asyncio.Event()
+    passes = 0
+
+    async def read_state():
+        return {"pairable": True, "discoverable": False}
+
+    async def close_pairing_window(value):
+        closes.append(value)
+
+    async def sweep():
+        nonlocal passes
+        passes += 1
+        # Observe how many closes happened after ONE pass, then let a second
+        # pass run and stop.
+        if passes == 1:
+            assert closes == [], "closed on a single observation"
+        if passes >= 2:
+            stop.set()
+        return ()
+
+    async def scenario():
+        await asyncio.wait_for(
+            no_code_agent._pairable_floor_watch(
+                stop,
+                interval=0.01,
+                read_state=read_state,
+                close_pairing_window=close_pairing_window,
+                sweep=sweep,
+            ),
+            timeout=2.0,
+        )
+
+    try:
+        asyncio.run(scenario())
+    except asyncio.TimeoutError:
+        pass
+
+    assert closes == [False], "second consecutive observation must close"
 
 
 def test_no_code_agent_release_notifies_owner():

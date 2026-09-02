@@ -32,8 +32,8 @@ runs the first and then the second.
 intended flow: run ``packet`` on the box, hand the file to whoever writes the
 prescription, then run ``propose``/``stage`` against the same file. Rebuilding
 the packet a second time is what used to make staging a fingerprint dance — a
-rebuild on another machine resolves ``--drivers``, ``--applied-profile`` and
-``--repeat-floor`` against whatever THAT machine has, so it fingerprints
+rebuild on another machine resolves ``--drivers``, ``--applied-profile``, ``--repeat-floor``
+and ``--declared-geometry`` against whatever THAT machine has, so it fingerprints
 differently and the document written against the first one is refused
 against the second, leaving an operator to paste a fingerprint across by
 hand. Nothing here re-stamps a
@@ -70,6 +70,7 @@ from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
+    REGION_UNAVAILABLE,
     BlendPrescription,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
@@ -83,6 +84,12 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     check_driver_document_size,
     driver_prescription_to_candidate_fields,
     read_driver_prescription,
+)
+from jasper.active_speaker.crossover_v2.alignment_prescription import (
+    ALIGNMENT_NO_CROSSOVER_REGION,
+)
+from jasper.active_speaker.crossover_v2.topology_prescription import (
+    TOPOLOGY_NO_CROSSOVER_REGION,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
@@ -103,6 +110,7 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     APPLIED_PROFILE_DEFAULT_PATH,
+    DECLARED_GEOMETRY_DEFAULT_PATH,
     DRIVERS_DEFAULT_PATH,
     REPEAT_FLOOR_DEFAULT_PATH,
     round_inputs,
@@ -114,6 +122,9 @@ from jasper.active_speaker.seat_level_reference import (
 )
 from jasper.active_speaker.session_volume_plan import (
     MEASUREMENT_REFERENCE_VOLUME_DB,
+)
+from jasper.audio_measurement.program_analysis import (
+    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
 )
 from jasper.identity import (
     CROSSOVER_PAGE_PATH,
@@ -137,9 +148,7 @@ AUTHORITY_TIER = "advisory (`stage` mutates)"
 #: at the moment of banking and ``status`` says it to an operator who arrived
 #: later and found one waiting — the same fact at two moments, so a second
 #: wording here would be a second answer to "what becomes of this file".
-STAGED_LIFECYCLE_NOTE = (
-    "the next round takes it once and consumes it; an Undo withdraws it unrun"
-)
+STAGED_LIFECYCLE_NOTE = "the next round takes it once and consumes it"
 
 #: Why the staged section has nothing to report. A slug in the packet's own
 #: style, so the section that reads a file the packet never sees still answers
@@ -152,8 +161,8 @@ def _read_packet_file(path: Path) -> dict[str, Any]:
 
     The whole point of the flag: a packet emitted on the speaker and a packet
     rebuilt on a laptop fingerprint differently, because the rebuild resolves
-    ``--drivers``/``--applied-profile``/``--repeat-floor`` against whatever
-    that machine has. So the answer to a packet was either re-fingerprinted
+    ``--drivers``/``--applied-profile``/``--repeat-floor``/
+    ``--declared-geometry`` against whatever that machine has. So the answer to a packet was either re-fingerprinted
     by hand — provenance laundering, and the one thing the echo exists to
     prevent — or judged against evidence it was not written for. Reading the
     FILE removes the second packet entirely; the fingerprint then matches by
@@ -222,6 +231,11 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
         repeat_floor_path=(
             Path(args.repeat_floor) if args.repeat_floor else inputs.repeat_floor_path
         ),
+        declared_geometry_path=(
+            Path(args.declared_geometry)
+            if args.declared_geometry
+            else inputs.declared_geometry_path
+        ),
     )
 
 
@@ -232,6 +246,7 @@ _REBUILD_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
     ("--drivers", "drivers"),
     ("--applied-profile", "applied_profile"),
     ("--repeat-floor", "repeat_floor"),
+    ("--declared-geometry", "declared_geometry"),
 )
 
 
@@ -1081,6 +1096,14 @@ def _next_actions(
                 "a blend prescription can be written for the crossover region "
                 f"{_band_phrase(*region['band_hz'])}"
             )
+        elif region["reason"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY:
+            out.append(
+                "this speaker has no crossover region, so the blend, alignment, "
+                "topology doors do not apply and refuse by name "
+                f"({REGION_UNAVAILABLE}, {ALIGNMENT_NO_CROSSOVER_REGION}, "
+                f"{TOPOLOGY_NO_CROSSOVER_REGION}) — the per-driver door below "
+                "is the whole loop here"
+            )
         else:
             out.append(
                 f"no crossover region is banked ({region['reason']}), so a blend "
@@ -1166,7 +1189,7 @@ def _next_actions(
             "(--target-db-spl states another) and banks the reference"
         )
 
-    out.append(f"run, apply, or undo a round at {crossover_url}")
+    out.append(f"run or apply a round at {crossover_url}")
     return out
 
 
@@ -1376,10 +1399,23 @@ _REPEAT_FLOOR_HELP = (
 )
 
 
+#: What ``--declared-geometry`` is, defaulted on the same terms as the three
+#: above. Without it the packet reports no room and the offline entanglement
+#: floor stays unknown.
+_DECLARED_GEOMETRY_HELP = (
+    "the household's declared rig geometry JSON — the speaker/mic heights and "
+    "distance `jasper-declare-geometry set` stores. Defaults to the round's "
+    f"own banked copy, or {DECLARED_GEOMETRY_DEFAULT_PATH} for a live session "
+    "directory. Without a readable file there, the packet's "
+    "session.declared_geometry names the absence and the room's entanglement "
+    "floor stays unknown"
+)
+
+
 #: What ``--packet`` is, and why it exists. The packet a laptop rebuilds is not
 #: the packet the speaker emitted — the rebuild resolves ``--drivers``,
-#: ``--applied-profile`` and ``--repeat-floor`` against whatever THAT machine
-#: has — so the two fingerprint differently and a document answering one is
+#: ``--applied-profile``, ``--repeat-floor`` and ``--declared-geometry``
+#: against whatever THAT machine has — so the two fingerprint differently and a document answering one is
 #: refused against the other. Emitting once and judging against the file
 #: removes the second packet rather than teaching anything to re-stamp a
 #: fingerprint, which would make the echo worthless as provenance.
@@ -1390,7 +1426,8 @@ _PACKET_HELP = (
     "the answer against the SAME file: the fingerprint the document echoes "
     "matches by construction and nobody copies one by hand. The rebuild inputs "
     "(the session_dir positional, --drivers, --applied-profile, "
-    "--repeat-floor) are refused beside it; `stage` still takes --state, "
+    "--repeat-floor, --declared-geometry) are refused beside it; `stage` "
+    "still takes --state, "
     "which it reads for the round ordinal rather than as evidence"
 )
 
@@ -1436,6 +1473,9 @@ def _add_evidence_args(
     parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
     parser.add_argument("--applied-profile", default=None, help=_APPLIED_PROFILE_HELP)
     parser.add_argument("--repeat-floor", default=None, help=_REPEAT_FLOOR_HELP)
+    parser.add_argument(
+        "--declared-geometry", default=None, help=_DECLARED_GEOMETRY_HELP
+    )
     if packet_source:
         parser.add_argument("--packet", default=None, help=_PACKET_HELP)
     else:
@@ -1471,7 +1511,8 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "  The fingerprint the document echoes is the file's, so it\n"
             "  matches by construction. Rebuilding the packet on another\n"
-            "  machine resolves --drivers/--applied-profile/--repeat-floor\n"
+            "  machine resolves --drivers/--applied-profile/--repeat-floor/\n"
+            "  --declared-geometry\n"
             "  against THAT machine and fingerprints differently, which is\n"
             "  what used to send an operator copying a fingerprint across\n"
             "  by hand.\n"
@@ -1480,7 +1521,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  0  accepted -- status (which accepts nothing) exits 0 once it\n"
             "     read the evidence, even a partial one\n"
             "  1  EXIT_EVIDENCE_UNREADABLE -- the bundle, --state,\n"
-            "     --drivers, --applied-profile, or --repeat-floor could not\n"
+            "     --drivers, --applied-profile, --repeat-floor, or\n"
+            "     --declared-geometry could not\n"
             "     be read\n"
             "  2  EXIT_REFUSED -- propose's or stage's gate refused the\n"
             "     prescription; \"refused (<reason>): <detail>\" on stderr,\n"

@@ -187,6 +187,7 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
         "driver_draft_path": round_inputs_mod.DRIVERS_DEFAULT_PATH,
         "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
         "repeat_floor_path": round_inputs_mod.REPEAT_FLOOR_DEFAULT_PATH,
+        "declared_geometry_path": round_inputs_mod.DECLARED_GEOMETRY_DEFAULT_PATH,
     }
 
 
@@ -831,6 +832,117 @@ def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
         "a blend prescription can be written" in action
         for action in payload["next_actions"]
     )
+
+
+
+def _full_range_draft() -> dict[str, Any]:
+    """A 1-way main's design draft: one declaration, no protective corner."""
+    return {
+        "kind": "jts_active_speaker_design_draft",
+        "driver_safety_profile": {
+            "kind": "jts_active_speaker_driver_safety_profile",
+            "confirmation": {"confirmed_fingerprint": "abc", "method": "operator"},
+            "targets": [
+                {
+                    "role": "full_range",
+                    "measurement_band_hz": [45.0, 18000.0],
+                    "hard_excitation_band_hz": [40.0, 20000.0],
+                    "required_protection_filters": [],
+                },
+            ],
+        },
+    }
+
+
+def _rebank_round_as_no_crossover(session: Path) -> None:
+    """Re-bank one bundle's round as the round a 1-way main banks — through the
+    production solver, so it cannot state a shape no round produces."""
+    from jasper.active_speaker.crossover_v2.blend_correction import (
+        solve_blend_correction,
+    )
+    from jasper.active_speaker.crossover_v2.evidence_packet import (
+        round_artifact_dir,
+    )
+    from jasper.audio_measurement.program_analysis import (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    )
+
+    round_dir, _reason = round_artifact_dir(session)
+    assert round_dir is not None
+    path = round_dir / "round_receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt["round_measurements"]["blend"] = solve_blend_correction(
+        graded=None, band_hz=None, incumbent=(),
+        no_crossover_reason=ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    ).to_dict()
+    path.write_text(json.dumps(receipt))
+
+
+def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
+    tmp_path, capsys
+):
+    """Not "not yet" — "not ever", and the three shut doors say so by name.
+
+    A 1-way main's blend, alignment and topology doors all describe a handoff
+    between two branches; telling an operator no region "is banked" would send
+    them back to a measurement for a band that cannot exist.
+    """
+    from jasper.audio_measurement.program_analysis import (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+    )
+
+    session, draft = _speaker_dirs(
+        tmp_path, draft=_full_range_draft(), classification=_classification()
+    )
+    _rebank_round_as_no_crossover(session)
+
+    _, payload = _status([str(session), "--drivers", str(draft)], capsys)
+    packet = cli.build_crossover_evidence_packet(
+        session, state_path=None, driver_draft_path=draft
+    )
+    for door in ("alignment", "topology"):
+        assert packet["request_time_prescriptions"][door]["available"] is False
+    assert (
+        packet["request_time_prescriptions"]["alignment"]["reason"]
+        == cli.ALIGNMENT_NO_CROSSOVER_REGION
+    )
+    assert (
+        packet["request_time_prescriptions"]["topology"]["reason"]
+        == cli.TOPOLOGY_NO_CROSSOVER_REGION
+    )
+    not_evaluated = {e["field"]: e["reason"] for e in packet["not_evaluated"]}
+    assert not_evaluated["crossover_region.band_hz"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+    assert (
+        not_evaluated["request_time_prescriptions.alignment"]
+        == cli.ALIGNMENT_NO_CROSSOVER_REGION
+    )
+    assert (
+        not_evaluated["request_time_prescriptions.topology"]
+        == cli.TOPOLOGY_NO_CROSSOVER_REGION
+    )
+
+    assert payload["declared"]["roles"] == ["full_range"]
+    # The SHAPE, not a measurement that has not happened yet.
+    assert payload["banked"]["region"] == {
+        **payload["banked"]["region"],
+        "available": False,
+        "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+        "band_hz": None,
+    }
+    # …and the per-driver door, the only one this speaker has, is open.
+    assert payload["declared"]["available"] is True
+    assert payload["banked"]["classification"]["available"] is True
+    # Exactly one next action carries all three refusal codes, so an operator is
+    # told once which doors are shut and by what name.
+    refusals = (
+        cli.REGION_UNAVAILABLE,
+        cli.ALIGNMENT_NO_CROSSOVER_REGION,
+        cli.TOPOLOGY_NO_CROSSOVER_REGION,
+    )
+    assert len([
+        action for action in payload["next_actions"]
+        if all(refusal in action for refusal in refusals)
+    ]) == 1
 
 
 def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, capsys):

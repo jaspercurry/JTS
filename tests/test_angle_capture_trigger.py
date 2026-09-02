@@ -45,7 +45,6 @@ from jasper.active_speaker.angle_capture import (
     resolve_request,
     summed_at,
 )
-from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     POLARITY_INVERTED,
@@ -57,7 +56,7 @@ from jasper.active_speaker.crossover_v2_flow import (
     POSITION_DEG_KEY,
     CrossoverV2FlowError,
 )
-from jasper.active_speaker import measurement_level as ml
+from jasper.active_speaker import seat_level_reference as slr
 from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     write_seat_level_reference,
@@ -77,8 +76,7 @@ from jasper.identity import CROSSOVER_PAGE_PATH
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 
 # One banked anchor, and the vendor header that makes it absolute. The level
-# the receipt must print is ``ANCHOR_DB_SPL`` -- every shipped program drives
-# at ``level_re_anchor_db == 0``.
+# the receipt must print is ``ANCHOR_DB_SPL`` -- a walk drives at the anchor.
 ANCHOR_DB_SPL = 77.5
 REFERENCE_VOLUME_DB = -18.0
 # Stubbed so the receipt's level does not depend on the output topology of
@@ -110,11 +108,15 @@ def _bank_an_anchor(tmp_path, monkeypatch):
     )
     cal = tmp_path / "umik2.txt"
     cal.write_text(CAL_WITH_SENS)
-    real = ml.resolve_mic_sensitivity
+    from jasper.audio_measurement import calibration
+
+    real = calibration.resolve_mic_sensitivity
     monkeypatch.setattr(
-        ml, "resolve_mic_sensitivity", lambda **_kw: real(calibration_file=str(cal))
+        calibration,
+        "resolve_mic_sensitivity",
+        lambda **_kw: real(calibration_file=str(cal)),
     )
-    monkeypatch.setattr(ml, "_preset_ceiling_db_spl", lambda: CEILING_DB_SPL)
+    monkeypatch.setattr(slr, "_ceiling_db_spl", lambda: CEILING_DB_SPL)
 
 
 @pytest.fixture
@@ -143,8 +145,8 @@ def slot(tmp_path, monkeypatch):
         lambda: None,
     )
     # ...and the box's standing ``jasper-declare-geometry`` declaration, which
-    # a flagless ``stage`` now falls back to: a developer's box that has one
-    # must not make these walks bank a room they never stated.
+    # ``stage`` echoes so the operator sees what a round will bank: a
+    # developer's box that has one must not change what these walks print.
     monkeypatch.setattr(cli, "DECLARED_GEOMETRY_PATH", tmp_path / "declared.json")
     try:
         yield path, volume_state
@@ -186,7 +188,7 @@ def test_cli_resolves_every_regime_and_mover_through_the_seam(regime, mover):
     args = cli.build_parser().parse_args(
         ["plan", "--angles", "0,7,-7,22,-22", "--regime", regime, "--mover", mover]
     )
-    built = cli._build_request(args).request
+    built = cli._build_request(args)
 
     expected = {
         REGIME_PER_DRIVER: per_driver_at,
@@ -202,7 +204,7 @@ def test_the_campaign_walk_plays_measure_at_five_angles_by_hand():
         ["plan", "--angles", "0,7,-7,22,-22", "--regime", "per_driver",
          "--mover", "human"]
     )
-    stops = resolve_request(cli._build_request(args).request)
+    stops = resolve_request(cli._build_request(args))
 
     assert [s.angle_deg for s in stops] == CAMPAIGN_ANGLES
     # Every stop plays MEASURE's interleaved per-driver object -- the forward
@@ -235,7 +237,7 @@ def test_both_pairs_the_regimes_so_the_microphone_moves_once_per_angle():
     args = cli.build_parser().parse_args(
         ["plan", "--angles", "0,45", "--regime", "both", "--mover", "arm"]
     )
-    stops = resolve_request(cli._build_request(args).request)
+    stops = resolve_request(cli._build_request(args))
 
     assert [(s.angle_deg, s.regime) for s in stops] == [
         (0, REGIME_PER_DRIVER), (0, REGIME_SUMMED),
@@ -314,8 +316,7 @@ def test_plan_echoes_the_delay_coordinate_when_stated(capsys):
     assert "tweeter" in human
     assert "128.588" in human
 
-    stated = cli._build_request(args)
-    payload = cli._walk_payload(stated.request, cli._resolved_level(stated.program))
+    payload = cli._walk_payload(cli._build_request(args), cli._resolved_level())
     assert payload["delayed_role"] == "tweeter"
     assert payload["delay_us"] == 128.588
 
@@ -378,54 +379,8 @@ def test_plan_writes_nothing(slot):
 
 
 # --------------------------------------------------------------------------- #
-# 3. the receipt / banking shape
+# 3. the receipt
 # --------------------------------------------------------------------------- #
-
-
-def test_each_stop_banks_in_the_shipped_cloud_position_record_shape(slot):
-    """The fields a stop determines are exactly the record's own fields.
-
-    ``cloud_position_record`` is the shipped per-position receipt. The planner
-    must not invent fields it has no evidence for, and must not misname the
-    ones it does have -- so this asserts membership against that function's real
-    signature rather than against a copied list.
-    """
-    import inspect
-
-    from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
-
-    record_fields = set(inspect.signature(cloud_position_record).parameters)
-    payload = cli._walk_payload(
-        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
-    )
-    banked = payload["stops"][0]["banks_as"]
-
-    # Every planned field is a real field of the record…
-    assert {"role", "wide"} <= set(banked) & record_fields
-    # …and the two that are NOT record fields are the pose's own geometry, which
-    # the record carries through ``prompt``/``wide`` rather than as numbers.
-    assert set(banked) - record_fields == {"offset_cm", "position_angle_deg"}
-    # Nothing MEASURED is claimed: a planner that printed a placeholder for a
-    # capture's own evidence would be inventing it.
-    for measured in (
-        "captured_at", "wav_sha256", "summed_ripple_db", "glitch_detected",
-        "gate_window_ms", "validity_floor_hz", "position_id", "take_id",
-    ):
-        assert measured not in banked
-
-
-def test_the_banked_pose_round_trips_the_commanded_bearing(slot):
-    payload = cli._walk_payload(
-        per_driver_at(CAMPAIGN_ANGLES), cli._resolved_level(None)
-    )
-    assert [s["banks_as"]["position_angle_deg"] for s in payload["stops"]] == (
-        CAMPAIGN_ANGLES
-    )
-    # …and the wide class is DERIVED from the distance, exactly as the shipped
-    # table assigns it: 22 deg off a 1 m mark is 40.4 cm, past the 30 cm edge.
-    assert [s["banks_as"]["wide"] for s in payload["stops"]] == (
-        [False, False, False, True, True]
-    )
 
 
 def test_the_staged_document_round_trips_the_whole_walk(slot):
@@ -952,9 +907,8 @@ def test_stage_banks_a_named_program_with_its_receipt(slot, capsys):
 def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
     """A named program's level is the banked anchor, in dB SPL, on the receipt.
 
-    ``level_re_anchor_db`` is what the program states; everything else in the
-    block is what makes it absolute, so a reader never has to guess whether the
-    number was measured or defaulted.
+    Every field beside it is what makes the number absolute, so a reader never
+    has to guess whether it was measured or defaulted.
     """
     args = cli.build_parser().parse_args(
         ["stage", "--program", "baseline", "--size", "express", "--json"]
@@ -965,7 +919,6 @@ def test_the_receipt_states_the_absolute_level_the_walk_drives_at(slot, capsys):
         "resolved": True,
         "target_db_spl": ANCHOR_DB_SPL,
         "anchor_db_spl": ANCHOR_DB_SPL,
-        "level_re_anchor_db": mp.program("baseline", "express").level_re_anchor_db,
         "reference_volume_db": REFERENCE_VOLUME_DB,
         "mic_serial": "8108494",
     }
@@ -989,7 +942,7 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
     body = json.loads(capsys.readouterr().out)
 
     assert body["ok"] is False
-    assert body["reason"] == ml.SEAT_REFERENCE_MISSING
+    assert body["reason"] == slr.ANCHOR_UNUSABLE
     assert not spool.staged_angle_request_pending()
 
     # ``plan`` is the dry run that SHOWS what is missing rather than refusing.
@@ -997,11 +950,12 @@ def test_stage_refuses_by_name_when_no_anchor_is_banked(
         ["plan", "--program", "baseline", "--size", "express", "--json"]
     )
     assert cli._cmd_plan(plan) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["level"] == {
-        "resolved": False,
-        "reason": ml.SEAT_REFERENCE_MISSING,
-        "detail": ml.SEAT_REFERENCE_MISSING_DETAIL,
-    }
+    unresolved = json.loads(capsys.readouterr().out)["level"]
+    assert unresolved["resolved"] is False
+    assert unresolved["reason"] == slr.ANCHOR_UNUSABLE
+    # One slug for the three ways an anchor goes unusable, so the remedy is
+    # only ever in the detail.
+    assert "jasper-seat-level" in unresolved["detail"]
 
 
 def test_a_spot_stages_one_raised_pose(slot, capsys):
@@ -1121,10 +1075,11 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
     spool.set_angle_request_spool_path_for_tests(Path(slot))
     import jasper.active_speaker.session_volume_plan as svp
     svp.DEFAULT_SESSION_VOLUME_STATE_PATH = Path(volume_state)
-    import jasper.active_speaker.measurement_level as ml
-    _real = ml.resolve_mic_sensitivity
-    ml.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
-    ml._preset_ceiling_db_spl = lambda: 90.0
+    import jasper.active_speaker.seat_level_reference as slr
+    from jasper.audio_measurement import calibration
+    _real = calibration.resolve_mic_sensitivity
+    calibration.resolve_mic_sensitivity = lambda **_kw: _real(calibration_file=cal)
+    slr._ceiling_db_spl = lambda: 90.0
     raise SystemExit(
         cli.main(["stage", "--angles", "0,7,-7,22,-22", "--regime", "per_driver"])
     )
@@ -1265,116 +1220,3 @@ def test_mutation_the_busy_guard_cannot_be_removed(slot):
     # The positive control: the SAME request, the same slot, an idle speaker.
     volume_state.unlink()
     assert spool.stage_angle_request(per_driver_at([0])).is_file()
-
-
-# --------------------------------------------------------------------------- #
-# the household's declared geometry: stated once, banked, read back
-# --------------------------------------------------------------------------- #
-
-_GEOMETRY_FLAGS = [
-    "--speaker-height-m", "0.9",
-    "--mic-height-m", "1.0",
-    "--distance-m", "1.05",
-]
-_GEOMETRY = DeclaredGeometry(0.9, 1.0, 1.05, 2.4)
-
-
-def test_the_declared_geometry_rides_the_document_and_the_receipt(slot, capsys):
-    """The whole operator hop: the LLM's four flags to the taken request.
-
-    The three distances are the only viable source for the room's entanglement
-    floor -- the reflection finder is structurally blind on this rig class --
-    so the receipt echoes what was banked rather than leaving the household's
-    answer visible only inside a file nobody opens.
-    """
-    path, _ = slot
-    args = cli.build_parser().parse_args(
-        ["stage", "--program", "baseline", "--size", "express",
-         *_GEOMETRY_FLAGS, "--ceiling-height-m", "2.4", "--json"]
-    )
-    assert cli._cmd_stage(args) == cli.EXIT_OK
-
-    assert json.loads(capsys.readouterr().out)["declared_geometry"] == (
-        _GEOMETRY.to_dict()
-    )
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    assert doc["declared_geometry"] == _GEOMETRY.to_dict()
-    assert spool.take_staged_angle_request().declared_geometry == _GEOMETRY
-
-
-def test_a_flagless_walk_takes_the_declaration_the_box_already_holds(slot, monkeypatch, tmp_path):
-    """``jasper-declare-geometry set`` is the standing answer (#3498).
-
-    One class, one stored declaration, one banked shape: the flags are the
-    one-off override, and a household that already declared its rig should
-    not have to restate it at every ``stage``.
-    """
-    path, _ = slot
-    stored = tmp_path / "measurement_geometry.json"
-    _GEOMETRY.save(stored)
-    monkeypatch.setattr(cli, "DECLARED_GEOMETRY_PATH", stored)
-
-    args = cli.build_parser().parse_args(["stage", "--angles", "0"])
-    assert cli._cmd_stage(args) == cli.EXIT_OK
-
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    assert doc["declared_geometry"] == _GEOMETRY.to_dict()
-    assert spool.take_staged_angle_request().declared_geometry == _GEOMETRY
-
-
-def test_a_walk_nobody_was_asked_about_banks_no_geometry(slot):
-    """Opt-in, and ADDITIVE: a document staged before the key reads the same."""
-    path, _ = slot
-    args = cli.build_parser().parse_args(["stage", "--angles", "0"])
-    assert cli._cmd_stage(args) == cli.EXIT_OK
-
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    assert doc["declared_geometry"] is None
-    assert spool.take_staged_angle_request().declared_geometry is None
-
-    older = {k: v for k, v in doc.items() if k != "declared_geometry"}
-    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
-    path.write_text(json.dumps(older), encoding="utf-8")
-    assert spool.take_staged_angle_request().declared_geometry is None
-
-
-@pytest.mark.parametrize(
-    "flags",
-    [
-        ["--speaker-height-m", "0.9"],
-        ["--speaker-height-m", "0.9", "--mic-height-m", "1.0"],
-        ["--distance-m", "1.0", "--ceiling-height-m", "2.4"],
-        ["--ceiling-height-m", "2.4"],
-    ],
-)
-def test_a_partial_geometry_is_a_usage_error_not_a_half_banked_room(slot, flags):
-    """All three or none: two of the three derive no entanglement floor."""
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main(["stage", "--angles", "0", *flags])
-    assert excinfo.value.code == 2
-    assert not spool.staged_angle_request_pending()
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda d: d.update(declared_geometry="1.0"),
-        lambda d: d.update(declared_geometry={}),
-        lambda d: d["declared_geometry"].update(distance_m=0.0),
-    ],
-)
-def test_mutation_a_banked_geometry_that_is_unusable_refuses_by_name(slot, mutate):
-    """Present-but-unusable refuses; it must never read as "nobody was asked"."""
-    path, _ = slot
-    spool.stage_angle_request(
-        AngleCaptureRequest(
-            stops=(AngleStop(0, REGIME_PER_DRIVER),), declared_geometry=_GEOMETRY,
-        )
-    )
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    mutate(doc)
-    path.write_text(json.dumps(doc), encoding="utf-8")
-
-    with pytest.raises(spool.AngleRequestRefused) as excinfo:
-        spool.take_staged_angle_request()
-    assert excinfo.value.reason == spool.SPOOL_MALFORMED

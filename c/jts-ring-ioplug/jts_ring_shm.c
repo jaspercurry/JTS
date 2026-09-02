@@ -809,9 +809,10 @@ static int acquire_writer_lock(const char *path) {
     // them cleanly.
     //
     // On expiry we return -1, which the caller maps to -EBUSY. That errno is
-    // REQUIRED, not incidental: jasper-doctor's `_alsa_busy()` matches on it to
-    // decide the lane is legitimately owned, and anything else reads as a
-    // broken device.
+    // REQUIRED, not incidental: jasper-doctor's `_busy_marker_line()` reads it
+    // off this refusal's SNDERR line to decide the probe REACHED this lock
+    // rather than failing to resolve, and anything else reads as a broken
+    // device.
     //
     // Same loop shape as acquire_open_lock (and the same open_lock_sleep,
     // which both lock waits now share). Note the budgets ADD rather than

@@ -45,7 +45,6 @@ from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
 
@@ -986,18 +985,6 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     )
 
 
-def test_a_program_measured_at_another_distance_is_refused() -> None:
-    """The walk derives every pose at one distance, so it refuses the others."""
-    elsewhere = dataclasses.replace(
-        mp.program("baseline", "express"), mark_distance_m=0.3,
-    )
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.request_for_program(elsewhere)
-
-    assert excinfo.value.reason == ac.WALK_DISTANCE_UNSUPPORTED
-    assert ac.WALK_DISTANCE_UNSUPPORTED in ac.WALK_REFUSAL_REASONS
-
-
 def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
     """A program says WHERE to measure; the mover says what it can reach."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
@@ -1008,50 +995,17 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
     assert excinfo.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
 
 
-def test_mutation_the_distance_guard_cannot_be_dropped() -> None:
-    """A guard that passed everything would pass this too."""
-    assert ac.request_for_program(mp.program("baseline", "express")).stops
-    with pytest.raises(ac.LateralWalkRefused):
-        ac.request_for_program(
-            dataclasses.replace(
-                mp.program("baseline", "express"),
-                mark_distance_m=ac.MARK_DISTANCE_M * 2,
-            )
-        )
-
-
-# --------------------------------------------------------------------------- #
-# 7. the household's declared geometry -- carried, never judged here
-# --------------------------------------------------------------------------- #
-
-
-def test_the_declared_geometry_is_opt_in_and_passed_through_untouched() -> None:
-    """A program states POSE geometry; the ROOM stays the caller's to state.
-
-    The room itself is
-    :mod:`jasper.audio_measurement.measurement_geometry`'s -- its own tests
-    own the bounds and the banked shape; this seam only carries it.
-    """
-    assert ac.per_driver_at([0]).declared_geometry is None
-    room = DeclaredGeometry(speaker_height_m=0.9, mic_height_m=1.0, distance_m=1.05)
-    assert ac.request_for_program(
-        mp.program("baseline", "express"), declared_geometry=room,
-    ).declared_geometry is room
-
-
 # --------------------------------------------------------------------------- #
 # 8. the candidate cycle: what a stop measures, and what it may not play
 # --------------------------------------------------------------------------- #
 
 
-def _fake_preset(
-    *, fc_hz: float = 2000.0, order: int = 4, upper: str = "tweeter",
-) -> object:
+def _fake_preset(*, upper: str = "tweeter") -> object:
     """A preset shaped only as ``preset_crossover_geometry`` reads one."""
     return SimpleNamespace(crossover_regions=(SimpleNamespace(
-        fc_hz=fc_hz,
+        fc_hz=2000.0,
         target_type="LinkwitzRiley",
-        order=order,
+        order=4,
         lower_driver="woofer",
         upper_driver=upper,
     ),))
@@ -1115,8 +1069,7 @@ def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> Non
     banked candidate may change about a stop -- and the flipped branch is the
     region's upper driver, the convention the candidate was minted under."""
     axes = ac.candidate_measure_axes(
-        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=250.0),
-        preset=_fake_preset(),
+        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=250.0)
     )
 
     assert axes == {
@@ -1134,12 +1087,10 @@ def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> Non
 def test_a_branch_no_measurement_graph_carries_refuses_by_name() -> None:
     """The flipped branch is read off the candidate's own crossover, so a
     region whose upper driver is not a branch the graph carries would reach
-    ``MeasureSpec`` as a pair it refuses. Same corner on both sides, so the
-    ONLY thing this can be refusing is the branch."""
-    odd = _fake_preset(upper="horn")
+    ``MeasureSpec`` as a pair it refuses."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.candidate_measure_axes(
-            _fake_candidate(polarity="invert", preset=odd), preset=odd,
+            _fake_candidate(polarity="invert", preset=_fake_preset(upper="horn"))
         )
 
     assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
@@ -1151,8 +1102,7 @@ def test_a_polarity_only_candidate_states_no_half_delay() -> None:
     -- otherwise a walk stages and then dies at the open with its document
     already consumed."""
     axes = ac.candidate_measure_axes(
-        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=0.0),
-        preset=_fake_preset(),
+        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=0.0)
     )
 
     assert (axes["delayed_role"], axes["delay_us"]) == ("", 0.0)
@@ -1173,20 +1123,11 @@ def test_a_polarity_only_candidate_states_no_half_delay() -> None:
             ac.WALK_CANDIDATE_NOT_MEASURABLE,
         ),
         (
-            _fake_candidate(preset=_fake_preset(fc_hz=1600.0)),
-            ac.WALK_CANDIDATE_CORNER_MISMATCH,
-        ),
-        (
-            _fake_candidate(preset=_fake_preset(order=2)),
-            ac.WALK_CANDIDATE_CORNER_MISMATCH,
-        ),
-        (
             _fake_candidate(preset=SimpleNamespace(crossover_regions=())),
-            ac.WALK_CANDIDATE_CORNER_MISMATCH,
+            ac.WALK_CANDIDATE_NOT_MEASURABLE,
         ),
     ],
-    ids=["linearization", "unknown-delayed-branch", "another-corner",
-         "another-slope", "unreadable"],
+    ids=["linearization", "unknown-delayed-branch", "unreadable"],
 )
 def test_a_candidate_this_graph_cannot_play_refuses_in_the_walk_vocabulary(
     candidate: object, reason: str,
@@ -1194,7 +1135,7 @@ def test_a_candidate_this_graph_cannot_play_refuses_in_the_walk_vocabulary(
     """Both refusals are walk refusals, so an adopting session and the staging
     door report them under one vocabulary."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.candidate_measure_axes(candidate, preset=_fake_preset())
+        ac.candidate_measure_axes(candidate)
 
     assert excinfo.value.reason == reason
     assert reason in ac.WALK_REFUSAL_REASONS

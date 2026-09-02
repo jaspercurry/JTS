@@ -190,9 +190,9 @@ def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
     geometry fan-in never builds — a hard ``RING_ATTACH_FATAL`` that CRASHES
     shm_ring at arm instead of refusing it. So a non-matching floor is REFUSED
     here, with its own reason token so the reconcile journal names why. Such a
-    DAC keeps loopback coupling and still gets the floor's outputd
-    period/buffer geometry through ``outputd.env``, which is where most of the
-    floor's value lives; teaching the ring slot to follow the floor across
+    DAC still gets the floor's outputd period/buffer geometry through
+    ``outputd.env``, which is where most of the floor's value lives; teaching
+    the ring slot to follow the floor across
     fan-in, the ioplug, the CamillaDSP emitter, and the negotiation model is
     issue #2147.
 
@@ -406,7 +406,7 @@ def _renderer_unit_user(unit: str) -> str | None:
 
     Only case 1 is a real answer; 2 and 3 are ignorance wearing the same value.
     The drop-in-aware net is the doctor's runtime `systemctl show -p User`
-    (``jasper.cli.doctor.renderers._systemd_user_for``), which resolves the full
+    (``jasper.cli.doctor.renderers._systemd_unit_user``), which resolves the full
     unit + drop-in merge and is what the PR #214 probe actually runs as. If this
     function's answer ever has to be trusted rather than merely advisory, use
     that instead.

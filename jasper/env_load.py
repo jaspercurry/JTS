@@ -217,20 +217,3 @@ def load_env_files(paths: "tuple[str, ...] | None" = None) -> None:
         os.environ.setdefault(key, value)
 
 
-def subprocess_env_with_fresh_files(
-    *,
-    base: "dict[str, str] | None" = None,
-    paths: "tuple[str, ...] | None" = None,
-) -> dict[str, str]:
-    """Return an environment for subprocesses launched by daemons.
-
-    ``base`` defaults to the current process environment so PATH and
-    service-local knobs are preserved. Env-file values are then applied
-    with normal systemd file precedence and override any stale value in
-    the long-lived daemon process. This is the right shape for
-    ``jasper-control`` launching ``jasper-doctor`` from the dashboard:
-    the wizard files are the current runtime truth, while
-    ``os.environ`` may reflect an older daemon start."""
-    env = dict(os.environ if base is None else base)
-    env.update(merged_env_files(paths))
-    return env

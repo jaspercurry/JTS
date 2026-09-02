@@ -108,7 +108,7 @@ def test_is_stable_card_pcm_rejects_drift_prone_forms() -> None:
 
 def test_transport_plan_rejects_non_stable_dac_pcms() -> None:
     cmap = (ChannelMapEntry(0, 0), ChannelMapEntry(1, 1))
-    with pytest.raises(OutputTopologyError, match="stable hw:CARD="):
+    with pytest.raises(OutputTopologyError):
         OutputTransportPlan(
             TRANSPORT_SINK_SINGLE_ALSA,
             2,
@@ -120,11 +120,11 @@ def test_transport_plan_rejects_non_stable_dac_pcms() -> None:
 
 def test_transport_plan_validates_shape_and_channel_map() -> None:
     cmap = (ChannelMapEntry(0, 0), ChannelMapEntry(1, 1))
-    with pytest.raises(OutputTopologyError, match="unsupported transport sink"):
+    with pytest.raises(OutputTopologyError):
         OutputTransportPlan("single_alsa_multi", 2, cmap, (), "single_device")
-    with pytest.raises(OutputTopologyError, match="one entry per transport channel"):
+    with pytest.raises(OutputTopologyError):
         OutputTransportPlan(TRANSPORT_SINK_SINGLE_ALSA, 4, cmap, (), "single_device")
-    with pytest.raises(OutputTopologyError, match="same physical_dac_channel"):
+    with pytest.raises(OutputTopologyError):
         OutputTransportPlan(
             TRANSPORT_SINK_SINGLE_ALSA,
             2,

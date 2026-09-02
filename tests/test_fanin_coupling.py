@@ -9,7 +9,6 @@ from __future__ import annotations
 import pytest
 
 from jasper.fanin_coupling import (
-    COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
@@ -29,16 +28,16 @@ from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
 
-def test_resolve_coupling_defaults_to_loopback():
-    assert resolve_coupling(None) == COUPLING_LOOPBACK
-    assert resolve_coupling("") == COUPLING_LOOPBACK
-    assert resolve_coupling("   ") == COUPLING_LOOPBACK
-
-
-def test_resolve_coupling_accepts_explicit_transports_case_insensitive():
-    assert resolve_coupling("loopback") == COUPLING_LOOPBACK
+def test_resolve_coupling_names_the_ring_or_nothing():
+    # ONE transport (ADR-0100): the resolver either names it or answers None.
+    # None is "this file names no transport" — an unwritten key and a retired
+    # token alike — never a second route; `coupling_value_removed` is what tells
+    # those two apart.
     assert resolve_coupling(" SHM_RING ") == COUPLING_SHM_RING
     assert resolve_coupling("Shm_Ring") == COUPLING_SHM_RING
+    for raw in ("loopback", "fifo", "pipe", "disabled", "transport_pipe",
+                None, "", "  "):
+        assert resolve_coupling(raw) is None
 
 
 def test_coupling_value_removed_flags_every_token_but_the_ring():
@@ -204,13 +203,6 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT_WIDE,
     }
-
-
-def test_resolve_coupling_answers_loopback_for_every_non_ring_value():
-    # The retired token is what a migrating box's file still says; the resolver
-    # names it so `coupling_value_removed` and the doctor can report it.
-    for raw in ("fifo", "pipe", "disabled", "transport_pipe", None, "", "  "):
-        assert resolve_coupling(raw) == COUPLING_LOOPBACK
 
 
 def test_member_kwargs_are_pipe_sink_detects_grouped_sink():

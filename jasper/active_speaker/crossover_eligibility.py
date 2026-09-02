@@ -13,8 +13,9 @@ This module owns that decision without reading files, logging, or playing audio.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Any, Mapping
+
+from jasper.json_fields import finite_float
 
 from .capture_geometry import (
     DRIVER_PLACEMENT_POLICY_ID,
@@ -51,18 +52,6 @@ def nonnegative_int(value: Any, *, default: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return default
     return value
-
-
-def finite_float(value: Any) -> float | None:
-    """Return one finite real value without accepting bools."""
-
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-    ):
-        return None
-    return float(value)
 
 
 @dataclass(frozen=True)
@@ -304,13 +293,8 @@ def driver_acoustic_usable(
             and gating.get("exempt_reason") == "near_field"
             and floor is None
         )
-    return bool(
-        gating.get("applied") is True
-        and not isinstance(floor, bool)
-        and isinstance(floor, (int, float))
-        and math.isfinite(float(floor))
-        and float(floor) > 0
-    )
+    floor_hz = finite_float(floor)
+    return gating.get("applied") is True and floor_hz is not None and floor_hz > 0.0
 
 
 def automatic_measurement_eligibility(

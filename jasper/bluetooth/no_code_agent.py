@@ -16,7 +16,11 @@ from dbus_next.aio import MessageBus  # type: ignore
 
 from jasper.log_event import log_event
 
-from .adapter import set_discoverable, state as adapter_state
+from .adapter import (
+    set_discoverable,
+    state as adapter_state,
+    untrust_unbonded,
+)
 from .agent import NoCodeAgent, register_agent, unregister_agent
 
 logger = logging.getLogger(__name__)
@@ -72,18 +76,81 @@ async def _enforce_pairable_floor_once(
     return False
 
 
+async def _sweep_unbonded_trust_once(
+    *,
+    sweep=untrust_unbonded,
+) -> tuple[str, ...]:
+    """Drop trust from any device whose bond is gone.
+
+    Granting trust only to a bonded device is not enough: a pairing that was
+    never bonded disappears on the next disconnect and leaves the trust
+    behind, which is the stranding case. This also heals a device stranded
+    before that guard existed.
+    """
+    try:
+        dropped = await sweep()
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            logger,
+            "bluetooth_agent.unbonded_trust_sweep_failed",
+            err=repr(exc),
+            level=logging.WARNING,
+        )
+        return ()
+    for address in dropped:
+        log_event(
+            logger,
+            "bluetooth_agent.untrusted_unbonded",
+            address=address,
+        )
+    return dropped
+
+
+async def _pairable_outside_window(*, read_state=adapter_state) -> bool:
+    """One read-only observation of "pairable with no window open"."""
+    try:
+        snapshot = await read_state()
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            logger,
+            "bluetooth_agent.pairable_floor_probe_failed",
+            err=repr(exc),
+            level=logging.WARNING,
+        )
+        return False
+    return bool(snapshot.get("pairable") and not snapshot.get("discoverable"))
+
+
 async def _pairable_floor_watch(
     stop: asyncio.Event,
     *,
     interval: float = PAIRABLE_FLOOR_POLL_SEC,
     read_state=adapter_state,
     close_pairing_window=set_discoverable,
+    sweep=untrust_unbonded,
 ) -> None:
+    # Two consecutive observations before closing. An outbound pair raises the
+    # bondable flag for the whole Pair() call -- up to its 60 s timeout on a
+    # remote that needs a button press -- from a DIFFERENT process, and it is
+    # pairable-without-discoverable the entire time. A single-observation
+    # floor lowers the flag mid-pair and the bond silently does not form,
+    # which is the defect this watch would otherwise cause rather than catch.
+    # Costs one extra interval of exposure against BlueZ's own 300 s
+    # PairableTimeout backstop.
+    armed = False
     while not stop.is_set():
-        await _enforce_pairable_floor_once(
-            read_state=read_state,
-            close_pairing_window=close_pairing_window,
-        )
+        if await _pairable_outside_window(read_state=read_state):
+            if armed:
+                await _enforce_pairable_floor_once(
+                    read_state=read_state,
+                    close_pairing_window=close_pairing_window,
+                )
+                armed = False
+            else:
+                armed = True
+        else:
+            armed = False
+        await _sweep_unbonded_trust_once(sweep=sweep)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except asyncio.TimeoutError:

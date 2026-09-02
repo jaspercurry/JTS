@@ -760,12 +760,12 @@ def test_the_active_shape_is_selected_by_the_marker_not_by_the_observed_device()
     assert stereo.name == TRANSPORT_SHM_RING
     assert stereo.camilla_to_outputd["camilla_playback_device"] == RING_PLAYBACK_DEVICE
 
-    # The marker flips the shape — while the observed device is passed as the
-    # WRONG one, proving the device is not what decides.
+    # The marker alone flips the shape: the observed Camilla playback device is
+    # not an input to this function at all, which is what keeps the comparison
+    # from deriving its expectation from the value it checks.
     active = transport_topology_for_coupling(
         "shm_ring",
         outputd_env={OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1"},
-        camilla_playback_device=RING_PLAYBACK_DEVICE,
     )
     assert active.name == TRANSPORT_SHM_RING_ACTIVE
     assert (

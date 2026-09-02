@@ -9,6 +9,7 @@ import logging
 
 import pytest
 
+from jasper.active_speaker.driver_protection import apply_driver_low_limit
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     DriverSweepGeneratorPlan,
@@ -839,3 +840,32 @@ def test_resolve_driver_measurement_band_hz_raises_on_unknown_target():
         match=ExcitationSafetyPlanRefusal.TARGET_NOT_CURRENT.value,
     ):
         resolve_driver_measurement_band_hz(profile, "not-a-real-fingerprint")
+
+
+def test_a_full_range_sweep_never_reaches_below_its_declared_low_limit():
+    """A ``full_range`` driver has no crossover high-pass under it, so its
+    declared minimum recommended crossover frequency is the only thing between
+    a sweep and the suspension. The projection and the resolver sit in
+    different modules, so their composition is pinned rather than assumed."""
+    declared_floor_hz = 80.0
+    target = apply_driver_low_limit(
+        {
+            "role": "full_range",
+            "target_id": "mono:full_range",
+            "target_fingerprint": "f" * 64,
+            "recommended_highpass_hz": declared_floor_hz,
+            "hard_excitation_band_hz": [40.0, 20_000.0],
+            "measurement_band_hz": [40.0, 15_000.0],
+            "required_protection_filters": [],
+            "level_duration_limits": {
+                "max_sweep_duration_s": 4,
+                "max_repeat_count": 3,
+                "minimum_cooldown_s": 1,
+            },
+        },
+        role="full_range",
+    )
+
+    band, _ceiling = resolve_driver_excitation_ceilings({"targets": [target]}, "f" * 64)
+
+    assert band.lower_hz >= declared_floor_hz

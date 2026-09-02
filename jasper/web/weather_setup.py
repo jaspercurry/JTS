@@ -147,10 +147,6 @@ def _seed_transit_from_weather_if_missing(
     return seeded
 
 
-def _state_without_owned_keys(current: dict[str, str]) -> dict[str, str]:
-    return {k: v for k, v in current.items() if k not in _owned_env_keys()}
-
-
 def _location_from_manual(form: dict[str, str]) -> tuple[location_state.SavedLocation | None, str | None]:
     manual_lat = (form.get("manual_lat") or "").strip()
     manual_lon = (form.get("manual_lon") or "").strip()

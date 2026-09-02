@@ -14,10 +14,6 @@ cannot serve parks under its own name
 
 This module is import-cheap (stdlib only) so socket-activated web surfaces and
 the config emitters can resolve the ring without pulling in NumPy/SciPy.
-
-:data:`COUPLING_LOOPBACK` is the RETIRED route's token, kept only so the readers
-that still parse a migrating box's persisted value recognize it. It is not in
-:data:`VALID_COUPLINGS` and nothing in this repo writes it.
 """
 
 from __future__ import annotations
@@ -33,20 +29,13 @@ if TYPE_CHECKING:
 # Environment selector. Read at config-emit time and at fan-in daemon startup.
 COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 
-# The RETIRED snd-aloop route's token (ADR-0100). Kept out of
-# :data:`VALID_COUPLINGS` so it reads as what it is — a value a migrating box's
-# ``fanin.env`` may still carry — while the readers that parse such a file keep
-# one spelling for it.
-COUPLING_LOOPBACK = "loopback"
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via a CAPTURE direction of the ``jts_ring`` ioplug. Same SHM
 # contract v1 as Ring B; roles flipped. The Rust ``Coupling::ShmRing``
 # normalizer MUST agree with this token.
 COUPLING_SHM_RING = "shm_ring"
 # THE transport, spelled once. Public so other planners (e.g.
-# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token,
-# and so :func:`jasper.control.transport_park.ring_only_transport` can DERIVE
-# "the ring is the only route" rather than carry a second flag for it.
+# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token.
 # ``_VALID_COUPLINGS`` stays as the backward-compatible private alias.
 VALID_COUPLINGS = frozenset({COUPLING_SHM_RING})
 _VALID_COUPLINGS = VALID_COUPLINGS
@@ -577,32 +566,23 @@ RING_PCM_DEVICES = (
 TRANSPORT_RING = "ring"
 
 
-def resolve_coupling(raw: str | None) -> str:
-    """Normalize a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value to a transport.
+def resolve_coupling(raw: str | None) -> str | None:
+    """The transport a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value NAMES, if any.
 
-    Answers :data:`COUPLING_LOOPBACK` for unset, empty, or any value outside
-    :data:`VALID_COUPLINGS` — i.e. for a migrating box's file, which the
-    reconciler rewrites on its next pass. Case-insensitive; whitespace ignored.
-    For "is this file still on the retired route?" ask
-    :func:`coupling_value_removed`, which answers it directly.
+    :data:`COUPLING_SHM_RING` for the ring token (case-insensitive, whitespace
+    ignored); ``None`` for everything else — unset, empty, or a value outside
+    :data:`VALID_COUPLINGS`. ``None`` is "this file names no transport", NOT a
+    second transport: since ADR-0100 there is only one, and a caller that needs
+    to tell an absent key from a retired token asks
+    :func:`coupling_value_removed`.
 
     THIS IS NOT THE DAEMON'S RULE, and nothing may derive a runtime expectation
-    from it. Since ADR-0100 the Rust daemon serves exactly ``None`` / ``""`` /
-    ``shm_ring`` — it has no loopback arm to take — and refuses anything else as
-    a config-class fault (exit 78, the unit parks). So a running fan-in is
-    always on the ring, whatever this returns. The ``COUPLING_LOOPBACK`` answer
-    for an unset key describes only the persisted FILE's legacy default, which
-    is what the ``--auto`` reconciler and :func:`coupling_value_removed` read it
-    for; the doctor no longer derives its expected transport from it (that
-    mapping FAILed a healthy box whose key had not been written yet, since
-    coupling-auto runs ``After=jasper-fanin.service``).
+    from it. The Rust daemon serves ``None`` / ``""`` / ``shm_ring`` alike and
+    refuses anything else as a config-class fault (exit 78, the unit parks), so
+    a running fan-in is on the ring whatever this returns.
     """
-    if raw is None:
-        return COUPLING_LOOPBACK
-    value = raw.strip().lower()
-    if value in _VALID_COUPLINGS:
-        return value
-    return COUPLING_LOOPBACK
+    value = (raw or "").strip().lower()
+    return value if value in _VALID_COUPLINGS else None
 
 
 def coupling_value_removed(raw: str | None) -> bool:

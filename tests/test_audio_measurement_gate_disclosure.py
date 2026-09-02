@@ -196,7 +196,7 @@ def test_build_gate_disclosure_never_raises_and_never_fabricates():
     diagnostic paths, so a missing or malformed field is ``None`` —
     "unknown" — never a substituted value."""
     for block in (None, {}, {"window_ms": "seven"}, {"floor_source": 12},
-                  {"pre_post_gate_delta": "nope"},
+                  {"window_ms": 10**400}, {"pre_post_gate_delta": "nope"},
                   {"internal_reflection_ledger": "nope"}):
         d = gate_disclosure.build_gate_disclosure(block)
         assert d.gate_ms is None

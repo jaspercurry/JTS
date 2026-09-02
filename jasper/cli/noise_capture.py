@@ -103,20 +103,6 @@ HEARTBEAT_SEC = 30.0
 # ---------------------------------------------------------------------------
 
 
-def noise_dirs(condition: str) -> tuple[str, str]:
-    """Return (aec_on_dir, aec_off_dir) names for the given condition.
-
-    Two-leg variant kept for backward compat — most new callers want
-    `all_noise_dirs()` which also returns the dtln dir.
-    """
-    if condition not in CONDITIONS:
-        raise ValueError(
-            f"unknown condition {condition!r}; expected one of {CONDITIONS}"
-        )
-    state = "music" if condition == "music" else "nomusic"
-    return (f"aec_on_{state}", f"aec_off_{state}")
-
-
 def all_noise_dirs(condition: str) -> dict[str, str]:
     """Return `{leg_name: noise_dir}` for the given condition.
 

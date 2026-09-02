@@ -166,7 +166,7 @@ def test_preview_compiled_preset_rides_the_ruled_stop() -> None:
 
 def test_passive_sub_preset_rides_the_ruled_stop() -> None:
     """The sibling compile site (passive mains + local sub) rides it too."""
-    preset, issues, _gates = staging.build_passive_mains_with_sub_preset(
+    preset, issues, _gates = staging.build_passive_mains_preset(
         _passive_1way_sub_topology_fc(120.0)
     )
 

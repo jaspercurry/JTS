@@ -55,7 +55,7 @@ import math
 import secrets
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
@@ -106,9 +106,12 @@ from jasper.active_speaker.crossover_v2.durable_state import (
     build_conductor_state,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_POSITION_HOLD_EXPIRED,
     REASON_POSITION_TARGET_MISSING,
+    REASON_REGISTRY,
     REASON_SESSION_CEILING_EXPIRED,
+    REASON_SPEAKER_SHAPE_UNSUPPORTED,
 )
 # The round-outcome vocabulary, which the domain owns (#2662). This module
 # still DECIDES which of the four a graded session came to — see
@@ -120,9 +123,9 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_BEST_EVALUATED,
     RESULT_VERIFIED_TARGET,
 )
-from jasper.active_speaker.measurement_programs import HOLD_BUDGET_S
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
+from jasper.web.correction_crossover_context import V2ConductorContext
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
@@ -1954,96 +1957,58 @@ def _take_staged_angle_walk(
     preset: Any,
     topology: Any,
 ) -> tuple[
-    tuple[Any, ...], str, dict[int, Any], dict[str, float], Any, tuple[Any, ...]
+    tuple[Any, ...], str, dict[int, Any], dict[str, float], tuple[Any, ...]
 ] | None:
     """This session's staged angle walk as
-    ``(poses, consumer, specs, trims, geometry, claims)``, or ``None``.
+    ``(poses, consumer, specs, trims, claims)``, or ``None``.
 
-    :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
-    ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
+    :func:`_take_staged_prescription`'s twin: ONE take, at ONE place. ``None``
+    means NOTHING WAS STAGED — an ordinary session — and nothing else.
 
-    **A staged walk this session cannot honour REFUSES THE OPEN**
-    (:class:`CrossoverV2Refused`), with the producing module's own slug in the
-    sentence. The four refusal classes it CATCHES are the spool's ``AngleRequestRefused``,
-    the seam's ``LateralWalkRefused``, the bare ``CrossoverV2FlowError`` the
-    spool re-raises for a banked stop that no longer satisfies the seam's
-    contract (a hand-edited angle), which that module deliberately does not
-    re-wrap, and the bare ``ValueError`` ``MeasureSpec`` raises for a polarity
-    pair it will not accept (``spec``, below).
+    A staged walk this session cannot honour REFUSES THE OPEN
+    (:class:`CrossoverV2Refused`) with the producing module's own slug, rather
+    than opening in the ordinary 3-capture shape and silently answering a
+    different question. This runs before any state is opened, so the loud
+    direction is also the cheap one; the document is single-use either way, so
+    the operator restages after fixing what was named.
 
-    It used to journal every one of them and return ``None``, and the session
-    then opened in its ordinary 3-capture shape: an operator who staged a walk
-    got a measurement that silently answered a different question, with the only
-    evidence a WARNING line on a box they were not reading. A refusal costs
-    nothing here — this runs before any state is opened — so the loud direction
-    is also the cheap one. The document is single-use either way, so the
-    operator restages after fixing what was named.
+    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, BUILT
+    here rather than checked: the same objects the engine leg plays, so no
+    second construction can disagree with the validated one. The design-axis
+    MEASURE index always carries the walk-level spec; a STOP is in the map only
+    when it names a candidate, which only the engine leg can install.
+    ``claims`` is what each stop's graph CARRIED, for the pose records the flow
+    banks.
 
-    The consumer is always ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here
-    rather than read from the document, because it decides which pose table the
-    walk runs and may have exactly one writer.
-
-    ``specs`` is capture index -> the ``MeasureSpec`` that index plays, built
-    HERE because adoption is where the document's ``(polarity, inverted_role)``
-    pair first meets the gate that judges it. Built rather than checked: the
-    same objects the engine leg plays, so no second construction can disagree
-    with the one that was validated. A pair ``MeasureSpec.__post_init__``
-    refuses therefore refuses the open here, in the spec's own sentence, rather
-    than reaching a capture callback as a 500.
-
-    The design-axis MEASURE index is always in the map, carrying the walk-level
-    spec. A STOP is in it only when it names a candidate: a candidate is played
-    as the alignment it was minted with, which only the engine leg can install,
-    where a walk naming none is the shipped one and stays on the leg it already
-    ran on. ``claims`` is what each stop's graph CARRIED — the candidate, the
-    polarity it rode, the level match it played through — for the pose records
-    the flow banks, so a reader selecting by candidate sees the graph the take
-    was measured under rather than the default one.
-
-    ``trims`` is the per-role attenuation a ``--level-matched`` walk's graph
-    will carry, RESOLVED HERE and empty for every walk that asked for none.
-    Adoption is the one place that can both ask the evidence question and still
-    refuse, so it is asked exactly once: the answer travels to the session that
-    installs the graph and to the record that states what played, and no later
-    hop re-derives it. A ``level_matched`` walk faces TWO refusals here, both
-    the same S12 lie caught at different seams. FIRST, the source: the trims
-    ride the engine MEASURE leg exactly as a sign-flip does, so a non-wired
-    source refuses with
+    ``trims`` is the per-role attenuation a ``--level-matched`` walk carries,
+    resolved HERE and empty for a walk that asked for none. Adoption is the one
+    place that can both ask the evidence question and still refuse, so it is
+    asked exactly once. Such a walk faces two refusals, the same lie caught at
+    different seams: a non-wired ``capture_source`` refuses with
     :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NEEDS_WIRED`
-    before any statefile is read. THEN, on a wired source, the evidence: it has
-    ONE owner
-    (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`,
-    which decides between the banked base trim and the guided captures), and a
-    box neither of those
-    answers for refuses with
-    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`
-    rather than measuring unmatched branches under a record that says matched.
+    before any statefile is read, and a wired box with no measured evidence
+    (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`)
+    refuses with
+    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`.
     A datasheet estimate is deliberately not a fallback: it is physics about
     the driver model, not a measurement of this cabinet.
 
-    ``capture_source`` is read for TWO questions, both the same one asked of a
-    different capability: only a wired session binds the engine MEASURE leg
-    (:func:`_bind_engine_measure_leg` returns ``None`` with no local capture
-    half), and every other source runs MEASURE on the flow leg, which has no
-    ``spec``, installs the ordinary graph, and knows nothing about a sign-flip
-    or a level match. So a walk asking for a sign-flipped branch OR a level
-    match on a non-wired source is one this session cannot honour — it refuses,
-    rather than banking an ordinary capture under a record, and a journal line,
-    that say otherwise.
+    ``capture_source`` gates the same capability twice: only a wired session
+    binds the engine MEASURE leg, and every other source runs MEASURE on the
+    flow leg, which has no ``spec`` and knows nothing about a sign-flip or a
+    level match.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
-    permissions mistake refuses every session until it is fixed rather than
-    silently destroying the evidence of itself.
+    permissions mistake refuses every session rather than silently destroying
+    the evidence of itself.
 
     ``lateral_group_present`` and ``plans_cloud_group`` are the session's own
-    facts, passed in rather than read, because the composing seam may not read
-    session flags.
+    facts, passed in because the composing seam may not read session flags.
 
-    A walk does not survive its session. The consumer is not persisted and the
+    A walk does not survive its session: the consumer is not persisted and the
     document is single-use, so a session that lapses mid-walk re-opens in its
-    ordinary shape and the operator stages again — which is the safe direction:
-    a resumed half-walk would bank poses under a consumer nothing re-declared.
+    ordinary shape and the operator stages again.
     """
     from jasper.active_speaker.angle_capture import (
         WALK_CANDIDATE_NOT_MEASURABLE,
@@ -2196,7 +2161,7 @@ def _take_staged_angle_walk(
     try:
         axes_by_candidate = {
             candidate_id: candidate_measure_axes(
-                find_banked_candidate(candidate_id).candidate, preset=preset,
+                find_banked_candidate(candidate_id).candidate
             )
             for candidate_id in sorted(set(candidate_ids) - {""})
         }
@@ -2273,7 +2238,6 @@ def _take_staged_angle_walk(
         delayed_role=request.delayed_role,
         delay_us=request.delay_us,
         level_matched=request.level_matched,
-        declared_geometry=request.declared_geometry is not None,
         # WHICH evidence answered, so a take's receipts name the source of the
         # gains its graph carries instead of leaving a reader to guess between
         # the banked trim and the guided captures. Empty on an unmatched walk.
@@ -2289,7 +2253,6 @@ def _take_staged_angle_walk(
         LATERAL_CONSUMER_FORWARD_MODEL,
         specs_by_index,
         level_trims,
-        request.declared_geometry,
         lateral_claims,
     )
 
@@ -2994,72 +2957,6 @@ def bind_evidence_publishers(
         )
 
     return publish_check, publish_candidate, refs
-
-
-def publish_declared_geometry(
-    store: Any, relay_session_id: str, geometry: Any
-) -> None:
-    """Bank what the household measured, once, when they were asked.
-
-    ``None`` publishes nothing: most sessions carry no declaration, and an
-    empty artifact would read as a room somebody measured to zero.
-
-    The values are CARRIED, never computed from: the entanglement floor
-    (``2.5 / t_first_bounce``) is an offline toolbox step over the banked
-    packet, and the reflection finder this rig class ships is structurally
-    blind to the bounce it would need, so the human answer is the only source.
-    """
-    if geometry is None:
-        return
-    from jasper.active_speaker.crossover_v2.evidence_packet import (
-        DECLARED_GEOMETRY_ARTIFACT,
-        DECLARED_GEOMETRY_KIND,
-    )
-
-    store.publish_json_artifact(
-        f"crossover_v2/{relay_session_id}/{DECLARED_GEOMETRY_ARTIFACT}",
-        {"schema_version": 1, "kind": DECLARED_GEOMETRY_KIND, **geometry.to_dict()},
-    )
-
-
-#: Where the declaration rides from the stage that took the walk to the stage
-#: that grades it, inside the durable ``evidence`` block the findings
-#: projection and the cloud fingerprints already cross on.
-DECLARED_GEOMETRY_STATE_KEY = "declared_geometry"
-
-
-def declared_geometry_prior_from_state(state: Mapping[str, Any] | None) -> Any:
-    """Stage 1's tape measure, as :func:`publish_declared_geometry` takes it.
-
-    The read side of :data:`DECLARED_GEOMETRY_STATE_KEY`. Stage 2 stages no
-    walk and opens its OWN bundle, so without this the post-apply packet would
-    report a room nobody ever declared — the reading defect that block's
-    absence reason exists to prevent, arriving by a different door.
-
-    ``None`` is every session nobody was asked about, and also a record too
-    damaged to read back: an unreadable declaration is not a room, and a
-    grading stage must not be refused its open over one.
-    """
-    from jasper.audio_measurement.measurement_geometry import (
-        DeclaredGeometry,
-        GeometryFieldError,
-    )
-
-    evidence = (state or {}).get("evidence")
-    record = (
-        evidence.get(DECLARED_GEOMETRY_STATE_KEY)
-        if isinstance(evidence, Mapping) else None
-    )
-    if not isinstance(record, Mapping):
-        return None
-    try:
-        return DeclaredGeometry.from_dict(record)
-    except GeometryFieldError:
-        log_event(
-            logger, "correction.crossover_v2_declared_geometry_unreadable",
-            declared=",".join(sorted(str(key) for key in record)),
-        )
-        return None
 
 
 def bind_round_receipt(
@@ -4299,57 +4196,6 @@ def _start_speculative_group_close(conductor: Any) -> threading.Thread | None:
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
-class V2ConductorContext:
-    """Everything the production conductor needs, resolved from live status."""
-
-    preset: Any
-    roles_bands: tuple
-    fc_hz: float
-    driver_caps_dbfs: dict[str, float]
-    # Per-role longest admissible ONE sweep, seconds, from the SAME owner the
-    # admission gate reads (``effective_sweep_duration_limit_s``). The MEASURE
-    # composer fits to these, so a segment cannot overshoot the ceiling
-    # admission then judges it against (#2921).
-    driver_sweep_duration_limits_s: dict[str, float]
-    role_targets: dict[str, str]
-    safety_profile: Mapping[str, Any]
-    session_volume_db: float
-    driver_spacing_m: float
-    topology: Any
-    playback_device: str
-    role_channels: dict[str, int]
-    sound_design_revision: int
-    # Per-role declared EFFECTIVE sensitivities (naked datasheet figure with
-    # any declared in-line pad folded in — #1665) from the design draft's
-    # declaration (the one owner of that fact — W6.5). Threaded into every cap
-    # resolution AND the play-time readmission so the composed levels and the
-    # admission gate can never disagree about a derived HF ceiling.
-    declared_sensitivities: dict[str, float] = field(default_factory=dict)
-    # Per-role declared driver technology class (#1665 component entry), fed
-    # to the conductor's Layer-1a linearization fit
-    # (linearization_envelope.compose_envelope's class_prior_limit term —
-    # see crossover_v2_flow.CrossoverV2Session's own driver_class_by_role
-    # ctor param, landed by #1668 PR-C ahead of this resolver populating it).
-    # A role absent here fits under the conservative "unknown" class default.
-    driver_class_by_role: dict[str, str] = field(default_factory=dict)
-    # Per-role declared effective radiating diameter in mm (#1665 component
-    # entry), the ka/beaming prior (#1675 owner ruling), which is DISCLOSURE
-    # and never a bound. Collected since #1665; the value reaches the conductor
-    # by the SAME draft path ``driver_class_by_role`` takes, which is why wiring
-    # it needs no schema or allowlist change. A role absent here simply gets no
-    # beaming prior, disclosed as such rather than assuming a diameter.
-    radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
-    # Flat-linearization plan PR-4: the tweeter's confirmed
-    # ``measurement_band_hz`` — the contract-derived echo/null analysis band
-    # replacing DEFAULT_ECHO_BAND_HZ's flat constant at the cloud-group
-    # pipeline's call site (crossover_v2_flow.CrossoverV2Session's own
-    # tweeter_measurement_band_hz ctor param). ``None`` degrades to that
-    # module default, never a refused session — a declared-metadata gap here
-    # is not a reason to block a measurement the household is entitled to run.
-    tweeter_measurement_band_hz: tuple[float, float] | None = None
-
-
 def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
     """Ensure a ready crossover preview exists before a v2 session reads one.
 
@@ -4514,7 +4360,6 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     it — the exact 2026-07-28 JTS3 dead-end.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
-    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.crossover_v2_flow import derive_session_volume_db
     from jasper.active_speaker.design_draft import (
@@ -4529,41 +4374,53 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         resolve_driver_measurement_band_hz,
     )
     from jasper.active_speaker.playback_route import resolve_active_playback_device
+    from jasper.active_speaker.profile import required_driver_roles
     from jasper.audio_measurement.program import RoleBand
-    from jasper.output_topology import load_output_topology
+    from jasper.output_topology import (
+        load_output_topology,
+        topology_is_subless_passive_mains,
+    )
 
-    if not status.get("active"):
-        raise CrossoverV2Refused(
-            "this speaker has no active crossover to measure"
-        )
-    setup = status.get("setup")
-    if not isinstance(setup, Mapping) or setup.get("status") != "ready":
-        raise CrossoverV2Refused(
-            "protected speaker setup is not ready; finish it before measuring"
-        )
-    # The one loud line 7j buys. A rotated topology fingerprint used to make
-    # `setup.status` `blocked` and refuse this session outright; it is now a
-    # notice, and this is the moment it is worth saying — once per session
-    # open, not on every `/state` poll.
-    if any(
-        isinstance(issue, Mapping)
-        and issue.get("code") == BASELINE_TOPOLOGY_CHANGED
-        for issue in (setup.get("issues") or ())
-    ):
-        log_event(
-            logger,
-            "correction.crossover_v2_baseline_topology_stale",
-            level=logging.WARNING,
-            code=BASELINE_TOPOLOGY_CHANGED,
-        )
     topology = load_output_topology()
-    # Ensure a ready crossover preview BEFORE resolving the capture preset —
-    # otherwise resolve_capture_preset's no-preview fallback silently bakes
-    # the generic bundled preset into every MEASURE candidate (see docstring).
-    ensure_crossover_preview_ready()
+    # A subless passive main has no active crossover, so the gates below — all
+    # asking whether an ACTIVE one is commissioned — are not questions about it.
+    passive_mains = topology_is_subless_passive_mains(topology)
+    if not passive_mains:
+        if not status.get("active"):
+            raise CrossoverV2Refused(
+                "this speaker has no active crossover to measure"
+            )
+        setup = status.get("setup")
+        if not isinstance(setup, Mapping) or setup.get("status") != "ready":
+            raise CrossoverV2Refused(
+                "protected speaker setup is not ready; finish it before measuring"
+            )
+        # The one loud line 7j buys. A rotated topology fingerprint used to make
+        # `setup.status` `blocked` and refuse this session outright; it is now a
+        # notice, and this is the moment it is worth saying — once per session
+        # open, not on every `/state` poll.
+        if any(
+            isinstance(issue, Mapping)
+            and issue.get("code") == BASELINE_TOPOLOGY_CHANGED
+            for issue in (setup.get("issues") or ())
+        ):
+            log_event(
+                logger,
+                "correction.crossover_v2_baseline_topology_stale",
+                level=logging.WARNING,
+                code=BASELINE_TOPOLOGY_CHANGED,
+            )
+        # Ensure a ready crossover preview BEFORE resolving the capture preset —
+        # otherwise resolve_capture_preset's no-preview fallback silently bakes
+        # the generic bundled preset into every MEASURE candidate (see docstring).
+        ensure_crossover_preview_ready()
     preset = resolve_capture_preset(topology)
-    if preset.way_count != 2:
-        raise CrossoverV2Refused("the v2 conductor flow is scoped to 2-way presets")
+    if preset.way_count not in (1, 2):
+        raise CrossoverV2Refused(
+            REASON_REGISTRY[REASON_SPEAKER_SHAPE_UNSUPPORTED].message,
+            code=REASON_SPEAKER_SHAPE_UNSUPPORTED,
+        )
+    roles = required_driver_roles(preset.way_count)
     draft = load_design_draft(topology=topology)
     safety_profile = draft.get("driver_safety_profile")
     # The gate the refusal text has always CLAIMED (issue #1821). Evaluated
@@ -4598,9 +4455,20 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             fingerprint = str(target.get("target_fingerprint") or "")
             if role and fingerprint:
                 role_targets[role] = fingerprint
-    if set(role_targets) != {"woofer", "tweeter"}:
+    if set(role_targets) != set(roles):
+        # The registry copy cannot carry the roles; the journal line can.
+        log_event(
+            logger,
+            "correction.crossover_v2_measurement_targets_missing",
+            level=logging.WARNING,
+            gate="session_open",
+            code=REASON_MEASUREMENT_TARGETS_MISSING,
+            declared=",".join(roles),
+            found=",".join(sorted(role_targets)),
+        )
         raise CrossoverV2Refused(
-            "the woofer and tweeter measurement targets are not both active"
+            REASON_REGISTRY[REASON_MEASUREMENT_TARGETS_MISSING].message,
+            code=REASON_MEASUREMENT_TARGETS_MISSING,
         )
     # The declaration's per-role EFFECTIVE datasheet sensitivities -- naked
     # figure with any declared in-line pad folded in (#1665) -- threaded into
@@ -4615,7 +4483,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     roles_bands = []
     caps: dict[str, float] = {}
     sweep_duration_limits_s: dict[str, float] = {}
-    for channel, role in enumerate(("woofer", "tweeter")):
+    measurement_bands: dict[str, tuple[float, float]] = {}
+    for channel, role in enumerate(roles):
         try:
             # program_admission=True: this context exists solely to serve the
             # admission-gated CHECK/MEASURE programs, whose channel routing
@@ -4641,28 +4510,26 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
             raise CrossoverV2Refused(
                 f"the {role}'s safe excitation limits could not be resolved"
             ) from exc
+        # Flat-linearization plan PR-4: this role's confirmed measurement band.
+        # Its OWN except arm: a declared-metadata gap on this optional surface
+        # must never refuse a session.
+        try:
+            measurement_bands[role] = resolve_driver_measurement_band_hz(
+                safety_profile, role_targets[role],
+            )
+        except (ExcitationSafetyPlanError, ValueError):
+            pass
         roles_bands.append(RoleBand(role, channel, band))
         caps[role] = float(cap)
-    # Flat-linearization plan PR-4: the tweeter's confirmed measurement band —
-    # by the time this loop above has succeeded for role="tweeter",
-    # resolve_driver_excitation_ceilings has ALREADY validated this exact
-    # field on the same confirmed record (see its "Band-edge asymmetry"
-    # docstring paragraph), so this call is not expected to raise here; it is
-    # still wrapped, because a declared-metadata gap on this NEW, optional
-    # surface must never turn into a refused measurement session — the
-    # conductor's own tweeter_measurement_band_hz ctor param degrades to the
-    # module default on None.
-    try:
-        tweeter_measurement_band_hz = resolve_driver_measurement_band_hz(
-            safety_profile, role_targets["tweeter"],
-        )
-    except (ExcitationSafetyPlanError, ValueError):
-        tweeter_measurement_band_hz = None
-    region = preset.crossover_regions[0]
-    fc_hz = float(region.fc_hz)
+    # ``None`` is "this speaker declares no corner", never a corner at zero —
+    # see ``crossover_v2.priors`` and ``build_verify_program``.
+    fc_hz = (
+        float(preset.crossover_regions[0].fc_hz)
+        if preset.crossover_regions else None
+    )
     session_volume_db = derive_session_volume_db(
         safety_profile,
-        [role_targets["woofer"], role_targets["tweeter"]],
+        [role_targets[role] for role in roles],
         declared_sensitivities=declared_sensitivities,
     )
     playback_device, _playback_device_source = resolve_active_playback_device(
@@ -4698,12 +4565,12 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
         driver_spacing_m=0.0,
         topology=topology,
         playback_device=playback_device,
-        role_channels={"woofer": 0, "tweeter": 1},
+        role_channels={role: channel for channel, role in enumerate(roles)},
         sound_design_revision=int(draft.get("revision", 0)),
         declared_sensitivities=declared_sensitivities,
         driver_class_by_role=driver_class_by_role,
         radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
-        tweeter_measurement_band_hz=tweeter_measurement_band_hz,
+        measurement_band_hz_by_role=measurement_bands,
     )
 
 
@@ -4802,11 +4669,11 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 #: How long ONE position hold waits for whoever is moving the microphone
-#: before the session refuses rather than holding forever.
+#: before the session refuses rather than holding forever. Ten minutes covers
+#: the slower mover — a person walking a tape to the next bearing and posting
+#: the release.
 #:
-#: The NUMBER and why it is ten minutes belong to
-#: :data:`~jasper.active_speaker.measurement_programs.HOLD_BUDGET_S`; this is
-#: the gate that spends it. A hold is unbounded as far as the transport is
+#: A hold is unbounded as far as the transport is
 #: concerned — the capture page re-posts the same begin every 1.5 s and each
 #: re-post rearms the runner's inactivity deadline
 #: (``capture_relay.session.run_capture_plan``) — so without this budget nothing
@@ -4825,7 +4692,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 #: :meth:`PositionGate.gate` once
 #: :func:`enforce_session_volume_ceiling_if_stale` reports the walk outlived its
 #: ceiling.
-REMOTE_POSITION_HOLD_BUDGET_S = float(HOLD_BUDGET_S)
+REMOTE_POSITION_HOLD_BUDGET_S = 600.0
 
 #: Machine reasons the gate answers a begin with. Stable strings: a driver
 #: branches on these, and the phone renders the message beside them.
@@ -6331,6 +6198,7 @@ def prepare_v2_session(
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
+    from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
     from jasper.active_speaker.crossover_v2.topology_prescription import (
         apply_topology_pin,
     )
@@ -6483,25 +6351,29 @@ def prepare_v2_session(
         raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
         topology_prescription = None
         if raw_topology is not None:
-            # Woofer first, tweeter second — the order this context builds them in.
-            woofer_band, tweeter_band = (
-                context.roles_bands[0].band, context.roles_bands[1].band,
+            # The declarations below are a TWO-role reading: a 1-way main passes
+            # ``None`` and the reader refuses on the way count instead.
+            pair = (
+                context.roles_bands if len(context.roles_bands) == 2
+                and "tweeter" in context.role_targets else ()
             )
             woofer_diameter_mm = context.radiating_diameter_mm_by_role.get("woofer")
             try:
                 topology_prescription = read_topology_prescription(
                     raw_topology,
-                    declared_floor_hz=tweeter_band.lower_hz,
-                    lower_driver_ceiling_hz=woofer_band.upper_hz,
+                    declared_floor_hz=pair[1].band.lower_hz if pair else None,
+                    lower_driver_ceiling_hz=pair[0].band.upper_hz if pair else None,
                     minimum_slope_db_per_octave=(
                         resolve_driver_protection_slope_db_per_octave(
                             context.safety_profile, context.role_targets["tweeter"],
-                        )
+                        ) if pair else None
                     ),
                     beaming_ceiling_hz=(
                         None if woofer_diameter_mm is None
                         else beaming_onset_hz(float(woofer_diameter_mm))
                     ),
+                    # ``None`` is "not stated": the gate stays silent, never guesses.
+                    way_count=getattr(context.preset, "way_count", None),
                 )
             except TopologyPrescriptionRefused as exc:
                 raise CrossoverV2Refused(
@@ -6516,8 +6388,12 @@ def prepare_v2_session(
         try:
             alignment_prescription = read_alignment_prescription(
                 (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
-                # THIS round's corner, never ``context.fc_hz`` — see the pin above.
+                # THIS round's corner, never ``context.fc_hz`` — see the pin
+                # above. ``None`` on a speaker with no crossover region, which
+                # the reader refuses on by way count rather than here.
                 fc_hz=session_fc_hz,
+                # THIS round's preset — the pinned one when a pin ran.
+                way_count=getattr(session_preset, "way_count", None),
                 # The preset's own declared window, from its single owner. It is
                 # the one bound here that does not rest on a number the request
                 # supplied — and it already existed as the Fix-3 plausibility
@@ -6558,11 +6434,6 @@ def prepare_v2_session(
     # What each stop of a staged walk was measured UNDER, in stop order, for
     # the pose records the flow banks. Empty on every session that stages none.
     lateral_claims: tuple[Any, ...] = ()
-    # The household's tape measure, if the operator was asked for it. Bound
-    # beside the two above for the same reason: ``_open`` reads it on both
-    # stages. Stage 2 stages no walk, so it rehydrates the room from durable
-    # state below rather than taking one.
-    declared_geometry: Any = None
     if not verify_only:
         include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
         # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
@@ -6605,7 +6476,6 @@ def prepare_v2_session(
                 lateral_consumer,
                 engine_measure_specs,
                 engine_level_trims,
-                declared_geometry,
                 lateral_claims,
             ) = staged_walk
             include_lateral = True
@@ -6706,10 +6576,6 @@ def prepare_v2_session(
         # ``CrossoverV2Session.__init__`` so the "values plus a date, or
         # nothing" rule has one owner.
         pilot_transfer_prior = pilot_transfer_prior_from_state(state)
-        # #3498's tape measure, rehydrated so the bundle this stage banks
-        # carries the same room stage 1 was told. Without it the post-apply
-        # packet reports a household that was never asked.
-        declared_geometry = declared_geometry_prior_from_state(state)
     else:
         prior_raw = load_v2_state()
         attempt_store = _attempt_loop_store_snapshot()
@@ -6791,8 +6657,9 @@ def prepare_v2_session(
             spec = build_v2_verify_session_spec(
                 # The corner this round was measured and applied at — stage 1's
                 # ``session_fc_hz`` rehydrated. Same one-corner-per-round rule
-                # as the stage-1 spec below.
+                # as the stage-1 spec below; ``None`` on a speaker with none.
                 verify_fc_hz,
+                measurement_band_hz=measurement_band_hz(context.roles_bands),
                 acknowledgement_binding=acknowledgement_binding,
                 plan_shape=plan_shape,
                 default_setup_calibration=default_setup_calibration_for_v2(),
@@ -6850,17 +6717,6 @@ def prepare_v2_session(
         publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
-        # Here rather than at the bundle open: the artifact is filed under the
-        # MINTED provider session id, which does not exist until the line above.
-        publish_declared_geometry(
-            evidence_store, relay_session_id, declared_geometry
-        )
-        if declared_geometry is not None:
-            # …and into durable ``evidence``, which is how the room reaches the
-            # stage that GRADES it: stage 2 stages no walk and banks its own
-            # bundle, so this is the only channel it has. Written on both
-            # stages so a re-armed verify keeps re-banking the same room.
-            refs[DECLARED_GEOMETRY_STATE_KEY] = declared_geometry.to_dict()
         # One signal per RELAY session, shared by the play seam (which fires
         # it) and the relay runner (which installs the armed capture's phone
         # progress ladder on it). A wired session has no page to pace, so it
@@ -6968,7 +6824,7 @@ def prepare_v2_session(
                 driver_spacing_m=context.driver_spacing_m,
                 driver_class_by_role=context.driver_class_by_role,
                 radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-                tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
+                tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
                 accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
                 applied=True,
                 gain_plan_db=state.get("gain_plan_db"),
@@ -7047,7 +6903,7 @@ def prepare_v2_session(
                 lateral_claims=lateral_claims,
                 measurement_protection_sections_by_role=protection_sections,
                 sound_design_revision=context.sound_design_revision,
-                tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
+                tweeter_measurement_band_hz=context.measurement_band_hz_by_role.get("tweeter"),
                 attempt_floor=attempt_store.floor,
                 speaker_id=context.topology.topology_id,
                 alignment_prescription=alignment_prescription,

@@ -9,6 +9,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -201,10 +203,28 @@ def test_airplay_renderer_missing_target_level_matches_camilla_default(tmp_path:
     assert "audio_backend_latency_offset_in_seconds = -0.093333;" in rendered
 
 
-def test_airplay_renderer_falls_back_when_outputd_env_missing(tmp_path: Path):
-    # No outputd env -> service default DAC buffer=3072. Same total as
-    # test_airplay_renderer_derives_latency_offset_from_camilla_target:
-    # 256 + 4096 + 128 + 3072 = 7552 / 48000 = -0.157333.
+def test_airplay_default_dac_buffer_matches_the_runtime_plan(tmp_path: Path):
+    """The packaged DAC-buffer default has ONE owner and a pin to prove it.
+
+    With neither env layer naming the key, jasper-outputd runs its compile-time
+    default and this renderer must charge exactly that number — the AirPlay
+    presentation offset is derived from it. The script keeps its own python-free
+    constant (this tier is what answers when the venv is the broken thing), so
+    the drift is closed here instead: against jasper.audio_runtime_plan, which
+    the plan's own contract test pins to the Rust const.
+    """
+    import re
+
+    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES
+
+    match = re.search(
+        r"^DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=(\d+)$",
+        SCRIPT.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match is not None
+    assert int(match.group(1)) == DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES
+
     rendered, _ = _render(
         tmp_path,
         """
@@ -217,7 +237,9 @@ def test_airplay_renderer_falls_back_when_outputd_env_missing(tmp_path: Path):
         outputd_env=NO_OUTPUTD_ENV,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.157333;" in rendered
+    # Ring A 256 + Camilla 4096 + Ring B 128 + the packaged DAC default.
+    expected = -(256 + 4096 + 128 + DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES) / 48000
+    assert f"audio_backend_latency_offset_in_seconds = {expected:.6f};" in rendered
 
 
 def test_airplay_renderer_picks_up_alternate_outputd_dac_buffer_size(tmp_path: Path):
@@ -333,7 +355,20 @@ def test_airplay_renderer_adds_no_content_bridge_term(tmp_path: Path):
     assert expected in stale, "a stale rate_match env must not move the offset"
 
 
-def test_airplay_renderer_ignores_stale_outputd_knobs_in_jasper_env(tmp_path: Path):
+def test_airplay_renderer_follows_jasper_env_and_ignores_retired_bridge_knobs(
+    tmp_path: Path,
+):
+    """/etc/jasper/jasper.env is the OPERATOR SEAM for outputd's DAC buffer.
+
+    jasper-outputd.service pins no `Environment=` for that key, so jasper.env is
+    what the daemon resolves when outputd.env is silent — and this renderer must
+    charge the same number, because the AirPlay offset is downstream of it. The
+    unit used to carry a literal BELOW that EnvironmentFile, which silently beat
+    it; the renderer's own literal agreed with the unit and so hid the shear.
+
+    The RETIRED bridge knobs in the same file still add nothing: that route is
+    gone (ADR-0100) and no term is charged for it.
+    """
     rendered, _ = _render(
         tmp_path,
         """
@@ -351,11 +386,40 @@ def test_airplay_renderer_ignores_stale_outputd_knobs_in_jasper_env(tmp_path: Pa
         ),
     )
 
-    # outputd.service applies packaged outputd defaults after /etc/jasper,
-    # so the renderer must not let stale /etc outputd knobs add a bridge term.
-    # Ring A 256 + Camilla 2048 + Ring B 128 + outputd DAC default 3072
-    # = 5504 / 48000.
-    assert "audio_backend_latency_offset_in_seconds = -0.114667;" in rendered
+    # Ring A 256 + Camilla 2048 + Ring B 128 + outputd DAC 1024 (jasper.env,
+    # no longer shadowed) = 3456 / 48000. No rate_match term.
+    assert "audio_backend_latency_offset_in_seconds = -0.072000;" in rendered
+
+
+@pytest.mark.parametrize(
+    ("outputd_env", "jasper_env", "expected"),
+    [
+        # The LAST assignment in a file wins, as it does for systemd.
+        (
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072\n"
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1024\n",
+            "",
+            "-0.072000",
+        ),
+        # A key PRESENT but empty in the higher layer is terminal: the daemon
+        # then sees that value, not jasper.env's, and falls to its default.
+        (
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=\n",
+            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1024\n",
+            "-0.114667",
+        ),
+    ],
+)
+def test_airplay_dac_buffer_layers_resolve_as_systemd_does(
+    tmp_path: Path, outputd_env: str, jasper_env: str, expected: str
+):
+    rendered, _ = _render(
+        tmp_path,
+        _PROD_CAMILLA,
+        outputd_env=outputd_env,
+        jasper_env_content=jasper_env,
+    )
+    assert f"audio_backend_latency_offset_in_seconds = {expected};" in rendered
 
 
 def test_airplay_renderer_falls_back_on_invalid_outputd_dac_buffer(tmp_path: Path):

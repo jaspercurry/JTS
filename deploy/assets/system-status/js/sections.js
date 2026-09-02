@@ -58,7 +58,6 @@ export function waitingNote(spanGrid) {
 // instead of matching the copy, which would make every reword a test edit.
 export const PARK_HEADLINE = {
   parked: "No ring serves this box, so it emits nothing.",
-  pending: "This box still plays on the loopback route. It parks when that route is deleted.",
   unclassified: "This box's saved layout resolves no ring geometry, and no named park describes it yet.",
   unavailable: "The saved layout or the output daemon's settings could not be read, so a park cannot be ruled out.",
 };

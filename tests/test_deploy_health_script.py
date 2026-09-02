@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.machinery
 import importlib.util
 import json
@@ -564,8 +565,9 @@ def test_source_intent_reader_enforces_byte_cap_and_strict_utf8(
         health._source_expectations_with_fingerprint(intent)
 
     intent.write_bytes(b"\xff")
-    with pytest.raises(RuntimeError, match="cannot decode.*UTF-8"):
+    with pytest.raises(RuntimeError) as raised:
         health._source_expectations_with_fingerprint(intent)
+    assert isinstance(raised.value.__cause__, UnicodeError)
 
 
 def test_source_intent_reader_refuses_symlink_and_fifo_without_blocking(
@@ -575,8 +577,10 @@ def test_source_intent_reader_refuses_symlink_and_fifo_without_blocking(
     target.write_text(f"{health.AIRPLAY_INTENT_KEY}=enabled\n", encoding="utf-8")
     intent = tmp_path / "source_intent.env"
     intent.symlink_to(target)
-    with pytest.raises(RuntimeError, match="cannot read"):
+    with pytest.raises(RuntimeError) as raised:
         health._source_expectations_with_fingerprint(intent)
+    assert isinstance(raised.value.__cause__, OSError)
+    assert raised.value.__cause__.errno == errno.ELOOP
     assert target.read_text(encoding="utf-8").endswith("=enabled\n")
 
     intent.unlink()
@@ -1022,7 +1026,7 @@ def test_install_replay_invalidates_previous_source_acknowledgement() -> None:
 
 
 @pytest.mark.parametrize("profile", ["streambox", "endpoint", "satellite"])
-def test_streambox_profiles_skip_parked_brain_and_input_units(
+def test_streambox_profiles_skip_parked_brain_units(
     monkeypatch: pytest.MonkeyPatch,
     short_socket_dir: Path,
     stub_systemctl: Path,
@@ -1031,7 +1035,6 @@ def test_streambox_profiles_skip_parked_brain_and_input_units(
 ) -> None:
     _set_inactive_units(
         monkeypatch,
-        "jasper-input.service",
         "jasper-voice.service",
         "jasper-aec-bridge.service",
     )
@@ -1041,9 +1044,11 @@ def test_streambox_profiles_skip_parked_brain_and_input_units(
     output = capsys.readouterr().out
     queried = stub_systemctl.read_text(encoding="utf-8").splitlines()
     assert "profile=streambox" in output
-    assert "jasper-input.service" not in queried
     assert "jasper-voice.service" not in queried
     assert "jasper-aec-bridge.service" not in queried
+    # The HID accessory bridge is NOT a brain unit: a streambox runs it, so
+    # health must check it rather than excuse it.
+    assert any("jasper-input.service" in line for line in queried)
     assert "deploy health passed: 0 failure(s), 0 warning(s)" in output
 
 

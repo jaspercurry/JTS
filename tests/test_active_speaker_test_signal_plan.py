@@ -246,6 +246,35 @@ def test_driver_test_signal_plan_subwoofer_stays_above_floor_and_below_lowpass()
     assert plan["selection_reason"] == "role_native_subwoofer_tone"
 
 
+def test_a_declared_full_range_driver_gets_a_tone_instead_of_a_refusal() -> None:
+    """``full_range`` has no class figure standing in for a crossover edge, so
+    its floor lives only in the declaration — and reaches BOTH halves of the
+    plan, the profile that picks the tone and the envelope that admits it."""
+    declared = driver_test_signal_plan_from_edges(
+        "full_range",
+        declared_low_limit_hz=80.0,
+        crossover_edge_source="way1_no_crossover",
+    )
+
+    assert declared["status"] == "ready"
+    assert declared["driver_protection"]["audio_allowed"] is True
+    assert declared["issues"] == []
+    assert declared["frequency_hz"] is not None
+    # Both halves read the same floor: the profile that picks the tone…
+    assert declared["driver_protection"]["floor_test_frequency_hz"] == 80.0
+
+    # …and silence stays the answer for a driver nobody has described, under
+    # the name of the missing declaration.
+    undeclared = driver_test_signal_plan_from_edges(
+        "full_range", crossover_edge_source="way1_no_crossover",
+    )
+
+    assert undeclared["status"] == "blocked"
+    assert "full_range_low_edge_undeclared" in {
+        issue["code"] for issue in undeclared["issues"]
+    }
+
+
 def test_driver_test_signal_plan_blocks_impossibly_narrow_band() -> None:
     plan = driver_test_signal_plan(
         _three_way_preset(woofer_mid_hz=1000, mid_tweeter_hz=1100),

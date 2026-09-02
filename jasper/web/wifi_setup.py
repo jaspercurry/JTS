@@ -143,19 +143,6 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _env_truthy(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-
-
-# The backend can compute that a scan is known-bad, but product behavior
-# stays conservative while we validate the Pi 5 brcmfmac failure mode live.
-# Set this to 1 in a lab/operator build to actually hide the Scan button
-# after a driver-suppressed scan is detected.
-_HIDE_SCAN_WHEN_SUPPRESSED = _env_truthy(
-    "JASPER_WIFI_HIDE_SCAN_WHEN_SUPPRESSED",
-)
 _SCAN_REPAIR_ROOT_TIMEOUT = _env_float("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", 20.0)
 
 
@@ -614,10 +601,10 @@ def _scan_report(
         "degraded": degraded,
         "suspect": only_current and not degraded,
         "reason": reason,
-        "hideScanButton": bool(
-            _HIDE_SCAN_WHEN_SUPPRESSED
-            and reason == "driver_scan_suppressed"
-        ),
+        # Product behavior stays conservative while the Pi 5 brcmfmac
+        # driver-suppressed-scan failure mode is validated live: the
+        # backend can detect suppression but never hides the Scan button.
+        "hideScanButton": False,
         "debug": {
             "rescanReturncode": rescan_proc.returncode,
             "listReturncode": list_proc.returncode,

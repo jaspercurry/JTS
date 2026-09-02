@@ -43,6 +43,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 
@@ -60,7 +61,9 @@ from jasper.cli._refusal import (
 )
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HARMONIC_ORDERS,
+    STATE_UNREADABLE,
     HarmonicEvidenceRefused,
+    banked_roles,
     read_round_harmonics,
 )
 
@@ -68,7 +71,8 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "advisory"
 
-#: The shipped MEASURE driver bands, as the flow composes them today.
+#: The shipped MEASURE driver bands for a PAIR, as the flow composes them today
+#: (:data:`DEFAULT_FULL_RANGE_BAND_HZ` is the 1-way sibling).
 #:
 #: Defaults rather than constants: a round measured with different bands is read
 #: by passing them, and a wrong pair cannot produce a wrong reading — it fails
@@ -78,6 +82,10 @@ DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
     "woofer": (150.0, 4000.0),
     "tweeter": (1600.0, 20000.0),
 }
+
+#: The 1-way default: the whole measurable span in Hz, since a passive main's
+#: own declared band is not derivable here.
+DEFAULT_FULL_RANGE_BAND_HZ: tuple[float, float] = (150.0, 20000.0)
 
 
 def _band(text: str) -> tuple[float, float]:
@@ -91,6 +99,30 @@ def _band(text: str) -> tuple[float, float]:
     if not 0.0 < lo < hi:
         raise argparse.ArgumentTypeError(f"band must satisfy 0 < lo < hi, got {text!r}")
     return lo, hi
+
+
+def round_bands_hz(
+    state: Mapping[str, Any], overrides: Mapping[str, tuple[float, float]]
+) -> dict[str, tuple[float, float]]:
+    """The band each role THIS round swept, keyed by role.
+
+    Roles come from :func:`~...harmonic_evidence.banked_roles`, the reader
+    ``rebuild_measure_program`` composes against, so the CLI cannot hand it a
+    shape it will only refuse. Refuses rather than dropping a role it cannot
+    place, which would compose a program silently missing a sweep.
+    """
+    roles = banked_roles(state)
+    if not roles or not overrides.keys() >= set(roles):
+        gains = state.get("gain_plan_db")
+        raise HarmonicEvidenceRefused(
+            STATE_UNREADABLE,
+            {
+                "missing": "a band for every role this round's gain plan names",
+                "gain_plan_roles": sorted(gains) if isinstance(gains, Mapping) else [],
+                "bands_offered": sorted(overrides),
+            },
+        )
+    return {role: overrides[role] for role in roles}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -180,6 +212,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="tweeter sweep band in Hz (default %(default)s)",
     )
     parser.add_argument(
+        "--full-range-band",
+        type=_band,
+        default=DEFAULT_FULL_RANGE_BAND_HZ,
+        metavar="LO:HI",
+        help=(
+            "1-way (passive full-range main) sweep band in Hz; used only when "
+            "the round banked one full-range role (default %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--calibration",
         type=Path,
         default=None,
@@ -253,7 +295,11 @@ def main(argv: list[str] | None = None) -> int:
             round_dir,
             args.dumps,
             state,
-            {"woofer": args.woofer_band, "tweeter": args.tweeter_band},
+            round_bands_hz(state, {
+                "woofer": args.woofer_band,
+                "tweeter": args.tweeter_band,
+                "full_range": args.full_range_band,
+            }),
             session_id=session_id,
             orders=HARMONIC_ORDERS,
             calibration_text=calibration_text,

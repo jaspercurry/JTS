@@ -296,25 +296,29 @@ def test_local_sub_rejects_out_of_range_corner(fc: float) -> None:
         LocalSubwoofer(physical_output_index=4, label="Sub", crossover_fc_hz=fc).validate()
 
 
-def test_subless_one_way_preset_is_rejected() -> None:
-    # A 1-way passive main is ONLY valid with a local sub; subless passive takes
-    # the flat program lane, never this multi-output path.
-    with pytest.raises(ActiveSpeakerConfigError, match="local subwoofer"):
-        ActiveSpeakerPreset.from_mapping({
-            "artifact_schema_version": 1,
-            "kind": "jts_active_speaker_preset",
-            "preset_id": "bad-passive",
-            "name": "passive subless",
-            "way_count": 1,
-            "channel_map": {
-                "layout": "stereo",
-                "outputs": [
-                    {"index": 0, "side": "left", "driver_role": "full_range", "label": "L"},
-                    {"index": 1, "side": "right", "driver_role": "full_range", "label": "R"},
-                ],
-            },
-            "drivers": {"full_range": {"manufacturer": "X", "model": "FR"}},
-        })
+def test_subless_one_way_preset_is_valid() -> None:
+    # A subless 1-way passive main is the recommissioning session's plant. It
+    # declares no crossover region and no sub, and that is the whole of its
+    # shape.
+    preset = ActiveSpeakerPreset.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_preset",
+        "preset_id": "passive-subless",
+        "name": "passive subless",
+        "way_count": 1,
+        "channel_map": {
+            "layout": "stereo",
+            "outputs": [
+                {"index": 0, "side": "left", "driver_role": "full_range", "label": "L"},
+                {"index": 1, "side": "right", "driver_role": "full_range", "label": "R"},
+            ],
+        },
+        "drivers": {"full_range": {"manufacturer": "X", "model": "FR"}},
+    })
+
+    assert preset.way_count == 1
+    assert preset.crossover_regions == ()
+    assert preset.local_subwoofer is None
 
 
 def test_sub_output_index_must_be_next_contiguous_channel() -> None:
@@ -808,16 +812,6 @@ def test_local_subwoofer_falls_back_to_default_corner() -> None:
     assert sub.crossover_fc_hz == DEFAULT_SUB_CROSSOVER_HZ == 80.0
 
 
-def test_topology_is_passive_mains_with_sub_predicate() -> None:
-    from jasper.active_speaker.staging import topology_is_passive_mains_with_sub
-
-    assert topology_is_passive_mains_with_sub(_passive_1way_sub_topology_fc(120.0)) is True
-    # A SUBLESS passive speaker is NOT routed through the active emitter.
-    assert topology_is_passive_mains_with_sub(_subless_passive_topology()) is False
-    # An active 2-way + sub is the preview-driven path, not this one.
-    assert topology_is_passive_mains_with_sub(_active_2way_sub_topology()) is False
-
-
 def test_passive_mains_sub_builds_and_reproves_at_topology_fc(tmp_path) -> None:
     # The headline of this slice: a full_range_passive + sub topology now COMPILES
     # end-to-end through the active multi-output emitter (the degenerate 1-way bass-
@@ -854,11 +848,16 @@ def test_passive_mains_sub_builds_and_reproves_at_topology_fc(tmp_path) -> None:
     assert payload_yaml["filters"]["as_full_range_bass_mgmt_hp"]["parameters"]["freq"] == 120.0
 
 
-def test_subless_passive_does_not_compile_an_active_preset(tmp_path) -> None:
-    # A SUBLESS passive topology must NOT route through the active emitter: with no
-    # ready active crossover preview it blocks (the active preview-driven path), and
-    # never produces a passive 1-way preset. (At runtime such a topology takes the
-    # flat emit_sound_config lane; this asserts the build path does not hijack it.)
+def test_subless_passive_with_nothing_measured_does_not_compile_an_active_preset(
+    tmp_path,
+) -> None:
+    """The flat lane is the default, and only a MEASURED round moves it.
+
+    A subless passive topology with nothing measured for it has no
+    bass-management split and no inter-driver crossover, so it takes the flat
+    ``emit_sound_config`` lane; this call brings neither a candidate nor an
+    applied profile naming one, so the build path must not hijack it.
+    """
     from jasper.active_speaker.baseline_profile import build_baseline_profile_candidate
 
     topology = _subless_passive_topology()

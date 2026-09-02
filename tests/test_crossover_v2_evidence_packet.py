@@ -26,8 +26,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    DECLARED_GEOMETRY_ARTIFACT,
-    DECLARED_GEOMETRY_KIND,
     NO_CANDIDATE_TAKES,
     REPEAT_FLOOR_UNMEASURED,
     REPEAT_FLOOR_UNREADABLE,
@@ -520,66 +518,68 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# session.declared_geometry (#3498) — the one reader of the banked geometry
+# session.declared_geometry (#3498) — the fifth banked SSOT sibling
 # --------------------------------------------------------------------------- #
 
 
-def test_the_session_block_reads_the_households_declared_geometry(tmp_path):
-    """The banked room in metres, WITHOUT the artifact envelope it arrived in.
-
-    This is the ONE reader of what the operator declared at ``stage``; the
-    room's entanglement floor (2.5 / t_first_bounce) is derived from it
-    offline. A reader that passed the artifact straight through would leak
-    ``schema_version`` and ``kind`` into the room, so the keys are named.
-    """
-    session, _ = _bundle(tmp_path)
-    room = {
-        "speaker_height_m": 0.9, "mic_height_m": 1.0,
-        "distance_m": 1.05, "ceiling_height_m": 2.4,
-    }
-    round_dir, _ = round_artifact_dir(session)
-    (round_dir / DECLARED_GEOMETRY_ARTIFACT).write_text(json.dumps({
-        "schema_version": 1, "kind": DECLARED_GEOMETRY_KIND, **room,
-    }))
-
-    assert build_crossover_evidence_packet(session)["session"][
-        "declared_geometry"
-    ] == room
-
-
 @pytest.mark.parametrize(
-    "banked, reason",
+    "stored, room",
     [
-        (None, "source_absent"),
         (
-            json.dumps({"schema_version": 1, "kind": DECLARED_GEOMETRY_KIND}),
-            "field_null",
+            json.dumps({
+                "speaker_height_m": 0.9, "mic_height_m": 1.0,
+                "distance_m": 1.05, "ceiling_height_m": 2.4,
+            }),
+            {
+                "speaker_height_m": 0.9, "mic_height_m": 1.0,
+                "distance_m": 1.05, "ceiling_height_m": 2.4,
+            },
         ),
-        ("{ not a document", ""),
+        (None, None),
+        ("{ not a document", None),
     ],
+    ids=["declared", "absent", "unreadable"],
 )
-def test_a_session_without_a_readable_room_names_which_absence_it_is(
-    tmp_path, banked, reason,
+def test_the_session_block_reads_the_declaration_the_caller_resolved(
+    tmp_path, stored, room,
 ):
-    """Never asked, asked-and-empty and unreadable are three different facts.
+    """The room comes from the path the CALLER hands in, never an on-box read.
 
-    Most sessions carry no declaration at all, and that is the ordinary row.
-    A file that DID arrive and could not be read is somebody's defect, and
-    collapsing it into "nobody was asked" is how an offline reader ends up
-    deriving an entanglement floor from a room that was never banked.
-
-    ``reason=""`` is the row where the packet must name the read failure
-    itself, in whatever words the artifact reader gives it.
+    A banked round freezes its declaration beside the bundle like the other
+    SSOT documents, so a round read on another machine reports the room the
+    SPEAKER declared rather than that machine's. Never declared (most
+    households) and declared-but-unreadable are two different facts about the
+    round, kept apart because an offline reader must not derive an
+    entanglement floor from a room nobody stated.
     """
     session, _ = _bundle(tmp_path)
-    if banked is not None:
-        round_dir, _ = round_artifact_dir(session)
-        (round_dir / DECLARED_GEOMETRY_ARTIFACT).write_text(banked)
+    declared = tmp_path / "declared-geometry.json"
+    if stored is not None:
+        declared.write_text(stored, encoding="utf-8")
+
+    block = build_crossover_evidence_packet(
+        session, declared_geometry_path=declared
+    )["session"]["declared_geometry"]
+    if room is not None:
+        assert block == room
+        return
+    assert block["status"] == "not_evaluated"
+    assert block["field"] == "declared_geometry"
+    assert (block["reason"] == "source_absent") is (stored is None)
+
+
+def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
+    tmp_path,
+):
+    """No path handed in means NO ROOM — not whatever this machine declares.
+
+    The packet is rebuilt by every reader, so a builder that fell back to the
+    on-box SSOT would make a banked round's room, and its
+    ``packet_fingerprint``, drift to the reading speaker's own declaration.
+    """
+    session, _ = _bundle(tmp_path)
 
     block = build_crossover_evidence_packet(session)["session"]["declared_geometry"]
+
     assert block["status"] == "not_evaluated"
-    assert block["field"] == DECLARED_GEOMETRY_ARTIFACT
-    if reason:
-        assert block["reason"] == reason
-    else:
-        assert block["reason"] not in {"source_absent", "field_null"}
+    assert block["reason"] == "source_absent"

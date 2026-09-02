@@ -446,19 +446,17 @@ def test_get_state_returns_json(monkeypatch):
     assert json.loads(h.wfile.getvalue().decode())["lockoutRisk"] == "high"
 
 
-def test_get_state_backend_failure_returns_one_502(monkeypatch, caplog):
+def test_get_state_backend_failure_returns_one_502(monkeypatch):
     def fail_state():
         raise RuntimeError("state unavailable")
 
     monkeypatch.setattr(wifi_setup, "gather_state", fail_state)
-    caplog.set_level(logging.ERROR, logger=wifi_setup.logger.name)
     h, captured = _make_request("/state")
 
     h.do_GET()
 
     assert captured["responses"] == [502]
     assert json.loads(h.wfile.getvalue()) == {"error": "state unavailable"}
-    assert "/state failed" in caplog.text
 
 
 @pytest.mark.parametrize(

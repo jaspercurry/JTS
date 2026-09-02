@@ -74,6 +74,10 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.program_analysis import (
+    ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
+)
+
 from ..flat_spec import FlatSpecReport, GradedSpec
 from .contracts import (
     AdoptionDecision,
@@ -779,23 +783,26 @@ def evaluate_round(
         spec = evaluate_spec(spec_report)
         post_residual = None if after is None else pooled_residual(after)
         # The band is the VERIFY absolute claim's own — which is
-        # ``program_analysis.crossover_region_band_hz``'s output, reached
+        # ``comparison_bands.crossover_region_band_hz``'s output, reached
         # through that function's existing production consumer rather than
         # re-derived here. Two things follow and both are the point: the region
         # corrected over is byte-identically the one the household is shown on
         # the done screen, and every ``not_evaluated`` arm of that claim
         # (no Fc, no crossover target, no trusted region) becomes "no band"
         # for free instead of needing its own translation.
-        band_hz = _crossover_region_band_hz(post_analysis)
+        # The second half says, when there is no band, whether the speaker HAS
+        # no region or this round failed to establish the one it has.
+        band_hz, no_crossover = _crossover_region(post_analysis)
         blend = solve_blend_correction(
             graded=graded_spec,
             band_hz=band_hz,
             incumbent=applied_blend_correction,
             previous_residual_db=previous_blend_residual_db,
+            no_crossover_reason=no_crossover,
         )
         region_benefit = evaluate_region_benefit(
             entry_baseline=before, post=after, band_hz=band_hz,
-            margin_db=margin_db,
+            margin_db=margin_db, no_crossover_reason=no_crossover,
         )
 
     result = verification_result(
@@ -852,13 +859,13 @@ def evaluate_round(
     )
 
 
-def _crossover_region_band_hz(
+def _crossover_region(
     post_analysis: "ProgramAnalysis | None",
-) -> tuple[float, float] | None:
-    """The blend region, read off the VERIFY absolute claim, or ``None``.
+) -> tuple[tuple[float, float] | None, str | None]:
+    """``(band_hz, no_crossover_reason)``, both read off the VERIFY absolute claim.
 
     **The band's owner is
-    :func:`~jasper.audio_measurement.program_analysis.crossover_region_band_hz`,
+    :func:`~jasper.audio_measurement.comparison_bands.crossover_region_band_hz`,
     and this reads its output rather than calling it a second time.** That
     function is deliberately NOT ``overlap_band_hz``: the latter clamps the
     lower edge UP to the tweeter's own sweep floor because its consumers read a
@@ -876,24 +883,31 @@ def _crossover_region_band_hz(
     into it — so it holds no copy of the corner, and moves with it for free
     when the declared driver limits change.
 
-    ``None`` for every ``not_evaluated`` arm of that claim, which is the honest
-    "there is no region to grade" and the reason the solver's
-    ``no_trusted_band`` refusal needs no separate translation.
+    A ``None`` band for every ``not_evaluated`` arm of that claim, which is the
+    honest "there is no region to grade" and the reason the solver's
+    ``no_trusted_band`` refusal needs no separate translation. The reason is
+    :data:`ABSOLUTE_NO_CROSSOVER_TOPOLOGY` on that claim's ONE arm saying the
+    speaker HAS no region — a different next action from every other arm.
     """
 
     absolute = getattr(post_analysis, "verify_absolute", None)
     if not isinstance(absolute, Mapping):
-        return None
+        return (None, None)
+    reason = (
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+        if absolute.get("not_evaluated") == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+        else None
+    )
     band = absolute.get("band_hz")
     if not isinstance(band, (list, tuple)) or len(band) != 2:
-        return None
+        return (None, reason)
     try:
         lo, hi = float(band[0]), float(band[1])
     except (TypeError, ValueError):
-        return None
+        return (None, reason)
     if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
-        return None
-    return (lo, hi)
+        return (None, reason)
+    return ((lo, hi), reason)
 
 
 def build_round_receipt(

@@ -27,11 +27,11 @@ the CLI hands it a duck-typed ``RepeatabilityResult`` the round views own.
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TypeGuard
 
 from jasper.atomic_io import atomic_write_json
+from jasper.json_fields import finite_float
 
 from .attempts_loop import FloorStats, percentile
 from .seat_level_reference import _utc_now
@@ -152,8 +152,7 @@ def load_repeat_floor(
 
 
 def _finite(value: Any) -> TypeGuard[float]:
-    """Is ``value`` a finite number — bools excluded (``isinstance(True, int)``)?"""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return finite_float(value) is not None
 
 
 def stopping_thresholds(record: Mapping[str, Any]) -> dict[str, Any] | None:

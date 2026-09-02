@@ -1185,7 +1185,12 @@ async def test_bench_role_executor_full_round_trip_through_produce_limiter_thres
     limiter_evidence producer accepts end to end."""
 
     from jasper.bass_extension.bench import activation
-    from jasper.bass_extension.bench.context import build_measured_context
+    from jasper.bass_extension.bench.context import (
+        DETECTOR_REFERENCE,
+        LIMITER_DOMAIN_MAX_DBFS,
+        LIMITER_DOMAIN_MIN_DBFS,
+        limiter_domain_fingerprint,
+    )
     from jasper.bass_extension.bench.manifest import STIMULUS_ROLES, author_campaign_manifest
     from jasper.bass_extension.bench.runner import run_campaign
     from jasper.bass_extension.limiter_evidence import LimiterThresholdSet, produce_limiter_thresholds
@@ -1288,20 +1293,31 @@ async def test_bench_role_executor_full_round_trip_through_produce_limiter_thres
         },
         target_ids=(TARGET_ID,),
     )
-    context = build_measured_context(
-        target_family_fingerprint=_sha_label("family"),
-        target_order=[(TARGET_ID, _sha_label(f"target:{TARGET_ID}"))],
-        driver_safety_fingerprint=_sha_label("ds"),
-        margin_policy_fingerprint=_sha_label("mp"),
-        transparency_policy_fingerprint=_sha_label("tp"),
-        natural_graph_fingerprint=_sha_label("natural-graph"),
-        baseline_limiter_clip_limit_dbfs=-1.0,
-        camilladsp_build_id="build",
-        owner_channels=list(OWNER_CHANNELS),
-        sample_rate_hz=48_000,
-        limiter_name=LIMITER_NAME,
-        tap_implementation_id="tap",
-    )
+    context = {
+        "target_family_fingerprint": _sha_label("family"),
+        "target_order": [
+            {
+                "target_id": TARGET_ID,
+                "target_fingerprint": _sha_label(f"target:{TARGET_ID}"),
+            }
+        ],
+        "driver_safety_fingerprint": _sha_label("ds"),
+        "margin_policy_fingerprint": _sha_label("mp"),
+        "transparency_policy_fingerprint": _sha_label("tp"),
+        "natural_graph_fingerprint": _sha_label("natural-graph"),
+        "baseline_limiter_clip_limit_dbfs": -1.0,
+        "limiter_domain_min_dbfs": LIMITER_DOMAIN_MIN_DBFS,
+        "limiter_domain_max_dbfs": LIMITER_DOMAIN_MAX_DBFS,
+        "limiter_domain_fingerprint": limiter_domain_fingerprint(),
+        "camilladsp_build_id": "build",
+        "owner_channels": list(OWNER_CHANNELS),
+        "sample_rate_hz": 48_000,
+        "limiter_name": LIMITER_NAME,
+        "limiter_type": "Limiter",
+        "soft_clip": True,
+        "tap_implementation_id": "tap",
+        "detector_reference": DETECTOR_REFERENCE,
+    }
     retained_facts = {
         name: _artifact(f"retained-{name}")
         for name in ("sweep", "sustain", "commanded_level", "stimulus_peak", "boost", "digital_clamp")

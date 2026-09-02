@@ -215,5 +215,5 @@ def test_the_field_census_reproduces_the_committed_classification():
     }
     assert by_class[PROJECTION] == {"glitch_detected"}
     assert by_class[INPUT_PREDICATE] == {"configured_path_composed"}
-    assert len(by_class[PRODUCED]) == 21
-    assert len(classified) == 27
+    assert len(by_class[PRODUCED]) == 22
+    assert len(classified) == 28

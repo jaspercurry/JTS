@@ -110,7 +110,7 @@ DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 # now — but the reconciler still RESOLVES this map once per pass, against the
 # constant RETIRED_ALOOP_PLAYBACK_DEVICE, and hard-exits 66 when the lookup
 # misses. That gate is a deliberate boot-time fail-loud tripwire (and the only
-# trigger for the #2489 clockless park), kept pending an owner ruling.
+# trigger for the #2489 clockless park); ADR-0186 rules it and this entry stay.
 #
 # So the entry below is NOT trimmable on its own: its key is exactly the
 # constant the gate feeds in, so deleting it while the gate stands parks EVERY

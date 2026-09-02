@@ -138,6 +138,8 @@ from jasper.audio_measurement.evidence_identity import (
 # constant ``program_analysis.MeasurementGeometry`` and ``branch_chain`` import.
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+from jasper.audio_measurement.program_analysis import ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+from jasper.json_fields import finite_float
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
@@ -151,9 +153,8 @@ from .record_index import Measurement, bundle_measurements
 # that patched this module's own binding, because the binding was all the test
 # could see.
 from . import position_cycle
-from .alignment_prescription import alignment_prescription_response_format
 from .blend_prescription import prescription_response_format
-from .topology_prescription import topology_prescription_response_format
+from . import handoff_doors as doors
 from .driver_prescription import (
     driver_passbands_from_safety_profile,
     driver_prescription_response_format,
@@ -166,7 +167,6 @@ from .feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
     UNCERTAINTY_UNSEPARATED,
     FeatureVerdict,
-    finite_number,
     read_feature_verdicts,
 )
 from .operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
@@ -174,8 +174,6 @@ from .round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 
 __all__ = [
     "CLASSIFICATION_ARTIFACT",
-    "DECLARED_GEOMETRY_ARTIFACT",
-    "DECLARED_GEOMETRY_KIND",
     "HARMONICS_ARTIFACT",
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
@@ -323,21 +321,6 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: writer would have to travel back the other way. The packet owns the names of
 #: the artifacts it reads; :mod:`.feature_classifier` takes the same direction.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
-
-#: The household's own tape measure (#3498), banked by the session that took
-#: the walk it was stated on. Optional and reported absent: the reflection
-#: finder is structurally blind on this rig class, so this human answer is the
-#: only source for the room's entanglement floor -- but most sessions never
-#: asked. Named here on the same rule as the two above: the packet owns the
-#: names of the artifacts it reads, and ``correction_crossover_v2`` writes it.
-DECLARED_GEOMETRY_ARTIFACT = "declared_geometry.json"
-
-DECLARED_GEOMETRY_KIND = "jts_active_speaker_declared_geometry"
-
-#: What that artifact carries ABOUT ITSELF rather than about the room.
-#: Subtracted rather than allow-listing the measurements, so a distance the
-#: writer later adds reaches the reader without a second edit here.
-DECLARED_GEOMETRY_ENVELOPE_FIELDS = frozenset({"schema_version", "kind"})
 
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns.
@@ -590,20 +573,30 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _declared_geometry_block(raw: Any, reason: str) -> dict[str, Any]:
-    """The banked room, in metres, or WHICH absence this is.
+def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
+    """The household's own tape measure, in metres, or WHICH absence this is.
 
-    An artifact that never arrived (nobody was asked, which is most sessions),
-    one this install could not read, and one carrying nothing but its own
-    envelope are three different facts about the round. Collapsing them to a
-    single ``None`` is the reading defect :func:`_absence` exists to fix, so
-    the reason travels here on exactly the terms the sibling blocks state it.
+    Read from the path the CALLER resolved -- a banked round's frozen sibling,
+    or the live speaker's own SSOT file -- on the same terms as the four
+    documents beside it. ``None`` is a round that banked no declaration.
+
+    A household that never declared one (most of them) and a declaration this
+    install could not read are two different facts about the round, kept apart
+    on exactly the terms the sibling blocks state them.
     """
-    room = {
-        key: value for key, value in _mapping(raw).items()
-        if key not in DECLARED_GEOMETRY_ENVELOPE_FIELDS
-    }
-    return room or _absence(reason, False, DECLARED_GEOMETRY_ARTIFACT)
+    from jasper.audio_measurement.measurement_geometry import (
+        load_declared_geometry,
+    )
+
+    if path is None:
+        return _absence("source_absent", False, "declared_geometry")
+    try:
+        geometry = load_declared_geometry(path)
+    except (OSError, ValueError) as exc:
+        return _absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry")
+    if geometry is None:
+        return _absence("source_absent", False, "declared_geometry")
+    return geometry.to_dict()
 
 
 def _ordinal(value: Any) -> int:
@@ -672,7 +665,7 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     guard: ``bool`` subclasses ``int``, never ``float``, so a boolean column
     (``clean``, ``is_dip``, ``controls_ok``, ``gain_plan_snr_floor_ok``) falls
     through to the passthrough already — unlike in
-    :func:`~.feature_classification.finite_number`, which needs one because its
+    :func:`~jasper.json_fields.finite_float`, which needs one because its
     check includes ``int``.
 
     Scoped to the two blocks whose sources are written with a plain
@@ -859,7 +852,7 @@ def _member_curve(values: Any, n_bins: int) -> list[float] | None:
     was actually taken over in every bin. Refusing the whole row keeps one n for
     the whole curve — and the row is counted, never dropped silently.
 
-    :func:`~.feature_classification.finite_number` does the per-sample work
+    :func:`~jasper.json_fields.finite_float` does the per-sample work
     rather than a second copy of its three traps (``bool`` is an ``int``,
     ``float("1037")`` succeeds, an arbitrary-precision ``int`` raises on
     ``float()``).
@@ -868,7 +861,7 @@ def _member_curve(values: Any, n_bins: int) -> list[float] | None:
         return None
     curve: list[float] = []
     for value in values:
-        number = finite_number(value)
+        number = finite_float(value)
         if number is None:
             return None
         curve.append(number)
@@ -2135,7 +2128,7 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
             f"(null_registry.reason={registry.get('reason')!r}), so its "
             "tau_ladder_us is the no-ladder sentinel rather than a delay"
         )
-    tau_us = finite_number(registry.get("tau_ladder_us")) if not refusal else None
+    tau_us = finite_float(registry.get("tau_ladder_us")) if not refusal else None
     if not refusal and (tau_us is None or tau_us <= 0.0):
         refusal = (
             "the interference-null registry reported no usable fitted ladder "
@@ -2497,14 +2490,14 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
                 for role, value in _mapping(
                     candidate.get("role_attenuations_db")
                 ).items()
-                if finite_number(value) is not None
+                if finite_float(value) is not None
             },
             {
                 str(role): bool(_mapping(entry).get("trim_pinned") is True)
                 for role, entry in linearization.items()
             },
         ),
-        "delay_us": (finite_number(alignment.get("delay_us")), None),
+        "delay_us": (finite_float(alignment.get("delay_us")), None),
         "polarity": (
             polarity if isinstance(polarity, str) and polarity else None,
             (
@@ -2514,7 +2507,7 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
             ),
         ),
         "crossover_fc_hz": (
-            finite_number(_mapping(region).get("fc_hz")), None,
+            finite_float(_mapping(region).get("fc_hz")), None,
         ),
     }
     return {
@@ -2626,21 +2619,23 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
     }
 
 
-def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
-    """The crossover region a proposal must sit inside.
+def _region_block(receipt: dict[str, Any], reason: str) -> tuple[dict[str, Any], bool]:
+    """The crossover region a proposal must sit inside, and whether it exists.
 
-    ``round_measurements.blend.band_hz`` and nothing else. That field is the
-    VERIFY absolute claim's own band, which decision 10 also makes the region
-    the blend correction is solved and graded over — so a prescription checked
-    against it is checked against byte-identically the band the deterministic
-    solver was bounded by, rather than against a second derivation of "the
-    crossover region" that could drift from it.
+    ``round_measurements.blend.band_hz`` is the VERIFY absolute claim's own
+    band, which decision 10 also makes the region the blend correction is
+    solved and graded over, so a prescription is checked against the band the
+    deterministic solver was bounded by rather than a second derivation.
     """
     blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
     band = blend.get("band_hz")
-    absent = _absence(reason, band is not None, "round_measurements.blend.band_hz")
+    shape = band is None and blend.get("reason") == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
+    band_field = "round_measurements.blend.band_hz"
+    absent = _absence(
+        ABSOLUTE_NO_CROSSOVER_TOPOLOGY if shape else reason, band is not None, band_field
+    )
     if absent:
-        return {"available": False, **absent}
+        return {"available": False, **absent}, shape
     return {
         "available": True,
         "band_hz": band,
@@ -2649,7 +2644,7 @@ def _region_block(receipt: dict[str, Any], reason: str) -> dict[str, Any]:
             "the VERIFY absolute claim's band, which is also the region the "
             "deterministic blend correction is solved and graded over"
         ),
-    }
+    }, shape
 
 
 def _incumbent_block(
@@ -3066,6 +3061,7 @@ def _not_evaluated(
     gate_numbers_reason: str,
     reflector_path_reason: str,
     findings: dict[str, Any],
+    no_crossover: bool,
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
 
@@ -3233,6 +3229,10 @@ def _not_evaluated(
                 "finding was promoted for this round"
             ),
         })
+    if no_crossover:
+        entries.append({"field": "crossover_region.band_hz", "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY})
+        entries.append({"field": "request_time_prescriptions.alignment", "reason": doors.ALIGNMENT_NO_CROSSOVER_REGION})
+        entries.append({"field": "request_time_prescriptions.topology", "reason": doors.TOPOLOGY_NO_CROSSOVER_REGION})
     return entries
 
 
@@ -3243,6 +3243,7 @@ def build_crossover_evidence_packet(
     driver_draft_path: Path | None = None,
     applied_profile_path: Path | None = None,
     repeat_floor_path: Path | None = None,
+    declared_geometry_path: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -3280,6 +3281,16 @@ def build_crossover_evidence_packet(
     absence reported. A packet without it says the floor is unmeasured and
     falls back to the two codified assumptions, naming which it used.
 
+    ``declared_geometry_path`` is the household's declared rig geometry
+    (``measurement_geometry.json``), the only viable source for the room's
+    entanglement floor. Same posture, same reason: OPTIONAL, absence reported.
+    It is INJECTED rather than defaulted to the on-box SSOT path for the
+    reason ``state_path`` is: this packet is rebuilt by every reader, and a
+    path resolved here would make a banked round's room — and its
+    ``packet_fingerprint`` — depend on whatever the READING machine happens to
+    have declared. ``None`` is "this round banked none", which is the
+    ``source_absent`` absence.
+
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
     unreadable artifact is reported inside the packet, because a partially
@@ -3297,9 +3308,6 @@ def build_crossover_evidence_packet(
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
-    geometry_raw, geometry_reason = _read_json(
-        round_dir / DECLARED_GEOMETRY_ARTIFACT
-    )
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
     findings_raw, _ = _read_json(round_dir / "findings_cloud_verify.json")
     classification_raw, classification_reason = _read_json(
@@ -3349,6 +3357,7 @@ def build_crossover_evidence_packet(
     cross_seat_sigma = _mapping(positions.get("cross_seat_sigma"))
     verify = _verify_block(state, state_reason)
     reflections = _reflections_block(cloud, cloud_reason)
+    crossover_region, no_crossover = _region_block(receipt, receipt_reason)
 
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
@@ -3382,12 +3391,7 @@ def build_crossover_evidence_packet(
             "state": info_raw.get("state"),
             "started_at": info_raw.get("started_at"),
             "round_id": receipt.get("round_id"),
-            # The household's own tape measure, in metres, or an ``_absence``
-            # naming why there is none. The envelope keys are dropped: what a
-            # reader wants is the room, not the wrapper it arrived in.
-            "declared_geometry": _declared_geometry_block(
-                geometry_raw, geometry_reason
-            ),
+            "declared_geometry": _declared_geometry_block(declared_geometry_path),
             "note": (
                 "bundle_session_id and relay_session_id are different id "
                 "namespaces; the round artifacts are filed under the relay id"
@@ -3413,7 +3417,7 @@ def build_crossover_evidence_packet(
             "applied_graph_fingerprint": receipt.get("applied_graph_fingerprint"),
             **_absence(receipt_reason, bool(receipt), "round_receipt.json"),
         },
-        "crossover_region": _region_block(receipt, receipt_reason),
+        "crossover_region": crossover_region,
         "incumbent": _incumbent_block(
             receipt, receipt_reason, applied_profile, applied_profile_reason, state
         ),
@@ -3517,25 +3521,17 @@ def build_crossover_evidence_packet(
             gate_numbers_reason=_gate_numbers_reason(positions, verify),
             reflector_path_reason=str(reflections.get("reason") or ""),
             findings=findings,
+            no_crossover=no_crossover,
         ),
         # TWO contracts, one per prescription class, each written by the gate
-        # that enforces it. Beside each other rather than merged: they describe
-        # different shapes with different bounds, and a merged block would need
-        # an owner that is neither gate.
+        # that enforces it. Beside each other rather than merged: a merged
+        # block would need an owner that is neither gate.
         "response_format": prescription_response_format(),
         "driver_response_format": driver_prescription_response_format(),
-        # …and the doors this one does NOT open (#2773). A reader who found
-        # only the two contracts above would conclude that two things can be
-        # prescribed for a round, when four can — the other two arrive as
-        # request-body keys at session open and refuse the whole session rather
-        # than just the staging. Named apart from the two above rather than
-        # listed beside them precisely because they are not stageable: a
-        # document of this class handed to ``stage`` is refused by the class
-        # gate, and the block says where it belongs instead.
-        "request_time_prescriptions": {
-            "alignment": alignment_prescription_response_format(),
-            "topology": topology_prescription_response_format(),
-        },
+        # …and the doors this one does NOT open (#2773): the other two arrive
+        # as session-open request-body keys, not something ``stage`` can act
+        # on, so they are named apart from the two contracts above.
+        "request_time_prescriptions": doors.request_time_prescriptions(no_crossover, _absence),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet

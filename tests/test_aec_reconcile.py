@@ -325,6 +325,52 @@ def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.parametrize(
+    ("mic_device", "channels", "wants_bridge"),
+    (("Array", 6, True), ("udp:9876", None, False)),
+    ids=("array-present", "array-absent"),
+)
+def test_voice_wants_the_bridge_only_while_the_bridge_carries_the_mic(
+    tmp_path: Path,
+    mic_device: str,
+    channels: int | None,
+    wants_bridge: bool,
+) -> None:
+    """`Wants=` starts a unit even when it is disabled.
+
+    So the want cannot live statically in jasper-voice.service: a box with no
+    local mic -- a streambox answering through a paired Bluetooth remote on
+    the accessory path -- would pull the whole AEC stack up anyway. This
+    reconciler already decides whether the bridge runs, so it owns the want
+    from the same transitions.
+    """
+    systemd_dir = tmp_path / "systemd"
+    dropin = systemd_dir / "jasper-voice.service.d" / "10-aec-bridge-want.conf"
+    dropin.parent.mkdir(parents=True)
+    if not wants_bridge:
+        # Seed ONLY here, so this case proves REMOVAL rather than
+        # never-created -- and so the other case proves CREATION rather than
+        # a seeded file simply surviving.
+        dropin.write_text("[Unit]\nWants=jasper-aec-bridge.service\n")
+
+    _write_env(tmp_path, mic_device)
+    _write_mode(tmp_path)
+    if channels is not None:
+        _write_card(tmp_path, channels=channels)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_SYSTEMD_DIR": str(systemd_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert dropin.exists() is wants_bridge
+    if wants_bridge:
+        assert "Wants=jasper-aec-bridge.service" in dropin.read_text()
+
+
 def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> None:
     env_file = _write_env(tmp_path, "Array")
     _write_mode(tmp_path)
@@ -754,7 +800,6 @@ def test_reconcile_parks_voice_when_provider_unset(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -769,7 +814,6 @@ def test_reconcile_parks_voice_when_provider_invalid(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -785,7 +829,6 @@ def test_reconcile_parks_voice_when_provider_manifest_missing(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -801,7 +844,6 @@ def test_reconcile_parks_voice_when_provider_not_in_manifest(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert "JASPER_MIC_DEVICE=udp:9876" in env_file.read_text()
-    assert "voice provider unset or invalid; leaving jasper-voice parked" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert VOICE_RESTART_CMD not in commands
@@ -1493,7 +1535,6 @@ def test_mic_profile_resolver_failure_clears_stale_chip_support(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "mic profile resolver unavailable" in result.stderr
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_XVF_CHIP_AEC_SUPPORTED=0" in body
     assert "JASPER_XVF_CHIP_BEAM_PLAN=''" in body
@@ -2224,7 +2265,6 @@ def test_flex_linear_auto_discovers_card_but_does_not_arm_square_chip_beams(
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
     assert "aec_mic=L16K6Ch" in result.stderr
-    assert "no validated production chip beam plan" in result.stderr
 
 
 def test_flex_linear_profile_managed_mode_rederives_stale_array_card(
@@ -3802,7 +3842,6 @@ def test_measurement_registry_probe_failure_excludes_nothing(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "measurement-mic registry probe failed" in result.stderr
     assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
 
 

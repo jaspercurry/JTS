@@ -3976,7 +3976,7 @@ def _household_messages(payload, path: str = "") -> list[tuple[str, str]]:
 
 
 def _live_parks() -> tuple[dict, ...]:
-    """One ring-only `transport_park` verdict per park class (#3120).
+    """One `transport_park` verdict per park class (#3120).
 
     Driven from that module's own `_PARK_CASES` table rather than a second
     copy of it, so a fifth class added there is swept here without an edit —
@@ -3987,9 +3987,7 @@ def _live_parks() -> tuple[dict, ...]:
     from tests.test_transport_park import _PARK_CASES
 
     return tuple(
-        transport_park_reader.snapshot(
-            case.values[0], case.values[1], ring_only=True
-        )
+        transport_park_reader.snapshot(case.values[0], case.values[1])
         for case in _PARK_CASES
     )
 

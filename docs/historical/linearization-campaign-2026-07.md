@@ -32,7 +32,6 @@
 | `flat-linearization-plan.md` | measurement basis, the flat spec, the six fundamentals, the non-goals | `flat_spec.SPEC_BANDS` and `spatial_combine`/`interference_nulls`, each carrying its derivation inline; this record holds the provenance |
 | `flat-linearization-productization-plan.md` | the PR-1…PR-8 build ladder and its declared choreography defaults | the constants it sized — `MAX_CAPTURE_PLAN_ATTEMPTS`, `DEFAULT_SESSIONS_MAX_BYTES`, the PR-4 band derivation — each stating its own arithmetic |
 | `flat-linearization-flow-simplification-plan.md` | Express's claim boundary and the one-instruction screen grammar | `EXPRESS_CLOUD_VERIFY_POSITIONS` and the capture page; its §2.2/§2.6 contracts were already superseded by [`two-stage-commission-flow-plan.md`](../two-stage-commission-flow-plan.md) |
-| `crossover-linearization-80-20-plan.md` | the R14–R20 mission record and the boost ruling | the boost ruling is implemented in `intervention.plan_linearization` and pinned by test; the R14–R20 campaign narrative is [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)'s |
 | `linearization-integrity-plan.md` | the PR-L1…PR-L5 fix ladder for the 10 dB-dark profile | all five items landed; `delta_probe`, `linearization_fit` and `crossover_envelope_v2` carry the live rules, and [ADR-0003](../adr/0003-prediction-gate-frame.md) carries the prediction-gate frame |
 
 ---
@@ -296,9 +295,7 @@ the VERIFY begin-first/confirm-after-apply contract and the group-close
 
 The revision that preserved the gated/spatial honesty research but gave the
 anchor, lateral samples, candidate solver and later Room cloud separate jobs.
-The round-by-round position, commits and PR numbers are
-[`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)'s;
-the campaign's own dated narrative is
+The campaign's own dated narrative is
 [`crossover-measurement-v2-campaign-record.md`](crossover-measurement-v2-campaign-record.md)'s.
 Three things are **only** here.
 
@@ -313,7 +310,6 @@ needs one. It is the ancestor of the owner table at the top of this file.
 | Speaker/room/bass/preference layer boundaries | [`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md) |
 | Why spatially gated measurements, exclusions, and power averages exist | this record |
 | This revision's measurement contracts, rounds, and issue disposition | this record |
-| Program-wide current position and campaign ordering | [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md) |
 | Individual defect, evidence, and acceptance tests | the owning GitHub issue |
 
 ### R16's unrecorded ratification — the finding, kept because it is a finding
