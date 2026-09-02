@@ -45,15 +45,15 @@ tell that the bytes underneath it changed between two of its own captures. It
 is a disclosure, never a gate, and it is scoped: a household preference-EQ
 save is above everything under tune and deliberately does not trip it (#3489).
 
-**Neither swap ducks the fader** (wave 6d). The 40 dB / ``MAIN_VOLUME_RAMP_SETTLE_S``
-bracket exists because replacing the pipeline under live household audio can
-step the graph's own gain by tens of dB at an unchanged volume. Neither
-condition holds here: the session has already claimed the fader at its declared
-measurement level and holds the measurement window, so there is no household
-programme for a step to be loud against, and the install happens once with
-nothing playing. Both swaps keep the writer lock. Every other
-``set_active_config_raw`` caller replaces the pipeline under live audio and
-still ducks.
+**Neither swap ducks the fader** (wave 6d). The ``GRAPH_SWAP_DUCK_DB`` /
+``MAIN_VOLUME_RAMP_SETTLE_S`` bracket exists because replacing the pipeline
+under live household audio can step the graph's own gain by tens of dB at an
+unchanged volume. Neither condition holds here: the session has already
+claimed the fader at its declared measurement level and holds the measurement
+window, so there is no household programme for a step to be loud against,
+and the install happens once with nothing playing. Both swaps keep the
+writer lock. Every other ``set_active_config_raw`` caller replaces the
+pipeline under live audio and still ducks.
 
 **Async, like the seam.** :class:`~.session_seams.SessionGraph` declares its
 three verbs ``async`` for the reason this implementation is: the transport

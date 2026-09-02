@@ -2316,10 +2316,9 @@ async def test_reconcile_preserves_toggle_mute_restore_level(tmp_path):
 
 
 async def test_reconcile_noop_when_drift_looks_like_duck(tmp_path):
-    """CueDuck plays proactive cues with `_voice_session_active=False`.
-    During a CueDuck, main_volume is JASPER_DUCK_DB below expected
-    (default -25 dB, well past RECONCILE_DUCK_SKIP_DB=10). Reconciler
-    must skip — un-ducking the cue mid-playback would defeat the cue."""
+    """The retained quiet carve-out: a fader claim held in ANOTHER process —
+    `jasper-web`'s volume-floor audition — parks camilla tens of dB below the
+    household level with nothing this reconciler can ask (#3038)."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=percent_to_db(70) - 25.0)  # cue-ducked
     backend = _FakeBackend(active={})
@@ -3123,41 +3122,17 @@ def _real_controller(client: _MinimalCamillaClient, tmp_path):
     return cam
 
 
-def test_the_swap_duck_is_deeper_than_the_reconciler_skip():
-    """The coupling between the two constants, stated AS an inequality.
+async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
+    """The reconciler writes by DECLARING the household level, so a duck held
+    in this process outranks it — no dB inference is involved, which is why
+    `RECONCILE_DUCK_SKIP_DB` is not what protects `CueDuck`.
 
-    `test_reconciler_leaves_a_graph_swap_duck_alone` below proves the
-    behaviour end to end, but a reader grepping either constant finds no
-    statement that they are related at all, and concludes NOT PINNED. This is
-    that statement.
-
-    The reason survives wave 5's reconciler question: the 1 Hz reconciler
-    (W3) is KEPT, because it is the only thing that walks a fader back after
-    `jasper-web` idle-exits holding a claim, and it retires only behind
-    durable short-lived-process claims (#3038). It is cross-process and takes
-    no DSP writer lock, so the ONLY thing keeping it from writing the fader
-    back up mid-swap is that the swap duck is deep enough to read as
-    somebody's duck.
+    The duck is shallower than that threshold, so the carve-out cannot be
+    what spares it; releasing the claim lands the fader back on the household
+    level.
     """
-    from jasper import camilla as camilla_module
-    from jasper import volume_coordinator as coordinator_module
+    from jasper.volume_owner import ClaimKind
 
-    assert (
-        camilla_module.GRAPH_SWAP_DUCK_DB
-        > coordinator_module.RECONCILE_DUCK_SKIP_DB
-    )
-
-
-async def test_reconciler_leaves_a_graph_swap_duck_alone(tmp_path, monkeypatch):
-    """The reconciler is cross-process and takes no DSP writer lock, so the
-    bracket survives its 1 Hz tick only by riding `RECONCILE_DUCK_SKIP_DB`.
-
-    A mute-based bracket did not: mute drift bypasses both skip paths, the
-    reconciler un-muted mid-swap, and the swap landed at full volume.
-    """
-    from jasper import camilla as camilla_module
-
-    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
     expected_db = percent_to_db(70)
     client = _MinimalCamillaClient(db=expected_db)
     cam = _real_controller(client, tmp_path)
@@ -3168,29 +3143,60 @@ async def test_reconciler_leaves_a_graph_swap_duck_alone(tmp_path, monkeypatch):
         spotify_router=None,
     )
     await coord.set_listening_level(70)
+    owner = coord.volume_owner
+    await owner.declare_household_level_db(expected_db)
+    claim = await owner.acquire_duck(5.0)
+    assert owner.holds_kind(ClaimKind.TRANSIENT_DUCK)
+    ducked_db = client.db
+    assert ducked_db == pytest.approx(expected_db - 5.0)
+
+    await coord.maybe_reconcile_camilla()
+
+    assert client.db == pytest.approx(ducked_db)
+
+    await owner.release(claim)
     assert client.db == pytest.approx(expected_db)
 
-    async with cam._graph_mutation("test.swap"):
-        ducked = client.db
-        assert ducked == pytest.approx(
-            expected_db - camilla_module.GRAPH_SWAP_DUCK_DB
-        )
 
-        # The observer tick, with the coordinator's real reconcile logic.
+async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(
+    tmp_path,
+):
+    """The swap's claim on the fader is the writer lock, not the duck's depth.
+
+    The realistic shape: a household volume change lands during the bracket,
+    so the ducked fader now reads LOUDER than the level the reconciler
+    expects — the one direction it always corrects. Only the lock can hold
+    that write back, and once the lock goes the very next tick corrects it,
+    which is what makes the stand-down transient rather than a second
+    carve-out.
+    """
+    from jasper.dsp_apply import camilla_graph_mutation
+
+    expected_db = percent_to_db(40)
+    client = _MinimalCamillaClient(db=expected_db)
+    cam = _real_controller(client, tmp_path)
+    coord = _RecordingCoordinator(
+        camilla=cam,
+        persistence=VolumePersistence(str(tmp_path / "speaker_volume.json")),
+        backend=_FakeBackend(active={}),
+        spotify_router=None,
+    )
+    await coord.set_listening_level(40)
+    client.db = 0.0  # some other writer left camilla far too loud
+
+    async with camilla_graph_mutation(
+        source="test.swap", lock_path=cam._graph_mutation_lock_path,
+    ):
         await coord.maybe_reconcile_camilla()
+        assert client.db == pytest.approx(0.0)
 
-        assert client.db == pytest.approx(ducked), (
-            "the reconciler wrote the fader back up mid-swap — the graph "
-            "would change under an un-ducked speaker"
-        )
-        assert client.muted is False
-
+    await coord.maybe_reconcile_camilla()
     assert client.db == pytest.approx(expected_db)
 
 
 async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
-    """The duck carve-out this bracket rides is directional — it must not have
-    turned the reconciler's loud-direction safety correction into a skip."""
+    """The quiet carve-out is directional — it must never turn the
+    reconciler's loud-direction safety correction into a skip."""
     expected_db = percent_to_db(40)
     client = _MinimalCamillaClient(db=expected_db)
     cam = _real_controller(client, tmp_path)
