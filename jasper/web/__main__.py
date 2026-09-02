@@ -599,6 +599,14 @@ def main() -> int:
         port = spec.port()
         servers.append((spec, port, spec.make_server(target_for(port))))
 
+    # The .socket unit is static and binds ports this tier's capabilities may
+    # not grant. Left unaccepted they hang nginx and re-trigger the unit
+    # forever — see _systemd.drain_unclaimed_listeners.
+    claimed_ports = {port for _, port, _ in servers}
+    _systemd.drain_unclaimed_listeners(
+        [sock for port, sock in by_port.items() if port not in claimed_ports]
+    )
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —

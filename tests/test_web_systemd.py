@@ -12,6 +12,7 @@ import inspect
 import logging
 import os
 import re
+import select
 import socket
 import threading
 import time
@@ -679,3 +680,114 @@ def test_notify_writes_datagram_to_socket() -> None:
             os.unlink(sock_path)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Unserved inherited listeners (static .socket vs capability-gated wizards)
+# ---------------------------------------------------------------------------
+
+
+def _listener() -> socket.socket:
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(5)
+    return sock
+
+
+def test_drain_ends_a_connection_on_an_unserved_port() -> None:
+    """A connect to a drained listener ends at once and leaves no backlog.
+
+    Both halves matter: the client seeing EOF is what lets nginx answer 502
+    instead of waiting out proxy_read_timeout, and the empty backlog is what
+    stops systemd re-triggering the unit the moment it idle-exits.
+    """
+    listener = _listener()
+    port = listener.getsockname()[1]
+    try:
+        assert _systemd.drain_unclaimed_listeners([listener]) is not None
+
+        client = socket.create_connection(("127.0.0.1", port), timeout=2)
+        try:
+            client.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            client.settimeout(2.0)
+            try:
+                assert client.recv(64) == b""  # FIN: server hung up
+            except ConnectionResetError:
+                pass  # RST is the same answer to nginx
+        finally:
+            client.close()
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if not select.select([listener], [], [], 0.05)[0]:
+                break
+        assert not select.select([listener], [], [], 0.2)[0], (
+            "backlog still readable — systemd would re-trigger the unit"
+        )
+    finally:
+        listener.close()
+
+
+def test_drain_is_a_noop_without_unserved_listeners() -> None:
+    assert _systemd.drain_unclaimed_listeners([]) is None
+
+
+
+
+def test_main_drains_exactly_the_ports_no_granted_wizard_claimed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main() hands the drain every inherited fd its granted specs skipped.
+
+    Pins the selection, not the mechanism: with inherited sockets covering
+    both a granted and an ungranted wizard, only the ungranted one is drained.
+    """
+    import dataclasses
+
+    from jasper import volume_coordinator
+    from jasper.web import __main__ as web_main
+
+    served, unserved = _listener(), _listener()
+    drained: list[list[socket.socket]] = []
+    granted = dataclasses.replace(
+        web_main.WIZARD_SPECS[0], make_server=lambda target: _FakeServer(),
+    )
+
+    monkeypatch.setattr(
+        web_main._systemd, "adopt_systemd_sockets", lambda: [served, unserved],
+    )
+    monkeypatch.setattr(
+        web_main._systemd, "drain_unclaimed_listeners",
+        lambda socks: drained.append(list(socks)),
+    )
+    monkeypatch.setattr(web_main, "_specs_for_role", lambda role: (granted,))
+    monkeypatch.setattr(web_main, "_active_install_role", lambda: "streambox")
+    monkeypatch.setattr(
+        volume_coordinator, "install_env_canonical_target_provider", lambda: None,
+    )
+    monkeypatch.setattr(
+        web_main._systemd, "install_request_idle_bump", lambda cls, tracker: None,
+    )
+    monkeypatch.setattr(web_main._systemd, "notify_ready", lambda: None)
+    monkeypatch.setattr(web_main._systemd, "notify_stopping", lambda: None)
+    monkeypatch.setattr(
+        web_main._systemd.IdleShutdownTracker, "start", lambda self: None,
+    )
+    # getsockname() is how main() maps an fd to a wizard, so point the spec at
+    # the fake listener's real port through the env override it already honours.
+    monkeypatch.setenv(granted.env_var, str(served.getsockname()[1]))
+
+    try:
+        assert web_main.main() == 0
+        assert drained == [[unserved]]
+    finally:
+        served.close()
+        unserved.close()
+
+
+class _FakeServer:
+    RequestHandlerClass = BaseHTTPRequestHandler
+
+    def serve_forever(self) -> None:
+        return None

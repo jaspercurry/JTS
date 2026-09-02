@@ -60,6 +60,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import select
 import socket
 import threading
 import time
@@ -155,6 +156,63 @@ def make_http_server(target, handler_cls) -> ThreadingHTTPServer:
         f"make_http_server: target must be socket, (host, port) tuple, "
         f"or int port; got {type(target).__name__}"
     )
+
+
+def drain_unclaimed_listeners(
+    sockets: list[socket.socket],
+) -> threading.Thread | None:
+    """Accept-and-close on inherited listeners no wizard serves.
+
+    The .socket units are static files: they bind every port the tier COULD
+    host, while jasper.web.__main__ builds servers only for the wizards this
+    tier's capabilities grant. A connection to an ungranted port completes
+    into the backlog with nobody to accept it, so nginx waits out
+    proxy_read_timeout for a 504 — and the pending connection keeps systemd's
+    copy of the fd readable, so the daemon idle-exits and systemd re-triggers
+    it at once, forever.
+
+    Closing our own fd does NOT fix that: ``socket.fromfd`` dup'd it and
+    systemd still holds the original, so the queued connection survives the
+    close (measured). Accepting and closing is what empties the backlog; the
+    client sees the connection end at once and nginx answers 502.
+
+    Deliberately does NOT touch the idle tracker — a refused connection is
+    not activity, and bumping would keep the process resident to serve
+    nothing. Returns the drain thread, or None when there is nothing to
+    drain.
+    """
+    if not sockets:
+        return None
+    thread = threading.Thread(
+        target=_drain_forever,
+        args=(list(sockets),),
+        name="jasper-web-drain",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _drain_forever(sockets: list[socket.socket]) -> None:
+    log = logging.getLogger("jasper.web._systemd")
+    while True:
+        try:
+            ready, _, _ = select.select(sockets, [], [])
+        except (OSError, ValueError):
+            return  # a socket was closed under us; the process is going away
+        for sock in ready:
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                continue
+            with contextlib.suppress(OSError):
+                port = sock.getsockname()[1]
+                conn.close()
+                log.info(
+                    "jasper-web refused a connection on unserved port %d "
+                    "(no capability grants this wizard on this tier)",
+                    port,
+                )
 
 
 def _notify(message: str) -> None:

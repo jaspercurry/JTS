@@ -757,8 +757,8 @@ def _capability_gated_sections(html: str, capability: str) -> list[str]:
 def test_voice_brain_rows_resolve_on_streambox_unless_wake_gated() -> None:
     """Every link a voice_brain section shows must exist on the streambox site.
 
-    The tier grants ASSISTANT without WAKE_DETECTION (a streambox driving the
-    assistant from a mic-bearing remote), so these sections unhide there while
+    When a tier grants ASSISTANT without WAKE_DETECTION (a streambox driving
+    the assistant from a mic-bearing remote), these sections unhide there while
     the wake surfaces stay off. A row pointing at a route that profile does not
     serve is a 404 the page cannot report — it renders as a normal row. Rows
     that ARE wake-side carry their own data-requires="wake_detection" and are
@@ -799,13 +799,17 @@ def test_mic_pause_card_follows_wake_detection() -> None:
     """
     html = _index_html()
     card = re.search(
-        r'<section class="control-section" data-requires="(\w+)" hidden>\s*'
-        r'<div class="control-head">\s*<h2 class="eyebrow">Voice assistant</h2>',
+        r'<section class="control-section" data-requires="(?P<cap>\w+)" hidden>\s*'
+        r'<div class="control-head">\s*<h2 class="eyebrow">Voice assistant</h2>'
+        r'(?P<body>.*?)</section>',
         html,
+        re.S,
     )
     assert card is not None, "mic pause card markup drifted"
-    assert card.group(1) == "wake_detection"
-    assert "fetch('/mic'" in html
+    assert card.group("cap") == "wake_detection"
+    # The control the /mic poll and mute POST drive lives inside this card, so
+    # the gate above is what decides whether they ever run.
+    assert 'id="mic-toggle"' in card.group("body")
     assert "/mic" not in _nginx_locations(
         _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
     )

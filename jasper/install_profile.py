@@ -303,12 +303,9 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "content_dsp": local_sources,
         "voice_brain": voice_brain,
         # Separate key on purpose: a tier can hold a conversation without
-        # having the headroom to listen for a wake word all day. The
-        # landing page has no data-requires="wake_detection" gate yet —
-        # the key exists so a surface CAN gate on the right question
-        # instead of overloading voice_brain. No production reader yet;
-        # see install_profile_supports_wake_detection's docstring for
-        # the staging note (scheduled consumer, tripwire test).
+        # having the headroom to listen for a wake word all day. The landing
+        # page's mic card and /wake/ row gate on this key rather than
+        # overloading voice_brain (deploy/index.html).
         "wake_detection": wake_detection,
         "network_settings": True,
         "speaker_settings": True,
