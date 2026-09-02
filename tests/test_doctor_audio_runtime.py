@@ -1320,49 +1320,6 @@ def test_audio_runtime_plan_doctor_reports_policy_and_emitted_apart(
     assert "camilla_emitted=256/1536" in r.detail
 
 
-def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
-    # The route is unsupported only when the bond actually reads outputd's
-    # dac_content lane, so the plan carries that fact alongside the route mode.
-    plan = audio_runtime_plan.build_audio_runtime_plan(
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
-        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
-        route_mode="active_leader",
-        dac_content_lane_armed=True,
-    )
-    monkeypatch.setattr(
-        audio_runtime_plan,
-        "build_audio_runtime_plan_from_system",
-        lambda: plan,
-    )
-
-    r = doctor.check_audio_runtime_plan()
-
-    assert r.status == "fail"
-    assert "shm_ring is not supported while" in r.detail
-
-
-def test_audio_runtime_plan_doctor_passes_a_bonded_box_with_a_cleared_lane(
-    monkeypatch,
-):
-    """The narrowing, at the doctor: an ACTIVE endpoint's dac_content lane is
-    cleared, so a ring-armed bonded box is no longer reported as an unsupported
-    route. Without this the doctor would red every box the hardware pass needs."""
-    plan = audio_runtime_plan.build_audio_runtime_plan(
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
-        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
-        route_mode="active_leader",
-        dac_content_lane_armed=False,
-    )
-    monkeypatch.setattr(
-        audio_runtime_plan,
-        "build_audio_runtime_plan_from_system",
-        lambda: plan,
-    )
-
-    r = doctor.check_audio_runtime_plan()
-
-    assert "shm_ring is not supported while" not in r.detail
-
 
 def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     monkeypatch,

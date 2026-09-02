@@ -22,7 +22,6 @@ import fcntl
 import json
 import logging
 import os
-import stat
 import subprocess
 import sys
 import time
@@ -32,7 +31,10 @@ from pathlib import Path
 
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
-from ..fanin_coupling import OUTPUTD_ENV_BOOL_TRUE, RING_ACTIVE_PLAYBACK_DEVICE
+from ..fanin_coupling import (
+    OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+    RING_ACTIVE_PLAYBACK_DEVICE,
+)
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..source_intent import (
@@ -41,7 +43,12 @@ from ..source_intent import (
 from ..source_intent import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from . import config
 from .config import GroupingConfig
-from .dac_content_ring import DAC_CONTENT_LANE_ENV
+from .dac_content_ring import (
+    DAC_CONTENT_LANE_ENV,
+    DAC_CONTENT_RING_PCM,
+    DAC_CONTENT_RING_PERIOD_FRAMES,
+    dac_content_ring_servable,
+)
 from .effective_role import (
     FOLLOWER_STATUS_FILE,
     grouping_request_fingerprint,
@@ -136,12 +143,12 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 
 # ---------- the member round-trip content lane ----------
 #
-# Raw-PCM FIFO snapclient writes the buffered round-trip into
-# (`--player file:filename=...`, option string verified on snapclient 0.31.0),
-# read by outputd's `dac_content` lane — never snd-aloop, so snapclient's
-# snd_pcm_delay can't lie (inv-2). tmpfs (ARGS_DIR); the reconciler mkfifos it
-# before starting snapclient on every reconcile/boot.
-MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
+# The dumb member's round-trip rides the dac-content SHM ring: snapclient writes
+# DAC_CONTENT_RING_PCM through its `alsa` player and outputd reads that ring as
+# its sole content source. The transport's identity — PCM name, ring file, wire,
+# slot geometry — is owned by jasper.multiroom.dac_content_ring. Still never
+# snd-aloop (snapclient's snd_pcm_delay would lie, inv-2) and never the raw DAC,
+# which outputd owns.
 
 # Reconciler-owned PERSISTENT env file the jasper-outputd unit layers after
 # jasper.env (EnvironmentFile=-). Persistent (NOT /run) so a bonded speaker boots
@@ -371,30 +378,42 @@ def snapserver_argv(cfg: GroupingConfig) -> list[str]:
 def snapclient_argv(
     cfg: GroupingConfig,
     *,
-    player_fifo: str | None = None,
     player_alsa_device: str | None = None,
 ) -> list[str]:
     """Build the snapclient command line from a GroupingConfig.
 
-    PURE: a deterministic function of `cfg` (+ the optional player selection).
-    The host is the loopback when this speaker is the leader (it runs its own
-    server), otherwise the leader's address.
+    PURE: a deterministic function of `cfg` (+ the optional
+    ``player_alsa_device``). The host is the loopback when this speaker is the
+    leader (it runs its own server), otherwise the leader's address.
 
     Channel selection (which of L/R/sub this client plays) is a CamillaDSP or
     outputd concern and is intentionally NOT decided here.
 
-    ``player_fifo``: snapclient writes raw PCM to that FIFO via its ``file``
-    player, so the buffered round-trip feeds outputd's ``dac_content`` lane
-    rather than snd-aloop (which would trip the ``snd_pcm_delay``-lies trap,
-    inv-2) or fight outputd for the raw DAC. ``None`` leaves the command
-    BYTE-FOR-BYTE unchanged. The ``file:filename=`` option string was verified
-    against snapclient 0.31.0 (``--player file:?``).
+    ``active_endpoint`` (the ACTIVE follower, plus the active leader's own
+    drivers) DISABLES the ``dac_content`` ChannelPick on this box: CamillaDSP
+    owns both the channel-pick and the ``2->N`` split (Layer A), so outputd just
+    runs its normal active sink fed by camilla.
 
-    ``player_alsa_device`` (the ACTIVE endpoint, follower or leader): snapclient
-    writes to that ALSA device via its ``alsa`` player. An active endpoint's
-    CamillaDSP runs Layer A in the bonded path and captures the SAME device —
-    :data:`jasper.multiroom.grouping_ring.GROUPING_RING_PCM`, one name opened in
-    both directions. Mutually exclusive with ``player_fifo``.
+    THE ARMED BRANCH WRITES A BLANK ``JASPER_OUTPUTD_CONTENT_BRIDGE``, and every
+    other branch OMITS the key. outputd refuses the marker beside a DECLARED
+    bridge of any value, and its ``env_optional`` read counts blank as
+    undeclared — so blank is what overrides the ``shm_ring`` that
+    ``jasper-fanin-coupling-auto`` writes into the FIRST env layer on every pass.
+    Omitting the key there leaves that value standing and parks the daemon at
+    EX_CONFIG under ``RestartPreventExitStatus=78``. The unarmed branches must
+    NOT write blank: without the marker outputd reads this key with ``env_str``,
+    whose blank is a value it parks on, so they inherit layer 1 verbatim.
+
+    THE FIFO KEY IS CLEARED, NEVER SET. Arming both round-trip transports at once
+    is outputd's most fundamental refusal — two content sources on one DAC — and
+    this writer must never emit a combination the validator rejects across all
+    env LAYERS.
+
+    Active-mode TTS stays upstream of the crossover in fan-in. The outputd TTS
+    mixer is stereo-only and post-crossover; on an active lane a 2-way speaker is
+    also "2 channels", so arming that socket would send full-range assistant
+    audio to the tweeter. Active endpoints therefore clear the outputd TTS socket
+    along with the dac_content lane.
     """
     # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond wizard
     # mints it as a STABLE mDNS .local handle (the leader's JASPER_HOSTNAME), not
@@ -411,9 +430,58 @@ def snapclient_argv(
     ]
     if player_alsa_device:
         argv += ["--soundcard", player_alsa_device, "--player", "alsa"]
-    elif player_fifo:
-        argv += ["--player", f"file:filename={player_fifo}"]
     return argv
+
+
+#: Why a bonded member is not on the dac-content return ring. Stable tokens:
+#: they reach ``/state`` and the doctor through the follower STATUS file.
+LANE_REFUSED_ACTIVE_ENDPOINT = "active_endpoint"
+LANE_REFUSED_FLAT_OUTPUT_DENIED = "flat_output_not_allowed"
+LANE_REFUSED_PERIOD = "dac_content_ring_period_mismatch"
+
+
+@dataclass(frozen=True)
+class LaneDecision:
+    """Whether this box arms the dac-content return lane, and why not."""
+
+    armed: bool
+    #: One of the ``LANE_REFUSED_*`` tokens, or ``""`` when armed.
+    reason: str = ""
+
+
+def member_lane_decision(
+    cfg: GroupingConfig,
+    *,
+    active_endpoint: bool = False,
+    flat_output_allowed: bool = False,
+    outputd_period_frames: int | None = None,
+) -> LaneDecision:
+    """THE arming rule for the dumb-member round-trip lane. PURE.
+
+    Four conditions, spelled once and consumed by everything that needs the
+    answer — the env writer, the reconciler's bond refusal, and the doctor's
+    channel-pick check:
+
+    - an ``is_active_member``-shaped config (enabled, no error);
+    - not an ACTIVE endpoint: CamillaDSP owns that box's channel-pick and split
+      (Layer A), so outputd runs its normal active sink and no lane;
+    - a saved topology that permits a flat final-output graph, from the
+      canonical output runtime contract;
+    - an outputd period the ring's slot can carry
+      (:func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable`).
+
+    A disabled or invalid config is not refused — it is not a member at all —
+    so it returns the same unarmed decision with no reason token.
+    """
+    if not (cfg.enabled and cfg.error is None):
+        return LaneDecision(armed=False)
+    if active_endpoint:
+        return LaneDecision(armed=False, reason=LANE_REFUSED_ACTIVE_ENDPOINT)
+    if not flat_output_allowed:
+        return LaneDecision(armed=False, reason=LANE_REFUSED_FLAT_OUTPUT_DENIED)
+    if not dac_content_ring_servable(outputd_period_frames):
+        return LaneDecision(armed=False, reason=LANE_REFUSED_PERIOD)
+    return LaneDecision(armed=True)
 
 
 def _assemble_args(
@@ -441,18 +509,14 @@ def _assemble_args(
 
     # The units invoke `/usr/bin/snap* $ARGS`, so persist only argv[1:].
     server = "" if cfg.role != "leader" else _join_args(snapserver_argv(cfg))
-    if active_endpoint:
-        # snapclient writes the grouping ring; this box's CamillaDSP captures the
-        # same PCM and runs Layer A IN the bonded path, so it owns the
-        # channel-pick + split and needs a capture device rather than the FIFO.
-        client = _join_args(
-            snapclient_argv(cfg, player_alsa_device=GROUPING_RING_PCM)
-        )
-    else:
-        # DUMB member: the round-trip FIFO (`file` player) — never an ALSA sink,
-        # which would fight outputd for the DAC. outputd reads the FIFO via its
-        # dac_content lane and picks this member's channel there.
-        client = _join_args(snapclient_argv(cfg, player_fifo=MEMBER_CONTENT_FIFO))
+    # ONE snapclient shape, two rings, told apart by which end READS them: an
+    # ACTIVE endpoint's own CamillaDSP captures GROUPING_RING_PCM to run Layer A
+    # in the bonded path, while a DUMB member's outputd reads
+    # DAC_CONTENT_RING_PCM as its sole content source. A member the lane
+    # decision refuses never reaches here bonded — `main` falls back to solo,
+    # which returns above on `cfg.enabled`.
+    player = GROUPING_RING_PCM if active_endpoint else DAC_CONTENT_RING_PCM
+    client = _join_args(snapclient_argv(cfg, player_alsa_device=player))
     return {_SERVER_ARGS_KEY: server, _CLIENT_ARGS_KEY: client}
 
 
@@ -473,39 +537,54 @@ def outputd_grouping_env(
     *,
     active_endpoint: bool = False,
     flat_output_allowed: bool = False,
+    outputd_period_frames: int | None = None,
 ) -> dict[str, str]:
     """The outputd round-trip lane env derived from a GroupingConfig. PURE.
 
-    A DUMB ACTIVE member (enabled + valid, either role, single-DAC) plays the
-    round-tripped stream only when the saved topology explicitly permits a flat
-    final-output graph: outputd reads ``MEMBER_CONTENT_FIFO`` and picks this
-    speaker's channel (``ChannelPick``). Everyone else gets EMPTY strings — which
-    outputd's ``env_optional`` reads as unset, i.e. the byte-identical solo loop
-    — so a stale file can never half-configure the lane.
+    Whether the lane arms is :func:`member_lane_decision`'s answer, never a
+    second rule; what the lane IS is :mod:`jasper.multiroom.dac_content_ring`'s
+    module docstring.
 
-    ``flat_output_allowed`` comes from the canonical output runtime contract.
-    Empty, malformed, or roleful topology never arms a direct DAC bypass.
+    Every non-arming shape gets EMPTY strings rather than absent keys — outputd
+    reads empty as unset (``env_optional``) and as disarmed (``env_bool``), so a
+    stale file can never half-configure the lane.
 
     ``active_endpoint`` (the ACTIVE follower, plus the active leader's own
     drivers) DISABLES the ``dac_content`` ChannelPick on this box: CamillaDSP
     owns both the channel-pick and the ``2->N`` split (Layer A), so outputd just
     runs its normal active sink fed by camilla.
 
-    Active-mode TTS stays upstream of the crossover in fan-in. The outputd TTS
-    mixer is stereo-only and post-crossover; on an active lane a 2-way speaker is
-    also "2 channels", so arming that socket would send full-range assistant
-    audio to the tweeter. Active endpoints therefore clear the outputd TTS socket
-    along with the dac_content lane.
+    THE ARMED BRANCH WRITES A BLANK ``JASPER_OUTPUTD_CONTENT_BRIDGE``, and every
+    other branch OMITS the key. outputd refuses the marker beside a DECLARED
+    bridge of any value (``rust/jasper-outputd/src/config.rs``), and its
+    ``env_optional`` read counts blank as undeclared — so blank is what
+    overrides the ``shm_ring`` that ``jasper-fanin-coupling-auto`` writes into
+    the FIRST env layer on every pass. Omitting the key there would leave that
+    value standing and park the daemon at EX_CONFIG under
+    ``RestartPreventExitStatus=78``. The unarmed branches must NOT write blank:
+    without the marker outputd reads this key with ``env_str``, whose blank is a
+    value it parks on, so an unarmed box has to inherit layer 1 verbatim.
 
-    The lane has NO transport to pin (ADR-0100 / ADR-0178
-    ``grouped_dac_content_lane``, #3118): a pin would name a bridge nothing
-    serves, so the box parks at outputd's own bridge requirement instead, which
-    names the lane and the key.
+    THE FIFO KEY IS CLEARED, NEVER SET. Arming both round-trip transports at
+    once is outputd's most fundamental refusal — two content sources on one DAC
+    — and this writer must never emit a combination the validator rejects across
+    all env LAYERS.
+
+    Active-mode TTS stays upstream of the crossover in fan-in: the outputd TTS
+    mixer is stereo-only and post-crossover, and on an active lane a 2-way
+    speaker is also "2 channels", so arming that socket would send full-range
+    assistant audio to the tweeter. Active endpoints therefore clear the outputd
+    TTS socket along with the lane.
     """
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
 
     if cfg.enabled and cfg.error is None:
-        if active_endpoint or not flat_output_allowed:
+        if not member_lane_decision(
+            cfg,
+            active_endpoint=active_endpoint,
+            flat_output_allowed=flat_output_allowed,
+            outputd_period_frames=outputd_period_frames,
+        ).armed:
             # CORNER PRECEDENCE: an ACTIVE main could carry the crossover corner
             # TWICE — the wireless-sub mains high-pass in this lane AND its own
             # CamillaDSP Layer-A bass-management high-pass (folded at
@@ -518,13 +597,14 @@ def outputd_grouping_env(
             # jasper.bass_management reports that state honestly to displays.
             # Only a DUMB (passive single-DAC) member carries the wireless HP.
             return {
+                DAC_CONTENT_LANE_ENV: "",
                 OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
                 OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
                 OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
                 OUTPUTD_DAC_CONTENT_HP_HZ_ENV: "",
                 # Empty = unset to outputd's env_f32 (default 0.0).
                 OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
-            }
+            }  # no CONTENT_BRIDGE key: layer 1's value must stand
         sub_present = config.bond_has_subwoofer(cfg)
         # The wireless-sub mains high-pass corner, applied in THIS (dumb-member)
         # lane. cfg.crossover_hz is the SHARED bass-management corner
@@ -536,7 +616,14 @@ def outputd_grouping_env(
             else ""
         )
         env = {
-            OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
+            # The BARE marker outputd's env_bool reads (never a path — outputd
+            # derives the ring file from its own DEFAULT_DAC_CONTENT_RING_PATH,
+            # so the two ends have no second spelling to disagree on).
+            DAC_CONTENT_LANE_ENV: "1",
+            # BLANK, not absent: this layer loads AFTER outputd.env, where
+            # jasper-fanin-coupling-auto writes shm_ring on every pass.
+            OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "",
+            OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
             OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
             OUTPUTD_DAC_CONTENT_HP_HZ_ENV: main_highpass_hz,
@@ -555,6 +642,7 @@ def outputd_grouping_env(
             env[OUTPUTD_TTS_SOCKET_ENV] = route.outputd_tts_socket
         return env
     return {
+        DAC_CONTENT_LANE_ENV: "",
         OUTPUTD_DAC_CONTENT_FIFO_ENV: "",
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV: "",
         OUTPUTD_TTS_SOCKET_ENV: "",
@@ -562,44 +650,6 @@ def outputd_grouping_env(
         # Empty = unset to outputd's env_f32 (default 0.0).
         OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
     }
-
-
-def dac_content_lane_armed(
-    cfg: GroupingConfig,
-    *,
-    active_endpoint: bool = False,
-    flat_output_allowed: bool = False,
-) -> bool:
-    """Would :func:`outputd_grouping_env` arm the dac_content lane here? PURE.
-
-    Asks the WRITER rather than restating its rule, so it cannot drift when the
-    writer gains an input.
-
-    EITHER transport counts (FIFO key or ring marker), as
-    :mod:`jasper.control.transport_park` also names both: one lane, two
-    spellings. Reading only the FIFO key would answer "not armed" once the writer
-    moves to the ring marker, and the consumer would then arm ``shm_ring`` under
-    a lane that owns the DAC.
-
-    Its consumer is the coupling support matrix
-    (:func:`jasper.audio_runtime_plan.coupling_supported_for_route`), which
-    blocks ``shm_ring`` only where this lane is armed: the round-trip lane is
-    itself the content source, so it and the ring are mutually exclusive by
-    construction (outputd refuses the pair).
-
-    Crosses module boundaries as a plain ``bool`` ON PURPOSE:
-    ``jasper.audio_runtime_plan`` keeps its multiroom imports lazy (it is
-    imported at module level BY ``multiroom.active_leader_config``), so importing
-    this predicate there would invert that direction into a cycle.
-    """
-    env = outputd_grouping_env(
-        cfg,
-        active_endpoint=active_endpoint,
-        flat_output_allowed=flat_output_allowed,
-    )
-    return bool(env[OUTPUTD_DAC_CONTENT_FIFO_ENV]) or (
-        env.get(DAC_CONTENT_LANE_ENV, "").strip().lower() in OUTPUTD_ENV_BOOL_TRUE
-    )
 
 
 def voice_grouping_env(
@@ -731,33 +781,36 @@ def is_active_speaker_box() -> bool:
     return _output_topology_state()[0] is True
 
 
-def box_dac_content_lane_armed(cfg: GroupingConfig) -> bool:
-    """This box's live :func:`dac_content_lane_armed` verdict for ``cfg``.
+def box_outputd_period_frames() -> int | None:
+    """The outputd period THIS box will LOAD, or ``None`` if unresolved.
 
-    For the coupling gates that hold a route mode and nothing else: a route mode
-    cannot answer this, because ``route_mode_from_grouping_config`` classifies on
-    ``cfg.role`` alone, so a DUMB member and an ACTIVE follower are both
-    ``active_follower``.
+    :func:`jasper.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
+    plan's policy resolver: the slot gate has to match the value outputd's own
+    ``env_u32`` reads off its three EnvironmentFile= layers, and the two differ
+    exactly where guessing is fatal (a DAC floor of 128 with a stale 1024 still
+    in ``outputd.env``; an operator ``jasper.env`` value the reconciler has not
+    applied).
 
-    The OFF path is answered FIRST, before any topology read: a solo box has no
-    lane whatever the topology says, and ``_output_topology_state`` logs a WARN
-    per call on an unreadable one — journal spam from the 60 s route sampler and
-    every /state build, on a box that is not even bonded.
+    Fail-soft to ``None``, which
+    :func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable` reads
+    as "do not arm": a wrong guess parks outputd and the speaker goes silent.
 
-    UNCERTAINTY FAILS CLOSED, as worst-case INPUTS rather than a bypass: an
-    unreadable topology cannot separate a dumb member (lane armed) from an active
-    endpoint (lane cleared), so the rule is asked with the shape that arms it.
+    Lazy import for the reason the rest of this module's
+    ``jasper.audio_runtime_plan`` uses are lazy: that module is imported at
+    module level by :mod:`jasper.multiroom.active_leader_config`.
     """
-    if not config.is_active_member(cfg):
-        return False
-    active_box_state, flat_output_allowed = _output_topology_state()
-    if active_box_state is None:
-        return dac_content_lane_armed(cfg, flat_output_allowed=True)
-    return dac_content_lane_armed(
-        cfg,
-        active_endpoint=active_box_state,
-        flat_output_allowed=flat_output_allowed,
-    )
+    try:
+        from jasper.audio_runtime_plan import outputd_period_frames_as_loaded
+
+        return outputd_period_frames_as_loaded()
+    except Exception as e:  # noqa: BLE001 - an unresolved period must not raise
+        log_event(
+            logger,
+            "multiroom.reconcile.outputd_period_unresolved",
+            error=e,
+            level=logging.WARNING,
+        )
+        return None
 
 
 def _systemctl_unit_state(query: str, unit: str) -> bool | None:
@@ -1095,45 +1148,6 @@ def _write_derived_env(
         )
         return (True, False)
     return (True, True)
-
-
-def _ensure_member_fifo(*, path: str = MEMBER_CONTENT_FIFO) -> bool:
-    """Make sure the member round-trip FIFO exists at ``path``. Fail-soft.
-
-    tmpfs-backed (ARGS_DIR), so it must be recreated each boot, before starting
-    the snapclient that writes it via the `file` player. A non-FIFO squatter is
-    replaced: snapclient's file player would happily write a growing regular file
-    (a disk-filling silent failure) and outputd's dac_content open would still
-    succeed, masking it."""
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        st = None
-        try:
-            st = os.stat(path)
-        except FileNotFoundError:
-            pass
-        if st is not None and not stat.S_ISFIFO(st.st_mode):
-            log_event(
-                logger,
-                "multiroom.reconcile.fifo_replaced",
-                path=path,
-                detail="non-FIFO squatter removed",
-                level=logging.WARNING,
-            )
-            os.unlink(path)
-            st = None
-        if st is None:
-            os.mkfifo(path, 0o600)
-    except OSError as e:
-        log_event(
-            logger,
-            "multiroom.reconcile.fifo_failed",
-            path=path,
-            error=e,
-            level=logging.WARNING,
-        )
-        return False
-    return True
 
 
 def _reset_failed_unit(unit: str) -> None:
@@ -1674,6 +1688,15 @@ def main(argv: list[str] | None = None) -> int:
     # they SHARE the snapclient-writes-the-ring + outputd-dac_content-disabled
     # wiring.
     active_endpoint = active_follower or active_speaker_leader
+    # ONE lane decision per pass, read by the bond refusal below and handed to
+    # the env writer, so the refusal and what gets written cannot disagree.
+    outputd_period_frames = box_outputd_period_frames()
+    lane_decision = member_lane_decision(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+        outputd_period_frames=outputd_period_frames,
+    )
     log_event(
         logger,
         "multiroom.reconcile.start",
@@ -1736,49 +1759,33 @@ def main(argv: list[str] | None = None) -> int:
             _restart_outputd()
         return 1
 
-    # Ring-armed box: REFUSE a bond the armed ring would silence — the SYMMETRIC
-    # half of the coupling support matrix, asked of that matrix rather than
-    # restated here. Fail-SAFE to solo (the box keeps playing its own content)
-    # and surface the matrix's reason. Placed BEFORE snapcast provision / any
-    # bond wiring; the request stays in the wizard config, so disarming the ring
-    # lets the next reconcile bond.
-    if active:
-        from jasper.audio_runtime_plan import (
-            GROUPED_SHM_RING_MECHANISM,
-            coupling_supported_for_route,
-            route_mode_from_grouping_config,
-        )
-        from jasper.fanin.ring_health import read_persisted_coupling
-
-        coupling_support = coupling_supported_for_route(
-            read_persisted_coupling(),
-            route_mode_from_grouping_config(cfg),
-            dac_content_lane_armed=dac_content_lane_armed(
-                cfg,
-                active_endpoint=active_endpoint,
-                flat_output_allowed=flat_output_allowed,
+    # A member whose outputd period cannot carry the return ring has no
+    # round-trip transport, and arming one anyway makes outputd bail EX_CONFIG
+    # under `RestartPreventExitStatus=78` — a parked daemon and a SILENT
+    # speaker. Fail-SAFE to solo: the box keeps playing its own content, the
+    # request stays in the wizard config, and a DAC change lets the next
+    # reconcile bond. Placed BEFORE snapcast provision / any bond wiring. Only
+    # this reason refuses the bond — the other two unarmed shapes (an ACTIVE
+    # endpoint, a topology that forbids a flat graph) are legitimate members.
+    if active and lane_decision.reason == LANE_REFUSED_PERIOD:
+        endpoint_block_reason = LANE_REFUSED_PERIOD
+        log_event(
+            logger,
+            "multiroom.reconcile.dac_content_ring_period_mismatch",
+            reason=args.reason,
+            outputd_period_frames=(
+                "(unresolved)" if outputd_period_frames is None
+                else outputd_period_frames
             ),
+            ring_period_frames=DAC_CONTENT_RING_PERIOD_FRAMES,
+            detail=(
+                "this box's outputd period is not the dac-content return ring's "
+                "slot, so outputd would refuse the pair at startup and park. "
+                "Staying solo."
+            ),
+            level=logging.WARNING,
         )
-        if not coupling_support.supported:
-            # The matrix owns the token and the mechanism string; only the ACTION
-            # is this side's — here the coupling is untouched and the BOND is
-            # refused.
-            endpoint_block_reason = coupling_support.reason
-            log_event(
-                logger,
-                "multiroom.reconcile.ring_armed_bond_blocked",
-                reason=args.reason,
-                detail=(
-                    GROUPED_SHM_RING_MECHANISM
-                    # No disarm remedy is offered: the ring is the one transport
-                    # (ADR-0100), `jasper-fanin-coupling-reconcile loopback`
-                    # exits 2, and the bonded round-trip lane is itself parked
-                    # pending #3118. A remedy that cannot run is worse than none.
-                    + " Grouping this speaker waits on #3118. Staying solo."
-                ),
-                level=logging.WARNING,
-            )
-            fall_back_to_solo()
+        fall_back_to_solo()
 
     # Grouping prerequisite: install.sh ships the snapcast units but never the
     # binaries — that is the grouping opt-in's job (jasper.multiroom.provision).
@@ -1928,7 +1935,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # 1. Derived files + FIFO — before any unit work.
+    # 1. Derived files — before any unit work.
     derived = _assemble_args(cfg, active_endpoint=active_endpoint)
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
@@ -1946,6 +1953,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg,
         active_endpoint=active_endpoint,
         flat_output_allowed=flat_output_allowed,
+        outputd_period_frames=outputd_period_frames,
     )
     env_changed, env_ok = _write_derived_env(
         outputd_env,
@@ -1958,20 +1966,15 @@ def main(argv: list[str] | None = None) -> int:
         path=OUTPUTD_GROUPING_ENV_FILE,
         changed=env_changed,
         ok=env_ok,
-        fifo=outputd_env[OUTPUTD_DAC_CONTENT_FIFO_ENV] or "(cleared)",
+        lane=outputd_env[DAC_CONTENT_LANE_ENV] or "(cleared)",
         channel=outputd_env[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] or "(cleared)",
     )
     if not env_ok:
         rc = 1
-    # The member content FIFO feeds the DUMB follower's dac_content lane. An
-    # active ENDPOINT takes the grouping ring instead, whose file the ioplug
-    # creates at open (deploy/lib/install/ring-platform.sh leaves it alone).
-    if (
-        active
-        and not active_endpoint
-        and not _ensure_member_fifo(path=MEMBER_CONTENT_FIFO)
-    ):
-        rc = 1
+    # NO ring file to create on either bonded path: both the grouping ring and
+    # the dac-content ring are ioplug rings whose C writer creates the file at
+    # open, and the install leaves them alone on purpose
+    # (deploy/lib/install/ring-platform.sh).
 
     # 2. CamillaDSP solo RESTORE — unwind a prior bond before units tear down.
     #    A box that will APPLY a bonded config below skips restore. An ACTIVE box

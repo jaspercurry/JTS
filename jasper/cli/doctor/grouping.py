@@ -635,13 +635,18 @@ def check_grouping_channel_pick() -> CheckResult:
     is gone). A missing or drifted env is SILENT (the speaker plays the
     full stereo program — the wrong channel), so this drift check is the
     only way a wrong-channel member is visible."""
+    from ...fanin_coupling import dac_content_lane_marker_armed
     from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
     from ...multiroom.reconcile import (
-        MEMBER_CONTENT_FIFO,
+        LANE_REFUSED_ACTIVE_ENDPOINT,
+        LANE_REFUSED_FLAT_OUTPUT_DENIED,
+        LANE_REFUSED_PERIOD,
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
         OUTPUTD_GROUPING_ENV_FILE,
-        is_active_speaker_box,
+        _output_topology_state,
+        box_outputd_period_frames,
+        member_lane_decision,
     )
 
     label = "grouping: channel pick"
@@ -649,7 +654,28 @@ def check_grouping_channel_pick() -> CheckResult:
     if not is_active_member(cfg):
         return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
 
-    active_endpoint = is_active_speaker_box()
+    # The reconciler's OWN rule, asked with the reconciler's own inputs, so this
+    # check can never expect a lane the writer would not have armed.
+    active_box_state, flat_output_allowed = _output_topology_state()
+    if active_box_state is None:
+        # The reconciler took its own `active_speaker_topology_unknown` branch
+        # and never asked the lane rule at all, so reporting "the topology does
+        # not permit a flat graph" would name the wrong fault and offer no
+        # remedy for the real one.
+        return CheckResult(
+            label, "warn",
+            "this box's saved output topology could not be read, so the "
+            "grouping reconciler preserved the running graph instead of wiring "
+            "the round-trip lane (blocked_reason=active_speaker_topology_unknown)",
+        )
+    active_endpoint = active_box_state is True
+    period = box_outputd_period_frames()
+    decision = member_lane_decision(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+        outputd_period_frames=period,
+    )
     path = Path(OUTPUTD_GROUPING_ENV_FILE)
     if not path.exists():
         if active_endpoint:
@@ -670,26 +696,48 @@ def check_grouping_channel_pick() -> CheckResult:
         return CheckResult(label, "warn", f"could not read {path}: {e}")
 
     want_channel = cfg.channel or "stereo"
-    fifo = env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV, "")
+    # The lane is armed by a BARE marker, so this asks the same predicate
+    # outputd's own accept-set backs rather than comparing a path: the ring file
+    # is derived at both ends from one constant and no env names it.
+    lane_armed = dac_content_lane_marker_armed(env)
     channel = env.get(OUTPUTD_DAC_CONTENT_CHANNEL_ENV, "")
-    if active_endpoint:
-        if fifo or channel:
+    if decision.reason == LANE_REFUSED_ACTIVE_ENDPOINT:
+        if lane_armed or channel:
             return CheckResult(
                 label, "warn",
                 f"active endpoint should have outputd channel-pick lane cleared "
-                f"(fifo={fifo or '(unset)'} channel={channel or '(unset)'}) — "
-                "active speakers receive the round-trip through the grouping "
-                "ring jts_ring_grouping; run jasper-grouping-reconcile",
+                f"(lane={'armed' if lane_armed else '(disarmed)'} "
+                f"channel={channel or '(unset)'}) — active speakers receive the "
+                "round-trip through the grouping ring jts_ring_grouping; run "
+                "jasper-grouping-reconcile",
             )
         return CheckResult(
             label, "ok",
             "active endpoint picks its channel off jts_ring_grouping",
         )
-    if fifo != MEMBER_CONTENT_FIFO or channel != want_channel:
+    # The two refusals below are the reconciler's own decisions, not drift, so
+    # neither prescribes a reconcile: it would change nothing.
+    if decision.reason == LANE_REFUSED_PERIOD:
         return CheckResult(
             label, "warn",
-            f"outputd lane env drifted (fifo={fifo or '(unset)'} "
-            f"channel={channel or '(unset)'}, want fifo={MEMBER_CONTENT_FIFO} "
+            f"this box runs outputd at period_frames="
+            f"{period if period is not None else '(unresolved)'}, but the "
+            f"dac-content return ring's slot is {DAC_CONTENT_RING_PERIOD_FRAMES}"
+            " — outputd would refuse the pair, so this member stays solo",
+        )
+    if decision.reason == LANE_REFUSED_FLAT_OUTPUT_DENIED:
+        return CheckResult(
+            label, "warn",
+            "this box's saved output topology does not permit a flat "
+            "final-output graph, so the round-trip lane stays cleared and this "
+            "member plays nothing from the bond",
+        )
+    if not lane_armed or channel != want_channel:
+        return CheckResult(
+            label, "warn",
+            f"outputd lane env drifted (lane="
+            f"{'armed' if lane_armed else '(disarmed)'} "
+            f"channel={channel or '(unset)'}, want lane=armed "
             f"channel={want_channel}) — this member would play the wrong "
             "channel; run jasper-grouping-reconcile",
         )

@@ -10,8 +10,8 @@ reconciles — the two silence classes observed during the 2026-06-11
 bring-up, both of which left every systemd unit green:
 
   1. **Round-trip starvation.** The member's snapclient stops feeding
-     /run/jasper-grouping/member-content.fifo (process gone, wedged,
-     or the dac_content lane never armed because a reconcile failed).
+     the dac-content return ring (process gone, wedged, or the
+     dac_content lane never armed because a reconcile failed).
      outputd's per-period fallback keeps the DAC fed with silence —
      correct for a transient, but a SUSTAINED fallback means the
      speaker plays no music indefinitely (inv-B). Detection: outputd's

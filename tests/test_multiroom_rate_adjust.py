@@ -17,6 +17,12 @@ from __future__ import annotations
 
 import pytest
 
+from tests._bonded_member import bonded_grouping_env
+
+from jasper.multiroom.dac_content_ring import (
+    DAC_CONTENT_LANE_ENV,
+    DAC_CONTENT_RING_PERIOD_FRAMES,
+)
 from jasper.multiroom.config import (
     GroupingConfig,
     is_active_member,
@@ -420,6 +426,7 @@ def test_leader_pipe_check_skips_non_leaders(monkeypatch):
 
 def _channel_pick_check(
     monkeypatch, *, cfg, env_text=None, env_path=None, active_box=False,
+    period=DAC_CONTENT_RING_PERIOD_FRAMES, topology_state=None,
 ):
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
@@ -432,8 +439,14 @@ def _channel_pick_check(
         str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
     )
     monkeypatch.setattr(
-        recmod, "_output_topology_state", lambda: (active_box, not active_box)
+        recmod,
+        "_output_topology_state",
+        lambda: topology_state or (active_box, not active_box),
     )
+    # This box's outputd runs the return ring's slot, so the fourth arming gate
+    # passes and the check's subject is the lane env. The mismatching box is
+    # test_channel_pick_check_names_a_period_the_return_ring_cannot_carry.
+    monkeypatch.setattr(recmod, "box_outputd_period_frames", lambda: period)
     return groupmod.check_grouping_channel_pick()
 
 
@@ -448,18 +461,15 @@ def test_channel_pick_check_warns_when_env_missing(monkeypatch):
 
 
 def test_channel_pick_check_warns_on_channel_drift(monkeypatch, tmp_path):
-    from jasper.multiroom.reconcile import (
-        MEMBER_CONTENT_FIFO,
-        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
-    )
+    from jasper.multiroom.reconcile import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
+
     env = tmp_path / "grouping-outputd.env"
     r = _channel_pick_check(
         monkeypatch,
         cfg=_cfg(enabled=True, role="follower", channel="right",
                  bond_id="b", leader_addr="jts.local"),
         env_text=(
-            f"{OUTPUTD_DAC_CONTENT_FIFO_ENV}={MEMBER_CONTENT_FIFO}\n"
+            f"{DAC_CONTENT_LANE_ENV}=1\n"
             f"{OUTPUTD_DAC_CONTENT_CHANNEL_ENV}=left\n"  # drifted
         ),
         env_path=env,
@@ -468,17 +478,58 @@ def test_channel_pick_check_warns_on_channel_drift(monkeypatch, tmp_path):
     assert "wrong channel" in r.detail
 
 
-def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
-    from jasper.multiroom.reconcile import (
-        MEMBER_CONTENT_FIFO,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
-        outputd_grouping_env,
+def test_channel_pick_check_names_an_unreadable_topology_as_such(
+    monkeypatch, tmp_path,
+):
+    """An unreadable topology is not "the topology forbids a flat graph".
+
+    The reconciler takes its own `active_speaker_topology_unknown` branch there
+    and never asks the lane rule at all, so naming the flat-graph rule would
+    send the operator to fix a permission the box has not been asked for."""
+    env = tmp_path / "grouping-outputd.env"
+    r = _channel_pick_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        env_text=f"{DAC_CONTENT_LANE_ENV}=\n",
+        env_path=env,
+        topology_state=(None, False),
     )
+    assert r.status == "warn"
+    assert "active_speaker_topology_unknown" in r.detail
+
+
+def test_channel_pick_check_names_a_period_the_return_ring_cannot_carry(
+    monkeypatch, tmp_path,
+):
+    """A box whose outputd period is not the ring's slot never armed the lane,
+    and the reconciler refused its bond on purpose — so the check names that
+    rather than prescribing a reconcile that would change nothing."""
+    env = tmp_path / "grouping-outputd.env"
+    r = _channel_pick_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        env_text=f"{DAC_CONTENT_LANE_ENV}=\n",
+        env_path=env,
+        period=1024,
+    )
+    assert r.status == "warn"
+    assert "1024" in r.detail and str(DAC_CONTENT_RING_PERIOD_FRAMES) in r.detail
+    assert "jasper-grouping-reconcile" not in r.detail
+
+
+def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
+    from jasper.fanin_coupling import dac_content_lane_marker_armed
+
     cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
     # The reconciler's own pure derive writes the file → the check passes:
     # the two ends of the contract are the same function.
-    derived = outputd_grouping_env(cfg, flat_output_allowed=True)
-    assert derived[OUTPUTD_DAC_CONTENT_FIFO_ENV] == MEMBER_CONTENT_FIFO
+    derived = bonded_grouping_env(
+        cfg,
+        flat_output_allowed=True,
+    )
+    assert dac_content_lane_marker_armed(derived)
     env = tmp_path / "grouping-outputd.env"
     r = _channel_pick_check(
         monkeypatch, cfg=cfg,
@@ -495,12 +546,11 @@ def test_channel_pick_check_active_endpoint_names_the_grouping_ring(
     from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
         outputd_grouping_env,
     )
     cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
     derived = outputd_grouping_env(cfg, active_endpoint=True)
-    assert derived[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
+    assert derived[DAC_CONTENT_LANE_ENV] == ""
     assert derived[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] == ""
     env = tmp_path / "grouping-outputd.env"
     r = _channel_pick_check(
@@ -517,17 +567,14 @@ def test_channel_pick_check_active_endpoint_names_the_grouping_ring(
 def test_channel_pick_check_active_endpoint_warns_on_stale_dumb_lane(
     monkeypatch, tmp_path,
 ):
-    from jasper.multiroom.reconcile import (
-        MEMBER_CONTENT_FIFO,
-        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
-    )
+    from jasper.multiroom.reconcile import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
+
     cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
     env = tmp_path / "grouping-outputd.env"
     r = _channel_pick_check(
         monkeypatch, cfg=cfg,
         env_text=(
-            f"{OUTPUTD_DAC_CONTENT_FIFO_ENV}={MEMBER_CONTENT_FIFO}\n"
+            f"{DAC_CONTENT_LANE_ENV}=1\n"
             f"{OUTPUTD_DAC_CONTENT_CHANNEL_ENV}=right\n"
         ),
         env_path=env,
@@ -587,17 +634,13 @@ def test_sub_corner_check_na_for_active_speaker_box(monkeypatch):
 
 
 def test_sub_corner_check_warns_when_corner_absent(monkeypatch, tmp_path):
-    from jasper.multiroom.reconcile import (
-        MEMBER_CONTENT_FIFO,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
-    )
     env = tmp_path / "grouping-outputd.env"
     r = _sub_corner_check(
         monkeypatch,
         cfg=_cfg(enabled=True, role="follower", channel="sub",
                  bond_id="b", leader_addr="jts.local", crossover_hz=120.0),
-        # FIFO present but the SUB_HZ key absent (a stale pre-feature file).
-        env_text=f"{OUTPUTD_DAC_CONTENT_FIFO_ENV}={MEMBER_CONTENT_FIFO}\n",
+        # Lane armed but the SUB_HZ key absent (a stale pre-feature file).
+        env_text=f"{DAC_CONTENT_LANE_ENV}=1\n",
         env_path=env,
     )
     assert r.status == "warn"
@@ -609,11 +652,13 @@ def test_sub_corner_check_ok_when_wired(monkeypatch, tmp_path):
     the two ends of the contract are the same function."""
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_SUB_HZ_ENV,
-        outputd_grouping_env,
     )
     cfg = _cfg(enabled=True, role="follower", channel="sub", bond_id="b",
                leader_addr="jts.local", crossover_hz=120.0)
-    derived = outputd_grouping_env(cfg, flat_output_allowed=True)
+    derived = bonded_grouping_env(
+        cfg,
+        flat_output_allowed=True,
+    )
     assert derived[OUTPUTD_DAC_CONTENT_SUB_HZ_ENV] == "120.0"
     env = tmp_path / "grouping-outputd.env"
     r = _sub_corner_check(
@@ -645,13 +690,13 @@ def test_outputd_grouping_env_clears_when_not_active():
         assert "JASPER_OUTPUTD_CONTENT_BRIDGE" not in env
 
 
-def test_outputd_grouping_env_never_declares_a_transport():
-    """The writer emits no content-bridge key in ANY state.
+def test_only_the_armed_branch_touches_the_content_bridge_key():
+    """UNARMED SHAPES MUST NOT WRITE THE KEY AT ALL, in any spelling.
 
-    It used to pin ``direct`` beside the FIFO for writer/validator coherence
-    (the jts3 2026-06-11 boot-loop). Under one audio transport there is no
-    route to pin: the lane parks at outputd's own bridge requirement, and a
-    stale declaration in the last env layer would only obscure why."""
+    This layer loads after ``outputd.env``, so a key written here overrides what
+    ``jasper-fanin-coupling-auto`` put there. Without the marker outputd reads
+    the bridge with ``env_str``, whose BLANK is a value it parks on, so an
+    unarmed box has to inherit layer 1 verbatim — absent, not cleared."""
     from jasper.multiroom.reconcile import outputd_grouping_env
     configs = [
         _cfg(),
@@ -661,7 +706,16 @@ def test_outputd_grouping_env_never_declares_a_transport():
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
     ]
     for cfg in configs:
+        # No flat-output permission and no resolved period: every one of these
+        # takes an unarmed branch.
         assert "JASPER_OUTPUTD_CONTENT_BRIDGE" not in outputd_grouping_env(cfg)
+
+    armed = bonded_grouping_env(
+        _cfg(enabled=True, role="follower", channel="right",
+             bond_id="b", leader_addr="jts.local"),
+        flat_output_allowed=True,
+    )
+    assert armed["JASPER_OUTPUTD_CONTENT_BRIDGE"] == ""
 
 
 def test_outputd_config_exit_code_contract():
@@ -1130,7 +1184,7 @@ def test_outputd_grouping_env_carries_the_trim():
         OUTPUTD_DAC_CONTENT_TRIM_ENV,
         outputd_grouping_env,
     )
-    bonded = outputd_grouping_env(
+    bonded = bonded_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
              bond_id="b", leader_addr="jts.local", trim_db=-2.5),
         flat_output_allowed=True,

@@ -4,22 +4,22 @@
 
 """The DAC-content return transport's identity — one name, one wire, one owner.
 
-A grouping LEADER plays what its followers play by taking its own program back
-out of the sync engine: the leader's localhost snapclient writes the bond's
-shared stereo, and ``jasper-outputd`` reads it one DAC period at a time so the
-leader is sample-locked to its members. This module owns what that transport
-IS — its ALSA PCM name, its ring file, the conf.d block that declares it, and
-the wire both ends have to agree on.
+A bonded DUMB member plays the bond's program by taking it back out of the sync
+engine: that box's snapclient writes the bond's shared stereo, and
+``jasper-outputd`` reads it one DAC period at a time as its SOLE content source,
+so the member is sample-locked to the rest of the bond. EITHER ROLE — a passive
+leader takes its own program back the same way a follower takes the leader's;
+what decides it is the box being a passive single-DAC member, not which end of
+the bond it is. This module owns what that transport IS — its ALSA PCM name, its
+ring file, the conf.d block that declares it, and the wire both ends have to
+agree on.
 
-**Nothing opens it yet.** The lane is parked (:doc:`ADR-0178
-<../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name>`
-``grouped_dac_content_lane``, #3118): its old transport was a raw-PCM FIFO,
-which the one-transport ruling (ADR-0100) leaves with no route to pin —
-``jasper.multiroom.reconcile.outputd_grouping_env`` says so in prose. This
-module is the identity the lane moves ONTO, shipped ahead of its consumers
-exactly as ``60-jts-ring.conf``, ``61-jts-renderer-lanes.conf`` and the
-grouping ring all shipped ahead of theirs, so a geometry that fails on metal
-costs one file rather than a transport already flipped onto it.
+**Its writer is** ``jasper.multiroom.reconcile._assemble_args`` (the member's
+snapclient ``--soundcard``) **and its arm is**
+``jasper.multiroom.reconcile.outputd_grouping_env`` (the bare
+:data:`DAC_CONTENT_LANE_ENV` marker). Why the marker is served, why the legacy
+FIFO spelling still parks, and what the two env layers have to agree on:
+:doc:`ADR-0219 <../docs/adr/0219-the-dac-content-marker-is-served-and-its-contradiction-parks>`.
 
 **A sibling of** :mod:`jasper.multiroom.grouping_ring`, **not a reuse of it.**
 The two carry the same wire at the same geometry, but they are opposite
@@ -42,14 +42,14 @@ from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.ring_assets import ring_writer_lock_path
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/63-jts-ring-dac-content.conf``
-#: defines — one string for the leader's localhost snapclient ``--soundcard``
-#: and for outputd's reader.
+#: defines — one string for the member's snapclient ``--soundcard`` and for
+#: outputd's reader.
 DAC_CONTENT_RING_PCM = "jts_ring_dac_content"
 
 #: The SHM ring file that PCM's ``path`` names, under the shared
 #: ``/dev/shm/jts-ring`` directory the ring platform's tmpfiles entry creates.
-#: Only a LEADER has a return path to carry, so unlike the coupling's content
-#: hop there is no role-dependent second spelling.
+#: One spelling for both roles — unlike the coupling's content hop, this ring
+#: does not vary with which end of the bond the box is.
 DAC_CONTENT_RING_FILE = "/dev/shm/jts-ring/dac-content.ring"
 
 #: Where the installer places that conf.d block
@@ -101,3 +101,17 @@ DAC_CONTENT_RING_SLOTS = 16
 #: again here — one suffix rule, one owner, already pinned against the C header
 #: by ``tests/test_ring_slot_ceiling_pin.py``.
 DAC_CONTENT_RING_WRITER_LOCK = ring_writer_lock_path(DAC_CONTENT_RING_FILE)
+
+
+def dac_content_ring_servable(outputd_period_frames: int | None) -> bool:
+    """Can a box running ``outputd_period_frames`` read this ring? PURE.
+
+    One slot is one outputd PERIOD, and outputd bails EX_CONFIG on the
+    mismatched pair (``rust/jasper-outputd/src/config.rs``) under the unit's
+    ``RestartPreventExitStatus=78`` — a parked daemon and a silent speaker. So
+    the writer must not arm the lane unless the two already agree.
+
+    ``None`` (an unresolved period) is not servable: an indeterminate period
+    must never be assumed to match.
+    """
+    return outputd_period_frames == DAC_CONTENT_RING_PERIOD_FRAMES

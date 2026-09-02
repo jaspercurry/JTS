@@ -69,8 +69,6 @@ import shutil
 from pathlib import Path
 
 from .. import atomic_io
-from ..audio_runtime_plan import coupling_supported_for_route
-from ..fanin.coupling_reconcile import read_persisted_coupling
 from ..log_event import log_event
 from . import follower_config
 from .config import GroupingConfig
@@ -165,14 +163,9 @@ async def precheck_active_leader(
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.active_speaker.playback_route import (
-        active_playback_route_capability,
-    )
     from jasper.active_speaker.runtime_contract import (
         GRAPH_DRIVER_DOMAIN_BASELINE,
         classify_camilla_graph,
-        classify_output_contract,
-        topology_allows_flat_dac_graph,
     )
     from jasper.fanin_coupling import capture_half, coupling_capture_kwargs_from_env
     from jasper.output_topology import (
@@ -183,7 +176,6 @@ async def precheck_active_leader(
     from jasper.sound.settings import load_sound_settings, output_trim_db
 
     from .grouping_ring import GROUPING_RING_FORMAT, GROUPING_RING_PCM
-    from .reconcile import dac_content_lane_armed
 
     # program_channel_for is the SHARED single-box channel pick; re-raise its
     # follower-flavoured error as the leader error so this arm raises a single
@@ -236,27 +228,6 @@ async def precheck_active_leader(
             "active leader cannot re-prove its graphs — output topology is "
             f"missing/corrupt ({exc}); refusing to bond (no full-range emit)",
         ) from exc
-
-    # An ACTIVE-speaker leader is an active ENDPOINT: outputd_grouping_env clears
-    # its dac_content lane (this box's own CamillaDSP owns the channel-pick and
-    # the split), so an armed ring strands no lane here and the coupling matrix
-    # admits the bond. Derived from the topology just loaded rather than asserted
-    # from the caller's context, so the answer stays right if this precheck is
-    # ever reached on a box whose topology says otherwise.
-    box_is_active = active_playback_route_capability(topology).active_group_count > 0
-    coupling_support = coupling_supported_for_route(
-        read_persisted_coupling(),
-        "active_leader",
-        dac_content_lane_armed=dac_content_lane_armed(
-            cfg,
-            active_endpoint=box_is_active,
-            flat_output_allowed=topology_allows_flat_dac_graph(
-                classify_output_contract(topology)
-            ),
-        ),
-    )
-    if not coupling_support.supported:
-        raise ActiveLeaderError(coupling_support.reason, coupling_support.detail)
 
     # 1. camilla#2 driver-domain (Layer A) — the leader's OWN drivers, captured
     #    from the grouping ring. Identical build to the active follower
