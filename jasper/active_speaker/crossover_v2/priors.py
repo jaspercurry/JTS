@@ -47,7 +47,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from jasper.audio_measurement.program import ExcitationProgram
+    from jasper.audio_measurement.program import ExcitationProgram, ProgramSegment
 
 __all__ = [
     "role_transfers",
@@ -127,6 +127,30 @@ def candidate_required_band_hz(
     }
 
 
+def _sweep_branches(
+    measure_program: "ExcitationProgram | None",
+) -> tuple["ProgramSegment", ...]:
+    """The first-occurrence sweep of every branch the program carries, lowest
+    first — THE answer to "which branches did this session sweep".
+
+    ``build_measure_program`` pins ``sweep_w`` for the lower driver and
+    ``sweep_t`` for the upper one, and a 1-way main's solo keeps the
+    ``sweep_w`` spelling — so a missing ``sweep_t`` is a one-branch program,
+    not a broken one. Empty (no ``sweep_w`` at all, or no program yet) means
+    nothing was swept, and both readers below turn that into ``None`` rather
+    than a guess.
+    """
+    if measure_program is None:
+        return ()
+    branches: list["ProgramSegment"] = []
+    for segment_id in ("sweep_w", "sweep_t"):
+        try:
+            branches.append(measure_program.segment(segment_id))
+        except KeyError:
+            break
+    return tuple(branches)
+
+
 def measure_sweep_bounds(
     measure_program: "ExcitationProgram | None",
 ) -> tuple[float, float] | None:
@@ -139,22 +163,15 @@ def measure_sweep_bounds(
     be a second answer to "what did this session sweep".
 
     On a pair that is the upper branch's sweep floor and the lower branch's
-    sweep ceiling. A 1-way main composes ONE sweep (which keeps the ``sweep_w``
-    spelling), so the band all of its branches share is that sweep's own — and
-    VERIFY, whose summed sweep deliberately reaches below MEASURE's floor,
-    needs it for the same reason a pair does.
+    sweep ceiling. A 1-way main sweeps ONE branch, so the band all of its
+    branches share is that sweep's own — and VERIFY, whose summed sweep
+    deliberately reaches below MEASURE's floor, needs it for the same reason a
+    pair does.
     """
-    if measure_program is None:
+    branches = _sweep_branches(measure_program)
+    if not branches:
         return None
-    try:
-        woofer = measure_program.segment("sweep_w")
-    except KeyError:
-        return None
-    try:
-        lo = measure_program.segment("sweep_t").f1_hz
-    except KeyError:
-        lo = woofer.f1_hz
-    hi = woofer.f2_hz
+    lo, hi = branches[-1].f1_hz, branches[0].f2_hz
     if lo is None or hi is None:
         return None
     return float(lo), float(hi)
@@ -165,29 +182,22 @@ def measure_sweep_durations_s(
 ) -> dict[str, float] | None:
     """MEASURE's ACTUAL per-role sweep length, realized — possibly fitted.
 
-    Read off the SAME first-occurrence segments :func:`measure_sweep_bounds`
-    reads its band edges from (``sweep_w`` / ``sweep_t``), so the two stay one
-    source of what the session actually played. #2921's duration fit can
-    shorten either role's sweep to the longest phase-closing length at or
-    below its admitted limit; this is the length that was REALIZED, not the
-    nominal request, which is what a caller banking it (round state, #2923)
-    needs — the fit is a continuous float no search grid can reach, so an
-    offline rebuild can only reproduce a fitted program by reading this back.
-    ``None`` when there is no MEASURE program yet, mirroring
-    :func:`measure_sweep_bounds`.
+    One entry per branch :func:`_sweep_branches` finds — the SAME segments
+    :func:`measure_sweep_bounds` reads its band edges from, so the two stay one
+    source of what the session actually played, and a 1-way main banks its solo
+    rather than nothing. #2921's duration fit can shorten any role's sweep to
+    the longest phase-closing length at or below its admitted limit; this is
+    the length that was REALIZED, not the nominal request, which is what a
+    caller banking it (round state, #2923) needs — the fit is a continuous
+    float no search grid can reach, so an offline rebuild can only reproduce a
+    fitted program by reading this back. ``None`` when there is no MEASURE
+    program yet, mirroring :func:`measure_sweep_bounds`.
     """
-    if measure_program is None:
-        return None
-    try:
-        woofer = measure_program.segment("sweep_w")
-        tweeter = measure_program.segment("sweep_t")
-    except KeyError:
+    branches = _sweep_branches(measure_program)
+    if measure_program is None or not branches:
         return None
     rate = measure_program.sample_rate_hz
-    return {
-        str(woofer.role): woofer.n_samples / rate,
-        str(tweeter.role): tweeter.n_samples / rate,
-    }
+    return {str(seg.role): seg.n_samples / rate for seg in branches}
 
 
 def check_priors(*, fc_hz: float | None) -> MeasurementPriors:

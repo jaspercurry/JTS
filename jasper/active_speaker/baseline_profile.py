@@ -74,6 +74,7 @@ from .driver_base_trim import (
     BANK_UNMEASURED,
     BANK_WRITE_FAILED,
     BANK_WRITE_REFUSED,
+    REFUSE_NO_FRAME,
     REFUSED_STATUSES as BASE_TRIM_REFUSED_STATUSES,
     STATUS_SUPERSEDED as BASE_TRIM_STATUS_SUPERSEDED,
     DriverBaseTrimError,
@@ -3405,6 +3406,21 @@ async def _record_apply_outcome_into_bundle(
     )
 
 
+def _single_branch_snapshot(snapshot: Any) -> bool:
+    """Does this applied profile's own preset declare exactly one branch?
+
+    ``False`` for anything unreadable: a snapshot whose preset will not parse
+    is not evidence that a speaker is way-1, so the caller's ordinary arms
+    still apply to it.
+    """
+    raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
+    try:
+        preset = ActiveSpeakerPreset.from_mapping(dict(raw or {}))
+        return len(required_driver_roles(preset.way_count)) < 2
+    except (ActiveSpeakerConfigError, TypeError, ValueError):
+        return False
+
+
 def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     """Bank (or clear) the base trim the applied profile is actually playing.
 
@@ -3484,6 +3500,25 @@ def _bank_applied_base_trim(candidate: Mapping[str, Any]) -> None:
     # rather than by a multiroom consolidation nobody re-read this seam for.
     snapshot = candidate.get("recomposition_snapshot")
     if isinstance(snapshot, Mapping) and snapshot.get("domain") == "driver":
+        return
+
+    # STRUCTURAL, ahead of every evidence arm below: a base trim is a FRAME —
+    # one role's level relative to the others — and a one-branch preset has no
+    # roles to be relative to, so the writer refuses by name
+    # (``driver_base_trim.REFUSE_NO_FRAME``).
+    #
+    # Keyed on the SNAPSHOT'S OWN PRESET, not the trim map: a 2-way profile
+    # carrying only one correction is BROKEN, not way-1, and must keep the
+    # refuse-and-clear path below. A standing record is left alone because
+    # every reader keys on the declaration fingerprint
+    # (``driver_base_trim.banked_base_trims``), so a mismatched record is
+    # already refused there.
+    if _single_branch_snapshot(snapshot):
+        left_standing(
+            REFUSE_NO_FRAME,
+            "this speaker declares one driver, so it has no roles to level "
+            "against each other",
+        )
         return
 
     corrections = candidate.get("corrections")

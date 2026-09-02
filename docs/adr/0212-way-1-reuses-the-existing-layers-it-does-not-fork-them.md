@@ -16,7 +16,10 @@ ones of its own:
 - **No per-role trim exists.** A base trim is a FRAME — one role's level
   relative to the others — and way-1 declares one role. The write path
   refuses `base_trim_no_frame` rather than bank a vacuous
-  `{"full_range": 0.0}`, indistinguishable from a levelled speaker.
+  `{"full_range": 0.0}`, indistinguishable from a levelled speaker; the apply
+  seam recognizes the same fact off the applied preset's own way count and
+  leaves any standing record alone under that name, so a way-1 apply never
+  reports a topology property as a failed write.
 - **The passive network is its own protection.** `full_range` gets no active
   `min_highpass_hz`, taking the stricter of the woofer/tweeter floor-test and
   level figures. Its declared `recommended_highpass_hz` stays optional and
@@ -34,7 +37,11 @@ keeps the honesty property without a way-1-specific path.
 ## Consequences
 
 - A way-1 receipt reads like a 2-way one with fewer populated fields: same
-  candidate layer, same headroom/gain/limiter keys, `base_trim_no_frame`
-  where a 2-way receipt shows a trim pair.
+  candidate layer, same headroom/gain/limiter keys, and no trim pair or
+  `level_match.base_trim` block where a 2-way receipt carries one. The reason
+  is named where the decision is made — the apply seam journals
+  `event=dsp.baseline_base_trim_banked result=left_standing
+  reason=base_trim_no_frame` — rather than published as a receipt row, because
+  nothing was written for a row to describe.
 - A future single-role or degenerate-topology speaker gets the same
   treatment by construction: fit the existing layer, refuse by name.

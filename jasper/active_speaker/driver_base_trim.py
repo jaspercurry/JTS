@@ -121,6 +121,11 @@ REFUSE_NO_FRAME = "base_trim_no_frame"
 #: above: those name a writer envelope this module enforces, these name the
 #: seam's own reading of the applied profile. Both live here so one file holds
 #: every word an operator can see about this artifact.
+#:
+#: The ONE crossing is deliberate: a way-1 apply is left standing under
+#: :data:`REFUSE_NO_FRAME` itself, because there the seam and the writer are
+#: naming the identical fact about the same speaker, and minting a second slug
+#: for it would be the one-slug-per-fact rule inverted.
 BANK_CORRECTIONS_UNREADABLE = "corrections_unreadable"
 BANK_READINESS_UNREADABLE = "readiness_unreadable"
 BANK_CORRECTION_ENTRY_UNREADABLE = "correction_entry_unreadable"

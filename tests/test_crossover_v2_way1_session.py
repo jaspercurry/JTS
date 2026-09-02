@@ -486,6 +486,12 @@ def test_a_way1_banked_round_rebuilds_its_one_role_measure_program():
     ``program_id``, so composing a two-role program for a one-role round could
     only ever REFUSE — the reading an operator would then be told is
     ``state_unreadable``, blaming the bank for a shape it never had.
+
+    The round is DURATION-FITTED, which is what makes the banked length
+    load-bearing rather than incidental: a fitted sweep is a continuous float
+    no search grid reaches, so a round that banks nothing composes at nominal
+    and can only fail to reproduce. A way-1 round used to bank nothing at all,
+    which shut this door for every passive main.
     """
     from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
     from jasper.active_speaker.crossover_v2 import priors
@@ -494,18 +500,28 @@ def test_a_way1_banked_round_rebuilds_its_one_role_measure_program():
         FakeSeams(),
         index_phase_map=_way1_index_phase_map(),
         gain_plan_db={"full_range": -11.0},
+        driver_sweep_duration_limits_s={"full_range": 3.5},
     )
     program = conductor.program_for_phase(PHASE_MEASURE)
+    durations = priors.measure_sweep_durations_s(program)
     state = {
         "gain_plan_db": {"full_range": -11.0},
         "candidate": {"program_id": program.program_id},
-        "measure_sweep_durations_s": priors.measure_sweep_durations_s(program),
+        "measure_sweep_durations_s": durations,
     }
 
     rebuilt, downstream_db, prelude = he.rebuild_measure_program(
         state, {"full_range": (WAY1_BAND.lower_hz, WAY1_BAND.upper_hz)},
     )
 
+    # The solo's realized length is banked, and the fit actually bit — the
+    # nominal default sits above the limit, so nominal could not reproduce.
+    assert durations is not None
+    assert set(durations) == {"full_range"}
+    assert durations["full_range"] == pytest.approx(
+        program.segment("sweep_w").n_samples / program.sample_rate_hz
+    )
+    assert durations["full_range"] <= 3.5
     assert rebuilt.program_id == program.program_id
     assert downstream_db == pytest.approx(-20.0)
     assert prelude is False
@@ -600,7 +616,7 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
     assert branch.index(fitted[-1]) < branch.index("as_full_range_baseline_gain")
 
 
-def test_a_way1_apply_banks_no_base_trim_and_does_not_fail_trying(
+def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
     tmp_path, caplog, monkeypatch
 ):
     """A base trim is a FRAME — one role's level relative to the others — so a
@@ -608,9 +624,11 @@ def test_a_way1_apply_banks_no_base_trim_and_does_not_fail_trying(
     structurally (``driver_base_trim.REFUSE_NO_FRAME``).
 
     A way-1 apply must therefore reach neither the write nor the failed-bank
-    clear that follows one: nothing is banked, and the seam says so at INFO
-    with a standing-bank result, because having no frame is a property of the
-    speaker rather than an apply that went wrong.
+    clear that follows one: nothing is banked, and the seam names the TOPOLOGY
+    fact at INFO with a standing-bank result — not one of the evidence arms
+    below it ("names no readiness", "not level-matched by measurement"), which
+    describe a round that went wrong and send an operator to re-measure for a
+    frame that cannot exist.
     """
     import logging
 
@@ -633,6 +651,7 @@ def test_a_way1_apply_banks_no_base_trim_and_does_not_fail_trying(
         if "event=dsp.baseline_base_trim_banked" in message
     ]
     assert [event["result"] for event in events] == ["left_standing"]
+    assert events[0]["reason"] == dbt.REFUSE_NO_FRAME
     assert dbt.load_base_trim() is None
 
 
