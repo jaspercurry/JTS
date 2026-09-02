@@ -50,7 +50,9 @@ def _make_wake_loop():
     wl._fire_and_forget = set()
     # If a guard is skipped, these would be reached — make them visible.
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
-    wl._connection = types.SimpleNamespace(is_paused=lambda: False)
+    wl._connection = types.SimpleNamespace(
+        is_paused=lambda: False, last_failure_detail=lambda: None,
+    )
     wl._begin_turn = _SpyCalls()
     wl._prepare_assistant_loudness_context = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
@@ -320,7 +322,9 @@ def _ptt_only_wake_loop():
     wl._measurement_active = asyncio.Event()
     wl._fire_and_forget = set()
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
-    wl._connection = types.SimpleNamespace(is_paused=lambda: False)
+    wl._connection = types.SimpleNamespace(
+        is_paused=lambda: False, last_failure_detail=lambda: None,
+    )
     wl._begin_turn = _SpyCalls()
     wl._prepare_assistant_loudness_context = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()

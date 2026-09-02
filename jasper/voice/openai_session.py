@@ -72,6 +72,7 @@ from ._supervisor import (
     ESCALATION_REPEAT_THRESHOLD,
     DeferredReconnect,
     FailureFingerprint,
+    failure_detail,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -957,6 +958,9 @@ class OpenAIRealtimeConnection:
             maxlen=ESCALATION_REPEAT_THRESHOLD,
         )
         self._last_escalation_at: float = float("-inf")
+        # Cause of the most recent reconnect failure, for /state. Cleared
+        # on a successful reconnect so it never outlives the outage.
+        self._last_failure_detail: str | None = None
         self._failure_escalation_cb: Callable[[str], Awaitable[object]] | None = None
 
     # ------------------------------------------------------------------
@@ -1115,6 +1119,9 @@ class OpenAIRealtimeConnection:
             ConnectionState.PAUSED_FOR_BACKOFF,
             ConnectionState.FAILED,
         )
+
+    def last_failure_detail(self) -> str | None:
+        return self._last_failure_detail
 
     def supports_server_vad(self) -> bool:
         return True
@@ -1454,7 +1461,7 @@ class OpenAIRealtimeConnection:
                         phase=phase,
                         attempt=attempt,
                         exc=type(e).__name__,
-                        reason=repr(str(e)[:200]),
+                        reason=repr(self._last_failure_detail),
                         level=logging.WARNING,
                     )
                     raise
@@ -1469,7 +1476,7 @@ class OpenAIRealtimeConnection:
                         elapsed_sec=f"{elapsed:.1f}",
                         budget_sec=f"{budget_sec:.1f}",
                         exc=type(e).__name__,
-                        reason=repr(str(e)[:200]),
+                        reason=repr(self._last_failure_detail),
                         level=logging.ERROR,
                     )
                     raise RuntimeError(
@@ -1494,7 +1501,7 @@ class OpenAIRealtimeConnection:
                     elapsed_sec=f"{elapsed:.1f}",
                     budget_sec=f"{budget_sec:.1f}",
                     exc=type(e).__name__,
-                    reason=repr(str(e)[:200]),
+                    reason=repr(self._last_failure_detail),
                     level=logging.WARNING,
                 )
                 log_event(
@@ -1525,6 +1532,20 @@ class OpenAIRealtimeConnection:
         return lambda model: self._client.realtime.connect(model=model)
 
     async def _open_session(self) -> None:
+        """Open a session, recording the cause when it fails.
+
+        Every retry loop funnels through here, so `_last_failure_detail`
+        tracks the live connection by construction — a later caller
+        cannot forget the bookkeeping and leave /state reporting a
+        stale outage."""
+        try:
+            await self._open_session_attempt()
+        except Exception as e:  # noqa: BLE001
+            self._last_failure_detail = failure_detail(e)
+            raise
+        self._last_failure_detail = None
+
+    async def _open_session_attempt(self) -> None:
         connect_call = self._resolve_connect_call()
         t0 = _time.monotonic()
         cm = connect_call(model=self._model)
@@ -1735,7 +1756,7 @@ class OpenAIRealtimeConnection:
                 last_exc = e
                 logger.warning(
                     "openai connection: reconnect attempt %d failed (%s: %s)",
-                    attempt, type(e).__name__, e,
+                    attempt, type(e).__name__, self._last_failure_detail,
                 )
                 self._recent_failure_fingerprints.append(
                     FailureFingerprint.from_exception(e),

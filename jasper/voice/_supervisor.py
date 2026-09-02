@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from ..secret_redaction import redact_secrets
+
 # Tight-retry-loop escalation: when the supervisor reconnect loop keeps
 # producing the SAME failure (same exception type, same close code, same
 # reason text) in succession, that's a signal the user should know about
@@ -34,6 +36,17 @@ from typing import Callable
 ESCALATION_REPEAT_THRESHOLD = 5
 ESCALATION_RATE_LIMIT_SEC = 3600.0
 ESCALATION_CUE_SLUG = "cant_reach_cloud"
+
+# Cap on the cause string stored and logged. Comfortably fits a provider's
+# JSON error body; short enough that an HTML error page cannot flood the
+# journal or /state.
+FAILURE_DETAIL_LIMIT = 300
+
+# How much of a body is worth scanning. Nothing past this can reach the
+# truncated output, so bounding the scan cannot hide a credential from
+# redaction — it only stops a multi-megabyte error page from costing
+# proportional work and memory on a 1 GB Pi.
+_SCAN_LIMIT = FAILURE_DETAIL_LIMIT * 4
 
 
 @dataclass(frozen=True)
@@ -75,6 +88,36 @@ class FailureFingerprint:
             close_code=close_code,
             reason=str(reason)[:200],
         )
+
+
+def failure_detail(exc: BaseException) -> str:
+    """A one-line, secret-free cause for logs and ``/state``.
+
+    ``str(exc)`` discards the part that matters: websockets renders a
+    refused handshake as a bare "server rejected WebSocket connection:
+    HTTP 403" while ``.response.body`` holds the reason a household can
+    act on. Prefer the body; fall back to ``str(exc)`` otherwise.
+
+    Never share this string with :class:`FailureFingerprint` — a body
+    carrying a request id would break its identity comparison, and with
+    it the tight-retry-loop detection.
+
+    Redaction precedes truncation so a clipped tail cannot leave half a
+    credential behind.
+    """
+    response = getattr(exc, "response", None)
+    body = getattr(response, "body", None)
+    if isinstance(body, (bytes, bytearray)):
+        body = bytes(body[:_SCAN_LIMIT]).decode("utf-8", "replace")
+    if isinstance(body, str) and body.strip():
+        status = getattr(response, "status_code", None)
+        text = f"HTTP {status}: {body}" if status else body
+    else:
+        text = str(exc)
+    text = " ".join(redact_secrets(text[:_SCAN_LIMIT]).split())
+    if len(text) > FAILURE_DETAIL_LIMIT:
+        text = text[:FAILURE_DETAIL_LIMIT - 3] + "..."
+    return text
 
 
 class DeferredReconnect:
