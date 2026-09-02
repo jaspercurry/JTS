@@ -58,12 +58,22 @@ class PoseCapture:
     Data only. Whatever a reader derives from ``ir`` — curves, references,
     detrends — is that reader's own, held beside this rather than written back
     onto it, so two readers of one round can never see each other's scratch.
+
+    The gate-sweep engine (:func:`~.gate_sweep.sweep_features`) computes from
+    five fields only: ``capture_id``, ``radiated_band_hz``, ``sample_rate``,
+    ``ir``, ``peak_idx``. The rest — ``phase``, ``wav``, ``program``,
+    ``program_sha256``, ``azimuth_deg``, ``vertical_deg``,
+    ``mark_distance_m`` — are disclosure: a report echoes them to name the
+    capture it read, and none of them moves a number. A caller holding
+    captures in memory rather than on disk fills them with ``None`` or a
+    placeholder, which is why the two paths are optional and both reporters
+    tolerate their absence.
     """
 
     capture_id: str
     phase: str | None
-    wav: Path
-    program: Path
+    wav: Path | None
+    program: Path | None
     program_sha256: str
     azimuth_deg: float | None
     vertical_deg: float | None

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,12 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
     add_delayed_copy,
     biquad_peaking,
 )
-from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
+from jasper.active_speaker.crossover_v2.gate_sweep import sweep_features, sweep_round
+from jasper.active_speaker.crossover_v2.round_captures import (
+    PoseCapture,
+    RoundCapturesRefused,
+    discover_captures,
+)
 from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
 
 RATE = 48_000
@@ -173,6 +179,26 @@ def anchored_reports(tmp_path_factory: pytest.TempPathFactory) -> tuple[dict, di
         sweep_round(root, rungs_ms=rungs),
         sweep_round(root, rungs_ms=rungs, at_hz=(FEATURE_HZ, ANCHOR_UNRESOLVED_HZ)),
     )
+
+
+@pytest.fixture(scope="module")
+def in_memory_round(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> tuple[Path, tuple[PoseCapture, ...]]:
+    """One round on disk, and the same captures stripped to what is computed on.
+
+    The stripped copies carry no WAV, no program and no phase — a number that
+    moved with those would be a number the engine had no business reading.
+    """
+    root = _write_round(
+        tmp_path_factory.mktemp("in_memory"),
+        [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
+    )
+    stripped = tuple(
+        replace(capture, phase=None, wav=None, program=None, program_sha256="")
+        for capture in discover_captures(root)
+    )
+    return root, stripped
 
 
 def test_common_mode_arrival_leaves_across_pose_sigma_flat(
@@ -356,3 +382,38 @@ def test_the_whole_sigma_surface_is_banked(anchored_reports: tuple[dict, dict]) 
     assert all(
         len(values) == points for values in sigma_map["sigma_db_by_rung"].values()
     )
+
+
+def test_the_in_memory_door_reads_what_the_round_door_reads(
+    in_memory_round: tuple[Path, tuple[PoseCapture, ...]],
+) -> None:
+    """One engine, two doors: the same bins, read to the same numbers."""
+    root, captures = in_memory_round
+    rungs = (5.0, 20.0)
+    at_hz = (FEATURE_HZ, ANCHOR_UNRESOLVED_HZ)
+
+    assert sweep_features(captures, rungs_ms=rungs, at_hz=at_hz) == sweep_round(
+        root, rungs_ms=rungs, at_hz=at_hz
+    )["features"]
+
+
+@pytest.mark.parametrize("n_poses", [0, 1])
+def test_the_in_memory_door_refuses_fewer_than_two_poses(
+    in_memory_round: tuple[Path, tuple[PoseCapture, ...]], n_poses: int
+) -> None:
+    """Across-pose sigma needs two poses, whichever door asked for it."""
+    _root, captures = in_memory_round
+    with pytest.raises(RoundCapturesRefused) as refusal:
+        sweep_features(captures[:n_poses], at_hz=(FEATURE_HZ,))
+    assert refusal.value.reason == gate_sweep.REFUSE_SINGLE_POSE
+
+
+@pytest.mark.parametrize(
+    "hz", [gate_sweep.GRID_LO_HZ - 1.0, gate_sweep.GRID_HI_HZ + 1.0]
+)
+def test_the_in_memory_door_rejects_a_frequency_off_the_grid(
+    in_memory_round: tuple[Path, tuple[PoseCapture, ...]], hz: float
+) -> None:
+    _root, captures = in_memory_round
+    with pytest.raises(ValueError):
+        sweep_features(captures, at_hz=(hz,))

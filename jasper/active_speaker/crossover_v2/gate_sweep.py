@@ -40,6 +40,10 @@ Three measured hazards this module exists to not repeat (all P1):
   the sidecar's declared stimulus phase, which is mislabelled on five of six
   captures of the round this instrument was built from.
 
+One engine, two doors: :func:`sweep_round` reads a banked round directory,
+:func:`sweep_features` reads captures a caller already holds. Both go through
+the same ladder, so no second reader grows a window shape beside this one.
+
 Pipeline stage: **diagnose**, offline and read-only. It plays nothing,
 writes nothing but its own report, and decides nothing: the output is
 evidence for an attribution argument, not a verdict, and EQ is not its
@@ -680,6 +684,72 @@ def _sigma_map(
     }
 
 
+def _validated(
+    rungs_ms: Sequence[float], at_hz: Sequence[float]
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """The ladder sorted and the requested bins bounds-checked, for any door."""
+    rungs = tuple(sorted(float(rung) for rung in rungs_ms))
+    if len(rungs) < 2:
+        raise ValueError("a gate sweep needs at least two rungs")
+    wanted = tuple(float(hz) for hz in at_hz)
+    for hz in wanted:
+        if not GRID_LO_HZ <= hz <= GRID_HI_HZ:
+            raise ValueError(
+                f"{hz:g} Hz is outside the analysis grid "
+                f"({GRID_LO_HZ:g}-{GRID_HI_HZ:g} Hz)"
+            )
+    return rungs, wanted
+
+
+def _prepare(
+    captures: Sequence[PoseCapture], rungs_ms: Sequence[float]
+) -> tuple[np.ndarray, tuple[SweepCurves, ...], dict[float, np.ndarray]]:
+    """The grid, every capture's curves on it, and the across-pose sigma.
+
+    The whole ladder, computed once. Both doors go through here so neither
+    can grow a window shape, a grid or a normalisation the other does not
+    have.
+    """
+    if len(captures) < 2:
+        raise RoundCapturesRefused(
+            REFUSE_SINGLE_POSE,
+            {
+                "captures": [cap.capture_id for cap in captures],
+                "note": "across-pose sigma needs at least two poses",
+            },
+        )
+    grid = analysis_grid()
+    reads = _read_curves(captures, grid, rungs_ms)
+    return grid, reads, _across_pose_sigma(reads, rungs_ms)
+
+
+def sweep_features(
+    captures: Sequence[PoseCapture],
+    *,
+    rungs_ms: Sequence[float] = DEFAULT_RUNGS_MS,
+    at_hz: Sequence[float],
+) -> list[dict[str, Any]]:
+    """Named bins read through the ladder, from captures already in memory.
+
+    :func:`sweep_round`'s ``features`` block, for a caller that holds its own
+    deconvolved captures rather than a banked round directory. Same window,
+    same grid, same normalisation, same null model — one engine, two doors.
+
+    Computes from ``capture_id``, ``radiated_band_hz``, ``sample_rate``,
+    ``ir`` and ``peak_idx`` alone, and echoes the declared pose into each
+    ``poses`` row; ``wav``, ``program``, ``program_sha256`` and ``phase`` are
+    never read, so a caller with none passes ``None``. Numbers banked from
+    here need :func:`frame_descriptor`'s block beside them, exactly as the
+    round door's do.
+
+    Raises :class:`~.round_captures.RoundCapturesRefused` on fewer than two
+    poses, :exc:`ValueError` on an unusable ladder or an off-grid bin.
+    """
+    rungs, wanted = _validated(rungs_ms, at_hz)
+    grid, reads, sigma = _prepare(captures, rungs)
+    return [_feature_at(reads, grid, sigma, hz, rungs_ms=rungs) for hz in wanted]
+
+
 def sweep_round(
     round_dir: Path,
     *,
@@ -695,28 +765,9 @@ def sweep_round(
 
     Raises :class:`RoundCapturesRefused` naming the missing input.
     """
-    rungs = tuple(sorted(float(rung) for rung in rungs_ms))
-    if len(rungs) < 2:
-        raise ValueError("a gate sweep needs at least two rungs")
-    wanted = tuple(float(hz) for hz in at_hz)
-    for hz in wanted:
-        if not GRID_LO_HZ <= hz <= GRID_HI_HZ:
-            raise ValueError(
-                f"{hz:g} Hz is outside the analysis grid "
-                f"({GRID_LO_HZ:g}-{GRID_HI_HZ:g} Hz)"
-            )
+    rungs, wanted = _validated(rungs_ms, at_hz)
     captures = discover_captures(Path(round_dir))
-    if len(captures) < 2:
-        raise RoundCapturesRefused(
-            REFUSE_SINGLE_POSE,
-            {
-                "captures": [cap.capture_id for cap in captures],
-                "note": "across-pose sigma needs at least two poses",
-            },
-        )
-    grid = analysis_grid()
-    reads = _read_curves(captures, grid, rungs)
-    sigma = _across_pose_sigma(reads, rungs)
+    grid, reads, sigma = _prepare(captures, rungs)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_by": GENERATED_BY,
@@ -730,8 +781,10 @@ def sweep_round(
                 "azimuth_deg": read.capture.azimuth_deg,
                 "vertical_deg": read.capture.vertical_deg,
                 "mark_distance_m": read.capture.mark_distance_m,
-                "capture_wav": read.capture.wav.name,
-                "program_wav": read.capture.program.name,
+                "capture_wav": read.capture.wav.name if read.capture.wav else None,
+                "program_wav": (
+                    read.capture.program.name if read.capture.program else None
+                ),
                 "program_sha256_12": read.capture.program_sha256[:12],
                 "sample_rate_hz": read.capture.sample_rate,
                 "direct_peak_ms": (
