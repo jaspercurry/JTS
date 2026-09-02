@@ -18,6 +18,11 @@ not the feature's, and a ratio anchored there is set by its own tiny
 denominator. Every other rung pair stays readable — ``sigma_map`` banks the
 across-pose sigma on the whole analysis grid at every rung.
 
+Sigma is published per varied AXIS as well as over every pose
+(``sigma_by_axis``): only a round that mixes azimuth and elevation poses can
+say whether a feature moves with height, which is the axis #3503 says decides
+the contested sub-500 Hz features.
+
 Which bin the ratio is about is the CALLER's choice, not an argmax: a band's
 deepest median-detrended bin is not always its most window-divergent one.
 ``at_hz`` anchors the report on the frequency the spec verdict flagged; the
@@ -204,6 +209,12 @@ WINDOW_UNRESOLVED = "unresolved"
 ROUTE_SIGMA_GROWTH = "sigma_growth"
 ROUTE_DEPTH_DELTA = "depth_delta"
 ROUTE_CENTRE_SHIFT = "centre_shift"
+
+#: The two axes a pose can vary along, each naming its own sigma family. An
+#: azimuth-only cloud cannot attribute a feature it flags, because every pose
+#: shares one floor and ceiling path (#3503).
+AXIS_AZIMUTH = "azimuth"
+AXIS_ELEVATION = "elevation"
 
 # --- refusals: every one names the input that was missing --------------------
 
@@ -556,6 +567,85 @@ def _across_pose_sigma(
     }
 
 
+@dataclass(frozen=True)
+class AxisSigma:
+    """One family of poses varying along a single axis, and its sigma."""
+
+    #: Distinct declared poses in the family, not captures: a repeat take at
+    #: one pose feeds the sigma without being a second pose.
+    n_poses: int
+    #: Across-pose sigma over this family alone, on the whole grid, per rung.
+    sigma: dict[float, np.ndarray]
+
+
+def _axis_sigmas(
+    reads: Sequence[SweepCurves], rungs_ms: Sequence[float]
+) -> dict[str, AxisSigma]:
+    """Across-pose sigma per varied axis, for the axis question (#3503).
+
+    The azimuth family is the poses declaring elevation 0, the elevation
+    family the poses declaring azimuth 0, and the (0, 0) anchor is in both. A
+    family is formed only where its OWN angle takes two values: two captures
+    that differ in distance alone would otherwise publish an elevation spread
+    for a round in which elevation never moved. A family that did not vary is
+    absent rather than zero, so a round that varied one axis reads exactly as
+    it did before this split.
+
+    An undeclared pose field is never read as zero — a capture that declares
+    no height is not a capture at height zero, which is the assumption #3503
+    exists to refuse — so a round declaring no poses forms no family at all.
+    """
+    families = {
+        AXIS_AZIMUTH: [
+            (read.capture.azimuth_deg, read)
+            for read in reads
+            if read.capture.vertical_deg == 0
+        ],
+        AXIS_ELEVATION: [
+            (read.capture.vertical_deg, read)
+            for read in reads
+            if read.capture.azimuth_deg == 0
+        ],
+    }
+    sigmas: dict[str, AxisSigma] = {}
+    for axis, members in families.items():
+        if len({angle for angle, _read in members}) < 2:
+            continue
+        family = [read for _angle, read in members]
+        sigmas[axis] = AxisSigma(
+            n_poses=len({read.capture.pose_key for read in family}),
+            sigma=_across_pose_sigma(family, rungs_ms),
+        )
+    return sigmas
+
+
+def _axis_sigma_row(
+    family: AxisSigma,
+    grid_index: int,
+    *,
+    rungs_ms: Sequence[float],
+    valid_rungs_ms: Sequence[float],
+) -> dict[str, Any]:
+    """One family's sigma at this bin, on the headline's own growth terms."""
+    sigma = {rung: float(family.sigma[rung][grid_index]) for rung in rungs_ms}
+    row: dict[str, Any] = {
+        "n_poses": family.n_poses,
+        "sigma_db_by_rung": {_key(rung): sigma[rung] for rung in rungs_ms},
+        "sigma_growth_ratio": None,
+        "sigma_growth_readable": False,
+    }
+    if len(valid_rungs_ms) < 2:
+        return row
+    short, long_ = min(valid_rungs_ms), max(valid_rungs_ms)
+    # A ratio the headline itself would refuse is not published here either,
+    # and a family with no ratio is not readable: the two fields move together
+    # so a caller can apply :func:`moved_routes`'s rule to a family unchanged.
+    if sigma[short] > 0.0:
+        row["sigma_growth_ratio"] = sigma[long_] / sigma[short]
+        row["sigma_growth_readable"] = sigma[long_] >= SIGMA_GROWTH_MIN_SIGMA_DB
+    return row
+
+
 def moved_routes(
     *,
     sigma_growth_ratio: float,
@@ -587,6 +677,7 @@ def _feature_result(
     reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
+    axes: Mapping[str, AxisSigma],
     hz: float,
     *,
     rungs_ms: Sequence[float],
@@ -603,6 +694,10 @@ def _feature_result(
     capture order, which is the order that block is in: a round whose captures
     declare no pose has one ``pose_key`` for all of them, so the JOIN is the
     position, not the key.
+
+    ``sigma_by_axis`` is the same spread over each axis family beside the
+    all-pose one, never instead of it: a mixed round says which axis the
+    feature moves with, and a family the round did not vary is absent (#3503).
     """
     grid_index = int(np.argmin(np.abs(grid - float(hz))))
     bin_hz = float(grid[grid_index])
@@ -613,6 +708,12 @@ def _feature_result(
         "cycles_by_rung": {_key(r): _cycles(bin_hz, r) for r in rungs_ms},
         "resolution_by_rung": {_key(r): _resolution(bin_hz, r) for r in rungs_ms},
         "sigma_db_by_rung": {_key(r): bin_sigma[r] for r in rungs_ms},
+        "sigma_by_axis": {
+            axis: _axis_sigma_row(
+                family, grid_index, rungs_ms=rungs_ms, valid_rungs_ms=valid
+            )
+            for axis, family in axes.items()
+        },
         "n_valid_rungs": len(valid),
         "valid_rungs_ms": list(valid),
         "poses": [
@@ -754,6 +855,7 @@ def _band_result(
     reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
+    axes: Mapping[str, AxisSigma],
     band: tuple[float, float, float],
     *,
     rungs_ms: Sequence[float],
@@ -788,7 +890,7 @@ def _band_result(
     worst_hz = float(grid[mask][worst_index])
 
     feature = _feature_result(
-        reads, grid, sigma, worst_hz, rungs_ms=rungs_ms, cache=cache
+        reads, grid, sigma, axes, worst_hz, rungs_ms=rungs_ms, cache=cache
     )
     result["worst_bin_hz"] = feature.pop("bin_hz")
     # The band's deepest feature is not always its most window-divergent one
@@ -867,12 +969,15 @@ def _feature_at(
     reads: Sequence[SweepCurves],
     grid: np.ndarray,
     sigma: Mapping[float, np.ndarray],
+    axes: Mapping[str, AxisSigma],
     hz: float,
     *,
     rungs_ms: Sequence[float],
     cache: HostCurves,
 ) -> dict[str, Any]:
-    result = _feature_result(reads, grid, sigma, hz, rungs_ms=rungs_ms, cache=cache)
+    result = _feature_result(
+        reads, grid, sigma, axes, hz, rungs_ms=rungs_ms, cache=cache
+    )
     return {
         "requested_hz": hz,
         "band_hz": _spec_band_of(result["bin_hz"]),
@@ -916,8 +1021,13 @@ def _validated(
 
 def _prepare(
     captures: Sequence[PoseCapture], rungs_ms: Sequence[float]
-) -> tuple[np.ndarray, tuple[SweepCurves, ...], dict[float, np.ndarray]]:
-    """The grid, every capture's curves on it, and the across-pose sigma.
+) -> tuple[
+    np.ndarray,
+    tuple[SweepCurves, ...],
+    dict[float, np.ndarray],
+    dict[str, AxisSigma],
+]:
+    """The grid, every capture's curves on it, and the across-pose sigmas.
 
     The whole ladder, computed once. Both doors go through here so neither
     can grow a window shape, a grid or a normalisation the other does not
@@ -933,7 +1043,12 @@ def _prepare(
         )
     grid = analysis_grid()
     reads = _read_curves(captures, grid, rungs_ms)
-    return grid, reads, _across_pose_sigma(reads, rungs_ms)
+    return (
+        grid,
+        reads,
+        _across_pose_sigma(reads, rungs_ms),
+        _axis_sigmas(reads, rungs_ms),
+    )
 
 
 def sweep_features(
@@ -959,10 +1074,10 @@ def sweep_features(
     poses, :exc:`ValueError` on an unusable ladder or an off-grid bin.
     """
     rungs, wanted = _validated(rungs_ms, at_hz)
-    grid, reads, sigma = _prepare(captures, rungs)
+    grid, reads, sigma, axes = _prepare(captures, rungs)
     cache: HostCurves = {}
     return [
-        _feature_at(reads, grid, sigma, hz, rungs_ms=rungs, cache=cache)
+        _feature_at(reads, grid, sigma, axes, hz, rungs_ms=rungs, cache=cache)
         for hz in wanted
     ]
 
@@ -984,7 +1099,7 @@ def sweep_round(
     """
     rungs, wanted = _validated(rungs_ms, at_hz)
     captures = discover_captures(Path(round_dir))
-    grid, reads, sigma = _prepare(captures, rungs)
+    grid, reads, sigma, axes = _prepare(captures, rungs)
     cache: HostCurves = {}
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1014,11 +1129,11 @@ def sweep_round(
             for read in reads
         ],
         "bands": [
-            _band_result(reads, grid, sigma, band, rungs_ms=rungs, cache=cache)
+            _band_result(reads, grid, sigma, axes, band, rungs_ms=rungs, cache=cache)
             for band in SPEC_BANDS
         ],
         "features": [
-            _feature_at(reads, grid, sigma, hz, rungs_ms=rungs, cache=cache)
+            _feature_at(reads, grid, sigma, axes, hz, rungs_ms=rungs, cache=cache)
             for hz in wanted
         ],
         "sigma_map": _sigma_map(grid, sigma, rungs),
