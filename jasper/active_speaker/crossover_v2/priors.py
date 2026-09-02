@@ -129,24 +129,35 @@ def candidate_required_band_hz(
 
 def measure_sweep_bounds(
     measure_program: "ExcitationProgram | None",
-) -> tuple[float | None, float | None]:
-    """MEASURE's ACTUAL ``(tweeter sweep lo, woofer sweep hi)``, or ``None``s.
+) -> tuple[float, float] | None:
+    """The band EVERY MEASURE branch was excited over, or ``None``.
 
     Read off the COMPOSED MEASURE program rather than derived from Fc, so every
     consumer of :func:`overlap_band_hz`'s clamp — VERIFY's tracking comparison
-    and R17's per-candidate scoring band — bounds itself by the frequencies both
+    and R17's per-candidate scoring band — bounds itself by the frequencies the
     branches were actually excited at (§5.6). One reader, because a second would
     be a second answer to "what did this session sweep".
+
+    On a pair that is the upper branch's sweep floor and the lower branch's
+    sweep ceiling. A 1-way main composes ONE sweep (which keeps the ``sweep_w``
+    spelling), so the band all of its branches share is that sweep's own — and
+    VERIFY, whose summed sweep deliberately reaches below MEASURE's floor,
+    needs it for the same reason a pair does.
     """
     if measure_program is None:
-        return None, None
+        return None
     try:
-        return (
-            measure_program.segment("sweep_t").f1_hz,
-            measure_program.segment("sweep_w").f2_hz,
-        )
+        woofer = measure_program.segment("sweep_w")
     except KeyError:
-        return None, None
+        return None
+    try:
+        lo = measure_program.segment("sweep_t").f1_hz
+    except KeyError:
+        lo = woofer.f1_hz
+    hi = woofer.f2_hz
+    if lo is None or hi is None:
+        return None
+    return float(lo), float(hi)
 
 
 def measure_sweep_durations_s(
@@ -368,7 +379,7 @@ def verify_priors(
     fc_hz: float | None,
     source_preset: Any,
     predicted_sum: Any,
-    sweep_bounds: tuple[float | None, float | None],
+    sweep_bounds: tuple[float, float] | None,
 ) -> MeasurementPriors:
     """VERIFY's priors — the tracking comparison, and the absolute claim.
 
@@ -380,15 +391,13 @@ def verify_priors(
     RAISES on a partial prior set) is reachable only from ``_analyze_measure``;
     keep it that way.
     """
-    tweeter_sweep_lo_hz, woofer_sweep_hi_hz = sweep_bounds
     configured_response, configured_polarity = configured_crossover_transfers(
         source_preset
     )
     return MeasurementPriors(
         crossover_fc_hz=fc_hz,
         predicted_sum=predicted_sum,
-        measure_tweeter_sweep_lo_hz=tweeter_sweep_lo_hz,
-        measure_woofer_sweep_hi_hz=woofer_sweep_hi_hz,
+        measure_excited_band_hz=sweep_bounds,
         configured_crossover_response_by_role=configured_response,
         configured_polarity_sign_by_role=configured_polarity,
     )
@@ -439,9 +448,9 @@ def entry_baseline_priors(*, fc_hz: float | None) -> MeasurementPriors:
       ``analysis.verify_tracking`` ``None``, which is what
       :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_realization`
       already reads as UNAVAILABLE rather than as a pass.
-    * ``measure_tweeter_sweep_lo_hz`` / ``measure_woofer_sweep_hi_hz`` —
-      **dropped**. They exist only to clamp the tracking comparison's graded
-      band, and there is no tracking comparison here.
+    * ``measure_excited_band_hz`` — **dropped**. It exists only to clamp the
+      tracking comparison's graded band, and there is no tracking comparison
+      here.
     * ``configured_crossover_response_by_role`` /
       ``configured_polarity_sign_by_role`` — **dropped** (R18, #1868). They let
       ``_analyze_verify`` make the crossover-region ABSOLUTE claim against the

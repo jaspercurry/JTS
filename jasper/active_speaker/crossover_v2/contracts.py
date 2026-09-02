@@ -442,7 +442,7 @@ class CandidateAcousticContext:
         main, whose single branch runs full range and whose preset declares no
         region. Every other shape still fails closed on an empty section set —
         a preset naming two branches and no crossover describes no crossover,
-        and guessing one is the 2026-08-10 defect wearing a new hat.
+        and guessing one is the defect :meth:`from_sections` refuses.
 
         THE one derivation. The planner (``planning.plan_for_candidate``) and
         the proposal assembler (``proposal.build_intervention_proposal``) both

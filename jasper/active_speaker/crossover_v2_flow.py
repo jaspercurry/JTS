@@ -3188,7 +3188,7 @@ class CrossoverV2Session:
             fc_hz=self._fc_hz, ambient_report=self._check_ambient_report,
         )
 
-    def _measure_sweep_bounds(self) -> tuple[float | None, float | None]:
+    def _measure_sweep_bounds(self) -> tuple[float, float] | None:
         return _priors.measure_sweep_bounds(self._measure_program)
 
     def _verify_priors(self) -> MeasurementPriors:

@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from jasper.active_speaker.audible_policy import (
     AUDIBLE_TEST_ALLOWED_ROLES,
     audible_policy_payload,
@@ -10,6 +12,7 @@ from jasper.active_speaker.audible_policy import (
     audible_role_block_message,
 )
 from jasper.active_speaker.driver_protection import driver_protection_payload
+from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 
 
 def test_tweeter_requires_explicit_driver_protection() -> None:
@@ -52,6 +55,27 @@ def test_audible_policy_payload_exposes_low_frequency_default() -> None:
 
 
 def test_unknown_role_uses_generic_block_reason() -> None:
-    assert audible_role_allowed("full_range") is False
-    assert audible_role_block_code("full_range") == "audible_role_not_enabled"
-    assert "woofer, mid, and subwoofer" in audible_role_block_message("full_range")
+    assert audible_role_allowed("summed") is False
+    assert audible_role_block_code("summed") == "audible_role_not_enabled"
+    # The copy names the classes the policy admits, read off the set itself so
+    # a class added to one cannot go unmentioned by the other.
+    message = audible_role_block_message("summed")
+    assert all(role in message for role in AUDIBLE_TEST_ALLOWED_ROLES)
+
+
+@pytest.mark.parametrize(
+    "role",
+    sorted({role for roles in DRIVER_ROLES_BY_WAY.values() for role in roles}),
+)
+def test_the_audible_gate_and_the_protection_envelope_answer_together(role) -> None:
+    """ONE owner for "may this driver be driven": ``audio_allowed``.
+
+    The two were separate answers, and they disagreed — the envelope admitted a
+    ``full_range`` driver the role set had never heard of, so a way-1 speaker
+    was refused at the audible gate by a policy that had already admitted it.
+    Every role any speaker shape declares is checked, so a class added to one
+    side and not the other fails here.
+    """
+    assert audible_role_allowed(role) is driver_protection_payload(role)[
+        "audio_allowed"
+    ]

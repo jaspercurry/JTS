@@ -123,6 +123,7 @@ __all__ = [
     "RING_NOT_SCOPED_TO_ONE_SESSION",
     "STATE_UNREADABLE",
     "HarmonicEvidenceRefused",
+    "banked_roles",
     "read_round_harmonics",
     "rebuild_measure_program",
 ]
@@ -360,6 +361,26 @@ def _banked_sweep_durations_s(
     return durations
 
 
+def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
+    """WHICH branches this round swept, read off its own banked gain plan.
+
+    The shape table (``DRIVER_ROLES_BY_WAY``) resolved against the roles the
+    plan names, so a 1-way main answers ``("full_range",)`` and a pair answers
+    the pair — never assumed. Empty when the bank names no roles, or names a
+    set no speaker shape declares; every caller turns that into a refusal by
+    name rather than composing a program the round never played.
+
+    One reader, because "what did this round sweep" answered twice — here and
+    at the CLI door that resolves the bands — is how the two come to disagree.
+    """
+    from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
+
+    gains = state.get("gain_plan_db")
+    banked = set(gains) if isinstance(gains, Mapping) else set()
+    roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())
+    return roles if set(roles) == banked else ()
+
+
 def rebuild_measure_program(
     state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]]
 ):
@@ -403,20 +424,15 @@ def rebuild_measure_program(
         build_measure_program,
     )
 
-    from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
-
     from .programs import (
         courtesy_prelude_for_phase,
         leading_pilot_role,
         pilot_gains,
     )
 
-    # WHICH branches this round swept, read off the bands the caller resolved
-    # from the round's own preset rather than assumed to be a pair: a 1-way
-    # main banks one role and its MEASURE program carries one sweep. Empty for
-    # a band count no speaker shape declares, which the check below names.
-    roles = DRIVER_ROLES_BY_WAY.get(len(bands), ())
-    gains = state.get("gain_plan_db") or {}
+    roles = banked_roles(state)
+    raw_gains = state.get("gain_plan_db")
+    gains = raw_gains if isinstance(raw_gains, Mapping) else {}
     candidate = state.get("candidate") or {}
     want = candidate.get("program_id") if isinstance(candidate, Mapping) else None
     if not isinstance(want, str) or not want:
@@ -435,16 +451,12 @@ def rebuild_measure_program(
         raise HarmonicEvidenceRefused(
             STATE_UNREADABLE,
             {
-                "missing": "bands_hz for the roles this round's shape declares",
-                "supplied": sorted(bands),
-                "program_id": want[:12],
-            },
-        )
-    if not isinstance(gains, Mapping) or not set(roles) <= set(gains):
-        raise HarmonicEvidenceRefused(
-            STATE_UNREADABLE,
-            {
-                "missing": "gain_plan_db." + "/".join(roles),
+                "missing": (
+                    "a gain plan naming one speaker shape's roles, and a band "
+                    "for each of them"
+                ),
+                "gain_plan_roles": sorted(gains),
+                "bands_supplied": sorted(bands),
                 "program_id": want[:12],
             },
         )

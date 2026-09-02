@@ -905,18 +905,18 @@ class MeasurementPriors:
     omits them reads a deterministic mismatch equal to their own in-band
     response (~1.7 dB measured on JTS3, against a ±1.5 dB tolerance).
 
-    ``measure_tweeter_sweep_lo_hz`` / ``measure_woofer_sweep_hi_hz`` carry the
-    MEASURE program's actual per-driver sweep bounds forward to VERIFY, whose
-    tracking comparison must trust the SAME band ``predicted_sum`` was built in
-    (see ``overlap_band_hz``); a wider nominal Fc±1-octave band would compare
-    real VERIFY capture data against sub-floor noise inherited from an
-    unexcited MEASURE branch. ``None`` falls back to the unclamped nominal
-    band. ``alignment_delay_bounds_us`` is the unsigned, declaration-derived
-    applied-delay magnitude range the flatness refinement may search, derived
-    by the session from the crossover region's ``delay_range_ms``; the
-    drift-corrected physical peak gap orients and centers one ±half-period
-    signed lobe inside it, and ``None`` keeps GCC as the applied-delay
-    estimate.
+    ``measure_excited_band_hz`` carries the band every MEASURE branch was
+    actually swept over forward to VERIFY, whose tracking comparison must trust
+    the SAME band ``predicted_sum`` was built in (see ``overlap_band_hz``); a
+    wider band — the nominal Fc±1-octave one on a pair, the verify sweep's own
+    span on a 1-way main — would compare real VERIFY capture data against
+    sub-floor noise inherited from a branch MEASURE never drove there. ``None``
+    falls back to the unclamped band. ``alignment_delay_bounds_us`` is the
+    unsigned, declaration-derived applied-delay magnitude range the flatness
+    refinement may search, derived by the session from the crossover region's
+    ``delay_range_ms``; the drift-corrected physical peak gap orients and
+    centers one ±half-period signed lobe inside it, and ``None`` keeps GCC as
+    the applied-delay estimate.
 
     Two priors are facts the host holds and hands down rather than ones this
     module could reach for, and each is read on exactly one path,
@@ -967,8 +967,7 @@ class MeasurementPriors:
     target_capture_dbfs: float = DEFAULT_TARGET_CAPTURE_DBFS
     predicted_sum: tuple[np.ndarray, np.ndarray] | None = None
     ambient_report: Mapping[str, Any] | None = None
-    measure_tweeter_sweep_lo_hz: float | None = None
-    measure_woofer_sweep_hi_hz: float | None = None
+    measure_excited_band_hz: tuple[float, float] | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     applied_alignment: AppliedAlignment | None = None
     explicit_alignment_delay_us: float | None = None
@@ -2894,21 +2893,26 @@ def _driver_snr_block(
     not the window, that buys this.
 
     ``radiated_band_hz`` scopes the verdict to the band this branch's stimulus
-    actually drove — see :func:`branch_snr_band_hz`, which owns that policy.
+    actually drove — see :func:`branch_snr_band_hz`, which owns that policy and
+    is the whole window on a branch with no corner to narrow it further.
     BOTH decision classes below take the same window, because "a row the sweep
     never entered is not evidence" is a statement about the MEASUREMENT, not
     about which law reads it.
 
-    Fails closed: a raw report with no captured segment to pair it against
-    produces no verdict at all rather than a cross-domain one. A segment that
-    is PRESENT but degenerate (a capture truncated before this sweep, so
+    Fails closed: a raw report with no captured segment to pair it against,
+    or a branch that declares neither a corner nor a radiated band to scope the
+    verdict by, produces no verdict at all rather than an unscoped one. A
+    segment that is PRESENT but degenerate (a capture truncated before this sweep, so
     :func:`_raw_sweep_segment` clamps to fewer than 8 samples) instead makes
     ``band_levels_dbfs`` return no bands, so the block carries ``verdict:
     "unknown"`` and an empty band list. The two spellings are distinguishable
     on purpose: absent means "no evidence was offered", unknown means "evidence
     was offered and was unusable".
     """
-    if ambient_report is None or fc_hz is None:
+    if ambient_report is None:
+        return None
+    relevant_hz = branch_snr_band_hz(fc_hz, radiated_band_hz)
+    if relevant_hz is None:
         return None
     noise_domain, noise_bands = snr_policy.unwrap_noise_report(ambient_report)
     if noise_domain == "deconvolved":
@@ -2924,7 +2928,6 @@ def _driver_snr_block(
         band_method = "fft_band_power_difference"
     else:
         return None
-    relevant_hz = branch_snr_band_hz(fc_hz, radiated_band_hz)
     block = snr_policy.band_snr_verdicts(
         decision_class=snr_policy.DECISION_CLASS_MAGNITUDE,
         capture_bands=capture_bands,
@@ -3097,9 +3100,9 @@ def overlap_band_hz(
 
 
 def branch_snr_band_hz(
-    fc_hz: float,
+    fc_hz: float | None,
     radiated_band_hz: tuple[float, float] | None,
-) -> tuple[float, float]:
+) -> tuple[float, float] | None:
     """The band ONE branch's capture-SNR verdict may be judged over.
 
     ``[Fc/ρ, Fc·ρ]`` intersected with the band this branch's stimulus actually
@@ -3107,6 +3110,10 @@ def branch_snr_band_hz(
     binds, binds: a tweeter swept from above ``Fc/ρ`` raises ``lo``, a woofer
     swept to below ``Fc·ρ`` lowers ``hi``. ``radiated_band_hz`` of ``None``
     leaves the nominal band untouched.
+
+    The corner only ever BOUNDS this window, so a branch that has none — a
+    1-way main's lone full-range driver — is judged over what it radiated, and
+    only a branch with neither fact leaves the verdict unbuilt (``None``).
 
     Erring CONSERVATIVE on row width: a row the window keeps can still be WIDER
     than the sweep's coverage of it, and under a flat noise floor that
@@ -3126,6 +3133,8 @@ def branch_snr_band_hz(
     band, since admission needs ``row_hi > lo >= radiated_lo`` and ``row_lo <
     hi <= radiated_hi``.
     """
+    if fc_hz is None:
+        return radiated_band_hz
     lo = fc_hz / OVERLAP_OCTAVE_RATIO
     hi = fc_hz * OVERLAP_OCTAVE_RATIO
     if radiated_band_hz is None:
@@ -6156,19 +6165,28 @@ def _analyze_verify(
     tracking_curve = None
     measured_db = None
     # A 1-way main declares no corner, so there is no overlap band to scope the
-    # comparison by. Its band is the branch's OWN declared radiated span — the
-    # same span the verify program's no-crossover mode draws its pilots from —
-    # and a segment declaring none leaves the comparison absent rather than
-    # graded over a band nobody stated.
-    band: tuple[float, float] | None = (
-        overlap_band_hz(
+    # comparison by. What scopes it instead is THIS sweep's radiated span
+    # intersected with the band MEASURE actually excited the lone branch over
+    # (``priors.measure_excited_band_hz``, read off the composed MEASURE
+    # program): the verify sweep deliberately reaches below MEASURE's floor, and
+    # ``predicted_sum`` down there is deconvolution noise from a branch nothing
+    # drove. A segment declaring no bounds, an absent excited band, or an empty
+    # intersection leaves the comparison absent rather than graded over a band
+    # nobody stated.
+    excited_band_hz = priors.measure_excited_band_hz
+    band: tuple[float, float] | None
+    if fc_hz is not None:
+        sweep_lo_hz, sweep_hi_hz = excited_band_hz or (None, None)
+        band = overlap_band_hz(
             fc_hz,
-            tweeter_sweep_lo_hz=priors.measure_tweeter_sweep_lo_hz,
-            woofer_sweep_hi_hz=priors.measure_woofer_sweep_hi_hz,
+            tweeter_sweep_lo_hz=sweep_lo_hz,
+            woofer_sweep_hi_hz=sweep_hi_hz,
         )
-        if fc_hz is not None
-        else _radiated_band_hz(seg)
-    )
+    else:
+        band = _radiated_band_hz(seg)
+        if band is not None and excited_band_hz is not None:
+            lo, hi = max(band[0], excited_band_hz[0]), min(band[1], excited_band_hz[1])
+            band = (lo, hi) if lo < hi else None
     # The ripple and the reverse null are statements about a handoff, so they
     # stay behind the corner rather than behind the band.
     if fc_hz is not None and band is not None:

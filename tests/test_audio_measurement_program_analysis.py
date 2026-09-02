@@ -7870,8 +7870,7 @@ def _r18_verify(*, dip_center_hz=None, dip_depth_db=0.0, with_target=True):
         priors=MeasurementPriors(
             crossover_fc_hz=R18_FC_HZ,
             predicted_sum=(freqs, system_db),
-            measure_tweeter_sweep_lo_hz=R18_FC_HZ,
-            measure_woofer_sweep_hi_hz=6000.0,
+            measure_excited_band_hz=(R18_FC_HZ, 6000.0),
             configured_crossover_response_by_role=(
                 _r18_transfers() if with_target else None
             ),

@@ -598,13 +598,12 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     signal — the failed session-start was invisible in journalctl. The 400
     response is correct for the browser; the gap was purely observability.
 
-    The refusal this bare box hits FIRST has moved twice: #2662 W2b made the
-    relay origin required only when the session actually opens on the relay,
-    and this suite's saved topology — a subless passive main — became an
-    ADMITTED shape, so the walk now reaches the driver-declaration gate instead
-    of stopping at "no active crossover". The subject is unchanged:
-    whichever gate refuses, the refusal is journaled, never silent, and it
-    carries the code the household's screen renders from."""
+    WHICH gate this bare box hits first is not the subject and is free to
+    move — this suite's saved topology is a subless passive main, an admitted
+    shape, so the walk reaches the driver-declaration gate rather than a
+    "no active crossover" refusal. The subject is that whichever gate refuses,
+    the refusal is journaled, never silent, and it carries the code the
+    household's screen renders from."""
     monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True

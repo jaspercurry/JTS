@@ -1812,7 +1812,7 @@ def _way1_branch_db() -> np.ndarray:
     and a broadband tilt makes the fit's whole lift budget an HF-tail request
     the envelope refuses, which would leave a cut-only round looking like a
     decision when it was an absence of material. It lands the boost at
-    +4.94 dB / 400 Hz, beside the real 2026-07-28 JTS3 profile's
+    +4.94 dB / 400 Hz, beside the real JTS3 profile's
     +4.8807 dB / 377.4 Hz.
     """
     freqs = _LINEARIZABLE_FREQS_HZ

@@ -204,7 +204,7 @@ def profile_graph_summation(
         entry for role in roles
         if isinstance(entry := corrections.get(role), Mapping)
     ]
-    if not entries or len(entries) != len(roles):
+    if len(entries) != len(roles):
         return None
     gains: list[Any] = [entry.get("gain_db") for entry in entries]
     if any(gain is None for gain in gains):

@@ -56,9 +56,9 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HARMONIC_ORDERS,
     STATE_UNREADABLE,
     HarmonicEvidenceRefused,
+    banked_roles,
     read_round_harmonics,
 )
-from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 
 EXIT_OK = 0
 EXIT_ROUND_UNREADABLE = 1
@@ -104,8 +104,9 @@ def round_bands_hz(
 ) -> dict[str, tuple[float, float]]:
     """The band each role THIS round swept, keyed by role.
 
-    The ROLES come from the round's own banked ``gain_plan_db``, resolved
-    through the SAME ``DRIVER_ROLES_BY_WAY`` table
+    The ROLES come from
+    :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.banked_roles`,
+    the same reader
     :func:`~jasper.active_speaker.crossover_v2.harmonic_evidence.rebuild_measure_program`
     composes against — so the CLI cannot hand it a shape it will only refuse. A
     1-way passive main banks one role, and reading it as a pair composes a
@@ -115,15 +116,16 @@ def round_bands_hz(
     map composes a program silently missing a sweep, which the ``program_id``
     proof would then blame on the bank.
     """
-    gains = state.get("gain_plan_db")
-    banked = set(gains) if isinstance(gains, Mapping) else set()
-    roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())
-    if not roles or set(roles) != banked or not overrides.keys() >= set(roles):
+    roles = banked_roles(state)
+    if not roles or not overrides.keys() >= set(roles):
+        gains = state.get("gain_plan_db")
         raise HarmonicEvidenceRefused(
             STATE_UNREADABLE,
             {
                 "missing": "a band for every role this round's gain plan names",
-                "gain_plan_roles": sorted(banked),
+                "gain_plan_roles": (
+                    sorted(gains) if isinstance(gains, Mapping) else []
+                ),
                 "bands_offered": sorted(overrides),
             },
         )

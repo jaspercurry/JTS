@@ -271,6 +271,7 @@ def driver_test_signal_plan(
     role: str,
     *,
     driver_style: Any = None,
+    declared_floor_hz: Any = None,
     edge_margin_ratio: float = EDGE_MARGIN_RATIO,
 ) -> dict[str, Any]:
     """Return a safe preset-derived tone frequency for one driver role.
@@ -278,6 +279,12 @@ def driver_test_signal_plan(
     The passband is derived from the active preset crossover edges plus
     code-owned protection policy. The returned tone is inside the margin-bounded
     band; if no such tone exists, the plan is blocked and must not be played.
+
+    ``declared_floor_hz`` is :func:`~.driver_protection.driver_excitation_floor_hz`
+    of this role's own declaration, for a caller that holds it. The preset
+    carries only the stored protective high-pass, which is one of that answer's
+    three arms — enough for every class whose floor the code table anchors, and
+    not enough for ``full_range``, whose floor exists only in the declaration.
     """
 
     role_id = str(role or "").strip().lower()
@@ -292,6 +299,7 @@ def driver_test_signal_plan(
         ),
         declared_low_limit_hz=declared_protection_floor_hz(preset, role_id),
         driver_style=driver_style,
+        declared_floor_hz=declared_floor_hz,
         edge_margin_ratio=edge_margin_ratio,
         crossover_edge_source="preset.crossover_regions",
         protective_edge_source="active_speaker.test_signal_plan",
@@ -306,6 +314,7 @@ def driver_test_signal_plan_from_edges(
     protective_highpass_hz: Any = None,
     declared_low_limit_hz: Any = None,
     driver_style: Any = None,
+    declared_floor_hz: Any = None,
     edge_margin_ratio: float = EDGE_MARGIN_RATIO,
     crossover_edge_source: str = "compiled_active_speaker_edges",
     protective_edge_source: str = "compiled_active_speaker_edges",
@@ -321,11 +330,24 @@ def driver_test_signal_plan_from_edges(
     the ``driver_protection_minimum`` edge below and anchors the tone gate; an
     absent one falls back to the style default, which is the only tone-gate job
     the class table keeps (#2874).
+
+    ``declared_floor_hz`` is the wider excitation floor
+    (:func:`~.driver_protection.driver_excitation_floor_hz`) when the caller
+    resolved it from the declaration itself; the stored protective high-pass
+    above is that answer's second arm and stands in when it did not. Only the
+    ``full_range`` class reads it, and without it that class has no floor at
+    all and refuses every tone.
     """
 
     role_id = str(role or "").strip().lower()
     margin = _finite_positive(edge_margin_ratio) or EDGE_MARGIN_RATIO
-    profile = driver_protection_profile(role_id, driver_style=driver_style)
+    excitation_floor_hz = (
+        _finite_positive(declared_floor_hz)
+        or _finite_positive(declared_low_limit_hz)
+    )
+    profile = driver_protection_profile(
+        role_id, driver_style=driver_style, declared_floor_hz=excitation_floor_hz,
+    )
     low_limit = tone_gate_low_limit(
         role_id,
         driver_style=driver_style,
@@ -474,6 +496,7 @@ def driver_test_signal_plan_from_edges(
         ),
         band_limit=band_limit if band_type != "unknown" else None,
         declared_low_limit_hz=declared_low_limit_hz,
+        declared_floor_hz=excitation_floor_hz,
     )
     issues.extend(
         issue

@@ -13,6 +13,7 @@ trim, so those axes do not exist rather than being defaulted.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -511,22 +512,15 @@ def test_a_way1_banked_round_rebuilds_its_one_role_measure_program():
     assert [seg.role for seg in rebuilt.segments if seg.segment_id == "sweep_t"] == []
 
 
-def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
-    """The whole Phase-2 loop, end to end: banked solo -> profile on disk.
+def _way1_ready_to_apply_payload(tmp_path):
+    """One way-1 round's banked solo, compiled to a ready-to-apply profile.
 
-    The candidate is the one ``_build_candidate`` returned; the YAML is the one
-    the COMPILE GATE wrote, not a hand-built emit. The shape is the subless
+    The candidate is the one ``_build_candidate`` returned and the YAML is the
+    one the COMPILE GATE wrote, not a hand-built emit. The shape is the subless
     passive main PAIR, which is what a real one is — its mono sibling declares
     one physical output and the active ring's accept-set starts at two, so the
     emitter refuses that width by name before this graph is reachable.
-
-    Non-negotiable tier (hearing): the ceiling, the headroom charge and the
-    per-branch limiter are asserted structurally on a profile carrying a real
-    fitted linearization, so a way-1 apply cannot ship a chain whose limiter
-    was dropped with the crossover it never had.
     """
-    import yaml as yaml_lib
-
     from jasper.active_speaker.baseline_profile import (
         build_baseline_profile_candidate,
     )
@@ -548,7 +542,7 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
     )
     assert state.outcome == LINEARIZATION_OUTCOME_SINGLE_BRANCH
 
-    payload = build_baseline_profile_candidate(
+    return build_baseline_profile_candidate(
         topology,
         # A passive box saves no crossover preview and completes no summed
         # active-crossover validation; both are two-branch artifacts. Passing
@@ -563,6 +557,19 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
         tuning_owner="automatic",
         measured_candidate=candidate,
     )
+
+
+def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
+    """The whole Phase-2 loop, end to end: banked solo -> profile on disk.
+
+    Non-negotiable tier (hearing): the ceiling, the headroom charge and the
+    per-branch limiter are asserted structurally on a profile carrying a real
+    fitted linearization, so a way-1 apply cannot ship a chain whose limiter
+    was dropped with the crossover it never had.
+    """
+    import yaml as yaml_lib
+
+    payload = _way1_ready_to_apply_payload(tmp_path)
 
     assert payload["status"] == "ready_to_apply"
     assert payload["permissions"]["may_apply"] is True
@@ -591,6 +598,42 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
     fitted = [name for name in branch if "_linearization_" in name]
     assert fitted
     assert branch.index(fitted[-1]) < branch.index("as_full_range_baseline_gain")
+
+
+def test_a_way1_apply_banks_no_base_trim_and_does_not_fail_trying(
+    tmp_path, caplog, monkeypatch
+):
+    """A base trim is a FRAME — one role's level relative to the others — so a
+    lone branch has nothing to bank, and the writer refuses a one-role map
+    structurally (``driver_base_trim.REFUSE_NO_FRAME``).
+
+    A way-1 apply must therefore reach neither the write nor the failed-bank
+    clear that follows one: nothing is banked, and the seam says so at INFO
+    with a standing-bank result, because having no frame is a property of the
+    speaker rather than an apply that went wrong.
+    """
+    import logging
+
+    from jasper.active_speaker import baseline_profile as baseline_profile_mod
+    from jasper.active_speaker import driver_base_trim as dbt
+
+    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
+    caplog.set_level(logging.INFO, logger=baseline_profile_mod.logger.name)
+    payload = _way1_ready_to_apply_payload(tmp_path)
+
+    baseline_profile_mod.persist_applied_baseline_profile(
+        payload,
+        apply_state={"result": "success"},
+        state_path=tmp_path / "applied_profile.json",
+    )
+
+    events = [
+        dict(token.partition("=")[::2] for token in shlex.split(message))
+        for message in caplog.messages
+        if "event=dsp.baseline_base_trim_banked" in message
+    ]
+    assert [event["result"] for event in events] == ["left_standing"]
+    assert dbt.load_base_trim() is None
 
 
 def test_the_one_way_preset_emits_a_protected_neutral_program_graph(tmp_path):
@@ -644,7 +687,7 @@ def test_a_way1_verify_claim_names_the_shape_not_the_missing_corner():
     def _claim(preset):
         priors = verify_priors(
             fc_hz=None, source_preset=preset,
-            predicted_sum=None, sweep_bounds=(None, None),
+            predicted_sum=None, sweep_bounds=None,
         )
         return _verify_absolute_result(None, None, None, priors)
 
@@ -690,7 +733,10 @@ def _way1_round_through_verify():
     :data:`_BOOST_DB` across :data:`_BOOST_HZ` and the speaker delivers it, so
     tracking passes and the probe runs where a shipped round runs it.
     """
-    from jasper.active_speaker.crossover_v2.priors import verify_priors
+    from jasper.active_speaker.crossover_v2.priors import (
+        measure_sweep_bounds,
+        verify_priors,
+    )
     from tests.crossover_v2_round_harness import _consume_verify
     from tests.test_audio_measurement_program_analysis import (
         SR,
@@ -703,7 +749,8 @@ def _way1_round_through_verify():
         index_phase_map=_way1_index_phase_map(),
         gain_plan_db={"full_range": -11.0},
     )
-    measure = _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
+    measure_program = conductor.program_for_phase(PHASE_MEASURE)
+    measure = _way1_measure_analysis(measure_program)
     raw_hz, raw_db = measure.predicted_sum
     applied = (raw_hz, np.asarray(raw_db, dtype=float) + _boost_db(raw_hz))
     conductor._measure_commanded_delta = conductor._commanded_delta_for(
@@ -720,7 +767,8 @@ def _way1_round_through_verify():
     def _analyze(predicted_sum):
         return analyze_program_capture(program, capture, SR, priors=verify_priors(
             fc_hz=None, source_preset=_one_way_preset(),
-            predicted_sum=predicted_sum, sweep_bounds=(None, None),
+            predicted_sum=predicted_sum,
+            sweep_bounds=measure_sweep_bounds(measure_program),
         ))
 
     # The prediction the applied graph is graded against is this capture's own
@@ -741,16 +789,16 @@ def _boost_db(freqs_hz) -> np.ndarray:
 def test_a_way1_verify_capture_grades_through_the_shipped_path():
     """The whole chain, on a speaker with one branch.
 
-    The tracking comparator is scoped by the branch's OWN declared span, not by
-    an overlap band a speaker with no corner has none of, and the two axes come
-    from the lone branch's chain and from itself — so a way-1 round is graded
-    rather than reporting unavailable, which is neither a rollback nor a
+    The tracking comparator is scoped by what the lone branch was excited over,
+    not by an overlap band a speaker with no corner has none of, and the two
+    axes come from that branch's chain and from itself — so a way-1 round is
+    graded rather than reporting unavailable, which is neither a rollback nor a
     permission.
     """
     conductor, analysis, verdict = _way1_round_through_verify()
 
     assert verdict.accepted is True
-    # The comparator ran, over the declared span rather than an overlap band.
+    # The comparator ran, over an excited span rather than an overlap band.
     assert analysis.verify_tracking_curve is not None
     lo, hi = analysis.verify_tracking["tracking_band_hz"]
     assert lo < _BOOST_HZ[0] and hi > _BOOST_HZ[1]
@@ -790,3 +838,59 @@ def test_a_way1_probe_that_contradicts_its_claim_is_graded_not_excused():
     assert probe.max_error_db == pytest.approx(2.0 * _BOOST_DB, abs=0.1)
     # A SHORTFALL, not an overshoot.
     assert probe.realized_louder_than_commanded is False
+
+
+def test_a_way1_tracking_band_stops_where_measure_stopped_exciting():
+    """The comparator may only grade bins the PREDICTION has evidence in.
+
+    VERIFY's no-crossover mode widens its sweep down to the declaration, below
+    the floor MEASURE excited the lone branch at — and ``predicted_sum`` down
+    there is deconvolution noise from a branch nothing drove, so a round graded
+    over the verify sweep's own span fails for a reason that is not the speaker.
+    """
+    conductor, analysis, _verdict = _way1_round_through_verify()
+
+    measure_sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
+    verify_sweep = conductor.program_for_phase(PHASE_VERIFY).segment("sweep_verify")
+
+    # The verify sweep really does reach outside what MEASURE excited…
+    assert verify_sweep.f1_hz < measure_sweep.f1_hz
+    assert verify_sweep.f2_hz > measure_sweep.f2_hz
+    # …and the graded band is the intersection of the two, on both edges.
+    assert analysis.verify_tracking["tracking_band_hz"] == [
+        measure_sweep.f1_hz, measure_sweep.f2_hz,
+    ]
+
+
+def test_a_way1_measure_publishes_its_solo_capture_snr_verdict():
+    """The corner only ever BOUNDS the SNR window, so a branch with none is
+    still judged — over what it radiated. Without this a way-1 round published
+    no per-driver capture-SNR verdict at all, which reads as "not measured"
+    rather than as the good capture it was.
+    """
+    from tests.test_audio_measurement_program_analysis import (
+        SR,
+        _ambient,
+        _band_impulse,
+        _synthesize,
+    )
+
+    conductor = _way1_conductor(
+        FakeSeams(),
+        index_phase_map=_way1_index_phase_map(),
+        gain_plan_db={"full_range": -11.0},
+    )
+    program = conductor.program_for_phase(PHASE_MEASURE)
+    ir = _band_impulse(200, WAY1_BAND.lower_hz, WAY1_BAND.upper_hz, 1.0)
+    capture = _synthesize(program, woofer_ir=ir, tweeter_ir=ir)
+
+    analysis = analyze_program_capture(
+        program, capture, SR,
+        priors=MeasurementPriors(ambient_report=_ambient()),
+    )
+
+    solo = next(r for r in analysis.driver_responses if r.role == "full_range")
+    sweep = program.segment("sweep_w")
+    assert solo.snr is not None
+    assert solo.snr["relevant_hz"] == [sweep.f1_hz, sweep.f2_hz]
+    assert solo.snr["verdict"] == "ok"

@@ -338,7 +338,7 @@ def test_driver_signal_plan_identical_across_surfaces(monkeypatch):
         "allowed_band": {"highpass_hz": 80.0, "lowpass_hz": 400.0},
     }
 
-    def _fake_driver_test_signal_plan(preset, role, *, driver_style=None):
+    def _fake_driver_test_signal_plan(preset, role, **_kwargs):
         return dict(sentinel_plan)
 
     # Patch the lazy import target the shared helper reaches for.
