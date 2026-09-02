@@ -1033,10 +1033,31 @@ def _cmd_warm_check(args: argparse.Namespace) -> int:
     return 0 if verdict.warm else 1
 
 
+def _resolve_period_bytes(pcap: Path, declared: int | None) -> int | None:
+    """The tap period this pcap was captured at: declared, or read from a
+    jasper-pipe-probe manifest sitting beside it. Never inferred from the
+    pcap's own datagrams -- that is a vote an intruder can win (#3509)."""
+    if declared is not None:
+        return declared
+    manifest = ref9891_pcap.read_capture_manifest(pcap)
+    return None if manifest is None else manifest.get("tap", {}).get("period_bytes")
+
+
 def _cmd_convert_pcap(args: argparse.Namespace) -> int:
+    period_bytes = _resolve_period_bytes(Path(args.pcap), args.period_bytes)
+    if not period_bytes:
+        print(
+            f"refusal={ref9891_pcap.REFUSAL_NO_GEOMETRY} -- no tap period for this "
+            f"pcap. Pass --period-bytes (outputd STATUS dac.period_frames x "
+            f"{ref9891_pcap.BYTES_PER_FRAME}), or convert beside the "
+            f"jasper-pipe-probe manifest that records it.",
+            file=sys.stderr,
+        )
+        return 1
     try:
         result = ref9891_pcap.convert_pcap_to_detections(
-            Path(args.pcap), Path(args.out), threshold=args.threshold
+            Path(args.pcap), Path(args.out),
+            period_bytes=period_bytes, threshold=args.threshold,
         )
     except (OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -1161,6 +1182,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_convert_pcap.add_argument("pcap", help="Input pcap from `tcpdump -i lo udp port 9891` (passive capture; never binds the port).")
     p_convert_pcap.add_argument("out", help="Output mic-detections JSONL path (feed to `analyze --mic-detections`).")
     p_convert_pcap.add_argument("--threshold", type=float, default=ref9891_pcap.DEFAULT_THRESHOLD, help=f"Peak-detection threshold, 0..1 normalized S16 (default {ref9891_pcap.DEFAULT_THRESHOLD:g}).")
+    p_convert_pcap.add_argument("--period-bytes", type=int, default=None, help="Tap datagram size: outputd STATUS `dac.period_frames` x %d. Required unless a jasper-pipe-probe manifest sits beside the pcap; it is the identity check, so it is never inferred from the capture (#3509)." % ref9891_pcap.BYTES_PER_FRAME)
     p_convert_pcap.set_defaults(func=_cmd_convert_pcap)
 
     return parser

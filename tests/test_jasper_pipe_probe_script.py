@@ -247,10 +247,18 @@ _SILENT = bytes(_PERIOD)
             _lo_pair(_TONE) * 50 + _record(_TONE) + _record(_SILENT),
             102, False, {}, id="pair_mismatch",
         ),
-        # An ODD number of VALID records cannot be collapsed -- reporting it as
-        # paired would hand `latency` an un-collapsed stream that reads ~2x late.
+        # A capture cut mid-pair: the sniffer's deadline landed between one
+        # datagram's two copies on lo (seen on a 30 s jts3 run). The unpaired
+        # tail is dropped and the rest still has to pair -- condemning the
+        # whole capture would report a 30 s window as 60 s of duplicates.
         pytest.param(
-            _lo_pair(_TONE) * 2 + _record(_TONE), 5, False, {}, id="odd_valid_records",
+            _lo_pair(_TONE) * 2 + _record(_TONE), 2, True, {}, id="truncated_tail",
+        ),
+        # A loss anywhere but the end is still a violation: dropping the tail
+        # cannot repair it, so nothing is collapsed and `latency` is refused.
+        pytest.param(
+            _lo_pair(_TONE) + _record(_SILENT) + _lo_pair(_TONE),
+            4, False, {}, id="odd_loss_mid_stream",
         ),
         # Excision AND a pairing violation together: the surviving records are
         # returned unmerged, but the foreign one is still not among them.
@@ -330,8 +338,37 @@ def test_the_shipped_sniffer_parses_exactly_what_the_shared_parser_does() -> Non
     # And the shared parser actually accepts a real one / rejects the quote.
     assert ref9891_pcap.parse_udp_payload(cases["udp_to_the_port"], 9891) == good
     assert ref9891_pcap.parse_udp_payload(cases["icmp_quoting_the_port"], 9891) is None
-    # The old parse is what admitted the quote -- that is the defect's shape.
+    # A laxer read is what admits the quote -- that is the defect's shape.
     assert sniffer["naive_port"](cases["icmp_quoting_the_port"]) == 9891
+
+
+def test_the_sniffer_tallies_what_reaches_the_port_without_being_a_datagram() -> None:
+    """#3509 item 1's evidence claim: the manifest's rejected_by_header is
+    produced by the sniffer classifying real frames, not asserted anywhere.
+    Drives the shipped classifier over one frame of each kind and builds the
+    tally exactly as the capture loop does."""
+    sniffer: dict = {}
+    exec(compile(jasper_pipe_probe.SNIFFER_SOURCE, "sniffer", "exec"), sniffer)
+    good = bytes(_PERIOD)
+    frames = [
+        _frame(good),                                  # the tap: stored
+        _frame(bytes(534), proto=1),                   # ICMP quoting the port
+        _frame(bytes(534), proto=1),                   # ...twice
+        _frame(good, frag=0x0100),                     # a fragment
+        _frame(good, dport=9888),                      # another port entirely
+    ]
+
+    tally: dict = {}
+    stored = list(sniffer["tap_payloads"](iter(frames), 9891, tally))
+
+    assert stored == [good]
+    assert tally == {
+        "proto=1,frag=0,wire_len=576": 2,
+        "proto=17,frag=1,wire_len=554": 1,
+    }
+    # The mic stream on :9888 is not this port's business and must not be
+    # counted as something that reached it.
+    assert not any("9888" in key for key in tally)
 
 
 def test_capture_reports_what_it_saw_and_fails_only_when_it_saw_nothing(
@@ -382,6 +419,10 @@ def test_capture_reports_what_it_saw_and_fails_only_when_it_saw_nothing(
     assert good["pcm"]["bytes"] == 10 * _PERIOD
     assert good["pcm"]["frames"] == 10 * _PERIOD // 4
     assert good["pcm"]["duration_s"] == (10 * _PERIOD // 4) / 48000
+    # 10 periods is far short of the 1 s asked for: audio that stops
+    # mid-window still writes a well-formed file, so the durations are
+    # compared rather than assumed to match.
+    assert good["pcm"]["short_of_requested"] is True
 
     # An all-zero tap is REPORTED, not failed: an idle box is validly silent.
     deaf_code, deaf = run(_lo_pair(_SILENT) * 10, stderr=reported)
@@ -559,12 +600,12 @@ def test_every_ssh_entry_point_creates_control_dir_before_spawning(
     monkeypatch.setattr(jasper_pipe_probe, "_SSH_CONTROL_DIR", control_dir)
     spawns: list[tuple[str, bool]] = []
 
-    def _record(cmd, *_args, **_kwargs):
+    def _spawn(cmd, *_args, **_kwargs):
         spawns.append((cmd[0], control_dir.is_dir()))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(jasper_pipe_probe.subprocess, "run", _record)
-    monkeypatch.setattr(jasper_pipe_probe.subprocess, "Popen", _record)
+    monkeypatch.setattr(jasper_pipe_probe.subprocess, "run", _spawn)
+    monkeypatch.setattr(jasper_pipe_probe.subprocess, "Popen", _spawn)
 
     invoke(jasper_pipe_probe)
 

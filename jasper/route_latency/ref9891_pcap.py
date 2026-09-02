@@ -70,6 +70,14 @@ def is_tap_period(payload_len: int, period_bytes: int) -> bool:
 CAPTURE_MANIFEST_KIND = "jts_pipe_probe_capture"
 CAPTURE_MANIFEST_SCHEMA = 1
 
+# How far below the requested window a capture may land before it is called
+# short. NOT one period: a healthy 300 s jts3 capture came back 0.016 s (six
+# periods) light, because the sniffer's loop stops on its own deadline
+# mid-period and whatever is still in the socket buffer is never read. A
+# one-period rule fires on every run and gets ignored; this catches a real
+# mid-capture gap — the #3509 incident spanned a daemon restart — instead.
+CAPTURE_SHORT_FRACTION = 0.01
+
 
 def capture_manifest_path(raw_path: Path) -> Path:
     return raw_path.with_name(raw_path.name + ".json")
@@ -147,6 +155,11 @@ def build_capture_manifest(
             "frames": frames,
             "duration_s": frames / RATE,
             "all_zero": all_zero,
+            # The identity check: audio that stops mid-window still writes a
+            # well-formed file, so the two durations have to be compared.
+            "short_of_requested": (
+                frames / RATE < requested_seconds * (1.0 - CAPTURE_SHORT_FRACTION)
+            ),
         },
     }
 
@@ -273,7 +286,7 @@ class ConversionResult:
     n_detections: int
     threshold: float
     rt_minus_mono: float
-    frames_per_packet: int | None
+    frames_per_packet: int
     # Payload lengths on :9891 that were not one tap period, counted by
     # length -- the evidence #3509 asks for about what else reaches the port.
     # Shared vocabulary: every :9891 reader reports rejects under this name.
@@ -306,8 +319,8 @@ def convert_pcap_to_detections(
     pcap_path: Path,
     out_path: Path,
     *,
+    period_bytes: int,
     threshold: float = DEFAULT_THRESHOLD,
-    period_bytes: int | None = None,
 ) -> ConversionResult:
     """Convert a ``:9891`` pcap into a mic-detections JSONL at ``out_path``.
 
@@ -320,13 +333,13 @@ def convert_pcap_to_detections(
     peak+refractory shape (this converter has no hysteresis band; see its
     module docstring for why the two aren't unified).
 
-    ``period_bytes`` is the box's own `dac.period_frames * BYTES_PER_FRAME`,
-    read from outputd's STATUS by the caller. When it is None the period is
-    taken from the first decodable datagram instead — the pcap is all there
-    is to go on. Either way it is then AUTHORITATIVE: a datagram of any other
-    length is not tap audio, so it is counted and skipped rather than
-    converted. Converting it fired a false detection off whatever its bytes
-    happened to be (#3509).
+    ``period_bytes`` is the box's own `dac.period_frames * BYTES_PER_FRAME`
+    and is REQUIRED: it is the identity check, so nothing here may infer it.
+    Learning it from the capture — even from a single first datagram — is a
+    vote the intruder can win, and an intruder-first pcap then converts the
+    intruder, fires a detection off its bytes, and discards every real
+    period as the wrong length (#3509). A datagram of any other length is
+    counted and skipped rather than converted.
 
     A capture carrying no usable datagram, or one carrying nothing but zeros,
     is REFUSED: the tap ran and the pipeline produced an empty detections
@@ -335,6 +348,14 @@ def convert_pcap_to_detections(
     verdict on the capture, not an I/O failure.
     """
 
+    if period_bytes <= 0 or period_bytes % BYTES_PER_FRAME:
+        # Reachable from `--period-bytes`: a bad value would otherwise reject
+        # every datagram and refuse as `no_packets`, blaming the capture for
+        # the caller's number.
+        raise ValueError(
+            f"period_bytes must be a positive multiple of {BYTES_PER_FRAME} "
+            f"(one S16 stereo frame), got {period_bytes}"
+        )
     rt_minus_mono = time.clock_gettime(time.CLOCK_REALTIME) - time.monotonic()
     n_pkts = n_det = 0
     unexpected: Counter[int] = Counter()
@@ -343,12 +364,6 @@ def convert_pcap_to_detections(
     all_zero = True
     with open(out_path, "w") as fo:
         for rt_ts, payload in payloads(pcap_path):
-            if period_bytes is None:
-                frames, remainder = divmod(len(payload), BYTES_PER_FRAME)
-                if frames == 0 or remainder:
-                    unexpected[len(payload)] += 1
-                    continue
-                period_bytes = len(payload)
             if not is_tap_period(len(payload), period_bytes):
                 unexpected[len(payload)] += 1
                 continue
@@ -383,7 +398,7 @@ def convert_pcap_to_detections(
         n_detections=n_det,
         threshold=threshold,
         rt_minus_mono=rt_minus_mono,
-        frames_per_packet=None if period_bytes is None else period_bytes // BYTES_PER_FRAME,
+        frames_per_packet=period_bytes // BYTES_PER_FRAME,
         unexpected_by_length=dict(sorted(unexpected.items())),
         refusal=refusal,
     )
