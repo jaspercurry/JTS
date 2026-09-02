@@ -69,6 +69,7 @@ from ._supervisor import (
     DeferredReconnect,
     OutageTracker,
     is_transient,
+    survive_terminal_initial_connect,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -1002,26 +1003,16 @@ class OpenAIRealtimeConnection:
     ) -> None:
         """Connect and start the reconnect supervisor.
 
-        A terminal first connect (blocked account, revoked key) does NOT
-        raise: the reconnect path already survives the same rejection
-        indefinitely, and dying here instead crash-looped the unit into
-        ``StartLimitAction=reboot``. The daemon stays up with wake word,
-        cues and local tools alive, ``/state`` reporting the outage, and
-        the supervisor retrying until the provider accepts again. A
-        budget-exhausted TRANSIENT connect still raises — a fresh process
-        gets a fresh budget, which is what that path is for."""
+        A terminal first connect leaves the connection FAILED and returns
+        rather than raising — see ``survive_terminal_initial_connect``."""
         self._registry = registry
         if callable(system_instruction):
             self._system_instruction_provider = system_instruction
         else:
             instruction = system_instruction or ""
             self._system_instruction_provider = lambda: instruction
-        try:
-            await self._do_initial_connect()
-        except Exception as e:  # noqa: BLE001
-            if is_transient(e):
-                raise
-            # Already logged as event=openai.initial_connect.fatal.
+        # Already logged as event=openai.initial_connect.fatal.
+        if await survive_terminal_initial_connect(self._do_initial_connect()):
             self._reconnect_event.set()
         self._supervisor_task = asyncio.create_task(self._supervisor_loop())
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable
+from typing import Awaitable, Callable
 
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
@@ -100,6 +100,28 @@ def is_transient(exc: BaseException) -> bool:
         return True
     # No status — treat as transient (network blip, WS reset, etc.).
     return True
+
+
+async def survive_terminal_initial_connect(connect: Awaitable[None]) -> bool:
+    """Await a provider's first connect, tolerating a terminal rejection.
+
+    A terminal first connect (blocked account, revoked key) does NOT
+    raise: every provider's reconnect path already survives the same
+    rejection indefinitely, and dying here instead crash-looped the unit
+    into ``StartLimitAction=reboot``. Returns True when the connection
+    was left terminally failed, so the caller wakes its supervisor and
+    the daemon stays up — wake word, cues and local tools alive,
+    ``/state`` reporting the outage — until the provider accepts again.
+
+    A budget-exhausted TRANSIENT connect still raises: a fresh process
+    gets a fresh budget, which is what that path is for."""
+    try:
+        await connect
+    except Exception as e:  # noqa: BLE001
+        if is_transient(e):
+            raise
+        return True
+    return False
 
 
 class OutageTracker:

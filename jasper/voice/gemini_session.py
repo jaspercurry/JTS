@@ -19,6 +19,7 @@ from ._supervisor import (
     DeferredReconnect,
     OutageTracker,
     http_status,
+    survive_terminal_initial_connect,
 )
 from .session import (
     CONNECTION_NOISY_TRANSITIONS,
@@ -648,16 +649,18 @@ class GeminiLiveConnection:
         what voice_daemon.py uses so the time-injection stays accurate
         across the connection's hours-long lifetime — the callable is
         invoked on initial connect, every reconnect, and every
-        context-reset reopen."""
+        context-reset reopen.
+
+        A terminal first connect leaves the connection FAILED and returns
+        rather than raising — see ``survive_terminal_initial_connect``."""
         self._registry = registry
         if callable(system_instruction):
             self._system_instruction_provider = system_instruction
         else:
             instruction = system_instruction or ""
             self._system_instruction_provider = lambda: instruction
-        await self._do_initial_connect()
-        # Once initial connect succeeds, supervisor + keepalive run for
-        # the daemon's lifetime.
+        if await survive_terminal_initial_connect(self._do_initial_connect()):
+            self._reconnect_event.set()
         self._supervisor_task = asyncio.create_task(self._supervisor_loop())
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
