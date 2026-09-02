@@ -30,6 +30,7 @@ preserved here.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import tomllib
@@ -93,8 +94,8 @@ def test_python_normalize_maps_legacy_tokens_to_streambox():
     # role == profile now; legacy tokens behave exactly like streambox.
     assert install_role_for_profile("endpoint") == "streambox"
     assert is_streambox_install_profile("satellite")
-    assert not install_profile_allows_voice_brain("endpoint")
-    assert not install_profile_allows_voice_brain("streambox")
+    assert install_profile_allows_voice_brain("endpoint")
+    assert install_profile_allows_voice_brain("streambox")
     assert install_profile_allows_voice_brain("full")
 
     with pytest.raises(ValueError, match="invalid install profile"):
@@ -117,10 +118,11 @@ def test_system_capabilities_map_per_profile():
 
     full = caps("full")
     streambox = caps("streambox")
-    # full has the voice brain + developer tools; streambox does not. Both run
-    # the local audio graph (sources + DSP) and keep the management surfaces.
+    # Both tiers hold the voice brain now; only full has developer tools.
+    # Both run the local audio graph (sources + DSP) and keep the
+    # management surfaces.
     assert full["voice_brain"] is True and full["developer_tools"] is True
-    assert streambox["voice_brain"] is False
+    assert streambox["voice_brain"] is True
     assert streambox["developer_tools"] is False
     for k in ("local_sources", "content_dsp"):
         assert full[k] is True and streambox[k] is True
@@ -134,7 +136,7 @@ def test_system_capabilities_map_per_profile():
     legacy = caps("endpoint")
     assert legacy["install_profile"] == "endpoint"
     assert legacy["role"] == "streambox"
-    assert legacy["voice_brain"] is False and legacy["local_sources"] is True
+    assert legacy["voice_brain"] is True and legacy["local_sources"] is True
 
 
 def test_bash_normalize_maps_legacy_tokens_to_streambox():
@@ -278,7 +280,10 @@ def test_streambox_plan_includes_audio_graph_not_voice_brain():
         "jasper-outputd daemon",
         "CamillaDSP:",
         "AirPlay, Spotify Connect, Bluetooth, and USB Audio Input",
-        "voice, wake-word, mic/AEC",  # listed as out-of-scope
+        "wake-word, local microphone, or AEC",  # listed as out-of-scope
+        # The assistant IS in scope, owned by the accessory reconciler.
+        # See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+        "jasper-accessory-reconcile starts and stops jasper-voice",
     ]:
         assert expected in result.stdout, expected
     for forbidden in [
@@ -302,6 +307,12 @@ def test_full_plan_includes_voice_and_audio_graph():
         assert expected in result.stdout, expected
 
 
+def _distribution_name(requirement: str) -> str:
+    """Distribution name of a PEP 508 requirement — the text before any
+    version specifier, environment marker, or direct-reference URL."""
+    return re.split(r"[<>=!;@ ]", requirement, maxsplit=1)[0].strip()
+
+
 def test_pyproject_base_install_stays_minimal():
     data = tomllib.loads(PYPROJECT.read_text())
     base = data["project"]["dependencies"]
@@ -312,9 +323,17 @@ def test_pyproject_base_install_stays_minimal():
     for dep_prefix in ["camilladsp", "google-genai", "openai", "onnxruntime"]:
         assert not any(dep.startswith(dep_prefix) for dep in base)
         assert any(dep.startswith(dep_prefix) for dep in full)
-    # streambox stays voice-brain-light.
-    for voice_only in ["google-genai", "openai", "onnxruntime"]:
-        assert not any(dep.startswith(voice_only) for dep in streambox)
+    # A push-to-talk-only streambox runs the assistant, so it carries the
+    # provider/tool SDKs; it never builds a wake detector, opens the local
+    # mic, or talks to the XVF3800, so those four runtimes stay full-only.
+    # See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    assert set(streambox) < set(full)
+    assert {_distribution_name(dep) for dep in set(full) - set(streambox)} == {
+        "onnxruntime",
+        "pyusb",
+        "libusb_package",
+        "pyalsaaudio",
+    }
 
 
 def test_correction_relay_dependency_is_explicit_in_both_install_profiles():
@@ -627,3 +646,113 @@ def test_streambox_resolves_coupling_after_grouping_during_install():
     assert body.index("reconcile_grouping_state") < body.index(
         "resolve_fanin_coupling_default"
     )
+
+
+# ---------- assistant unit on the streambox profile (ADR-0216) -----------
+
+
+def test_voice_unit_file_actually_installs(tmp_path: Path):
+    """Run the streambox installer's voice helper for real; assert it lands.
+
+    The accessory reconciler issues `systemctl start jasper-voice.service`
+    when a mic-bearing remote pairs. That exits 1 on a box whose unit file
+    was never written, and a streambox converted from a full install carries
+    the file from the earlier profile -- which is exactly how a fresh-box
+    gap ships unnoticed.
+    """
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail\n'
+            'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
+            "install_voice_unit_files\n",
+        ],
+        env={
+            **os.environ,
+            "REPO_DIR": str(REPO_ROOT),
+            "SYSTEMD_DIR": str(systemd_dir),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {path.name for path in systemd_dir.iterdir()} == {
+        "jasper-voice.service",
+    }
+
+
+def test_streambox_stages_the_voice_unit_without_boot_enabling_it():
+    """Staged, never enabled: the reconciler owns when the assistant runs.
+
+    Structural rather than executed for the same reason as the accessory
+    bridge above: install_streambox_systemd_units writes outside SYSTEMD_DIR
+    and start_streambox_runtime_units drives /opt and /usr/local binaries,
+    so neither can run unprivileged.
+
+    Boot-enabling would leave a remote-less streambox running an assistant
+    it has no microphone for, which is the state ADR-0216 exists to prevent.
+    """
+    install_path = _installer_function_body("install_streambox_systemd_units")
+    assert "install_voice_unit_files" in install_path
+
+    runtime = _installer_function_body("start_streambox_runtime_units")
+    assert "jasper-voice.service" not in runtime
+
+
+def test_streambox_parking_clears_the_stale_voice_input_marker(tmp_path: Path):
+    """Parking the marker's writer must also drop the marker.
+
+    jasper-voice.service carries
+    ConditionPathExists=!/var/lib/jasper/voice-input-absent and only
+    jasper-aec-reconcile -- parked here -- ever removes it. Left behind, every
+    start the accessory reconciler issues for a paired mic remote
+    condition-fails silently: the unit reports success and nothing runs.
+    """
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    marker = state_dir / "voice-input-absent"
+    marker.write_text("", encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    fake_systemctl = bin_dir / "systemctl"
+    fake_systemctl.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>{shlex.quote(str(calls))}\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail\n'
+            'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
+            "park_streambox_brain_units\n",
+        ],
+        env={
+            **os.environ,
+            "REPO_DIR": str(REPO_ROOT),
+            "SYSTEMD_DIR": str(tmp_path / "systemd"),
+            "STATE_DIR": str(state_dir),
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    # Harness self-check: a driver that died while sourcing would leave the
+    # marker untouched for the wrong reason.
+    assert calls.exists() and calls.read_text(encoding="utf-8").strip(), (
+        f"parking never reached systemctl; stderr={result.stderr!r}"
+    )
+    assert not marker.exists()

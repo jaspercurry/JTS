@@ -14,23 +14,30 @@ dependencies = [
 
 [project.optional-dependencies]
 streambox = [
-    # Streambox = local renderers + local CamillaDSP content/driver DSP,
-    # without voice/wake/mic/AEC/provider integrations. Keep this list
-    # deliberately narrower than [full] so Zero-class installs do not
-    # pull assistant-only SDKs or wake-word runtimes just to play music.
+    # Streambox = local renderers, CamillaDSP, and the assistant reached only
+    # through a paired remote's mic (push-to-talk, no wake word). Exactly
+    # [full] minus the wake/mic/AEC/XVF runtimes that path never loads.
+    # See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
+    "google-genai==2.9.0",
+    "openai>=2.36.0",
+    "audioop-lts>=0.2; python_version >= '3.13'",
     "camilladsp @ https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087",
     "sounddevice==0.5.5",
     "numpy>=1.26,<3",
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
     "httpx==0.28.1",
-    # The Streambox keeps the correction/phone-mic relay surfaces, whose
-    # package imports AES-GCM support directly.  Keep the AEAD dependency
-    # explicit here rather than relying on another package's transitive tree.
-    "cryptography>=50.0.0",
+    "gtfs-realtime-bindings==2.1.0",
+    "protobuf==7.35.1",
     "rapidfuzz>=3.6,<4",
+    "google-auth>=2.36",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.150",
+    "evdev>=1.7; sys_platform == 'linux'",
+    "pyudev>=0.24",
     "dbus-next>=0.2.3",
     "zeroconf>=0.149,<1.0",
+    "cryptography>=50.0.0",
 ]
 
 full = [

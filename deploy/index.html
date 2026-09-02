@@ -566,8 +566,9 @@
           </p>
         </section>
 
-        <!-- wake_detection, not voice_brain: this card drives /mic, the
-             always-on listen state. A push-to-talk tier holds no mic open. -->
+        <!-- wake_detection, not voice_brain: this card is the always-on
+             listen state, and its Pause posts /mic/mute — off a streambox's
+             control route table (jasper/control/server.py). See ADR-0216. -->
         <section class="control-section" data-requires="wake_detection" hidden>
           <div class="control-head">
             <h2 class="eyebrow">Voice assistant</h2>

@@ -21,10 +21,10 @@ Three things are pinned here:
    because of this. A capability that read something dynamic would let a
    baked page be wrong at runtime, and the landing page's
    ``applyCapabilities`` fails closed — a section hidden forever, no error.
-3. **Behaviour neutrality of the PR that introduced the axis.** The
-   capability map is byte-identical to its pre-axis values except for the
-   one added ``wake_detection`` key. Golden values were captured by
-   running the pre-PR module, not transcribed by hand.
+3. **The grant table's derived map, pinned.** Every
+   ``system_capabilities_for_profile`` boolean is a thin view over
+   ``PROFILE_CAPABILITIES`` — data, not a second place to restate a grant.
+   The golden map fails loudly the day the two drift apart.
 """
 from __future__ import annotations
 
@@ -240,14 +240,13 @@ def test_capability_map_is_deterministic_across_calls():
         )
 
 
-# ---------- (3) behaviour neutrality: the golden map ----------------------
+# ---------- (3) the grant table's derived map, pinned ---------------------
 
 # Captured by running jasper.install_profile.system_capabilities_for_profile
-# from the commit BEFORE the capability axis landed (git archive of
-# origin/main into a scratch tree, then json.dumps(..., sort_keys=True)).
-# Not transcribed from a design doc — the point is to compare against what
-# the code actually produced.
-_PRE_AXIS_CAPABILITIES = {
+# at HEAD, reflecting the grant table in PROFILE_CAPABILITIES. Not
+# transcribed from a design doc — the point is to compare against what the
+# code actually produces.
+_EXPECTED_CAPABILITIES = {
     "full": {
         "audio_quality": True,
         "content_dsp": True,
@@ -277,29 +276,31 @@ _PRE_AXIS_CAPABILITIES = {
         "poweroff": True,
         "reboot": True,
         "restart_audio": True,
-        "restart_voice": False,
+        "restart_voice": True,
         "role": "streambox",
         "speaker_settings": True,
-        "voice_brain": False,
+        "voice_brain": True,
     },
 }
 
-# The ONLY key the capability axis was allowed to add.
-_ADDED_KEYS = {"wake_detection"}
+# Held out of the golden map because test_wake_detection_key_tracks_the
+# _capability pins it directly against the grant, one altitude down.
+_PINNED_ELSEWHERE = {"wake_detection"}
 
 
-@pytest.mark.parametrize("profile", sorted(_PRE_AXIS_CAPABILITIES))
-def test_capability_map_is_unchanged_except_for_the_added_key(profile):
-    """Naming the axis changed no profile's effective capabilities.
+@pytest.mark.parametrize("profile", sorted(_EXPECTED_CAPABILITIES))
+def test_capability_map_matches_the_grant_table(profile):
+    """The map's booleans are a thin view over PROFILE_CAPABILITIES.
 
-    Re-expressing voice_brain on top of Capability.ASSISTANT is a
-    refactor; the landing page and /system must see the same answers they
-    saw before, plus exactly one new key.
+    voice_brain/restart_voice mirror ``Capability.ASSISTANT`` and
+    wake_detection mirrors ``Capability.WAKE_DETECTION`` for every
+    profile — the landing page and /system must see exactly these
+    answers.
     """
-    golden = _PRE_AXIS_CAPABILITIES[profile]
+    golden = _EXPECTED_CAPABILITIES[profile]
     live = system_capabilities_for_profile(profile)
 
-    assert set(live) - set(golden) == _ADDED_KEYS
+    assert set(live) - set(golden) == _PINNED_ELSEWHERE
     assert not set(golden) - set(live), "a capability key disappeared"
     for key, value in golden.items():
         assert live[key] == value, key
@@ -314,16 +315,12 @@ def test_wake_detection_key_tracks_the_capability():
         )
 
 
-def test_both_tiers_keep_wake_and_assistant_welded_for_now():
-    """Behaviour neutrality, stated as data.
+def test_streambox_grants_assistant_without_wake_detection():
+    """The Bluetooth-remote split.
 
-    Naming the axis does NOT split any tier's grants yet: full has both,
-    streambox has neither. Granting streambox ASSISTANT without
-    WAKE_DETECTION — the Bluetooth-remote case this axis exists for — is
-    a separate, deliberate change. When it lands, this test SHOULD fail;
-    update it then, and only then.
+    See docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
     """
     assert PROFILE_CAPABILITIES["full"] == frozenset(
         {Capability.ASSISTANT, Capability.WAKE_DETECTION},
     )
-    assert PROFILE_CAPABILITIES["streambox"] == frozenset()
+    assert PROFILE_CAPABILITIES["streambox"] == frozenset({Capability.ASSISTANT})

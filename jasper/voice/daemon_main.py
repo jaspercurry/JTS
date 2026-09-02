@@ -39,6 +39,10 @@ from ..cues import AudioCueManager, build_cue_tts_backend
 from ..google_creds import GoogleClients, build_google_clients
 from ..google_routes import build_google_routes_client
 from ..home_assistant import HAClient, build_ha_client
+from ..install_profile import (
+    install_profile_supports_wake_detection,
+    read_install_profile,
+)
 from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import BuildResult, Router, build_clients
@@ -204,6 +208,33 @@ def _require_usable_input(
         ",".join(declared_manual_devices) or "<none>",
         RuntimeError("no usable mic source: no wake leg, no manual mic"),
     )
+
+
+def _wake_detection_supported() -> bool:
+    """Whether the install profile grants always-on wake inference.
+
+    ``read_install_profile()`` raises ``ValueError`` on an unparseable
+    marker token. ``main()`` special-cases only ``InputDeviceUnavailable``,
+    ``VoiceProviderNotConfigured`` and ``SpeechVADSetupError`` — anything
+    else would traceback out, exit 1, and climb ``Restart=on-failure`` to
+    ``StartLimitAction=reboot``. Fail OPEN (today's pre-ADR-0216 behaviour:
+    wake detection supported, legs planned as always) rather than reboot a
+    speaker over a corrupt marker file. Mirrors
+    ``jasper.control.server._control_install_profile``, which fails the
+    opposite way because its stakes are a route allowlist, not a daemon
+    crash.
+    """
+    try:
+        profile = read_install_profile()
+    except ValueError as e:
+        log_event(
+            logger,
+            "voice.install_profile_unreadable",
+            detail=str(e),
+            level=logging.WARNING,
+        )
+        return True
+    return install_profile_supports_wake_detection(profile)
 
 
 def _wake_ready_detail(cfg: Config, planned_wake_legs: list) -> str:
@@ -955,7 +986,13 @@ async def run() -> None:
     # `wake=` must report what this daemon actually DOES, not what the config
     # happens to name — see `_wake_ready_detail`. Resolved once here because
     # the AsyncExitStack below opens its mics from this same list.
-    planned_wake_legs = _configured_wake_legs(cfg)
+    #
+    # The install marker is static for the process, so it is read once here
+    # and passed down rather than re-read per decision. See ADR-0216.
+    planned_wake_legs = _configured_wake_legs(
+        cfg,
+        wake_detection_supported=_wake_detection_supported(),
+    )
     logger.info(
         "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
         cfg.voice_provider, _active_model(cfg),

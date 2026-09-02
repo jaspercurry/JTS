@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -401,6 +402,65 @@ def test_landing_page_data_requires_match_capability_map() -> None:
     )
 
 
+def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
+    # A capability grant is what unhides a section, so widening one (streambox
+    # gained ASSISTANT — ADR-0216) can reveal rows linking to wizards that
+    # profile's nginx conf never routes: the household taps "Voice" and gets
+    # the catch-all. Pin the seam between the two files rather than the three
+    # sections that happened to break, so the next widened grant is caught.
+    from jasper.install_profile import system_capabilities_for_profile
+
+    caps = system_capabilities_for_profile("streambox")
+    served = {
+        prefix
+        for prefix in re.findall(
+            r"location\s+=?\s*(/[^\s{]*)",
+            _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"),
+        )
+        if prefix != "/"  # the catch-all is exactly what a dead link falls to
+    }
+
+    class _Gates(HTMLParser):
+        """Collect hrefs whose whole enclosing data-requires stack is granted."""
+
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.stack: list[tuple[str, str | None]] = []
+            self.visible: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            attrib = dict(attrs)
+            gate = attrib.get("data-requires")
+            href = attrib.get("href", "")
+            if (
+                href.startswith("/")
+                and (gate is None or caps.get(gate) is True)
+                and all(caps.get(g) is True for _, g in self.stack if g)
+            ):
+                self.visible.append(href.split("#")[0].split("?")[0])
+            # Void elements never close, so they must not push a frame.
+            if tag not in ("meta", "link", "img", "br", "hr", "input", "use"):
+                self.stack.append((tag, gate))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    del self.stack[index:]
+                    return
+
+    gates = _Gates()
+    gates.feed(_index_html())
+    unserved = sorted({
+        href
+        for href in gates.visible
+        if not any(href == p or href.startswith(p) for p in served)
+    })
+    assert not unserved, (
+        "landing rows visible on streambox link to paths "
+        f"nginx-jasper-streambox.conf does not serve: {unserved}"
+    )
+
+
 def test_landing_page_tracks_static_reference_visual_tokens() -> None:
     # Tokens and the .page container now live in the shared stylesheet
     # (the landing page links it); only landing-specific bits stay inline.
@@ -742,53 +802,6 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
 
 def _nginx_locations(nginx: str) -> set[str]:
     return set(re.findall(r"^    location (?:= )?(/[^\s{]*)", nginx, re.M))
-
-
-def _capability_gated_sections(html: str, capability: str) -> list[str]:
-    """Each <section> whose own data-requires is ``capability``."""
-    out = []
-    for part in re.split(r"(?=<section\b)", html):
-        head = part.split(">", 1)[0]
-        if f'data-requires="{capability}"' in head:
-            out.append(part.split("</section>", 1)[0])
-    return out
-
-
-def test_voice_brain_rows_resolve_on_streambox_unless_wake_gated() -> None:
-    """Every link a voice_brain section shows must exist on the streambox site.
-
-    When a tier grants ASSISTANT without WAKE_DETECTION (a streambox driving
-    the assistant from a mic-bearing remote), these sections unhide there while
-    the wake surfaces stay off. A row pointing at a route that profile does not
-    serve is a 404 the page cannot report — it renders as a normal row. Rows
-    that ARE wake-side carry their own data-requires="wake_detection" and are
-    exempt, because that gate is what keeps them hidden.
-    """
-    html = _index_html()
-    locations = _nginx_locations(_STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"))
-    sections = _capability_gated_sections(html, "voice_brain")
-    assert sections, "no voice_brain-gated sections found — selector drifted"
-
-    unresolved: list[str] = []
-    for section in sections:
-        for element in re.findall(r"<a\b[^>]*>", section):
-            href = re.search(r'href="(/[^"]*)"', element)
-            if href is None:
-                continue
-            if 'data-requires="wake_detection"' in element:
-                assert " hidden" in element, (
-                    f"{href.group(1)} is wake-gated but not hidden by default"
-                )
-                continue
-            prefix = "/" + href.group(1).strip("/").split("/")[0] + "/"
-            if href.group(1) not in locations and prefix not in locations:
-                unresolved.append(href.group(1))
-
-    assert not unresolved, (
-        "voice_brain rows point at routes the streambox nginx site does not "
-        f"serve: {sorted(unresolved)}. Either serve them there or gate the row "
-        'on data-requires="wake_detection".'
-    )
 
 
 def test_mic_pause_card_follows_wake_detection() -> None:

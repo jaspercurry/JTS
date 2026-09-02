@@ -120,12 +120,12 @@ PROFILE_CAPABILITIES: Mapping[str, frozenset[Capability]] = {
         Capability.ASSISTANT,
         Capability.WAKE_DETECTION,
     }),
-    # Streambox grants nothing on this axis today: a Zero 2 W has neither
-    # the headroom for always-on wake nor (yet) the assistant. Naming the
-    # axis is what makes granting ASSISTANT *without* WAKE_DETECTION —
-    # the Bluetooth-remote streambox — expressible at all; that flip is a
-    # separate, deliberate change, not this one.
-    STREAMBOX_INSTALL_PROFILE: frozenset(),
+    # Streambox grants ASSISTANT — a mic-bearing Bluetooth remote turns it
+    # into a conversational endpoint — but not WAKE_DETECTION: the Zero 2 W
+    # lacks the headroom for always-on wake inference (see the Capability
+    # docstring above). See
+    # docs/adr/0216-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md.
+    STREAMBOX_INSTALL_PROFILE: frozenset({Capability.ASSISTANT}),
 }
 
 
@@ -240,9 +240,9 @@ def install_profile_allows_voice_brain(profile: str | None) -> bool:
 
     Exactly ``Capability.ASSISTANT``, under the name every existing
     caller already imports. It does NOT also mean "wake detection runs
-    here" — that is ``install_profile_supports_wake_detection``. Today
-    the two answers coincide for both tiers; they are separate questions
-    and a caller that means one should not ask the other.
+    here" — that is ``install_profile_supports_wake_detection``. They
+    are separate questions; a caller that means one should not ask the
+    other.
     """
     return install_profile_has_capability(profile, Capability.ASSISTANT)
 
@@ -256,10 +256,12 @@ def install_profile_supports_wake_detection(profile: str | None) -> bool:
     mic/AEC stack rides along, because always-on wake is its only
     always-on consumer.
 
-    ``test_both_tiers_keep_wake_and_assistant_welded_for_now`` is the
-    tripwire for the day a tier is granted ASSISTANT without
-    WAKE_DETECTION: it is SUPPOSED to fail then, so update it rather
-    than leave it red.
+    Consumers: the voice daemon (``jasper.voice_daemon``) plans wake legs
+    only where this is granted; the accessory reconciler
+    (``jasper.accessories.reconcile``) owns jasper-voice's lifecycle where
+    it is not. Enhanced AEC
+    (``jasper.enhanced_aec.install_profile_supports_enhanced_aec``) rides
+    with it too.
     """
     return install_profile_has_capability(profile, Capability.WAKE_DETECTION)
 
@@ -297,9 +299,12 @@ def system_capabilities_for_profile(profile: str | None) -> dict[str, object]:
         "content_dsp": local_sources,
         "voice_brain": voice_brain,
         # Separate key on purpose: a tier can hold a conversation without
-        # having the headroom to listen for a wake word all day. The landing
-        # page's mic card and /wake/ row gate on this key rather than
-        # overloading voice_brain (deploy/index.html).
+        # having the headroom to listen for a wake word all day. The
+        # landing page's mic card and /wake/ row gate on THIS key; the
+        # Assistant and Integrations blocks stay on voice_brain, whose
+        # wizards are served on both tiers (deploy/index.html). See
+        # install_profile_supports_wake_detection's docstring for its
+        # consumers.
         "wake_detection": wake_detection,
         "network_settings": True,
         "speaker_settings": True,
