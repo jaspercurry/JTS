@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -149,6 +150,58 @@ def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
     )
 
 
+def _event_record(caplog, event: str):
+    """The ONE ``event=<name> k=v …`` record, plus its fields as a mapping.
+
+    Asserting on fields rather than the whole sentence keeps these pins off
+    log prose, and folding "exactly one record" in here makes that property
+    explicit at every call site.
+    """
+
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().split(" ", 1)[0] == f"event={event}"
+    ]
+    assert len(records) == 1, [record.getMessage() for record in records]
+    fields = dict(
+        token.split("=", 1)
+        for token in records[0].getMessage().split(" ")[1:]
+        if "=" in token
+    )
+    return records[0], fields
+
+
+def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
+    """Stub the three audio sessions a topology mutation stops before parking.
+
+    Records ``"<summed|commission>:<reason>"`` per tone and ``"safe"`` for the
+    safe-playback session, in call order, so a test can pin the ordering.
+    """
+
+    recorded = [] if stops is None else stops
+
+    def stop_tone(kind: str):
+        def _stop(*, reason: str) -> dict:
+            recorded.append(f"{kind}:{reason}")
+            return {"status": "idle", "reason": reason}
+
+        return _stop
+
+    def stop_safe() -> dict:
+        recorded.append("safe")
+        return {"status": "idle"}
+
+    monkeypatch.setattr(
+        sound_setup, "_active_speaker_stop_summed_test_tone", stop_tone("summed")
+    )
+    monkeypatch.setattr(
+        sound_setup, "_active_speaker_stop_commission_tone", stop_tone("commission")
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", stop_safe)
+    return recorded
+
+
 def _follower_post_status(base: str, path: str, session: dict) -> int:
     """POST an empty JSON body to ``path`` and return the HTTP status code.
 
@@ -190,6 +243,14 @@ def _room_config(peqs: list[PeqFilter] | None = None) -> str:
         SoundProfile(enabled=False),
         room_peqs=peqs or [],
     )
+
+
+def _preamp_gain(config_text: str) -> float:
+    """The broadband output-trim filter's gain, out of the emitted graph."""
+
+    import yaml
+
+    return yaml.safe_load(config_text)["filters"]["sound_preamp"]["parameters"]["gain"]
 
 
 def _configure_passive_layout_for_eq(
@@ -345,8 +406,8 @@ class FakeVolumeCamilla:
 def _install_floor_tone_owner(fake: FakeVolumeCamilla) -> None:
     """Bind the process fader owner to this fake, as `jasper.web` binds the real one.
 
-    The audition's level control IS a COMMISSIONING claim now, so a test with
-    no owner registered exercises the degrade path instead of the subject. The
+    The audition's level control is a COMMISSIONING claim, so a test with no
+    owner registered exercises the degrade path instead of the subject. The
     autouse `_isolate_process_volume_owner` fixture clears this again after
     each test.
     """
@@ -356,11 +417,9 @@ def _install_floor_tone_owner(fake: FakeVolumeCamilla) -> None:
         return fake.db
 
     async def _write(db: float) -> bool:
-        # best_effort=True is the owner's door contract, and it is now the
-        # posture for BOTH directions: the audition's start no longer depends
-        # on the setter raising, because an unconfirmable level refuses the
-        # claim outright — a stronger check than a write that was merely
-        # accepted. `jasper.web` binds the real door the same way.
+        # best_effort=True is the owner's door contract in BOTH directions: an
+        # unconfirmable level refuses the claim outright rather than relying on
+        # the setter to raise. `jasper.web` binds the real door the same way.
         return await fake.set_volume_db(db, best_effort=True)
 
     install_volume_owner(
@@ -481,16 +540,25 @@ def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
     assert payload["blocking_phase"] == "correction:sweeping"
 
 
-def _start_sound_server(tmp_path: Path):
-    server = sound_setup.make_server(
-        ("127.0.0.1", 0),
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=tmp_path / "configs",
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, f"http://127.0.0.1:{server.server_address[1]}"
+@contextmanager
+def sound_server(tmp_path: Path):
+    """Serve the real ``/sound/`` handler on loopback; yield its base URL."""
+
+    try:
+        server = sound_setup.make_server(
+            ("127.0.0.1", 0),
+            profile_path=tmp_path / "sound_profile.json",
+            library_path=tmp_path / "sound_profiles.json",
+            config_dir=tmp_path / "configs",
+        )
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 class _ReadTrackingBytesIO(io.BytesIO):
@@ -573,11 +641,7 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
         fail_abort,
     )
     caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         response = json_post_with_csrf(
             base,
             "/active-speaker/commission-ramp-abort",
@@ -586,24 +650,15 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
         )
         assert response.headers.get_content_type() == "application/json"
         payload = json.loads(response.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload == {"error": str(error)}
-    records = [
-        record
-        for record in caplog.records
-        if record.getMessage().startswith("event=sound.post_dispatch_failed")
-    ]
-    assert len(records) == 1
-    assert records[0].getMessage() == (
-        "event=sound.post_dispatch_failed "
-        "path=/active-speaker/commission-ramp-abort "
-        f"error_type={error_type}"
-    )
-    assert records[0].exc_info is not None
-    assert records[0].exc_info[0] is type(error)
+    record, fields = _event_record(caplog, "sound.post_dispatch_failed")
+    assert fields == {
+        "path": "/active-speaker/commission-ramp-abort",
+        "error_type": error_type,
+    }
+    assert record.exc_info is not None
+    assert record.exc_info[0] is type(error)
 
 
 @pytest.mark.parametrize(
@@ -614,14 +669,14 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
             "/output-topology",
             "_output_topology_payload",
             "sound.output_topology",
-            "",
+            {},
         ),
         (
             "POST",
             "/active-speaker/channel-protection",
             "_active_speaker_channel_protection_save_payload",
             "sound.active_speaker_channel_protection",
-            " error=OSError",
+            {"error": "OSError"},
         ),
     ],
 )
@@ -644,11 +699,7 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
 
     monkeypatch.setattr(sound_setup, builder, fail)
     caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         if method == "GET":
             try:
                 urllib.request.urlopen(f"{base}{route}")
@@ -661,17 +712,9 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
             response = json_post_with_csrf(base, route, {}, expect_status=502)
         assert response.headers.get_content_type() == "application/json"
         payload = json.loads(response.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload == {"error": str(error)}
-    messages = [
-        record.getMessage()
-        for record in caplog.records
-        if record.getMessage().startswith(f"event={event} ")
-    ]
-    assert messages == [f"event={event} result=error{extra_fields}"]
+    assert _event_record(caplog, event)[1] == {"result": "error", **extra_fields}
 
 
 def test_sound_post_does_not_secondary_send_after_response_write_failure(
@@ -811,40 +854,36 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     assert read_calls == [len(body)]
 
 
-def test_index_html_renders_eq_page_mode():
-    html = sound_setup._index_html(page_mode="eq").decode()
+# The EQ chrome the /sound/setup/ page must not render: the Off/Saved/Draft
+# tablist and the now-playing plot are content-DSP surfaces.
+_EQ_ONLY_CHROME = ('id="tab-off"', 'id="tab-saved"', 'id="tab-draft"', 'id="plot"')
 
-    # Canonical design system + page shell.
+
+@pytest.mark.parametrize(
+    ("page_mode", "title"),
+    [("eq", "EQ"), ("setup", "Sound setup")],
+)
+def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
+    """Both modes share the design system and the static module; only the EQ
+    mode renders the Off/Saved/Draft chrome, and neither inlines logic."""
+    html = sound_setup._index_html(page_mode=page_mode).decode()
+
     assert "/assets/app.css" in html
-    assert "/assets/sound-profile/sound.css?v=" in html  # page CSS linked, not inlined
+    assert "/assets/sound-profile/sound.css?v=" in html  # linked, not inlined
     assert "<style>" not in html
-    assert 'class="app-header__title">EQ' in html
+    assert f'class="app-header__title">{title}' in html
     assert 'id="sound-page-data"' in html
-    assert '"mode": "eq"' in html
-
-    # Off / Saved / Draft tabs are the live source (server-rendered chrome).
-    assert 'id="tab-off"' in html
-    assert 'id="tab-saved"' in html
-    assert 'id="tab-draft"' in html
-
-    # The editor itself is a static ES module (served + revalidated by nginx),
-    # not inline script — same delivery model as /system/.
+    assert f'"mode": "{page_mode}"' in html
+    # The editor is a static ES module (served + revalidated by nginx), the
+    # same delivery model as /system/, with no inline logic left in the page.
     assert '<script type="module" src="/assets/sound-profile/js/main.js">' in html
-    assert "<script>" not in html  # no inline logic left in the page
+    assert "<script>" not in html
 
-
-def test_index_html_renders_setup_page_mode_without_eq_chrome():
-    html = sound_setup._index_html(page_mode="setup").decode()
-
-    assert 'class="app-header__title">Sound setup' in html
-    assert 'id="sound-page-data"' in html
-    assert '"mode": "setup"' in html
-    assert 'id="view-body"' in html
-    assert 'id="tab-off"' not in html
-    assert 'id="tab-saved"' not in html
-    assert 'id="tab-draft"' not in html
-    assert 'id="plot"' not in html
-    assert '<script type="module" src="/assets/sound-profile/js/main.js">' in html
+    if page_mode == "eq":
+        assert all(marker in html for marker in _EQ_ONLY_CHROME[:3])
+    else:
+        assert 'id="view-body"' in html
+        assert not any(marker in html for marker in _EQ_ONLY_CHROME)
 
 
 def _island_payload(html: str) -> dict:
@@ -853,7 +892,10 @@ def _island_payload(html: str) -> dict:
     return json.loads(html[start : html.index("</script>", start)])
 
 
-def test_sound_page_island_serves_the_compilers_crossover_vocabulary():
+@pytest.mark.parametrize("follower", [False, True])
+def test_sound_page_island_serves_the_compilers_crossover_vocabulary(
+    monkeypatch, follower,
+):
     """The page offers exactly what the compiler builds, and is TOLD what that is.
 
     Before this the filter picker carried its own list (including a Butterworth
@@ -862,7 +904,8 @@ def test_sound_page_island_serves_the_compilers_crossover_vocabulary():
     ``crossover_preview_filter_unsupported`` several screens later. Deriving the
     offer here is what makes widening
     :data:`~jasper.active_speaker.profile.SUPPORTED_CROSSOVER_TYPES` /
-    ``SUPPORTED_LR_ORDERS`` reach the wizard with no edit in main.js.
+    ``SUPPORTED_LR_ORDERS`` reach the wizard with no edit in main.js. A bonded
+    follower keeps its LOCAL driver domain, so it gets the same offer.
     """
     from jasper.active_speaker.crossover_preview import (
         DEFAULT_FILTER_TYPE,
@@ -873,27 +916,17 @@ def test_sound_page_island_serves_the_compilers_crossover_vocabulary():
         supported_declaration_slopes_db_per_octave,
     )
 
-    vocabulary = _island_payload(
-        sound_setup._index_html(page_mode="setup").decode()
-    )["crossover_vocabulary"]
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
+    island = _island_payload(sound_setup._index_html(page_mode="setup").decode())
+    vocabulary = island["crossover_vocabulary"]
 
+    assert island["follower"] is follower
     assert vocabulary["filter_types"] == list(supported_declaration_filter_types())
     assert vocabulary["slopes_db_per_octave"] == list(
         supported_declaration_slopes_db_per_octave()
     )
     assert vocabulary["default_filter_type"] == DEFAULT_FILTER_TYPE
     assert vocabulary["default_slope_db_per_octave"] == DEFAULT_SLOPE_DB_PER_OCTAVE
-
-
-def test_bonded_follower_sound_page_serves_the_same_crossover_vocabulary(monkeypatch):
-    # A bonded follower keeps its LOCAL driver domain, so it mounts the same
-    # crossover editor and needs the same offer.
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-
-    solo = _island_payload(sound_setup._index_html(page_mode="setup").decode())
-    assert solo["follower"] is True
-    assert solo["crossover_vocabulary"]["filter_types"]
-    assert solo["crossover_vocabulary"]["slopes_db_per_octave"]
 
 
 def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
@@ -918,11 +951,7 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     with output_topology_mutation(topology_path) as mutation:
         mutation.save(mono_output_topology(card_id=None))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         refused = json_post_with_csrf(
             base,
             "/active-speaker/design-draft",
@@ -943,9 +972,6 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
             expect_status=400,
         )
         payload = json.loads(refused.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload["error"] == (
         "crossover_candidate.filter_type must be one of: Linkwitz-Riley"
@@ -1009,11 +1035,7 @@ def test_setup_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
 
 def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/settings",
@@ -1022,9 +1044,6 @@ def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Pa
         )
         payload = json.loads(resp.read().decode("utf-8"))
         assert "controlled on the pair leader" in payload["error"]
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_follower_block_set_is_content_dsp_only():
@@ -1051,11 +1070,7 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
     commissioning/crossover POST reaches its handler (never 404/409), while a
     content-DSP POST still 409s. Local driver work stays with the DAC owner."""
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         session = make_csrf_session(base, "/")
         # A content-DSP mutation is delegated to the leader.
         assert _follower_post_status(base, "/settings", session) == 409
@@ -1069,20 +1084,13 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
             base, "/active-speaker/stage-config", session,
         )
         assert active_status not in (404, 409), active_status
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path):
     """The live combined-test slider route must pass the route-before-CSRF gate."""
 
     monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/active-speaker/summed-test/level",
@@ -1091,9 +1099,6 @@ def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path)
         payload = json.loads(resp.read().decode("utf-8"))
         assert payload["status"] == "idle"
         assert payload["reason"] == "no_active_summed_test"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_index_html_embeds_csrf_meta_for_json_posts():
@@ -1452,9 +1457,8 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "detected_hardware_identity" in js
     # #2812 B1: the mismatch message is computed once, server-side, in
     # jasper.output_topology.declared_hardware_mismatch and published as
-    # payload.hardware_mismatch — the page reads that field rather than
-    # recomputing "Saved topology expects ..." locally, so the literal no
-    # longer lives here.
+    # payload.hardware_mismatch; the page reads that field rather than
+    # recomputing "Saved topology expects ..." locally.
     assert "hardwareMismatch" in js
     assert "Saved topology expects" not in js
     assert "Detected output hardware" not in js
@@ -1520,10 +1524,9 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
     assert "Speaker layout is a draft." in js
     assert "active-speaker-issues--warning" in js
     assert "renderIssueList(issues, 5)" in js
-    # #2812 B1: the dual-Apple clock-blocker filter moved server-side into
+    # #2812 B1: the dual-Apple clock-blocker filter lives server-side in
     # jasper.output_topology.declared_hardware_mismatch (the same function
-    # backing payload.hardware_mismatch above); outputClockHardwareBlockers
-    # and its dual_apple_* code list no longer exist in this file.
+    # backing payload.hardware_mismatch above), not here.
     assert "function outputClockHardwareBlockers()" not in js
     assert "dual_apple_observed_" not in js
     assert "dual_apple_usb_topology_mismatch" not in js
@@ -1538,19 +1541,13 @@ def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
 # --------------------------------------------------------------------------
 # Commissioning blocker copy — the COMPLETENESS guards (#2344).
 #
-# #2344 shipped a blocker whose message carried an operator shell command and
-# whose code was registered in NO renderer map. Nothing failed, because every
-# copy map was only ever asserted for the entries it already had. These walk the
-# BACKEND's codes instead, so the next unregistered one fails here.
+# These walk the BACKEND's codes, so a newly minted blocker with no renderer
+# entry fails here rather than shipping.
 #
-# What is deliberately NOT asserted: "every backend blocker code has its own
-# entry in every map". 78 literal blocker codes exist and 46 have no specific
-# mapping BY DESIGN — the preparation failures out of `staging.py` (an invalid
-# crossover preview, an unassigned subwoofer output) are collapsed into the
-# `commissioning_candidate_prepared` gate's one sentence, which is the right
-# household copy for all of them. A guard demanding per-code entries would be a
-# 46-line exemption list restating that design, which protects nothing. These
-# assert the two properties that actually bite instead.
+# NOT asserted: "every backend blocker code has its own entry in every map".
+# Of 78 literal codes, 46 have no specific mapping by design — the preparation
+# failures out of `staging.py` collapse into the `commissioning_candidate_prepared`
+# gate's one sentence, which is the right household copy for all of them.
 # --------------------------------------------------------------------------
 
 _COMMISSION_CODE_MODULES = (
@@ -1582,16 +1579,11 @@ _COMMISSION_CODE_MODULES = (
 # An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
 # long CLI flag. Household surfaces must never carry one.
 #
-# THE LEFT BOUNDARY ADMITS A BACKTICK AND A SLASH, not whitespace alone, and
-# that was a hole rather than a nicety. Backend prose spells a remedy as
-# "Arm it with `sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile …`",
-# where `sudo` follows a BACKTICK and the binary follows a SLASH — so neither
-# token had a whitespace boundary and the whole sentence scanned as
-# command-free. #2344's own blocker only tripped this by accident, on the space
-# before its `--endpoint` flag. Proved by mutation at #2412 Wave 3: misspelling
-# a new blocker's code left both guards below green while its message still
-# named a root command. Widened rather than reworded, because rewording the
-# message to suit the regex is gaming the guard.
+# The left boundary admits a backtick and a slash, not whitespace alone:
+# backend prose spells a remedy as "Arm it with
+# `sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile …`", where `sudo`
+# follows a backtick and the binary follows a slash, so a whitespace-only
+# boundary scans that whole sentence as command-free.
 _OPERATOR_COMMAND_RE = re.compile(
     r"(?:^|[\s`/])(?:sudo\s|systemctl\s|jasper-[a-z-]+|--[a-z][a-z-]+)"
 )
@@ -1630,13 +1622,13 @@ def _blocker_dict_fields(node) -> tuple[object, object] | None:
     return fields["code"], fields.get("message")
 
 
-# The seeded builders, whose definitions live OUTSIDE the scanned modules
+# The seeded builders, defined OUTSIDE the scanned modules
 # (`jasper.active_speaker._common`), so nothing here can discover them. ARITY,
-# not name, disambiguates the `_issue` alias: most modules do
-# `from ._common import issue as _issue` — 3 positional args, severity first —
-# while `web_commissioning` does `from ._common import blocker_issue as _issue`
-# — 2 args, code first, always a blocker. Reading `args[1]` blindly would
-# collect MESSAGES as codes there. Value is (code_index, message_index).
+# not name, disambiguates the `_issue` alias: most modules import
+# `issue as _issue` (3 positional args, severity first) while
+# `web_commissioning` imports `blocker_issue as _issue` (2 args, code first),
+# so reading `args[1]` blindly would collect MESSAGES as codes there.
+# Value is (code_index, message_index).
 _SEEDED_BLOCKER_BUILDERS: dict[tuple[str, int], tuple[int, int]] = {
     ("_issue", 2): (0, 1),
     ("blocker_issue", 2): (0, 1),
@@ -1647,13 +1639,8 @@ _SEEDED_BLOCKER_BUILDERS: dict[tuple[str, int], tuple[int, int]] = {
 def _local_blocker_helpers(tree) -> dict[str, tuple[int, int]]:
     """Module-local helpers that forward their own params into a blocker issue.
 
-    Discovered BY DEFINITION, not by name. The walk used to recognise three
-    hard-coded helper names positionally and require `code=` in the keyword
-    branch, so `sound_setup`'s since-deleted `_commission_setup_issue` — called
-    positionally at seven sites — matched neither, and every one of those
-    blockers was invisible while the guard read as complete. Deleting that one
-    helper fixed that one instance; a name list still cannot be widened ahead of
-    the next helper somebody writes, and a definition scan can.
+    Discovered BY DEFINITION, not by name: a hard-coded name list cannot be
+    widened ahead of the next helper somebody writes, and a definition scan can.
 
     Returns ``name -> (code_arg_index, message_arg_index)`` for any function
     whose body builds a blocker (a literal `severity: "blocker"` dict, or a call
@@ -1695,21 +1682,14 @@ def _local_blocker_helpers(tree) -> dict[str, tuple[int, int]]:
 def _commission_blocker_pairs() -> list[tuple[str, str, str]]:
     """AST-walk the commissioning modules for literal (code, message, where).
 
-    Mechanical on purpose: a hand-kept list of codes is the same class of bug as
-    a hand-kept list of copy entries — and so is a hand-kept list of the HELPER
-    NAMES that build them, which is why `_local_blocker_helpers` discovers those
-    from their definitions instead.
-
     Three shapes are collected: the seeded `_common` builders (by arity, see
     `_SEEDED_BLOCKER_BUILDERS`), any module-local helper that forwards its own
-    params into a blocker, and BARE `{"severity": "blocker", ...}` dict literals
-    — which the walk skipped entirely while it visited only `ast.Call`, hiding
-    five live mint sites in modules it was already scanning.
+    params into a blocker, and bare `{"severity": "blocker", ...}` dict literals.
 
-    Codes built from an f-string or a variable are invisible here. That is a
-    known bound, not an oversight: the property under test is about the literal
-    prose an author writes next to a literal code, and a computed code carries a
-    computed message the walk could not check either.
+    Codes built from an f-string or a variable are invisible here — a known
+    bound: the property under test is the literal prose an author writes next to
+    a literal code, and a computed code carries a computed message the walk
+    could not check either.
     """
     import ast
 
@@ -1869,14 +1849,11 @@ def test_every_preflight_gate_id_has_household_copy():
 
 
 def test_the_transport_blockers_are_registered_on_every_household_surface():
-    """The instance #2344 shipped without, re-pointed by #2412 Wave 3.
+    """Both directions of the shared code set (#2344, re-pointed by #2412).
 
-    The retired rung named a capability that no longer exists; its two map
-    entries were re-pointed rather than deleted, because the codes that replace
-    it carry the operator's reconciler commands — exactly what these maps exist
-    to intercept. Both directions are asserted: each new code present on both
-    surfaces, and the retired one absent from both. Asserting only the first
-    half would pass over a partial re-point that left the dead rung reachable.
+    Each live code present on both surfaces, and the retired ring-transport
+    rung absent from both: asserting only the first half would pass over a
+    partial re-point that left the dead rung reachable.
     """
     from jasper.active_speaker.commissioning_coordinator import (
         _SUMMED_TEST_FAILURE_COPY,
@@ -1886,24 +1863,13 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
     mapped = {code for code, _ in _SUMMED_TEST_FAILURE_COPY}
     # The codes the BUILDERS actually raise, so a map entry cannot outlive a
-    # renamed emitter. Only the two that carry an operator command are held to
-    # the mapping by the command guard above; the ends-disagree code carries no
-    # command, so without this a misspelling in the emitter would leave its copy
-    # mapped to a code nothing raises and every guard green (proved by mutation).
+    # renamed emitter: the ends-disagree code carries no operator command, so
+    # the command guard above would not catch a misspelling in its emitter.
     emitted = {code for code, _, _ in _commission_blocker_pairs()}
-    # EXACT tokens, not substrings: `..._unarmed_X` contains `..._unarmed`, so a
-    # substring assertion passes over a misspelled rung — proved by mutation,
-    # which is why the ladder's real coverage is asserted BEHAVIOURALLY in
-    # tests/js/active_speaker_ui_test.mjs. This is the cheap second layer, not
-    # the guarantee.
-    #
-    # THE WHOLE SHARED SET, not the transport rungs alone. Pinning four of the
-    # eleven codes both surfaces carry left the other seven free to be renamed
-    # on one side only — the same partial-re-point hazard this test was written
-    # for, just further down the ladder. `ring_wire_declaration_invalid` joins
-    # the loop here rather than being asserted separately: it was mapped in the
-    # coordinator since #2364 and absent from the ladder until the gate lifted,
-    # and it never had the `emitted` half at all.
+    # Quoted tokens, not substrings: `..._unarmed_X` contains `..._unarmed`, so
+    # a substring assertion passes over a misspelled rung. The ladder's real
+    # coverage is asserted behaviourally in tests/js/active_speaker_ui_test.mjs;
+    # this is the cheap second layer, not the guarantee.
     for code in (
         "commissioning_transport_ends_disagree",
         "commissioning_ring_feed_unarmed",
@@ -1919,20 +1885,11 @@ def test_the_transport_blockers_are_registered_on_every_household_surface():
             f"the /sound/ issue ladder does not name {code}"
         )
         assert code in mapped, f"the combined-test card has no copy for {code}"
-    # The three the ladder reaches through a PREFIX rung, not by name. This is
-    # asserted as it is rather than as eight equal codes because the two
-    # surfaces genuinely disagree here and the pin must say which is true:
-    #
-    #   `for (var i = 0; …) if (String(codes[i]).indexOf('commission_startup_anchor_') === 0)`
-    #
-    # collapses all three into ONE sentence ("re-check the setup above, then
-    # start the tone again"), while Python routes them to THREE different
-    # families with three different remedies — back to Add your components, back
-    # to Confirm outputs, and retry-then-escalate. So the codes appear ZERO
-    # times literally in the ladder and `f"'{code}'" in helper_js` is false for
-    # every one of them. Pinned: each is emitted, each has Python copy, and the
-    # prefix rung that swallows them still exists. Not pinned as equivalent
-    # advice, because it is not.
+    # The three the ladder reaches through a PREFIX rung, never by name: its
+    # `indexOf('commission_startup_anchor_')` branch collapses all three into
+    # one sentence, while Python routes them to three families with three
+    # remedies. Pinned as emitted + copied + swallowed by a rung that exists —
+    # deliberately NOT pinned as equivalent advice, because it is not.
     assert "indexOf('commission_startup_anchor_') === 0" in helper_js, (
         "the /sound/ ladder no longer collapses the startup-anchor family by "
         "prefix; if it now names the codes, pin them like the eight above"
@@ -2179,7 +2136,19 @@ def _active_speaker_mono_topology_payload(
     *,
     protection_status: str,
     card_id: str | None = "DAC8",
+    identity_verified: bool = False,
 ) -> dict:
+    woofer: dict = {"role": "woofer", "physical_output_index": 0}
+    tweeter: dict = {
+        "role": "tweeter",
+        "physical_output_index": 1,
+        "startup_muted": True,
+        "protection_required": True,
+        "protection_status": protection_status,
+    }
+    if identity_verified:
+        woofer["identity_verified"] = True
+        tweeter["identity_verified"] = True
     return {
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -2198,19 +2167,67 @@ def _active_speaker_mono_topology_payload(
                 "label": "Mono cabinet",
                 "kind": "mono",
                 "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": protection_status,
-                    },
-                ],
+                "channels": [woofer, tweeter],
             }
         ],
         "routing": {"mono_group_id": "mono"},
+    }
+
+
+def _passive_left_topology_payload() -> dict:
+    """One unverified passive full-range lane on DAC output 1."""
+
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            }
+        ],
+        "routing": {"main_left_group_id": "left"},
+    }
+
+
+def _bench_active_topology_payload() -> dict:
+    """A mono active 2-way with neither lane confirmed and no tweeter guard."""
+
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench_active",
+        "name": "Bench active",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": 8,
+        },
+        "speaker_groups": [
+            {
+                "id": "main",
+                "label": "Main speaker",
+                "kind": "mono",
+                "mode": "active_2_way",
+                "channels": [
+                    {"role": "woofer", "physical_output_index": 0},
+                    {"role": "tweeter", "physical_output_index": 1},
+                ],
+            }
+        ],
+        "routing": {"mono_group_id": "main"},
     }
 
 
@@ -2488,9 +2505,30 @@ def _no_lane_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
     return payload
 
 
-def test_active_layout_on_a_dac_without_an_active_lane_is_refused(
+@pytest.mark.parametrize(
+    ("shape", "named_in_refusal"),
+    [
+        # Passive is not a free remedy: it sends full-range into every assigned
+        # output, which on an actively-wired cabinet reaches a bare tweeter. The
+        # household is being steered there, so the consequence travels with it.
+        (
+            {"active": True},
+            (
+                "full-range audio to every output",
+                "built-in passive crossover",
+                "attach an active-capable DAC",
+            ),
+        ),
+        # The subwoofer branch is roleful too, and the wizard offers it as a
+        # one-tap add-on, so the copy has to name it.
+        ({"active": False, "subwoofer": True}, ("subwoofer layouts",)),
+    ],
+)
+def test_a_roleful_layout_on_a_dac_without_an_active_lane_is_refused(
     monkeypatch,
     tmp_path: Path,
+    shape,
+    named_in_refusal,
 ):
     """Save-time capability guard: the wizard must not accept a layout this
     box can never drive. Before this guard the save landed with blockers=0 and
@@ -2500,41 +2538,12 @@ def test_active_layout_on_a_dac_without_an_active_lane_is_refused(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
     with pytest.raises(ValueError) as excinfo:
-        sound_setup._save_output_topology_payload(
-            _no_lane_topology_payload(active=True)
-        )
+        sound_setup._save_output_topology_payload(_no_lane_topology_payload(**shape))
 
     message = str(excinfo.value)
     assert PASSIVE_ONLY_DAC_LABEL in message
-    # Passive is not a free remedy: it sends full-range into every assigned
-    # output, which on an actively-wired cabinet reaches a bare tweeter. The
-    # household is being steered there, so the consequence travels with it.
-    assert "full-range audio to every output" in message
-    assert "built-in passive crossover" in message
-    assert "attach an active-capable DAC" in message
+    assert all(fragment in message for fragment in named_in_refusal)
     # Refused means refused: nothing was written.
-    assert not topo_path.exists()
-
-
-def test_passive_mains_plus_local_sub_are_refused_on_the_same_dac(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """The subwoofer branch is roleful too, and the wizard offers it as a
-    one-tap add-on — so the refusal copy must name subwoofer layouts, not only
-    active crossovers."""
-    register_passive_only_dac(monkeypatch)
-    topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-
-    with pytest.raises(ValueError) as excinfo:
-        sound_setup._save_output_topology_payload(
-            _no_lane_topology_payload(active=False, subwoofer=True)
-        )
-
-    message = str(excinfo.value)
-    assert "subwoofer layouts" in message
-    assert PASSIVE_ONLY_DAC_LABEL in message
     assert not topo_path.exists()
 
 
@@ -2553,56 +2562,44 @@ def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path
     assert topo_path.exists()
 
 
-def test_active_layout_on_the_innomaker_is_accepted(monkeypatch, tmp_path: Path):
-    """THE FLIP, at the surface the owner hit: /sound/setup/ refused a mono
-    active 2-way on the InnoMaker, and now accepts it.
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param({"active": True}, id="active_2_way"),
+        pytest.param({"active": False, "subwoofer": True}, id="local_sub"),
+    ],
+)
+def test_a_roleful_layout_on_the_innomaker_is_accepted_with_a_drivable_route(
+    monkeypatch, tmp_path: Path, shape,
+):
+    """THE FLIP, at the surface the owner hit: /sound/setup/ refused these
+    layouts on the InnoMaker, and now accepts them.
 
     The board declares the width-2 active outputd lane, so the one predicate
-    behind the refusal (``active_lane_capability_gap``) no longer fires and the
-    layout persists. Accepting the layout is NOT arming it — the reconciler
-    still gates active mode on a legal active graph already being live, which
-    only commissioning produces. That fail-closed property is pinned in
-    tests/test_audio_hardware_reconcile.py.
+    behind the refusal (``active_lane_capability_gap``) no longer fires for
+    either roleful shape and the layout persists. Accepting a layout is NOT
+    arming it — the reconciler still gates active mode on a legal active graph
+    already being live, which only commissioning produces; that fail-closed
+    property is pinned in tests/test_audio_hardware_reconcile.py. Acceptance
+    still has to come with a drivable route, which is the second half here.
     """
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
     saved = sound_setup._save_output_topology_payload(
-        _innomaker_topology_payload(active=True)
+        _innomaker_topology_payload(**shape)
     )
 
     assert saved["output_topology"]["hardware"]["device_id"] == INNOMAKER_DEVICE_ID
-    group = saved["output_topology"]["speaker_groups"][0]
-    assert group["mode"] == "active_2_way"
-    assert [channel["role"] for channel in group["channels"]] == [
-        "woofer",
-        "tweeter",
-    ]
     assert topo_path.exists()
+    roleful = saved["output_topology"]["speaker_groups"][-1]
+    assert roleful["mode"] == ("active_2_way" if shape["active"] else "subwoofer")
 
-    # The route the accepted layout resolves to: the width-2 outputd active
-    # lane, no blockers. A save the box cannot drive is exactly what the guard
-    # exists to stop, so acceptance has to come with a drivable route.
     route = saved["active_playback_route"]
     assert route["playback_device_source"] == OUTPUTD_ACTIVE_LANE_SOURCE
     assert route["transport_channel_count"] == 2
     assert route["issues"] == []
     assert route["ready"] is True
-
-
-def test_local_sub_on_the_innomaker_is_accepted(monkeypatch, tmp_path: Path):
-    """The subwoofer branch rides the same lane declaration, so it unblocks
-    with it — the refusal copy named both shapes and both were gated on the
-    one predicate."""
-    topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-
-    saved = sound_setup._save_output_topology_payload(
-        _innomaker_topology_payload(active=False, subwoofer=True)
-    )
-
-    assert saved["output_topology"]["hardware"]["device_id"] == INNOMAKER_DEVICE_ID
-    assert topo_path.exists()
 
 
 def test_topology_save_kicks_hardware_and_grouping_reconcile(
@@ -2639,17 +2636,7 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units", fake_manage_units
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
 
     saved = sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
@@ -2670,72 +2657,58 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     assert set(saved["hardware_adoption"]) == {"allowed", "identity"}
 
 
-def test_topology_save_reconcile_failure_reports_safe_attention_message(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+# The two reconcile outcomes every topology-mutating endpoint has to tell
+# apart (#3094): a reconcile past its own wait budget is still working, and
+# saying "needs attention" for it sends a household to Status for nothing.
+RECONCILE_STILL_CONVERGING = {"ok": False, "converging": True}
+RECONCILE_FAILED = {"ok": False, "error": "private backend detail"}
+
+
+def _stub_reconcile(monkeypatch, result: dict) -> None:
     monkeypatch.setattr(
         "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": False, "error": "private backend detail"},
+        lambda **_kwargs: result,
     )
+
+
+@pytest.mark.parametrize(
+    ("reconcile", "verdict"),
+    [
+        (
+            RECONCILE_FAILED,
+            {
+                "status": "needs_attention",
+                "message": (
+                    "Speaker layout was saved, but audio remains off. "
+                    "Open Status before continuing."
+                ),
+            },
+        ),
+        (
+            RECONCILE_STILL_CONVERGING,
+            {
+                "status": "converging",
+                "message": (
+                    "Speaker layout was saved and is still applying. "
+                    "Check Status in a moment."
+                ),
+            },
+        ),
+    ],
+)
+def test_topology_save_reports_the_reconcile_verdict_without_leaking_it(
+    monkeypatch, tmp_path: Path, reconcile, verdict,
+):
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
+    _stub_audio_stops(monkeypatch)
+    _stub_reconcile(monkeypatch, reconcile)
 
     saved = sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
     )
 
-    assert saved["save"] == {
-        "status": "needs_attention",
-        "message": (
-            "Speaker layout was saved, but audio remains off. "
-            "Open Status before continuing."
-        ),
-    }
+    assert saved["save"] == verdict
     assert "private backend detail" not in saved["save"]["message"]
-
-
-def test_topology_save_reconcile_still_converging_reports_distinct_status(
-    monkeypatch, tmp_path: Path,
-):
-    """A reconcile past its own wait budget is not needs_attention (#3094)."""
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": False, "converging": True},
-    )
-
-    saved = sound_setup._save_output_topology_payload(
-        _innomaker_topology_payload(active=False)
-    )
-
-    assert saved["save"] == {
-        "status": "converging",
-        "message": (
-            "Speaker layout was saved and is still applying. "
-            "Check Status in a moment."
-        ),
-    }
 
 
 def test_topology_save_parks_before_replacing_saved_layout(
@@ -2762,17 +2735,7 @@ def test_topology_save_parks_before_replacing_saved_layout(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
 
     saved = sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
@@ -2827,21 +2790,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
         "_output_topology_payload",
         lambda: {"output_topology": {"status": "verified"}},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
     sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
@@ -2884,23 +2833,8 @@ def test_topology_save_stops_audio_sessions_before_parking(
     monkeypatch, tmp_path: Path,
 ):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
-    events: list[str] = []
+    events = _stub_audio_stops(monkeypatch)
 
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: events.append(f"summed:{reason}") or {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: events.append(f"commission:{reason}") or {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: events.append("safe") or {"status": "idle"},
-    )
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         lambda _topology, commit, **_kwargs: (
@@ -2932,11 +2866,7 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
     register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/output-topology",
@@ -2953,66 +2883,58 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
         assert PASSIVE_ONLY_DAC_LABEL in payload["error"]
         assert "output_topology" not in payload
         assert not topo_path.exists()
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
+@pytest.mark.parametrize(
+    ("posted_fc_hz", "blocker"),
+    [
+        (110, None),
+        (None, None),
+        # An out-of-range corner is a fail-loud topology blocker (never a silent
+        # clamp), so the saved topology surfaces the issue rather than emitting
+        # a non-band-limiting crossover.
+        (999, "subwoofer_crossover_out_of_range"),
+    ],
+)
 def test_subwoofer_crossover_fc_round_trips_through_topology_save(
     monkeypatch,
     tmp_path: Path,
+    posted_fc_hz,
+    blocker,
 ):
-    """A user-set bass-management corner posted on the sub channel persists and
+    """A bass-management corner posted on the sub channel persists verbatim and
     echoes back through ``_save_output_topology_payload`` — the contract the
-    ``/sound/`` subwoofer-card Fc control relies on (it mutates the draft sub
-    channel's ``crossover_fc_hz`` and saves via the same topology POST)."""
+    ``/sound/`` subwoofer-card Fc control relies on. Left unset, no field is
+    written at all, so the active builder falls back to
+    ``DEFAULT_SUB_CROSSOVER_HZ``.
+    """
+    from jasper.output_topology import load_output_topology
+
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
     )
     saved = sound_setup._save_output_topology_payload(
-        _passive_stereo_with_sub_topology_payload(crossover_fc_hz=110)
+        _passive_stereo_with_sub_topology_payload(crossover_fc_hz=posted_fc_hz)
     )
-    assert _sub_channel_from_saved(saved)["crossover_fc_hz"] == 110
+    channel = _sub_channel_from_saved(saved)
+    codes = {
+        issue["code"]
+        for issue in saved["output_topology"]["evaluation"]["blockers"]
+    }
+
+    assert channel.get("crossover_fc_hz") == posted_fc_hz
+    assert ("crossover_fc_hz" in channel) is (posted_fc_hz is not None)
+    assert (blocker in codes) if blocker else "subwoofer_crossover_out_of_range" not in codes
 
     # Re-load from disk to prove the value survives serialization, not just the
     # in-memory echo.
-    from jasper.output_topology import load_output_topology
-
-    topology = load_output_topology()
     sub_group = next(
-        group for group in topology.speaker_groups if group.mode == "subwoofer"
+        group
+        for group in load_output_topology().speaker_groups
+        if group.mode == "subwoofer"
     )
-    assert sub_group.channels[0].crossover_fc_hz == 110
-
-
-def test_subwoofer_crossover_fc_unset_omits_field(monkeypatch, tmp_path: Path):
-    """When the card leaves the corner at the default, no ``crossover_fc_hz`` is
-    written — the active builder then falls back to ``DEFAULT_SUB_CROSSOVER_HZ``."""
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    saved = sound_setup._save_output_topology_payload(
-        _passive_stereo_with_sub_topology_payload(crossover_fc_hz=None)
-    )
-    assert "crossover_fc_hz" not in _sub_channel_from_saved(saved)
-
-
-def test_subwoofer_crossover_out_of_range_is_a_blocker(monkeypatch, tmp_path: Path):
-    """An out-of-range corner is a fail-loud topology blocker (never a silent
-    clamp) so the saved topology surfaces the issue rather than emitting an
-    unsafe / non-band-limiting crossover."""
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    saved = sound_setup._save_output_topology_payload(
-        _passive_stereo_with_sub_topology_payload(crossover_fc_hz=999)
-    )
-    evaluation = saved["output_topology"]["evaluation"]
-    codes = {issue["code"] for issue in evaluation["blockers"]}
-    assert "subwoofer_crossover_out_of_range" in codes
+    assert sub_group.channels[0].crossover_fc_hz == posted_fc_hz
 
 
 def test_sub_crossover_bounds_match_python():
@@ -3388,12 +3310,9 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
 ):
     """A populated output-hardware state file must not 502 the route.
 
-    Regression: ``load_state`` returns a frozen ``OutputHardwareState`` when a
-    state file exists (every real Pi), and ``_send_json`` emits the payload
-    with plain ``json.dumps`` — which can't encode the dataclass. Embedding it
-    raw produced "Object of type OutputHardwareState is not JSON serializable"
-    -> HTTP 502 on ``/sound/output-topology``. The prior payload test only
-    exercised the no-file (``None``) path, so the defect shipped untested.
+    ``load_state`` returns a frozen ``OutputHardwareState`` whenever a state
+    file exists (every real Pi) and ``_send_json`` emits with plain
+    ``json.dumps``, which cannot encode a dataclass.
     """
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
@@ -3426,20 +3345,15 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
         "outputd_active_lane"
     )
     assert envelope["active_playback_route"]["transport_channel_count"] == 2
-
-
-def test_output_hardware_state_payload_is_json_serializable():
-    """The reset precondition is derived from, never a copy of, detection."""
-    payload = sound_setup._output_topology_payload()
-    json.dumps(payload)
-    assert set(payload["hardware_adoption"]) == {"allowed", "identity"}
+    # The reset precondition is derived from, never a copy of, detection.
+    assert set(envelope["hardware_adoption"]) == {"allowed", "identity"}
     # #2812 S5: the JS mismatch card (and #2819's re-pin offer nested inside
-    # it) is a pure proxy for this key now -- it does not recompute the rule
+    # it) is a pure proxy for this key now — it does not recompute the rule
     # itself. Deleting the key here would silently kill both with every test
     # elsewhere still green (the JS harness fixture supplies its own value
-    # independent of this payload builder), so the key's presence is pinned
-    # at its one source.
-    assert "hardware_mismatch" in payload
+    # independent of this payload builder), so the key's presence is pinned at
+    # its one source.
+    assert "hardware_mismatch" in envelope
 
 
 def test_active_speaker_design_draft_route_persists_saved_topology_research(
@@ -3449,42 +3363,13 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
     preview_path = paths["JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"]
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
+    sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(
+            protection_status="software_guard_requested",
+            card_id=None,
+            identity_verified=True,
+        )
+    )
 
     payload = sound_setup._active_speaker_design_draft_save_payload({
         "expected_revision": 0,
@@ -3596,11 +3481,7 @@ def test_design_draft_http_conflict_returns_fresh_revision(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     with output_topology_mutation(topology_path) as mutation:
         mutation.save(mono_output_topology(card_id=None))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         first = json_post_with_csrf(
             base,
             "/active-speaker/design-draft",
@@ -3622,9 +3503,6 @@ def test_design_draft_http_conflict_returns_fresh_revision(
             expect_status=409,
         )
         fresh = json.loads(conflict.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert fresh["revision"] == 1
     assert fresh["operator_inputs"]["notes"] == "first"
@@ -3682,6 +3560,61 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     assert preview["source"]["design_draft_updated_at"] == draft["updated_at"]
 
 
+def _declared_candidate_box(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    slope_db_per_octave: int | None = 24,
+    operator_inputs: dict | None = None,
+) -> list[int]:
+    """Save one declared woofer/tweeter candidate at 5500 Hz, revision 1.
+
+    Returns the recorded ``os.fsync`` fd list, already asserted empty: an
+    ordinary wizard design-draft save must not fsync (#2292), so that half is
+    checked at every call site rather than in one test.
+    """
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    from jasper.output_topology import save_output_topology
+
+    save_output_topology(topology)
+    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    candidate = {
+        "between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500,
+        "filter_type": "Linkwitz-Riley",
+        "confidence": "medium",
+    }
+    if slope_db_per_octave is not None:
+        candidate["slope_db_per_octave"] = slope_db_per_octave
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [candidate]
+
+    fsync_calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+    saved = sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": manual,
+        "operator_inputs": operator_inputs or {},
+    })
+    assert fsync_calls == []  # ordinary wizard save: no fsync
+    assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    return fsync_calls
+
+
+def _geometry(fc_hz: float, slope_db_per_octave: int):
+    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
+
+    return CrossoverGeometry(
+        fc_hz=fc_hz,
+        filter_type="Linkwitz-Riley",
+        slope_db_per_octave=slope_db_per_octave,
+    )
+
+
 def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
     monkeypatch, tmp_path: Path,
 ) -> None:
@@ -3697,49 +3630,21 @@ def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
     human clicked Confirm in the wizard. The declaration the machine just wrote
     must read as current.
     """
-    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
     from jasper.active_speaker.design_draft import load_design_draft
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _manual_settings
 
-    topology = mono_output_topology(card_id=None)
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    from jasper.output_topology import save_output_topology
-
-    save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
-    manual = _manual_settings()
-    manual["crossover_candidates"] = [{
-        "between_roles": ["woofer", "tweeter"],
-        "frequency_hz": 5500,
-        "filter_type": "Linkwitz-Riley",
-        "slope_db_per_octave": 24,
-        "confidence": "medium",
-    }]
-    original = sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
-        "manual_settings": manual,
-        "operator_inputs": {"notes": "keep this"},
-    })
-    # The starting state is the one the loop needs: a usable declaration.
-    assert original["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    _declared_candidate_box(
+        monkeypatch, tmp_path, operator_inputs={"notes": "keep this"}
+    )
 
     saved = sound_setup.apply_measured_crossover_geometry(
         expected_revision=1,
         between_roles=("woofer", "tweeter"),
-        configured=CrossoverGeometry(
-            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-        ),
-        selected=CrossoverGeometry(
-            fc_hz=5750, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-        ),
+        configured=_geometry(5500, 24),
+        selected=_geometry(5750, 24),
     )
 
     assert saved["revision"] == 2
     assert saved["operator_inputs"]["notes"] == "keep this"
-    assert saved["manual_settings"]["crossover_candidates"][0][
-        "frequency_hz"
-    ] == 5750
     # The whole point: the machine's own write does not lock the loop it is
     # part of. Also asserted on the RELOADED artifact, since the gates read from
     # disk rather than from this return value.
@@ -3750,7 +3655,7 @@ def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
         == profile["profile_fingerprint"]
     )
     assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
-    reloaded = load_design_draft(topology=topology)
+    reloaded = load_design_draft(topology=sound_setup.load_output_topology())
     assert reloaded["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
     # And it is still not an audio authorization.
     assert profile["authorizes_playback"] is False
@@ -3759,188 +3664,63 @@ def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
         sound_setup.apply_measured_crossover_geometry(
             expected_revision=1,
             between_roles=("woofer", "tweeter"),
-            configured=CrossoverGeometry(
-                fc_hz=5750, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-            ),
-            selected=CrossoverGeometry(
-                fc_hz=6000, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-            ),
+            configured=_geometry(5750, 24),
+            selected=_geometry(6000, 24),
         )
     assert load_design_draft()["revision"] == 2
 
 
-def test_apply_measured_crossover_geometry_saves_durably(
-    monkeypatch, tmp_path: Path,
+@pytest.mark.parametrize(
+    ("selected_fc_hz", "selected_slope"),
+    [
+        pytest.param(5750, 24, id="frequency_only"),
+        # The declaration is three fields, not one: a candidate re-measured at
+        # the SAME corner but a different slope must still write. "The frequency
+        # didn't move" is not license to treat the accept as a no-op.
+        pytest.param(5500, 48, id="slope_only"),
+        pytest.param(6000, 48, id="frequency_and_slope"),
+    ],
+)
+def test_apply_measured_crossover_geometry_writes_the_measured_declaration(
+    monkeypatch, tmp_path: Path, selected_fc_hz, selected_slope,
 ) -> None:
-    """#2292 scope 2: apply_measured_crossover_geometry (the crossover-accept
-    seam) fsyncs its design-draft write; an ordinary wizard design-draft save
-    does not."""
-    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _manual_settings
-
-    topology = mono_output_topology(card_id=None)
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    from jasper.output_topology import save_output_topology
-
-    save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
-    manual = _manual_settings()
-    manual["crossover_candidates"] = [{
-        "between_roles": ["woofer", "tweeter"],
-        "frequency_hz": 5500,
-        "filter_type": "Linkwitz-Riley",
-        "slope_db_per_octave": 24,
-        "confidence": "medium",
-    }]
-    fsync_calls: list[int] = []
-    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
-
-    sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
-        "manual_settings": manual,
-        "operator_inputs": {},
-    })
-    assert fsync_calls == []  # ordinary wizard save: no fsync
-
-    sound_setup.apply_measured_crossover_geometry(
-        expected_revision=1,
-        between_roles=("woofer", "tweeter"),
-        configured=CrossoverGeometry(
-            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-        ),
-        selected=CrossoverGeometry(
-            fc_hz=5750, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-        ),
-    )
-    assert len(fsync_calls) == 2  # crossover-accept seam: file fsync + dir fsync
-
-
-def test_apply_measured_crossover_geometry_writes_slope_only_change(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """The declaration is three fields, not one: a candidate re-measured at the
-    SAME corner but a different slope must still write (and still fsync) --
-    "frequency didn't move" is not license to treat the accept as a no-op."""
-    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _manual_settings
-
-    topology = mono_output_topology(card_id=None)
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    from jasper.output_topology import save_output_topology
-
-    save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
-    manual = _manual_settings()
-    manual["crossover_candidates"] = [{
-        "between_roles": ["woofer", "tweeter"],
-        "frequency_hz": 5500,
-        "filter_type": "Linkwitz-Riley",
-        "slope_db_per_octave": 24,
-        "confidence": "medium",
-    }]
-    sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
-        "manual_settings": manual,
-        "operator_inputs": {},
-    })
-    fsync_calls: list[int] = []
-    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+    """The crossover-accept seam lands every moved field and fsyncs its
+    design-draft write, file and directory (#2292)."""
+    fsync_calls = _declared_candidate_box(monkeypatch, tmp_path)
 
     saved = sound_setup.apply_measured_crossover_geometry(
         expected_revision=1,
         between_roles=("woofer", "tweeter"),
-        configured=CrossoverGeometry(
-            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-        ),
-        selected=CrossoverGeometry(
-            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=48
-        ),
+        configured=_geometry(5500, 24),
+        selected=_geometry(selected_fc_hz, selected_slope),
     )
 
     candidate = saved["manual_settings"]["crossover_candidates"][0]
-    assert candidate["frequency_hz"] == 5500
-    assert candidate["slope_db_per_octave"] == 48
+    assert candidate["frequency_hz"] == selected_fc_hz
+    assert candidate["slope_db_per_octave"] == selected_slope
     assert len(fsync_calls) == 2  # crossover-accept seam: file fsync + dir fsync
 
 
-def test_apply_measured_crossover_geometry_writes_frequency_and_slope_together(
-    monkeypatch, tmp_path: Path,
+@pytest.mark.parametrize(
+    "declared_slope",
+    [
+        # The live slope no longer matches what ``configured`` claims, even
+        # though the corner itself still lines up: the CAS binds on all three
+        # declared fields, not just ``frequency_hz``.
+        pytest.param(24, id="declared_slope_moved"),
+        # A declared candidate carrying no slope at all cannot be reconciled
+        # into a CrossoverGeometry, so the writer refuses rather than completing
+        # the missing field with the caller's own guess — the same refusal as a
+        # genuine mismatch, not a silent fill-in.
+        pytest.param(None, id="declared_slope_absent"),
+    ],
+)
+def test_apply_measured_crossover_geometry_refuses_an_unreconcilable_declaration(
+    monkeypatch, tmp_path: Path, declared_slope,
 ) -> None:
-    """A candidate can be re-measured at a new corner AND a new slope in the
-    same accept; the writer must land both fields rather than the first one
-    that happens to differ."""
-    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _manual_settings
-
-    topology = mono_output_topology(card_id=None)
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    from jasper.output_topology import save_output_topology
-
-    save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
-    manual = _manual_settings()
-    manual["crossover_candidates"] = [{
-        "between_roles": ["woofer", "tweeter"],
-        "frequency_hz": 5500,
-        "filter_type": "Linkwitz-Riley",
-        "slope_db_per_octave": 24,
-        "confidence": "medium",
-    }]
-    sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
-        "manual_settings": manual,
-        "operator_inputs": {},
-    })
-
-    saved = sound_setup.apply_measured_crossover_geometry(
-        expected_revision=1,
-        between_roles=("woofer", "tweeter"),
-        configured=CrossoverGeometry(
-            fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-        ),
-        selected=CrossoverGeometry(
-            fc_hz=6000, filter_type="Linkwitz-Riley", slope_db_per_octave=48
-        ),
+    _declared_candidate_box(
+        monkeypatch, tmp_path, slope_db_per_octave=declared_slope
     )
-
-    candidate = saved["manual_settings"]["crossover_candidates"][0]
-    assert candidate["frequency_hz"] == 6000
-    assert candidate["slope_db_per_octave"] == 48
-
-
-def test_apply_measured_crossover_geometry_refuses_when_declared_slope_moved(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """The compare-and-swap binds on all three declared fields, not just
-    ``frequency_hz``: a live slope that no longer matches what ``configured``
-    claims must refuse even though the corner itself still lines up. Proves
-    the widened CAS actually reads slope rather than only frequency."""
-    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _manual_settings
-
-    topology = mono_output_topology(card_id=None)
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    from jasper.output_topology import save_output_topology
-
-    save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
-    manual = _manual_settings()
-    manual["crossover_candidates"] = [{
-        "between_roles": ["woofer", "tweeter"],
-        "frequency_hz": 5500,
-        "filter_type": "Linkwitz-Riley",
-        "slope_db_per_octave": 24,
-        "confidence": "medium",
-    }]
-    sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
-        "manual_settings": manual,
-        "operator_inputs": {},
-    })
 
     with pytest.raises(
         ValueError, match="Sound changed since this measurement; review afresh"
@@ -3948,61 +3728,39 @@ def test_apply_measured_crossover_geometry_refuses_when_declared_slope_moved(
         sound_setup.apply_measured_crossover_geometry(
             expected_revision=1,
             between_roles=("woofer", "tweeter"),
-            # fc_hz matches the live declaration (5500); slope does not (the
-            # live entry still says 24, this claims it was measured at 48).
-            configured=CrossoverGeometry(
-                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=48
-            ),
-            selected=CrossoverGeometry(
-                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-            ),
+            configured=_geometry(5500, 48),
+            selected=_geometry(5500, 24),
         )
 
 
-def test_apply_measured_crossover_geometry_refuses_when_declared_slope_absent(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    """A declared candidate that carries no ``slope_db_per_octave`` at all
-    cannot be reconciled into a :class:`CrossoverGeometry`, so the writer must
-    refuse rather than complete the missing field with the caller's own
-    guess -- the same refusal as a genuine mismatch, not a silent fill-in."""
-    from jasper.active_speaker.crossover_declaration import CrossoverGeometry
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _manual_settings
+LEFT_APPLE_SERIAL = "DWH53530FHL2FN3AC"
+RIGHT_APPLE_SERIAL = "DWH53530FLL2FN3A3"
 
-    topology = mono_output_topology(card_id=None)
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    from jasper.output_topology import save_output_topology
 
-    save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
-    manual = _manual_settings()
-    manual["crossover_candidates"] = [{
-        "between_roles": ["woofer", "tweeter"],
-        "frequency_hz": 5500,
-        "filter_type": "Linkwitz-Riley",
-        # slope_db_per_octave deliberately absent.
-        "confidence": "medium",
-    }]
-    sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
-        "manual_settings": manual,
-        "operator_inputs": {},
-    })
+def _apple_cards(*serials: str) -> list[OutputCardFact]:
+    """The commissioned pair's cards, one per serial, on their fixed USB ports."""
 
-    with pytest.raises(
-        ValueError, match="Sound changed since this measurement; review afresh"
-    ):
-        sound_setup.apply_measured_crossover_geometry(
-            expected_revision=1,
-            between_roles=("woofer", "tweeter"),
-            configured=CrossoverGeometry(
-                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=24
-            ),
-            selected=CrossoverGeometry(
-                fc_hz=5500, filter_type="Linkwitz-Riley", slope_db_per_octave=48
-            ),
+    return [
+        OutputCardFact(
+            card_id=card_id,
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            serial=serial,
+            usb_path=usb_path,
+            busnum="1",
+            controller="xhci-hcd.0",
+            endpoint_sync="SYNC",
         )
+        for card_id, usb_path, serial in zip(
+            ("A", "A_1"), ("usb1/1-2", "usb1/1-1"), serials
+        )
+    ]
+
+
+def _observe_apple_cards(tmp_path: Path, *serials: str) -> None:
+    write_output_hardware_state(
+        classify_output_cards(_apple_cards(*serials)),
+        path=tmp_path / "output_hardware.json",
+    )
 
 
 def _dual_apple_hardware() -> dict:
@@ -4014,17 +3772,58 @@ def _dual_apple_hardware() -> dict:
                 "child_id": "left_dac",
                 "device_id": "apple_usb_c_dongle",
                 "device_label": "Apple USB-C audio adapter",
-                "serial": "DWH53530FHL2FN3AC",
+                "serial": LEFT_APPLE_SERIAL,
                 "physical_output_indexes": [0, 1],
             },
             {
                 "child_id": "right_dac",
                 "device_id": "apple_usb_c_dongle",
                 "device_label": "Apple USB-C audio adapter",
-                "serial": "DWH53530FLL2FN3A3",
+                "serial": RIGHT_APPLE_SERIAL,
                 "physical_output_indexes": [2, 3],
             },
         ],
+    }
+
+
+def _dual_apple_stereo_topology_raw(*, identity_verified: bool = True) -> dict:
+    """The commissioned dual-Apple stereo active pair, one cabinet per dongle."""
+
+    def group(group_id: str, kind: str, woofer: int, tweeter: int) -> dict:
+        woofer_channel: dict = {"role": "woofer", "physical_output_index": woofer}
+        tweeter_channel: dict = {
+            "role": "tweeter",
+            "physical_output_index": tweeter,
+            "startup_muted": True,
+            "protection_required": True,
+            "protection_status": "present",
+        }
+        if identity_verified:
+            woofer_channel["identity_verified"] = True
+            tweeter_channel["identity_verified"] = True
+        return {
+            "id": group_id,
+            "label": f"{group_id.title()} speaker",
+            "kind": kind,
+            "mode": "active_2_way",
+            "channels": [woofer_channel, tweeter_channel],
+        }
+
+    return {
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual_apple_pair",
+        "name": "Dual Apple stereo active pair",
+        "status": "draft",
+        "hardware": _dual_apple_hardware(),
+        "speaker_groups": [
+            group("left", "left", 0, 1),
+            group("right", "right", 2, 3),
+        ],
+        "routing": {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+        },
     }
 
 
@@ -4040,29 +3839,7 @@ def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
         "JASPER_OUTPUT_HARDWARE_STATE_PATH",
         str(tmp_path / "output_hardware.json"),
     )
-    write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FHL2FN3AC",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FLL2FN3A3",
-                usb_path="usb1/1-1",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-        ]),
-        path=tmp_path / "output_hardware.json",
-    )
+    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
 
     envelope = sound_setup._output_topology_payload()
     payload = envelope["output_topology"]
@@ -4070,16 +3847,46 @@ def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
     assert payload["hardware"]["device_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
     assert payload["hardware"]["device_label"] == "Dual Apple USB-C DAC 4-channel pair"
     assert payload["hardware"]["physical_output_count"] == 4
-    assert payload["hardware"]["child_devices"][0]["serial"] == "DWH53530FHL2FN3AC"
+    assert payload["hardware"]["child_devices"][0]["serial"] == LEFT_APPLE_SERIAL
     assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock"
     assert envelope["clock_domain"]["composite_clock_supported"] is True
     assert payload["safety"]["sound_tests_allowed"] is False
 
 
-def test_sound_output_topology_payload_separates_saved_dual_from_observed_single(
+@pytest.mark.parametrize(
+    ("observed", "observed_profile_id", "observed_output_count", "issue"),
+    [
+        pytest.param(
+            (LEFT_APPLE_SERIAL,),
+            APPLE_USB_C_DONGLE_DEVICE_ID,
+            2,
+            "dual_apple_observed_profile_mismatch",
+            id="one_unit_attached",
+        ),
+        pytest.param(
+            ("WRONGLEFTSERIAL", "WRONGRIGHTSERIAL"),
+            DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+            4,
+            "dual_apple_observed_serial_mismatch",
+            id="wrong_pair_attached",
+        ),
+    ],
+)
+def test_a_saved_dual_apple_pair_blocks_its_clock_on_the_hardware_it_observes(
     monkeypatch,
     tmp_path: Path,
+    observed,
+    observed_profile_id,
+    observed_output_count,
+    issue,
 ):
+    """The saved 4-channel shape survives; the composite clock does not.
+
+    The read reports both sides separately — what was commissioned under
+    ``output_topology`` and what is attached under ``output_hardware`` — so a
+    swapped or half-attached pair blocks the composite clock by name instead of
+    silently adopting whatever is plugged in.
+    """
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         str(tmp_path / "output_topology.json"),
@@ -4088,173 +3895,25 @@ def test_sound_output_topology_payload_separates_saved_dual_from_observed_single
         "JASPER_OUTPUT_HARDWARE_STATE_PATH",
         str(tmp_path / "output_hardware.json"),
     )
-    write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FHL2FN3AC",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FLL2FN3A3",
-                usb_path="usb1/1-1",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-        ]),
-        path=tmp_path / "output_hardware.json",
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "dual_apple_pair",
-        "name": "Dual Apple stereo active pair",
-        "status": "draft",
-        "hardware": _dual_apple_hardware(),
-        "speaker_groups": [
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "present",
-                    },
-                ],
-            },
-            {
-                "id": "right",
-                "label": "Right speaker",
-                "kind": "right",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 2,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 3,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "present",
-                    },
-                ],
-            },
-        ],
-        "routing": {
-            "main_left_group_id": "left",
-            "main_right_group_id": "right",
-        },
-    })
-    write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FHL2FN3AC",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-        ]),
-        path=tmp_path / "output_hardware.json",
-    )
+    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
+    sound_setup._save_output_topology_payload(_dual_apple_stereo_topology_raw())
+    _observe_apple_cards(tmp_path, *observed)
 
     envelope = sound_setup._output_topology_payload()
     payload = envelope["output_topology"]
+    clock = envelope["clock_domain"]
 
     assert payload["hardware"]["device_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
     assert payload["hardware"]["physical_output_count"] == 4
-    assert envelope["output_hardware"]["profile_id"] == APPLE_USB_C_DONGLE_DEVICE_ID
-    assert envelope["output_hardware"]["physical_output_count"] == 2
-    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock_blocked"
-    assert "dual_apple_observed_profile_mismatch" in {
-        issue["code"] for issue in envelope["clock_domain"]["issues"]
-    }
-    assert envelope["clock_domain"]["composite_clock_supported"] is False
-    assert envelope["clock_domain"]["coherent_physical_output_count"] == 0
-    assert envelope["output_hardware"]["profile_id"] != payload["hardware"]["device_id"]
-
-
-def test_sound_output_topology_payload_blocks_wrong_dual_apple_serials(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
-        str(tmp_path / "output_hardware.json"),
-    )
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "dual_apple",
-        "name": "Dual Apple active pair",
-        "status": "draft",
-        "hardware": _dual_apple_hardware(),
-        "speaker_groups": [],
-        "routing": {},
-    })
-    write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="WRONGLEFTSERIAL",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="WRONGRIGHTSERIAL",
-                usb_path="usb1/1-1",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-        ]),
-        path=tmp_path / "output_hardware.json",
-    )
-
-    envelope = sound_setup._output_topology_payload()
-
-    assert envelope["output_hardware"]["profile_id"] == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-    assert envelope["output_hardware"]["physical_output_count"] == 4
     assert envelope["output_hardware"]["status"] == "ready"
-    assert envelope["clock_domain"]["status"] == "dual_apple_composite_clock_blocked"
-    assert "dual_apple_observed_serial_mismatch" in {
-        issue["code"] for issue in envelope["clock_domain"]["issues"]
-    }
-    assert envelope["clock_domain"]["composite_clock_supported"] is False
-    assert envelope["clock_domain"]["coherent_physical_output_count"] == 0
+    assert envelope["output_hardware"]["profile_id"] == observed_profile_id
+    assert envelope["output_hardware"]["physical_output_count"] == (
+        observed_output_count
+    )
+    assert clock["status"] == "dual_apple_composite_clock_blocked"
+    assert issue in {entry["code"] for entry in clock["issues"]}
+    assert clock["composite_clock_supported"] is False
+    assert clock["coherent_physical_output_count"] == 0
 
 
 def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
@@ -4267,76 +3926,11 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
         "JASPER_OUTPUT_HARDWARE_STATE_PATH",
         str(tmp_path / "output_hardware.json"),
     )
-    write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FHL2FN3AC",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FLL2FN3A3",
-                usb_path="usb1/1-1",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-        ]),
-        path=tmp_path / "output_hardware.json",
-    )
+    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
 
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "dual_apple_pair",
-        "name": "Dual Apple stereo active pair",
-        "status": "draft",
-        "hardware": _dual_apple_hardware(),
-        "speaker_groups": [
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "present",
-                    },
-                ],
-            },
-            {
-                "id": "right",
-                "label": "Right speaker",
-                "kind": "right",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 2},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 3,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "present",
-                    },
-                ],
-            },
-        ],
-        "routing": {
-            "main_left_group_id": "left",
-            "main_right_group_id": "right",
-        },
-    })
+    sound_setup._save_output_topology_payload(
+        _dual_apple_stereo_topology_raw(identity_verified=False)
+    )
     _confirm_channel_identity("left", "woofer", "tweeter")
     _confirm_channel_identity("right", "woofer", "tweeter")
     payload = sound_setup._output_topology_payload()
@@ -4371,29 +3965,7 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
         "JASPER_OUTPUT_HARDWARE_STATE_PATH",
         str(tmp_path / "output_hardware.json"),
     )
-    write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FHL2FN3AC",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FLL2FN3A3",
-                usb_path="usb1/1-1",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-        ]),
-        path=tmp_path / "output_hardware.json",
-    )
+    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
 
     sound_setup._save_output_topology_payload({
         "artifact_schema_version": 1,
@@ -4454,43 +4026,13 @@ def test_active_speaker_tone_backend_status_is_explicit_lab_only(
     )
     monkeypatch.delenv("JASPER_AUDIO_LAB_TONE_BACKEND", raising=False)
     monkeypatch.delenv("JASPER_AUDIO_LAB_TEST_PCM", raising=False)
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "mono_active",
-        "name": "Mono active 2-way output",
-        "status": "verified",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "sndrpihifiberry",
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
-    })
+    sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(
+            protection_status="software_guard_requested",
+            card_id="sndrpihifiberry",
+            identity_verified=True,
+        )
+    )
 
     status = sound_setup._active_speaker_tone_backend_status()
 
@@ -4535,34 +4077,9 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
 ):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    raw = {
-        "output_topology": {
-            "artifact_schema_version": 1,
-            "kind": OUTPUT_TOPOLOGY_KIND,
-            "topology_id": "living_room",
-            "name": "Living room",
-            "status": "draft",
-            "hardware": {
-                "device_id": "hifiberry_dac8x",
-                "device_label": "HiFiBerry DAC8x",
-                "physical_output_count": 8,
-            },
-            "speaker_groups": [
-                {
-                    "id": "left",
-                    "label": "Left speaker",
-                    "kind": "left",
-                    "mode": "full_range_passive",
-                    "channels": [
-                        {"role": "full_range", "physical_output_index": 0}
-                    ],
-                }
-            ],
-            "routing": {"main_left_group_id": "left"},
-        }
-    }
-
-    sound_setup._save_output_topology_payload(raw)
+    sound_setup._save_output_topology_payload(
+        {"output_topology": _passive_left_topology_payload()}
+    )
     _confirm_channel_identity("left", "full_range")
     payload = sound_setup._output_topology_payload()
     topology = payload["output_topology"]
@@ -4721,28 +4238,7 @@ def test_sound_channel_identity_route_marks_saved_topology_only(
 ):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "living_room",
-        "name": "Living room",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            }
-        ],
-        "routing": {"main_left_group_id": "left"},
-    })
+    sound_setup._save_output_topology_payload(_passive_left_topology_payload())
 
     payload = sound_setup._active_speaker_channel_identity_save_payload({
         "speaker_group_id": "left",
@@ -4772,51 +4268,60 @@ def test_sound_channel_identity_route_marks_saved_topology_only(
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
 
 
-async def test_commission_ack_can_promote_output_identity_before_driver_proof(
-    monkeypatch,
-    tmp_path: Path,
-):
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_active",
-        "name": "Bench active",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {"role": "tweeter", "physical_output_index": 1},
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
-    })
+_PENDING_WOOFER_STEP = {
+    "role": "woofer",
+    "playback_id": "pb-woofer",
+    "gain_db": -80.0,
+}
+
+
+def _stub_confirmed_ramp_ack(monkeypatch) -> None:
+    """A pending woofer step whose operator ack comes back confirmed."""
 
     async def fake_ack(*, outcome, load_config):
         assert outcome == "heard_correct_driver"
         assert load_config is not None
         return {
             "status": "confirmed",
-            "acknowledged_step": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
+            "acknowledged_step": dict(_PENDING_WOOFER_STEP),
             "issues": [],
         }
 
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.load_ramp_state",
+        lambda: {
+            "speaker_group_id": "main",
+            "pending": dict(_PENDING_WOOFER_STEP),
+        },
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack", fake_ack
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda *, reason: {"status": "stopped", "reason": reason},
+    )
+    monkeypatch.setattr(
+        sound_setup, "commission_seams", lambda _cam: (object(), None, None)
+    )
+
+
+async def _ack_confirming_output_identity():
+    return await sound_setup._active_speaker_commission_ramp_ack_payload(
+        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
+        camilla_factory=lambda: object(),
+    )
+
+
+async def test_commission_ack_can_promote_output_identity_before_driver_proof(
+    monkeypatch,
+    tmp_path: Path,
+):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    sound_setup._save_output_topology_payload(_bench_active_topology_payload())
+    _stub_confirmed_ramp_ack(monkeypatch)
     recorded: dict[str, object] = {}
 
     def fake_record_driver_measurement(topology, raw, **_kwargs):
@@ -4833,21 +4338,6 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
         }
 
     monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.load_ramp_state",
-        lambda: {
-            "speaker_group_id": "main",
-            "pending": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
-        },
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
-        fake_ack,
-    )
-    monkeypatch.setattr(
         "jasper.active_speaker.measurement.record_driver_measurement",
         fake_record_driver_measurement,
     )
@@ -4856,20 +4346,10 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
         lambda: {},
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.safe_playback.load_safe_playback_state",
-        lambda: {},
+        "jasper.active_speaker.safe_playback.load_safe_playback_state", lambda: {}
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "stopped", "reason": reason},
-    )
-    monkeypatch.setattr(sound_setup, "commission_seams", lambda _cam: (object(), None, None))
 
-    payload = await sound_setup._active_speaker_commission_ramp_ack_payload(
-        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
-        camilla_factory=lambda: object(),
-    )
+    payload = await _ack_confirming_output_identity()
     saved = json.loads(path.read_text(encoding="utf-8"))
 
     assert payload["status"] == "confirmed"
@@ -4880,6 +4360,7 @@ async def test_commission_ack_can_promote_output_identity_before_driver_proof(
     assert payload["topology_revision"].startswith("sha256:")
     assert payload["hardware_adoption"]["identity"].startswith("sha256:")
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
+    # The recorder saw the promoted lane, so the promotion precedes the proof.
     assert recorded["woofer_identity"] is True
     assert recorded["raw"]["role"] == "woofer"
     assert recorded["raw"]["playback_id"] == "pb-woofer"
@@ -4889,88 +4370,25 @@ async def test_commission_ack_fails_when_output_identity_cannot_save(
     monkeypatch,
     tmp_path: Path,
 ):
+    from jasper.output_topology import OutputTopologyMutation
+
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_active",
-        "name": "Bench active",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {"role": "tweeter", "physical_output_index": 1},
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
-    })
-
-    async def fake_ack(*, outcome, load_config):
-        return {
-            "status": "confirmed",
-            "acknowledged_step": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
-            "issues": [],
-        }
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.load_ramp_state",
-        lambda: {
-            "speaker_group_id": "main",
-            "pending": {
-                "role": "woofer",
-                "playback_id": "pb-woofer",
-                "gain_db": -80.0,
-            },
-        },
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack",
-        fake_ack,
-    )
-
-    from jasper.output_topology import OutputTopologyMutation
+    sound_setup._save_output_topology_payload(_bench_active_topology_payload())
+    _stub_confirmed_ramp_ack(monkeypatch)
 
     def fail_save(_mutation, _topology):
         raise OSError("disk full")
 
-    monkeypatch.setattr(
-        OutputTopologyMutation,
-        "save",
-        fail_save,
-    )
+    monkeypatch.setattr(OutputTopologyMutation, "save", fail_save)
     monkeypatch.setattr(
         "jasper.active_speaker.measurement.record_driver_measurement",
         lambda *_args, **_kwargs: pytest.fail(
             "driver evidence must not be recorded when identity save fails"
         ),
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "stopped", "reason": reason},
-    )
-    monkeypatch.setattr(sound_setup, "commission_seams", lambda _cam: (object(), None, None))
 
-    payload = await sound_setup._active_speaker_commission_ramp_ack_payload(
-        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
-        camilla_factory=lambda: object(),
-    )
+    payload = await _ack_confirming_output_identity()
     saved = json.loads(path.read_text(encoding="utf-8"))
 
     assert payload["status"] == "failed"
@@ -4988,37 +4406,11 @@ def test_sound_channel_protection_route_accepts_software_guard_request(
 ):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono",
-        "name": "Bench mono",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "required_missing",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
+    sound_setup._save_output_topology_payload(
+        _active_speaker_mono_topology_payload(
+            protection_status="required_missing", card_id=None
+        )
+    )
 
     payload = sound_setup._active_speaker_channel_protection_save_payload({
         "speaker_group_id": "mono",
@@ -5062,28 +4454,7 @@ def test_sound_channel_identity_save_requires_explicit_boolean(
 ):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "living_room",
-        "name": "Living room",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            }
-        ],
-        "routing": {"main_left_group_id": "left"},
-    })
+    sound_setup._save_output_topology_payload(_passive_left_topology_payload())
 
     with pytest.raises(ValueError, match="identity|object"):
         sound_setup._active_speaker_channel_identity_save_payload(raw)
@@ -5098,34 +4469,9 @@ def test_sound_channel_identity_http_route_rejects_non_boolean_evidence(
 ):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "living_room",
-        "name": "Living room",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            }
-        ],
-        "routing": {"main_left_group_id": "left"},
-    })
+    sound_setup._save_output_topology_payload(_passive_left_topology_payload())
 
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
             "/active-speaker/channel-identity",
@@ -5141,9 +4487,6 @@ def test_sound_channel_identity_http_route_rejects_non_boolean_evidence(
 
         assert "identity_verified must be a boolean" in payload["error"]
         assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
@@ -5155,11 +4498,7 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         str(tmp_path / "output_topology.json"),
     )
     _record_dac8x()
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         get_resp = urllib.request.urlopen(f"{base}/output-topology")
         get_payload = json.loads(get_resp.read().decode("utf-8"))
         assert get_payload["output_topology"]["status"] == "draft"
@@ -5184,9 +4523,6 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
         assert post_payload["topology_revision"].startswith("sha256:")
         assert post_payload["active_playback_route"]["transport_channel_count"] == 8
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_output_topology_http_route_rejects_stale_browser_save(
@@ -5197,11 +4533,7 @@ def test_sound_output_topology_http_route_rejects_stale_browser_save(
 
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         old_payload = sound_setup._save_output_topology_payload(
             _active_speaker_mono_topology_payload(
                 protection_status="software_guard_requested"
@@ -5225,9 +4557,6 @@ def test_sound_output_topology_http_route_rejects_stale_browser_save(
         assert "changed in another session" in conflict["error"]
         assert conflict["output_topology"]["speaker_groups"] == []
         assert saved["speaker_groups"] == []
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_output_topology_reset_http_route_is_csrf_protected(
@@ -5240,73 +4569,69 @@ def test_sound_output_topology_reset_http_route_is_csrf_protected(
         "_reset_output_topology_payload",
         lambda raw: calls.append(raw) or {"output_topology": {"status": "draft"}},
     )
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(base, "/output-topology/reset", {})
         payload = json.loads(resp.read().decode("utf-8"))
 
         assert calls == [{}]
         assert payload["output_topology"]["status"] == "draft"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
-def test_reset_rejects_stale_topology_before_parking_or_cleanup(
-    monkeypatch, tmp_path: Path,
-):
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    save_output_topology(new_topology_draft(), path=topology_path)
-    request = sound_setup._output_topology_payload()
-    save_output_topology(new_topology_draft(name="Newer layout"), path=topology_path)
-    before = topology_path.read_bytes()
-    monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        lambda *_args, **_kwargs: pytest.fail("stale reset must not park or delete"),
-    )
-
-    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
-        sound_setup._reset_output_topology_payload({
-            "topology_revision": request["topology_revision"],
-            "detected_hardware_identity": request["hardware_adoption"]["identity"],
-        })
-
-    assert raised.value.code == "topology_changed"
-    assert topology_path.read_bytes() == before
-
-
-def test_reset_rejects_changed_detected_hardware_before_deleting(
-    monkeypatch, tmp_path: Path,
-):
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    hardware_path = tmp_path / "output_hardware.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
-    save_output_topology(new_topology_draft(), path=topology_path)
+def _apple_dongle_detected() -> None:
     write_output_hardware_state(OutputHardwareState(
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-        profile_label="Apple USB-C audio adapter", status="ready",
+        profile_label="Apple USB-C audio adapter",
+        status="ready",
         physical_output_count=2,
     ))
+
+
+def _dac8x_detected() -> None:
+    write_output_hardware_state(OutputHardwareState(
+        profile_id="hifiberry_dac8x",
+        profile_label="HiFiBerry DAC8x",
+        status="ready",
+        physical_output_count=8,
+    ))
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        pytest.param("topology", "topology_changed", id="another_session_saved"),
+        pytest.param(
+            "hardware", "detected_hardware_changed", id="the_dac_was_swapped"
+        ),
+    ],
+)
+def test_reset_refuses_a_stale_request_before_parking_or_deleting(
+    monkeypatch, tmp_path: Path, change, code,
+):
+    """A reset carries the browser's view of both the saved layout and the
+    attached hardware; either having moved refuses by code, and refusing must
+    happen before anything is parked or deleted."""
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH", str(tmp_path / "output_hardware.json")
+    )
+    save_output_topology(new_topology_draft(), path=topology_path)
+    _apple_dongle_detected()
     request = sound_setup._output_topology_payload()
     before = topology_path.read_bytes()
-    write_output_hardware_state(OutputHardwareState(
-        profile_id="hifiberry_dac8x", profile_label="HiFiBerry DAC8x",
-        status="ready", physical_output_count=8,
-    ))
+
+    if change == "topology":
+        save_output_topology(
+            new_topology_draft(name="Newer layout"), path=topology_path
+        )
+        before = topology_path.read_bytes()
+    else:
+        _dac8x_detected()
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        lambda *_args, **_kwargs: pytest.fail(
-            "changed hardware must not park or delete"
-        ),
+        lambda *_args, **_kwargs: pytest.fail("a stale reset must not park or delete"),
     )
 
     with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
@@ -5315,7 +4640,7 @@ def test_reset_rejects_changed_detected_hardware_before_deleting(
             "detected_hardware_identity": request["hardware_adoption"]["identity"],
         })
 
-    assert raised.value.code == "detected_hardware_changed"
+    assert raised.value.code == code
     assert topology_path.read_bytes() == before
 
 
@@ -5330,38 +4655,18 @@ def test_reset_revalidates_hardware_after_parking_before_deleting(
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
     initial = new_topology_draft(name="Initial")
     save_output_topology(initial, path=topology_path)
-    write_output_hardware_state(OutputHardwareState(
-        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-        profile_label="Apple USB-C audio adapter",
-        status="ready",
-        physical_output_count=2,
-    ))
+    _apple_dongle_detected()
     request = sound_setup._output_topology_payload()
 
     def park_and_commit(_topology, commit, **_kwargs):
-        write_output_hardware_state(OutputHardwareState(
-            profile_id="hifiberry_dac8x",
-            profile_label="HiFiBerry DAC8x",
-            status="ready",
-            physical_output_count=8,
-        ))
+        _dac8x_detected()
         return _RuntimeMutation(commit())
 
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit,
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         lambda: pytest.fail("second-check conflict must not clear setup evidence"),
@@ -5419,17 +4724,7 @@ def test_reset_validation_and_empty_write_share_the_topology_transaction(
 
     monkeypatch.setattr(sound_setup, "_reset_request_hardware", checked)
     monkeypatch.setattr(OutputTopologyMutation, "save", save_under_same_lock)
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     def clear_under_same_lock():
         assert_transaction_held()
         events.append("setup-cleanup")
@@ -5456,14 +4751,7 @@ def test_reset_accepts_the_response_from_a_normal_save_without_reload(
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
     )
-    for name in (
-        "_active_speaker_stop_summed_test_tone",
-        "_active_speaker_stop_commission_tone",
-    ):
-        monkeypatch.setattr(
-            sound_setup, name, lambda *, reason: {"status": "idle", "reason": reason}
-        )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         lambda: {"status": "cleared", "removed": []},
@@ -5487,11 +4775,7 @@ def test_reset_http_requires_revision_and_hardware_identity(
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
     )
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base, "/output-topology/reset", {}, expect_status=400
         )
@@ -5508,9 +4792,6 @@ def test_reset_http_requires_revision_and_hardware_identity(
         )
         payload = json.loads(resp.read().decode("utf-8"))
         assert payload["error"] == "detected_hardware_identity is required"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_reset_http_reports_ambiguous_failure_with_current_topology(
@@ -5532,27 +4813,9 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         lambda: {"status": "cleared", "removed": []},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         response = json_post_with_csrf(
             base,
             "/output-topology/reset",
@@ -5563,9 +4826,6 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
             expect_status=502,
         )
         payload = json.loads(response.read().decode("utf-8"))
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert "not changed" not in payload["error"]
     assert payload["reset"]["status"] == "needs_attention"
@@ -5605,23 +4865,7 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    summed_stops = []
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: summed_stops.append(reason)
-        or {"status": "stopped", "reason": reason},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    stops = _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         sound_setup,
         "_output_topology_payload",
@@ -5635,7 +4879,11 @@ def test_reset_output_topology_payload_clears_active_setup_state(
 
     assert payload["output_topology"]["status"] == "draft"
     assert payload["reset"]["status"] == "reset"
-    assert summed_stops == ["output_topology_reset"]
+    assert stops == [
+        "summed:output_topology_reset",
+        "commission:output_topology_reset",
+        "safe",
+    ]
     assert all(not path.exists() for path in paths)
 
 
@@ -5674,21 +4922,7 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_audio_stops(monkeypatch)
 
     payload = sound_setup._reset_output_topology_payload({
         "topology_revision": request["topology_revision"],
@@ -5700,112 +4934,57 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     assert payload["reset"]["status"] == "needs_attention"
 
 
-def test_reset_reports_converging_when_reconcile_is_still_activating(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """A reconcile past its own wait budget is not needs_attention (#3094)."""
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    save_output_topology(new_topology_draft(name="Old intent"), topology_path)
-    request = sound_setup._output_topology_payload()
-
-    def park_and_commit(_topology, commit, **_kwargs):
-        return _RuntimeMutation(commit())
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        park_and_commit,
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
-        lambda: {"status": "cleared"},
-    )
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": False, "converging": True},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
-
-    payload = sound_setup._reset_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
-
-    assert payload["reset"] == {
-        "status": "converging",
-        "message": (
-            "Speaker setup was reset and is still applying. "
-            "Check Status in a moment."
+@pytest.mark.parametrize(
+    ("reconcile", "verdict"),
+    [
+        (
+            RECONCILE_STILL_CONVERGING,
+            {
+                "status": "converging",
+                "message": (
+                    "Speaker setup was reset and is still applying. "
+                    "Check Status in a moment."
+                ),
+            },
         ),
-    }
-
-
-def test_reset_reconcile_failure_without_converging_still_needs_attention(
-    monkeypatch,
-    tmp_path: Path,
+        (
+            RECONCILE_FAILED,
+            {
+                "status": "needs_attention",
+                "message": (
+                    "Speaker setup was reset and audio is off. JTS could not "
+                    "finish setup cleanup; open Status before continuing."
+                ),
+            },
+        ),
+    ],
+)
+def test_reset_reports_the_reconcile_verdict(
+    monkeypatch, tmp_path: Path, reconcile, verdict,
 ) -> None:
-    """A genuine reconcile failure (not converging) keeps needing attention."""
     from jasper.output_topology import new_topology_draft, save_output_topology
 
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     save_output_topology(new_topology_draft(name="Old intent"), topology_path)
     request = sound_setup._output_topology_payload()
-
-    def park_and_commit(_topology, commit, **_kwargs):
-        return _RuntimeMutation(commit())
-
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        park_and_commit,
+        lambda _topology, commit, **_kwargs: _RuntimeMutation(commit()),
     )
     monkeypatch.setattr(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         lambda: {"status": "cleared"},
     )
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": False, "error": "grouping failed"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: {"status": "idle"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"status": "idle"},
-    )
+    _stub_reconcile(monkeypatch, reconcile)
+    _stub_audio_stops(monkeypatch)
 
     payload = sound_setup._reset_output_topology_payload({
         "topology_revision": request["topology_revision"],
         "detected_hardware_identity": request["hardware_adoption"]["identity"],
     })
 
-    assert payload["reset"]["status"] == "needs_attention"
+    assert payload["reset"] == verdict
 
 
 def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
@@ -5820,11 +4999,7 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
         "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH",
     )
     monkeypatch.setenv("JASPER_AUDIO_DAC_ID", "hifiberry_dac8x")
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         measurement_resp = urllib.request.urlopen(
             f"{base}/active-speaker/measurements"
         )
@@ -5837,23 +5012,44 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
         assert measurement_payload["permissions"]["may_not_play_audio"] is True
         assert profile_payload["kind"] == "jts_active_speaker_baseline_profile_candidate"
         assert profile_payload["permissions"]["may_apply"] is False
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
-async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
-    apply_kwargs = {}
+BASELINE_CONFIG_PATH = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
+
+
+def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
+    """Stand in for the whole baseline-apply backend behind the finish handoff.
+
+    Returns ``(apply_kwargs_seen, mux_commands)``: the kwargs of every
+    ``apply_baseline_profile`` call in order, and the mux commands the restore
+    issued. The fake invokes ``on_candidate_verified`` exactly as the real
+    apply does, so the finish route's cleanup runs.
+    """
+
+    apply_calls: list[dict] = []
+    mux_commands: list[str] = []
 
     async def fake_apply_baseline_profile(_topology, **kwargs):
-        apply_kwargs.update(kwargs)
-        return {
+        apply_calls.append(kwargs)
+        callback = kwargs.get("on_candidate_verified")
+        if callback is not None:
+            await callback()
+        applied = {
             "status": "applied",
-            "apply": {"result": "success"},
+            "apply": {"result": "success", "active_config_path": BASELINE_CONFIG_PATH},
             "issues": [],
         }
-
-    mux_commands: list[str] = []
+        if applied_profile:
+            applied["profile"] = {
+                "status": "applied",
+                "config": {
+                    "path": BASELINE_CONFIG_PATH,
+                    "basename": "active_speaker_baseline.yml",
+                },
+                "permissions": {"may_apply": False},
+                "issues": [],
+            }
+        return applied
 
     def fake_mux_command(command: str) -> dict:
         mux_commands.append(command)
@@ -5866,12 +5062,11 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
 
     monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
     monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft",
-        lambda: {},
+        "jasper.active_speaker.design_draft.load_design_draft", lambda: {}
     )
     monkeypatch.setattr(
         "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda **kwargs: {},
+        lambda **_kwargs: {},
     )
     monkeypatch.setattr(
         "jasper.active_speaker.measurement.load_measurement_state",
@@ -5882,9 +5077,22 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
         fake_apply_baseline_profile,
     )
     monkeypatch.setattr(
+        sound_setup, "_commission_tone_mux_command", fake_mux_command
+    )
+    return apply_calls, mux_commands
+
+
+def _reviewed_candidate(monkeypatch) -> None:
+    monkeypatch.setattr(
         sound_setup,
-        "_commission_tone_mux_command",
-        fake_mux_command,
+        "_active_speaker_baseline_profile_payload",
+        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
+    )
+
+
+async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
+    apply_calls, mux_commands = _stub_baseline_apply(
+        monkeypatch, applied_profile=False
     )
 
     payload = await sound_setup._active_speaker_baseline_profile_apply_payload(
@@ -5893,7 +5101,7 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
     )
 
     assert mux_commands == ["AUTO"]
-    assert apply_kwargs["expected_candidate_fingerprint"] == "reviewed-candidate"
+    assert apply_calls[0]["expected_candidate_fingerprint"] == "reviewed-candidate"
     assert payload["source_selection_restore"]["status"] == "ok"
     assert payload["source_selection_restore"]["state"]["mode"] == "auto"
 
@@ -5901,78 +5109,15 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
 async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     monkeypatch,
 ):
-    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
-    apply_calls = 0
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_baseline_profile_payload",
-        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
-    )
-
-    async def fake_apply_baseline_profile(_topology, **kwargs):
-        nonlocal apply_calls
-        apply_calls += 1
-        callback = kwargs.get("on_candidate_verified")
-        if callback is not None:
-            await callback()
-        return {
-            "status": "applied",
-            "profile": {
-                "status": "applied",
-                "config": {
-                    "path": baseline_path,
-                    "basename": "active_speaker_baseline.yml",
-                },
-                "permissions": {"may_apply": False},
-                "issues": [],
-            },
-            "apply": {
-                "result": "success",
-                "active_config_path": baseline_path,
-            },
-            "issues": [],
-        }
-
-    mux_commands: list[str] = []
-
-    def fake_mux_command(command: str) -> dict:
-        mux_commands.append(command)
-        return {
-            "mode": "auto",
-            "selected_source": None,
-            "active_source": "airplay",
-            "test_source": None,
-        }
-
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
-    monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda **kwargs: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.load_measurement_state",
-        lambda topology: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
-        fake_apply_baseline_profile,
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_mux_command",
-        fake_mux_command,
-    )
+    _reviewed_candidate(monkeypatch)
+    apply_calls, mux_commands = _stub_baseline_apply(monkeypatch)
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
         expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
-    assert apply_calls == 1
+    assert len(apply_calls) == 1
     assert mux_commands == ["AUTO"]
     assert payload["status"] == "applied"
     assert payload["profile"]["status"] == "applied"
@@ -5980,7 +5125,7 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     assert payload["output_safety"] == {
         "safety_muted": False,
         "reason": None,
-        "active_config_path": baseline_path,
+        "active_config_path": BASELINE_CONFIG_PATH,
     }
 
 
@@ -6069,78 +5214,25 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
         ramp_state_path,
     )
 
-    baseline_path = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_baseline_profile_payload",
-        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
-        str(tmp_path / "ramp.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
-        str(tmp_path / "commission-load.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    _record_ramp_state(
-        {
-            **_ramp_base_state(ramp_state_path()),
-            "speaker_group_id": "main",
-            "confirmed_roles": ["woofer"],
-            "pending": {
-                "role": "tweeter",
-                "gain_db": -20.0,
-                "playback_id": "late-auto-ramp-step",
-            },
-            "last_action": "late_step",
-        }
-    )
-    async def fake_apply_baseline_profile(_topology, **kwargs):
-        callback = kwargs.get("on_candidate_verified")
-        if callback is not None:
-            await callback()
-        return {
-            "status": "applied",
-            "profile": {
-                "status": "applied",
-                "config": {
-                    "path": baseline_path,
-                    "basename": "active_speaker_baseline.yml",
-                },
-                "permissions": {"may_apply": False},
-                "issues": [],
-            },
-            "apply": {"result": "success", "active_config_path": baseline_path},
-            "issues": [],
-        }
-
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
-    monkeypatch.setattr(
-        "jasper.active_speaker.design_draft.load_design_draft",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda **kwargs: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.load_measurement_state",
-        lambda topology: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.apply_baseline_profile",
-        fake_apply_baseline_profile,
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_commission_tone_mux_command",
-        lambda command: {"mode": "auto", "command": command},
-    )
+    _reviewed_candidate(monkeypatch)
+    for name, filename in (
+        ("JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE", "ramp.json"),
+        ("JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE", "commission-load.json"),
+        ("JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE", "safe-playback.json"),
+    ):
+        monkeypatch.setenv(name, str(tmp_path / filename))
+    _record_ramp_state({
+        **_ramp_base_state(ramp_state_path()),
+        "speaker_group_id": "main",
+        "confirmed_roles": ["woofer"],
+        "pending": {
+            "role": "tweeter",
+            "gain_db": -20.0,
+            "playback_id": "late-auto-ramp-step",
+        },
+        "last_action": "late_step",
+    })
+    _stub_baseline_apply(monkeypatch)
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
         expected_candidate_fingerprint="reviewed-candidate",
@@ -6157,47 +5249,12 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
     tmp_path: Path,
 ):
     _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
-        topology = {
-            "artifact_schema_version": 1,
-            "kind": OUTPUT_TOPOLOGY_KIND,
-            "topology_id": "bench_mono",
-            "name": "Bench mono",
-            "status": "draft",
-            "hardware": {
-                "device_id": "hifiberry_dac8x",
-                "device_label": "HiFiBerry DAC8x",
-                "physical_output_count": 8,
-            },
-            "speaker_groups": [
-                {
-                    "id": "mono",
-                    "label": "Mono cabinet",
-                    "kind": "mono",
-                    "mode": "active_2_way",
-                    "channels": [
-                        {
-                            "role": "woofer",
-                            "physical_output_index": 0,
-                            "identity_verified": True,
-                        },
-                        {
-                            "role": "tweeter",
-                            "physical_output_index": 1,
-                            "identity_verified": True,
-                            "startup_muted": True,
-                            "protection_required": True,
-                            "protection_status": "software_guard_requested",
-                        },
-                    ],
-                }
-            ],
-            "routing": {"mono_group_id": "mono"},
-        }
+    with sound_server(tmp_path) as base:
+        topology = _active_speaker_mono_topology_payload(
+            protection_status="software_guard_requested",
+            card_id=None,
+            identity_verified=True,
+        )
         research = {
             "artifact_schema_version": 1,
             "kind": "jts_active_crossover_driver_research",
@@ -6247,9 +5304,6 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
         assert payload["status"] == "ready_for_protected_staging"
         assert payload["safety"]["no_audio"] is True
         assert payload["permissions"]["may_not_emit_camilla_yaml"] is True
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
@@ -6280,10 +5334,12 @@ def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
     assert "selectedId = findIdFor(applied);" in load_body
 
 
-def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
+@pytest.fixture(scope="module")
+def sound_harness_out() -> dict:
+    """Run the /sound/ JS harness once and hand every scenario its verdict."""
+
     if _NODE is None:
         pytest.skip("node not on PATH")
-
     proc = subprocess.run(
         [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
         capture_output=True,
@@ -6291,79 +5347,46 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes():
         timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-
-    assert out["applyProfileIds"] == ["stock:flat"]
-    assert out["liveDraftRequests"] == 1
-    assert out["liveDraftEpoch"] == "apply-1"
-    assert out["liveTabMarked"] is True
-    # Distributed-active Slice 4: the module boots in follower mode (tabs + plot
-    # absent) and renders the local driver/crossover UI without fetching /state.
-    assert {"followerModeRendersLocalDriverUi": True} in out["results"]
-    assert {"confirmedOutputKeepsResetPreconditions": True} in out["results"]
-    assert {"resetPartialCleanupSurfacesWarning": True} in out["results"]
-    assert {
-        "driverResearchImportPreservesOperatorInstalledConfiguration": True
-    } in out["results"]
-    # #2883: the handoff card renders only once a baseline plays, mints its
-    # prompt server-side, and discloses a copy the declarations moved past.
-    assert {"tuningHandoffCardMintsAndGoesStale": True} in out["results"]
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def test_sound_module_renders_first_active_crossover_step_without_scary_copy():
-    if _NODE is None:
-        pytest.skip("node not on PATH")
-
-    proc = subprocess.run(
-        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-
-    assert {"activeCrossoverFirstStepRendered": True} in out["results"]
-    assert {
-        "componentFirstResearchFlowIsOrderedAndAdvancedIsFlat": True
-    } in out["results"]
-    assert {
-        "passiveMainWithSubUsesResearchableMainTargetOnly": True
-    } in out["results"]
-    assert {"partialSavePreservesUnchosenEnclosure": True} in out["results"]
-    assert {
-        "directCrossoverEditRefreshesProposalAndFooter": True
-    } in out["results"]
-    assert {
-        "tweeterTypeChangeInvalidatesCopiedResearchBinding": True
-    } in out["results"]
-    assert {"activeSpeakerSetupTogglePersistsAcrossRender": True} in out["results"]
+def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
+    sound_harness_out,
+):
+    assert sound_harness_out["applyProfileIds"] == ["stock:flat"]
+    assert sound_harness_out["liveDraftRequests"] == 1
+    assert sound_harness_out["liveDraftEpoch"] == "apply-1"
+    assert sound_harness_out["liveTabMarked"] is True
 
 
-def test_sound_module_discloses_a_speaker_split_across_two_child_dacs():
-    """The cross-child verdict is a warning, so the notice IS the disclosure.
-
-    ``evaluate_output_topology`` reports ``speaker_group_spans_child_devices``
-    without blocking the save (never-nanny: the layout drives, the cost is
-    fidelity). Nothing else tells the household, so this render is the whole
-    user-facing half of issue #2486.
-    """
-
-    if _NODE is None:
-        pytest.skip("node not on PATH")
-
-    proc = subprocess.run(
-        [_NODE, str(_SOUND_HARNESS), str(_SOUND_MODULE)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-
-    assert {
-        "crossChildSpeakerGroupIsDisclosedInTheMapStep": True
-    } in out["results"]
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        # The module boots in follower mode (tabs + plot absent) and renders
+        # the local driver/crossover UI without fetching /state.
+        "followerModeRendersLocalDriverUi",
+        "confirmedOutputKeepsResetPreconditions",
+        "resetPartialCleanupSurfacesWarning",
+        "driverResearchImportPreservesOperatorInstalledConfiguration",
+        # #2883: the handoff card renders only once a baseline plays, mints its
+        # prompt server-side, and discloses a copy the declarations moved past.
+        "tuningHandoffCardMintsAndGoesStale",
+        "activeCrossoverFirstStepRendered",
+        "componentFirstResearchFlowIsOrderedAndAdvancedIsFlat",
+        "passiveMainWithSubUsesResearchableMainTargetOnly",
+        "partialSavePreservesUnchosenEnclosure",
+        "directCrossoverEditRefreshesProposalAndFooter",
+        "tweeterTypeChangeInvalidatesCopiedResearchBinding",
+        "activeSpeakerSetupTogglePersistsAcrossRender",
+        # The cross-child verdict is a warning, so the notice IS the disclosure:
+        # evaluate_output_topology reports speaker_group_spans_child_devices
+        # without blocking the save, and nothing else tells the household. This
+        # render is the whole user-facing half of #2486.
+        "crossChildSpeakerGroupIsDisclosedInTheMapStep",
+    ],
+)
+def test_the_sound_module_passes_its_harness_scenario(sound_harness_out, scenario):
+    assert {scenario: True} in sound_harness_out["results"]
 
 
 def test_sound_component_flow_uses_bounded_responsive_grids():
@@ -6651,9 +5674,9 @@ async def test_reconcile_current_dsp_skips_unknown_config(
     assert payload["reason"] == "unknown_config"
     assert fake.loaded_path is None
     assert not (tmp_path / "dsp.json").exists()
-    assert "event=sound.reconcile_current_dsp" in caplog.text
-    assert "result=skipped" in caplog.text
-    assert "reason=unknown_config" in caplog.text
+    _, fields = _event_record(caplog, "sound.reconcile_current_dsp")
+    assert fields["result"] == "skipped"
+    assert fields["reason"] == "unknown_config"
 
 
 async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
@@ -6678,9 +5701,9 @@ async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
     assert payload["status"] == "skipped"
     assert payload["reason"] == "active_audition"
     assert fake.loaded_path is None
-    # The audition file is untouched by the skip. Its preference frame is
-    # present either way now, so what proves "not promoted" is that nothing was
-    # loaded and the file's bytes did not move -- asserted above and below.
+    # The audition file is untouched by the skip: its preference frame is
+    # present either way, so "not promoted" is proved by nothing being loaded
+    # and the file's bytes not moving.
     assert "sound_simple_bass:" in audition.read_text()
     assert not (config_dir / "sound_current.yml").exists()
     assert not (tmp_path / "dsp.json").exists()
@@ -6690,18 +5713,13 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     tmp_path: Path, monkeypatch, caplog,
 ):
     _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    # Realistic apply-then-redeploy: the wizard save stamped sound_current.yml
-    # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id. A redeploy's
-    # dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID, so the two
-    # files differ ONLY in the cosmetic ``(id=...)`` header. Reconcile must still
-    # recognize this as unchanged and skip the gratuitous CamillaDSP reload.
-    #
-    # Tripwire: this previously pre-stamped the on-disk file with
-    # ``profile_id="reconcile-current-dsp"`` so the raw byte comparison matched
-    # by accident — masking that the no-op path is dead in production (the saved
-    # file never carries the reconcile id). Using a timestamp id here makes the
-    # test fail against the old id-sensitive comparison and pass against the
-    # header-normalizing fix.
+    # Realistic apply-then-redeploy: the wizard save stamps sound_current.yml
+    # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id, and a
+    # redeploy's dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID —
+    # so the two files differ ONLY in the cosmetic ``(id=...)`` header, which
+    # must still read as unchanged. The timestamp id below is load-bearing: a
+    # pre-stamped reconcile id would make the raw byte comparison match by
+    # accident, and the production no-op path never sees that id.
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     config_dir = tmp_path / "configs"
@@ -6742,8 +5760,9 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     # The on-disk file is left untouched — its original (timestamp) id survives,
     # proving reconcile took the no-op path rather than re-emitting.
     assert "id=1717000000000000001" in current.read_text()
-    assert "event=sound.reconcile_current_dsp" in caplog.text
-    assert "result=unchanged" in caplog.text
+    assert _event_record(caplog, "sound.reconcile_current_dsp")[1]["result"] == (
+        "unchanged"
+    )
 
 
 def test_config_id_header_strip_only_touches_the_header_line():
@@ -6779,40 +5798,17 @@ def test_config_id_header_strip_only_touches_the_header_line():
     assert _config_without_id_header(device_a) != _config_without_id_header(device_b)
 
 
-async def test_apply_profile_no_trim_by_default_so_boosts_boost(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("match_loudness", [False, True])
+async def test_apply_profile_trims_the_output_only_when_match_loudness_is_on(
+    tmp_path: Path, monkeypatch, match_loudness,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
-
-    payload = await sound_setup._apply_profile(
-        SoundProfile(simple_eq=SimpleEq(bass_db=6.0)),
-        profile_path=tmp_path / "sound_profile.json",
-        config_dir=config_dir,
-        camilla_factory=lambda: fake,
-    )
-
-    generated = Path(fake.loaded_path).read_text()
-    assert "sound_simple_bass:" in generated
-    # Default: boosts boost. The preamp is always DEFINED so its presence never
-    # depends on a value, and it is inert at 0 dB.
-    assert "  sound_preamp:" in generated
-    assert "gain: 0.0000" in generated
-    assert payload["output_trim_db"] == 0
-
-
-async def test_apply_profile_emits_output_trim_when_match_loudness_on(
-    tmp_path: Path, monkeypatch
-):
+    """By default boosts boost. The preamp filter is DEFINED either way — its
+    presence must never depend on a value — and inert at 0 dB until
+    match-loudness asks for a trim."""
     _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     settings_path = tmp_path / "sound_settings.json"
-    settings_path.write_text('{"match_loudness": true}')
+    settings_path.write_text(json.dumps({"match_loudness": match_loudness}))
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -6828,8 +5824,10 @@ async def test_apply_profile_emits_output_trim_when_match_loudness_on(
     )
 
     generated = Path(fake.loaded_path).read_text()
-    assert "sound_preamp:" in generated  # loudness comp applied as output trim
-    assert payload["output_trim_db"] > 0
+    assert "sound_simple_bass:" in generated
+    assert "  sound_preamp:" in generated
+    assert (payload["output_trim_db"] > 0) is match_loudness
+    assert (_preamp_gain(generated) == 0.0) is not match_loudness
 
 
 async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
@@ -7664,11 +6662,6 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
 
     # The preamp is always present; what must not move is its GAIN. A
     # draft-derived trim would have turned the loud draft down.
-    def _preamp_gain(text):
-        import yaml as _yaml
-
-        return _yaml.safe_load(text)["filters"]["sound_preamp"]["parameters"]["gain"]
-
     assert _preamp_gain(after_quiet) == _preamp_gain(after_loud)
     # Same filter set both times, so the edit is a parameter write and the
     # broadband gain never steps.
@@ -7793,65 +6786,68 @@ async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):
     assert refusal.reason_code == "unknown_config"
 
 
-async def test_apply_profile_blocks_active_baseline_with_typed_reason(
-    tmp_path: Path, monkeypatch
-):
-    # Regression: an applied active-speaker baseline used to hit the misleading
-    # "custom config ... Reset" 502 that would have DESTROYED the active graph
-    # if followed. PR-3 lets a SOLO baseline host preference EQ by recomposing
-    # from its saved evidence; here that evidence is absent (a bare tmp config
-    # dir), so the apply refuses with a specific, honest reason
-    # (active_baseline_recompose_unavailable), never re-emits a stereo config
-    # over the active graph, and — since a refusal is a handled "blocked"
-    # outcome, not a DSP failure — records NO dsp-apply state (SF-2; the
-    # pre-check dry-runs the active carrier), so jasper-doctor's
-    # check_dsp_apply_state stays clean on an active speaker.
-    from jasper.dsp_apply import last_dsp_apply_state
+def _active_baseline_config() -> str:
     from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
 
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "active_speaker_baseline.yml"
-    current.write_text(_active_baseline_yaml("mono", 2))
-    fake = FakeCamilla(str(current))
-
-    with pytest.raises(RuntimeError) as excinfo:
-        await sound_setup._apply_profile(
-            SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
-            profile_path=tmp_path / "sound_profile.json",
-            config_dir=config_dir,
-            camilla_factory=lambda: fake,
-        )
-    refusal = sound_setup._carrier_refusal(excinfo.value)
-    assert refusal is not None
-    assert refusal.reason_code == "active_baseline_recompose_unavailable"
-    assert refusal.to_payload()["status"] == "blocked"
-    # Fail closed: the active config was never overwritten / re-loaded.
-    assert fake.loaded_path is None
-    # SF-2: the refusal raised before the apply transaction — no failure state.
-    assert last_dsp_apply_state() is None
+    return _active_baseline_yaml("mono", 2)
 
 
-async def test_apply_profile_blocks_program_bake_without_dirtying_dsp_state(
-    tmp_path: Path, monkeypatch
-):
-    from jasper.dsp_apply import last_dsp_apply_state
+def _program_bake_config() -> str:
     from tests.test_active_speaker_runtime_contract import _program_bake_yaml
 
+    return _program_bake_yaml()
+
+
+def _program_bake_member_kwargs(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        lambda: {"enable_rate_adjust": True, "playback_pipe_path": None},
+    )
+
+
+@pytest.mark.parametrize(
+    ("basename", "yaml_factory", "reason_code", "prepare"),
+    [
+        pytest.param(
+            "active_speaker_baseline.yml",
+            _active_baseline_config,
+            "active_baseline_recompose_unavailable",
+            None,
+            id="active_speaker_baseline",
+        ),
+        pytest.param(
+            "grouping_active_leader_bake.yml",
+            _program_bake_config,
+            "program_bake_pipe_unavailable",
+            _program_bake_member_kwargs,
+            id="grouping_program_bake",
+        ),
+    ],
+)
+async def test_apply_profile_blocks_a_carrier_that_cannot_host_eq(
+    tmp_path: Path, monkeypatch, basename, yaml_factory, reason_code, prepare,
+):
+    """A graph preference EQ cannot ride refuses by NAME and changes nothing.
+
+    An applied active-speaker baseline used to hit the misleading "custom
+    config ... Reset" 502 that would have DESTROYED the active graph if
+    followed. A solo baseline can host preference EQ by recomposing from its
+    saved evidence; here that evidence is absent (a bare tmp config dir), so
+    the apply refuses with a specific, honest reason, never re-emits a stereo
+    config over the active graph, and — since a refusal is a handled "blocked"
+    outcome, not a DSP failure — records NO dsp-apply state (the pre-check
+    dry-runs the active carrier), so jasper-doctor's check_dsp_apply_state
+    stays clean on an active speaker.
+    """
+    from jasper.dsp_apply import last_dsp_apply_state
+
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
-    current = config_dir / "grouping_active_leader_bake.yml"
-    current.write_text(_program_bake_yaml(), encoding="utf-8")
-    fake = FakeCamilla(str(current))
-    monkeypatch.setattr(
-        "jasper.multiroom.member_config.member_camilla_kwargs",
-        lambda: {
-            "enable_rate_adjust": True,
-            "playback_pipe_path": None,
-        },
-    )
+    (config_dir / basename).write_text(yaml_factory(), encoding="utf-8")
+    fake = FakeCamilla(str(config_dir / basename))
+    if prepare is not None:
+        prepare(monkeypatch)
 
     with pytest.raises(RuntimeError) as excinfo:
         await sound_setup._apply_profile(
@@ -7860,9 +6856,13 @@ async def test_apply_profile_blocks_program_bake_without_dirtying_dsp_state(
             config_dir=config_dir,
             camilla_factory=lambda: fake,
         )
+
     refusal = sound_setup._carrier_refusal(excinfo.value)
     assert refusal is not None
-    assert refusal.reason_code == "program_bake_pipe_unavailable"
+    assert refusal.reason_code == reason_code
+    assert refusal.to_payload()["status"] == "blocked"
+    # Fail closed: the active config was never overwritten / re-loaded, and the
+    # refusal raised before the apply transaction, so no failure state landed.
     assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
 
@@ -7887,8 +6887,8 @@ def test_carrier_refusal_unwraps_raw_and_wrapped():
 
 
 def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch):
-    # SF-4: the headline user-facing contract, exercised through the real
-    # do_POST handler (the carrier unit tests can't reach it). A graph that
+    # The headline user-facing contract, exercised through the real do_POST
+    # handler (the carrier unit tests cannot reach it). A graph that
     # can't host EQ yields HTTP 200 {status:"blocked"} — the page's honest-hint
     # vocabulary — never a 502 toast or a silent no-op. A regression that
     # dropped the handler's `return` (falling through to the 502 branch) would
@@ -7896,7 +6896,6 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     import io
 
     from jasper.dsp_apply import last_dsp_apply_state
-    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
 
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     # CSRF / host guard is covered by its own tests; bypass it to drive dispatch.
@@ -7905,7 +6904,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     active = config_dir / "active_speaker_baseline.yml"
-    active.write_text(_active_baseline_yaml("mono", 2))
+    active.write_text(_active_baseline_config())
     fake = FakeCamilla(str(active))
 
     Handler = sound_setup._make_handler(
@@ -7940,7 +6939,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     payload = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode())
     assert payload["status"] == "blocked"
     assert payload["reason_code"] == "active_baseline_recompose_unavailable"
-    # Fail closed (active config never swapped) + SF-2 (no prepare_failed state).
+    # Fail closed: active config never swapped, no prepare_failed state.
     assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
 
@@ -8020,22 +7019,20 @@ def test_summed_validation_route_conflicts_while_combined_test_active(
 async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap(
     tmp_path: Path, monkeypatch
 ):
-    # SF-2 TOCTOU guard: the carrier is re-resolved UNDER the dsp-apply writer
+    # TOCTOU guard: the carrier is re-resolved UNDER the dsp-apply writer
     # lock, so if the loaded config is swapped to an active graph between the
     # pre-lock fast-check and lock acquisition (a concurrent active-startup load
     # shares that lock), the durable apply refuses in-lock and NEVER re-emits a
     # stereo config over the active crossover. Simulated by a fake that reports
     # a hostable config on the first read (pre-lock) and an active graph on
     # every read after (in-lock).
-    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
-
     _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     (config_dir / "sound_current.yml").write_text(_room_config())  # hostable
     (config_dir / "active_speaker_baseline.yml").write_text(
-        _active_baseline_yaml("mono", 2)
+        _active_baseline_config()
     )
 
     class _RacingCamilla:
@@ -8241,35 +7238,11 @@ def _write_repin_fixture(
         OutputTopology.from_mapping(_ported_dual_apple_topology_raw()),
         path=topology_path,
     )
-    write_output_hardware_state(
-        classify_output_cards([
-            OutputCardFact(
-                card_id="A",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial="DWH53530FHL2FN3AC",
-                usb_path="usb1/1-2",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-            OutputCardFact(
-                card_id="A_1",
-                device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-                serial=attached_serial_b,
-                usb_path="usb1/1-1",
-                busnum="1",
-                controller="xhci-hcd.0",
-                endpoint_sync="SYNC",
-            ),
-        ]),
-        path=hardware_path,
-    )
+    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, attached_serial_b)
 
 
 def _stub_repin_runtime(monkeypatch, park_kwargs: dict | None = None) -> list[str]:
     """Stand in for the audio-parking choreography a re-pin shares with save."""
-
-    stops: list[str] = []
 
     def park_and_commit(_topology, commit, **kwargs):
         if park_kwargs is not None:
@@ -8284,20 +7257,7 @@ def _stub_repin_runtime(monkeypatch, park_kwargs: dict | None = None) -> list[st
         "jasper.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: stops.append(reason) or {"status": "stopped"},
-    )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "idle", "reason": reason},
-    )
-    monkeypatch.setattr(
-        sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"}
-    )
-    return stops
+    return _stub_audio_stops(monkeypatch)
 
 
 def test_output_topology_payload_offers_a_repin_only_for_a_swapped_dongle(
@@ -8319,9 +7279,7 @@ def test_output_topology_payload_offers_a_repin_only_for_a_swapped_dongle(
         "Apple DAC B right",
     ]
 
-    _write_repin_fixture(
-        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
-    )
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
     assert sound_setup._output_topology_payload()["hardware_repin"] is None
 
 
@@ -8347,7 +7305,11 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
 
     assert payload["repin"]["status"] == "repinned"
     assert "Apple DAC B left, Apple DAC B right" in payload["repin"]["message"]
-    assert stops == ["output_topology_repin"]
+    assert stops == [
+        "summed:output_topology_repin",
+        "commission:output_topology_repin",
+        "safe",
+    ]
     # The card promises audio stays off until the outputs are re-confirmed. The
     # graph selector is identity-blind, so that promise is only true because
     # this endpoint keeps the runtime parked; see
@@ -8357,7 +7319,7 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
 
     saved = load_output_topology()
     assert [child.serial for child in saved.hardware.child_devices] == [
-        "DWH53530FHL2FN3AC",
+        LEFT_APPLE_SERIAL,
         "NEW-DONGLE",
     ]
     assert {
@@ -8391,44 +7353,37 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
     assert sound_setup._output_topology_payload()["hardware_repin"] is None
 
 
-def test_repin_reports_converging_when_reconcile_is_still_activating(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """A reconcile past its own wait budget is not needs_attention (#3094)."""
-    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
-    _stub_repin_runtime(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": False, "converging": True},
-    )
-    request = sound_setup._output_topology_payload()
-
-    payload = sound_setup._repin_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
-
-    assert payload["repin"] == {
-        "status": "converging",
-        "message": (
-            "Pinned the new DAC and kept your speaker setup. Audio is "
-            "still applying. Check Status in a moment."
+@pytest.mark.parametrize(
+    ("reconcile", "verdict"),
+    [
+        (
+            RECONCILE_STILL_CONVERGING,
+            {
+                "status": "converging",
+                "message": (
+                    "Pinned the new DAC and kept your speaker setup. Audio is "
+                    "still applying. Check Status in a moment."
+                ),
+            },
         ),
-    }
-
-
-def test_repin_reconcile_failure_without_converging_still_needs_attention(
-    monkeypatch,
-    tmp_path: Path,
+        (
+            RECONCILE_FAILED,
+            {
+                "status": "needs_attention",
+                "message": (
+                    "The new DAC was pinned and your speaker setup was kept, "
+                    "but audio remains off. Open Status before continuing."
+                ),
+            },
+        ),
+    ],
+)
+def test_repin_reports_the_reconcile_verdict(
+    monkeypatch, tmp_path: Path, reconcile, verdict,
 ):
-    """A genuine reconcile failure (not converging) keeps needing attention."""
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
     _stub_repin_runtime(monkeypatch)
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": False, "error": "grouping failed"},
-    )
+    _stub_reconcile(monkeypatch, reconcile)
     request = sound_setup._output_topology_payload()
 
     payload = sound_setup._repin_output_topology_payload({
@@ -8436,7 +7391,7 @@ def test_repin_reconcile_failure_without_converging_still_needs_attention(
         "detected_hardware_identity": request["hardware_adoption"]["identity"],
     })
 
-    assert payload["repin"]["status"] == "needs_attention"
+    assert payload["repin"] == verdict
 
 
 def test_repin_rejects_a_stale_request_before_parking(monkeypatch, tmp_path: Path):
@@ -8474,9 +7429,7 @@ def test_repin_refuses_when_the_attached_pair_is_already_pinned(
 ):
     """The endpoint is not a laxer door than the offer it is rendered from."""
 
-    _write_repin_fixture(
-        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
-    )
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
     request = sound_setup._output_topology_payload()
     assert request["hardware_repin"] is None
     monkeypatch.setattr(
@@ -8503,19 +7456,12 @@ def test_sound_output_topology_repin_http_route_is_csrf_protected(
         "_repin_output_topology_payload",
         lambda raw: calls.append(raw) or {"output_topology": {"status": "valid"}},
     )
-    try:
-        server, base = _start_sound_server(tmp_path)
-    except PermissionError:
-        pytest.skip("environment does not allow loopback test server bind")
-    try:
+    with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(base, "/output-topology/repin", {})
         payload = json.loads(resp.read().decode("utf-8"))
 
         assert calls == [{}]
         assert payload["output_topology"]["status"] == "valid"
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 def _save_topology(monkeypatch, tmp_path: Path, raw: dict) -> Path:
@@ -8566,9 +7512,7 @@ def test_unconfirming_a_roleful_output_parks_the_speaker_at_the_click(
     exact seam rather than inventing a second mechanism.
     """
 
-    _write_repin_fixture(
-        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
-    )
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
     park_kwargs: dict = {}
     _stub_repin_runtime(monkeypatch, park_kwargs)
 
@@ -8605,9 +7549,7 @@ def test_a_failed_park_still_records_the_household_s_declared_doubt(
 
     from jasper.active_speaker.runtime_contract import roleful_identity_confirmed
 
-    _write_repin_fixture(
-        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
-    )
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -8649,9 +7591,7 @@ def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
 
     # Confirming a lane never parks — including the second lane of a box that is
     # still unconfirmed elsewhere.
-    _write_repin_fixture(
-        monkeypatch, tmp_path, attached_serial_b="DWH53530FLL2FN3A3"
-    )
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
     park_kwargs: dict = {}
     _stub_repin_runtime(monkeypatch, park_kwargs)
     sound_setup._active_speaker_channel_identity_save_payload({
@@ -8774,14 +7714,10 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         "jasper.active_speaker.design_draft.load_design_draft",
         lambda *a, **k: {"status": "ready_for_review", "revision": 2},
     )
-    server, base = _start_sound_server(tmp_path)
-    try:
+    with sound_server(tmp_path) as base:
         with urllib.request.urlopen(base + "/active-speaker/tuning-handoff") as resp:
             assert resp.status == 200
             payload = json.loads(resp.read())
-    finally:
-        server.shutdown()
-        server.server_close()
 
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
