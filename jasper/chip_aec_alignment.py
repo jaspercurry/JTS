@@ -546,8 +546,10 @@ class TimingResult:
         return {
             "lag": self.lag,
             "peak": round(self.peak, 4),
+            "min_timing_peak": MIN_TIMING_PEAK,
             "peak_height": round(self.peak_height, 4),
             "peak_ratio": round(self.peak_ratio, 4),
+            "min_peak_ratio": MIN_PEAK_RATIO,
             "competitor_lag": self.competitor_lag,
             "competitor_offset_ms": round(self.competitor_offset_ms, 2),
             "competitor_height": round(self.competitor_height, 4),
@@ -557,16 +559,21 @@ class TimingResult:
         }
 
 
-class TimingRejected(ValueError):
-    """A timing capture the objective gate refused, carrying why."""
+class Rejected(ValueError):
+    """A capture an objective gate refused, carrying why."""
 
+    def __init__(self, label: str, fields: dict[str, Any]) -> None:
+        self.fields = fields
+        super().__init__(
+            f"{label} rejected: "
+            + " ".join(f"{name}={value}" for name, value in fields.items())
+        )
+
+
+class TimingRejected(Rejected):
     def __init__(self, result: TimingResult, *, at_edge: bool) -> None:
         self.result = result
-        self.fields: dict[str, Any] = {**result.evidence(), "at_edge": at_edge}
-        super().__init__(
-            "timing rejected: "
-            + " ".join(f"{name}={value}" for name, value in self.fields.items())
-        )
+        super().__init__("timing", {**result.evidence(), "at_edge": at_edge})
 
 
 def _bandpass(values: np.ndarray) -> np.ndarray:
@@ -577,7 +584,7 @@ def _bandpass(values: np.ndarray) -> np.ndarray:
     return scipy_signal.sosfiltfilt(sos, values.astype(np.float64))
 
 
-def _dbfs_rms(values: np.ndarray) -> float:
+def dbfs_rms(values: np.ndarray) -> float:
     import numpy as np
 
     rms = float(np.sqrt(np.mean(np.square(values, dtype=np.float64))))
@@ -618,8 +625,8 @@ def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResu
         alignment.peak,
         alignment.secondary_lag_samples - 512,
         alignment.secondary,
-        _dbfs_rms(paired),
-        _dbfs_rms(reference),
+        dbfs_rms(paired),
+        dbfs_rms(reference),
         clips,
     )
     at_edge = alignment.lag_samples <= 8 or alignment.lag_samples >= 1_016
@@ -635,6 +642,23 @@ class ProductResult:
     beam_suppression_db: tuple[float, float]
     beam_acquisition_db: tuple[float, float]
     clipped_samples: int
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "raw_level_delta_db_abs": round(abs(self.raw_level_delta_db), 3),
+            "max_raw_level_delta_db": MAX_RAW_LEVEL_DELTA_DB,
+            "raw_excess_snr_db": round(self.minimum_raw_excess_snr_db, 2),
+            "min_raw_excess_snr_db": MIN_RAW_EXCESS_SNR_DB,
+            "beam_acquisition_db": tuple(
+                round(value, 2) for value in self.beam_acquisition_db
+            ),
+            "min_beam_acquisition_db": MIN_BEAM_ACQUISITION_DB,
+            "beam_suppression_db": tuple(
+                round(value, 2) for value in self.beam_suppression_db
+            ),
+            "min_beam_suppression_db": MIN_BEAM_SUPPRESSION_DB,
+            "clipped_samples": self.clipped_samples,
+        }
 
 
 def _power(values: np.ndarray) -> float:
@@ -720,7 +744,7 @@ def analyze_product(
         or min(result.beam_suppression_db) < MIN_BEAM_SUPPRESSION_DB
         or result.clipped_samples
     ):
-        raise ValueError("product AEC evidence does not meet the fixed thresholds")
+        raise Rejected("product", result.evidence())
     return result
 
 

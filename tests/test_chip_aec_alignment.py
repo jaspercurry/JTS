@@ -475,7 +475,9 @@ def test_timing_correlation_removes_filtered_window_mean(monkeypatch) -> None:
     assert all(abs(value) < 1e-8 for value in observed_means[0])
 
 
-def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
+def _product_captures(*, clipped: bool = False) -> tuple[np.ndarray, ...]:
+    """An AEC-on/off pair that clears every product threshold it is held to."""
+
     _stereo, _reference, active = commissioning_stimulus()
     rng = np.random.default_rng(7)
     on = rng.integers(-10, 11, size=(32_000, 6), dtype=np.int16)
@@ -489,6 +491,16 @@ def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
         on[start : start + len(active), beam] = (active.astype(np.int32) // 20).astype(
             np.int16
         )
+    if clipped:
+        # Same samples in both captures, so the ratio the other four
+        # thresholds are measured from does not move with the clip count.
+        on[start + 50 : start + 55, 2] = alignment.CLIP
+        off[start + 50 : start + 55, 2] = alignment.CLIP
+    return on, off, active
+
+
+def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
+    on, off, active = _product_captures()
 
     result = analyze_product(on, off, active)
 
@@ -496,3 +508,39 @@ def test_product_analyzer_requires_both_beams_and_all_raw_mics() -> None:
     assert min(result.beam_acquisition_db) > 8
     assert min(result.beam_suppression_db) > 20
     assert result.clipped_samples == 0
+
+
+@pytest.mark.parametrize(
+    "constant, impossible, measured",
+    [
+        ("MAX_RAW_LEVEL_DELTA_DB", -1.0, "raw_level_delta_db_abs"),
+        ("MIN_RAW_EXCESS_SNR_DB", 500.0, "raw_excess_snr_db"),
+        ("MIN_BEAM_ACQUISITION_DB", 500.0, "beam_acquisition_db"),
+        ("MIN_BEAM_SUPPRESSION_DB", 500.0, "beam_suppression_db"),
+    ],
+)
+def test_a_rejected_product_capture_carries_each_metric_beside_its_threshold(
+    constant, impossible, measured, monkeypatch
+) -> None:
+    # The refusal IS the evidence: jts.local refused on the five-threshold
+    # block with a bare message, so the measurement that failed and the number
+    # it was held to both had to be re-derived by hand (#3271).
+    on, off, active = _product_captures()
+    expected = analyze_product(on, off, active).evidence()[measured]
+    monkeypatch.setattr(alignment, constant, impossible)
+
+    with pytest.raises(alignment.Rejected) as rejected:
+        analyze_product(on, off, active)
+
+    fields = rejected.value.fields
+    assert (fields[measured], fields[constant.lower()]) == (expected, impossible)
+    assert fields["clipped_samples"] == 0
+
+
+def test_a_clipping_product_capture_is_refused_with_the_count() -> None:
+    on, off, active = _product_captures(clipped=True)
+
+    with pytest.raises(alignment.Rejected) as rejected:
+        analyze_product(on, off, active)
+
+    assert rejected.value.fields["clipped_samples"] == 10
