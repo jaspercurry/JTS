@@ -372,11 +372,10 @@ def check_camillagui_loopback() -> CheckResult:
 # tuple set-equal to it and to the shipped deploy/*.socket files, so a wizard
 # added there cannot silently drop out of this sweep.
 #
-# Profile-conditional members read as absent rather than needing a name of
-# their own: a streambox installs deploy/jasper-web-streambox.{service,socket}
-# AS jasper-web.{service,socket} (install_streambox_web_unit_files), and never
-# installs jasper-chat-web at all — for which `systemctl show` answers
-# ActiveState=inactive at rc=0, which this sweep reads as ok.
+# One name covers both profiles: a streambox installs
+# deploy/jasper-web-streambox.{service,socket} AS jasper-web.{service,socket}
+# (install_streambox_web_unit_files). Every unit below is installed on both
+# profiles, so the sweep probes them identically — no profile branch here.
 WIZARD_UNITS = (
     "jasper-web",
     "jasper-bluetooth-web",

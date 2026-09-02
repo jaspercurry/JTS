@@ -713,7 +713,8 @@ def test_system_snapshot_legacy_endpoint_token_reports_streambox_caps(
     caps = body["system_capabilities"]
     assert caps["install_profile"] == "endpoint"  # raw token preserved
     assert caps["role"] == "streambox"            # normalized role
-    assert caps["voice_brain"] is False
+    assert caps["voice_brain"] is True
+    assert caps["wake_detection"] is False
     assert caps["developer_tools"] is False
     assert caps["network_settings"] is True
     assert caps["reboot"] is True
@@ -757,9 +758,10 @@ def test_system_snapshot_reports_streambox_capabilities(
     assert caps["role"] == "streambox"
     assert caps["local_sources"] is True
     assert caps["content_dsp"] is True
-    assert caps["voice_brain"] is False
+    assert caps["voice_brain"] is True
+    assert caps["wake_detection"] is False
     assert caps["audio_quality"] is True
-    assert caps["restart_voice"] is False
+    assert caps["restart_voice"] is True
     assert caps["restart_audio"] is True
     assert caps["network_settings"] is True
     assert caps["speaker_settings"] is True
