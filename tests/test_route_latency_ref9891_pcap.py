@@ -32,7 +32,12 @@ def _payload(peak_sample: int, *, frames: int = _FRAMES_PER_PKT) -> bytes:
 
 
 def _udp_packet(
-    payload: bytes, *, dst_port: int = _DST_PORT, proto: int = 17, frag: int = 0
+    payload: bytes,
+    *,
+    dst_port: int = _DST_PORT,
+    proto: int = 17,
+    frag: int = 0,
+    udp_len: int | None = None,
 ) -> bytes:
     eth = b"\x00" * 12 + b"\x08\x00"  # dst/src MAC (unchecked) + ethertype IPv4
     # version/IHL=5, then total length, id, flags+fragment offset, TTL and the
@@ -44,7 +49,9 @@ def _udp_packet(
         + bytes([64, proto])
         + b"\x00" * 10  # checksum + src/dst addresses: 20-byte header total
     )
-    udp = struct.pack(">HHHH", 55555, dst_port, 8 + len(payload), 0)
+    udp = struct.pack(
+        ">HHHH", 55555, dst_port, 8 + len(payload) if udp_len is None else udp_len, 0
+    )
     return eth + ip + udp + payload
 
 
@@ -114,6 +121,44 @@ def test_convert_pcap_to_detections_round_trip(tmp_path, monkeypatch):
     for detection, expected_ns in zip(detections, expected_monotonic_ns):
         assert abs(detection["monotonic_ns"] - expected_ns) < 1_000  # < 1 us
         assert detection["peak"] == 20000 / 32768.0
+
+
+def test_a_datagram_is_exactly_what_its_udp_length_field_claims():
+    """#3509: the payload is bounded by the UDP length field, never by the
+    end of the frame -- a trailer would otherwise be appended to a period
+    and a length pointing past the frame would yield a truncated one.
+
+    Pinned here, at the rule's one owner: `scripts/jasper-pipe-probe`'s
+    Pi-side sniffer imports this parse from the installed tree rather than
+    carrying a copy of it, so there is no second implementation to compare
+    against any more.
+    """
+    good = _payload(20000)
+
+    assert ref9891_pcap.parse_udp_payload(_udp_packet(good) + b"\xff" * 16, _DST_PORT) == good
+    assert ref9891_pcap.parse_udp_payload(_udp_packet(good, udp_len=9000), _DST_PORT) is None
+    assert ref9891_pcap.parse_udp_payload(_udp_packet(good, udp_len=4), _DST_PORT) is None
+
+
+def test_classify_frame_names_what_a_laxer_read_would_have_admitted():
+    """The `rejected_by_header` vocabulary, at the module that declares the
+    bucket. A frame only a protocol/fragment-blind read would call a
+    datagram is COUNTED (that is #3509's evidence), while traffic that never
+    claimed this port is neither stored nor counted -- counting it would
+    read back as evidence about the port."""
+    good = _payload(20000)
+    quote = _udp_packet(bytes(540), proto=1)  # ICMP error quoting a lo header
+
+    assert ref9891_pcap.classify_frame(_udp_packet(good), _DST_PORT) == (good, None)
+    assert ref9891_pcap.classify_frame(quote, _DST_PORT) == (
+        None, "proto=1,frag=0,wire_len=%d" % len(quote),
+    )
+    fragment = _udp_packet(good, frag=0x0100)
+    assert ref9891_pcap.classify_frame(fragment, _DST_PORT) == (
+        None, "proto=17,frag=1,wire_len=%d" % len(fragment),
+    )
+    assert ref9891_pcap.classify_frame(_udp_packet(good, dst_port=9888), _DST_PORT) == (None, None)
+    assert ref9891_pcap.classify_frame(bytes(20), _DST_PORT) == (None, None)
 
 
 def test_payloads_skips_non_9891_and_short_records(tmp_path):

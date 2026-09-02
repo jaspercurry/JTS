@@ -1313,7 +1313,7 @@ def _ring_transport_state(monkeypatch, tmp_path, *, coupling: str, marker: str):
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
@@ -1457,7 +1457,7 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
 
     topology, preset = _commissioning_box()
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH",
+        "jasper.fanin.ring_health.FANIN_ENV_PATH",
         str(tmp_path / "absent" / "fanin.env"),
     )
     monkeypatch.setattr(

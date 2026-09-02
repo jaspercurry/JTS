@@ -1577,7 +1577,7 @@ def build_driver_commission_load_preflight(
         # import time, so passing it is what makes the read follow the module
         # constant at CALL time — and what makes the freshness contract testable
         # against a real file.
-        from jasper.fanin.coupling_reconcile import (
+        from jasper.fanin.ring_health import (
             FANIN_ENV_PATH,
             read_persisted_coupling,
         )

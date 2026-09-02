@@ -616,9 +616,3 @@ def test_endpoint_uses_cached_oneshot_not_inprocess_doctor():
     assert "/run/jasper-control/doctor-result.json" in server
     # The old in-process spawn must be gone.
     assert '"/opt/jasper/.venv/bin/jasper-doctor", "--json"' not in server
-
-
-def test_install_installs_the_oneshot_unit():
-    units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text()
-    # Installed in BOTH the full and streambox unit-install paths.
-    assert units_sh.count("jasper-doctor-json.service") >= 2

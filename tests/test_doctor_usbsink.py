@@ -23,7 +23,7 @@ from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli import doctor
 from jasper.fanin import coupling_auto as _ca
-from jasper.fanin import coupling_reconcile as _cr
+from jasper.fanin import ring_health as _ring_health
 
 # ----------------------------------------------------------------------
 # shared USB data role
@@ -1143,7 +1143,7 @@ def _setup_combo(
     fanin_env.write_text(
         f"{_ca.USB_DIRECT_ENV_VAR}={_ca.USB_COMBO_ENABLED_VALUE}\n" if armed else ""
     )
-    monkeypatch.setattr(_cr, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(_ring_health, "FANIN_ENV_PATH", str(fanin_env))
 
 
 @pytest.mark.parametrize(

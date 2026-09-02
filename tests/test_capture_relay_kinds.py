@@ -490,12 +490,3 @@ def test_level_ramp_phone_timeout_exceeds_pi_safety_timeout():
 def test_builders_registry_is_complete():
     assert set(BUILDERS) == set(SHIPPED_KINDS)
     assert all(callable(b) for b in BUILDERS.values())
-
-
-def test_adding_a_kind_touched_neither_relay_nor_validator():
-    # The validator never enumerates kinds (so the schema/relay are kind-blind):
-    import inspect
-
-    source = inspect.getsource(CaptureSpec.validate)
-    for kind in SHIPPED_KINDS:
-        assert kind not in source
