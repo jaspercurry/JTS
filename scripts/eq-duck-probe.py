@@ -12,7 +12,8 @@ Runs ON the Pi, inside the bounded diagnostic lane:
 Make every gesture under test on ``/eq/`` while it runs (default 60 s). It
 prints one line per fader movement and a verdict: the deepest excursion from
 the starting fader in dB. The EQ is silent only when that is 0.00 — a ducked
-swap shows as a ~40 dB dip (see ADR-0211). Silent to the room: it only reads.
+swap shows as a `camilla.GRAPH_SWAP_DUCK_DB` dip (see ADR-0211). Silent to
+the room: it only reads.
 """
 
 from __future__ import annotations
