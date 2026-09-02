@@ -76,7 +76,6 @@ for (const quiet of [
 const parked = transportParkCard({
   status: "parked",
   parked: true,
-  ring_only: true,
   parks: [
     {
       park_class: "mono_full_range",
@@ -104,16 +103,6 @@ assert.match(parkedRows["mono full range"], /#3117/);
 assert.doesNotMatch(parkedRows["mono full range"], /Clear it with/);
 assert.match(
   parkedRows["roleful active endpoint unconverged"], /baseline-reemit --endpoint ring/);
-
-// A box that still plays takes the OTHER entry — the pin is the selection.
-const pending = transportParkCard({
-  status: "pending",
-  parks: [{ park_class: "mono_full_range", issue: "#3117", detail: "why" }],
-});
-assert.equal(pending.headline, PARK_HEADLINE.pending);
-assert.notEqual(PARK_HEADLINE.pending, PARK_HEADLINE.parked,
-  "a box that plays and a box that is silent must not share one sentence");
-assert.equal(pending.rows.length, 1);
 
 // --- the fifth shape: ring-eligible, converge refused -----------------------
 // `status` reads clean here; without its own row this box is invisible.

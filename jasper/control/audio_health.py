@@ -711,13 +711,8 @@ def _transport_park_signal(
 ) -> dict[str, Any] | None:
     """Return the signal path for a LIVE transport park, or ``None``.
 
-    Only ``status="parked"`` reaches the household: that is the ring-only
-    state where no transport serves this box and it emits nothing. A
-    ``"pending"`` verdict — the box is in one of ADR-0178's four classes but
-    the loopback route still carries it — is an OPERATOR fact and stops at
-    jasper-doctor and ``/state``. Telling a household its playing speaker is
-    parked would be the confusion ADR-0100 exists to prevent, pointed the
-    wrong way.
+    Only ``status="parked"`` reaches the household: that is the state where
+    no transport serves this box and it emits nothing.
 
     Presentation only, exactly like :func:`_parked_signal`: the incident rows
     :func:`_state_issues` writes from the same snapshot keep one row per park
@@ -756,8 +751,7 @@ def _stopped_dsp_signal(
 
     :func:`_signal_path` structurally CANNOT see this.  It reads only fan-in
     and outputd, and both are built to keep looping when the stage between
-    them disappears: fan-in's default `loopback` coupling is timer-paced
-    ("structurally immune"), `shm_ring`
+    them disappears: fan-in's `shm_ring` coupling
     free-run-drops on an absent reader rather than blocking, outputd reads its
     content lane nonblocking and zero-fills ("absent content becomes silence.
     This keeps the final output loop alive"), and BOTH `last_progress_age_ms`

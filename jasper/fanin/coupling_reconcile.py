@@ -635,8 +635,8 @@ def _reconcile_camilla(
     mid-commission roleful box boots from the all-muted staged startup anchor,
     which the carrier correctly refuses to host EQ on
     (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`) — so every arm of the
-    fleet-typical composite failed here, with the reconciler keeping loopback
-    (jts.local, 2026-08-15). :func:`ring_endpoint_anchor_converged` proves from
+    fleet-typical composite failed here, with the graph left unchanged.
+    :func:`ring_endpoint_anchor_converged` proves from
     the artifacts on disk that the graph IS that anchor and IS already at the
     ring endpoint at the box's wire; only then is the step converged, with its
     own detail so the outcome is never confused with a re-emit. Every other
