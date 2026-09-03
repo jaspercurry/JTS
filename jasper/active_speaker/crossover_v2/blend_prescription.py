@@ -191,8 +191,8 @@ BOOST_MAX_DISSENTING_POSITIONS = 1
 
 PRESCRIPTION_TOO_LARGE = "prescription_too_large"
 #: ``BLEND_PRESCRIPTION_`` prefixed on these three so the Python identifiers do
-#: not collide with :mod:`.alignment_prescription`'s bare ones; the VALUES are
-#: each vocabulary's own.
+#: not collide with :mod:`.alignment_prescription`'s bare ones. Only the
+#: identifiers differ — the VALUES are the same strings that door uses.
 BLEND_PRESCRIPTION_MALFORMED = "prescription_malformed"
 PRESCRIPTION_SCHEMA_UNSUPPORTED = "prescription_schema_unsupported"
 PRESCRIPTION_PACKET_MISMATCH = "prescription_packet_mismatch"

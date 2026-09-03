@@ -13,8 +13,8 @@ so every downstream consumer reads one field. Two gates compose: provenance
 from the incumbent delay. Refusals raise and are never clamped to the boundary.
 One parser, two policies: :func:`read_alignment_prescription` is the request
 gate and the only place the bound is applied;
-:func:`alignment_prescription_from_mapping` re-checks shape only and returns
-``None``.
+:func:`alignment_prescription_from_mapping` re-checks shape and provenance but
+not the bound, and returns ``None`` rather than raising.
 """
 
 from __future__ import annotations
@@ -105,9 +105,10 @@ _PRESCRIPTION_FIELDS = frozenset({
     "basis_note",
     # Optional; absent is the automatic path.
     "polarity",
-    # Written BY the gate, accepted on the way back in so a durable block
+    # Not supplied to the gate, accepted on the way back in so a durable block
     # round-trips through this parser. A request that supplies them is
-    # harmless: the gate overwrites both with what it actually checked.
+    # harmless: the gate overwrites the first two with what it actually
+    # checked, and ``residual_us`` is a property, so the value is never read.
     "checked_at_fc_hz",
     "lobe_us",
     "residual_us",

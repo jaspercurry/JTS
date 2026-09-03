@@ -434,10 +434,12 @@ class DriverPrescription:
     ``filters`` is a TOTAL for every role it names, not a delta. A role the
     document does not name is not mentioned and is not changed.
 
-    Every ``int | None`` / ``float | None`` disclosure below reads the same
-    way: ``None`` is "nobody computed this" (the durable read-back applies no
-    bound), and ``0`` is "computed, and the answer is none". A receipt that
-    spelled them the same would claim a measurement it never made.
+    Every ``int | None`` / ``float | None`` disclosure below separates "nobody
+    computed this" (``None``) from "computed, and the answer is none" (``0``);
+    a receipt that spelled them the same would claim a measurement it never
+    made. The durable read-back reports ``None`` for all of them. The
+    ``displaced_*`` three also report it after a full request-gate run whenever
+    the evidence carried no incumbent — which is every take from the spool.
     """
 
     #: The prescribed biquads, in emission order, each naming its own role.
@@ -1313,10 +1315,11 @@ def read_driver_prescription(
     The four keywords are the evidence packet's own answers, read out by
     :mod:`.evidence_packet`'s named readers. Taking VALUES rather than the
     packet keeps this module a leaf of the DAG. All four are required and
-    undefaulted: they are the only inputs a prescriber willing to lie cannot
-    forge, and forgetting ``incumbent_filters`` costs no error at all — only a
-    silent ``None`` where a disclosure belonged. That one bounds nothing and
-    ``None`` is a legitimate value for it, unlike the three above.
+    undefaulted, so a caller cannot lose the evidence's own opinion silently:
+    they are the only inputs a prescriber willing to lie cannot forge.
+    ``incumbent_filters`` bounds nothing and ``None`` is a legitimate value for
+    it, unlike the three above — it buys the one disclosure
+    :func:`_check_displaced` makes.
 
     Order is deliberate — shape, identity, bands, per-filter bounds, composed
     cascade — because each stage sends a prescriber somewhere different. The
