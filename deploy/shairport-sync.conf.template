@@ -194,15 +194,7 @@ metadata = {
 };
 
 diagnostics = {
-    // Raised from default 1 → 2 on 2026-05-21 to log the post-SETUP
-    // RECORD / cipher / PTP-sync state for an open AP2 failure mode:
-    // shairport accepts the SETUP, logs "Connection N. AP2 Realtime
-    // Audio Stream." at rtsp.c:3304, then silently fails to start
-    // audio. Level 1 stops logging at that line — level 2 emits
-    // enough downstream detail to name the failing component on the
-    // next recurrence.
-    // EARMARK: drop back to log_verbosity = 1 once this failure is
-    // closed — this level-2 detail is ~55% of shairport's log volume
-    // (~40 PTP-anchor lines/min).
-    log_verbosity = 2;
+    // 2 logs post-SETUP RECORD/cipher/PTP-sync detail; re-raise only if
+    // the AP2 post-SETUP silent-failure mode (issue #171) recurs.
+    log_verbosity = 1;
 };
