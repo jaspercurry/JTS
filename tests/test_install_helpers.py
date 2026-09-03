@@ -2368,6 +2368,26 @@ def test_aborted_install_restores_units_from_both_park_phases(tmp_path):
     )
 
 
+def test_park_stops_fanin_before_outputd(tmp_path):
+    """jasper-fanin must be stopped before jasper-outputd during the park.
+
+    With outputd gone and CamillaDSP free-running, fanin's mixer loop loses
+    its downstream pacer and its RT thread trips RLIMIT_RTTIME (SIGKILL)
+    within ~1s if it is still running when outputd stops. Regression pin for
+    park_low_memory_build_units's explicit early fanin stop.
+    """
+    run = _run_park_cycle(
+        tmp_path,
+        active=["jasper-fanin.service", "jasper-outputd.service"],
+        scenario="mark_trap; exit 1",
+    )
+
+    stops = [call.split()[-1] for call in run.calls if call.startswith("stop ")]
+    assert stops.index("jasper-fanin.service") < stops.index(
+        "jasper-outputd.service"
+    ), f"jasper-fanin must be stopped before jasper-outputd; got {stops}"
+
+
 def test_aborted_install_restores_the_graph_before_its_renderers(tmp_path):
     """Restore order follows the units' own declared After= chain.
 
