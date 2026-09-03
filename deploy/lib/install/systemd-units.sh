@@ -1248,6 +1248,36 @@ start_streambox_runtime_units() {
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 }
 
+mask_distro_background_units() {
+    # Distro housekeeping a single-purpose speaker never benefits from. On a
+    # 415 MB Zero 2 W an apt-daily or man-db run evicts the audio path's page
+    # cache; cloud-init costs 6.9 s of boot re-deciding a host identity JTS
+    # already owns. Masking the timers leaves the services runnable by hand
+    # (`systemctl start apt-daily.service`) — only the schedule goes away.
+    # apt-daily-upgrade.timer is what drives unattended-upgrades, so security
+    # updates become the owner's `apt upgrade`, not the box's.
+    # To undo on a box that already ran this: `systemctl unmask --now <unit>`.
+    # A mask outlives the installer, so deleting this function does not
+    # restore the timers.
+    local unit
+    for unit in apt-daily.timer apt-daily-upgrade.timer man-db.timer \
+                dpkg-db-backup.timer e2scrub_all.timer; do
+        # `mask --now` also stops the unit, and stopping an absent one fails:
+        # these five ship in different packages and no image carries them all.
+        if systemctl list-unit-files "${unit}" 2>/dev/null \
+                | grep -q "^${unit}"; then
+            systemctl mask --now "${unit}" >/dev/null 2>&1 || true
+        fi
+    done
+    # The sentinel file is cloud-init's own opt-out: the package stays
+    # installed, and deleting the file restores it on the next boot.
+    local cloud_dir="${JTS_CLOUD_INIT_DIR:-/etc/cloud}"
+    if [[ -d "${cloud_dir}" ]]; then
+        touch "${cloud_dir}/cloud-init.disabled" \
+            || echo "  WARN: could not write ${cloud_dir}/cloud-init.disabled"
+    fi
+}
+
 install_streambox_systemd_units() {
     install_jasper_support_files
     install_local_audio_graph_unit_files
@@ -1261,6 +1291,7 @@ install_streambox_systemd_units() {
     install_voice_unit_files
     install_audio_output_recovery_unit_files
     park_streambox_brain_units
+    mask_distro_background_units
 
     validate_streambox_systemd_units
     systemctl daemon-reload
@@ -1662,6 +1693,8 @@ install_systemd_units() {
     # Exercise both cgroup protection slices now as well as enabling them for
     # boot — both carry [Install], so a copy alone is not enough.
     systemctl enable --now jts-audio.slice jts-mic.slice
+
+    mask_distro_background_units
 
     # Hardware-gated USB management network: enable the composite gadget (first
     # gadget unit we enable) and wire the device-activated DHCP. Its condition
