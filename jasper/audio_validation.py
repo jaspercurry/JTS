@@ -811,20 +811,9 @@ def _dac_identity_check(
     )
 
 
-def _normalize_dac_id(value: object) -> str:
-    normalized = (
-        str(value or "unknown")
-        .strip()
-        .strip("'\"")
-        .lower()
-        .replace("-", "_")
-    )
-    return normalized or "unknown"
-
-
 def _chip_aec_dac_support_check(dac: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
-    dac_id = _normalize_dac_id(dac.get("id"))
-    gate = resolve_chip_aec_dac_gate(dac_id)
+    gate = resolve_chip_aec_dac_gate(dac.get("id"))
+    dac_id = gate.dac_id
     observed = {
         "id": dac_id,
         "status": gate.status,

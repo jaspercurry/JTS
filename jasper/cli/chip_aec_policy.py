@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import sys
 from typing import Any
 
-from ..chip_aec.health import DISPOSITIONS, alignment_health
+from ..chip_aec.health import DISPOSITIONS, alignment_health, render_shell_assignments
 from ..chip_aec.policy import resolve_chip_aec_dac_gate
 from ..route_latency.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
 
@@ -43,7 +42,7 @@ def _shell_assignments(gate, *, testing_requested: bool) -> str:
         "JASPER_CHIP_AEC_DAC_GATE_SOURCE": gate.source,
         "JASPER_CHIP_AEC_DAC_GATE_DETAIL": gate.detail,
     }
-    return "\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items())
+    return render_shell_assignments(values)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         outputd_error=outputd_error,
     )
     if args.shell_env:
-        print(_shell_assignments(gate, testing_requested=args.testing_requested))
+        print(_shell_assignments(gate, testing_requested=args.testing_requested), end="")
     else:
         print(json.dumps(gate.to_dict(), sort_keys=True))
     return 0
