@@ -47,11 +47,15 @@ MEASUREMENT_MIN_DEGREES = -TRAVEL_ENVELOPE_DEGREES
 MEASUREMENT_MAX_DEGREES = TRAVEL_ENVELOPE_DEGREES
 TRAVEL_ENVELOPE_EXCEEDED = "travel_envelope_exceeded"
 TRAVEL_OFFSET_UNREADABLE = "travel_offset_unreadable"
-# 7 retries * 1.5s stays under the unit's TimeoutStartSec=40s. More attempts
-# buys more real settling time, not a longer per-attempt window: an
-# unapproved startup byte fails synchronize() immediately, it never times
-# out, so a controller still emitting post-power-on noise needs repeated
-# tries rather than a longer wait per try.
+# Worst case per attempt is open()'s startup_timeout plus 4 independent
+# response_timeout round trips (probe's connection/firmware/product + stop),
+# each capped at AUTOSTOP_IO_TIMEOUT: 5 * 1.5s = 7.5s. 8 attempts * 7.5s + 7
+# inter-attempt sleeps * AUTOSTOP_RETRY_SECONDS = 70.5s, under the unit's
+# TimeoutStartSec=90s (deploy/systemd/jasper-turntable-autostop@.service).
+# More attempts buys more real settling time, not a longer per-attempt
+# window: an unapproved startup byte fails synchronize() immediately, it
+# never times out, so a controller still emitting post-power-on noise needs
+# repeated tries rather than a longer wait per try.
 AUTOSTOP_ATTEMPTS = 8
 AUTOSTOP_RETRY_SECONDS = 1.5
 AUTOSTOP_PRODUCT = "MT320RUBL40ProV3"

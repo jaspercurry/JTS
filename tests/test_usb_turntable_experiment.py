@@ -1753,7 +1753,7 @@ def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
     assert "ExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/" in unit
     assert "--port /dev/%I --json hotplug-stop" in unit
     assert "/bin/sh" not in unit
-    assert "TimeoutStartSec=40s" in unit
+    assert "TimeoutStartSec=90s" in unit
     assert "DeviceAllow=/dev/%I rw" in unit
     assert "jasper-turntable-autostop@.service" in units_install
     assert "99-jasper-turntable-autostop.rules" in units_install
