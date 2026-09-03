@@ -167,10 +167,10 @@ from ._common import (
     send_html_response,
     send_json_response,
     send_route_failure,
+    terminate_process,
 )
 from .volume_floor_tone import (
     _VOLUME_FLOOR_TONE_SESSION,
-    _terminate_process,
     _VolumeFloorToneSession,
 )
 
@@ -2365,7 +2365,7 @@ def _stop_commission_tone_locked(*, reason: str) -> dict[str, Any]:
     proc = session.get("process")
     was_running = bool(proc is not None and proc.poll() is None)
     if was_running:
-        _terminate_process(proc)
+        terminate_process(proc)
     return {
         "status": "stopped" if was_running else "expired",
         "reason": reason,
@@ -2613,7 +2613,7 @@ def _stop_summed_test_tone_locked(*, reason: str) -> dict[str, Any]:
         }
     was_running = bool(proc.poll() is None)
     if was_running:
-        _terminate_process(proc)
+        terminate_process(proc)
     return {
         "status": "stopped" if was_running else "expired",
         "reason": reason,
@@ -3252,10 +3252,10 @@ async def _active_speaker_play_summed_commission_tone(
                     now = time.monotonic()
                     if now >= watchdog_deadline:
                         watchdog_expired = True
-                        _terminate_process(started_proc)
+                        terminate_process(started_proc)
                         break
                     if now >= deadline:
-                        _terminate_process(started_proc)
+                        terminate_process(started_proc)
                         raise TimeoutError(
                             "aplay timed out during combined speaker test"
                         )
@@ -3290,7 +3290,7 @@ async def _active_speaker_play_summed_commission_tone(
                 session["progress_monotonic"] = now_monotonic
         try:
             if started_proc is not None and started_proc.poll() is None:
-                _terminate_process(started_proc)
+                terminate_process(started_proc)
             if fanin_gate is not None:
                 _commission_tone_release_fanin_lane(reason="summed_test")
             rollback, rollback_issue = await rollback_summed_commission_teardown(

@@ -28,6 +28,8 @@ from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.volume_curve import percent_to_db
 from jasper.volume_owner import ClaimKind, VolumeClaimHandle, volume_owner
 
+from ._common import terminate_process
+
 logger = logging.getLogger(__name__)
 
 VOLUME_FLOOR_TONE_FREQS_HZ = (125.0, 500.0, 2000.0)
@@ -105,27 +107,6 @@ def _volume_floor_tone_wav_path() -> Path:
     return wav_path
 
 
-def _terminate_process(
-    proc: subprocess.Popen[Any] | None,
-    *,
-    timeout: float = 0.75,
-) -> None:
-    """Best-effort bounded subprocess shutdown for audible test helpers."""
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            proc.kill()
-            proc.wait(timeout=timeout)
-        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-            pass
-    except (OSError, ProcessLookupError):
-        pass
-
-
 class _LoopingVolumeFloorTone:
     """Small `aplay` loop independent of per-request asyncio loops."""
 
@@ -175,7 +156,7 @@ class _LoopingVolumeFloorTone:
     def _terminate_current(self) -> None:
         with self._proc_lock:
             proc = self._proc
-        _terminate_process(proc)
+        terminate_process(proc)
 
     def _run(self) -> None:
         deadline = time.monotonic() + self._max_duration_s
@@ -244,6 +225,7 @@ class _LoopingVolumeFloorTone:
                         rc=rc,
                     )
                     break
+                # Natural EOF of the short cached WAV: immediately loop it.
         finally:
             if finish_reason in {"error", "timeout"} and self._on_finish:
                 self._on_finish(self, finish_reason)
@@ -421,9 +403,9 @@ class _VolumeFloorToneSession:
                 # The claim is held; only the level it sits at moves. One
                 # settle, so the tone steps between floors instead of jumping
                 # to the household level and back down.
-                if self._claim is not None:
-                    # A held claim implies the owner that granted it.
-                    self._claim = await volume_owner().relevel(  # type: ignore[union-attr]
+                owner = volume_owner()
+                if owner is not None and self._claim is not None:
+                    self._claim = await owner.relevel(
                         self._claim, percent_to_db(1, floor_db=floor_db),
                     )
                 await camilla.set_main_mute(False)
