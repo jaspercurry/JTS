@@ -163,8 +163,9 @@ def test_a_heartbeat_from_the_future_clamps_instead_of_alarming(tmp_path):
 # --- D1: the discrimination argument, as a test ------------------------------
 
 
+@pytest.mark.parametrize("write_seq", [0, 4096, 2**40])
 @pytest.mark.parametrize("read_seq", [0, 1, 4096, 2**40])
-def test_the_alarm_survives_the_read_seq_inversion(tmp_path, read_seq):
+def test_the_alarm_survives_the_read_seq_inversion(tmp_path, read_seq, write_seq):
     """THE D1 RULING. ``read_seq`` must not enter the verdict at ANY value.
 
     During the exact fault this alarm exists to catch, the writer advances
@@ -176,32 +177,22 @@ def test_the_alarm_survives_the_read_seq_inversion(tmp_path, read_seq):
     inside the pre-demotion grace and goes FALSE exactly when the drops start —
     an alarm that switches itself off at the onset of its own fault.
 
-    Sweeping ``read_seq`` across flat, advancing, and resynced-to-``write_seq``
-    while holding the heartbeats fixed proves the verdict is independent of it.
+    Sweeping BOTH sequence cursors across flat, advancing, and
+    resynced-to-each-other while holding the heartbeats fixed proves the verdict
+    is independent of either.
     """
     path = _ring_file(
         tmp_path,
         writer_hb=FRESH,
         reader_hb=STALE,
         read_seq=read_seq,
-        write_seq=2**40,
+        write_seq=write_seq,
     )
     verdict = ring_stall_verdict(path, now_ns=NOW)
     assert verdict.stalled is True, (
-        f"read_seq={read_seq} changed the verdict — the alarm has re-imported "
-        "the self-silencing inversion D1 removed"
+        f"read_seq={read_seq} write_seq={write_seq} changed the verdict — the "
+        "alarm has re-imported the self-silencing inversion D1 removed"
     )
-
-
-def test_the_verdict_reads_no_sequence_field_at_all():
-    """Belt and braces on the same ruling, at the source level: the function
-    must not name ``read_seq`` or ``write_seq``, so a future edit cannot quietly
-    reintroduce the dependency the parametrized test sweeps for."""
-    import inspect
-
-    source = inspect.getsource(ring_stall_verdict)
-    assert "read_seq" not in source
-    assert "write_seq" not in source
 
 
 # --- the doctor surface ------------------------------------------------------

@@ -4,74 +4,45 @@
 
 """What KIND of feature is that — measured, from a round's own banked captures.
 
-The INSTRUMENT behind :mod:`.feature_classification`'s register. That module
-owns the verdict names, the row schema and what ``depth_db`` means; this one
-runs the tests that fill them in, over captures a round already banked. It
-imports every verdict string and never spells one, so the producer and the
-reader cannot drift.
+The INSTRUMENT behind :mod:`.feature_classification`'s register: that module
+owns the verdict names, the row schema and what ``depth_db`` means, this one
+runs the tests that fill them in over captures a round already banked. It
+imports every verdict string and never spells one.
 
-**Three tests and a gate.**
+**Three tests and a gate.** EXCESS GROUP DELAY — minimum-phase (a driver
+defect, so a filter is at least the right kind of tool) or non-minimum-phase
+(a cancellation, where a filter lowers the direct sound and its delayed copy
+together), read as a fraction of what a genuine same-frequency cancellation
+produces through this exact pipeline, which the C4 control measures. GATE
+INVARIANCE — the window ladder, run by :mod:`.gate_sweep`; this module owns
+no second one. TIMING SCATTER — the sub-sample arrival residual between
+captures at the same angle, which needs a repeated angle to run and never
+reads its own absence as evidence of tight timing.
 
-* **Excess group delay** — is the feature minimum-phase (a driver defect, so a
-  filter is at least the right kind of tool) or non-minimum-phase (a
-  cancellation, where a filter lowers the direct sound and its delayed copy
-  together)? Read as a fraction of what a genuine same-frequency cancellation
-  produces through this exact pipeline, which is what the C4 control measures.
-* **Gate invariance** — the window ladder, run by :mod:`.gate_sweep`. This
-  module owns no second one: it hands the engine the captures it already
-  deconvolved and reads back per-feature across-pose sigma growth and a
-  null-model-corrected depth change, which is what :data:`GATE_MOVED` is
-  decided on.
-* **Timing scatter** — the sub-sample arrival residual between captures at the
-  same angle, which is what survives into any phase comparison. It needs a
-  repeated angle to run, says so when it has none, and never reads its own
-  absence as evidence of tight timing.
+**The controls certify the PHASE test, and only it.** Four known answers are
+pushed through the identical pipeline on the round's own measured IR, and
+none of them touches the magnitude ladder. A run whose controls fail still
+writes its artifact and still publishes a real ``gate_verdict``; what it
+loses is the phase class, which every row reports as ``ambiguous`` beside
+``controls_ok: false`` and the raw reading in ``egd_verdict_raw``.
+``defect-*`` is unreachable there — it requires a MIN-PHASE egd verdict — so
+no filter can be vouched for by an instrument that failed its own
+known-answer check.
 
-**The controls certify the PHASE test, and only it.** Known answers are pushed
-through the identical pipeline on the round's own measured IR — a minimum-phase
-peaking filter that must read flat, an all-pass that must recover its own group
-delay, a quiet delayed copy that must ALSO read flat (``|g| < 1`` puts every
-zero inside the unit circle, so it is minimum phase), and a loud one that must
-not. All four calibrate the excess-group-delay scale, and none of them touches
-the magnitude ladder. So a run whose controls fail still writes its artifact and
-still publishes a real ``gate_verdict``; what it loses is the phase class, which
-every row reports as ``ambiguous`` beside ``controls_ok: false`` and the raw
-reading the numbers said in ``egd_verdict_raw``. ``defect-*`` is unreachable
-there — it requires a MIN-PHASE egd verdict — so no filter can be vouched for by
-an instrument that failed its own known-answer check, which is the property the
-old whole-artifact refusal was protecting at the cost of the window evidence.
+**Only the summed post-apply capture shapes are admissible.** A ``lateral``
+capture replays the per-driver MEASURE program one driver at a time, so it
+cannot answer a question about the summed system's features and is a HARD
+refusal by name (:data:`LATERAL_CAPTURE_SHAPE`) rather than a silent skip.
+The pre-apply half of ``programs.SUMMED_SWEEP_PHASES``
+(``entry_baseline`` / ``cloud_measure``) is not admitted either: it measures
+a DIFFERENT graph, and pooling the two would classify a mixture.
 
-**Only the summed post-apply capture shapes are admissible.** ``verify`` and
-``cloud_verify`` play the mono summed sweep through the live production graph
-(``programs.SUMMED_SWEEP_PHASES``); ``lateral`` replays the per-driver MEASURE
-program one driver at a time, which is why :mod:`.journey` keeps it out of that
-set. A per-driver curve cannot answer a question about the summed system's
-features, so a lateral capture is a HARD refusal by name
-(:data:`LATERAL_CAPTURE_SHAPE`) rather than a silent skip — a caller who
-pointed this at a per-driver round should be told what is wrong with the
-round, not handed an empty result. The pre-apply half of that set
-(``entry_baseline`` / ``cloud_measure``) is not admitted either, for a
-different reason: it measures a DIFFERENT graph, and pooling the two would
-classify a mixture.
-
-**Why it lives here and not in** :mod:`jasper.audio_measurement`, where the DSP
-seams it uses live.  ``tests/test_correction_boundary_ssot.py``'s
-``test_audio_measurement_imports_neither_consumer_package`` pins that no file
-under ``jasper/audio_measurement/`` may import ``jasper.active_speaker`` or
-``jasper.correction`` — that invariant is what earns that package the home of
-the correction-boundary SSOT.  This module imports the verdict register and the
-phase names from ``jasper.active_speaker``, so relocating it there fails that
-guard with two offenders.  It reaches the ``audio_measurement`` seams from this
-side instead, which is the direction ``spatial.py`` and ``capture_dispatch.py``
-already run.  **If you are about to move this module, read that test first.**
-
-**What the lab harness did that this does not.** The 2026-08-19 campaign tools
-(``captures/*/tools/classify_*.py``) also fitted a single-delay null ladder
-through the dips and ran a 4000-trial randomisation against it, and read each
-dip's depth through the shipped two-path reflection law. Both were reported and
-neither entered a verdict — the run log's own conclusion was that four dips
-with free rung integers pin nothing. They are left in the capture directories
-as the archaeology they are.
+It lives here rather than under :mod:`jasper.audio_measurement` because
+``tests/test_correction_boundary_ssot.py``'s
+``test_audio_measurement_imports_neither_consumer_package`` forbids that
+package importing ``jasper.active_speaker``, which this module does for the
+verdict register and the phase names. **If you are about to move this
+module, read that test first.**
 """
 
 from __future__ import annotations
@@ -165,10 +136,6 @@ __all__ = [
 ]
 
 
-# --------------------------------------------------------------------------- #
-# refusals — a name for every way this instrument declines to report
-# --------------------------------------------------------------------------- #
-
 #: A ``lateral`` capture was bound to this round. See the module docstring.
 LATERAL_CAPTURE_SHAPE = "classification_lateral_capture_shape"
 
@@ -177,22 +144,18 @@ LATERAL_CAPTURE_SHAPE = "classification_lateral_capture_shape"
 #: remedy is a different ROUND: point at a verify-shaped one.
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
 
-#: No capture of this round reached the instrument at all — an empty ring, one
-#: holding only other sessions' captures, or sidecars that will not parse (an
-#: unreadable one carries no session id, so it is not attributable to this
-#: round either). The remedy is the RING or the bundle it was scoped to; no
-#: round shape would satisfy this one. Narrowed from the slug that used to
-#: cover :data:`ROUND_SHAPE_INADMISSIBLE` too (#3480): the two situations
-#: refuse from different code paths and have different remedies, and one name
-#: for both sent a driver at the wrong fix.
+#: No capture of this round reached the instrument at all — an empty ring,
+#: one holding only other sessions' captures, or sidecars that will not
+#: parse. The remedy is the RING or the bundle it was scoped to; no round
+#: shape would satisfy this one. Narrowed from the slug that used to cover
+#: :data:`ROUND_SHAPE_INADMISSIBLE` too (#3480): the two refuse from
+#: different code paths and have different remedies.
 NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 
-#: This round banked a capture of an admissible shape and the ring cannot hand
-#: it over: the WAV is not beside its sidecar, or the dump name lost the stamp
-#: the take's timing is bound to. The round shape is RIGHT — the remedy is the
-#: ring or the bank step that filled it, and pointing this driver at a
-#: verify-shaped round (what :data:`ROUND_SHAPE_INADMISSIBLE` asks for) is the
-#: #3480 misdirection rebuilt one vocabulary later.
+#: This round banked a capture of an admissible shape and the ring cannot
+#: hand it over: the WAV is not beside its sidecar, or the dump name lost
+#: the stamp the take's timing is bound to. The round shape is RIGHT — the
+#: remedy is the ring or the bank step that filled it (#3480).
 CAPTURES_UNREADABLE = "classification_captures_unreadable"
 
 #: No program in the round directory carries the bytes a capture's sidecar
@@ -214,12 +177,11 @@ CLASSIFICATION_REFUSAL_REASONS = frozenset({
     NO_FEATURES_DETECTED,
 })
 
-# --- ladder refusals — the round still classifies, the window verdict does not
 
 #: A ladder of one rung. The window verdict compares the shortest and longest
-#: resolution-valid rung, so one rung compares with nothing. Deliberately not a
-#: :data:`CLASSIFICATION_REFUSAL_REASONS` member: it costs the window verdict
-#: and nothing else.
+#: resolution-valid rung, so one rung compares with nothing. Deliberately
+#: not a :data:`CLASSIFICATION_REFUSAL_REASONS` member: it costs the window
+#: verdict and nothing else.
 GATE_LADDER_NEEDS_TWO_RUNGS = "gate_ladder_needs_two_rungs"
 
 #: The engine declined this ladder or a bin on it for a reason of its own
@@ -227,7 +189,6 @@ GATE_LADDER_NEEDS_TWO_RUNGS = "gate_ladder_needs_two_rungs"
 #: above, and for the same reason.
 GATE_LADDER_UNUSABLE = "gate_ladder_unusable"
 
-# --- per-capture admissibility — why each capture in the ring was dropped --- #
 
 #: The capture is classifiable: an admissible shape, this round's session, the
 #: program whose bytes it banked present, and a readable WAV under a stamped
@@ -261,12 +222,11 @@ CAPTURE_WAV_MISSING = "wav_missing"
 #: timing residual is bound to.
 CAPTURE_UNSTAMPED_NAME = "unstamped_name"
 
-#: Which refusal each admissibility reason speaks for when a round ends with no
-#: classifiable capture — the partition of the closed capture vocabulary onto
-#: the refusal vocabulary, as data. A row does not get to be a phase-shape
-#: finding and a ring finding at once, and a reason cannot be added to the
-#: vocabulary below without being placed here, because the vocabulary IS this
-#: table's keys.
+#: Which refusal each admissibility reason speaks for when a round ends with
+#: no classifiable capture — the partition of the closed capture vocabulary
+#: onto the refusal vocabulary, as data. A reason cannot be added to the
+#: vocabulary below without being placed here, because the vocabulary IS
+#: this table's keys.
 _REFUSAL_FOR_CAPTURE_REASON: dict[str, str | None] = {
     # Classifiable, so it cannot coexist with the refusal this table serves.
     CAPTURE_ADMISSIBLE: None,
@@ -288,9 +248,9 @@ _REFUSAL_FOR_CAPTURE_REASON: dict[str, str | None] = {
 
 #: Read in this order, so the most specific thing the census can say is what
 #: the refusal says: a round whose admissible take the ring lost IS
-#: verify-shaped, and naming its shape as the remedy is the #3480 misdirection.
-#: A census speaking for neither says nothing of this round arrived, which is
-#: :data:`NO_ADMISSIBLE_CAPTURES` — the empty census's answer too.
+#: verify-shaped, and naming its shape as the remedy is the #3480
+#: misdirection. A census speaking for neither is
+#: :data:`NO_ADMISSIBLE_CAPTURES`.
 _REFUSAL_PRECEDENCE = (CAPTURES_UNREADABLE, ROUND_SHAPE_INADMISSIBLE)
 
 #: What to fix, carried in the refusal a driver actually reads: the slug names
@@ -323,10 +283,6 @@ class FeatureClassificationRefused(RuntimeError):
         self.detail: dict[str, Any] = dict(detail or {})
 
 
-# --------------------------------------------------------------------------- #
-# what this instrument will read
-# --------------------------------------------------------------------------- #
-
 #: The capture shapes whose response IS the summed system, post-apply. The
 #: pre-apply members of ``programs.SUMMED_SWEEP_PHASES`` are deliberately not
 #: here — see the module docstring.
@@ -339,28 +295,19 @@ CLASSIFICATION_SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.feature_classifier"
 
 
-# --------------------------------------------------------------------------- #
-# instrument constants — each anchored on something, none a taste
-# --------------------------------------------------------------------------- #
-
 #: The primary analysis window. ``gating.SEARCH_T_MAX_MS`` is the product's own
 #: reflection search ceiling AND the window it falls back to when no reflection
 #: is found, so a fixed window of that length is the longest one the product
 #: ever calls reflection-free. Overridable per run.
 DEFAULT_GATE_MS = SEARCH_T_MAX_MS
 
-#: 6.11b's receipt: what :func:`excess_group_delay` actually windows with.
-#: Research 03's pitfall is real — a SHORT gate biases the Hilbert min-phase
+#: What :func:`excess_group_delay` actually windows with. Research 03's
+#: pitfall is real — a SHORT gate biases the Hilbert min-phase
 #: reconstruction — but the window this instrument reads EGD through is
-#: ``DEFAULT_GATE_MS`` (``== gating.SEARCH_T_MAX_MS``), already documented
-#: above as the longest window the product ever calls reflection-free: there
-#: is no longer clean window to move to, so this names what is used rather
-#: than changing it. It is also the exact window the C1/C3 controls are
-#: calibrated on, on THIS round's own IR — a known minimum-phase change must
-#: still read flat through it (``CONTROL_MAX_FALSE_POSITIVE_US`` /
-#: ``CONTROL_MAX_ECHO_FALSE_POSITIVE_US``), which is the reflection-freeness
-#: claim being tested rather than assumed. Investigated, not derived: judged
-#: deliberate and defensible, so nothing about the window changed.
+#: ``DEFAULT_GATE_MS`` (``== gating.SEARCH_T_MAX_MS``), the longest window
+#: the product ever calls reflection-free, so there is no longer clean
+#: window to move to. It is also the exact window the C1/C3 controls are
+#: calibrated on, on THIS round's own IR.
 EGD_WINDOW_KIND = "fixed_reflection_free_gate"
 
 #: Complex smoothing for the phase chain, as a fraction of an octave. Finer
@@ -396,13 +343,11 @@ LOGMAG_FLOOR_DB = 60.0
 
 #: Out-of-band log-magnitude is held at the nearest in-band value across this
 #: crossfade. The cepstral transform is a Hilbert transform over the WHOLE
-#: spectrum, so leaving the gate's low-frequency floor and the deconvolution
-#: regulariser's roll-off raw injects a large fake minimum-phase slope right
-#: through the features. That holds for a capture, whose out-of-band magnitude
-#: the gate has already destroyed. It does NOT hold for magnitude a synthetic
-#: control puts down there deliberately: the phase is kept while the magnitude
-#: is replaced, and the mismatch lands in band as excess GD rising as ~1/f^2
-#: toward the low edge — see :func:`injection_excess_gd` and issue #3493.
+#: spectrum, so leaving the gate's low-frequency floor and the
+#: deconvolution regulariser's roll-off raw injects a large fake
+#: minimum-phase slope through the features. That holds for a capture, not
+#: for magnitude a synthetic control puts down there deliberately — see
+#: :func:`injection_excess_gd` and issue #3493.
 EDGE_LO_HZ = 250.0
 EDGE_HI_HZ = 17000.0
 EDGE_BLEND_OCT = 0.5
@@ -421,11 +366,10 @@ FEATURE_MIN_DEPARTURE_DB = 0.10
 
 #: Two extrema closer together than half a feature band are one feature, not
 #: two. Deliberately NOT
-#: :data:`~.feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES`: the real
-#: 2026-08-19 record has peak/dip pairs 0.143 and 0.157 octaves apart, inside
-#: that tolerance, and merging them would delete four genuine features. The
-#: register's own answer to close neighbours is the nearest-verdict-decides
-#: rule, not a wider detector.
+#: :data:`~.feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES`: the
+#: 2026-08-19 record has peak/dip pairs 0.143 and 0.157 octaves apart,
+#: inside that tolerance, and merging them would delete four genuine
+#: features.
 FEATURE_MIN_SEPARATION_OCT = FEATURE_HALF_OCT
 
 #: Half-width of the direct-sound window the timing residual is measured over.
@@ -434,13 +378,11 @@ FEATURE_MIN_SEPARATION_OCT = FEATURE_HALF_OCT
 DIRECT_SOUND_HALF_WINDOW_MS = 1.0
 
 #: Bounded work per round. The 2026-08-19 record found nine; a response that
-#: offers more than this is reporting texture rather than features, and the
-#: largest are the ones any filter would be aimed at. Each feature costs two
-#: full excess-group-delay runs in the C4 control pair, so this is the
-#: instrument's CPU bound as well as its honesty bound.
+#: offers more than this is reporting texture rather than features. Each
+#: feature costs two full excess-group-delay runs in the C4 control pair,
+#: so this is the instrument's CPU bound as well as its honesty bound.
 MAX_FEATURES = 12
 
-# --- decision thresholds ---------------------------------------------------- #
 
 #: Fraction of a genuine same-frequency non-minimum-phase comb's excursion (the
 #: C4 control, measured on this round's own capture) below which the feature is
@@ -458,7 +400,6 @@ Z_LOCAL_FLAT = 3.0
 # the ladder owns what counts as the window having moved a feature, and this
 # module maps its three-word verdict into the register (:func:`_gate_call`).
 
-# --- control specifications and their bars ---------------------------------- #
 
 CONTROL_PEAKING_GAIN_DB = 2.0
 CONTROL_PEAKING_Q = 2.0
@@ -501,7 +442,6 @@ CONTROLS_FAILED_DISCLOSURE = (
 #: would be a coin toss dressed as a threshold.
 CONTROL_SEPARATION_MARGIN = 5.0
 
-# --- narrow-band decay ------------------------------------------------------- #
 
 #: The drop time-to-decay is measured against. Named once so the field
 #: (``time_to_neg20_db_ms``) and the reachability test (``below_floor``) read
@@ -510,23 +450,17 @@ DECAY_TARGET_DROP_DB = 20.0
 
 #: How far beyond a feature's own +/-``FEATURE_HALF_OCT`` skirts a flanking
 #: decay band's matching skirt sits. One third-octave: the flanking reads
-#: exist to show whether extended ringing is peculiar to the resonance or is
-#: the room's tail everywhere nearby — the campaign's own ~48 ms on the
-#: 898 Hz ridge against ~6-10 ms a third-octave outside it (same room, same
-#: capture). Each flank is the SAME width as the centre band, not narrower.
+#: show whether extended ringing is peculiar to the resonance or is the
+#: room's tail nearby — the campaign's ~48 ms on the 898 Hz ridge against
+#: ~6-10 ms a third-octave outside it. Each flank is the SAME width as the
+#: centre band.
 DECAY_FLANK_SKIRT_OFFSET_OCT = 1.0 / 3.0
 
 #: Fraction of a band-limited envelope's own tail read for its noise floor.
 #: The IRs this reads are the full deconvolved capture, not a gated
 #: fragment, so any decay this instrument could report has long since
-#: finished by the last fifth of it; late enough to be floor, wide enough
-#: that a handful of samples cannot set it.
+#: finished by the last fifth of it.
 DECAY_NOISE_FLOOR_TAIL_FRACTION = 0.2
-
-
-# --------------------------------------------------------------------------- #
-# banked round input
-# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
@@ -608,41 +542,34 @@ def load_round_captures(
 ) -> tuple[RoundCapture, ...]:
     """Bind one round's banked captures to the programs that produced them.
 
-    ``round_dir`` is the round's own artifact directory — the
-    ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/`` one the packet
-    reads, which is where the ``<phase>_program.wav`` files live and where the
-    verdict is filed. ``dumps_dir`` is the banked capture ring's root: sidecar
-    JSON beside its WAV, in either the flat ``wav/`` + ``sidecar/`` shape or a
-    per-phase nesting of it, found by
-    :data:`~.evidence_packet.RING_SIDECAR_GLOB` —
+    ``round_dir`` is the round's own artifact directory, where the
+    ``<phase>_program.wav`` files live and where the verdict is filed.
+    ``dumps_dir`` is the banked capture ring's root: sidecar JSON beside its
+    WAV, found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` —
     :func:`~.harmonic_evidence.read_round_harmonics` reads the same ring
-    through the same constant, so ``jasper-classify-features --dumps`` and
-    ``jasper-read-distortion --dumps`` cannot come to mean different
-    directories.
+    through the same constant, so ``--dumps`` cannot come to mean two
+    different directories.
 
     ``session_id`` scopes the ring to this round. It is the BUNDLE session id
-    (``info.json``'s ``session_id``), which is what a sidecar stamps into
+    (``info.json``'s), which is what a sidecar stamps into
     ``jts_session_identity``; the relay id that names ``round_dir`` is a
-    different namespace. Omitting it admits every capture in the ring, which is
-    correct only when the ring holds one round.
+    different namespace. Omitting it admits every capture in the ring, which
+    is correct only when the ring holds one round. ``walk_logs`` are optional:
+    without them captures carry no angle and the timing test says it did not
+    run.
 
-    ``walk_logs`` are turntable trails. They are optional: without them
-    captures carry no angle and the timing test says it did not run.
-
-    Raises :class:`FeatureClassificationRefused` — never returns an empty
-    tuple, because "no captures" is a finding a caller must be told by name.
-    EVERY refusal it raises carries ``captures``: one row per sidecar the ring
-    listed (``sidecar`` / ``phase`` / ``admissible`` / ``reason``, the reason
-    drawn from :data:`CAPTURE_ADMISSIBILITY_REASONS`), so a caller sees which
-    capture was dropped and why rather than a count contradicting the ring
-    listing it was just handed. Which name a no-capture round refuses under is
-    read off those rows through :data:`_REFUSAL_FOR_CAPTURE_REASON`.
+    Raises :class:`FeatureClassificationRefused` — never returns empty, "no
+    captures" being a finding a caller must be told by name. EVERY refusal
+    carries ``captures``: one row per sidecar the ring listed, the reason drawn
+    from :data:`CAPTURE_ADMISSIBILITY_REASONS`, and which name a no-capture
+    round refuses under is read off those rows through
+    :data:`_REFUSAL_FOR_CAPTURE_REASON`.
     """
-    # The listing and the binding map are separate because they answer
-    # different questions: a round directory really does hold byte-identical
-    # programs (``_play`` banks the first summed-sweep phase's bytes a second
-    # time as ``summed_program.wav``), and those collapse into ONE hash key —
-    # so a refusal naming the map's values would omit files that are on disk.
+    # The listing and the binding map are separate because a round directory
+    # really does hold byte-identical programs (``_play`` banks the first
+    # summed-sweep phase's bytes again as ``summed_program.wav``) that collapse
+    # into ONE hash key, so a refusal naming the map's values would omit files
+    # that are on disk.
     banked_programs = sorted(round_dir.glob("*_program.wav"))
     programs = {
         sha256_file(path): path
@@ -662,9 +589,9 @@ def load_round_captures(
         """One row of the per-capture admissibility table.
 
         Every drop below records why, so a refusal names the captures the ring
-        listing just handed the caller instead of only counting them (#3480),
-        and the banked stimulus digest rides along so a program-missing row
-        says what it matched against.
+        listing just handed the caller instead of only counting them (#3480), and
+        the banked stimulus digest rides along so a program-missing row says what
+        it matched against.
         """
         census.append({
             "sidecar": sidecar.name,
@@ -801,12 +728,11 @@ class RoundPoseCurve:
     """One banked lateral-walk pose's one driver-role curve, magnitude only.
 
     Read from :func:`~.spatial.pose_curve_record`'s magnitude+phase bank
-    (Wave 4a / ruling S3) through the same reader :mod:`.delay_landscape` and
-    ``jasper-delay-sweep`` already use to reconstruct a transfer function --
-    never a raw lateral WAV, and never a second tree-walker over the bundle
-    (house ruling R11). ``band_hz`` is the role's own driven sweep band,
-    parsed by the shared :func:`~.position_cycle.parse_curve_magnitude` —
-    the same step the delay-sweep reader layers phase onto.
+    (ruling S3) through the same reader :mod:`.delay_landscape` and
+    ``jasper-delay-sweep`` already use — never a raw lateral WAV, and never a
+    second tree-walker over the bundle (house ruling R11). ``band_hz`` is the
+    role's own driven sweep band, parsed by
+    :func:`~.position_cycle.parse_curve_magnitude`.
     """
 
     pose_id: str
@@ -824,29 +750,20 @@ class RoundPoseCurve:
 def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     """Every banked lateral-walk pose curve in this bundle, magnitude only.
 
-    ``bundle_dir`` is the commissioning bundle -- the same directory
-    :func:`load_round_captures` and :func:`~.evidence_packet.round_artifact_dir`
-    read, not the round's own artifact directory.
-
-    Reused, not re-walked: :func:`~.record_index.bundle_measurements` is the
-    same take index the evidence packet's ``lateral_poses`` block and
-    ``jasper-delay-sweep propose`` scan, and
+    ``bundle_dir`` is the commissioning bundle, not the round's own artifact
+    directory. Reused, not re-walked:
+    :func:`~.record_index.bundle_measurements` is the same take index the
+    evidence packet's ``lateral_poses`` block scans, and
     :func:`~.position_cycle.read_take_curves` is the same banked-curve reader
-    :func:`~.spatial.pose_curve_record` writes. Phase is dropped -- a
-    persistence read is magnitude-only -- so a caller wanting the pair reads
-    ``read_take_curves`` directly.
+    :func:`~.spatial.pose_curve_record` writes. Phase is dropped — a
+    persistence read is magnitude-only.
 
-    Returns one entry per (pose stop, role): a stop that measured two driver
-    curves banks two entries sharing one ``pose_id``. **Latest attempt wins,
-    per stop** -- a retake's superseded attempts stay banked as the honest
-    walk record, but only the newest readable take speaks for its stop
-    (:func:`~.spatial.take_stop_id` groups them; the same rule
-    :func:`~.position_cycle.read_pose_curve_pair` applies), so a persistence
-    or pooling read never averages a retake with the noise it replaced.
-    Empty when this round ran no lateral walk, or banked none that survived
-    to a curve -- never raises, which is what lets :func:`classify_round`
-    tell "no lateral walk" from "a walk that measured nothing usable" apart
-    from a directory error.
+    One entry per (pose stop, role). **Latest attempt wins, per stop**: a
+    retake's superseded attempts stay banked as the honest walk record, but
+    only the newest readable take speaks for its stop, so a pooling read never
+    averages a retake with the noise it replaced. Empty when this round ran no
+    lateral walk, and never raises, which is what lets :func:`classify_round`
+    tell "no lateral walk" from a directory error.
     """
     from .position_cycle import parse_curve_magnitude, read_take_curves
     from .record_index import Measurement, bundle_measurements
@@ -887,11 +804,6 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     return tuple(out)
 
 
-# --------------------------------------------------------------------------- #
-# gating and magnitude
-# --------------------------------------------------------------------------- #
-
-
 def gate(
     ir: np.ndarray,
     sample_rate: int,
@@ -902,17 +814,17 @@ def gate(
 ) -> np.ndarray:
     """A FIXED-length window from the IR peak, optionally with a pre-peak lead.
 
-    Deliberately not :func:`~jasper.audio_measurement.gating.gate_impulse_response`,
-    whose window is sized from a DETECTED reflection: the length here is the
+    Deliberately not
+    :func:`~jasper.audio_measurement.gating.gate_impulse_response`, whose
+    window is sized from a DETECTED reflection: the length here is the
     caller's, so a control's known answer and the capture it is injected into
-    are read through the identical window. The shape is the same family: flat
-    to the peak, decaying half-Hann after it, raised-cosine fade into any lead.
+    are read through the identical window. Same shape family — flat to the
+    peak, decaying half-Hann after it, raised-cosine fade into any lead.
 
     This is the PRIMARY and phase window only. The window LADDER has its own
-    shape — :func:`~jasper.audio_measurement.gating.build_gate_window` at a
-    forced span, which is a different family — and it belongs to
-    :func:`~.gate_sweep.gated_segment`. The two are not interchangeable and
-    their numbers are not comparable (P1 sec 6, rows D and F).
+    shape (:func:`~.gate_sweep.gated_segment`); the two are not
+    interchangeable and their numbers are not comparable (P1 sec 6, rows D
+    and F).
     """
     if peak is None:
         peak = int(np.argmax(np.abs(ir)))
@@ -942,9 +854,9 @@ def smoothed_curve(
 
     Smoothing is the product's own power-mean
     (:func:`~jasper.audio_measurement.analysis.smooth_fractional_octave`), run
-    on the linear rfft grid it expects and then interpolated onto the log grid.
-    The lab harness used an arithmetic dB mean of its own; the numbers here are
-    therefore this instrument's, not a reproduction of the night's.
+    on the linear rfft grid it expects and then interpolated onto the log
+    grid. The lab harness used an arithmetic dB mean of its own, so these
+    numbers are this instrument's, not a reproduction of the night's.
     """
     freqs, db = magnitude_response(segment.astype(np.float32), sample_rate)
     lo, hi = CLASSIFICATION_GRID_LO_HZ * 0.8, CLASSIFICATION_GRID_HI_HZ * 1.2
@@ -955,11 +867,6 @@ def smoothed_curve(
     curve = np.interp(grid, freqs[keep], smoothed)
     band = (grid >= NORMALISE_BAND_HZ[0]) & (grid <= NORMALISE_BAND_HZ[1])
     return curve - float(np.median(curve[band]))
-
-
-# --------------------------------------------------------------------------- #
-# excess group delay
-# --------------------------------------------------------------------------- #
 
 
 def _hold_band_edges(freqs: np.ndarray, logmag: np.ndarray) -> np.ndarray:
@@ -1025,10 +932,10 @@ def _window_slopes(
     """Least-squares slope of ``y`` against sample INDEX in each window.
 
     The transform grid is uniform, so the regressor is the index and the
-    denominator ``n(n^2-1)/12`` is exact — no accumulation error, and no
-    per-window ``polyfit`` call. Doing this by prefix sums rather than a Python
-    loop is what keeps a run bounded: the in-band span is ~21 000 bins and the
-    instrument fits a slope at every one of them, dozens of times per round.
+    denominator ``n(n^2-1)/12`` is exact. Doing this by prefix sums rather
+    than a Python loop is what keeps a run bounded: the in-band span is
+    ~21 000 bins and the instrument fits a slope at every one of them,
+    dozens of times per round.
     """
     n = y.size
     idx = np.arange(n, dtype=np.float64)
@@ -1069,20 +976,19 @@ def excess_group_delay(
 ) -> ExcessPhase:
     """Excess group delay of a gated response, in microseconds.
 
-    In the order that matters: transform with heavy zero-padding; estimate and
-    remove bulk time-of-flight as a linear phase fit, without which the complex
-    smoothing that follows would average rotating phasors to nothing;
-    complex-smooth; take minimum phase from the smoothed log-magnitude with the
-    band edges held; subtract it and remove any residual linear trend; then
-    differentiate by a local linear fit so the derivative is not a noise
-    amplifier.
+    In the order that matters: transform with heavy zero-padding; estimate
+    and remove bulk time-of-flight as a linear phase fit, without which the
+    complex smoothing that follows would average rotating phasors to
+    nothing; complex-smooth; take minimum phase from the smoothed
+    log-magnitude with the band edges held; subtract it and remove any
+    residual linear trend; differentiate by a local linear fit.
 
     **What it cannot see, permanently.** Bulk delay removal cannot tell a
     smooth band-wide all-pass from metres of air, so a crossover's own global
     phase rotation is removed along with the time of flight. Only LOCALISED
-    excess phase is detectable — which is what a cancellation produces, and is
-    the target — but "minimum-phase" from this instrument means "no local
-    excess phase at this feature", never "the whole response is minimum-phase".
+    excess phase is detectable, so "minimum-phase" from this instrument means
+    "no local excess phase at this feature", never "the whole response is
+    minimum-phase".
     """
     spectrum = np.fft.rfft(np.asarray(segment, dtype=np.float64), n=PHASE_NFFT)
     freqs = np.fft.rfftfreq(PHASE_NFFT, d=1.0 / sample_rate)
@@ -1130,13 +1036,11 @@ def egd_excursion(
 
     Two metrics, because one would miss half the physics. ``excursion_us`` is
     the SIGNED peak departure of the feature band from the neighbourhood
-    median — a local detector, matched to the narrow features under test, and a
-    cancellation throws exactly that shape. ``p2p_us`` is peak-to-peak across
-    the whole neighbourhood — a broad detector, because a gentle all-pass lifts
-    the neighbourhood together and the local metric would read it as flat.
-
-    ``clean`` is False when the neighbourhood runs off the trusted band: a
-    verdict there would be reading the band edge, not the speaker.
+    median — a local detector, and a cancellation throws exactly that shape.
+    ``p2p_us`` is peak-to-peak across the whole neighbourhood — a broad
+    detector, because a gentle all-pass lifts the neighbourhood together and
+    the local metric would read it as flat. ``clean`` is False when the
+    neighbourhood runs off the trusted band.
     """
     freqs, gd = ep.freqs, ep.excess_gd_us
     finite = np.isfinite(gd)
@@ -1176,11 +1080,6 @@ def egd_excursion(
             and fc * 2 ** NEIGHBOURHOOD_OCT <= trusted_band_hz[1]
         ),
     }
-
-
-# --------------------------------------------------------------------------- #
-# synthetic perturbations — the controls' known answers
-# --------------------------------------------------------------------------- #
 
 
 def biquad_allpass(
@@ -1235,26 +1134,22 @@ def injection_excess_gd(
 ) -> ExcessPhase:
     """What this chain reports for a delayed-copy injection ON ITS OWN.
 
-    ``|gain| < 1`` makes ``1 + g*z^-N`` minimum phase, so a correct reading is
-    zero everywhere and whatever comes back is this chain's own artifact —
-    which is what makes subtracting it sound rather than a rubber stamp, and
-    why a non-minimum-phase gain is refused instead of corrected.
+    ``|gain| < 1`` makes ``1 + g*z^-N`` minimum phase, so a correct reading
+    is zero everywhere and whatever comes back is this chain's own artifact —
+    which is what makes subtracting it sound rather than a rubber stamp.
 
     The artifact is :func:`_hold_band_edges`: it replaces the log-magnitude
-    below :data:`EDGE_LO_HZ` with a constant, while :func:`excess_group_delay`
-    keeps the measured phase there. A NEGATIVE gain puts the comb's DC null —
-    the sharpest feature of its magnitude — inside that discarded band (-6.0 dB
-    true against -3.1 dB held at ``g = -0.5``), and the cepstral reconstruction
-    is then handed a magnitude the phase does not match. Because the Hilbert
-    relation is global, the mismatch lands in the analysed band as excess GD
-    rising roughly as 1/f^2 towards the low edge: 12.7 us at 465 Hz on a bare
-    impulse, against C3's 10.0 us bar. C1's peaking filter is unity at DC and
-    C4's positive-gain combs sit on a broad DC maximum, so neither is touched;
-    only C3 is. See issue #3493.
+    below :data:`EDGE_LO_HZ` with a constant while :func:`excess_group_delay`
+    keeps the measured phase there. A NEGATIVE gain puts the comb's DC null
+    inside that discarded band (-6.0 dB true against -3.1 dB held at
+    ``g = -0.5``), and because the Hilbert relation is global the mismatch
+    lands in the analysed band as excess GD rising roughly as 1/f^2 towards
+    the low edge: 12.7 us at 465 Hz on a bare impulse, against C3's 10.0 us
+    bar. C1 is unity at DC and C4's positive-gain combs sit on a broad DC
+    maximum, so only C3 is touched. See issue #3493.
 
-    Read through the identical chain — same transform, smoothing, hold and
-    local-slope differentiator — so the correction is made the way the reading
-    is, and goes to zero exactly when the hold does.
+    Read through the identical chain, so the correction is made the way the
+    reading is and goes to zero exactly when the hold does.
     """
     if abs(gain) >= 1.0:
         raise ValueError(
@@ -1270,11 +1165,6 @@ def injection_excess_gd(
     )
 
 
-# --------------------------------------------------------------------------- #
-# the run
-# --------------------------------------------------------------------------- #
-
-
 def _apply(ir: np.ndarray, coeffs: tuple[np.ndarray, np.ndarray]) -> np.ndarray:
     from scipy.signal import lfilter
 
@@ -1286,10 +1176,9 @@ def classifiable_band_hz(trusted_band_hz: tuple[float, float]) -> tuple[float, f
 
     A feature is read against its own +/-1/3-octave neighbourhood, so the
     neighbourhood has to fit inside the trusted band — otherwise
-    :func:`egd_excursion` reports ``clean=False`` and the "excursion" is the
-    edge of the measurement. This is that band, and it bounds detection AND an
-    explicitly requested frequency: a caller asking about 15 kHz on a 7 ms gate
-    is asking a question this instrument cannot answer.
+    :func:`egd_excursion` reports ``clean=False`` and the excursion is the
+    edge of the measurement. This bounds detection AND an explicitly
+    requested frequency.
     """
     lo, hi = trusted_band_hz
     return lo * 2**NEIGHBOURHOOD_OCT, hi * 2**-NEIGHBOURHOOD_OCT
@@ -1306,23 +1195,18 @@ def _detect_features(
     Three things have to be true at once, and each rejects a different way of
     being wrong:
 
-    * **Two-sided prominence in the RAW pooled curve.** A real peak falls away
-      on BOTH sides and a real dip rises on both. The shoulder of a large
-      resonance does neither — it is flat on one side and climbing on the
-      other — and a one-sided test calls that shoulder a feature. Removing the
-      broad tilt MANUFACTURES those shoulders (a 1-octave baseline under a
-      +3 dB resonance leaves a −0.7 dB trough on each flank), so the
-      prominence is read before the detrend, never after it. This is
-      ``scipy``'s own topographic prominence, bounded to the neighbourhood
-      width so a distant feature cannot supply the col.
-    * **A trend-removed size of the same sign.** The size that is reported and
-      that the gate test compares against is the detrended one; when the two
-      disagree about which way the feature points, neither is trustworthy.
-    * **Stability across the round's captures.** A departure that stands
-      :data:`FEATURE_STABILITY_Z` standard errors above the capture-to-capture
-      scatter is a property of the speaker; one that does not is a property of
-      where the microphone was, and the register's readers are asking about
-      the speaker.
+    * **Two-sided prominence in the RAW pooled curve.** A real peak falls
+      away on BOTH sides and a real dip rises on both, where the shoulder of
+      a large resonance does neither. Removing the broad tilt MANUFACTURES
+      those shoulders (a 1-octave baseline under a +3 dB resonance leaves a
+      −0.7 dB trough on each flank), so prominence is read before the
+      detrend. ``scipy``'s topographic prominence, bounded to the
+      neighbourhood width so a distant feature cannot supply the col.
+    * **A trend-removed size of the same sign.** When the two disagree about
+      which way the feature points, neither is trustworthy.
+    * **Stability across the round's captures**, :data:`FEATURE_STABILITY_Z`
+      standard errors above the capture-to-capture scatter: below that it is
+      a property of where the microphone was.
     """
     from scipy.signal import find_peaks
 
@@ -1417,12 +1301,11 @@ def _run_controls(
     }
 
     # C2 — an all-pass, read as a difference curve referenced far from f0. The
-    # excess-GD curve carries an arbitrary constant (bulk-delay removal absorbs
-    # part of any added all-pass), so a raw before/after read at f0 would
-    # measure the detrend rather than the filter. The expectation is the exact
-    # digital filter's own group delay referenced over the identical band, NOT
-    # the raw 4Q/w0 peak: a 2nd-order all-pass sits on a plateau below f0, and
-    # comparing against the peak marks a correct instrument wrong.
+    # excess-GD curve carries an arbitrary constant, so a raw before/after
+    # read at f0 would measure the detrend rather than the filter. The
+    # expectation is the exact digital filter's own group delay over the
+    # identical band, NOT the raw 4Q/w0 peak: a 2nd-order all-pass sits on a
+    # plateau below f0.
     from scipy.signal import group_delay as _scipy_group_delay
 
     c2: dict[str, Any] = {}
@@ -1449,18 +1332,15 @@ def _run_controls(
             "detrend_offset_removed_us": offset,
         }
 
-    # C3 — the research spec's own interference case, run as specified and
-    # reported honestly: |gain| = 0.5 is MINIMUM phase, so a correct pipeline
-    # must read it flat. Flagging it would be a false positive, not a pass.
-    #
-    # "Flat" is the known answer for the FILTER, not for this chain's reading
-    # of it, for the same reason C2's known answer is the exact filter's own
-    # group delay and not the textbook 4Q/w0 peak: the declared edge hold
-    # discards the comb's DC null, and the reconstruction error lands in band.
+    # C3 — the research spec's own interference case: |gain| = 0.5 is MINIMUM
+    # phase, so a correct pipeline must read it flat, and flagging it would
+    # be a false positive. "Flat" is the known answer for the FILTER, not for
+    # this chain's reading of it: the declared edge hold discards the comb's
+    # DC null and the reconstruction error lands in band.
     # :func:`injection_excess_gd` derives that from the injection and the edge
-    # constants alone — no capture enters it — so it is removed rather than
-    # tolerated by a wider bar (#3493). Subtracted from the CURVE, because
-    # ``excursion_us`` peak-picks and so does not carry an offset additively.
+    # constants alone, so it is removed rather than tolerated by a wider bar
+    # (#3493). Subtracted from the CURVE, because ``excursion_us`` peak-picks
+    # and so does not carry an offset additively.
     echo = add_delayed_copy(ir, CONTROL_ECHO_GAIN, CONTROL_ECHO_MS, sample_rate)
     c3_bias = injection_excess_gd(
         CONTROL_ECHO_GAIN,
@@ -1516,10 +1396,10 @@ def _run_controls(
     c2_ok = all(ratio_lo <= entry["ratio"] <= ratio_hi for entry in c2.values())
     separation = min(entry["separation_us"] for entry in pair.values())
     required = CONTROL_SEPARATION_MARGIN * max(c1_max, c3_max, 1.0)
-    # WHICH control missed, named once and reduced to ``passes`` — the same
-    # four terms the boolean was spelled from. A run that fails is a fact
-    # about one control, and #3480 met the same suite passing on one verify
-    # round of a rig and failing on another with nothing saying which moved.
+    # WHICH control missed, named once and reduced to ``passes`` — the same four
+    # terms the boolean was spelled from. #3480 met the same suite passing on
+    # one verify round of a rig and failing on another with nothing saying
+    # which moved.
     failed = [
         name
         for name, ok in (
@@ -1599,26 +1479,23 @@ def _sweep_ladder(
     """Every feature through :func:`~.gate_sweep.sweep_features`, plus its frame.
 
     Returns ``(by_feature, frame, poses, refusal)``. ``refusal`` is ``None``
-    when the ladder ran; otherwise it names why it could not, and
+    when the ladder ran; otherwise it names why it could not and
     ``by_feature`` is empty — the LADDER is refused for the round, never the
     classification. A round with one capture, with sidecars banking no
     radiated band, or with a ladder of one rung still gets its phase class,
-    its decay reads and its per-pose facts; what it does not get is a window
-    verdict, and every row says so by name rather than reading
-    :data:`GATE_STABLE` off a test that never ran.
+    its decay reads and its per-pose facts, and every row says so by name
+    rather than reading :data:`GATE_STABLE` off a test that never ran.
 
     ``poses`` is who each pose row of every feature IS, banked once for the
-    round beside the frame rather than repeated inside each feature, in the
-    order those rows are in. Position is the join, not ``pose_key``: a ring
-    capture carries an angle only when a walk log bound one, and a round with
-    none has the same key on every pose.
+    round beside the frame, in the order those rows are in. Position is the
+    join, not ``pose_key``: a ring capture carries an angle only when a walk
+    log bound one.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     frame = frame_descriptor(rungs, analysis_grid())
     # Everything but `radiated_band_hz`, `sample_rate`, `ir` and `peak_idx` is
-    # disclosure: it names the capture a pose row was read from, and none of it
-    # moves a number. A commanded turntable angle is the one pose fact a ring
-    # capture carries, and the program digest is not one this loader keeps.
+    # disclosure: it names the capture a pose row was read from, and none of
+    # it moves a number.
     poses: list[PoseCapture] = []
     unbanded: list[str] = []
     for capture, ir, peak in zip(captures, irs, peaks):
@@ -1693,11 +1570,10 @@ def _sweep_ladder(
     except RoundCapturesRefused as refusal:
         return {}, frame, banked_poses, {"reason": refusal.reason, **refusal.detail}
     except ValueError as exc:
-        # Anything else the engine's own input check refuses -- today only a
-        # bin off its 200-20000 Hz grid, which this caller can reach with a
-        # long enough `gate_ms`. Folded, not swallowed: the message rides the
-        # refusal into the artifact. Remove when the engine stops raising and
-        # refuses by name instead.
+        # Anything else the engine's own input check refuses -- today only a bin off
+        # its 200-20000 Hz grid, which this caller can reach with a long enough
+        # `gate_ms`. Folded, not swallowed: the message rides the refusal into
+        # the artifact. Remove when the engine refuses by name instead.
         return (
             {},
             frame,
@@ -1723,13 +1599,11 @@ def _timing_scatter(
 
     The raw arrival spread is dominated by the relay's capture-start offset,
     which every other test removes by re-finding the peak. The SUB-SAMPLE
-    residual is what survives into a phase comparison, and it is measured by
-    cross-spectrum phase slope over the direct-sound window.
-
-    It needs an angle to have been visited twice. When no pair exists the
-    result says NOT RUN and carries no numbers: a dimension that did not run is
-    a different fact from one that measured zero, and confidence must not read
-    the second off the first.
+    residual is what survives into a phase comparison, measured by
+    cross-spectrum phase slope over the direct-sound window. It needs an
+    angle visited twice; with no pair the result says NOT RUN and carries no
+    numbers, a dimension that did not run being a different fact from one
+    that measured zero.
     """
     arrivals = [peak / sample_rate * 1e3 for peak in peaks]
     spread = {
@@ -1804,15 +1678,10 @@ def _subsample_delay_us(
     return float(-slope * 1e6)
 
 
-# --------------------------------------------------------------------------- #
-# off-axis persistence -- a fact read from ALREADY-BANKED lateral pose curves
-# --------------------------------------------------------------------------- #
-
 #: Fewest samples inside a centre-search span for its extremum to mean
 #: anything, on the lateral walk's own coarse evidence grid
-#: (``spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave -- "not a polar
-#: measurement", by that module's own words). Lower than
-#: :data:`_MIN_SLOPE_SAMPLES`: this reads an extremum, not a fitted slope.
+#: (``spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave). Lower
+#: than :data:`_MIN_SLOPE_SAMPLES`: this reads an extremum, not a slope.
 _POSE_MIN_CENTRE_SAMPLES = 3
 
 
@@ -1840,19 +1709,15 @@ def _pose_reading(
 ) -> dict[str, Any]:
     """One pose curve's own depth/centre near ``fc``, or NOT-RESOLVED.
 
-    Direct on the curve's own banked ``(freqs_hz, magnitude_db)`` -- never a
-    raw WAV. Detrended with this module's own :func:`detrend`, the same
-    one-octave baseline the primary detector uses, so a departure read here
-    means what it means there.
+    Direct on the curve's own banked ``(freqs_hz, magnitude_db)``, never a
+    raw WAV, and detrended with this module's own :func:`detrend` so a
+    departure read here means what it means in the primary detector.
 
     NOT-RESOLVED (``resolved=False``, both numbers ``None``) whenever this
-    pose cannot answer the question at all: ``fc``'s own neighbourhood falls
-    outside the curve's driven ``band_hz``, or too few of the grid's sparse
-    points land inside the centre-search span to read an extremum from. Never
-    a fabricated 0 dB -- absence is not zero.
-
-    ``detrended`` is the curve's own detrended magnitude, computed once per
-    curve by the caller — it is feature-independent.
+    pose cannot answer at all: ``fc``'s neighbourhood falls outside the
+    curve's driven ``band_hz``, or too few grid points land inside the
+    centre-search span. Never a fabricated 0 dB — absence is not zero.
+    ``detrended`` is computed once per curve by the caller.
     """
     lo = fc * 2**-NEIGHBOURHOOD_OCT
     hi = fc * 2**NEIGHBOURHOOD_OCT
@@ -1878,10 +1743,8 @@ def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
     """This round's lateral-pose bank, once -- what every row's
     ``pose_persistence`` table is read against.
 
-    Mirrors :func:`_timing_scatter`'s NOT-RUN shape for the same reason: "no
-    lateral poses banked" is a different fact from "every pose read as
-    not-resolved", and a reader must not have to infer the first from a row
-    full of the second.
+    Mirrors :func:`_timing_scatter`'s NOT-RUN shape: "no lateral poses
+    banked" is a different fact from "every pose read as not-resolved".
     """
     if not pose_curves:
         return {
@@ -1899,19 +1762,14 @@ def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
     }
 
 
-# --------------------------------------------------------------------------- #
-# narrow-band decay -- from the IRs this instrument already deconvolved
-# --------------------------------------------------------------------------- #
-
-
 def _decay_bands_hz(fc: float) -> dict[str, tuple[float, float]]:
     """The centre band and its two flanks, every one ``FEATURE_HALF_OCT`` wide.
 
-    The centre band is the feature's own -- :func:`read_feature`'s band,
-    restated so a magnitude read and a decay read agree on what "the
-    feature's own band" means. Each flank is the SAME width, its own inner
-    edge :data:`DECAY_FLANK_SKIRT_OFFSET_OCT` beyond the centre band's
-    matching skirt, never narrower.
+    The centre band is :func:`read_feature`'s, restated so a magnitude read
+    and a decay read agree on what "the feature's own band" means. Each
+    flank is the SAME width, its own inner edge
+    :data:`DECAY_FLANK_SKIRT_OFFSET_OCT` beyond the centre band's matching
+    skirt, never narrower.
     """
     half = FEATURE_HALF_OCT
     far = 3 * half + DECAY_FLANK_SKIRT_OFFSET_OCT
@@ -1953,11 +1811,9 @@ def _band_limited_envelope(
     """The analytic envelope of the host IR restricted to ``band_hz``.
 
     An FFT-domain brick-wall mask, zero outside the band: the IR here is the
-    module's own reflection-free deconvolution, already long and clean, so
-    no taper is needed to keep the result well-behaved.
-    :func:`~jasper.audio_measurement.gating.analytic_envelope` is REUSED, not
-    duplicated — the same Hilbert-magnitude envelope the gating half of this
-    package already reads a ring-down with.
+    module's own reflection-free deconvolution, already long and clean, so no
+    taper is needed. :func:`~jasper.audio_measurement.gating.analytic_envelope`
+    is REUSED, not duplicated.
     """
     mask = (host.freqs >= band_hz[0]) & (host.freqs <= band_hz[1])
     band_limited = np.fft.irfft(host.spectrum * mask, n=host.n)
@@ -1970,11 +1826,9 @@ def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any
     ``noise_floor_db`` is the envelope's own late-tail level, dB relative to
     THIS band's own peak, so it is directly comparable to
     :data:`DECAY_TARGET_DROP_DB`. ``below_floor`` is a property of that
-    number alone — the target drop is not resolvable above the floor,
-    independent of whether a search happens to cross it.
-    ``time_to_neg20_db_ms`` is ``None`` whenever ``below_floor`` is true OR
-    the envelope never reaches the target within the IR's own length —
-    never a fabricated time.
+    number alone. ``time_to_neg20_db_ms`` is ``None`` whenever
+    ``below_floor`` is true OR the envelope never reaches the target within
+    the IR's own length — never a fabricated time.
     """
     envelope = _band_limited_envelope(host, band_hz)
     peak_idx = int(np.argmax(envelope))
@@ -2001,10 +1855,6 @@ def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any
     }
 
 
-# --------------------------------------------------------------------------- #
-# frequency-dependent windowing -- diagnostic evidence only (ADR-0201)
-# --------------------------------------------------------------------------- #
-
 #: The two cycle counts research 03's Stage 3 names: a narrow one that best
 #: rejects reflections and a wide one closer to the shipped primary window's
 #: own length. ADR-0201 binds what this buys: re-analysis EVIDENCE only
@@ -2015,17 +1865,14 @@ FDW_CYCLES: tuple[float, ...] = (5.0, 15.0)
 
 #: Half-width of the band an FDW rung is read over. Reused rather than
 #: re-picked: :data:`NEIGHBOURHOOD_OCT` is already this module's standing
-#: "local context" width, and both :func:`read_feature`'s and
-#: :func:`_extremum_reading`'s search spans fit inside it -- so this module's
-#: existing feature readers serve the FDW curve unmodified, rather than a
-#: second "how big is this feature" implementation.
+#: "local context" width and both feature readers' search spans fit
+#: inside it, so they serve the FDW curve unmodified.
 FDW_BAND_OCT = NEIGHBOURHOOD_OCT
 
 #: Points across that band, log-spaced. Hundreds, not the ~2000/octave main
-#: analysis grid: FDW re-picks its window at EVERY point (unlike the main
-#: grid's one gate shared by all of them), so each point is its own direct
-#: frequency read rather than a shared FFT bin -- an offline, twice-per-
-#: feature cost, not a global one.
+#: analysis grid: FDW re-picks its window at EVERY point, so each point
+#: is its own direct frequency read rather than a shared FFT bin — an
+#: offline, twice-per-feature cost, not a global one.
 FDW_GRID_POINTS = 300
 
 #: Taper shape for the FDW window. Hann: it is already the family
@@ -2038,15 +1885,12 @@ def _fdw_read_hz(
     ir: np.ndarray, sample_rate: int, peak: int, freq_hz: float, cycles: float
 ) -> float:
     """One frequency's FDW magnitude, dB, from a window of ``cycles`` cycles
-    of ``freq_hz`` (``cycles / freq_hz`` seconds) CENTRED on ``peak`` -- the
-    same direct-arrival sample :func:`gate` windows from.
+    of ``freq_hz`` (``cycles / freq_hz`` seconds) CENTRED on ``peak``.
 
     A direct single-bin read: the window differs at every frequency, so no
-    one FFT serves the whole curve. :data:`FDW_TAPER`, then the exact-
-    frequency DFT term, normalised by the taper's own coherent gain so a
-    window-LENGTH change alone cannot move the level -- what survives that
-    normalisation and the caller's own :func:`detrend` is the feature, not
-    the window's shrinking span.
+    one FFT serves the whole curve. :data:`FDW_TAPER`, then the
+    exact-frequency DFT term, normalised by the taper's own coherent gain so
+    a window-LENGTH change alone cannot move the level.
     """
     half = max(1, int(round(cycles / freq_hz * sample_rate / 2.0)))
     start = max(0, peak - half)
@@ -2110,10 +1954,6 @@ def _fdw_rungs(
         }
     return out
 
-
-# --------------------------------------------------------------------------- #
-# composing the row, and the public entry point
-# --------------------------------------------------------------------------- #
 
 #: The engine's three words in the register's own. A mapping, never a second
 #: rule: :mod:`.gate_sweep` decides what counts as the window having moved a
@@ -2200,11 +2040,10 @@ def _gate_call(
 def _gate_rungs(sweep: Mapping[str, Any] | None) -> dict[str, Any]:
     """Every rung's own facts, additive to the verdict the ladder composed.
 
-    ``_gate_call`` carries only what the verdict turned on — one corrected
-    delta between two rungs. A reader auditing the ladder itself needs every
-    rung, including the ones whose own resolution bars them from bounding a
-    sensitivity, which is what this publishes. The per-pose values are in
-    ``gate_sensitivity``; this is their pooled form.
+    ``_gate_call`` carries only what the verdict turned on. A reader auditing
+    the ladder itself needs every rung, including the ones whose own
+    resolution bars them from bounding a sensitivity. The per-pose values are
+    in ``gate_sensitivity``; this is their pooled form.
     """
     if sweep is None:
         return {}
@@ -2277,11 +2116,10 @@ def _compose(
         egd_verdict == EGD_NON_MIN_PHASE and frac > 0.75
     )
     resolved_gates = gate["resolved_gates"]
-    # The three words are quality_model's shared TrustLevel — `medium` spelled
-    # in full. This instrument wrote `med` until 2026-08-22, alone against
-    # every sibling that answers "how much do I trust this number?"; a banked
-    # artifact from before then still carries `med` and is normalised on the
-    # way back in by feature_classification.read_feature_verdicts.
+    # The three words are quality_model's shared TrustLevel — `medium` spelled in
+    # full. An artifact banked before 2026-08-22 carries `med` and is
+    # normalised on the way back in by
+    # feature_classification.read_feature_verdicts.
     confidence: TrustLevel
     if classification == UNRESOLVED:
         confidence = "low"
@@ -2339,25 +2177,22 @@ def classify_round(
 
     ``gate_ms`` is the PRIMARY window — the one the phase test, the feature
     detector and the trusted band are read through. ``gates_ms`` is the
-    window LADDER, which is :mod:`.gate_sweep`'s and defaults to its
-    :data:`~.gate_sweep.DEFAULT_RUNGS_MS`. The two are independent: the ladder
-    no longer references the primary, so the primary is not forced into it.
+    window LADDER, which is :mod:`.gate_sweep`'s. The two are independent.
 
     ``pose_curves`` is this round's banked lateral-walk curves
-    (:func:`load_round_pose_curves`), optional and orthogonal to ``captures``:
-    a caller with none still gets every EGD/gate/timing fact, plus a
-    ``pose_bank``/``pose_persistence`` NOT-RUN pair rather than a refusal.
+    (:func:`load_round_pose_curves`), optional and orthogonal to
+    ``captures``: a caller with none still gets every EGD/gate/timing fact,
+    plus a ``pose_bank``/``pose_persistence`` NOT-RUN pair rather than a
+    refusal.
 
-    A round whose known-answer controls did not pass is REPORTED, not refused:
-    the controls calibrate the excess-group-delay scale and nothing else, so
-    every row keeps its real ``gate_verdict`` and gives up only its phase
-    class (``egd_verdict`` reads ``ambiguous``, and ``defect-*`` becomes
-    unreachable). ``controls_disclosure`` at the top of the artifact says so
-    in words.
+    A round whose known-answer controls did not pass is REPORTED, not
+    refused: every row keeps its real ``gate_verdict`` and gives up only its
+    phase class, and ``controls_disclosure`` at the top of the artifact says
+    so in words.
 
     Raises :class:`FeatureClassificationRefused` with
     :data:`NO_FEATURES_DETECTED` when nothing stood above the round's own
-    scatter, which does not return a partial artifact.
+    scatter.
     """
     if not captures:
         raise FeatureClassificationRefused(NO_ADMISSIBLE_CAPTURES, {"n_captures": 0})
@@ -2435,9 +2270,8 @@ def classify_round(
     controls_ok = bool(controls["verdict"]["passes"])
 
     # TEST 1. Two transforms per CAPTURE — the phase gate's lead, and the
-    # zero-lead window whose disagreement is reported as `lead_sensitivity_us`
-    # — and every feature's excursion read off each. Per (capture, feature)
-    # would be the same numbers at N times the cost.
+    # zero-lead window whose disagreement is reported as
+    # `lead_sensitivity_us` — and every feature's excursion read off each.
     lead_by_feature: dict[str, list[dict[str, Any]]] = {
         f"{fc:.0f}": [] for fc in features
     }
@@ -2561,11 +2395,11 @@ def classify_round(
             # because who a pose is does not vary with the bin.
             "gate_ladder_poses": ladder_poses,
             "gate_ladder_refused": ladder_refusal,
-            # P1 sec 6 measured one capture's 441.6 Hz feature through both
-            # window families and they disagree by 1.72 dB on the same 7->20 ms
-            # change (row D, this ladder's shape, against row F, the shape it
-            # replaced). Ladder numbers banked before this instrument moved
-            # onto the engine are row F and are not comparable with these.
+            # P1 sec 6 measured one capture's 441.6 Hz feature through both window
+            # families and they disagree by 1.72 dB on the same 7->20 ms change (row
+            # D, this ladder's shape, against row F, the shape it replaced). Ladder
+            # numbers banked before this instrument moved onto the engine are row F
+            # and are not comparable with these.
             "gate_ladder_window_changed": (
                 "the ladder's window family changed with the move onto "
                 "jasper.active_speaker.crossover_v2.gate_sweep; ladder numbers "

@@ -187,9 +187,10 @@ def _applied_acoustic_profile(
     if with_snapshot:
         profile["candidate_fingerprint"] = "candidate-fp"
         preset = json.loads(
-            Path(
-                "jasper/active_speaker/presets/"
-                "bc_de250_dayton_e150he44_v1.json"
+            (
+                Path(__file__).resolve().parent
+                / "fixtures"
+                / "bc_de250_dayton_e150he44_v1.json"
             ).read_text(encoding="utf-8")
         )
         profile["recomposition_snapshot"] = {

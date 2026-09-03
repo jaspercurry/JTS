@@ -4,79 +4,37 @@
 
 """Settle-based level-match ramp controller (shared measurement kernel).
 
-This is the P2 generalization of ``jasper.correction.autolevel``. The analog
-amplifier's gain is unknown; JTS controls only the digital ``main_volume``. The
-controller drives
-``main_volume`` up from a quiet start until a phone-reported mic level settles
-inside the safe measurement window, then locks — never blasting up to find it.
-
-Why *settle-based two-point mapping*, not cross-correlation (the design review's
-supersession note, §3.1): the played level and the mic-reported level are related
-by a single unknown constant gain ``G`` because the whole chain is LTI and
-``main_volume`` adds in dB:
+The analog amplifier's gain is unknown; JTS controls only the digital
+``main_volume``. The whole chain is LTI and ``main_volume`` adds in dB, so
 
     mic_dbfs(v) = v + G          (G = amp + room + mic path gain, unknown)
 
-So one *trusted, settled* reading fixes ``G`` (the line's slope is a known ``1``),
-and the volume that puts the mic anywhere in the window is exact. An earlier
-draft reused ``audio_measurement.alignment.cross_correlation_alignment`` to recover
-the transport delay ``τ``; that estimator is waveform-domain and structurally
-near-degenerate on a monotonic ramp envelope. The replacement never estimates
-``τ`` — it *waits out* the modeled worst-case loop latency after every volume
-change and reads only samples that postdate it.
-
-How the settle read works under the real transport (the adversarial-panel fix —
-the phone posts batched samples at ≤2 Hz behind a ~0.75 s relay poll, so most
-kernel ticks deliver nothing):
-
-  * every volume change stamps ``blank_until = now + max_loop_latency_s``;
-    samples arriving before that reflect a stale (pre-change) level and are
-    excluded from settle/confirm decisions (clip detection is NEVER blanked);
-  * SETTLING accumulates post-blank trusted samples into a hold buffer and
-    completes only when the hold has elapsed AND the buffer holds at least
-    ``settle_min_samples`` — a momentarily-empty tick *extends* the hold; the
-    machine never bounces back to CLIMBING (the review-reproduced bounce
-    re-stepped the staircase past the window top);
-  * the settled level is the **median of that buffered tail**; the jump aims at
-    the **window midpoint** (symmetric ±half-window tolerance for gain-map
-    noise — the *staircase* still stops-ahead below the window bottom via
-    ``pre_window``); CONFIRMING then requires ``confirm_k`` consecutive
-    post-blank in-window samples before locking;
-  * if CONFIRMING instead sees ``confirm_k`` consecutive out-of-window samples
-    all on one side, it recomputes the gain map from their median and takes a
-    bounded corrective jump (total jumps ≤ ``max_jumps``).
+and one trusted, settled reading fixes ``G`` (the line's slope is a known
+``1``). The controller never estimates the transport delay: it waits out the
+modeled worst-case loop latency after every volume change and reads only
+samples that postdate it. Every volume change stamps
+``blank_until = now + max_loop_latency_s``; samples arriving before that
+reflect a stale level and are excluded from settle/confirm decisions (clip
+detection is NEVER blanked). A momentarily-empty tick EXTENDS the settle hold;
+the machine never bounces back to CLIMBING.
 
 Safety is the whole point. Every ramp-commanded volume passes the
 ``_safe_target`` choke point: ``<=`` the dynamic cap (the lower of
-``original + bump`` and the absolute ceiling) AND
-``<= 0 dB``, and a non-finite target raises instead of propagating (a hostile
-relay post can never become ``set_main_volume_db(nan)``). The coarse staircase
-stops at a pre-window set below the window bottom by the worst-case in-flight
-overshoot — ``step_db + ramp_rate × max_loop_latency_s``, the step-quantization
-term included. A ``clip=true`` sample is an immediate abort; readings that are
-non-finite, AGC-compressed, or below ``noise_floor + trust_margin`` are never
-trusted; a feed that goes silent aborts (a vanished phone also has no clip
-protection). At the cap, the kernel normally returns ``MAXED_OUT`` and restores.
-The sole exception is an explicitly labeled ``bounded_low_level`` lock after a
-fresh post-latency tail proves a known noise floor, the existing SNR trust
-margin, frozen AGC, no clipping, live delivery, consecutive samples, and
-bounded spread; it never claims the normal target window was reached. A phone
-that never produced a usable sample is an ERROR, not a low-level verdict. The
-safety timeout is derived from the config's own worst-case walk; and every stop
-fades down before the tone is killed. Restoring the user's own pre-ramp volume
-is exempt from the dynamic cap (it is not a ramp command) and honors only the
-0 dB hard ceiling.
+``original + bump`` and the absolute ceiling) AND ``<= 0 dB``, with a
+non-finite target raising instead of propagating. The coarse staircase stops at
+a pre-window set below the window bottom by the worst-case in-flight overshoot
+(``step_db + ramp_rate × max_loop_latency_s``). A ``clip=true`` sample aborts
+immediately; readings that are non-finite, AGC-compressed, or below
+``noise_floor + trust_margin`` are never trusted; a feed that goes silent
+aborts. At the cap the kernel returns ``MAXED_OUT`` and restores, the sole
+exception being an explicitly labeled ``bounded_low_level`` lock proven by a
+fresh post-latency tail. Restoring the user's own pre-ramp volume is exempt
+from the dynamic cap and honors only the 0 dB hard ceiling.
 
 Tone contract: ``play_continuous_tone`` must play until ``cancel_tone()`` is
-called (the ``correction.playback.TonePlayer.play`` shape). The kernel runs it
-as a task; if it finishes while the ramp is still working (WAV too short,
-player crash) the ramp ends in ERROR and restores — a silent tone must never
-blind-climb.
-
-The controller stays **pure and synthetically testable**: inject a fake clock,
-a fake volume setter, and a fake mic-sample source (:class:`LevelSample`
-batches on any schedule, including the relay's real sparse cadence). No
-CamillaDSP, no ``aplay``, no relay.
+called (the ``correction.playback.TonePlayer.play`` shape); the kernel runs it
+as a task and an early finish ends the ramp in ERROR -- a silent tone must
+never blind-climb.
 """
 
 from __future__ import annotations
@@ -95,28 +53,25 @@ from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-# Level-event schema version. Bump when :class:`LevelSample`'s shape changes so a
-# stale phone payload is detectable rather than silently misread. Pinned by
-# tests/test_audio_measurement_ramp.py and mirrored by
+# Level-event schema version. Bump when :class:`LevelSample`'s shape changes so
+# a stale phone payload is detectable rather than silently misread. Mirrored by
 # capture-page/js/level-events.js.
 LEVEL_EVENT_SCHEMA_VERSION = 1
 
 # The digital-full-scale hard ceiling: main_volume must never exceed this,
 # independent of the dynamic cap. Mirrors camilla.py::_coerce_main_volume_db,
-# duplicated here as defense-in-depth so the kernel is safe even if a caller
-# forgets to clamp. Do not raise.
+# duplicated here as defense-in-depth. Do not raise.
 HARD_CEILING_DBFS = 0.0
 
 # Fixed/listening-position measurements use the shared -12 dBFS stimulus at
-# roughly one metre. This policy permits up to 15 dB above the household entry
-# volume while retaining the digital-full-scale ceiling and live clipping abort.
-# Near-field measurement deliberately keeps MeasurementRamp's tighter default.
+# roughly one metre: up to 15 dB above the household entry volume, keeping the
+# digital-full-scale ceiling and the live clipping abort.
 LISTENING_POSITION_CAP_BUMP_DB = 15.0
 LISTENING_POSITION_CAP_CEIL_DB = HARD_CEILING_DBFS
 
 # Worst-case expected gap between consecutive phone samples reaching the kernel
-# (≤2 Hz phone batches behind the relay's ~0.75 s poll). Used only to budget the
-# derived safety timeout — not a gate.
+# (≤2 Hz batches behind the relay's ~0.75 s poll). Budgets the derived safety
+# timeout -- not a gate.
 SAMPLE_BUDGET_S = 1.5
 
 
@@ -125,34 +80,19 @@ def capped_gap_step_db(
 ) -> float:
     """How far one measured level step moves the level: the remaining gap.
 
-    The one climb policy in the tree. A level ramp that has just MEASURED where
-    it is knows exactly how far it has to go, so the step is that gap — big
-    while it is far away, naturally shrinking as it closes, and never a fixed
-    staircase whose rung size has to be guessed. Every step re-measures, so the
-    policy needs the chain to be only LOCALLY monotone in dB, never globally
-    linear: a chain that answers a 10 dB command with 7 dB simply takes one more
-    step.
-
-    ``cap_db`` saturates the step UPWARD only. Downward motion is never capped
-    because it reduces risk — the same asymmetry
-    :mod:`jasper.active_speaker.calibration_level` states for its
-    ``upward_step_limit_db``. Callers that command an audible level bind the cap
-    to that shared limit; a caller whose own geometry already bounds the jump
-    passes none.
-
-    Returns the step in dB, to be ADDED to the current commanded level. The
-    caller still clamps the result against its ceiling: this function knows the
-    gap, not the rails.
+    The one climb policy in the tree. Every step re-measures, so the policy
+    needs the chain to be only LOCALLY monotone in dB, never globally linear.
+    ``cap_db`` saturates the step UPWARD only -- downward motion reduces risk,
+    the same asymmetry :mod:`jasper.active_speaker.calibration_level` states for
+    its ``upward_step_limit_db``. Returns the step in dB, to be ADDED to the
+    current commanded level; the caller still clamps against its own ceiling.
     """
     return min(float(target_db) - float(measured_db), float(cap_db))
 
-# The exception set the ramp treats as recoverable-by-restore. Deliberately a
-# broad-but-named tuple rather than a blind ``except Exception`` (lint contract:
-# no new BLE001 suppressions): it covers every realistic failure of the injected
-# callables (network/OS/timeout errors, protocol value errors, buggy-feed
-# type/attribute/lookup errors, math-domain errors) while letting
-# CancelledError / SystemExit / MemoryError propagate — the caller's
-# restore-listening-volume hook is the backstop for those.
+# The exception set the ramp treats as recoverable-by-restore. A broad-but-named
+# tuple rather than a blind ``except Exception`` (lint contract: no new BLE001
+# suppressions): it covers every realistic failure of the injected callables
+# while letting CancelledError / SystemExit / MemoryError propagate.
 RECOVERABLE_ERRORS = (
     OSError,
     RuntimeError,
@@ -166,26 +106,18 @@ RECOVERABLE_ERRORS = (
 
 # --- env knobs ---------------------------------------------------------------
 #
-# Every threshold whose true value is hardware-gated is a deploy-time knob
-# (H1 supplies the real numbers on-device — the defaults here are conservative
-# placeholders, NOT empirically derived), mirroring the
-# JASPER_CAPTURE_ALIGNMENT_THRESHOLD pattern in audio_measurement/alignment.py. Set
-# them in jasper.env once measured; no rebuild required. Out-of-range or
-# unparseable values fall back to the documented default; a *combination* of
-# individually-valid values that fails cross-field validation also falls back
-# as a whole (see :meth:`MeasurementRamp.from_env`) — a jasper.env edit can
-# never brick the ramp at construction time.
+# Every threshold whose true value is hardware-gated is a deploy-time knob (the
+# defaults here are conservative placeholders, NOT empirically derived).
+# Out-of-range or unparseable values fall back to the documented default; a
+# COMBINATION of individually-valid values that fails cross-field validation
+# falls back as a whole (see :meth:`MeasurementRamp.from_env`), so a jasper.env
+# edit can never brick the ramp at construction time.
 
 
 class RampState(Enum):
     """Ramp sub-state, orthogonal to the measurement session state.
 
     The happy path is ``IDLE → CLIMBING → SETTLING → CONFIRMING → LOCKED``.
-    ``CLIMBING`` is the quiet-start coarse staircase up to the pre-window; once a
-    trusted reading crosses the pre-window the volume freezes and ``SETTLING``
-    buffers post-latency samples until the settled read is trustworthy; a
-    computed jump lands the window midpoint; ``CONFIRMING`` requires
-    ``confirm_k`` consecutive in-window samples before the lock is trusted.
     """
 
     IDLE = "idle"
@@ -202,11 +134,9 @@ class RampState(Enum):
 class RampLockKind(str, Enum):
     """Why a terminal ``LOCKED`` result is usable.
 
-    ``BOUNDED_LOW_LEVEL`` is deliberately distinct from the ordinary
-    in-window lock: it records that the hard/dynamic gain bound was honored and
-    the live mic evidence was trustworthy and stable, but the measured level
-    still fell short of the preferred window.  Downstream code may proceed
-    while preserving that degraded evidence instead of pretending the normal
+    ``BOUNDED_LOW_LEVEL`` records that the hard/dynamic gain bound was honored
+    and the live mic evidence was trustworthy and stable, but the measured level
+    still fell short of the preferred window -- never a claim that the normal
     target was reached.
     """
 
@@ -230,24 +160,19 @@ TERMINAL_STATES = frozenset(
 class LevelSample:
     """One phone-reported mic-level sample.
 
-    Batched, client-timestamped sample arrays (not singular events) ride the
-    relay's last-write-wins ``event`` slot, so the Pi's ~0.75 s poll never
-    decimates the series. ``rms_dbfs`` / ``peak_dbfs`` are computed on the phone
-    the same way the Pi's ``quality._dbfs`` computes them. ``clip`` marks a
-    full-scale sample (immediate abort). ``agc_frozen`` is the phone's realized
-    ``autoGainControl:false`` state — ``False`` means either the browser left
-    AGC on (explicitly reported ``true``) or never reports the setting at all
-    (``undefined`` — every WebKit build; ``getSettings()`` simply omits the
-    key). ``agc_unattested`` disambiguates the two ``agc_frozen=False`` cases:
-    ``True`` means the browser could not attest either way (the iOS/Safari
-    shape) and the sample is eligible for the empirical slope verification in
-    :class:`RampController` instead of being auto-rejected; ``False`` (the
-    default) is the original meaning — the browser affirmatively reported AGC
-    on, so the level is AGC-compressed and must never be trusted as a gain-map
-    reference. Encoding it this way (never bare ``agc_frozen=True`` for an
-    unattested chain) means an older Pi that has not learned about
-    ``agc_unattested`` still falls back to the pre-existing "never trust"
-    behavior instead of silently trusting an unproven chain.
+    Batched, client-timestamped sample arrays ride the relay's last-write-wins
+    ``event`` slot, so the Pi's ~0.75 s poll never decimates the series.
+    ``rms_dbfs`` / ``peak_dbfs`` are computed on the phone the same way the Pi's
+    ``quality._dbfs`` computes them; ``clip`` marks a full-scale sample
+    (immediate abort). ``agc_frozen`` is the phone's realized
+    ``autoGainControl:false`` state, and ``False`` means the browser either
+    reported AGC on or never reports the setting at all (every WebKit build).
+    ``agc_unattested`` disambiguates those two: ``True`` means the browser could
+    not attest either way and the sample is eligible for the empirical slope
+    verification in :class:`RampController`; ``False`` means AGC was
+    affirmatively reported on, so the level must never be a gain-map reference.
+    An unattested chain is never encoded as bare ``agc_frozen=True``, so an older
+    Pi falls back to "never trust" instead of trusting an unproven chain.
     """
 
     seq: int
@@ -264,8 +189,7 @@ class LevelSample:
 
         Strict on the numeric fields: a non-finite ``rms_dbfs`` / ``peak_dbfs``
         (JSON ``"NaN"`` / ``"Infinity"`` strings parse fine through ``float()``)
-        raises ``ValueError`` so a hostile relay post can never smuggle NaN into
-        the gain map — callers treat a raising sample as malformed and drop it.
+        raises ``ValueError``, so NaN can never reach the gain map.
         """
         rms = float(data["rms_dbfs"])
         peak = float(data.get("peak_dbfs", rms))
@@ -284,48 +208,33 @@ class LevelSample:
 
 @dataclass(frozen=True)
 class MeasurementRamp:
-    """The ramp's tuning knobs — one self-describing, validated config.
+    """The ramp's tuning knobs -- one self-describing, validated config.
 
-    Constructing an instance whose overshoot invariant would be violated raises
-    ``ValueError``, so a config that *could* drive the mic past the window can
-    never be built. All bounds are dBFS ``main_volume``; all durations seconds.
-
-    Overshoot invariant (validated in ``__post_init__``), including the
-    step-quantization term — the first trusted crossing can already sit a full
-    step above the pre-window before any transport latency is added:
+    All bounds are dBFS ``main_volume``; all durations seconds. Constructing an
+    instance that would violate the overshoot invariant raises ``ValueError``:
 
         step_db + ramp_rate * max_loop_latency < 0.5 * window_width
 
-    with ``ramp_rate = step_db / step_interval_s``. Because the coarse staircase
-    stops at ``pre_window`` (set below ``window_low_dbfs`` by at least that
-    worst-case in-flight overshoot), the staircase never climbs into the window;
-    the sole approach into the window is a computed jump from a settled read.
-
-    That invariant is also why this staircase cannot take audible-sized strides:
-    it ties the step to the WINDOW width, so a 5 dB band admits steps under
-    ~1.25 dB however far there is to climb. A ramp that wants big strides has to
-    stop being blind — step on a fresh post-latency reading rather than on a
-    timer — which is the shape
-    :mod:`jasper.active_speaker.seat_level_ramp` runs and this kernel does not.
+    with ``ramp_rate = step_db / step_interval_s``. The coarse staircase stops at
+    ``pre_window`` (below ``window_low_dbfs`` by at least that worst-case
+    in-flight overshoot), so the sole approach into the window is a computed jump
+    from a settled read. The invariant also ties the step to the WINDOW width, so
+    this staircase cannot take audible-sized strides; a ramp that wants big
+    strides steps on a fresh post-latency reading instead, which is what
+    :mod:`jasper.active_speaker.seat_level_ramp` runs.
     """
 
     # Target window. The coarse staircase stops-ahead BELOW the bottom (the
-    # pre_window); the settled JUMP aims at the window MIDPOINT — a deliberate
-    # refinement of §3.1(d)'s "aim at the bottom": aim-bottom exists to keep a
-    # *moving* ramp from eating the window under loop latency, which does not
-    # apply to a one-shot jump computed from a frozen-volume settled read.
-    # Mid-window gives the jump symmetric ±half-window tolerance to gain-map
-    # noise instead of parking half the noise distribution below the window.
+    # pre_window); the settled JUMP aims at the window MIDPOINT, which gives it
+    # symmetric ±half-window tolerance to gain-map noise.
     window_low_dbfs: float = -20.0
     window_high_dbfs: float = -12.0
 
-    # Trust floor: a reading is only trustable once it clears
-    # noise_floor + trust_margin_db (§3.1 (a)). Below that the RMS is
-    # ambient-dominated and the early ramp shape is meaningless.
+    # Trust floor: a reading is trustable only once it clears
+    # noise_floor + trust_margin_db. Below that the RMS is ambient-dominated.
     trust_margin_db: float = 10.0
 
-    # Consecutive in-window trusted samples required before the level is treated
-    # as trustworthy → lock (§3.1 settle-based mapping, k >= 3).
+    # Consecutive in-window trusted samples required before locking (k >= 3).
     confirm_k: int = 3
 
     # Coarse staircase. step/interval chosen so the overshoot invariant holds
@@ -335,9 +244,8 @@ class MeasurementRamp:
     step_interval_s: float = 0.5
 
     # Hold at least this long after the pre-window crossing before the settled
-    # read may complete; the read additionally requires settle_min_samples
-    # post-latency samples, extending the hold on a sparse feed (never bouncing
-    # back to CLIMBING).
+    # read may complete; it also requires settle_min_samples post-latency
+    # samples, extending the hold on a sparse feed.
     settle_hold_s: float = 2.0
     max_loop_latency_s: float = 2.0
     # Minimum post-latency samples in the settle buffer before the median is
@@ -348,74 +256,57 @@ class MeasurementRamp:
     # re-jump from CONFIRMING evidence.
     max_jumps: int = 2
 
-    # At the hard/dynamic cap, a below-window result may be accepted only as an
-    # explicitly degraded bounded-low lock.  The final ``confirm_k`` trusted,
-    # post-latency samples must fit inside this peak-to-peak spread.  This is a
-    # stability policy, not permission to weaken the existing noise-floor,
-    # AGC, clipping, liveness, cap, or timeout guards.
+    # At the hard/dynamic cap a below-window result may be accepted only as an
+    # explicitly degraded bounded-low lock; the final ``confirm_k`` trusted,
+    # post-latency samples must fit inside this peak-to-peak spread. A stability
+    # policy, not permission to weaken any other guard.
     allow_bounded_low_level: bool = False
     bounded_low_max_spread_db: float = 1.5
     bounded_low_max_shortfall_db: float = 20.0
 
     # Empirical AGC verification for an unattested chain (no browser attestation
-    # either way — every WebKit build). Regress reported rms_dbfs against the
+    # either way -- every WebKit build). Regress reported rms_dbfs against the
     # ramp's own commanded main_volume_db (both dB, so a gain-stable chain has
-    # slope 1): a time-varying AGC gain flattens the reported response toward
-    # the staircase (slope << 1), so a slope at/near 1 across several distinct
-    # commanded levels is direct evidence the WHOLE mic->USB->OS->browser chain
-    # held its gain fixed while climbing — stronger than the (frequently
-    # unavailable) browser flag, and it works identically on iOS and Android.
-    # ``agc_slope_min_span_db`` — the PRIMARY evidence gate: the trusted
-    # samples must cover at least this many dB of commanded-level span before
-    # a verdict is rendered. Span is what gives the regression x-leverage: at
-    # the default 0.75 dB step, 3 distinct steps is only ~1.5 dB of span, and
-    # over that little leverage the OLS slope's sampling noise under realistic
-    # mic jitter can push a true-slope-1.0 chain under the threshold by chance
-    # (a fragile false abort — the availability regression this feature exists
-    # to fix, just in a new shape). 6 dB of span (8 steps) makes the slope
-    # estimate robust while still aborting a truly AGC'd chain at deeply quiet
-    # levels: evidence begins the moment reports clear the trust floor, and
-    # the staircase typically has ~20+ dB of climb between that point and the
-    # window, so a verdict lands within ~6.75 dB (span + one step of
-    # quantization) of trust-clearing — far below the pre-window.
-    # ``agc_slope_min_steps`` stays as a secondary floor on distinct
-    # commanded levels; fewer than either bound is INDETERMINATE, never
-    # auto-passed. ``agc_slope_threshold`` — recommended default 0.7: leaves
-    # headroom for real reading jitter (a perfectly linear chain still won't
-    # measure exactly 1.0) while staying far enough above a materially AGC'd
-    # chain's flattened response (an aggressive AGC compresses the staircase
-    # toward 0.1-0.3) that the two regimes don't overlap. H1 supplies
-    # hardware-measured numbers; these are placeholders.
+    # slope 1); a time-varying AGC gain flattens the response toward the
+    # staircase. ``agc_slope_min_span_db`` is the PRIMARY evidence gate -- span
+    # is the regression's x-leverage, and 3 steps at the default 0.75 dB is only
+    # ~1.5 dB, over which OLS sampling noise can push a true-slope-1.0 chain
+    # under the threshold by chance. 6 dB (8 steps) is robust while still
+    # aborting a truly AGC'd chain far below the pre-window.
+    # ``agc_slope_min_steps`` is a secondary floor on distinct commanded levels;
+    # fewer than either bound is INDETERMINATE, never auto-passed. The 0.7
+    # threshold leaves headroom for real reading jitter while staying above an
+    # aggressive AGC's compressed 0.1-0.3. Placeholders until hardware-measured.
     agc_slope_min_span_db: float = 6.0
     agc_slope_min_steps: int = 3
     agc_slope_threshold: float = 0.7
 
-    # Feed liveness: if NO samples at all (trusted or not) arrive for this long
-    # after the tone starts, the phone is gone — abort and restore (a vanished
-    # phone also has no clip protection).
+    # Feed liveness: if NO samples at all arrive for this long after the tone
+    # starts, the phone is gone -- abort and restore (a vanished phone also has
+    # no clip protection).
     feed_timeout_s: float = 8.0
 
     # Safety timeout. None (the default) derives it from the config's own
-    # worst-case walk — see the `safety_timeout` property — so a quiet amp
-    # reaches MAXED_OUT before the timeout instead of dying as a generic
-    # CANCELLED. An explicit value is honored verbatim (tests).
+    # worst-case walk -- see the `safety_timeout` property -- so a quiet amp
+    # reaches MAXED_OUT rather than a generic CANCELLED. An explicit value is
+    # honored verbatim.
     safety_timeout_s: float | None = None
 
-    # Graceful fade-before-tone-kill (preserved from AutolevelController).
+    # Graceful fade-before-tone-kill.
     fade_down_to_db: float = -50.0
     fade_step_db: float = 2.0
     fade_step_s: float = 0.03
 
-    # Dynamic cap: the lower of original + bump and the absolute ceiling. This
-    # is the OPERATIVE ceiling — tighter than HARD_CEILING_DBFS. There is no
-    # floor: flooring a quiet listener's cap upward can turn a promised +12 dB
-    # maximum rise into a much larger, unsafe jump.
+    # Dynamic cap: the lower of original + bump and the absolute ceiling. This is
+    # the OPERATIVE ceiling, tighter than HARD_CEILING_DBFS. There is no floor:
+    # flooring a quiet listener's cap upward can turn a promised +12 dB maximum
+    # rise into a much larger, unsafe jump.
     cap_bump_db: float = 12.0
     cap_ceil_db: float = -3.0
 
-    # Derived pre-window: the coarse staircase stops here. Defaulted from the
-    # window bottom minus the worst-case in-flight overshoot in __post_init__
-    # when left as None so the staircase provably never climbs into the window.
+    # Derived pre-window: the coarse staircase stops here, defaulted in
+    # __post_init__ to the window bottom minus the worst-case in-flight
+    # overshoot so the staircase provably never climbs into the window.
     pre_window_db: float | None = None
 
     def __post_init__(self) -> None:
@@ -483,8 +374,8 @@ class MeasurementRamp:
                 f"{0.5 * window_width:.3f} dB (slow the ramp, shrink the step, "
                 "shorten latency, or widen the window)"
             )
-        # Fill the derived pre-window so the coarse staircase stops below the
-        # window by at least the worst-case in-flight overshoot.
+        # Fill the derived pre-window so the staircase stops below the window by
+        # at least the worst-case in-flight overshoot.
         ceiling = self.window_low_dbfs - overshoot
         pre_window = ceiling if self.pre_window_db is None else self.pre_window_db
         if pre_window > ceiling + 1e-9:
@@ -501,12 +392,7 @@ class MeasurementRamp:
 
     @property
     def pre_window(self) -> float:
-        """The resolved pre-window threshold (never None after ``__post_init__``).
-
-        The coarse staircase stops here; a typed accessor so callers don't carry
-        the ``float | None`` of the raw field, which ``__post_init__`` always
-        fills.
-        """
+        """The resolved pre-window threshold, never None after ``__post_init__``."""
         assert self.pre_window_db is not None  # set in __post_init__
         return self.pre_window_db
 
@@ -520,11 +406,9 @@ class MeasurementRamp:
         """The effective safety timeout.
 
         Explicit ``safety_timeout_s`` wins. Otherwise derived from the config's
-        own worst-case walk — the full climb to the loosest cap, one settle
-        (hold + latency + min-samples at the worst sample cadence), the jump
-        budget's confirm phases, and a fixed margin — so the timeout is a true
-        backstop rather than a bound the staircase itself exceeds (the review's
-        quiet-amp CANCELLED-instead-of-MAXED_OUT failure at the old fixed 25 s).
+        own worst-case walk -- the full climb to the loosest cap, one settle,
+        the jump budget's confirm phases, and a fixed margin -- so the timeout
+        is a true backstop rather than a bound the staircase itself exceeds.
         """
         if self.safety_timeout_s is not None:
             return self.safety_timeout_s
@@ -540,9 +424,9 @@ class MeasurementRamp:
     def dynamic_cap(self, original_db: float) -> float:
         """Return the operative cap without ever flooring a quiet start upward.
 
-        The cap is always ``<= original + bump`` and ``<= cap_ceil_db``.  The
-        old ``max(cap_floor_db, ...)`` formula violated the first invariant for
-        quiet listening levels (for example, ``-45 + 12`` became ``-20``).
+        Always ``<= original + bump`` and ``<= cap_ceil_db``: a
+        ``max(cap_floor_db, ...)`` formula violates the first for quiet
+        listening levels (``-45 + 12`` became ``-20``).
         """
         requested = original_db + self.cap_bump_db
         if not math.isfinite(requested):
@@ -556,15 +440,11 @@ class MeasurementRamp:
     def from_env(cls, **overrides: Any) -> MeasurementRamp:
         """Build a config with hardware-gated knobs read from the environment.
 
-        Explicit ``overrides`` win over env (tests pass exact values); anything
-        not overridden and not in the env falls back to the documented default.
-        Mirrors ``alignment._env_threshold``: out-of-range / unparseable env
-        values are ignored. Additionally, when individually-valid env values
-        fail *cross-field* validation (a window-low knob raised above the
-        default window-high, a settle hold below the loop latency, a latency
-        that breaks the overshoot invariant), the env set is dropped as a whole
-        with a warning and the defaults (plus any explicit overrides) are used
-        — a jasper.env edit can never brick the ramp at construction time.
+        Explicit ``overrides`` win over env; anything else falls back to the
+        documented default. Out-of-range or unparseable env values are ignored,
+        and when individually-valid env values fail CROSS-FIELD validation the
+        env set is dropped as a whole with a warning, so a jasper.env edit can
+        never brick the ramp at construction time.
         """
         env_values: dict[str, Any] = {
             "window_low_dbfs": bounded_env_float(
@@ -585,10 +465,9 @@ class MeasurementRamp:
                 lo=0.0,
                 hi=30.0,
             ),
-            # Env floor is 2, not 1: the spec pins k >= 3 as the default; a
+            # Env floor is 2, not 1: the spec pins k >= 3 as the default and a
             # deploy knob may trade one confirmation for speed, but a single
-            # sample is never "consecutive confirmation" (owned weakening,
-            # documented in .env.example).
+            # sample is never "consecutive confirmation".
             "confirm_k": bounded_env_int(
                 "JASPER_RAMP_CONFIRM_K", cls.confirm_k, lo=2, hi=20
             ),
@@ -655,40 +534,34 @@ class RampData:
     gain_map_db: float | None = None
     settled_mic_dbfs: float | None = None
     settled_snr_db: float | None = None
-    # How far the SETTLED median sits below the window bottom, from
-    # ``_record_settled_evidence``. Its population is the settle/confirm
-    # evidence — TRUSTED, gate-passing samples at the volume the settle
-    # happened at — which is not the same population as a "last observed
-    # sample" reported anywhere else, and in an ambient-dominated room the two
-    # are far apart. jts3's 2026-08-22 pass printed `window_shortfall_db 1.39`
-    # beside an observed 54.8 dB SPL against a 72.5 dB SPL edge and the 17.7 dB
-    # gap read as a bug; it was two different populations, 1138 of that run's
-    # 1194 samples having fallen below the gate. Read it against
-    # ``settled_mic_dbfs``, never against a raw reading.
+    # How far the SETTLED median sits below the window bottom. Its population is
+    # the settle/confirm evidence -- trusted, gate-passing samples at the volume
+    # the settle happened at -- not "the last observed sample", and in an
+    # ambient-dominated room the two are far apart (jts3 2026-08-22 printed
+    # window_shortfall_db 1.39 beside an observed 54.8 dB SPL against a 72.5 dB
+    # SPL edge; 1138 of that run's 1194 samples had failed the gate). Read it
+    # against ``settled_mic_dbfs``, never against a raw reading.
     window_shortfall_db: float | None = None
     settled_spread_db: float | None = None
     noise_floor_dbfs: float | None = None
     trust_margin_db: float | None = None
     agc_frozen: bool = True
     # True once any admitted sample carried agc_unattested=true (the browser
-    # never reported autoGainControl either way — every WebKit build). Gates
-    # the empirical slope verification below; irrelevant (stays False) for a
-    # browser-attested or explicitly-AGC-on run.
+    # never reported autoGainControl either way). Gates the empirical slope
+    # verification below.
     agc_unattested: bool = False
     # None = not yet decided (insufficient distinct commanded-level evidence).
-    # True = the staircase's reported-vs-commanded slope cleared the threshold
-    # — the chain is empirically gain-stable. False = it did not — the run
-    # aborts (agc_suspected) the moment this is set.
+    # True = the reported-vs-commanded slope cleared the threshold. False = it
+    # did not, and the run aborts (agc_suspected) the moment this is set.
     agc_verified: bool | None = None
     # The most recently computed regression slope, for diagnostics/logging.
     agc_slope: float | None = None
-    # Count of trusted samples ever accepted. Reaching the cap may begin a
-    # bounded-low evidence hold only when this is nonzero; a phone that never
-    # produced a usable sample is an ERROR, not an acoustic diagnosis.
+    # Count of trusted samples ever accepted. A phone that never produced a
+    # usable sample is an ERROR, not an acoustic diagnosis.
     trusted_sample_count: int = 0
-    # Admission diagnostics for the full, fresh phone stream.  These counters
-    # explain *why* a live meter produced zero trusted samples without retaining
-    # the high-rate payload or weakening the clip/AGC/noise gates.
+    # Admission diagnostics for the full, fresh phone stream: why a live meter
+    # produced zero trusted samples, without retaining the high-rate payload or
+    # weakening the clip/AGC/noise gates.
     observed_sample_count: int = 0
     finite_sample_count: int = 0
     below_noise_sample_count: int = 0
@@ -698,11 +571,9 @@ class RampData:
     max_observed_peak_dbfs: float | None = None
     max_signal_over_noise_db: float | None = None
     error: str | None = None
-    # Extra homeowner-facing specifics beyond the stable `error` code (e.g.
-    # agc_suspected's measured slopes + step counts). None for every terminal
-    # that doesn't have anything to add beyond its own `error` sentence — see
-    # jasper.correction.level_match.describe_ramp_refusal, the single place
-    # a terminal (error, error_detail) pair becomes homeowner copy.
+    # Extra homeowner-facing specifics beyond the stable `error` code. None when
+    # a terminal has nothing to add; see
+    # jasper.correction.level_match.describe_ramp_refusal.
     error_detail: str | None = None
     # Idempotency guard for terminal-state listening-level restore.
     restored: bool = False
@@ -724,18 +595,10 @@ class RampData:
     def agc_trusted(self) -> bool:
         """Whether this run's level evidence is a trustworthy gain-map reference.
 
-        For an ordinary (non-unattested) run this is exactly ``agc_frozen`` —
-        the raw browser-attested flag — so an attested run's behavior is
-        byte-identical to before this property existed. For an unattested run
-        (``agc_unattested`` True) it is the *empirical* verdict instead:
-        ``agc_verified is True`` once the slope check passed, never the raw
-        ``agc_frozen`` (which stays False for an unattested run at the wire
-        level, by design — see :class:`LevelSample`). Every
-        downstream consumer that used to gate on ``agc_frozen`` as "is this
-        reference trustworthy" (:meth:`RampController._bounded_low_level_is_usable`,
-        :meth:`jasper.correction.level_match.MeasurementLevelLock.from_ramp`)
-        reads this property instead, so a verified-unattested lock behaves
-        identically to an attested one.
+        For an ordinary (non-unattested) run this is exactly ``agc_frozen``. For
+        an unattested run it is the EMPIRICAL verdict instead
+        (``agc_verified is True``), never the raw ``agc_frozen``, which stays
+        False for an unattested run at the wire level by design.
         """
         if self.agc_unattested:
             return self.agc_verified is True
@@ -783,8 +646,8 @@ class RampData:
 
 # A source of the next batch of phone-reported samples. Injected so the loop is
 # testable with a synthetic feed; the real feed polls the relay (rate-limited
-# feed-side — the kernel tick is NOT the HTTP cadence). Returning an empty list
-# means "no new samples this tick" (the loop keeps its clock running).
+# feed-side). An empty list means "no new samples this tick" and the loop keeps
+# its clock running.
 SampleSource = Callable[[], Awaitable[list[LevelSample]]]
 
 # Injected monotonic clock (seconds) + async sleep, so tests drive time directly.
@@ -809,31 +672,29 @@ class _LoopVars:
     confirm_in_streak: int = 0
     confirm_out_buf: list[float] = field(default_factory=list)
     jumps_used: int = 0
-    # True only when SETTLING was entered because the safe cap was reached
-    # below the pre-window.  It routes the stable evidence to the explicitly
-    # degraded bounded-low policy instead of fabricating a normal window lock.
+    # True only when SETTLING was entered because the safe cap was reached below
+    # the pre-window; it routes the evidence to the explicitly degraded
+    # bounded-low policy instead of fabricating a normal window lock.
     bounded_low_candidate: bool = False
-    # (commanded_main_volume_db, reported_rms_dbfs) pairs collected from an
-    # unattested chain's trusted samples (raw, not blank_until-gated — see the
-    # rationale where this is populated in run()), for the empirical AGC slope
-    # check. Unused (stays empty) for an attested/explicitly-AGC-on run.
+    # (commanded_main_volume_db, reported_rms_dbfs) pairs from an unattested
+    # chain's trusted samples (raw, not blank_until-gated -- see run()), for the
+    # empirical AGC slope check.
     agc_evidence: list[tuple[float, float]] = field(default_factory=list)
-    # (slope, distinct_step_count) recorded the first time the AGC slope
-    # check fails the threshold. A single marginal estimate is not enough
-    # evidence to refuse a measurement (the 2026-07-16 jts3 false-positive:
-    # 0.644 over 3 steps/6.65 dB span, the same mic clean at 4 steps in a
-    # different flow twenty minutes later) — the gate holds the verdict open
-    # for one more staircase step of evidence before a terminal fires. None
-    # means either no failing estimate has been seen yet, or (once set) that
-    # the one extension is already in flight.
+    # (slope, distinct_step_count) recorded the first time the AGC slope check
+    # fails the threshold. One marginal estimate is not enough evidence to refuse
+    # a measurement (jts3 2026-07-16: 0.644 over 3 steps / 6.65 dB span, the same
+    # mic clean at 4 steps twenty minutes later), so the gate holds the verdict
+    # open for one more staircase step. None means no failing estimate yet, or
+    # that the one extension is already in flight.
     agc_marginal: tuple[float, int] | None = None
 
 
 def _ols_slope(points: list[tuple[float, float]]) -> float | None:
-    """Ordinary-least-squares slope of ``y`` (rms_dbfs) against ``x`` (commanded
-    dB). ``None`` when there are too few points or the x-values are degenerate
-    (all equal — a vertical/undefined fit), so a caller can distinguish "not
-    enough evidence yet" from a real, low, computed slope."""
+    """OLS slope of ``y`` (rms_dbfs) against ``x`` (commanded dB).
+
+    ``None`` when there are too few points or the x-values are degenerate (all
+    equal), so a caller can tell "not enough evidence yet" from a real low slope.
+    """
     if len(points) < 2:
         return None
     x_mean = sum(x for x, _ in points) / len(points)
@@ -850,10 +711,7 @@ class RampController:
 
     Public surface mirrors ``AutolevelController`` (``run`` / ``lock`` /
     ``cancel`` / ``restore_listening_volume_if_ramped``) so the correction
-    session's adapter can swap the engine without changing its callers. The
-    engine is what changed: blind browser-locked ramp → Pi-side settle-based
-    two-point map with a stop-ahead window and clip/trust/liveness/timeout
-    safety.
+    session's adapter can swap the engine without changing its callers.
     """
 
     def __init__(
@@ -870,8 +728,6 @@ class RampController:
         self._main_volume_setter: VolumeSetter | None = None
         self._restore_lock = asyncio.Lock()
 
-    # -- listening-level restore (idempotent, best-effort) --
-
     @property
     def main_volume_setter(self) -> VolumeSetter | None:
         return self._main_volume_setter
@@ -883,12 +739,10 @@ class RampController:
     async def restore_listening_volume_if_ramped(self) -> None:
         """Restore main_volume when a measurement ends outside apply/reset.
 
-        A LOCKED ramp leaves main_volume at the measurement level for the whole
-        measurement; failed / verify-ended measurements skip the web apply/reset
-        handlers, so this best-effort hook restores the user's level there. A
-        MAXED_OUT run already attempts an immediate restore, but remains eligible
-        here as a retry. Idempotent; swallows recoverable errors. Mirrors
-        ``AutolevelController.restore_listening_volume_if_ramped``.
+        Failed / verify-ended measurements skip the web apply/reset handlers, so
+        this best-effort hook restores the user's level there. A MAXED_OUT run
+        already attempts an immediate restore but remains eligible here as a
+        retry. Idempotent; swallows recoverable errors.
         """
         async with self._restore_lock:
             d = self.data
@@ -922,8 +776,7 @@ class RampController:
                 )
 
     async def lock(self) -> bool:
-        """Signal the running ramp to lock at the current main_volume (the user
-        tapped a manual Lock)."""
+        """Signal the running ramp to lock at the current main_volume."""
         if self.data.state in TERMINAL_STATES:
             return False
         self._lock_requested = True
@@ -936,8 +789,6 @@ class RampController:
         self._cancel_requested = True
         return True
 
-    # -- volume choke points --
-
     def _cap_value(self) -> float:
         """The effective ramp ceiling: min(dynamic cap, hard 0 dB ceiling)."""
         cap = self.data.cap_db
@@ -946,11 +797,9 @@ class RampController:
     def _safe_target(self, desired_db: float) -> float:
         """Clamp a desired ramp volume to the operative cap AND the hard ceiling.
 
-        The single choke point every ramp-commanded volume passes through, so
-        the cap-safety invariant is one line, not scattered. Never returns a
-        value above ``min(dynamic_cap, HARD_CEILING_DBFS)`` — and never returns
-        a non-finite value: NaN would tunnel through ``min()``, so it raises
-        instead (the run loop's recoverable-error path fades and restores).
+        The single choke point every ramp-commanded volume passes through. Never
+        returns a value above ``min(dynamic_cap, HARD_CEILING_DBFS)``, and never
+        a non-finite value: NaN would tunnel through ``min()``, so it raises.
         """
         if not math.isfinite(desired_db):
             raise ValueError(f"non-finite ramp volume target: {desired_db!r}")
@@ -958,8 +807,6 @@ class RampController:
 
     def _at_cap(self) -> bool:
         return self.data.current_main_volume_db >= self._cap_value() - 1e-9
-
-    # -- the ramp loop --
 
     async def run(
         self,
@@ -975,19 +822,13 @@ class RampController:
     ) -> RampData:
         """Run the settle-based level-match ramp. Returns the terminal RampData.
 
-        Injected dependencies keep the loop pure/testable:
-          - ``get/set_main_volume_db``: read the pre-ramp level, drive the ramp.
-          - ``play_continuous_tone`` / ``cancel_tone``: the band-limited tone the
-            phone measures. Contract: the coroutine plays until ``cancel_tone()``
-            is called (the ``TonePlayer.play`` shape); the kernel runs it as a
-            task and treats an early finish as an error (a silent tone must not
-            blind-climb). Started AFTER the quiet start volume is set; killed
-            AFTER the fade-down (audio-safety order).
-          - ``next_samples``: awaited each tick for the phone's newest batch.
-          - ``noise_floor_dbfs``: the phone's pre-ramp noise floor (trust gate).
-            A non-finite value is treated as unknown (no trust floor) with a
-            warning, never as a gate that silently passes everything.
-          - ``clock`` / ``sleep``: injected monotonic time so tests drive cadence.
+        Injected dependencies keep the loop pure and testable.
+        ``play_continuous_tone`` must play until ``cancel_tone()`` is called (the
+        ``TonePlayer.play`` shape); the kernel runs it as a task and treats an
+        early finish as an error. It is started AFTER the quiet start volume is
+        set and killed AFTER the fade-down (audio-safety order). A non-finite
+        ``noise_floor_dbfs`` is treated as unknown (no trust floor) with a
+        warning, never as a gate that silently passes everything.
         """
         cfg = self.config
         if noise_floor_dbfs is not None and not math.isfinite(noise_floor_dbfs):
@@ -1020,13 +861,11 @@ class RampController:
         async def _graceful_stop(final_db: float | None) -> None:
             """Fade down before killing the tone, then set the final volume.
 
-            Preserves AutolevelController's click-free stop: never kill the tone
-            at a loud level. ``final_db`` is clamped only to the 0 dB HARD
-            ceiling — NOT the dynamic cap — because the finals that arrive here
-            are either a lock value already emitted through ``_set`` (≤ cap by
-            construction) or the user's own pre-ramp volume, and "restoring" a
-            −5 dB listener to the −6 dB measurement cap would be a regression,
-            not safety (panel: cap-clamped restore).
+            Never kill the tone at a loud level. ``final_db`` is clamped only to
+            the 0 dB HARD ceiling, NOT the dynamic cap: the finals that arrive
+            here are either a lock value already emitted through ``_set`` (<= cap
+            by construction) or the user's own pre-ramp volume, and "restoring" a
+            −5 dB listener to the −6 dB measurement cap would be a regression.
             """
             try:
                 cur = d.current_main_volume_db
@@ -1130,7 +969,6 @@ class RampController:
 
             while True:
                 now = clock()
-                # --- terminal signals checked every tick ---
                 if self._cancel_requested:
                     return await _terminal(
                         RampState.CANCELLED,
@@ -1184,38 +1022,28 @@ class RampController:
                     )
                 trusted = self._process_batch(d, batch)
                 if d.state == RampState.ABORTED:
-                    # A clip in the batch aborted immediately.
                     await _graceful_stop(d.original_main_volume_db)
                     return d
                 d.trusted_sample_count += len(trusted)
-                # Samples arriving before blank_until reflect a pre-change
-                # level; exclude them from settle/confirm decisions. (Clip
-                # detection already ran on the FULL batch above.)
+                # Samples arriving before blank_until reflect a pre-change level.
+                # (Clip detection already ran on the FULL batch above.)
                 settled_stream = (
                     [s.rms_dbfs for s in trusted] if now >= v.blank_until else []
                 )
 
                 if d.agc_unattested and d.agc_verified is None and trusted:
-                    # Deliberately NOT settled_stream: with the default step
-                    # cadence (0.5 s) much faster than max_loop_latency_s
-                    # (2 s), blank_until never clears mid-climb, so a
-                    # blank-gated stream would starve the regression of the
-                    # very staircase evidence it needs. Like the CLIMBING
-                    # pre-window crossing check above, raw trusted samples are
-                    # used — a rough linearity trend across many steps and
-                    # points tolerates the same per-sample lag/smear that
-                    # crossing detection already tolerates, and OLS averages
-                    # it out.
+                    # Deliberately NOT settled_stream: the default step cadence
+                    # (0.5 s) is much faster than max_loop_latency_s (2 s), so
+                    # blank_until never clears mid-climb and a blank-gated stream
+                    # would starve the regression of the staircase evidence it
+                    # needs. OLS averages out the per-sample lag.
                     self._update_agc_evidence(
                         d, v, cfg, [s.rms_dbfs for s in trusted]
                     )
                     if d.agc_verified is False:
                         # A CONFIRMED slope failure (the marginal-estimate
-                        # extension already ran and the extended evidence
-                        # still fails — see _update_agc_evidence): abort NOW,
-                        # at whatever (usually still-quiet) commanded level
-                        # the staircase has reached — never keep climbing an
-                        # AGC-suspected chain toward the window.
+                        # extension already ran and its evidence still fails):
+                        # abort now, never keep climbing an AGC-suspected chain.
                         xs = [x for x, _ in v.agc_evidence]
                         steps = len({round(x, 3) for x in xs})
                         slopes: list[float] = []
@@ -1274,12 +1102,11 @@ class RampController:
     ) -> RampData | None:
         """One state-machine step. Returns terminal RampData, or None to continue."""
         if d.state == RampState.CLIMBING:
-            # Freeze the moment ANY trusted reading crosses the pre-window —
-            # max over the batch, not the newest sample, so a mid-batch
-            # crossing whose newest sample dipped doesn't delay the freeze.
-            # Stale (pre-blank) samples are deliberately included here: a stale
-            # crossing means the true level is even higher, so freezing is MORE
-            # urgent — the conservative direction.
+            # Freeze the moment ANY trusted reading crosses the pre-window -- max
+            # over the batch, not the newest sample, so a mid-batch crossing
+            # whose newest sample dipped does not delay the freeze. Stale
+            # (pre-blank) samples are deliberately included: a stale crossing
+            # means the true level is even higher, so freezing is MORE urgent.
             if trusted and max(s.rms_dbfs for s in trusted) >= cfg.pre_window:
                 d.state = RampState.SETTLING
                 v.settle_start = now
@@ -1298,9 +1125,7 @@ class RampController:
                     if d.trusted_sample_count > 0:
                         # Reached the cap without crossing the pre-window. Hold
                         # the volume fixed and collect fresh post-latency
-                        # evidence. A bounded-low lock is possible only after
-                        # the same settle + confirmation discipline as the
-                        # normal path; historical climb samples are not enough.
+                        # evidence; historical climb samples are not enough.
                         d.state = RampState.SETTLING
                         v.settle_start = now
                         v.settle_buf = []
@@ -1351,13 +1176,9 @@ class RampController:
                 # A fixed rung, NOT :func:`capped_gap_step_db`. The climb's
                 # target is a threshold it must CROSS, not a point to land on,
                 # and a gap step aimed at a threshold asymptotes: each step is
-                # the remaining gap, so the gap halves and the crossing never
-                # arrives. Measured, not reasoned — adopting the gap policy
-                # here turned
-                # ``test_agc_unattested_steps_met_but_span_unmet_is_still_indeterminate``
-                # into a safety timeout at -49.7 dB. The gap policy belongs
-                # where a ramp lands ON a value: the settled jump below, and
-                # the seat-level pass's band.
+                # the remaining gap, so the crossing never arrives. Measured, not
+                # reasoned. The gap policy belongs where a ramp lands ON a value:
+                # the settled jump below.
                 await _set(d.current_main_volume_db + cfg.step_db)
 
         elif d.state == RampState.SETTLING:
@@ -1383,17 +1204,16 @@ class RampController:
                     and settled < cfg.window_low_dbfs
                     and self._at_cap()
                 ):
-                    # Already pinned at the allowed cap: do not manufacture a
-                    # jump or an in-window lock. Confirm a fresh stable tail and
-                    # label the result explicitly if the bounded policy passes.
+                    # Already pinned at the allowed cap: confirm a fresh stable
+                    # tail and label the result explicitly rather than
+                    # manufacture a jump or an in-window lock.
                     self._enter_confirming(v)
                     d.state = RampState.CONFIRMING
                 else:
                     await self._apply_jump(d, v, cfg, settled, _set)
                     d.state = RampState.CONFIRMING
-            # else: keep holding — a momentarily-empty feed EXTENDS the hold;
-            # the machine never bounces back to CLIMBING (the review-reproduced
-            # bounce ratcheted the staircase past the window top).
+            # else: keep holding -- a momentarily-empty feed EXTENDS the hold;
+            # the machine never bounces back to CLIMBING.
 
         elif d.state == RampState.CONFIRMING:
             for value in settled_stream:
@@ -1405,14 +1225,11 @@ class RampController:
                     v.confirm_in_streak = 0
             if v.confirm_in_streak >= cfg.confirm_k:
                 if d.agc_unattested and not d.agc_trusted:
-                    # A slope FAILURE already aborted earlier in run() — the
+                    # A slope FAILURE already aborted earlier in run(), so the
                     # only way to reach a would-be lock here with agc_trusted
-                    # False is an indeterminate verdict (not enough
-                    # commanded-level span/steps of evidence, e.g. the window
-                    # sat close to the pre-ramp start). Fail closed — but
-                    # under a DISTINCT wire code from agc_suspected: no AGC
-                    # was observed here, only insufficient evidence, and the
-                    # phone renders different copy for the two cases.
+                    # False is an INDETERMINATE verdict. Fail closed, under a
+                    # DISTINCT wire code: no AGC was observed, only insufficient
+                    # evidence, and the phone renders different copy for each.
                     xs = [x for x, _ in v.agc_evidence]
                     return await _terminal(
                         RampState.ERROR,
@@ -1461,9 +1278,9 @@ class RampController:
                             shortfall_db=f"{d.window_shortfall_db:.1f}",
                             spread_db=f"{d.settled_spread_db:.1f}",
                         )
-                    # The cap was genuinely reached, but the bounded-low
-                    # contract was not proven. Preserve the evidence and
-                    # restore; never masquerade as a normal lock.
+                    # The cap was genuinely reached but the bounded-low contract
+                    # was not proven. Preserve the evidence and restore; never
+                    # masquerade as a normal lock.
                     return await _terminal(
                         RampState.MAXED_OUT,
                         final_db=d.original_main_volume_db,
@@ -1494,9 +1311,8 @@ class RampController:
                 if v.jumps_used < cfg.max_jumps:
                     await self._apply_jump(d, v, cfg, evidence, _set)
                     return None
-                # Jump budget exhausted and still out of window — keep
-                # confirming until the timeout restores (fail-safe), rather
-                # than oscillating.
+                # Jump budget exhausted and still out of window: keep confirming
+                # until the timeout restores, rather than oscillating.
                 v.confirm_out_buf = []
         return None
 
@@ -1527,27 +1343,18 @@ class RampController:
         """Fold this tick's trusted samples into the AGC slope evidence.
 
         Called only for an unattested run whose verdict is still undecided.
-        Appends ``(commanded_db, rms)`` pairs at the CURRENT commanded level
-        (stable for this tick — only ``_set`` mutates it), then, once evidence
-        covers at least ``agc_slope_min_span_db`` of commanded-level SPAN (the
-        primary gate — span is the regression's x-leverage; a few adjacent
-        0.75 dB steps aren't enough to estimate the slope robustly under real
-        mic jitter) AND ``agc_slope_min_steps`` distinct commanded levels (the
-        secondary floor), regresses reported rms against commanded dB.
+        Appends ``(commanded_db, rms)`` pairs at the CURRENT commanded level,
+        then regresses reported rms against commanded dB once the evidence covers
+        at least ``agc_slope_min_span_db`` of commanded-level SPAN (the primary
+        gate) AND ``agc_slope_min_steps`` distinct commanded levels.
 
-        A slope at/above ``agc_slope_threshold`` sets ``agc_verified = True``
-        immediately (unchanged — the pass path is single-shot). A slope BELOW
-        threshold is provisional, not terminal: a single marginal estimate at
-        the minimum evidence window is noisy (the 2026-07-16 jts3
-        false-positive — 0.644 over 3 steps/6.65 dB span, the same mic clean
-        at 4 steps in a different flow twenty minutes later), so the first
-        failing estimate is held in ``v.agc_marginal`` and ``agc_verified``
-        stays ``None`` — the caller in ``run()`` keeps calling this as more
-        staircase evidence arrives. Only a SECOND failing evaluation, with
-        strictly more distinct commanded levels than the first, sets
-        ``agc_verified = False`` (the caller's abort). ``None`` at lock time
-        (never reached a second, or any, evaluation) is handled separately —
-        see ``_tick_state`` and ``_bounded_low_level_is_usable``.
+        A slope at or above ``agc_slope_threshold`` sets ``agc_verified = True``
+        immediately. A slope BELOW threshold is provisional, not terminal -- one
+        marginal estimate at the minimum evidence window is noisy (jts3
+        2026-07-16: 0.644 over 3 steps / 6.65 dB span, the same mic clean at 4
+        steps twenty minutes later) -- so the first failing estimate is held in
+        ``v.agc_marginal`` and only a SECOND failing evaluation, with strictly
+        more distinct commanded levels, sets ``agc_verified = False``.
         """
         for rms in rms_values:
             v.agc_evidence.append((d.current_main_volume_db, rms))
@@ -1589,8 +1396,7 @@ class RampController:
             )
             return
         # The one-step extension's evidence still fails: `run()` reads
-        # agc_verified is False and fires the ramp_agc_suspected terminal
-        # (the single emitter for that event — see run()'s AGC check).
+        # agc_verified is False and fires the ramp_agc_suspected terminal.
         d.agc_verified = False
 
     @staticmethod
@@ -1600,17 +1406,12 @@ class RampController:
     ) -> bool:
         """Whether cap evidence satisfies the degraded lock contract.
 
-        Uses ``agc_trusted``, not the raw ``agc_frozen`` flag: an attested run
-        behaves exactly as before (``agc_trusted == agc_frozen`` when
-        ``agc_unattested`` is False). An unattested run reaching the cap with
-        too little commanded-level span (or too few distinct steps) to reach
-        an AGC verdict (a driver capped early, e.g. a tweeter ramp with a
-        small pre-cap window) is
-        INDETERMINATE (``agc_verified is None``) — ``agc_trusted`` is False in
-        that case too, so it fails closed to the ordinary
-        ``bounded_low_evidence_insufficient`` MAXED_OUT path rather than
-        manufacturing a degraded lock on unproven gain stability. A slope
-        FAILURE never reaches here: it aborts immediately in ``run()``.
+        Uses ``agc_trusted``, not the raw ``agc_frozen`` flag. An unattested run
+        that reaches the cap with too little commanded-level span to render an
+        AGC verdict is INDETERMINATE, and ``agc_trusted`` is False there too, so
+        it fails closed to the ordinary ``bounded_low_evidence_insufficient``
+        MAXED_OUT path rather than manufacturing a degraded lock on unproven gain
+        stability. A slope FAILURE never reaches here: it aborts in ``run()``.
         """
         return bool(
             cfg.allow_bounded_low_level
@@ -1639,15 +1440,12 @@ class RampController:
     ) -> None:
         """One computed jump so the mic lands at the window midpoint.
 
-        The step is :func:`capped_gap_step_db` — the shared climb policy, here
-        with no cap: this jump's upward magnitude is already bounded by the
-        staircase's own geometry (the settled read that triggers it sits at or
-        above ``pre_window``, so the gap to ``window_target`` cannot exceed
-        ``window_target - pre_window``), and ``_set`` clamps it against the
-        dynamic cap either way. The jump can be up (amp quiet) or DOWN (amp
-        loud — the mic is already above the window even at the quiet floor);
-        going down is always cap-safe. ``blank_until`` (stamped by ``_set``)
-        excludes post-jump stale reports from the confirm stream.
+        The step is :func:`capped_gap_step_db` with no cap: this jump's upward
+        magnitude is already bounded by the staircase's own geometry (the settled
+        read that triggers it sits at or above ``pre_window``, so the gap to
+        ``window_target`` cannot exceed ``window_target - pre_window``), and
+        ``_set`` clamps it against the dynamic cap either way. The jump can be up
+        (amp quiet) or DOWN (amp loud); going down is always cap-safe.
         """
         gain = observed_mic_dbfs - d.current_main_volume_db
         target = d.current_main_volume_db + capped_gap_step_db(
@@ -1674,23 +1472,17 @@ class RampController:
     ) -> list[LevelSample]:
         """Fold a phone batch into ramp state; return the *trusted* samples.
 
-        A ``clip=true`` sample flips the state to ABORTED immediately (the caller
-        stops) — clip is checked on EVERY sample before any other gate, so clip
-        protection holds even for AGC-compressed or ambient-dominated readings.
-        A non-finite level is dropped (never trusted — the NaN-pierce fix). A
-        sample below ``noise_floor + trust_margin`` is dropped as
-        ambient-dominated. ``agc_frozen=false`` on any sample is recorded so the
-        adapter can degrade + disable drift (§3.1 (c)) — the ramp still runs (the
-        user may manually lock; that is the degrade path), but an AGC-compressed
-        level is never a trusted gain-map reference. The one exception is
-        ``agc_frozen=false`` PAIRED with ``agc_unattested=true`` (the browser
-        could not attest either way, not a proven AGC-on) — those samples are
-        admitted through the SAME finite/clip/noise-floor gates as an attested
-        sample, because whether they end up trustworthy is decided by the
-        empirical slope check in ``run()``/``_update_agc_evidence``, not by an
-        automatic reject here. A sample claiming BOTH ``agc_frozen=true`` and
-        ``agc_unattested=true`` is treated as fully attested — the explicit
-        attestation wins over the contradictory unattested hint.
+        A ``clip=true`` sample flips the state to ABORTED immediately -- clip is
+        checked on EVERY sample before any other gate, so clip protection holds
+        even for AGC-compressed or ambient-dominated readings. A non-finite level
+        is dropped, as is a sample below ``noise_floor + trust_margin``.
+        ``agc_frozen=false`` is recorded so the adapter can degrade and disable
+        drift; the ramp still runs, but an AGC-compressed level is never a
+        trusted gain-map reference. The one exception is ``agc_frozen=false``
+        PAIRED with ``agc_unattested=true``, admitted through the SAME gates as
+        an attested sample because the empirical slope check in ``run()`` decides
+        its trustworthiness. A sample claiming BOTH flags true is treated as
+        fully attested.
         """
         cfg = self.config
         trusted: list[LevelSample] = []
@@ -1734,16 +1526,14 @@ class RampController:
                 continue  # hostile/broken payload; liveness only, never trusted
             if not s.agc_frozen:
                 if s.agc_unattested:
-                    # Not proven AGC-on — eligible for the slope check. Fall
-                    # through to the SAME admission gates an attested sample
-                    # gets; `run()` decides whether the accumulated evidence
-                    # is actually trustworthy before any lock can use it.
+                    # Not proven AGC-on -- eligible for the slope check, so it
+                    # falls through to the SAME admission gates an attested
+                    # sample gets.
                     d.agc_unattested = True
                 else:
                     d.agc_frozen = False
                     d.agc_rejected_sample_count += 1
-                    # AGC-compressed: usable as a liveness signal but never as
-                    # a trusted level. Skip it from the trusted set.
+                    # AGC-compressed: a liveness signal, never a trusted level.
                     continue
             if floor is not None and s.rms_dbfs < floor + cfg.trust_margin_db:
                 d.below_noise_sample_count += 1

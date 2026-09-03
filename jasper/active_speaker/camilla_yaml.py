@@ -88,12 +88,10 @@ from .test_signal_plan import (
 logger = logging.getLogger(__name__)
 
 #: ``result=`` slug of the L0 emit gate's below-declared-floor refusal
-#: (:func:`_assert_tweeter_crossover_honours_declared_floor`). Named rather than
-#: spelled inline because it is the machine-readable half of a hearing-safety
-#: refusal: the operator sentence may be reworded, this may not. Sibling of the
-#: startup gate's ``tweeter_crossover_below_declared_protection_floor`` blocker
-#: code (``path_safety._tweeter_protection_floor_verdict``) — two layers, one
-#: condition, so the two slugs are deliberately readable as a pair.
+#: (:func:`_assert_tweeter_crossover_honours_declared_floor`). The
+#: machine-readable half of a hearing-safety refusal: the operator sentence may
+#: be reworded, this may not. Sibling of the startup gate's
+#: ``tweeter_crossover_below_declared_protection_floor`` blocker code.
 EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR = (
     "blocked_tweeter_crossover_below_declared_floor"
 )
@@ -106,23 +104,18 @@ if TYPE_CHECKING:
     from .branch_chain import CrossoverSection
 
 ACTIVE_STARTUP_CONFIG_NAME = "active_speaker_startup.yml"
-# The PARKED graph's on-disk name + internal vocabulary (issue #2135). Kept next
-# to the startup config's name because the two are the same class of artifact:
-# a generated, topology-derived, all-muted boot graph. See
-# emit_active_speaker_parked_config for what parked means and why it exists.
+# The PARKED graph's on-disk name + internal vocabulary — the same class of
+# artifact as the startup config: a generated, topology-derived, all-muted boot
+# graph. See emit_active_speaker_parked_config for what parked means.
 PARKED_CONFIG_NAME = "active_speaker_parked.yml"
 PARKED_SILENCE_MIXER = "parked_silence"
-# The parked graph's sink. A ``File`` playback, never a DAC — the same
-# safe-by-construction argument the camilla#1 program bake rests on ("no DAC, no
-# driver to over-drive", see ACTIVE_PROGRAM_BAKE_SOURCE and
-# runtime_contract._playback_is_program_bake_pipe). It is also what makes the
-# parked graph DAC-agnostic: a board with no active outputd lane at all (the
-# InnoMaker HiFi AMP Pro) can still park, where an ALSA-sink parked graph would
-# have nothing legal to open.
+# The parked graph's sink: a ``File`` playback, never a DAC — no DAC attached
+# means no driver to over-drive, and it makes parking DAC-agnostic (a board with
+# no active outputd lane at all can still park).
 PARKED_SINK_PATH = "/dev/null"
 # The `# Source:` marker the classifier keys on to recognise a parked graph.
-# Named here (the emitter owns its own spelling) and re-declared independently
-# by the runtime verifier, exactly as ACTIVE_BASELINE_SOURCE is.
+# The emitter owns its own spelling; the runtime verifier re-declares it
+# independently, exactly as ACTIVE_BASELINE_SOURCE is.
 ACTIVE_PARKED_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_parked_config"
 )
@@ -141,45 +134,33 @@ FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     # is Ring B now (ADR-0100) and is already covered by its literal below.
     RETIRED_ALOOP_PLAYBACK_DEVICE,
     "jasper_out",
-    # The full-range STEREO ring. An active graph carries POST-crossover
-    # per-driver channels; Ring B carries a full-range stereo program that
-    # outputd hands to a stereo sink. Pointing an active emitter at it would put
-    # per-driver audio on a full-range path (and, read the other way, would let
-    # the stereo path's consumers receive a graph they cannot mean). The ACTIVE
-    # ring (``jts_ring_active_playback``) is the legal ring target and is
-    # deliberately NOT here — and the two names are chosen so this
-    # case-insensitive SUBSTRING test separates them: "jts_ring_playback" is not
-    # a substring of "jts_ring_active_playback".
+    # The full-range STEREO ring: pointing an active emitter at it would put
+    # POST-crossover per-driver audio on a full-range path. The ACTIVE ring
+    # (``jts_ring_active_playback``) is the legal target and is deliberately NOT
+    # here — the names are chosen so this case-insensitive SUBSTRING test
+    # separates them ("jts_ring_playback" is not a substring of the other).
     "jts_ring_playback",
 )
 
-# The emitters' PARAMETER default for a lab emit that names no queue (Q6).
-# Production composes :func:`active_emit_devices`, which passes
-# ``jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`` — the certified queue/rate-adjust
-# pairing an ACTIVE RING sink needs — whole. Rate adjust itself needs no
-# default here: every emitter resolves it from its sink when not told
-# (:func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust`, ADR-0218).
+# The emitters' PARAMETER default for a lab emit that names no queue. Production
+# composes :func:`active_emit_devices`, which passes
+# ``jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`` whole. Rate adjust needs no
+# default: every emitter resolves it from its sink when not told (ADR-0218).
 DEFAULT_ACTIVE_QUEUELIMIT = 4
 
-# The active-LEADER's camilla#1 program-domain bake (distributed-active Stage B).
-# It emits ONLY the program domain (Layer B room correction + Layer C preference
-# EQ + program headroom) to a ``File`` sink writing the snapserver pipe — NO
-# Layer A (no 2->N split, no per-driver crossover/delay/gain/limiter; those live
-# in camilla#2). This distinct ``# Source:`` marker is what the runtime verifier
-# keys on to recognise the bake as a DAC-less program graph; the *safety* of the
-# exemption keys on ``devices.playback.type == File`` (no DAC attached, so no
-# driver can be over-driven), not on this string. Stamped over emit_sound_config's
-# own marker so the bake stays distinguishable from the solo /sound + correction
-# program graphs that share emit_sound_config's program assembly.
+# The active-LEADER's camilla#1 program-domain bake: ONLY the program domain
+# (Layer B + Layer C + program headroom) to a ``File`` sink writing the
+# snapserver pipe; Layer A lives in camilla#2. The runtime verifier keys on this
+# marker to recognise a DAC-less program bake, but the exemption's SAFETY keys
+# on ``devices.playback.type == File``, never on this string.
 ACTIVE_PROGRAM_BAKE_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config"
 )
 
-# Driver-domain-only (active follower) emit. A follower picks ONE inter-speaker
-# channel of the leader's already-corrected stereo program, so the valid
-# program-channel selections are left / right / a clip-safe mono sum. ``stereo``
-# is passthrough (not a single-box pick) and ``sub`` is the wireless-sub member
-# (gap 5) — both are out of scope for the follower driver-domain emit.
+# Driver-domain-only (active follower) emit: a follower picks ONE inter-speaker
+# channel of the leader's corrected stereo program, so the valid selections are
+# left / right / a clip-safe mono sum. ``stereo`` (passthrough) and ``sub`` (the
+# wireless-sub member) are out of scope here.
 DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
@@ -288,17 +269,11 @@ def _forbidden_playback_token(playback_device: str) -> str | None:
 def _assert_ring_playback_width(playback_device: str, output_count: int) -> None:
     """Refuse a ring-targeted active emit whose width the ring cannot carry.
 
-    The EMITTER-SIDE twin of ``_outputd_endpoint_width``'s bound. When an active
-    graph's sink is the ACTIVE RING, the channel count it declares becomes one of
-    the ring's declaring ends, and the ioplug's attach compares that field
-    against the on-disk header. An emit whose width the transport cannot
-    represent is therefore not a config that fails later — it is a config that
-    CRASHES the ring at attach (``RING_ATTACH_FATAL``) rather than being refused.
-
-    Refusing here means the shear is reported by the thing that caused it, at the
-    moment it is written, instead of by a daemon that inherited it. Non-ring
-    devices are untouched: this is a no-op for every ALSA-lane emit, which is
-    every emit on every box today.
+    When the sink is the ACTIVE RING the declared channel count is one of the
+    ring's declaring ends and the ioplug's attach compares it against the
+    on-disk header, so a width the transport cannot represent CRASHES the ring
+    at attach (``RING_ATTACH_FATAL``) rather than being refused. A no-op for
+    every ALSA-lane emit.
     """
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
     from jasper.active_speaker.runtime_contract import (
@@ -321,27 +296,16 @@ def _assert_ring_playback_width(playback_device: str, output_count: int) -> None
 def capture_device_for_playback(playback_device: str) -> str:
     """The capture device an active emit against ``playback_device`` must declare.
 
-    THE DEVICE AXIS ALONE, and the one owner of it. :func:`active_emit_devices`
+    THE DEVICE AXIS ALONE, and the one owner of it: :func:`active_emit_devices`
     answers for the whole ``devices:`` block and calls this for its
-    ``capture_device`` field — one owner, two arities, so the two cannot drift
-    into two lists of the same names. The second arity's caller is
-    :func:`jasper.active_speaker.commissioning_admission.issue_protection_evidence`'s
-    ``capture_route_current`` check, which derives what a RUNNING graph's
-    capture device must be from that same graph's OWN playback device: the live
-    counterpart of the end-to-end coupling :func:`active_emit_devices`
-    documents, asserted on the read-back rather than on the emit.
+    ``capture_device`` field, and the live counterpart asserts the same coupling
+    on a running graph's read-back.
 
-    THE DEVICE AXIS IS TOPOLOGY-FREE BY CONSTRUCTION, which is why this
-    signature takes no ``topology`` and this body reads no env and no file: the
-    ring is the only transport (ADR-0100), so every playback device pairs with
-    Ring A and the answer is a module constant. Only the FORMAT axis needs
-    :func:`~jasper.fanin_coupling.resolve_ring_wire`, which reads the box's
-    declaration and can raise ``ValueError`` — so a caller that needs the
-    device name alone pays none of that, and cannot fail for a reason that is
-    not about the device. Widening this helper past the device axis would need
-    the topology input :func:`active_emit_devices` has and this one
-    deliberately does not; a caller that needs more than the device asks that
-    function instead.
+    The device axis is TOPOLOGY-FREE by construction, so this takes no
+    ``topology`` and reads no env and no file: the ring is the only transport
+    (ADR-0100), every playback device pairs with Ring A, and the answer is a
+    module constant. Only the FORMAT axis needs
+    :func:`~jasper.fanin_coupling.resolve_ring_wire`, which can raise.
     """
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE
 
@@ -352,17 +316,14 @@ def capture_device_for_playback(playback_device: str) -> str:
 class ActiveEmitDevices:
     """The whole CamillaDSP ``devices:`` block an active emit against a sink needs.
 
-    BOTH HALVES, in one object, because the ring coupling is end-to-end: a graph
-    that names the ring on one side and the snd-aloop tap on the other is a graph
-    that goes silent, and a struct carrying only the sink is a struct a caller can
-    forward half of. Every field maps 1:1 onto an
-    ``emit_active_speaker_baseline_config`` parameter of the same name, and
-    ``tests/test_ring_active_endpoint.py`` walks
-    ``dataclasses.fields(ActiveEmitDevices)`` at every forwarding site so a field
-    added here cannot be silently dropped by one of them.
+    BOTH HALVES in one object, because the ring coupling is end-to-end: a graph
+    naming the ring on one side and the snd-aloop tap on the other goes silent,
+    and a struct carrying only the sink is one a caller can forward half of.
+    Every field maps 1:1 onto an ``emit_active_speaker_baseline_config``
+    parameter of the same name.
 
-    ``chunksize``/``target_level`` are ``None`` for a sink with no opinion, which
-    is the emitter's own "resolve the env/floor value at emit time" contract.
+    ``chunksize``/``target_level`` are ``None`` for a sink with no opinion —
+    the emitter's "resolve the env/floor value at emit time" contract.
     """
 
     capture_device: str
@@ -381,70 +342,39 @@ def active_emit_devices(
     derivation.
 
     ONE home for "what does an emit against THIS device have to declare", so a
-    caller that re-points an active graph at the ring cannot forget any of it —
-    which is exactly the shape of forgetting that produces a graph naming the
-    right device and behaving like the wrong one. Every other device (the ALSA
-    active lane, and every lab/CI override) gets today's values back, so a
-    caller that routes through this helper is byte-identical on every box that
-    is not armed.
+    caller re-pointing an active graph at the ring cannot forget half of it.
+    Every non-ring device gets today's values back byte-identically.
 
-    RING MEMBERSHIP IS OVER ALL THREE RING PCMs
-    (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`), not one ``==`` against
-    the active ring. Two of the three are refused earlier by other guards — the
-    stereo ring is a forbidden active playback token, and the capture ring is
-    not a sink at all — so today only the active ring reaches the ring branch.
-    Keying on the SET anyway is what makes this the site that answers for a ring
-    PCM rather than the site that happens to know one name: a caller emitting
-    any ring device reads the same resolution here instead of adding a second.
+    Ring membership is over ALL THREE ring PCMs
+    (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`), not one ``==`` against the
+    active ring, so this is the site that answers for a ring PCM rather than the
+    site that happens to know one name. What the ring branch answers:
 
-    WHAT THE RING BRANCH ANSWERS, and who owns each value:
-
-    - ``capture_device`` — :func:`capture_device_for_playback`, which answers
-      :data:`~jasper.fanin_coupling.RING_CAPTURE_DEVICE` (Ring A) here and owns
-      that axis for its second caller too.
-      THE COUPLING IS END-TO-END AND SO IS THIS: under ``shm_ring``
-      fan-in writes Ring A and stops feeding the snd-aloop tap, so a graph whose
-      sink is the ring while its source is still ``plug:jasper_capture`` captures
-      a device nobody writes — digital silence with every daemon healthy. That
-      trap is QUIET: the plan compares capture CHANNELS (2 == 2 passes) and the
-      arm's width gate only holds ring-NAMED lanes to the wire, so a tap capture
-      is not-inspected rather than refused. Moving both halves together is what
-      makes it unreachable, and once the capture names a ring PCM the width gate
-      holds it to the wire for free. There is no reverse: the ring is the one
-      legal ACTIVE endpoint, so no derivation restores the tap.
+    - ``capture_device`` — :func:`capture_device_for_playback` (Ring A). The
+      coupling is END-TO-END: under ``shm_ring`` fan-in writes Ring A and stops
+      feeding the snd-aloop tap, so a graph whose sink is the ring while its
+      source is still ``plug:jasper_capture`` captures a device nobody writes —
+      digital silence with every daemon healthy, and a QUIET trap (the plan
+      compares capture CHANNELS, 2 == 2, and the width gate only holds
+      ring-NAMED lanes). Moving both halves together makes it unreachable.
     - ``capture_format`` / ``playback_format`` —
-      :func:`~jasper.fanin_coupling.resolve_ring_wire`, the one per-box
-      resolution EVERY declaring end reads. ONE format for both, because the
-      three rings share one wire. Never the box's program-lane default: on a box
-      whose live post-DSP path is wide that default is ``S32_LE`` while the
-      resolver may answer narrow, and a graph carrying the box default is a
-      sheared attach waiting at the arm (observed on jts3 2026-08-11,
-      ``captures/r7b-jts3-arm2-20260811T132227Z``). This adopts whatever the
-      resolver answers, in both directions.
+      :func:`~jasper.fanin_coupling.resolve_ring_wire`, ONE format for both
+      because the three rings share one wire. Never the box's program-lane
+      default, which can be ``S32_LE`` where the resolver answers narrow — a
+      sheared attach waiting at the arm.
     - ``chunksize`` / ``target_level`` / ``queuelimit`` /
-      ``enable_rate_adjust`` — :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`,
-      whole. This graph is built end-to-end on the ring and passes the certified
-      pairing EXPLICITLY. That is not the fallback an ordinary stereo graph
-      takes: those carry the box's own floor, clamped to the ring's capacity by
-      ``resolve_camilla_latency_for_devices``, and read their
-      ``enable_rate_adjust`` from
-      :func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust` — the
-      sink decides it on either branch (ADR-0218).
+      ``enable_rate_adjust`` — :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`
+      whole, the certified pairing passed EXPLICITLY rather than the box floor an
+      ordinary stereo graph carries (ADR-0218).
 
     A helper rather than emitter-internal derivation: the emitters keep taking
-    the values as PARAMETERS (Q6), because a lab emit deliberately setting them
-    is a legitimate call, and burying the choice inside the emitter would remove
-    that seam. This is the default a production caller composes with.
+    the values as PARAMETERS, because a lab emit setting them is legitimate.
 
-    The CHANNEL axis is deliberately not here, on either half. Ring A always
-    carries the 2-channel stereo program fan-in mixes and the emitters already
-    declare exactly that; the ACTIVE ring's width is structural — the pipeline's
-    output count, derived from the same saved topology the resolver reads — so
-    there is nothing for a device helper to "adopt". What matters is that the
-    two agree per ring, and
-    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready`` proves that at the
-    arm, over the emitted graph, holding each lane to its OWN ring's width
-    (``_wire_channels_for_ring``) rather than to one number.
+    The CHANNEL axis is deliberately absent: the ACTIVE ring's width is
+    structural (the pipeline's output count, from the same saved topology the
+    resolver reads), so there is nothing for a device helper to adopt.
+    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready`` proves the two ends
+    agree per ring at the arm.
     """
     from jasper.fanin_coupling import (
         RING_CAMILLA_GEOMETRY,
@@ -724,62 +654,28 @@ def _assert_tweeter_crossover_honours_declared_floor(
 ) -> None:
     """Fail-closed L0 emit gate: refuse a crossover below the tweeter's own floor.
 
-    The *bound* half of tweeter protection, where
-    :func:`_assert_tweeter_outputs_protected` is the *structural* half.
-    Structure answers "is there **a** high-pass on this output"; this answers
-    "is its corner at or above what this driver's own declaration requires". A
-    searched or prescribed crossover frequency makes those two different
-    questions: a graph can carry a textbook-correct high-pass whose corner the
-    driver's manufacturer forbids.
+    The *bound* half of tweeter protection;
+    :func:`_assert_tweeter_outputs_protected` is the *structural* half. A graph
+    can carry a textbook-correct high-pass whose corner the driver's
+    manufacturer forbids, which is why both questions are asked.
 
-    **Both compared numbers come from their owners, never re-derived here.**
-    ``test_signal_plan.strictest_crossover_highpass_hz`` is the one derivation
-    of "the crossover corner this driver is protected at";
-    ``test_signal_plan.declared_protection_floor_hz`` is the thin read of the
-    preset-carried floor that
-    ``driver_protection.declared_protection_highpass_floor_hz`` parsed at the
-    single compile point (``staging._driver_spec_from_preview``); and
-    ``driver_protection.protection_highpass_floor_satisfied`` is the shared
-    comparison rule. So this gate cannot drift from the protective-high-pass
-    clamp, the staged metadata, or the load gate — all four compare the same
-    numbers with the same rule.
+    Both compared numbers come from their owners and are never re-derived here
+    (``strictest_crossover_highpass_hz``, ``declared_protection_floor_hz``, and
+    the shared ``protection_highpass_floor_satisfied`` rule), so this gate
+    cannot drift from the protective-high-pass clamp, the staged metadata, or
+    the load gate.
 
-    **Two layers, deliberately, and they are not redundant.**
-    ``path_safety._tweeter_protection_floor_verdict`` refuses the same
-    condition at **startup / commission-load**, reading the two facts
-    ``staging`` published onto a *staged config's metadata*. That gate can only
-    ever judge a graph already written to disk, and only on the load path. This
-    one runs first thing inside the household-facing emitters, before a single
-    line of YAML is built — so the routine apply transaction
-    (``baseline_profile.build_baseline_profile_candidate`` →
-    ``apply_baseline_profile`` → ``dsp_apply.apply_dsp_config``) cannot put a
-    below-floor crossover on disk in the first place. Neither subsumes the
-    other: remove this and a routine apply ships the graph the load gate would
-    later refuse; remove that and a config staged by any other producer loads
-    unchecked.
+    Two layers, deliberately: ``path_safety._tweeter_protection_floor_verdict``
+    refuses the same condition at commission-load, over a graph already on disk;
+    this runs inside the household-facing emitters before any YAML is built, so
+    a routine apply cannot write a below-floor crossover at all. Neither
+    subsumes the other. The commissioning-flow emitters are deliberately NOT
+    gated — refusing there would replace the load gate's actionable refusal with
+    a bare emit-time exception, and leave that gate untestable.
 
-    **Why only the household-facing emitters, and not every emitter.** The
-    commissioning-flow emitters (startup / commissioning / program) must stay
-    able to emit a below-floor graph, because refusing one is precisely what
-    the layer above them does *with a better message*: ``staging`` emits the
-    startup config, publishes both facts onto its metadata, and the load gate
-    then refuses it by name with an actionable "raise the crossover or correct
-    the declaration". Gating the emitter would replace that operator-facing
-    refusal with a bare emit-time exception thrown from underneath the
-    commissioning flow, and would leave the load gate untestable against the
-    very artifact it exists to catch (issue #2491's own contract pins stage a
-    below-floor draft on purpose). The scope is therefore the graphs that carry
-    household program: the baseline apply and the multiroom driver-domain bake.
-
-    **Boundary semantics are the shared predicate's, deliberately identical to
-    the startup gate's:** *at* the floor is legal (``>=``, the 2026-08-17 owner
-    ruling — a driver rated to cross at 5000 Hz may cross at 5000 Hz), below it
-    is refused, and a declared floor with no readable crossover corner is
-    refused rather than waved through. A driver that declares **no** floor is
-    honoured unchanged: ``None`` means the operator declared nothing, and
-    inventing a floor there is the nanny behaviour the 2026-08-14 ruling
-    excludes — the same present-and-``None`` case the startup gate calls "the
-    honest undeclared case".
+    Boundary semantics are the shared predicate's: *at* the floor is legal
+    (``>=``), below it is refused, a declared floor with no readable crossover
+    corner is refused, and a driver declaring NO floor is honoured unchanged.
     """
     floor_hz = declared_protection_floor_hz(preset, "tweeter")
     crossover_hz = strictest_crossover_highpass_hz(preset, "tweeter")
@@ -823,31 +719,18 @@ def _assert_tweeter_crossover_honours_declared_floor(
 def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPreset) -> None:
     """Fail-closed L0 emit gate: refuse a graph with an unprotected tweeter output.
 
-    Runs on every active-speaker graph THIS module emits, right before it is
-    returned or written, so an unprotected-tweeter graph can never leave the
-    emitter (let alone be loaded). It re-proves — against the emitted text, not
-    the emitter's own construction — that every physical output the preset
-    assigns a ``tweeter`` (compression-driver) role carries a protective
-    high-pass: its crossover high-pass and/or a dedicated protective high-pass.
+    Runs on every active-speaker graph this module emits, right before it is
+    returned or written, and re-proves against the EMITTED TEXT (not the
+    emitter's construction) that every physical output the preset assigns a
+    ``tweeter`` role carries a protective high-pass.
 
-    Structure only: this answers "is there **a** high-pass on this output", not
-    "is its corner at or above what this driver declared". That bound is the
-    separate concern of
-    :func:`_assert_tweeter_crossover_honours_declared_floor`, which the
-    household-facing emitters run *before* they build anything — see its
-    docstring for why the two are deliberately not merged, and why it does not
-    run on the commissioning-flow emitters this one also guards.
-
-    This closes the L0 hearing-safety hole: a compression driver is ~25 dB more
-    sensitive than the woofer, so a graph
-    that routes full-range program to a tweeter output with no high-pass is a
-    shrill / hot-tweeter hazard. The active emitters wire that protection by
-    construction; this gate makes the guarantee ENFORCED (a future refactor that
-    dropped the tweeter high-pass would fail loudly here rather than ship a
-    dangerous graph). A preset with no tweeter role (a passive full-range or
-    woofer-only shape) has nothing to protect, so the gate is a no-op — it never
-    over-blocks. Observability: a block emits ``event=active_speaker.emit_gate``
-    before raising, so the refusal is never silent.
+    Structure only — whether the corner clears the driver's declared floor is
+    :func:`_assert_tweeter_crossover_honours_declared_floor`'s separate concern.
+    A compression driver is ~25 dB more sensitive than the woofer, so a graph
+    routing full-range program to an unprotected tweeter output is a hot-tweeter
+    hazard (hearing, AGENTS.md #1). A preset with no tweeter role has nothing to
+    protect and the gate is a no-op. A block emits
+    ``event=active_speaker.emit_gate`` before raising.
     """
     tweeter_channels = _channels_for_role(preset, "tweeter")
     if not tweeter_channels:
@@ -900,11 +783,9 @@ def _emit_split_mixer(
 ) -> str:
     # Always run the cross-region polarity reduction — it is also the
     # consistency guard (a role inverted in one region but not another raises).
-    # Only its result is optionally suppressed as the mixer's inversion source:
-    # the baseline/driver-domain emitters carry polarity through ``corrections``
-    # (a per-driver Gain filter, see ``_emit_baseline_driver_definitions``)
-    # instead, so the mixer must stay a no-op inverter there or the two would
-    # cancel each other out (double inversion == net non-inverted).
+    # Only its RESULT is optionally suppressed: the baseline/driver-domain
+    # emitters carry polarity through ``corrections`` instead, so the mixer must
+    # stay a no-op inverter there or the two would cancel out.
     region_polarity = _role_polarity(preset)
     polarity = (
         region_polarity
@@ -913,9 +794,8 @@ def _emit_split_mixer(
     )
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
-    # Active-speaker policy: build the (dest -> L/R-sum sources) map from
-    # the preset's driver layout + per-driver polarity. The YAML spelling
-    # is the shared emit_mixer; this routing is the assembly concern.
+    # The (dest -> L/R-sum sources) map comes from the preset's driver layout
+    # plus per-driver polarity; the YAML spelling is the shared emit_mixer.
     mapping: list[tuple[int, list[tuple[int, float, bool]]]] = [
         (
             output.index,
@@ -930,10 +810,9 @@ def _emit_split_mixer(
     labels = [output.label for output in outputs]
     sub = preset.local_subwoofer
     if sub is not None:
-        # The local subwoofer taps the SAME full-range program as the mains: it
-        # mono-sums L+R with the clip-safe -6.02 dB recipe. Its band-limiting
-        # low-pass and excursion limiter live in the per-output pipeline chain,
-        # NOT here — the mixer is pure routing.
+        # The local subwoofer taps the SAME full-range program as the mains,
+        # mono-summed with the clip-safe -6.02 dB recipe. Its band-limiting
+        # low-pass and excursion limiter live in the per-output pipeline chain.
         mapping.append((sub.physical_output_index, mono_sum_sources(inverted=False)))
         labels.append(sub.label)
     return emit_mixer(
@@ -992,11 +871,9 @@ def _program_protection_name(role: str, index: int) -> str:
 
 
 # --- local-subwoofer + bass-management filter names ---------------------------
-# The single home for the local-sub lane spellings. The sub output carries an LR4
-# low-pass (band-limit) + non-positive baseline gain + soft-clip limiter
-# (excursion); the mains' lowest driver carries the complementary LR4 high-pass
-# (bass management). Mirrors the per-driver name helpers above so the verifier
-# imports one alias per filter rather than re-deriving the format.
+# The sub output carries an LR4 low-pass (band-limit) + non-positive baseline
+# gain + soft-clip limiter (excursion); the mains' lowest driver carries the
+# complementary LR4 high-pass (bass management).
 
 
 def _sub_lowpass_name() -> str:
@@ -1025,14 +902,9 @@ def _bass_management_hp_name(role: str) -> str:
 
 
 # --- public filter-name vocabulary -------------------------------------------
-# The emitter owns the spelling of every filter name it writes. The
-# verification side (runtime_contract / staging / commission_ramp, via
-# graph_evidence) imports THESE aliases rather than hardcoding a literal like
-# "as_tweeter_startup_limiter" or re-deriving the format, so a name change here
-# can never silently desync a safety verifier from the graph it inspects (the
-# verifier would otherwise look for a filter that no longer exists and fail
-# closed, spuriously blocking commissioning). Aliases (not renames) keep the
-# emitter's own call sites — and its emission behaviour — completely untouched.
+# The emitter owns the spelling of every filter name it writes; the verification
+# side imports THESE aliases rather than a literal, so a rename cannot silently
+# desync a safety verifier from the graph it inspects.
 driver_mute_name = _driver_mute_name
 driver_limiter_name = _driver_limiter_name
 driver_delay_name = _driver_delay_name
@@ -1064,12 +936,9 @@ sub_startup_mute_name = _sub_startup_mute_name
 sub_startup_limiter_name = _sub_startup_limiter_name
 bass_management_hp_name = _bass_management_hp_name
 
-# The inter-speaker channel-select mixer name — emitter-owned graph vocabulary
-# the verification side re-imports (via graph_evidence) rather than hardcoding,
-# so a rename can never silently desync the runtime_contract driver-domain arm
-# from the graph it inspects. The name is owned by the shared leaf
-# (jasper.camilla_emit) and re-exported here so the active-speaker verifier has
-# one import point.
+# The inter-speaker channel-select mixer name, owned by the shared leaf
+# (jasper.camilla_emit) and re-exported so the active-speaker verifier has one
+# import point.
 channel_select_mixer_name = CHANNEL_SELECT_MIXER
 
 
@@ -1114,10 +983,9 @@ def _driver_baseline_filter_chain(
     linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     names: list[str] = []
-    # Bass-management high-pass FIRST: the lowest driver's program is high-passed
-    # at the sub crossover corner before its own crossover/delay/gain/limiter. The
-    # sub low-pass at the same corner is the complementary lower half (see the sub
-    # lane below) — together they are one crossover.
+    # Bass-management high-pass FIRST: the lowest driver's program is
+    # high-passed at the sub crossover corner before its own chain. The sub
+    # low-pass at the same corner is the complementary lower half.
     if _bass_management_active(preset, role):
         names.append(_bass_management_hp_name(role))
     for region in _ordered_regions(preset):
@@ -1125,11 +993,8 @@ def _driver_baseline_filter_chain(
             names.append(_crossover_filter_name(role, region, highpass=False))
         if region.upper_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=True))
-    # Layer-1a driver linearization (#1668 PR-D): immediately after the
-    # crossover HP/LP, before bass-extension — mirrors the bass-extension
-    # addon's own slot exactly (design doc "Layer 1a concretely"). Empty
-    # linearization is a no-op, so an un-linearized/legacy baseline stays
-    # byte-identical to before this stage existed.
+    # Layer-1a driver linearization: immediately after the crossover HP/LP,
+    # before bass-extension. Empty linearization is a no-op.
     names.extend(
         _driver_linearization_chain_names(linearization or {}, role)
     )
@@ -1257,81 +1122,56 @@ def _validated_driver_corrections(
     return safe_corrections
 
 
-# --- Layer-1a driver-linearization emission (#1668 PR-D) ---------------------
+# --- Layer-1a driver-linearization emission ----------------------------------
 #
 # Reduced shape only: {role: [{biquad_type, freq, q, gain}, ...]}. The richer
-# LinearizationFit.to_dict() (fit_band_hz, residuals, reason_summary, mic_tier,
-# driver_class, n_repeats, the honesty-ladder fields) is candidate/profile
-# evidence, not emitter input -- jasper.active_speaker.linearization_fit's
-# shared linearization_filters_by_role() reduces the richer shape down to
-# this one before any caller reaches this module, so the emitter itself never
-# needs to know the fit engine's own artifact shape.
+# LinearizationFit.to_dict() is candidate/profile evidence, not emitter input;
+# linearization_fit.linearization_filters_by_role() reduces it before any caller
+# reaches this module.
 
-# Hard cap on filters per driver (shelf + peaking combined). LOCKSTEP
-# DUPLICATE of jasper.active_speaker.linearization_fit.MAX_FILTERS_PER_DRIVER
-# -- not imported, because the emitter is an independent re-validation of
-# whatever a persisted candidate claims, not a trust-the-caller pass-through,
-# so it must not import the fit engine's own policy constant and inherit a
-# future change to it silently. A pinning test asserts the two constants
-# stay numerically equal.
+# Hard cap on filters per driver (shelf + peaking combined). LOCKSTEP DUPLICATE
+# of linearization_fit.MAX_FILTERS_PER_DRIVER — deliberately not imported,
+# because the emitter independently re-validates whatever a persisted candidate
+# claims rather than inheriting the fit engine's policy. A pinning test asserts
+# the two stay numerically equal.
 MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
-# Per-filter linearization BOOST ceiling (PR-L5) — the lockstep duplicate of
-# ``linearization_fit.PER_FILTER_BOOST_CAP_DB``, held here for the same reason
-# the filter count above is: the emitter re-validates what a persisted
-# candidate claims rather than importing the fit engine's policy. A pinning
-# test asserts the two stay numerically equal.
+# Per-filter linearization BOOST ceiling — the lockstep duplicate of
+# ``linearization_fit.PER_FILTER_BOOST_CAP_DB``, held here for the reason the
+# filter count above is.
 #
-# This bounds ONE emitted biquad, not the correction. Total boost is uncapped
-# by the owner's 2026-07-27 ruling, and is made safe not by a number here but
-# by ``linearization_headroom_db`` below, which folds the worst branch chain's
-# realized peak into ``active_baseline_headroom`` — so the boosted band
-# lands at or under unity no matter how deep the correction is, and CamillaDSP's
-# 0 dB ceiling, the per-driver limiters, and tweeter protection are untouched.
+# It bounds ONE emitted biquad, not the correction. Total boost is uncapped and
+# is made safe by ``linearization_headroom_db`` below, which folds the worst
+# branch chain's realized peak into ``active_baseline_headroom`` so the boosted
+# band lands at or under unity however deep the correction is.
 MAX_LINEARIZATION_BOOST_DB = 12.0
 
 # Ceiling on the program-domain attenuation ``active_baseline_headroom`` may
-# carry, dB. NOT a cap on the correction — it is a refusal.
+# carry, dB. NOT a cap on the correction — a refusal.
 #
-# Total boost is uncapped by the owner's ruling, and the absorption mechanism
-# turns every dB of it into a dB of pre-split attenuation. Left unbounded that
-# is a silent failure mode rather than a safety one: eight filters at the
-# per-filter cap would charge 96 dB and emit a graph that is, to a household,
-# simply mute — with nothing in the journal naming why. So the emitter REFUSES
-# past this line instead of quietly muting the speaker (adversarial review N7).
-#
-# 40 dB is deliberately generous — it is the same bound
-# ``emit_active_speaker_baseline_config`` already validates
-# ``baseline_headroom_db`` against, it is far past any correction the fit's own
-# realization gates can produce, and a config asking for more has a defect
-# upstream of this file. Fail-safe stays fail-safe; it just says so.
+# The absorption mechanism turns every dB of uncapped boost into a dB of
+# pre-split attenuation, so left unbounded eight filters at the per-filter cap
+# would charge 96 dB and emit a graph that is, to a household, simply mute with
+# nothing naming why. 40 dB is the same bound
+# ``emit_active_speaker_baseline_config`` validates ``baseline_headroom_db``
+# against, and far past any correction the fit's realization gates can produce.
 MAX_PROGRAM_HEADROOM_DB = 40.0
 
 _LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
-# Public alias, on ``blend_correction_name``'s rule below: a reader outside
-# this module needs the same set to decide whether a persisted linearization
-# record is one this system wrote. The evidence packet's
-# ``packet_incumbent_linearization`` reads the applied profile's copy back out
-# and asks exactly that; a second literal there is how the emitter's policy and
-# that reader drift.
+# Public alias: a reader outside this module needs the same set to decide
+# whether a persisted linearization record is one this system wrote.
 LINEARIZATION_BIQUAD_TYPES = _LINEARIZATION_BIQUAD_TYPES
 
 # A linearization shelf carries NO steepness of its own. Every shelf reaches
 # CamillaDSP through ``emit_filter_spec``, which spells the one Butterworth
-# ``camilla_config_contract.SHELF_Q`` -- the same Q the fit engine designed the
-# shelf at (``linearization_fit._HIGHSHELF_Q``) and scored its residual with.
-# BOTH shelf types the fit engine emits (the rising-slope Highshelf and the
-# CD-horn Lowshelf backbone / trailing Highshelf taper, #1668) share it.
+# ``camilla_config_contract.SHELF_Q`` — the same Q the fit engine designed the
+# shelf at and scored its residual with. Both shelf types share it.
 #
-# This block used to define ``_LINEARIZATION_SHELF_SLOPE = 6.0`` on the belief
-# that CamillaDSP's ``slope: 6`` realized Butterworth. It does not: CamillaDSP's
-# Butterworth is ``slope: 12`` (S = slope/12, S = 1), and at ``slope: 6`` the
-# realized Q falls with the shelf's gain -- 0.476 at the -11 dB shelf the
-# 2026-07-27 JTS3 profile carried, missing the designed curve by up to 1.7 dB
-# across the tweeter band. The fit's realization gate, residual, and VERIFY
-# prediction all evaluated the Butterworth shelf, so nothing in the loop could
-# see it. See ``SHELF_Q`` for the formula and the upstream test that pins it.
+# CamillaDSP's Butterworth is ``slope: 12`` (S = slope/12, S = 1); at
+# ``slope: 6`` the realized Q falls with the shelf's gain (0.476 at -11 dB,
+# missing the designed curve by up to 1.7 dB across the tweeter band). See
+# ``SHELF_Q`` for the formula and the upstream test that pins it.
 
 
 def _driver_linearization_shelf_name(role: str) -> str:
@@ -1343,10 +1183,9 @@ def _driver_linearization_peak_name(role: str, index: int) -> str:
 
 
 def _driver_linearization_taper_name(role: str) -> str:
-    # The CD-horn stage's optional TRAILING Highshelf taper (#1668). A distinct
-    # name from the leading shelf so both a Lowshelf-led backbone and its taper
-    # can coexist in one driver's chain without a duplicate filter name (which
-    # CamillaDSP would reject / silently collapse).
+    # The CD-horn stage's optional TRAILING Highshelf taper. A distinct name
+    # from the leading shelf so a Lowshelf-led backbone and its taper can
+    # coexist in one chain without a duplicate filter name.
     return f"as_{_name_token(role)}_linearization_taper"
 
 
@@ -1355,14 +1194,12 @@ def _linearization_slot(
 ) -> str:
     """Classify one filter's role in a linearization chain by POSITION:
     ``"shelf"`` (a leading Highshelf/Lowshelf at index 0), ``"taper"`` (a
-    trailing Highshelf after a Lowshelf lead, #1668), else ``"peak"``.
+    trailing Highshelf after a Lowshelf lead), else ``"peak"``.
 
-    The single source of the shelf-first / taper-last structural rule, shared
-    by the validation gate, the chain namer, and the definition emitter so the
-    three can never disagree about which slot an entry occupies. It classifies
+    The single source of the shelf-first / taper-last rule, shared by the
+    validation gate, the chain namer and the definition emitter. It classifies
     whatever order the input carries; enforcing that order is
-    ``_validate_linearization_shelf_structure``'s job (a shelf-type entry that
-    lands in a ``"peak"`` slot is what that gate rejects).
+    ``_validate_linearization_shelf_structure``'s job.
     """
     biquad_type = filters[index]["biquad_type"]
     leading_is_lowshelf = count > 0 and filters[0]["biquad_type"] == "Lowshelf"
@@ -1378,20 +1215,15 @@ def _linearization_slot(
     return "peak"
 
 
-# Public aliases (matching the driver_baseline_gain_name convention above):
-# the runtime-safety verifier (graph_evidence -> runtime_contract) re-proves
-# the linearization stage against the EMITTED graph text and must spell these
-# names identically rather than re-deriving the format.
+# Public aliases: the runtime-safety verifier re-proves the linearization stage
+# against the EMITTED graph text and must spell these names identically.
 driver_linearization_shelf_name = _driver_linearization_shelf_name
 driver_linearization_peak_name = _driver_linearization_peak_name
 driver_linearization_taper_name = _driver_linearization_taper_name
 
-# Public alias, on ``LINEARIZATION_BIQUAD_TYPES``'s rule: a gate outside this
-# module that admits a shelf must answer "would the emitter accept this list"
-# before it accepts one, and that question has one owner. The per-driver
-# prescription door (``crossover_v2.driver_prescription._parse_filters``) reads
-# it so a shelf placed where ``_validate_linearization_shelf_structure`` would
-# raise is refused at intake instead of at emission.
+# Public alias: a gate outside this module that admits a shelf must answer
+# "would the emitter accept this list" before it does, so the per-driver
+# prescription door reads this and refuses at intake rather than at emission.
 linearization_slot = _linearization_slot
 
 
@@ -1405,35 +1237,18 @@ def _validated_biquad_entry(
 ) -> dict[str, Any]:
     """Re-validate ONE persisted biquad record, or raise.
 
-    Shared by every emitter gate that accepts a caller-supplied biquad list —
-    Layer-1a linearization and the crossover blend correction today. Extracted
-    rather than copied: both lists cross a JSON round trip before they reach
-    this module, both are re-validated here on the never-trust-the-caller rule,
-    and two hand-written copies of "is this a legal biquad" is exactly the
-    second-source-of-truth shape that lets one of them silently fall behind a
-    tightening applied to the other.
+    Shared by every emitter gate that accepts a caller-supplied biquad list;
+    each list crosses a JSON round trip before it reaches this module, so this
+    is a never-trust-the-caller re-validation. Each caller keeps its own POLICY
+    (permitted types, gain ceiling, entry count, order); this owns the
+    per-entry field contract, and RAISES rather than clamping — a value out of
+    range means the record was not written by the code that claims to own it.
 
-    What stays with each caller is its own POLICY: which biquad types it
-    permits, what its gain ceiling is, how many entries it allows, and any
-    structural rule about their order. This function owns only the per-entry
-    field contract, and it raises rather than clamping — a value out of range
-    means the persisted record was not written by the code that claims to own
-    it, which is not a condition a clamp can repair.
-
-    ``label`` names the owner in the message, so a household-visible refusal
-    still says which stage refused.
-
-    The Nyquist refusal (``freq >= sample_rate / 2``) is this module's OWN
-    proof, independent of whatever produced the record: a fit-engine placement
-    bound (``linearization_fit._HF_TAPER_NYQUIST_HZ``) is a design-time
-    choice about what that ONE stage should emit, not a guarantee about every
-    biquad this function will ever see — "the emitter would never write this"
-    is not a proof (the doctrine `branch_chain.py` already states for exactly
-    this class of gap). A biquad at or above Nyquist is not a policy choice to
-    reject, it is not a realizable digital filter corner at all: CamillaDSP
-    itself refuses it at ``--check``, so admitting one here would let an
-    apply transaction stage a config guaranteed to fail load, rather than
-    refusing it at the boundary that can still say why.
+    ``label`` names the owner in the message. The Nyquist refusal
+    (``freq >= sample_rate / 2``) is this module's own proof: a biquad at or
+    above Nyquist is not a realizable digital filter corner at all and
+    CamillaDSP refuses it at ``--check``, so admitting one would stage a config
+    guaranteed to fail load.
     """
 
     if not isinstance(entry, Mapping):
@@ -1468,24 +1283,14 @@ def _validated_linearization(
     preset: ActiveSpeakerPreset,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Normalize + independently re-validate the per-driver linearization
-    filter list, mirroring ``_validated_driver_corrections``'s shape/spirit.
+    """Normalize + independently re-validate the per-driver linearization list.
 
-    ``linearization`` crosses a JSON round-trip before it ever reaches this
-    emitter (a persisted ``MeasuredCrossoverCandidate``/applied-profile
-    snapshot, not the fit engine's own dataclass), so this is an independent
-    fail-closed gate -- not a trust-the-caller pass-through -- exactly like
-    every other correction/gain field this module re-validates. An unknown
-    role is dropped (mirrors ``_validated_driver_corrections``); a known
-    role's filter list is validated field-by-field and RAISES
-    ``ActiveSpeakerConfigError`` on the first violation (never silently
-    dropped or clamped). The per-filter boost cap it re-proves is a
-    REALIZATION-FIDELITY bound, not a hearing/SPL clamp -- past it the
-    emitted filter stops being a faithful realization of the requested shape
-    (``linearization_fit.PER_FILTER_BOOST_CAP_DB``'s own derivation); the SPL
-    budget is charged by headroom accounting, not here. Pinned by
-    tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
-    and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
+    An independent fail-closed gate, not a trust-the-caller pass-through: an
+    unknown role is dropped, a known role's list is validated field-by-field and
+    RAISES on the first violation. The per-filter boost cap it re-proves is a
+    REALIZATION-FIDELITY bound, not a hearing/SPL clamp — past it the emitted
+    filter stops being a faithful realization of the requested shape, and the
+    SPL budget is charged by headroom accounting instead.
     """
 
     safe: dict[str, list[dict[str, Any]]] = {}
@@ -1515,24 +1320,16 @@ def _validated_linearization(
     return safe
 
 
-# Ceiling on how many blend-correction cuts a candidate may carry, held here
-# for the same reason ``MAX_LINEARIZATION_FILTERS_PER_DRIVER`` is: the emitter
-# independently re-validates whatever a persisted candidate claims rather than
-# importing the solver's own policy constant and inheriting a future change to
-# it silently. A pinning test asserts the two stay numerically equal.
+# Ceiling on how many blend-correction cuts a candidate may carry, held here for
+# the reason ``MAX_LINEARIZATION_FILTERS_PER_DRIVER`` is. A pinning test asserts
+# it stays numerically equal to the solver's own constant.
 MAX_BLEND_CORRECTION_FILTERS = 2
 
-# The blend correction is CUTS-ONLY, and this is the emitter's own half of that
-# invariant (the solver's ``−max(deviation, 0)`` construction is the other).
-# Two independent places, deliberately: the solver cannot represent a boost,
-# and this gate refuses one — because between them sits a JSON round trip
-# through a persisted candidate, which is precisely where a value the solver
-# never produced could appear.
-#
-# A REFUSAL rather than a clamp, matching ``_validated_linearization``'s choice
-# for the same reason: a positive gain here means the record was not written by
-# the solver that claims to own it, and silently clamping it would emit a graph
-# from a document nobody can vouch for.
+# The blend correction is CUTS-ONLY. Two independent places hold that: the
+# solver cannot represent a boost, and this gate REFUSES one — between them sits
+# a JSON round trip through a persisted candidate, which is where a value the
+# solver never produced could appear. A refusal rather than a clamp, because a
+# positive gain means the record was not written by its claimed owner.
 MAX_BLEND_CORRECTION_GAIN_DB = 0.0
 
 _BLEND_CORRECTION_BIQUAD_TYPES = frozenset({"Peaking"})
@@ -1553,22 +1350,15 @@ def _validated_blend_correction(
 ) -> list[dict[str, Any]]:
     """Normalize + independently re-validate the pre-split blend correction.
 
-    The crossover blend region's bounded shape correction (design doc decision
-    10) — ``[{biquad_type, freq, q, gain}, ...]``, solved by
-    ``crossover_v2.blend_correction`` from the summed at-the-mark measurement
-    and emitted on the stereo program bus, before the split mixer.
+    The crossover blend region's bounded shape correction, solved from the
+    summed at-the-mark measurement and emitted on the stereo program bus before
+    the split mixer. Per-entry fields go through ``_validated_biquad_entry``;
+    the policy this gate adds is stage-specific — Peaking only (a shelf across a
+    two-octave blend would re-level the region, which is the trim's job), at
+    most :data:`MAX_BLEND_CORRECTION_FILTERS` entries, and every ``gain`` at or
+    below :data:`MAX_BLEND_CORRECTION_GAIN_DB`.
 
-    Fail-closed, like every other correction field this module re-validates.
-    Per-entry fields go through the shared ``_validated_biquad_entry``; the
-    policy this gate adds on top is the part that is specific to the stage:
-    Peaking only (a shelf across a two-octave blend would re-level the region,
-    which is the trim's job), at most
-    :data:`MAX_BLEND_CORRECTION_FILTERS` entries, and every ``gain`` at or
-    below :data:`MAX_BLEND_CORRECTION_GAIN_DB` — i.e. cuts only.
-
-    An empty/absent correction returns ``[]``, so a candidate that carries none
-    emits no stage and its graph is byte-identical to one written before this
-    stage existed.
+    An empty correction returns ``[]`` and emits no stage.
     """
 
     if blend_correction is None:
@@ -1597,15 +1387,13 @@ def _validated_blend_correction(
 def _validate_linearization_shelf_structure(
     role: str, role_filters: list[dict[str, Any]],
 ) -> None:
-    """Fail-closed structural gate on shelf placement (#1668). The fit engine
-    only ever emits shelves in ONE of two shapes: a single LEADING shelf
-    (rising-slope Highshelf OR CD-horn Lowshelf backbone) at position 0, and —
-    only after a Lowshelf lead — a single TRAILING Highshelf taper as the last
-    entry. Everything else is Peaking. Any other shelf placement (a shelf mid-
-    chain, two leading shelves, a taper without a Lowshelf lead, a taper that
-    isn't last, a second Lowshelf) means the persisted candidate was corrupted
-    or produced by something other than the fit engine — raise, so a duplicate
-    filter name can never reach the graph. Peaking anywhere is always fine.
+    """Fail-closed structural gate on shelf placement.
+
+    The fit engine emits shelves in one of two shapes only: a single LEADING
+    shelf at position 0, and — only after a Lowshelf lead — a single TRAILING
+    Highshelf taper as the last entry. Any other placement means the persisted
+    candidate was corrupted or produced by something else, so it raises rather
+    than letting a duplicate filter name reach the graph. Peaking is always fine.
     """
     shelf_types = {"Highshelf", "Lowshelf"}
     n = len(role_filters)
@@ -1629,16 +1417,12 @@ def _driver_linearization_chain_names(
     linearization: dict[str, list[dict[str, Any]]],
     role: str,
 ) -> list[str]:
-    """The filter-name list for ``role``'s linearization stage, one name per
-    entry in ``filters`` IN INPUT ORDER: a leading shelf-type entry (Highshelf
-    OR CD-horn Lowshelf, #1668) at position 0 gets the shelf name; a TRAILING
-    Highshelf after a Lowshelf lead gets the taper name; everything else gets
-    the next peak name. This function does not reorder or otherwise enforce the
-    "shelf first / taper last" order -- it names whatever order the input list
-    already carries. That order is a construction guarantee of the fit engine
-    (``linearization_fit.fit_driver_linearization``) and is fail-closed re-
-    validated at the emitter boundary (``_validate_linearization_shelf_
-    structure``), not enforced here."""
+    """The filter-name list for ``role``'s linearization stage, IN INPUT ORDER.
+
+    Names whatever order the input carries and never reorders it; the
+    shelf-first / taper-last order is the fit engine's construction guarantee,
+    re-validated at the emitter boundary by
+    ``_validate_linearization_shelf_structure``."""
 
     filters = linearization.get(role) or []
     names: list[str] = []
@@ -1660,18 +1444,15 @@ def _emit_driver_linearization_definitions(
     linearization: dict[str, list[dict[str, Any]]],
 ) -> list[str]:
     """Definitions for every role's linearization filters, via the shared
-    ``emit_filter_spec`` leaf (the same primitive preference-EQ bands use) so
-    a Peaking/Highshelf/Lowshelf band is spelled identically everywhere in
-    this codebase. Shelf-type entries (a leading Highshelf/Lowshelf, or a
-    trailing Highshelf taper after a Lowshelf lead, #1668) carry NO steepness
-    on their ``FilterSpec``: ``emit_filter_spec`` spells every shelf at the one
-    Butterworth ``SHELF_Q`` the fit engine designed it at (see the shelf-Q note
-    above this function's neighbours). The entry's own ``q`` is deliberately
-    dropped for the same reason -- the fit only ever produces ``_HIGHSHELF_Q``
-    there, and honouring a stray value would emit a shelf no evaluator in the
+    ``emit_filter_spec`` leaf.
+
+    Shelf-type entries carry NO steepness on their ``FilterSpec``:
+    ``emit_filter_spec`` spells every shelf at the one Butterworth ``SHELF_Q``
+    the fit engine designed it at, and the entry's own ``q`` is dropped for the
+    same reason — honouring a stray value would emit a shelf no evaluator in the
     fit loop can see. Position-aware naming mirrors
-    ``_driver_linearization_chain_names`` exactly so the emitted definitions
-    and pipeline names cannot disagree.
+    ``_driver_linearization_chain_names`` so definitions and pipeline names
+    cannot disagree.
     """
 
     lines: list[str] = []
@@ -1718,15 +1499,11 @@ def _emit_baseline_driver_definitions(
     """The driver-domain (Layer A) filter definitions shared by the solo/leader
     baseline and the follower's driver-domain-only graph.
 
-    Emits the per-region Linkwitz-Riley crossover pair, then each driver's
-    [delay, non-positive baseline gain, soft-clip limiter] chain. This is the
-    *intra-speaker* half — it has no program-domain headroom and no preference
-    EQ (those are program-domain, wired only by the baseline caller). The
-    follower's driver-domain emit reuses this verbatim so the relocated Layer A
-    is byte-for-byte the same protective chain a solo speaker runs. ``linearization``
-    is threaded only by the solo/leader baseline caller today — the follower's
-    driver-domain emit never passes it, so its graph stays exactly the pre-PR-D
-    protective chain (Layer 1a linearization ships to a follower in a later slice).
+    The per-region Linkwitz-Riley crossover pair, then each driver's [delay,
+    non-positive baseline gain, soft-clip limiter] chain. The *intra-speaker*
+    half only — no program-domain headroom, no preference EQ — so the follower's
+    relocated Layer A is byte-for-byte the chain a solo speaker runs.
+    ``linearization`` is threaded only by the solo/leader baseline caller.
     """
     lines: list[str] = []
     for region in _ordered_regions(preset):
@@ -1742,10 +1519,8 @@ def _emit_baseline_driver_definitions(
             freq_hz=region.fc_hz,
             order=region.order,
         ))
-    # Layer-1a driver linearization (#1668 PR-D): immediately after the
-    # crossover HP/LP definitions, before bass-management/bass-extension —
-    # mirrors the bass-extension addon's own slot. Empty linearization emits
-    # nothing.
+    # Layer-1a driver linearization: immediately after the crossover HP/LP
+    # definitions, before bass-management/bass-extension. Empty emits nothing.
     lines.extend(_emit_driver_linearization_definitions(linearization or {}))
     # Bass-management high-pass on the lowest driver (the complementary upper half
     # of the single sub crossover). Emitted only when a local sub is present.
@@ -1802,9 +1577,8 @@ def _emit_sub_startup_definitions(
     """The local-sub startup/commissioning lane definitions: LR4 low-pass +
     soft-clip limiter + hard mute.
 
-    The sub starts muted for commissioning safety (mirrors a driver's startup
-    mute). The band-limit (low-pass) and excursion limiter are still present so an
-    un-muting Phase-B path arms an already-protected sub output."""
+    The sub starts muted for commissioning safety; the band-limit and excursion
+    limiter are still present so an un-muting path arms a protected output."""
     return [
         *emit_linkwitz_riley(
             _sub_lowpass_name(),
@@ -1838,10 +1612,9 @@ def _emit_sub_commissioning_definitions(
     """The local-sub commissioning lane definitions: LR4 low-pass + soft-clip
     limiter only.
 
-    Mirrors a driver's commissioning definitions — the lane's own startup mute is
-    dropped (the per-output commission mute does the muting), so no orphan mute
-    filter is emitted. The band-limit + excursion limiter are still present so the
-    sub output stays protected even when its per-output mute is later lifted."""
+    The lane's own startup mute is dropped (the per-output commission mute does
+    the muting), so no orphan mute filter is emitted; the band-limit and
+    excursion limiter stay so the output is protected when the mute is lifted."""
     return [
         *emit_linkwitz_riley(
             _sub_lowpass_name(),
@@ -1860,11 +1633,9 @@ def _emit_sub_commissioning_definitions(
 def _sub_commissioning_filter_chain() -> list[str]:
     """The local-sub commissioning lane: band-limit + excursion limiter only.
 
-    Mirrors a driver's commissioning chain — the per-output commission mute
-    (appended in the pipeline) replaces the lane's own startup mute, so exactly
-    one physical output is excited through the real graph. The LR4 low-pass and
-    soft-clip limiter are preserved so the sub output stays band-limited AND
-    excursion-limited even when its per-output mute is later lifted to ramp it."""
+    The per-output commission mute replaces the lane's own startup mute, so
+    exactly one physical output is excited through the real graph; the low-pass
+    and limiter stay so the output is protected when that mute is lifted."""
     return [
         _sub_lowpass_name(),
         _sub_startup_limiter_name(),
@@ -1878,11 +1649,10 @@ def _emit_sub_baseline_definitions(
 ) -> list[str]:
     """The local-sub baseline filter definitions: LR4 low-pass + gain + limiter.
 
-    The sub protection mirrors the mains' per-driver chain (non-positive gain +
-    soft-clip limiter); the band-limit is the LR4 low-pass at the bass-management
-    corner. The subwoofer commissioning-tone bounds (50 Hz floor / 300 ms) live in
-    ``driver_protection.driver_protection_profile('subwoofer')`` and gate the
-    later audible ramp; the durable graph's protection is this gain<=0 + limiter.
+    The durable graph's sub protection is this ``gain <= 0`` + soft-clip
+    limiter, band-limited by the LR4 low-pass at the bass-management corner. The
+    commissioning-tone bounds (50 Hz floor / 300 ms) live in
+    ``driver_protection.driver_protection_profile('subwoofer')`` instead.
     """
     return [
         *emit_linkwitz_riley(
@@ -1909,49 +1679,27 @@ def linearization_headroom_db(
 
     The WORST branch's REALIZED PEAK — the largest gain any one branch chain
     (``crossover ⊗ linearization ⊗ trim``) applies to the program, plus
-    :data:`jasper.active_speaker.branch_chain.HEADROOM_MARGIN_DB`. Worst
-    branch and not the sum across branches because the driver chains run in
-    PARALLEL after the split, so no single sample path ever sees two branches'
-    boosts and the graph gives up the largest one.
+    :data:`jasper.active_speaker.branch_chain.HEADROOM_MARGIN_DB`. Worst branch
+    rather than the sum across branches because the driver chains run in
+    PARALLEL after the split, so no sample path ever sees two branches' boosts.
+    A per-branch SUM of positive gains is a valid but badly loose bound: it once
+    charged 22.458 dB against a branch peaking at +4.00 dB, leaving the speaker
+    8.3 dB below the household's listening level at maximum volume.
 
-    Until 2026-07-28 this was the per-branch SUM of positive filter gains — a
-    valid upper bound on the same quantity (overlapping boosts at ONE
-    frequency do add, which is the case a headroom charge has to survive), but
-    a badly loose one: on the JTS3 profile of that morning it charged
-    22.458 dB against a branch that peaked at +4.00 dB, most of the difference
-    paying for two boosts the woofer's own crossover then attenuated by 13.3
-    and 7.8 dB. The speaker ended 8.3 dB below the household's listening level
-    at maximum volume. The owner's ruling (#1808): corrections must never
-    stack invisible headroom — the speaker plays as loud as possible while
-    accomplishing its leveling goals, subject to ``volume_limit`` 0 and
-    protection. A bin-by-bin cascade evaluation contains the overlapping-boost
-    case the sum was protecting, and no other.
+    ``branch_context`` maps role to ``(crossover_sections, trim_db)`` and is
+    REQUIRED: omitting it would charge the linearization cascade alone — safe
+    for a charge, but wrong for any reader comparing two corrections, and wrong
+    in the loud direction for a delta. :func:`_branch_context` builds it from
+    the same preset and corrections the graph is emitted from.
 
-    ``branch_context`` maps role to ``(crossover_sections, trim_db)`` — what
-    else that branch's chain carries — and is **required**, deliberately.
-    Omitting it would charge the linearization cascade alone: a strict
-    over-estimate, so safe for a CHARGE, but silently wrong for any reader
-    asking what a correction costs or comparing two of them, and wrong in the
-    loud direction for a delta. There is no signature that lets a caller skip
-    it by accident; :func:`_branch_context` builds it from the same preset and
-    corrections the graph is emitted from. A role absent from the mapping
-    still falls back to "no crossover, no trim" for the same over-estimating
-    reason, but that is a per-role gap in a supplied context, not a whole
-    missing one.
-
-    Public because the runtime contract's prover has to agree with the emitter
-    about this number, and the candidate payload and ``/correction/`` browser
-    summary disclose it (via ``linearization_fit.worst_headroom_cost_db``
-    reading the per-branch numbers the session stamps). The evaluation
-    itself lives in :mod:`jasper.active_speaker.branch_chain` — one
-    implementation, read by the fit's disclosure, this charge, and that proof.
-    0.0 for a cut-only linearization, which is every one before PR-L5.
+    Public because the runtime contract's prover must agree with the emitter
+    about this number and the candidate payload discloses it. The evaluation
+    lives in :mod:`jasper.active_speaker.branch_chain` — one implementation.
+    0.0 for a cut-only linearization.
     """
-    # A branch with no positive gain cannot reach unity through a crossover
-    # and a non-positive trim, so the ordinary cut-only graph is charged 0.0
-    # without evaluating anything — and without this module importing numpy,
-    # which it otherwise does not (see branch_chain's module docstring on why
-    # that dependency is kept lazy on a 1 GB Pi).
+    # A branch with no positive gain cannot reach unity through a crossover and
+    # a non-positive trim, so a cut-only graph is charged 0.0 without evaluating
+    # anything — and without importing numpy, kept lazy on a 1 GB Pi.
     if not linearization_has_boost(linearization):
         return 0.0
     from .branch_chain import branch_headroom_db
@@ -1974,22 +1722,14 @@ def linearization_has_boost(
 ) -> bool:
     """Does any emitted linearization filter carry positive gain?
 
-    The guard that keeps a cut-only graph — every graph before PR-L5, and
-    every one a follower runs — off the chain-evaluation path entirely, so
-    neither this emitter nor the runtime contract imports numpy for it (see
-    :mod:`jasper.active_speaker.branch_chain`'s module docstring). Sound
-    because a cut cascade, a Linkwitz-Riley section, and a non-positive trim
-    are each <= 0 dB everywhere: that chain cannot reach unity, so its charge
-    is 0.0 without evaluating anything.
+    The guard that keeps a cut-only graph off the chain-evaluation path
+    entirely, so neither this emitter nor the runtime contract imports numpy for
+    it. Sound because a cut cascade, a Linkwitz-Riley section and a non-positive
+    trim are each <= 0 dB everywhere.
 
-    **Public because #2291's adoption table asks the same question of the
-    APPLIED candidate.** A boosted intervention whose measured benefit is
-    indeterminate fails closed and comes back off
-    (:func:`~jasper.active_speaker.crossover_v2.verification.decide_adoption`'s
-    ``boosted`` modifier). "Does this graph put energy in" has one definition
-    on this speaker; a second copy of the rule in the host is precisely the
-    drift that would let the emitter and the adoption decision disagree about
-    the same graph.
+    Public because the adoption table asks the same question of the APPLIED
+    candidate (a boosted intervention whose measured benefit is indeterminate
+    fails closed): "does this graph put energy in" has one definition here.
     """
     for filters in (linearization or {}).values():
         if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
@@ -2009,24 +1749,16 @@ def _branch_context(
 ) -> dict[str, tuple[tuple[CrossoverSection, ...], float]]:
     """Per-role ``(crossover sections, trim_db)`` for the headroom charge.
 
-    Built from the same two sources the graph itself is: the preset's
-    crossover regions (which :func:`_emit_baseline_driver_definitions` turns
-    into the emitted Linkwitz-Riley filters, ``lower_driver`` low-pass /
-    ``upper_driver`` high-pass) and ``corrections``' per-driver ``gain_db``
-    (the emitted baseline Gain). So the chain this charge is computed over is
-    the chain the next few lines emit — not a description of it.
+    Built from the same two sources the graph itself is — the preset's crossover
+    regions and ``corrections``' per-driver ``gain_db`` — so the chain this
+    charge is computed over IS the chain the next few lines emit. The role ->
+    sections half is :func:`jasper.active_speaker.branch_chain.sections_by_role`,
+    shared with the session that stamps the disclosed ``headroom_cost_db``.
 
-    The role -> sections half is :func:`jasper.active_speaker.branch_chain.
-    sections_by_role`, shared with the session that stamps the disclosed
-    ``headroom_cost_db`` — one derivation, because two of them had already
-    drifted on the no-region case in a way that would have made the disclosure
-    smaller than this charge.
-
-    Deliberately omits the bass-management high-pass and the protective
-    tweeter high-pass, which attenuate further still: crediting less
-    attenuation over-estimates the peak, which over-charges rather than
-    under-charges, and it keeps this identical to what the runtime contract
-    can re-derive from the graph without walking optional filters.
+    Deliberately omits the bass-management and protective tweeter high-passes,
+    which attenuate further still: crediting less attenuation over-charges
+    rather than under-charges, and keeps this identical to what the runtime
+    contract can re-derive without walking optional filters.
     """
     from .branch_chain import sections_by_role
 
@@ -2065,17 +1797,14 @@ def _emit_baseline_filter_definitions(
                 gain=peq.gain,
             )
         )
-    # Crossover blend correction (decision 10) — same Peaking primitive the
-    # room PEQs above use, and wired beside them pre-split.
+    # Crossover blend correction — the same Peaking primitive the room PEQs use,
+    # wired beside them pre-split.
     #
-    # It charges NO headroom below, and the reason is that it CANNOT BOOST —
-    # ``_validated_blend_correction`` refuses a positive gain — not that the
-    # common attenuation covers it. ``blend_correction`` is deliberately absent
-    # from ``total_headroom_db``'s expression, and a boost posture would have
-    # to ADD a term there: position above the gain is necessary for absorption
-    # and is not sufficient for it. A boosting stage left un-termed would
-    # silently spend the room layer's allocation instead of charging its own.
-    # Pinned by ``test_the_blend_stage_charges_no_headroom_and_is_not_a_term``.
+    # It charges NO headroom because it CANNOT BOOST
+    # (``_validated_blend_correction`` refuses a positive gain), not because the
+    # common attenuation covers it: a boost posture would have to ADD a term to
+    # ``total_headroom_db``, since position above the gain is necessary for
+    # absorption and not sufficient for it.
     for i, entry in enumerate(blend_correction, start=1):
         lines.extend(
             emit_peaking_biquad(
@@ -2085,34 +1814,22 @@ def _emit_baseline_filter_definitions(
                 gain=float(entry["gain"]),
             )
         )
-    # Program-domain headroom for the pre-split room PEQ (Layer B) and
-    # preference EQ (Layer C). This gain is the active graph's single place for
-    # explicit common attenuation: baseline headroom, room-correction boost
-    # headroom, plus the household's manual headroom / loudness-match
-    # output_trim_db when a profile has EQ. Preference boosts themselves ride at
-    # unity, matching the stereo /sound policy: boosts boost. Room-correction
-    # boosts are different: correction can raise a known room band above unity,
-    # so its worst-case positive boost is folded into this headroom gain rather
-    # than emitted as a separate room_headroom filter.
-    # Layer-1a linearization boost (PR-L5) joins the same fold for the same
-    # reason room-correction boost does: a per-driver correction can now raise
-    # a band above unity, so its worst-case positive boost is absorbed by this
-    # one common attenuation rather than left to clip. It rides the PRE-SPLIT
-    # gain because every branch sees the same program, so absorbing the worst
-    # branch's total covers all of them. This is the mechanism that lets the
-    # fit engine's boost stay uncapped while the 0 dB ceiling stays a hard
-    # rail. It is the SAME quantity the fit discloses as
-    # ``LinearizationFit.headroom_cost_db`` — both are that branch chain's
-    # realized peak (#1808; it was the per-branch sum of positive gains until
-    # 2026-07-28) — so what a household is told the correction costs is what
-    # the speaker actually gives up. Pinned by a test.
-    # A NUMBER, never a gate. `active_baseline_headroom` is always emitted, so
+    # The active graph's single place for explicit common attenuation: baseline
+    # headroom, room-correction boost headroom, the Layer-1a linearization
+    # boost, plus the household's manual headroom / loudness-match
+    # output_trim_db. Preference boosts themselves ride at unity, matching the
+    # stereo /sound policy; room-correction and linearization boosts can raise a
+    # band above unity, so their worst case is folded in here instead. It rides
+    # the PRE-SPLIT gain because every branch sees the same program, so absorbing
+    # the worst branch's total covers all of them — the mechanism that lets the
+    # fit engine's boost stay uncapped while the 0 dB ceiling stays a hard rail.
+    # The linearization term is the SAME quantity the fit discloses as
+    # ``LinearizationFit.headroom_cost_db``.
+    #
+    # A NUMBER, never a gate: `active_baseline_headroom` is always emitted, so
     # folding the trim into its value keeps a flat-window crossing a parameter
-    # write; gating it on the profile doing something would step this gain by
-    # the whole trim, un-ducked, the moment a band crossed +-0.05 dB. Matches
-    # the stereo path's `sound_preamp`, which is emitted unconditionally for
-    # the same reason. The user-visible consequence is the same there: a
-    # configured trim attenuates even while the profile is flat.
+    # write rather than stepping the gain by the whole trim, un-ducked, the
+    # moment a band crosses ±0.05 dB. Matches the stereo path's `sound_preamp`.
     trim_db = max(0.0, output_trim_db)
     total_headroom_db = (
         baseline_headroom_db
@@ -2151,10 +1868,9 @@ def _emit_baseline_filter_definitions(
         bass_extension=bass_extension,
         linearization=linearization,
     ))
-    # Program-domain preference EQ (Layer C) definitions. Emitted via the shared
-    # leaf emit_filter_spec (the same one emit_sound_config uses), so the active
-    # and stereo paths spell a preference band identically. They are wired
-    # pre-split — see _emit_baseline_pipeline.
+    # Program-domain preference EQ (Layer C) definitions, via the shared
+    # emit_filter_spec leaf so the active and stereo paths spell a preference
+    # band identically. Wired pre-split — see _emit_baseline_pipeline.
     for spec in preference_filters:
         lines.extend(emit_filter_spec(spec))
     return "\n".join(lines)
@@ -2207,34 +1923,22 @@ def _emit_baseline_pipeline(
             "    channels: [0, 1]",
             f"    names: [{names}]",
         ])
-    # Crossover blend correction (decision 10) — the summed measurement's
-    # bounded, cuts-first shape correction across the crossover region. Three
-    # properties come from this placement and no other, which is why it is here
-    # and not in a per-role chain:
+    # Crossover blend correction — pre-split, and only pre-split, for three
+    # properties:
     #
-    #  1. ONE summed fact, ONE filter. The correction describes the SUM.
-    #     Pre-split is the only place where "one filter = one summed fact" is
-    #     true by construction; per-role emission would be N copies of one fact
-    #     whose only defence against drift is a test.
-    #  2. Common-mode by construction. Applying the same B(f) to every role
-    #     gives Σ_r sign_r·B·C_r·D_r = B · Σ_r sign_r·C_r·D_r — the sum scales,
-    #     the inter-driver complex ratio is untouched. An asymmetric
-    #     application would change the interference pattern, which is ALIGNMENT
-    #     work; alignment keeps its own tools (contract clause (c)). Here,
-    #     asymmetry is unrepresentable rather than merely tested against.
-    #  3. Upstream of protection. In the durable baseline the crossover
-    #     high-pass at the tweeter's own chain IS that driver's protection
-    #     (re-proved by _assert_tweeter_outputs_protected). A pre-split filter
-    #     sits above it and cannot push energy past it, whatever a future boost
-    #     posture decides.
+    #  1. ONE summed fact, ONE filter. The correction describes the SUM;
+    #     per-role emission would be N copies whose only defence is a test.
+    #  2. Common-mode by construction. The same B(f) on every role gives
+    #     Σ_r sign_r·B·C_r·D_r = B · Σ_r sign_r·C_r·D_r — the sum scales, the
+    #     inter-driver complex ratio is untouched. Asymmetry (which would be
+    #     ALIGNMENT work) is unrepresentable here rather than merely tested for.
+    #  3. Upstream of protection. In the durable baseline the tweeter's
+    #     crossover high-pass IS its protection; a pre-split filter cannot push
+    #     energy past it.
     #
-    # BEFORE active_baseline_headroom, beside the room PEQs, so that the stage
-    # sits where a boost WOULD be absorbable. That placement is necessary and
-    # not sufficient: absorption happens because a layer is a TERM in
-    # ``total_headroom_db``, and this one deliberately is not (it cannot boost).
-    # A future boost posture needs both — the position it already has, and a
-    # term it does not. Emitted only when present, so a candidate carrying none
-    # stays byte-identical to a pre-decision-10 graph.
+    # BEFORE active_baseline_headroom so the stage sits where a boost WOULD be
+    # absorbable — necessary but not sufficient, since absorption needs a TERM in
+    # ``total_headroom_db`` and this stage deliberately has none.
     if blend_correction_names:
         names = ", ".join(blend_correction_names)
         lines.extend([
@@ -2247,12 +1951,11 @@ def _emit_baseline_pipeline(
         "    channels: [0, 1]",
         "    names: [active_baseline_headroom]",
     ])
-    # Preference EQ (Layer C) is a PROGRAM-domain transform: it rides the
-    # stereo bus on channels [0, 1] strictly BEFORE the split mixer, so it is
-    # upstream of every per-driver crossover, limiter, and tweeter high-pass.
-    # That placement is what makes a preference boost safe — it can neither
-    # move a crossover corner nor bypass a driver limiter. Emitted only when
-    # present, so a flat profile is byte-identical to the pre-PR-3 baseline.
+    # Preference EQ (Layer C) is a PROGRAM-domain transform: it rides the stereo
+    # bus on channels [0, 1] strictly BEFORE the split mixer, upstream of every
+    # per-driver crossover, limiter and tweeter high-pass. That placement is what
+    # makes a preference boost safe — it can neither move a crossover corner nor
+    # bypass a driver limiter.
     if preference_filter_names:
         names = ", ".join(preference_filter_names)
         lines.extend([
@@ -2302,13 +2005,11 @@ def _emit_driver_domain_pipeline(
     pair_trim_db: float = 0.0,
     bass_extension: dict[str, Any] | None = None,
 ) -> str:
-    # Driver-domain-only (follower) pipeline. The inter-speaker channel-select
-    # runs FIRST (a 2->2 Mixer that picks L/R/mono from the leader's corrected
-    # stereo program), THEN the optional pair-balance trim on the selected stereo
-    # bus, THEN the intra-speaker 2->N split, THEN each driver's
-    # crossover/delay/gain/limiter chain. Exactly one helper owns this ordering so
-    # an edit to the safety-critical Layer-A pipeline cannot fork the trimmed and
-    # untrimmed cases.
+    # Driver-domain-only (follower) pipeline, in order: the inter-speaker
+    # channel-select (a 2->2 Mixer picking L/R/mono from the leader's corrected
+    # program), the optional pair-balance trim, the intra-speaker 2->N split,
+    # then each driver's crossover/delay/gain/limiter chain. One helper owns
+    # this ordering so the trimmed and untrimmed cases cannot fork.
     lines = [
         "  - type: Mixer",
         f"    name: {CHANNEL_SELECT_MIXER}",
@@ -2365,11 +2066,9 @@ def emit_active_speaker_startup_config(
 ) -> str:
     """Build a muted/protected active-speaker startup template.
 
-    The returned YAML is a candidate for later validation and manual
-    inspection. This function deliberately does not load or reload
-    CamillaDSP. The caller must also provide an explicit active-hardware
-    playback device so the current stereo outputd lane is never used by
-    accident.
+    A candidate for later validation; this does not load or reload CamillaDSP.
+    The caller must name an explicit active-hardware playback device so the
+    stereo outputd lane is never used by accident.
     """
 
     preset.validate()
@@ -2409,17 +2108,14 @@ def emit_active_speaker_startup_config(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
 
-    # queuelimit rides the same coercion as every other integer knob here.
-    # It reaches the YAML through an f-string, so an unvalidated value is the
-    # one emitter input that can put arbitrary text into a CamillaDSP field;
-    # its siblings were coerced and it was not. Hardening, not a fixed escape:
-    # the reachable injection was chased to the volume_limit ceiling and does
-    # not escalate past it.
+    # queuelimit reaches the YAML through an f-string, so an unvalidated value
+    # is the one emitter input that can put arbitrary text into a CamillaDSP
+    # field; coerce it like every other integer knob here.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its declaring ends — refuse a shear
-    # here rather than let the ioplug attach crash on it. No-op for every
-    # ALSA-lane emit (see _assert_ring_playback_width).
+    # The ring's width is one of its declaring ends — refuse a shear here
+    # rather than let the ioplug attach crash on it (see
+    # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
     filter_yaml = _emit_filter_definitions(
         preset,
@@ -2501,10 +2197,8 @@ pipeline:
 def output_commission_mute_name(index: int) -> str:
     """The per-physical-output commission-mute filter name for ``index``.
 
-    Public because the protected-staging software guard
-    (``jasper.active_speaker.staging``) references these by index to prove a
-    driver's output is muted — the name is a cross-module contract, so the
-    emitter owns it and the guard reads it rather than re-deriving the spelling.
+    Public because the protected-staging software guard references these by
+    index to prove a driver's output is muted: the emitter owns the spelling.
     """
     return f"as_out{index}_commission_mute"
 
@@ -2524,59 +2218,36 @@ def emit_active_speaker_parked_config(
 ) -> str:
     """Build the PARKED (all-muted, DAC-less) active-speaker graph.
 
-    The third statefile-seeding outcome (issue #2135). A box whose saved output
-    topology declares roleful/protected outputs but has NOT yet staged an
-    all-muted active startup graph — commissioning paused between "topology
-    declared" and "crossover preview staged" — has no legal graph to run: a flat
-    full-range graph would put program into a declared tweeter, and there is no
-    staged graph to select. Refusing was the only option before, and it failed
-    the whole deploy.
+    The third statefile-seeding outcome, for a box whose saved topology declares
+    roleful outputs but has not yet staged an all-muted startup graph: a flat
+    full-range graph would put program into a declared tweeter, and refusing
+    failed the whole deploy. This graph is silent twice over:
 
-    This graph is the safe third option, and it is silent twice over:
-
-    * **The sink is a ``File``, not a DAC** (:data:`PARKED_SINK_PATH`). That is
-      the same safe-by-construction argument the camilla#1 program bake rests
-      on — no DAC attached, so no driver can be over-driven regardless of the
-      saved topology. It also makes parking DAC-agnostic: a board that declares
-      no active outputd lane at all can still park. Its emitted ``format`` is
-      ALWAYS ``DEFAULT_PIPE_SINK_FORMAT`` (D4, wide-output-path program),
-      decoupled from ``playback_format``/``DEFAULT_PLAYBACK_FORMAT`` the same
-      way the bonded-leader pipe sink is in
-      :func:`jasper.sound.camilla_yaml.emit_sound_config`. ``playback_format``
-      (default ``None``) is not applicable to this ``/dev/null`` File sink at
-      all — passing it EXPLICITLY (a caller-supplied value, ``is not None``)
-      is refused rather than silently ignored; this is a pure presence check
-      on the argument, never a value comparison against a mutable default, so
-      the only production caller (which never passes it) can never trip it.
+    * **The sink is a ``File``, not a DAC** (:data:`PARKED_SINK_PATH`) — no DAC
+      attached, so no driver can be over-driven regardless of the saved
+      topology, and parking works on a board with no active outputd lane at all.
+      Its ``format`` is ALWAYS ``DEFAULT_PIPE_SINK_FORMAT``; ``playback_format``
+      is not applicable to a ``/dev/null`` File sink and passing one EXPLICITLY
+      is refused rather than ignored (a presence check on the caller-supplied
+      argument, never a comparison against the default).
     * **Every physical output is hard muted** by the repo's one mute idiom — a
-      ``Gain`` filter at :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true``, the
-      same primitive the staged all-muted startup graph's crash-recovery
-      invariant rests on — and the mixer feeds every destination at that same
-      -120 dB floor, so even a defeated boolean mute is inaudible.
+      ``Gain`` at :data:`STARTUP_MUTE_GAIN_DB` with ``mute: true`` — and the
+      mixer feeds every destination at that same -120 dB floor, so even a
+      defeated boolean mute is inaudible.
 
-    It deliberately claims NOTHING else: no crossover, no driver roles, no
-    per-driver protection, no limiter policy. It is silence with a legal shape,
-    not a tuning. The runtime contract re-proves both properties independently
-    before this graph may be selected
-    (``jasper.active_speaker.runtime_contract._parked_graph_allowed``); this
-    emitter's own gate below is the first of those proofs.
+    It claims NOTHING else: no crossover, no driver roles, no per-driver
+    protection, no limiter policy. ``runtime_contract._parked_graph_allowed``
+    re-proves both properties before this graph may be selected.
     """
 
     capture_device = _yaml_string(capture_device, "capture_device")
     capture_format = _yaml_string(capture_format, "capture_format")
-    # D4 (wide-output-path program): the parked graph's /dev/null File sink is
-    # pinned to DEFAULT_PIPE_SINK_FORMAT below, independently of
-    # playback_format — mirrors the bonded-leader pipe-sink guard in
-    # jasper.sound.camilla_yaml.emit_sound_config. GENUINELY explicit: a bare
-    # ``is not None`` presence check on the CALLER-SUPPLIED argument, not a
-    # value comparison against DEFAULT_PLAYBACK_FORMAT (a module global read
-    # fresh at call time would silently diverge from this parameter's
-    # def-time-bound default the moment the two constants are no longer
-    # assigned in lockstep — SF1 from the PR-1 gate review). This function's
-    # only production caller never passes playback_format, so it can never
-    # trip this — the box must always be able to park. playback_format is
-    # not otherwise used (no ``_yaml_string`` validation either): the emitted
-    # format is always the pinned constant below, never this parameter.
+    # A bare ``is not None`` presence check on the CALLER-SUPPLIED argument,
+    # never a value comparison against DEFAULT_PLAYBACK_FORMAT: a module global
+    # read fresh at call time would diverge from this parameter's def-time-bound
+    # default the moment the two constants stop being assigned in lockstep. The
+    # only production caller never passes playback_format — the box must always
+    # be able to park — and the emitted format is always the pinned constant.
     if playback_format is not None:
         raise ActiveSpeakerConfigError(
             "the parked graph's /dev/null File sink is pinned to "
@@ -2679,11 +2350,9 @@ pipeline:
 {pipeline_yaml}
 """
 
-    # Fail-closed emit gate, mirroring _assert_tweeter_outputs_protected: re-prove
-    # against the EMITTED TEXT (not the emitter's own construction) that every
-    # physical output is hard-muted and that mute is wired to its channel. A
-    # refactor that dropped one output's mute fails loudly here instead of
-    # shipping a graph that could drive a declared tweeter.
+    # Fail-closed emit gate: re-prove against the EMITTED TEXT (not the
+    # emitter's construction) that every physical output is hard-muted and that
+    # mute is wired to its channel.
     _assert_parked_outputs_muted(yaml, output_count)
 
     if out_path is not None:
@@ -2752,17 +2421,12 @@ def _commissioning_driver_filter_chain(
     Commissioning isolates one *physical output* (not a whole role — a stereo
     woofer pair shares a role), so the role-level startup mute is dropped and a
     per-output mute layer is applied in the pipeline instead. Bring-up retains
-    the dedicated tweeter high-pass; automatic response measurement removes
-    only that extra filter so it measures the applied crossover shoulder.
+    the dedicated tweeter high-pass; automatic response measurement removes only
+    that extra filter so it measures the applied crossover shoulder.
 
-    ``measurement_delay_roles`` is the reverse-null delay sweep's lane (R-1):
-    the named roles carry a ``Delay`` filter at the head of the chain. Position
-    is free — a pure delay is LTI and commutes with every other stage here, so
-    it changes no magnitude wherever it sits — and the head is chosen because
-    this chain has nothing upstream of the protection worth preceding. (The
-    applied chains place their own delay AFTER the crossover; the two orderings
-    are equivalent, not a match.) Empty for every other caller, which keeps
-    their chains byte-identical.
+    ``measurement_delay_roles`` names the roles that carry a ``Delay`` at the
+    head of the chain. Position is free (a pure delay is LTI and commutes with
+    every stage here); the applied chains place theirs after the crossover.
     """
     if protection_sections_by_role is not None:
         return [
@@ -2792,22 +2456,19 @@ def _emit_commissioning_filter_definitions(
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
-    # R-1's delay lane. Definitions only for the roles the caller named, so an
-    # ordinary program emits exactly the filters it always did.
+    # The delay lane: definitions only for the roles the caller named.
     #
     # ONE `fmt` pass over the raw microsecond value and no intermediate
-    # rounding: `_emit_delay_filter` formats through `jasper.camilla_emit.fmt`,
-    # which IS `delay_graph.quantized_delay_ms`'s implementation, so the value
-    # a proof recomputes from the same `delay_us` matches by construction.
-    # Pre-quantizing here would be the second pass that module forbids.
+    # rounding — `_emit_delay_filter` formats through `jasper.camilla_emit.fmt`,
+    # which IS `delay_graph.quantized_delay_ms`'s implementation, so a proof
+    # recomputing from the same `delay_us` matches by construction.
     delays = dict(measurement_delays_us or {})
     if delays:
         if protection_sections_by_role is None:
-            # The unprotected shape already defines a zero Delay filter for
-            # every role below, so a named delay would emit a duplicate mapping
-            # key whose later zero wins on parse -- a capture that plays with no
-            # delay and banks as a delayed take. Refuse rather than emit a
-            # graph whose YAML disagrees with the request.
+            # The unprotected shape already defines a zero Delay filter per
+            # role, so a named delay would emit a duplicate mapping key whose
+            # later zero wins on parse — a capture that plays undelayed and
+            # banks as a delayed take.
             raise ActiveSpeakerConfigError(
                 "a measurement delay needs the protected-neutral program shape; "
                 "the unprotected shape carries its own zeroed delay lane"
@@ -2824,11 +2485,9 @@ def _emit_commissioning_filter_definitions(
         for role, delay_us in sorted(delays.items()):
             value = float(delay_us)
             if not math.isfinite(value):
-                # Caught here because a non-finite value emits `delay: .nan`,
-                # which parses back as a float and would read as a bound
-                # question rather than a nonsense one. The RANGE is the shared
-                # proof's (`_assert_measurement_delays_bound`), not a second
-                # copy here.
+                # A non-finite value emits `delay: .nan`, which parses back as a
+                # float and would read as a bound question rather than a
+                # nonsense one. The RANGE is `_assert_measurement_delays_bound`'s.
                 raise ActiveSpeakerConfigError(
                     f"measurement delay for {role!r} is not finite: {delay_us!r}"
                 )
@@ -2877,23 +2536,18 @@ def _emit_commissioning_filter_definitions(
             soft_clip=True,
         ))
     # The local-sub lane definitions (LR4 low-pass + soft-clip limiter): the sub
-    # output is band-limited AND excursion-limited even in the commissioning graph,
-    # exactly like the mains. Its muting is the per-output commission mask below
-    # (the sub's own startup mute is not wired into the commissioning chain).
+    # output is band-limited AND excursion-limited even in the commissioning
+    # graph. Its muting is the per-output commission mask below.
     if preset.local_subwoofer is not None:
         lines.extend(_emit_sub_commissioning_definitions(
             preset.local_subwoofer.crossover_fc_hz,
             limiter_clip_limit_db=limiter_clip_limit_db,
         ))
-    # Per-output commissioning mute: only audible outputs pass; the rest are
-    # hard-muted so exactly one physical driver is excited through the real
-    # graph. Default (empty set) is fully muted — the safe initial load.
-    # Audible outputs carry ``audible_gain_db`` as their per-output gain — the
-    # Stage-5 ramp variable. It defaults to the silent mute floor
-    # (``STARTUP_MUTE_GAIN_DB``), so an un-ramped commission load arms the target
-    # at {gain: -120, mute: off} (silent); the Stage-5 gate raises it within the
-    # commissioning level envelope. Muted outputs always stay at the -120 dB
-    # mute floor regardless of ``audible_gain_db``.
+    # Per-output commissioning mute: only audible outputs pass, so exactly one
+    # physical driver is excited through the real graph; the empty default is
+    # fully muted. An audible output carries ``audible_gain_db``, which defaults
+    # to the silent mute floor, so an un-ramped commission load arms the target
+    # at {gain: -120, mute: off}. Muted outputs stay at -120 dB regardless.
     for index in range(_output_count(preset)):
         is_audible = index in audible_outputs
         lines.extend(emit_gain_filter(
@@ -2977,19 +2631,13 @@ def emit_active_speaker_commissioning_config(
 ) -> str:
     """Build the **production** active-speaker graph with a per-output mask.
 
-    This is the single-audio-path commissioning config: the same protected
-    graph the speaker runs (volume ceiling 0 dB, startup headroom, protective
-    tweeter high-pass, per-driver limiters), but with each physical output
-    individually mutable. Loading it with ``audible_outputs={k}`` excites
-    exactly one driver through its real crossover/limiter chain; an empty set
-    is fully muted (the safe initial load); the full set is every driver live
-    for the summed check.
-
-    It replaces the old direct-DAC diagnostic bypass: validation now happens on
-    the production path, so the commissioned config *is* what gets frozen as the
-    durable profile. Like the other emitters it does not load or reload
-    CamillaDSP, and it refuses the existing stereo outputd lane as a playback
-    device.
+    The single-audio-path commissioning config: the same protected graph the
+    speaker runs (volume ceiling 0 dB, startup headroom, protective tweeter
+    high-pass, per-driver limiters) with each physical output individually
+    mutable. ``audible_outputs={k}`` excites exactly one driver through its real
+    crossover/limiter chain; the empty set is fully muted, the full set is every
+    driver live for the summed check. Validation happens on the production path,
+    so the commissioned config IS what is frozen as the durable profile.
     """
 
     preset.validate()
@@ -3033,26 +2681,22 @@ def emit_active_speaker_commissioning_config(
         raise ActiveSpeakerConfigError(
             "limiter_clip_limit_db must be between -120 and 0 dB"
         )
-    # Structural bound only: the per-output audible gain is an attenuation, so it
-    # never exceeds the 0 dB ceiling and never drops below the -120 dB mute floor.
-    # The tighter commissioning *level envelope* (the audible test range and the
-    # per-step ramp limit) is owned by the Stage-5 ramp gate, not this primitive.
+    # Structural bound only: the per-output audible gain is an attenuation, so
+    # it never exceeds the 0 dB ceiling nor drops below the -120 dB mute floor.
+    # The tighter commissioning level envelope is the ramp gate's.
     if audible_gain_db < STARTUP_MUTE_GAIN_DB or audible_gain_db > 0:
         raise ActiveSpeakerConfigError(
             f"audible_gain_db must be between {STARTUP_MUTE_GAIN_DB:.0f} and 0 dB"
         )
 
-    # queuelimit rides the same coercion as every other integer knob here.
-    # It reaches the YAML through an f-string, so an unvalidated value is the
-    # one emitter input that can put arbitrary text into a CamillaDSP field;
-    # its siblings were coerced and it was not. Hardening, not a fixed escape:
-    # the reachable injection was chased to the volume_limit ceiling and does
-    # not escalate past it.
+    # queuelimit reaches the YAML through an f-string, so an unvalidated value
+    # is the one emitter input that can put arbitrary text into a CamillaDSP
+    # field; coerce it like every other integer knob here.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its declaring ends — refuse a shear
-    # here rather than let the ioplug attach crash on it. No-op for every
-    # ALSA-lane emit (see _assert_ring_playback_width).
+    # The ring's width is one of its declaring ends — refuse a shear here
+    # rather than let the ioplug attach crash on it (see
+    # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
     audible: frozenset[int] = frozenset(audible_outputs or ())
     for index in audible:
@@ -3129,9 +2773,8 @@ pipeline:
 """
 
     # L0 emit gate (fail-closed): every tweeter output keeps its crossover /
-    # protective high-pass even while the per-output commission mask mutes it, so
-    # a graph that could later be unmuted onto a bare compression driver is
-    # refused here rather than shipped.
+    # protective high-pass even while the commission mask mutes it, so a graph
+    # that could later be unmuted onto a bare compression driver is refused.
     _assert_tweeter_outputs_protected(yaml, preset)
 
     if out_path is not None:
@@ -3155,20 +2798,18 @@ pipeline:
 
 # --- channel-routed program graph (crossover measurement session, W2) --------
 # The v2 crossover measurement flow plays ONE continuous 2-channel program WAV
-# (docs/crossover-measurement-productization-design.md §5.4): program capture
-# ch0 carries the woofer stimulus, ch1 the tweeter stimulus, sequenced in the
-# WAV so the CamillaDSP graph stays static (no reload mid-program). This graph
+# (docs/historical/crossover-measurement-productization-design.md §5.4):
+# program capture ch0 carries the woofer stimulus, ch1 the tweeter stimulus,
+# sequenced in the WAV so the CamillaDSP graph stays static (no reload
+# mid-program). This graph
 # maps each program capture channel to its driver's PHYSICAL output path.
 
-# LR4 is the shipped crossover slope, and 24 dB/oct is the slope this build
-# COMMISSIONS a tweeter crossover high-pass at (design §5.4). It is a code
-# figure, not a declaration, so since the 2026-08-23 owner ruling it may
-# disclose a shallower crossover and may prove a protective filter this build
-# itself derived — it may NOT refuse a crossover order a household pinned. See
+# The slope this build COMMISSIONS a tweeter crossover high-pass at. A code
+# figure, not a declaration, so it may disclose a shallower crossover and may
+# prove a protective filter this build itself derived — it may NOT refuse a
+# crossover order a household pinned. See
 # ``_assert_tweeter_crossover_hp_satisfies_floor`` for which half of that gate
-# is a refusal and which is a log line, and
-# ``driver_protection.PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE`` for the same
-# distinction on the declaration side.
+# refuses and which logs.
 PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
 
 
@@ -3198,19 +2839,15 @@ def _validated_measurement_trims(
 ) -> dict[str, float]:
     """The measurement's per-role level match, refused unless it can be honoured.
 
-    Fail-closed on the same question :func:`_validated_inverted_roles` asks,
-    and for its reason: a trim naming a role
-    no output declares would attenuate nothing, the graph would emit
-    byte-identical to its unmatched twin, and the banked record would claim a
-    level match nobody played.
+    Fail-closed for :func:`_validated_inverted_roles`'s reason: a trim naming a
+    role no output declares would attenuate nothing while the banked record
+    claimed a level match nobody played.
 
-    **Attenuation only.** A positive value is refused rather than clamped: this
-    is the one seam that could raise a measurement's drive above the level the
-    session was admitted at, and the honest answer to "make the tweeter louder"
-    is that the measurement graph does not do that. It leaves every hearing
-    clamp untouched — ``volume_limit``, the per-driver limiter and the tweeter
-    protection high-pass are all downstream of this mixer and unreachable from
-    here.
+    **Attenuation only** — a positive value is refused rather than clamped,
+    because this is the one seam that could raise a measurement's drive above
+    the level the session was admitted at. Every hearing clamp is untouched:
+    ``volume_limit``, the per-driver limiter and the tweeter protection
+    high-pass are downstream of this mixer and unreachable from here.
     """
     if not trims_db:
         return {}
@@ -3242,44 +2879,30 @@ def _emit_role_routed_mixer(
 ) -> str:
     """Emit the program graph's role-routed split mixer.
 
-    ``inverted_roles`` is the MEASUREMENT's reverse-null flip (R-1): each named
-    role's branch has its sign reversed **relative to whatever polarity this
-    graph would otherwise carry**, which is why it XORs onto the region
-    polarity rather than replacing it. It is level-neutral by construction —
-    every ``dest`` of this mixer has exactly ONE source (a program channel is
-    copied to its role's outputs, never summed), so flipping ``inverted``
-    negates each sample and leaves its magnitude, and therefore every peak the
-    limiter and the volume ceiling answer for, bit-identical.
+    ``inverted_roles`` is the measurement's reverse-null flip: each named role's
+    sign is reversed RELATIVE to whatever polarity this graph would otherwise
+    carry, so it XORs onto the region polarity rather than replacing it. It is
+    level-neutral by construction — every ``dest`` here has exactly ONE source,
+    so flipping ``inverted`` negates each sample and leaves every peak the
+    limiter and the volume ceiling answer for bit-identical.
 
-    ``level_trims_db`` is the measurement's declared per-driver level match,
-    and it is the ONE thing that moves a ``gain``: each named role's single
-    source is attenuated by its value, so the branches meet the crossover at
-    comparable level and a reverse null can actually form. Attenuation only
-    (:func:`_validated_measurement_trims`), so every peak this mixer emits can
-    only fall — the limiter and the volume ceiling answer for strictly less
-    than they did. An unnamed role keeps the ``0.0`` it always carried, so an
-    emit that asks for no level match is byte-identical to what it was.
+    ``level_trims_db`` is the ONE thing that moves a ``gain``: each named role's
+    single source is attenuated so the branches meet the crossover at comparable
+    level and a reverse null can form. Attenuation only
+    (:func:`_validated_measurement_trims`), so every peak can only fall.
 
-    Unlike :func:`_emit_split_mixer` (which routes a stereo program bus by output
-    *side*), this routes by driver *role*: every physical output of role ``r``
-    takes its single source from ``role_channels[r]`` — the program-WAV channel
-    carrying that driver's stimulus (ch0 → woofer, ch1 → tweeter, per design
-    §5.4). ``channels_in`` is the program channel count (max mapped channel + 1).
+    Unlike :func:`_emit_split_mixer` (which routes a stereo bus by output
+    *side*), this routes by driver *role*: every output of role ``r`` takes its
+    single source from ``role_channels[r]``. ``channels_in`` is the program
+    channel count (max mapped channel + 1).
 
-    The emitted mixer is named ``split_active_{way_count}way`` — the SAME name
-    :func:`_emit_split_mixer` uses — for two independent reasons that both land
-    on the identical spelling: (1) :func:`_emit_commissioning_pipeline`, reused
-    verbatim by the program graph, hardcodes a ``Mixer`` pipeline step under
-    that exact name (CamillaDSP's ``SetConfig`` refuses to load a pipeline step
-    referencing an undefined mixer — W6 hardware run 4 finding I: the program
-    graph shipped as ``program_route_{way}way`` here while the pipeline pointed
-    at ``split_active_{way}way``, and every program-graph load was rejected);
-    (2) ``jasper.active_speaker.environment``'s ``_ACTIVE_SPLIT_RE`` — the
-    runtime ecosystem's active-config classifier — recognizes an active-speaker
-    config by the presence of a ``split_active_Nway`` mixer name. It is ecosystem
-    vocabulary, not a routing claim: this mixer's ROUTING stays role-routed
-    (see above), never side-routed like the commissioning/baseline/startup
-    split — only the NAME is shared.
+    The mixer is named ``split_active_{way_count}way`` — the SAME name
+    :func:`_emit_split_mixer` uses — for two reasons landing on one spelling:
+    :func:`_emit_commissioning_pipeline`, reused verbatim here, hardcodes a
+    ``Mixer`` step under that name (CamillaDSP refuses a pipeline referencing an
+    undefined mixer), and ``environment``'s active-config classifier recognises
+    a ``split_active_Nway`` name. Ecosystem vocabulary, not a routing claim: the
+    ROUTING stays role-routed.
     """
     region_polarity = _role_polarity(preset)
     polarity = (
@@ -3363,35 +2986,22 @@ def _assert_tweeter_crossover_hp_satisfies_floor(
     """Refuse a preset whose tweeter crossover HP crosses BELOW the declared floor.
 
     In the program graph the tweeter is protected by its TARGET crossover
-    high-pass alone (the extra bring-up protective HP is dropped so the measured
-    branch is the applied crossover shoulder — design §5.4), so this build-time
-    gate reads that crossover from the preset BEFORE any YAML is emitted.
+    high-pass alone (the bring-up protective HP is dropped so the measured
+    branch is the applied crossover shoulder), so this build-time gate reads
+    that crossover from the preset before any YAML is emitted.
 
-    **The corner REFUSES; the slope only DISCLOSES**, and the split is the
-    2026-08-23 owner ruling ("if it was in the safe overall envelope, it's safe
-    to test"), not a weakening. ``min_corner_hz`` reaches here as
-    :data:`~jasper.active_speaker.graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`
-    (400 Hz) — an absolute code floor, not this driver's declaration, which is
-    enforced at the pin (``declared_floor_hz``) and at apply
-    (:func:`_assert_tweeter_crossover_honours_declared_floor`). It stays a
+    **The corner REFUSES; the slope only DISCLOSES.** ``min_corner_hz`` arrives
+    as :data:`~jasper.active_speaker.graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`
+    — an absolute code floor, not this driver's declaration — and stays a
     refusal because a crossover below it puts the low-frequency excursion hazard
-    band on a compression driver — a named damage mechanism, which is what the
-    doctrine's section 4 lets a code figure refuse on.
-    ``min_slope_db_per_octave`` reaches here
-    as :data:`PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE`, a hardcoded 24 that
-    no datasheet contains; refusing an order-2 crossover against it is the
-    same nanny the ruling struck at
-    :func:`~jasper.active_speaker.crossover_v2.topology_prescription.read_topology_prescription`,
-    one stage later and after the round had already been measured.
-
-    Why that was not caught with the rest of it: this branch runs only when the
-    caller omits ``protection_sections_by_role``, which the MEASURE call site
-    supplies and the **VERIFY** one does not — so an order-2 pin was admitted,
-    measured, applied, and then refused at VERIFY's emit. The manufacturer's
-    published condition is enforced at the pin, where the declaration is
-    readable; here there is no profile to read one from, so the shortfall is
-    logged (``result=tweeter_hp_slope_below_commissioning_floor``) and the graph
-    is emitted.
+    band on a compression driver, a named damage mechanism
+    (docs/measurement-loop-doctrine.md §5). ``min_slope_db_per_octave`` arrives
+    as :data:`PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE`, a code figure no
+    datasheet contains, so refusing a household's pinned order against it would
+    be a nanny; the manufacturer's published condition is enforced at the pin,
+    where the declaration is readable. Here there is none to read, so the
+    shortfall is logged (``result=tweeter_hp_slope_below_commissioning_floor``)
+    and the graph is emitted.
     """
     for role in required_driver_roles(preset.way_count):
         if role != "tweeter":
@@ -3419,10 +3029,9 @@ def _assert_tweeter_crossover_hp_satisfies_floor(
             )
         if order * 6.0 < min_slope_db_per_octave:
             # Disclosed, never refused — see this function's docstring. WARNING
-            # rather than ERROR because nothing is blocked: the household chose
-            # a shallower crossover than this build commissions at, the corner
-            # above already cleared the declared floor, and the manufacturer's
-            # published condition (if any) was applied at the pin.
+            # rather than ERROR because nothing is blocked: the corner already
+            # cleared the declared floor and the manufacturer's published
+            # condition, if any, was applied at the pin.
             log_event(
                 logger,
                 "active_speaker.program_emit_gate",
@@ -3441,25 +3050,17 @@ def _assert_pipeline_references_closed(
     """Fail-closed L0 emit gate: refuse a graph whose pipeline points at an
     undefined mixer or filter name.
 
-    Runs on every active-speaker graph THIS module emits, right before it is
-    returned or written — the same "prove it against the emitted text" shape as
-    :func:`_assert_tweeter_outputs_protected`, but a structural check rather
-    than a protection one: it does not reason about channels or filter
-    parameters, only whether every ``Mixer.name``/``Filter.names`` entry the
-    pipeline references resolves against the graph's own ``mixers:``/
-    ``filters:`` sections.
+    Runs on every active-speaker graph this module emits, right before it is
+    returned or written — the same prove-it-against-the-emitted-text shape as
+    :func:`_assert_tweeter_outputs_protected`, but structural: it reasons about
+    no channels and no filter parameters, only whether every
+    ``Mixer.name``/``Filter.names`` entry resolves against the graph's own
+    ``mixers:``/``filters:`` sections.
 
-    This closes the W6 hardware run 4 finding I hole: the program graph's
-    pipeline (reused verbatim from ``_emit_commissioning_pipeline``) named its
-    routing mixer ``split_active_2way`` while the graph's own ``mixers:``
-    section defined ``program_route_2way`` — a mismatch CamillaDSP's
-    ``SetConfig`` only caught at LOAD time on real hardware ("Use of missing
-    mixer 'split_active_2way'"), and even then reported only the first
-    dangling reference. Every emitter in this module composes its filter
-    definitions, mixer, and pipeline from independent helper calls
-    (see ``emit_active_speaker_program_config`` and
-    ``emit_active_speaker_baseline_config``); nothing upstream of this gate
-    proves the three pieces agree.
+    Every emitter here composes its definitions, mixer and pipeline from
+    independent helper calls, and nothing upstream of this gate proves the three
+    agree; CamillaDSP catches a dangling reference only at LOAD time, and only
+    the first one.
     """
     try:
         payload = yaml.safe_load(yaml_text)
@@ -3494,13 +3095,11 @@ def _assert_measurement_delays_bound(
     """Prove each requested delay actually landed, through the shared proof.
 
     :func:`~jasper.audio_measurement.delay_graph.prove_static_delay_binding` is
-    the tree's one answer to "does this graph carry that delay": it checks the
-    value through the same quantizer a later proof would, that the filter
-    occurs in EXACTLY ONE pipeline step wired to exactly the role's channels,
-    the 20 ms DSP bound, and ``devices.volume_limit``. Consuming it here rather
-    than re-checking those things by hand is what keeps one answer to the
-    question — and it is structural, so it catches an orphan filter or a
-    duplicate definition that a value check alone would miss.
+    the tree's one answer to "does this graph carry that delay": the value
+    through the same quantizer a later proof would use, the filter in EXACTLY
+    ONE pipeline step wired to exactly the role's channels, the 20 ms DSP bound,
+    and ``devices.volume_limit``. Structural, so it catches an orphan filter or
+    a duplicate definition a value check alone would miss.
     """
     if not measurement_delays_us:
         return
@@ -3541,18 +3140,15 @@ def _assert_program_graph_proven(
 ) -> None:
     """Build-and-prove the emitted program graph against graph_safety (fail-closed).
 
-    Runs the reference-closure gate (:func:`_assert_pipeline_references_closed`)
-    plus the three L0 tweeter proofs on the EMITTED text — the same evidence a
-    later readback would inspect — and refuses to return a graph that does not
-    prove all four. This is the program builder's return contract: it cannot
-    emit a graph whose pipeline points at an undefined mixer/filter name, nor
-    one whose tweeter output is not high-pass protected (against the declared
-    floor) AND wrapped by its crossover high-pass + soft-clip limiter in one
-    post-mixer step. A pre-split per-channel high-pass (which
-    ``output_highpass_protected`` alone could false-PASS on the 2-way preset,
-    where program ch1 numerically coincides with tweeter output 1) is rejected
-    here because ``tweeter_guard_present`` requires the high-pass AND the limiter
-    together on exactly the tweeter output channels.
+    The reference-closure gate plus the three L0 tweeter proofs, run on the
+    EMITTED text — the same evidence a later readback would inspect. The program
+    builder cannot return a graph whose pipeline points at an undefined
+    mixer/filter name, nor one whose tweeter output is not high-pass protected
+    against the declared floor AND wrapped by its crossover high-pass +
+    soft-clip limiter in one post-mixer step. That pairing is what rejects a
+    pre-split per-channel high-pass, which ``output_highpass_protected`` alone
+    could false-PASS on the 2-way preset (program ch1 numerically coincides with
+    tweeter output 1).
     """
     _assert_pipeline_references_closed(yaml_text, preset)
     tweeter_channels = _channels_for_role(preset, "tweeter")
@@ -3628,74 +3224,41 @@ def emit_active_speaker_program_config(
 ) -> str:
     """Emit the static channel-routed program graph for CHECK/MEASURE playback.
 
-    The v2 crossover session plays one 2-channel program WAV
-    (``jasper.audio_measurement.program``) once through ``correction_substream``;
     ``role_channels`` maps each driver role to the program-WAV channel carrying
-    its stimulus (ch0 → woofer, ch1 → tweeter — design §5.4). This graph:
+    its stimulus (ch0 → woofer, ch1 → tweeter). The graph routes each program
+    channel to that driver's PHYSICAL output path through a role-routed mixer,
+    carries either the legacy target crossover or caller-supplied confirmed role
+    protection plus the per-driver limiter, keeps the software volume ceiling
+    non-positive, and stays static (no reload mid-program). The
+    protected-neutral shape omits configured crossover, delay, linearization,
+    bass, Room and preference filters.
 
-    * routes each program channel to its driver's PHYSICAL output path via a
-      role-routed mixer (:func:`_emit_role_routed_mixer`);
-    * carries either the legacy target crossover or caller-supplied confirmed
-      role protection plus the per-driver limiter. The protected-neutral shape
-      omits configured crossover, delay, linearization, bass, Room, and
-      preference filters, and carries no per-driver level trim unless the
-      measurement declares one (``measurement_level_trims_db`` below);
-    * keeps the software volume ceiling non-positive and stays static (no reload
-      mid-program).
+    ``inverted_roles``, ``measurement_delays_us`` and
+    ``measurement_level_trims_db`` are parameters of THIS measurement emitter
+    and of nothing else: the applied and baseline emitters take their per-driver
+    delay and gain from the profile's ``corrections`` and cannot reach these, so
+    a swept coordinate can never leak into a graph a household plays. Empty or
+    ``None`` keeps every existing program byte-identical.
 
-    ``inverted_roles`` is the reverse-null measurement's flip (R-1): the named
-    driver branches ride the mixer with their sign reversed. **This emitter
-    only** — the applied/baseline graphs a household plays through never take
-    it. Level-neutral: see :func:`_emit_role_routed_mixer` for why no peak
-    moves, and note that the tweeter protection high-pass, the per-driver
-    limiter and the ``volume_limit`` ceiling below are unreachable from it.
+    * ``inverted_roles`` is level-neutral — see :func:`_emit_role_routed_mixer`.
+    * ``measurement_delays_us`` reaches the YAML through a single
+      :func:`~jasper.camilla_emit.fmt` pass, the same formatter
+      :func:`~jasper.audio_measurement.delay_graph.quantized_delay_ms` is
+      implemented as, so a proof recomputing from the same ``delay_us`` agrees
+      exactly. Delays ride ahead of the protection sections; a pure delay
+      commutes, so the position changes no magnitude.
+    * ``measurement_level_trims_db`` lands on ONE seam, the role-routed mixer's
+      per-source gain — the per-output commissioning gain is deliberately not
+      also touched, or one decision would be applied twice. Attenuation only.
 
-    ``measurement_delays_us`` is R-1's other half — the delay sweep's candidate
-    coordinate, one non-negative microsecond value per named role. **Scoped
-    exactly like** ``inverted_roles``, and for the same reason: it is a
-    parameter of this measurement emitter and of nothing else. The applied and
-    baseline emitters take their per-driver delay from the profile's
-    ``corrections`` (:func:`_emit_baseline_driver_definitions`) and cannot
-    reach this argument, so a swept coordinate can never leak into a graph a
-    household plays. ``None`` or empty emits no ``Delay`` filter and no chain
-    entry, which keeps every existing program byte-identical. Values reach the
-    YAML through a single :func:`~jasper.camilla_emit.fmt` pass — the same
-    formatter :func:`~jasper.audio_measurement.delay_graph.quantized_delay_ms`
-    is implemented as — so a proof that recomputes the expected value from the
-    same ``delay_us`` agrees exactly, with no intermediate rounding to disagree
-    about.
-    Delays ride ahead of the protection sections. A pure delay commutes with
-    every stage in this chain, so the position changes no magnitude; it is a
-    readability choice, not an equivalence claim about the applied chain, which
-    places its own delay after the crossover.
-
-    ``measurement_level_trims_db`` is the measurement's declared per-driver
-    LEVEL MATCH — the box's own banked per-driver trim, resolved on-box by the
-    session that opened this graph. **Scoped exactly like**
-    ``measurement_delays_us``, and for its reason: on a cabinet whose drivers
-    differ by ~10 dB of sensitivity the two branches never sum to a deep null
-    however well aligned they are, so the reverse-null confirmation needs the
-    branches level — and a household's applied graph takes its per-driver gain
-    from the profile's ``corrections``, cannot reach this argument, and is
-    therefore untouched by whatever a measurement declares. It lands on ONE
-    seam, the role-routed mixer's per-source gain
-    (:func:`_emit_role_routed_mixer`); the per-output commissioning gain is
-    deliberately NOT also touched, because two seams carrying one decision
-    would apply it twice. Attenuation only, refused otherwise. ``None`` or
-    empty moves no gain and keeps every existing program byte-identical.
-
-    Two fail-closed gates run before the graph can leave this function: a
-    build-time proof that the selected tweeter HP satisfies the declared floor, and
-    a build-and-prove of the emitted text against ``graph_safety``'s three L0
-    tweeter proofs (:func:`_assert_program_graph_proven`). Like the sibling
-    emitters it does not load or reload CamillaDSP and refuses the stereo outputd
-    lane as a playback device.
+    Two fail-closed gates run before the graph can leave: a build-time proof
+    that the selected tweeter HP satisfies the declared floor, and
+    :func:`_assert_program_graph_proven` over the emitted text.
     """
 
     preset.validate()
-    # Scope gate: this emitter routes ONE program channel per declared driver
-    # role — a 1-way passive main (one routed solo of the whole speaker) or a
-    # 2-way. A 3-way needs a designed reshape (mid-band MESM schedule,
+    # Scope gate: ONE program channel per declared driver role — a 1-way passive
+    # main or a 2-way. A 3-way needs a designed reshape (mid-band MESM schedule,
     # per-region alignment), not a silent generalization of this emitter.
     if preset.way_count not in (1, 2):
         raise ActiveSpeakerConfigError(
@@ -3775,24 +3338,20 @@ def emit_active_speaker_program_config(
                 raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
             tweeter_hp_name = _program_protection_name("tweeter", hp_index)
 
-    # queuelimit rides the same coercion as every other integer knob here.
-    # It reaches the YAML through an f-string, so an unvalidated value is the
-    # one emitter input that can put arbitrary text into a CamillaDSP field;
-    # its siblings were coerced and it was not. Hardening, not a fixed escape:
-    # the reachable injection was chased to the volume_limit ceiling and does
-    # not escalate past it.
+    # queuelimit reaches the YAML through an f-string, so an unvalidated value
+    # is the one emitter input that can put arbitrary text into a CamillaDSP
+    # field; coerce it like every other integer knob here.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its declaring ends — refuse a shear
-    # here rather than let the ioplug attach crash on it. No-op for every
-    # ALSA-lane emit (see _assert_ring_playback_width).
+    # The ring's width is one of its declaring ends — refuse a shear here
+    # rather than let the ioplug attach crash on it (see
+    # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
     program_channels = 1 + max(role_channels.values())
     # Every output is audible: a program never mutes a driver (the WAV silences
-    # it by channel), so the per-output commission mask is all-unmuted at 0 dB.
-    # Program headroom is the commissioning headroom (0 dB) so the effective-peak
-    # ledger the session-volume plan / admission share is main_volume + program
-    # peak with no hidden graph attenuation.
+    # it by channel). Program headroom is the commissioning headroom (0 dB), so
+    # the effective-peak ledger the session-volume plan and admission share is
+    # main_volume + program peak with no hidden graph attenuation.
     audible = frozenset(range(output_count))
     filter_mode = (
         APPLIED_RESPONSE_FILTER_MODE
@@ -3826,14 +3385,10 @@ def emit_active_speaker_program_config(
         f"# role_channels={dict(sorted(role_channels.items()))}",
         f"# program_channels={program_channels}",
         f"# filter_mode={filter_mode}",
-        # Beside `inverted_roles` below and for its reason: the graph SAYS which
-        # coordinate it carries, so a record naming it by fingerprint can be
-        # read without reconstructing the Delay filter body.
-        #
-        # Emitted ONLY when there is a coordinate. An unconditional line would
-        # change the bytes -- and so the fingerprint -- of every CHECK and
-        # MEASURE graph in the tree, which is exactly the byte-identity this
-        # parameter is scoped to protect. Its absence is unambiguous.
+        # The graph SAYS which coordinate it carries, so a record naming it by
+        # fingerprint reads without reconstructing the Delay filter body.
+        # Emitted ONLY when there is one: an unconditional line would change the
+        # bytes — and so the fingerprint — of every CHECK and MEASURE graph.
         *(
             [
                 "# measurement_delays_us="
@@ -3842,12 +3397,9 @@ def emit_active_speaker_program_config(
             if measurement_delays_us
             else []
         ),
-        # Beside the delay line, on its terms: emitted ONLY when the
-        # measurement declares a level match, so every graph that declares
-        # none keeps the bytes — and so the fingerprint — it always had. The
-        # numbers reach the comment from the SAME validated mapping the mixer
-        # gains came from, so the graph states the trims it actually carries
-        # and the take's ``graph_fingerprint`` moves with them for free.
+        # On the delay line's terms: emitted ONLY when a level match is
+        # declared. The numbers come from the SAME validated mapping the mixer
+        # gains did, so the graph states the trims it actually carries.
         *(
             ["# measurement_level_trims_db=" + repr(dict(sorted(level_trims.items())))]
             if level_trims
@@ -3855,10 +3407,9 @@ def emit_active_speaker_program_config(
         ),
     ]
     if inverted_roles:
-        # Emitted only when a branch is actually flipped, so every non-inverted
-        # emit stays byte-identical to what it was. The graph then SAYS which
-        # branch carries the reverse-null, beside the fingerprint a record
-        # names it by.
+        # Emitted only when a branch is actually flipped, so a non-inverted emit
+        # stays byte-identical; the graph then SAYS which branch carries the
+        # reverse-null, beside the fingerprint a record names it by.
         metadata_comments.append(f"# inverted_roles={sorted(set(inverted_roles))}")
     if baseline_id:
         baseline_id = _yaml_string(baseline_id, "baseline_id")
@@ -3964,81 +3515,46 @@ def emit_active_speaker_baseline_config(
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
-    Unlike the startup template, this YAML is not muted. It still preserves
-    the JTS 0 dB volume ceiling, keeps per-driver limiters, and refuses
-    positive per-driver correction gain.
-    Callers own the acceptance evidence and explicit CamillaDSP apply step.
+    Unlike the startup template this YAML is not muted. It still preserves the
+    JTS 0 dB volume ceiling, keeps per-driver limiters, and refuses positive
+    per-driver correction gain; callers own the acceptance evidence and the
+    explicit CamillaDSP apply step.
 
-    ``room_peqs`` (Layer B) is the preserved room-correction PEQ set. Each
-    filter is emitted on program channels [0, 1] before the split mixer, and any
-    positive room-correction boost is folded into ``active_baseline_headroom``.
-    That keeps the active path one-headroom-shaped while preserving the stereo
-    correction safety policy.
+    Every program-domain layer is emitted on channels [0, 1] strictly BEFORE the
+    split mixer, upstream of every crossover, limiter and tweeter high-pass:
 
-    ``preference_filters`` (Layer C) is the program-domain preference EQ band
-    list — the same ``FilterSpec`` objects the stereo emitter takes. Each band
-    is emitted VERBATIM on the program channels [0, 1] strictly *before* the
-    split mixer; dropping neutral ones is the caller's job, because the live
-    editing draft needs its idle slots kept. Preference
-    boosts ride at unity, matching ``emit_sound_config``: the active graph keeps
-    them safe by placing them upstream of every crossover/limiter/tweeter HP and
-    preserving the 0 dB volume ceiling. The empty default keeps every existing
+    * ``room_peqs`` (Layer B) — the preserved room-correction PEQ set; any
+      positive boost is folded into ``active_baseline_headroom``.
+    * ``preference_filters`` (Layer C) — the same ``FilterSpec`` objects the
+      stereo emitter takes, emitted VERBATIM (dropping neutral bands is the
+      caller's job, because the live editing draft needs its idle slots).
+      Preference boosts ride at unity, matching ``emit_sound_config``.
+    * ``output_trim_db`` — the household's manual headroom + loudness-match
+      attenuation, folded into the same headroom gain, applied only when some
+      band actually boosts.
+    * ``blend_correction`` — the crossover blend region's summed-response-owned
+      shape correction, flat rather than per-role because it describes the SUM;
+      see ``_emit_baseline_pipeline`` for what that placement buys.
+
+    ``linearization`` (Layer 1a) is the per-driver stage the fit engine designs,
+    in the REDUCED shape ``{role: [{biquad_type, freq, q, gain}, ...]}``. Each
+    role's filters are emitted immediately after that driver's crossover HP/LP
+    and before bass-extension.
+
+    ``linearization`` and ``blend_correction`` are both independently
+    re-validated here (``_validated_linearization`` /
+    ``_validated_blend_correction``) rather than trusted from the caller — the
+    per-filter boost cap and shelf-placement structure for one, Peaking-only and
+    NON-POSITIVE gain for the other. Every empty default keeps an existing
     caller byte-identical.
-
-    ``output_trim_db`` is the household's manual headroom + loudness-match
-    attenuation (``jasper.sound.settings.output_trim_db``), folded into the same
-    ``active_baseline_headroom`` gain so the active path honours it exactly like
-    ``emit_sound_config``. It is applied only when some band actually boosts (a
-    flat profile can't clip from EQ and plays at unity), so the default keeps
-    the no-EQ baseline byte-identical.
-
-    ``linearization`` (Layer 1a, #1668 PR-D) is the per-driver EQ/shelf stage
-    the driver-linearization fit engine
-    (``jasper.active_speaker.linearization_fit``) designs — cut-preferred but
-    NOT cut-only since PR-L5: a positive ``gain`` is legal here, bounded by
-    the per-filter cap re-proved below — the REDUCED shape
-    ``{role: [{biquad_type, freq, q, gain}, ...]}``, produced from a
-    ``LinearizationFit``/candidate by
-    ``linearization_fit.linearization_filters_by_role``. Each role's filters
-    are emitted immediately after that driver's crossover HP/LP and before
-    bass-extension (mirrors the bass-extension addon's own slot exactly), via
-    the shared ``emit_filter_spec`` primitive. Independently re-validated here
-    (``_validated_linearization``): ``biquad_type`` in {Peaking, Highshelf,
-    Lowshelf}, finite positive ``freq``/``q``, ``gain`` capped at
-    ``MAX_LINEARIZATION_BOOST_DB``, plus the
-    fail-closed shelf-placement structure (one leading shelf, one optional
-    trailing Highshelf taper after a Lowshelf lead — #1668) — a hardware-bound
-    safety invariant re-proved at the emitter boundary, not assumed from the
-    caller. The empty default keeps every existing caller byte-identical.
-    Pinned by
-    tests/test_active_speaker_linearization_emission.py::test_linearization_rejects_boost_above_the_per_filter_cap
-    and ::test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom.
-
-    ``blend_correction`` (decision 10) is the crossover blend region's
-    summed-response-owned shape correction — the flat list
-    ``[{biquad_type, freq, q, gain}, ...]``
-    ``crossover_v2.blend_correction.solve_blend_correction`` designs from the
-    post-apply spatial cloud. Flat rather than per-role on purpose: it
-    describes the SUM, and it is emitted ONCE on program channels [0, 1]
-    before the split mixer, which is what makes it common-mode by construction
-    (see ``_emit_baseline_pipeline`` for the three properties that placement
-    buys). Independently re-validated here (``_validated_blend_correction``):
-    Peaking only, finite positive ``freq``/``q``, at most
-    ``MAX_BLEND_CORRECTION_FILTERS`` entries, and NON-POSITIVE ``gain`` — the
-    cuts-only invariant, refused rather than clamped. The empty default keeps
-    every existing caller byte-identical.
     """
 
     preset.validate()
     # L0 emit gate (fail-closed), BEFORE any YAML is built: this is the graph
     # the routine apply transaction ships to a household, so a crossover below
-    # the tweeter's own declared protection floor is refused here rather than
-    # emitted and left for the startup-load gate to catch on the next boot.
+    # the tweeter's declared protection floor is refused here rather than left
+    # for the startup-load gate to catch on the next boot.
     _assert_tweeter_crossover_honours_declared_floor(preset)
-    # N3 (#1668 PR-D review): normalize the optional linearization mapping
-    # here rather than defaulting the parameter to a mutable ``{}`` literal
-    # -- matches how every other optional dict/sequence param on this
-    # function is handled.
     linearization = linearization or {}
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)
@@ -4082,24 +3598,20 @@ def emit_active_speaker_baseline_config(
     safe_linearization = _validated_linearization(preset, linearization)
     safe_blend_correction = _validated_blend_correction(blend_correction)
 
-    # Emit what the caller handed over, verbatim. Every caller now hands a slot
-    # per declared band with the neutral ones kept, because a filter appearing
-    # or disappearing is what forces a ducked pipeline replace. Re-filtering
-    # here would quietly undo that.
+    # Verbatim: every caller hands a slot per declared band with the neutral
+    # ones kept, because a filter appearing or disappearing is what forces a
+    # ducked pipeline replace.
     emitted_preference_filters = tuple(preference_filters)
     room_peqs = tuple(room_peqs)
 
-    # queuelimit rides the same coercion as every other integer knob here.
-    # It reaches the YAML through an f-string, so an unvalidated value is the
-    # one emitter input that can put arbitrary text into a CamillaDSP field;
-    # its siblings were coerced and it was not. Hardening, not a fixed escape:
-    # the reachable injection was chased to the volume_limit ceiling and does
-    # not escalate past it.
+    # queuelimit reaches the YAML through an f-string, so an unvalidated value
+    # is the one emitter input that can put arbitrary text into a CamillaDSP
+    # field; coerce it like every other integer knob here.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its declaring ends — refuse a shear
-    # here rather than let the ioplug attach crash on it. No-op for every
-    # ALSA-lane emit (see _assert_ring_playback_width).
+    # The ring's width is one of its declaring ends — refuse a shear here
+    # rather than let the ioplug attach crash on it (see
+    # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
     filter_yaml = _emit_baseline_filter_definitions(
         preset,
@@ -4176,17 +3688,13 @@ pipeline:
 """
 
     # L0 emit gate (fail-closed): the durable (unmuted) baseline is the graph a
-    # household actually plays through, so re-prove every tweeter output carries
-    # its crossover / protective high-pass before it can leave the emitter — a
-    # flat/unprotected tweeter baseline is the shrill hot-tweeter hazard.
+    # household plays through, so re-prove every tweeter output carries its
+    # crossover / protective high-pass before it can leave the emitter.
     _assert_tweeter_outputs_protected(yaml, preset)
     _assert_bass_extension_safe(yaml, preset, bass_extension)
-    # Reference-closure gate (fail-closed): the durable baseline shares the
-    # same "filters/mixer/pipeline assembled from independent helper calls"
-    # shape the program graph does (see the W6 finding I comment on
-    # _assert_pipeline_references_closed) — cheap enough to run on every
-    # baseline build, and it is what would have caught a dangling mixer/filter
-    # name here before it ever reached a live CamillaDSP load.
+    # Reference-closure gate (fail-closed): the baseline assembles its
+    # filters/mixer/pipeline from independent helper calls, exactly as the
+    # program graph does.
     _assert_pipeline_references_closed(yaml, preset)
 
     if out_path is not None:
@@ -4196,14 +3704,10 @@ pipeline:
                 f"parent directory does not exist: {out_path.parent}"
             )
         _atomic_write_text(out_path, yaml)
-        # linearization_shelves / shelf_q make the PR-L2 emission change legible
-        # in the journal: a graph written by a build BEFORE 2026-07-27 realized
-        # its Layer-1a shelves at CamillaDSP's gain-dependent ``slope: 6`` Q
-        # (0.476 at -11 dB), not the Butterworth Q the fit designed and scored
-        # them at. Re-emitting the SAME persisted design now realizes the
-        # designed curve, so the speaker's treble audibly changes on the first
-        # write after upgrading. These two fields date that transition per
-        # speaker; ``grep event=active_speaker_baseline_config_written``.
+        # linearization_shelves / shelf_q date, per speaker, the write after
+        # which a persisted Layer-1a design realizes the Butterworth shelf Q the
+        # fit designed it at rather than CamillaDSP's gain-dependent
+        # ``slope: 6`` Q (0.476 at -11 dB) — an audible treble change.
         shelf_count = sum(
             1
             for filters in safe_linearization.values()
@@ -4248,39 +3752,29 @@ def emit_active_speaker_driver_domain_config(
 ) -> str:
     """Build a **driver-domain-only** active-speaker graph for a wireless follower.
 
-    This is the active-crossover analogue of the dumb follower's channel-pick: an
-    *endpoint-crossover* graph that runs only **Layer A** (the ``2->N`` split plus
-    each driver's crossover / delay / non-positive gain / soft-clip limiter, with
-    the tweeter band-limited by its crossover high-pass) on a stereo program the
-    **leader already corrected** (Layer B room PEQ + Layer C preference EQ baked
-    into the streamed program). It therefore emits **no** program-domain prefix —
-    no ``active_baseline_headroom`` gain and no preference-EQ band — because that
-    domain belongs to the leader's bake instance.
+    An *endpoint-crossover* graph running only **Layer A** — the ``2->N`` split
+    plus each driver's crossover / delay / non-positive gain / soft-clip
+    limiter, tweeter band-limited by its crossover high-pass — on a stereo
+    program the **leader already corrected**. It emits NO program-domain prefix
+    (no ``active_baseline_headroom``, no preference EQ): that domain belongs to
+    the leader's bake instance.
 
     The pipeline is ``channel_select (2->2 pick L/R/mono) -> optional
-    pair_balance_trim -> split_active_<way>way (2->N) -> per-driver chain``:
-    the inter-speaker channel-select runs FIRST (which channel of the pair this
-    box plays), THEN the attenuate-only pair trim for this physical member,
-    THEN the intra-speaker driver split.
-    ``program_channel`` is one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``
-    (``left`` / ``right`` / ``mono``); the channel-select mixer is the shared
-    ``emit_channel_select_mixer`` primitive, so a follower and a bonded member
-    spell the pick identically.
+    pair_balance_trim -> split_active_<way>way (2->N) -> per-driver chain``.
+    ``program_channel`` is one of ``DRIVER_DOMAIN_PROGRAM_CHANNELS``; the
+    channel-select mixer is the shared ``emit_channel_select_mixer`` primitive,
+    so a follower and a bonded member spell the pick identically.
 
-    Like the baseline emitter it keeps the JTS 0 dB volume ceiling, per-driver
-    soft-clip limiters, and non-positive per-driver correction gain, and it
-    refuses the existing stereo outputd lane as a playback device. It does NOT
-    load or reload CamillaDSP — the reconciler (gap 3, a later slice) owns
-    pointing the capture at the grouping ring and the apply. ``corrections``
-    carries the same commissioned per-driver delay/gain/polarity as the solo
-    baseline (hardware truth, role-independent — gap 1), so the relocated Layer A
-    is the same protective chain the speaker runs solo.
+    Like the baseline emitter it keeps the 0 dB volume ceiling, per-driver
+    limiters and non-positive correction gain, and refuses the stereo outputd
+    lane. It does NOT load or reload CamillaDSP. ``corrections`` carries the same
+    commissioned per-driver delay/gain/polarity as the solo baseline, so the
+    relocated Layer A is the chain the speaker runs solo.
     """
 
     preset.validate()
-    # Same L0 emit gate as the solo baseline above, for the same reason: a
-    # bonded leader's driver domain runs the identical protective chain on the
-    # identical drivers, so it inherits the identical declared-floor bound.
+    # Same L0 emit gate as the solo baseline: a bonded member's driver domain
+    # runs the identical protective chain on the identical drivers.
     _assert_tweeter_crossover_honours_declared_floor(preset)
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = _forbidden_playback_token(playback_device)
@@ -4326,17 +3820,14 @@ def emit_active_speaker_driver_domain_config(
     safe_corrections = _validated_driver_corrections(preset, corrections)
     bass_extension = _bass_extension_emission(preset, bass_extension_profile)
 
-    # queuelimit rides the same coercion as every other integer knob here.
-    # It reaches the YAML through an f-string, so an unvalidated value is the
-    # one emitter input that can put arbitrary text into a CamillaDSP field;
-    # its siblings were coerced and it was not. Hardening, not a fixed escape:
-    # the reachable injection was chased to the volume_limit ceiling and does
-    # not escalate past it.
+    # queuelimit reaches the YAML through an f-string, so an unvalidated value
+    # is the one emitter input that can put arbitrary text into a CamillaDSP
+    # field; coerce it like every other integer knob here.
     queuelimit = _positive_int(queuelimit, "queuelimit")
     output_count = _output_count(preset)
-    # The ring's width is one of its declaring ends — refuse a shear
-    # here rather than let the ioplug attach crash on it. No-op for every
-    # ALSA-lane emit (see _assert_ring_playback_width).
+    # The ring's width is one of its declaring ends — refuse a shear here
+    # rather than let the ioplug attach crash on it (see
+    # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
     filter_lines = _emit_baseline_driver_definitions(
         preset,
@@ -4350,8 +3841,7 @@ def emit_active_speaker_driver_domain_config(
     filter_yaml = "\n".join(filter_lines)
     # channel_select FIRST (inter-speaker pick), then the intra-speaker split.
     # apply_region_polarity=False: this graph carries polarity through
-    # ``safe_corrections`` (a per-driver Gain filter above), so the mixer must
-    # stay a no-op inverter — see the docstring on _emit_split_mixer.
+    # ``safe_corrections``, so the mixer must stay a no-op inverter.
     mixer_yaml = "\n".join((
         emit_channel_select_mixer(program_channel),
         _emit_split_mixer(preset, apply_region_polarity=False),
@@ -4414,10 +3904,9 @@ pipeline:
 {pipeline_yaml}
 """
 
-    # L0 emit gate (fail-closed): the follower runs Layer A (the split + per-driver
-    # crossover chain) on the leader's corrected program, so its tweeter output
-    # must still carry the crossover / protective high-pass — re-prove it before
-    # the graph leaves the emitter.
+    # L0 emit gate (fail-closed): the follower runs Layer A on the leader's
+    # corrected program, so its tweeter output must still carry the crossover /
+    # protective high-pass.
     _assert_tweeter_outputs_protected(yaml, preset)
     _assert_bass_extension_safe(yaml, preset, bass_extension)
 
@@ -4463,43 +3952,29 @@ def emit_active_speaker_program_bake_config(
 ) -> str:
     """Build the active-LEADER's **program-domain-only** camilla#1 bake.
 
-    Stage B splits an active *leader*'s DSP across two CamillaDSP instances. This emits
-    the **program** half (camilla#1): Layer B room correction + Layer C
-    preference EQ + program headroom, written to a ``File`` sink feeding the
-    snapserver pipe (``SNAPFIFO``) so the follower(s) receive a corrected stereo
-    wire. The **driver** half — the ``2->N`` split and every per-driver
-    crossover / delay / gain / soft-clip limiter (Layer A) — lives in camilla#2
-    and is **deliberately absent here**.
+    The **program** half of a leader's split DSP: Layer B room correction +
+    Layer C preference EQ + program headroom, written to a ``File`` sink feeding
+    the snapserver pipe so the followers receive a corrected stereo wire. The
+    **driver** half (Layer A) lives in camilla#2 and is deliberately absent.
 
-    It is a *separate* emit that **bypasses the graph carrier** (exactly like the
-    follower's :func:`emit_active_speaker_driver_domain_config`): the carrier
-    fence ``eq_on_active_bonded_member`` guards the interactive ``/sound`` EQ
-    apply and is untouched by this path. The program assembly is
-    :func:`jasper.sound.camilla_yaml.emit_sound_config`'s — reused verbatim with
-    a ``File``/pipe sink — so the baked correction is byte-for-byte the
-    program graph the speaker already ships. Only the ``# Source:`` provenance
-    marker differs: this config carries :data:`ACTIVE_PROGRAM_BAKE_SOURCE` so the
-    runtime verifier recognises it as a DAC-less program bake.
+    A separate emit that bypasses the graph carrier, like the follower's
+    :func:`emit_active_speaker_driver_domain_config`. The program assembly is
+    :func:`jasper.sound.camilla_yaml.emit_sound_config`'s, reused verbatim with a
+    ``File``/pipe sink, so the baked correction is byte-for-byte the program
+    graph the speaker already ships; only the ``# Source:`` marker differs.
 
-    Safety is *by construction*: the playback is a pipe, not a DAC, so no driver
-    can be over-driven and the full-range-to-tweeter invariant cannot be
-    violated regardless of the saved speaker topology. The runtime verifier's
-    matching exemption (:func:`jasper.active_speaker.runtime_contract.classify_camilla_graph`)
-    keys on ``devices.playback.type == File`` — never on this marker — so an
-    ALSA-sink program graph reaching the DAC stays blocked under a roleful
-    topology.
+    Safety is BY CONSTRUCTION: the playback is a pipe, not a DAC, so no driver
+    can be over-driven regardless of the saved topology — and the runtime
+    verifier's matching exemption keys on ``devices.playback.type == File``,
+    never on the marker, so an ALSA-sink program graph reaching the DAC stays
+    blocked under a roleful topology.
 
-    This emit does NOT load or reload CamillaDSP, and it does NOT wire camilla#1
-    into the reconciler — that is a later Stage-B slice. ``out_path`` writes the
-    YAML group-readably (0640) for callers that stage it; the default returns the
-    text only.
+    This does NOT load or reload CamillaDSP and does NOT wire camilla#1 into the
+    reconciler. ``out_path`` writes the YAML group-readably (0640).
     """
 
-    # Import the snapserver pipe target lazily: it is the canonical camilla#1
-    # sink and lives in the grouping reconciler (jasper.multiroom.reconcile),
-    # whose module-load chain this read-heavy emitter must not pull eagerly. The
-    # sibling jasper.multiroom.leader_config uses the same lazy-import idiom for
-    # exactly this constant.
+    # Lazy: the snapserver pipe target lives in the grouping reconciler, whose
+    # module-load chain this read-heavy emitter must not pull eagerly.
     from jasper.multiroom.reconcile import SNAPFIFO
 
     program_yaml = emit_sound_config(
@@ -4518,8 +3993,8 @@ def emit_active_speaker_program_bake_config(
 
     # Re-stamp provenance so the bake is distinguishable from the solo /sound +
     # correction program graphs that share emit_sound_config's assembly. Fail
-    # loud if the upstream marker ever changes shape (a silent miss would ship a
-    # bake the verifier can't route to the flat program path).
+    # loud if the upstream marker changes shape: a silent miss would ship a bake
+    # the verifier cannot route to the flat program path.
     if _SOUND_SOURCE_LINE not in program_yaml:
         raise ActiveSpeakerConfigError(
             "program bake could not re-stamp the source marker: "

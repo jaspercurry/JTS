@@ -27,7 +27,6 @@ from jasper.active_speaker.attempts_loop import (
     FLOOR_SCOPE_ACROSS_SITTINGS,
     FLOOR_SCOPE_WITHIN_SITTING,
     FLOOR_SCOPES,
-    MAX_USEFUL_REPEAT_AVERAGES,
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
     REASON_ATTEMPT_NOT_COMPARABLE,
@@ -56,10 +55,10 @@ from jasper.active_speaker.attempts_loop import (
     FloorStats,
     decide_next,
     first_stop_index,
+    percentile,
     material_improvement_db,
     replay,
     summarize,
-    useful_repeats,
 )
 
 METRIC = "max_db_notch_excluded"
@@ -83,6 +82,34 @@ BANKED_MEDIAN_DB = 0.05183
 #: scope rather than a permissive one no speaker has adopted, and the sitting
 #: rule's own tests below are the only place the value varies.
 SITTING = "sitting-1"
+
+
+def test_percentile_reproduces_the_banked_studys_own_summary():
+    """The claim floor's inputs must be derivable, not transcribed.
+
+    The banked analysis published median 0.05183 and p95 0.08508 for these
+    thirteen pairs; the floor it derives is twice that p95. A percentile that
+    disagreed would silently move every floor this module computes.
+    """
+    assert percentile(BANKED_CONSECUTIVE_PAIRS_DB, 50.0) == pytest.approx(
+        BANKED_MEDIAN_DB, abs=5e-6,
+    )
+    assert percentile(BANKED_CONSECUTIVE_PAIRS_DB, 95.0) == pytest.approx(
+        BANKED_P95_DB, abs=5e-6,
+    )
+    assert CLAIM_FLOOR_P95_MULTIPLE * percentile(
+        BANKED_CONSECUTIVE_PAIRS_DB, 95.0
+    ) == pytest.approx(0.17016, abs=1e-5)
+
+
+def test_percentile_edges():
+    assert percentile([4.0], 95.0) == 4.0
+    assert percentile([1.0, 2.0, 3.0], 0.0) == 1.0
+    assert percentile([1.0, 2.0, 3.0], 100.0) == 3.0
+    assert percentile([1.0, 2.0, 3.0], 50.0) == 2.0
+    with pytest.raises(ValueError):
+        percentile([], 50.0)
+
 
 
 def _floor(
@@ -256,19 +283,6 @@ def test_a_non_comparable_predecessor_is_not_skipped_over():
     assert decision.reason == REASON_PREDECESSOR_NOT_COMPARABLE
     # Emphatically not an improvement of 4.0 dB graded against a1.
     assert decision.improvement_db is None
-
-
-# --------------------------------------------------------------------------
-# Constraint 2 — repeat averaging caps at 4
-# --------------------------------------------------------------------------
-
-
-def test_useful_repeats_clamps_to_the_measured_cap():
-    assert MAX_USEFUL_REPEAT_AVERAGES == 4
-    assert useful_repeats(1) == 1
-    assert useful_repeats(4) == 4
-    assert useful_repeats(9) == MAX_USEFUL_REPEAT_AVERAGES
-    assert useful_repeats(0) == 1
 
 
 def test_an_attempt_over_the_repeat_cap_is_disclosed_not_hidden():

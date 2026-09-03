@@ -68,11 +68,11 @@ this incident and not about the fixture.
 
 The per-driver measured RESPONSES do not replay, and the reason is size, not
 absence. They were never retained as arrays; re-deriving them offline from
-``measure_program.wav`` plus the UMIK-2 calibration is possible and is what
-``scripts/severed-twin-replay.py`` already does, but both inputs are
-gitignored capture data and the analysis grid is far too large to commit — the
-same session's VERIFY frame graded 37,080 bins across 1.7 kHz, so a full-band
-complex response runs to ~5e5 bins per driver. The branches below are
+``measure_program.wav`` plus the UMIK-2 calibration is possible, but both
+inputs are gitignored capture data and the analysis grid is too large to
+commit — the same session's VERIFY frame graded 37,080 bins across 1.7 kHz, so
+a full-band complex response runs to ~5e5 bins per driver. The branches below
+are
 therefore synthetic, and the two seams whose true output needs them —
 ``fit_driver_linearization`` and ``solve_ripple_optimal_trim`` — return the
 incident's own recorded results instead.

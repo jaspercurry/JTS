@@ -4,15 +4,13 @@
 
 """The commissioning journal: the log fields, and the emitters that write them.
 
-Everything here is read-only against a :class:`ProgramAnalysis`, a verdict and
-a handful of session values its caller passes in. Nothing decides a verdict,
-retries a capture or touches session state — these run AFTER the verdict
-already exists, which is what lets :func:`_safe_log_diag` degrade a bug in
-here to a WARN.
-
-The ``logger`` every emitter takes is the CALLER's, not one of this module's
-own: an operator greps one channel for a session, and moving these emitters
-out of :mod:`jasper.active_speaker.crossover_v2_flow` must not split it.
+Read-only against a :class:`ProgramAnalysis`, a verdict and a handful of
+session values the caller passes in. Nothing decides a verdict, retries a
+capture or touches session state — these run AFTER the verdict exists,
+which is what lets :func:`_safe_log_diag` degrade a bug in here to a WARN.
+The ``logger`` every emitter takes is the CALLER's: an operator greps one
+channel for a session, and moving these emitters out of
+:mod:`jasper.active_speaker.crossover_v2_flow` must not split it.
 """
 
 from __future__ import annotations
@@ -60,18 +58,14 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.log_event import log_event
 
 
-# --------------------------------------------------------------------------- #
-# log fields
-# --------------------------------------------------------------------------- #
 def _capture_integrity_log_field(integrity: CaptureIntegrity | None) -> str:
     """One logfmt token for a VERIFY capture's integrity verdict (#1971).
 
     Three values a reader must be able to tell apart, which is why this is not
-    a bool: ``unavailable`` (no record — a pre-#1971 analysis shape, never
-    produced by the live analyze seam), ``ok`` (every evaluated check passed),
+    a bool: ``unavailable`` (no record), ``ok`` (every evaluated check passed),
     or the comma-joined names of the checks that FAILED. The companion
-    ``integrity_not_evaluated`` field carries what could not be checked at
-    all, so "ok" never has to stand in for "nobody looked".
+    ``integrity_not_evaluated`` field carries what could not be checked at all,
+    so "ok" never has to stand in for "nobody looked".
     """
     if integrity is None:
         return "unavailable"
@@ -82,10 +76,12 @@ CLAIM_NAMES = ("woofer_branch", "hf_branch", "integration", "absolute")
 
 
 def _claims_log_field(claims: Mapping[str, Any]) -> str:
-    """One logfmt token for the whole §7 claim record: ``name:state`` per
-    claim, comma-joined, a not-evaluated one carrying its reason. So a corpus
-    sweep can count what was actually judged instead of inferring it from a
-    bare ``accepted=true``. ``""`` for an early refusal that graded nothing.
+    """One logfmt token for the whole §7 claim record.
+
+    ``name:state`` per claim, comma-joined, a not-evaluated one carrying its
+    reason, so a corpus sweep can count what was actually judged instead of
+    inferring it from a bare ``accepted=true``. ``""`` for an early refusal
+    that graded nothing.
     """
     return ",".join(
         f"{name}:{claims[name].get('status')}"
@@ -101,13 +97,9 @@ def _driver_snr_fields(
     """``(estimated_snr_db, verdict, band_id)`` from a driver's worst SNR band.
 
     The band identity travels because the number and the verdict alone cannot
-    say WHICH band produced them (#2613): fourteen consecutive jts3 rounds
-    logged ``tweeter_snr_db=-1.2 tweeter_snr_verdict=insufficient`` and the
-    band that actually limited them — one the tweeter sweep never entered —
-    had to be re-derived from the crossover frequency and the declared driver
-    bands instead of read off the line. ``band_id`` stays ``None`` when
-    ``worst_band_verdict`` selected a band carrying no id (it filters on
-    overlap and verdict rank, never on identity), so a real band is never
+    say WHICH band produced them (#2613). ``band_id`` stays ``None`` when
+    ``worst_band_verdict`` selected a band carrying no id — it filters on
+    overlap and verdict rank, never on identity — so a real band is never
     confused with an absent one.
     """
     if resp is None or resp.snr is None:
@@ -118,35 +110,25 @@ def _driver_snr_fields(
     )
 
 
-# The finite stand-in logged for `_pilot_in_band_snr_db`'s ``-inf`` — "this
-# pilot's measured power did not even exceed the ambient", i.e. the estimate
-# is unusable rather than merely low. JSON has no infinity, and DROPPING the
-# value is worse than substituting one: a two-role capture with one buried
-# pilot and one clean one would log the CLEAN pilot's SNR beside
-# ``pilot_snr_ok=False``, a diag row that contradicts itself and reproduces
-# the very "verdict beside absent evidence" shape #1810 was filed about.
-# -120 dB mirrors `program_analysis.DBFS_FLOOR`'s "off the scale" magnitude
-# and keeps the field monotone-comparable, so `min(...)` still selects the
-# worst pilot.
+# The finite stand-in logged for `_pilot_in_band_snr_db`'s ``-inf``: the
+# estimate is unusable rather than merely low. JSON has no infinity, and
+# DROPPING the value is worse than substituting one — a two-role capture
+# with one buried pilot and one clean one would log the CLEAN pilot's SNR
+# beside ``pilot_snr_ok=False`` (#1810). -120 dB mirrors
+# `program_analysis.DBFS_FLOOR` and keeps the field monotone-comparable, so
+# `min(...)` still selects the worst pilot.
 PILOT_SNR_UNUSABLE_DB = -120.0
 
 
 def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
     """The lowest quiet-pilot in-band SNR across this capture's pilots.
 
-    The number the ``pilot_snr_ok`` aggregate (an ``all(...)``) was
-    thresholded from, so the diag line says HOW low, not just that it was.
-    The two infinities `_pilot_in_band_snr_db` can return are treated
-    differently on purpose:
-
-    * ``+inf`` — "no ambient evidence to validate against". Not a
-      measurement, so it is EXCLUDED. A capture where every pilot reads
-      ``+inf`` (a legacy program with no room-listening window) logs
-      ``None``; one where some pilots read ``+inf`` and others a real number
-      logs the worst real number.
-    * ``-inf`` — "the pilot never exceeded the ambient". That IS a
-      measurement, and the most damning one, so it is substituted with
-      :data:`PILOT_SNR_UNUSABLE_DB` rather than dropped.
+    The number the ``pilot_snr_ok`` aggregate was thresholded from, so the diag
+    line says HOW low. The two infinities `_pilot_in_band_snr_db` can return
+    differ on purpose: ``+inf`` is "no ambient evidence to validate against",
+    not a measurement, so it is EXCLUDED and an all-``+inf`` capture logs
+    ``None``; ``-inf`` is "the pilot never exceeded the ambient", which IS a
+    measurement, so it substitutes :data:`PILOT_SNR_UNUSABLE_DB`.
     """
     values = [
         PILOT_SNR_UNUSABLE_DB if p.snr_db == -math.inf else p.snr_db
@@ -156,11 +138,6 @@ def _worst_pilot_snr_db(analysis: ProgramAnalysis) -> float | None:
     return round(min(values), 2) if values else None
 
 
-# --------------------------------------------------------------------------- #
-# emitters
-# --------------------------------------------------------------------------- #
-
-
 def _emit_cloud_combine_diagnostics(
     logger: logging.Logger, diagnostics: Mapping[str, Any] | None,
 ) -> None:
@@ -168,8 +145,7 @@ def _emit_cloud_combine_diagnostics(
 
     :mod:`jasper.active_speaker.crossover_v2.spatial` owns the combine and is
     side-effect-free by charter, so it returns its log fields rather than
-    writing them — the pattern :class:`~.crossover_v2.spatial.BoostExclusion`
-    already ships. The event NAME lives here, with the journal that carries it.
+    writing them. The event NAME lives here, with the journal that carries it.
     """
     if diagnostics is None:
         return
@@ -189,14 +165,12 @@ def _safe_log_diag(
 ) -> None:
     """Best-effort wrapper around one ``_log_*_diag`` call.
 
-    Symmetric with the capture-retention path's own best-effort
-    guarantee (Part 2): a bug in diagnostic-field extraction (a malformed
-    ``analysis``, an unexpected ``None``) must never crash the capture or
-    change the verdict the flow's ``_<phase>_verdict`` already decided —
-    it degrades to a WARN instead. The caught set matches the realistic
-    failure modes of these read-only field-extraction calls (attribute/
-    key/index access and numeric conversion on ``analysis``'s own
-    fields) — never a bare ``except Exception``.
+    A bug in diagnostic-field extraction (a malformed ``analysis``, an
+    unexpected ``None``) must never crash the capture or change the verdict
+    the flow already decided; it degrades to a WARN. The caught set matches
+    the realistic failure modes of these read-only field-extraction calls
+    (attribute/key/index access and numeric conversion) — never a bare
+    ``except Exception``.
     """
     try:
         log_fn(analysis, verdict)
@@ -225,9 +199,8 @@ def _log_slot_spent(
         level=logging.WARNING,
         session_id=session_id, phase=phase, index=index,
         observed=observed, outcome=outcome,
-        # A settled accepted result has ``code=None`` by protocol. Preserve
-        # the final rejected capture's exact observation/evidence pairing
-        # here so support does not have to infer it from earlier logs.
+        # A settled accepted result has ``code=None`` by protocol. The final rejected
+        # capture's exact observation/evidence pairing is preserved here.
         diagnosis=diagnosis,
         pilot_heard=pilot_heard,
         reflection_measured=reflection_measured,
@@ -248,9 +221,8 @@ def _log_condition_settled(
     """The journal line for a slot closed by its CONDITION, not its meter.
 
     Its own event rather than ``_log_slot_spent``: that line is named
-    ``position_attempts_spent`` and carries ``extra_allowed``, and a
-    rejection settled on the first take spent nothing — a support read that
-    found it there would count a session's exhausted positions wrong.
+    ``position_attempts_spent`` and carries ``extra_allowed``, and a rejection
+    settled on the first take spent nothing.
     """
     log_event(
         logger, "correction.crossover_v2_position_not_retriable",
@@ -290,15 +262,12 @@ def _log_check_diag(
         tweeter_channel_map_target_rise_db=tweeter["channel_map_target_rise_db"],
         tweeter_channel_map_cross_rise_db=tweeter["channel_map_cross_rise_db"],
         tweeter_channel_map_isolation_db=tweeter["channel_map_isolation_db"],
-        # The two constants the isolation figures above are GRADED against,
-        # on the same line as the numbers. The bound is what the ratio had
-        # to clear; the threshold is the target rise ABOVE WHICH the ratio
-        # was judged at all. Both are needed to read a line honestly: below
-        # the threshold an isolation figure is published but decided
-        # nothing, so the bound alone would let a sub-bound number read as
-        # the cause of a refusal that never happened. A future retune of
-        # either constant must not silently reinterpret a journal of old
-        # lines, which is the other reason they are printed and not implied.
+        # The two constants the isolation figures above are GRADED against, on the
+        # same line as the numbers. The bound is what the ratio had to clear; the
+        # threshold is the target rise ABOVE WHICH the ratio was judged at all.
+        # Below the threshold an isolation figure decided nothing, so the bound
+        # alone would let a sub-bound number read as the cause of a refusal that
+        # never happened.
         channel_map_min_isolation_db=CHANNEL_MAP_MIN_ISOLATION_DB,
         channel_map_isolation_judged_above_db=(
             CHANNEL_MAP_ISOLATION_JUDGED_ABOVE_DB
@@ -312,13 +281,11 @@ def _log_measure_level_solve(
 ) -> None:
     """One event per driver disclosing its solved MEASURE level (#1825).
 
-    A separate event rather than more fields on the CHECK diag above:
-    this is a per-ROLE record with its own evidence (the ambient band it
-    was solved against and the SNR it demanded there), and flattening two
-    roles × six fields into the already-wide diag line would bury it.
-    Emitted from the diagnostic path, so it lands on a REJECTED check too
-    — knowing what level the solve WOULD have chosen is exactly what a
-    `snr_floor` refusal needs read beside it.
+    A per-ROLE record with its own evidence — the ambient band it was solved
+    against and the SNR it demanded there — which flattening two roles × six
+    fields into the already-wide CHECK diag line would bury. Emitted from the
+    diagnostic path so it lands on a REJECTED check too: what level the solve
+    WOULD have chosen is what a ``snr_floor`` refusal needs read beside it.
     """
     gain_plan = analysis.gain_plan
     if gain_plan is None:
@@ -387,11 +354,10 @@ def _log_measure_diag(
     sweep_residual_ms_worst, sweep_locate_confidence_min = _sweep_schedule_diag_fields(
         analysis, sample_rate_hz
     )
-    # First-vs-last per-role epsilon (sweep-composition PR-A, #1668) —
-    # diagnostic only, never gated (DriftEstimate.per_role_epsilon_ppm's
-    # own docstring). None-safe for a legacy construction site that
-    # predates the field (empty mapping) or a role absent from it (<2
-    # located occurrences that role).
+    # First-vs-last per-role epsilon (#1668) — diagnostic only, never gated
+    # (DriftEstimate.per_role_epsilon_ppm). None-safe for a legacy construction
+    # site predating the field, or a role with fewer than 2 located
+    # occurrences.
     woofer_repeat_epsilon_ppm = (
         drift.per_role_epsilon_ppm.get(woofer_role) if drift else None
     )
@@ -430,12 +396,11 @@ def _log_measure_diag(
         delay_us=round(delay_us, 3) if delay_us is not None else None,
         delay_role=delay_role,
         polarity=polarity,
-        # The (polarity, delay) pair is one selection on one objective
-        # (#2598). ``polarity`` above is what shipped; these three say who
-        # chose it, what the GCC correlation answered, and whether the two
-        # agreed. A disagreement is ordinary operation — the flat-sum
-        # objective outranking a correlation sign is the fix — so this line
-        # is where it is legible rather than a refusal.
+        # The (polarity, delay) pair is one selection on one objective (#2598).
+        # ``polarity`` above is what shipped; these three say who chose it, what
+        # the GCC correlation answered, and whether the two agreed. A disagreement
+        # is ordinary operation, so this line is where it is legible rather than a
+        # refusal.
         alignment_objective=(cand.alignment_objective if cand else None),
         seed_polarity=(
             None if cand is None or cand.seed_polarity_sign is None
@@ -448,14 +413,11 @@ def _log_measure_diag(
         predicted_ripple_db=(
             round(float(cand.predicted_ripple_db), 4) if cand else None
         ),
-        # #1667: how far the RAW candidate's (ripple-optimal-where-
-        # trusted) tweeter trim moved from solve_branch_trims's
-        # band-average seed — this always reports the RAW candidate's
-        # own recovery, even on a linearization-eligible attempt (the
-        # linearized path's own recovery travels separately in the
-        # evidence JSON). The sanity-guard fallback path reads as
-        # exactly 0.0 (raw == seed); ``None`` only when this candidate
-        # predates trim_band_average_db.
+        # #1667: how far the RAW candidate's (ripple-optimal-where-trusted) tweeter
+        # trim moved from solve_branch_trims's band-average seed — always the RAW
+        # candidate's own recovery, even on a linearization-eligible attempt. The
+        # sanity-guard fallback path reads exactly 0.0 (raw == seed); ``None`` only
+        # when the candidate predates trim_band_average_db.
         trim_ripple_gain_db=(
             round(
                 float(
@@ -503,27 +465,16 @@ def _log_measure_diag(
             round(sweep_locate_confidence_min, 4)
             if sweep_locate_confidence_min is not None else None
         ),
-        # Which (if any) measurement-honesty gate fired this verdict —
-        # disambiguates a G1/G2 fire from the pre-existing check that
-        # shares its reused reason code (see __init__'s comment on
-        # ``_last_measure_guard``).
+        # Which (if any) measurement-honesty gate fired this verdict — disambiguates
+        # a G1/G2 fire from the pre-existing check that shares its reused reason
+        # code.
         guard=guard,
-        # The pilot SNR guard's own evidence (issue #1810). Live on this
-        # phase only since the pre-pilot ambient window shipped; before
-        # that ``pilot_snr_ok`` was True and ``pilot_snr_db`` +inf (logged
-        # as None) by construction, so a REASON_PILOT_LEVEL_COLLAPSE line
-        # with numbers here is what distinguishes a real low-SNR capture
-        # from the structurally-dead guard it replaced.
+        # The pilot SNR guard's own evidence (#1810). Live on this phase only since
+        # the pre-pilot ambient window shipped, so a REASON_PILOT_LEVEL_COLLAPSE
+        # line with numbers here is what distinguishes a real low-SNR capture from
+        # the structurally-dead guard it replaced.
         pilot_snr_ok=analysis.pilot_snr_ok,
         pilot_snr_db=_worst_pilot_snr_db(analysis),
-        # (A ``linearization`` field lived here until the 2026-07-27
-        # timing move. It reported which path the candidate build took,
-        # and the candidate build now happens eight captures later, at the
-        # cloud-measure group close — so this line could only ever have
-        # reported "". It moved to ``correction.crossover_v2_candidate_built``
-        # rather than being kept as a permanently-empty field, the same
-        # treatment PR-5 gave the per-capture ``flatness_*`` fields when
-        # their subject moved to the cloud.)
     )
 
 
@@ -549,20 +500,14 @@ def _log_verify_diag(
         analysis.summed_response.validity_floor_hz
         if analysis.summed_response is not None else None
     )
-    # (The ``flatness_*`` fields this line carried until PR-5 came from
-    # the retired per-capture construction. The spec verdict is logged
-    # on every close of the group instead — ``correction.
-    # crossover_v2_cloud_spec`` in ``_run_cloud_pipeline``, once per
-    # close rather than once per capture.)
     # Measurement-honesty gate G3's own diagnostics: the current
     # attempt's raw pilot transfer (re-derived fresh, read-only — never
     # the mutated session state) and the step vs baseline
     # ``_verify_verdict`` already computed and stashed transiently.
     pilot_transfer_db = _pilot_transfer_by_role(analysis).get(VERIFY_PILOT_ROLE)
-    # Frame discipline (rung P1): the journal line an operator greps for
-    # "did apply do what we predicted" is also where the answer "84 % of
-    # that was the instrument" has to be readable. Lifted, never
-    # recomputed — ``_verify_frame_from_tracking`` already reduced it.
+    # Frame discipline (rung P1): the journal line an operator greps for "did
+    # apply do what we predicted" is also where "84 % of that was the
+    # instrument" has to be readable. Lifted, never recomputed.
     frame = verify_frame or {}
     claims = verify_claims or {}
     absolute = claims.get("absolute") or {}
@@ -573,12 +518,11 @@ def _log_verify_diag(
         verify_tolerance_db=VERIFY_TOLERANCE_DB,
         verify_gate_window_ms=_gate_window_ms(analysis.summed_response),
         verify_gate_floor_source=_gate_floor_source(analysis.summed_response),
-        # (No ``measure_gate_floor_source`` beside ``measure_gate_window_ms``
-        # here on purpose: that window is RESTORED from persisted state on a
-        # resumed session, and the floor source is not persisted, so the
-        # pair could only be reported as a real window beside a null source.
-        # MEASURE's own source is disclosed where it is computed — the
-        # ``crossover_v2_measure_diag`` line and the retained sidecar.)
+        # No ``measure_gate_floor_source`` beside ``measure_gate_window_ms`` here on
+        # purpose: that window is RESTORED from persisted state on a resumed
+        # session and the floor source is not persisted, so the pair could only be
+        # reported as a real window beside a null source. MEASURE's own source is
+        # disclosed where it is computed.
         measure_gate_window_ms=measure_gate_window_ms,
         validity_floor_hz=validity_floor_hz,
         tracking_band_lo_hz=tracking_band_lo_hz,
@@ -590,12 +534,10 @@ def _log_verify_diag(
         frame_tilt_db_per_octave=_rounded(frame.get("tilt_db_per_octave"), 3),
         rms_db_tilt_removed=_rounded(frame.get("rms_db_tilt_removed"), 4),
         max_db_tilt_removed=_rounded(frame.get("max_db_tilt_removed"), 4),
-        # §7's claims, on the SAME line an operator already greps for a
-        # verify outcome (R18, #1868) — including the two that are
-        # structurally not-evaluated, so a corpus sweep counts what was
-        # judged instead of inferring it from a bare accepted=true. The
-        # absolute scalars ride beside it because a band and a verdict
-        # without the number are not a measurement. All lifted.
+        # §7's claims, on the SAME line an operator already greps for a verify
+        # outcome (R18, #1868) — including the two that are structurally
+        # not-evaluated. The absolute scalars ride beside it because a band and a
+        # verdict without the number are not a measurement. All lifted.
         claims=_claims_log_field(claims),
         absolute_worst_db=absolute.get("worst_db"),
         absolute_worst_hz=absolute.get("worst_hz"),
@@ -611,20 +553,16 @@ def _log_verify_diag(
             if verify_pilot_transfer_step_db is not None else None
         ),
         # Issue #1810 — see ``_log_measure_diag``'s note. Read alongside
-        # ``pilot_transfer_step_db``: the session that filed the issue
-        # showed a null step next to an agc_behavioral_fail, and these two
-        # fields together are what make that combination legible.
+        # ``pilot_transfer_step_db``: a null step next to an agc_behavioral_fail is
+        # the combination these two fields together make legible.
         pilot_snr_ok=analysis.pilot_snr_ok,
         pilot_snr_db=_worst_pilot_snr_db(analysis),
-        # Capture integrity (#1971), disclosed on EVERY verify — pass or
-        # fail. On a pass it is what makes "this capture was comparable" a
-        # measured statement rather than an unexamined one; on a refusal
-        # it names which check fired, which is what tells telemetry a
+        # Capture integrity (#1971), disclosed on EVERY verify — pass or fail. On a
+        # refusal it names which check fired, which is what tells telemetry a
         # ``locate_failed`` came from this gate rather than from
-        # ``_stimulus_locate_ok``, and a ``drift_baselines_disagree`` from
-        # a splice rather than a clip. The two scalars are the measured
-        # figures the verdict was drawn from, and are reported even where
-        # the check they feed was ``not_evaluated``.
+        # ``_stimulus_locate_ok``. The two scalars are the measured figures the
+        # verdict was drawn from, and are reported even where the check they feed
+        # was ``not_evaluated``.
         integrity=_capture_integrity_log_field(integrity),
         integrity_not_evaluated=(
             ",".join(integrity.not_evaluated) if integrity is not None else ""
@@ -697,4 +635,3 @@ def _log_entry_baseline_diag(
         pilot_snr_ok=analysis.pilot_snr_ok,
         glitch=analysis.glitch_detected,
     )
-

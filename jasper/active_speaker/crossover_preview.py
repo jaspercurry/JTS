@@ -234,20 +234,9 @@ def _driver_style_for_role(topology: OutputTopology, role: str) -> str | None:
     return None
 
 
-# ``_do_not_test_floor`` and its ``crossover_below_do_not_test_floor`` blocker
-# are gone with the second declaration they read (#2603). ``do_not_test_below_hz``
-# was an optional restatement of the driver's low limit, so once that limit got
-# one owner the blocker would have fired on exactly the condition #2491 routes
-# deliberately: this page DISCLOSES a corner below the declared protection
-# floor and ``path_safety`` REFUSES it at load. Blocking here would have made
-# that load gate unreachable. The remaining path is also strictly more reliable
-# than the one it replaces -- the disclosure below and the load gate both read
-# one always-derived number, where the blocker only fired when a separate
-# optional field happened to have been declared (#2132's fail-open).
-#
-# ``crossover_below_recommended_driver_floor`` went the same way: it read
-# ``recommended_highpass_hz`` directly, which is now the owner the disclosure
-# already speaks for, so it had become a second message for one fact.
+# A corner below the declared protection floor is DISCLOSED here and REFUSED by
+# ``path_safety`` at load (#2491); this page must not block it, or that load gate
+# becomes unreachable.
 
 
 def _filter_type(candidate: Mapping[str, Any]) -> str:

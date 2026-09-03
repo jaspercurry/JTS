@@ -359,16 +359,25 @@ def test_composite_floor_equals_its_children():
     assert DUAL_APPLE_USB_C_DAC_4CH.latency_floor == child_floor
 
 
-def test_declaring_the_floor_is_what_unlocks_the_conf_d_render():
+def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path, capsys):
     """The floor's real payoff, pinned at the command that consumes it: an
     absent floor short-circuits to ``no_declared_floor`` BEFORE the wire is
     resolved, so the ACTIVE block would keep the ioplug default forever."""
-    source = (REPO_ROOT / "jasper" / "cli" / "audio_config.py").read_text(
-        encoding="utf-8"
+    from jasper.cli import audio_config
+
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(Path(RING_CONF_D_SOURCE).read_text(encoding="utf-8"), "utf-8")
+    before = conf.read_text(encoding="utf-8")
+
+    rc = audio_config.main(
+        ["render-ring-conf-wire", "--profile-id", "", "--conf-d", str(conf)]
     )
-    assert 'print("reason no_declared_floor")' in source, (
-        "the skip path this floor exists to avoid moved; re-derive 1c's rationale"
-    )
+
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "result skipped" in lines
+    assert "reason no_declared_floor" in lines
+    assert conf.read_text(encoding="utf-8") == before
 
 
 # --- 1d: the conf.d ACTIVE block renders channels 4 -------------------------
@@ -589,23 +598,20 @@ def test_outputd_admits_a_composite_active_ring_endpoint():
 
 def test_active_emit_devices_needs_no_composite_change():
     """The design named this as the function to walk. THE WALK'S VERDICT IS
-    'NO CHANGE', recorded as a test so the claim is checkable rather than
-    asserted in a PR body: it branches on ring PCM NAME membership and carries
-    no channel axis at all, so it is already 4-channel-safe.
+    'NO CHANGE': it branches on ring PCM NAME membership and carries no channel
+    axis at all, so it is already 4-channel-safe.
     """
-    import inspect
+    import dataclasses
 
     from jasper.active_speaker.camilla_yaml import ActiveEmitDevices, active_emit_devices
 
-    source = inspect.getsource(active_emit_devices)
-    assert "if playback_device not in RING_PCM_DEVICES:" in source
-    assert "composite" not in source.lower(), (
-        "active_emit_devices must stay composite-agnostic"
-    )
-    assert not hasattr(ActiveEmitDevices, "channels"), (
-        "it carries no channel axis, which is why a 4-ch composite needs nothing "
-        "from it"
-    )
+    assert "channels" not in {f.name for f in dataclasses.fields(ActiveEmitDevices)}
+    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+
+    for device in (RING_ACTIVE_PLAYBACK_DEVICE, "hw:CARD=Lab,DEV=0"):
+        assert active_emit_devices(
+            device, topology=_composite_active_2way()
+        ) == active_emit_devices(device, topology=_stereo_topology())
 
 
 # --- the enable != arm rule --------------------------------------------------

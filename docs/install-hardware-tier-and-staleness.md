@@ -446,8 +446,8 @@ and a dedicated test pins that the guard does *not* fire during
 | The whole flow is testable without owning every SKU | Test strategy above: synthetic-`/proc` decision matrix + cgroup smoke + canary. |
 
 Last verified: 2026-08-25 (migration/reconcile denominator re-recounted to 10
-after the env-migrations retirement wave, REFACTOR-2026-08.md Wave 2, retired
-the six one-shot relocation loops named above; 2026-08-17 pass recounted
+after the env-migrations retirement wave removed the six one-shot relocation
+loops named above; 2026-08-17 pass recounted
 against the surviving set after the #2285 deletion wave; historical
 WebRTC-build recommendation reconciled with the shipped mandatory-v1 /
 optional-v2 split; broader tier/staleness analysis remains the 2026-06-21

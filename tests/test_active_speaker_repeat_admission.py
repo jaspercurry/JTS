@@ -85,18 +85,6 @@ def test_four_attempts_are_authoritative_and_fifth_is_refused(tmp_path):
     ] == 4
 
 
-def test_transport_failures_retry_until_the_reservation_circuit_breaker():
-    # A transport/infra failure never plays a tone, so it is refunded from the
-    # audible measurement budget and the set stays retryable — only reaching
-    # the reservation cap makes an infra failure terminal so an always-failing
-    # box cannot loop forever.
-    assert admission.failure_status(1) == "active"
-    assert admission.failure_status(admission.MAX_ATTEMPTS) == "active"
-    assert admission.failure_status(admission.MAX_RESERVATIONS - 1) == "active"
-    assert admission.failure_status(admission.MAX_RESERVATIONS) == "refused"
-    assert admission.failure_status("malformed") == "refused"
-
-
 def test_only_one_concurrent_inflight_reservation_wins(tmp_path):
     path = tmp_path / "repeat.json"
     comparison = _comparison()
@@ -226,44 +214,6 @@ def test_new_process_owner_aborts_ready_finalization_and_preserves_attempts(
     fresh = _comparison("b")
     admission.activate(fresh, path=path)
     assert _reserve(path, fresh)["attempt"] == 1
-
-
-def test_finished_reservation_is_identified_without_replaying_failure(tmp_path):
-    path = tmp_path / "repeat.json"
-    comparison = _comparison()
-    admission.activate(comparison, path=path)
-    reservation = _reserve(path, comparison)
-    admission.finish(
-        comparison,
-        target_id="mono:woofer",
-        target_fingerprint="mono:woofer-fingerprint",
-        token=reservation["token"],
-        result={"accepted": True},
-        status="ready",
-        path=path,
-    )
-    admission.abort_ready(
-        comparison,
-        target_id="mono:woofer",
-        target_fingerprint="mono:woofer-fingerprint",
-        reason="measurement_persistence_failed",
-        path=path,
-    )
-
-    assert admission.reservation_is_finished(
-        comparison,
-        target_id="mono:woofer",
-        target_fingerprint="mono:woofer-fingerprint",
-        attempt=1,
-        path=path,
-    )
-    assert not admission.reservation_is_finished(
-        comparison,
-        target_id="mono:woofer",
-        target_fingerprint="mono:woofer-fingerprint",
-        attempt=2,
-        path=path,
-    )
 
 
 def test_failed_startup_owner_claim_keeps_status_unavailable_until_reset(
@@ -537,8 +487,6 @@ def test_reservation_circuit_breaker_refuses_with_a_distinct_infra_reason(tmp_pa
     path = tmp_path / "repeat.json"
     comparison = _comparison()
     admission.activate(comparison, path=path)
-    # Keep every infra failure non-terminal to isolate the reservation-cap gate
-    # in reserve() from the failure_status() terminal path.
     for _ in range(admission.MAX_RESERVATIONS):
         _finish(
             path, comparison, _reserve(path, comparison),

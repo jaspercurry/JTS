@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The room-correction band ceiling, and its seam with the gated speaker spec.
+"""SSOT for the room-correction band ceiling and the gated spec's lower edge.
 
 **This module is the single source of truth for the room layer's upper band
 edge.** Before it existed the "350 Hz cap" was ten independent float literals
@@ -95,13 +95,11 @@ What is NOT owned here
   becomes per-room.
 
 Roadmap: RC1 (this module) only makes the boundary a single value. RC2 adds a
-Schroeder-frequency estimator and RC3 lets :func:`room_boundary_hz` resolve a
-per-room transition; every consumer already routed here picks that up with no
-further edit. See ``docs/room-correction-regime-plan.md``.
+Schroeder-frequency estimator and RC3 a per-room transition resolved here;
+every consumer already routed here picks that up with no further edit. See
+``docs/room-correction-regime-plan.md``.
 """
 from __future__ import annotations
-
-import math
 
 # The gated speaker spec's lower edge, in Hz. Owned here so the room layer's
 # clamp floor and the speaker layer's spec floor cannot drift apart;
@@ -112,37 +110,13 @@ import math
 # module docstring's "A session can grade higher than this edge" note.
 GATED_SPEC_LOWER_EDGE_HZ: float = 250.0
 
-# The room-correction ceiling, in Hz, when no per-room estimate is available.
-# 350 Hz is the shipped Toole-aligned modal/transition boundary and stays the
-# fallback whenever the RC2 estimator is missing or uncertain.
+# The room-correction ceiling, Hz, when no per-room estimate is available: the
+# shipped Toole-aligned modal/transition boundary.
 ROOM_BOUNDARY_DEFAULT_HZ: float = 350.0
 
-# Clamp bounds for a per-room ceiling estimate (RC2/RC3). The floor is the
-# gated spec's lower edge BY DEFINITION (see the module docstring's "relation,
-# stated once"); the ceiling is the widest room-correction band the project
-# admits, and is also the `assertive` strategy's band.
+# Clamp bounds for a per-room ceiling estimate. The floor is the gated spec's
+# lower edge BY DEFINITION (see the module docstring); the ceiling is the widest
+# room-correction band the project admits, and is also the `assertive`
+# strategy's band.
 ROOM_BOUNDARY_MIN_HZ: float = GATED_SPEC_LOWER_EDGE_HZ
 ROOM_BOUNDARY_MAX_HZ: float = 500.0
-
-
-def room_boundary_hz(estimate_hz: float | None = None) -> float:
-    """Resolve the room-correction ceiling in Hz.
-
-    With no argument — the RC1 state of the world, and the state whenever the
-    per-room estimator has nothing to say — this returns
-    :data:`ROOM_BOUNDARY_DEFAULT_HZ`. Given a per-room estimate (RC2's
-    Schroeder frequency) it returns that estimate clamped to
-    ``[ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]``.
-
-    A non-finite or non-positive estimate is treated as *no estimate* and falls
-    back to the default rather than clamping to a bound: "unknown" must not
-    silently become "250 Hz" (or "500 Hz"), which would look like a confident
-    per-room answer. Callers that need to disclose which case they got should
-    compare the result against the default themselves.
-    """
-    if estimate_hz is None:
-        return ROOM_BOUNDARY_DEFAULT_HZ
-    value = float(estimate_hz)
-    if not math.isfinite(value) or value <= 0.0:
-        return ROOM_BOUNDARY_DEFAULT_HZ
-    return min(max(value, ROOM_BOUNDARY_MIN_HZ), ROOM_BOUNDARY_MAX_HZ)

@@ -14,12 +14,12 @@ in test_control_server.py against the real ThreadingHTTPServer.
 """
 from __future__ import annotations
 
-import inspect
 import os
 import stat
 
 from jasper.cli import control_token as cli
 from jasper.control import control_token
+from tests._web_test_helpers import assert_verify_uses_constant_time_compare
 
 
 # --- core: token_enforced / verify ----------------------------------------
@@ -70,12 +70,11 @@ def test_verify_enforced_mismatch_and_missing_header(monkeypatch, tmp_path):
     assert control_token.verify("") is False
 
 
-def test_verify_uses_constant_time_compare():
-    """The compare must be hmac.compare_digest, never ==, so the token's
-    length/prefix doesn't leak through timing."""
-    src = inspect.getsource(control_token.verify)
-    assert "compare_digest" in src
-    assert "==" not in src.replace("!=", "")  # no equality compare of the secret
+def test_verify_uses_constant_time_compare(monkeypatch, tmp_path):
+    """compare_digest, never ==, so the token length/prefix cannot leak via timing."""
+    assert_verify_uses_constant_time_compare(
+        monkeypatch, tmp_path, control_token, "TOKEN_FILE", "the-token-value"
+    )
 
 
 # --- CLI: enable / show / disable -----------------------------------------

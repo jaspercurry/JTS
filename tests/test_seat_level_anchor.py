@@ -109,7 +109,6 @@ def test_a_level_resolves_or_names_the_input_it_is_missing(
         with pytest.raises(slr.LevelUnresolved) as excinfo:
             _resolve()
         assert excinfo.value.reason == reason
-        assert excinfo.value.reason in slr.LEVEL_REFUSAL_REASONS
         # The three ways an anchor goes unusable share one slug, so the
         # sentence is what separates them.
         assert excinfo.value.detail

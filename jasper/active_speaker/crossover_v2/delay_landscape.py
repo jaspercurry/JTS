@@ -4,36 +4,13 @@
 
 """Propose an inter-driver delay from banked transfers; confirm it acoustically.
 
-The method of record is compute-then-confirm, and the split is the point:
-
-* **PROPOSE** — complex-sum the two banked per-driver transfers across
-  ``null_walk``'s whole delay grid and read the null depth each coordinate
-  would produce. Ruling S3 banks magnitude AND phase for every measured curve
-  (:func:`~.spatial.pose_curve_record`), so the transfer functions reconstruct
-  exactly and the landscape falls out of evidence that is already on disk.
-  **No audio plays.** An existing MEASURE bank answers this today.
-* **DISPOSE** — play the acoustic null at the computed optimum and its
-  neighbours, inverted branch plus candidate delay, and measure what actually
-  cancels. Three takes (two at a grid edge) rather than a blind sweep of nine
-  to twenty-five.
-
-This is not the low-SNR alignment estimator wearing a new hat. That heuristic
-read a delay off one capture's arrival time and, when the branch SNR would not
-carry the read, committed 0.0 microseconds by declaration. This computes a
-**landscape** from measured complex transfers, states what it predicts, and
-then goes and measures whether the prediction is true. Predictions propose;
-measurements dispose.
-
-**Disagreement is a result, not an error.** A deep computed optimum whose
-acoustic null comes back shallow is the model breaking at this band — lobing,
-or a position the two-transfer sum does not describe — and it is reported as
-that. The delta between computed and measured is banked either way: it is the
-controllability evidence for the alignment band.
-
-**Weaker evidence is disclosed, never refused.** A real 2-way's drivers overlap
-by less than the canonical two octaves, so the depth's shoulders are that span
-clamped into the measured overlap and every landscape carries the span it used
-and which side was clamped
+PROPOSE complex-sums the two banked per-driver transfers across
+``null_walk``'s whole delay grid and reads the null depth each coordinate
+would produce — no audio plays, ruling S3 having banked magnitude AND phase
+for every curve (:func:`~.spatial.pose_curve_record`). DISPOSE plays the
+computed optimum and its neighbours and measures what cancels. Disagreement
+is a banked result, not an error, and the shoulders are the canonical span
+clamped into the measured overlap
 (:class:`~jasper.audio_measurement.analysis.ShoulderSpan`).
 """
 
@@ -65,37 +42,33 @@ REFUSAL_FC_OUTSIDE_OVERLAP = "shoulder_overlap_excludes_fc"
 REFUSAL_SHOULDER_RUN_UP = "shoulder_run_up_too_short"
 
 #: How far the measured null may sit from the computed one before the two are
-#: telling different stories. Wider than the walk's own repeat spread (2 dB)
-#: because this compares a two-transfer model against a real acoustic sum, not
-#: one capture against another.
+#: telling different stories. Wider than the walk's own repeat spread (2 dB):
+#: this compares a two-transfer model against a real acoustic sum.
 MODEL_AGREEMENT_DB = 6.0
 
 VERDICT_MODEL_BROKE = "model_break_at_alignment_band"
 VERDICT_NO_EVIDENCE = "confirmation_missing"
 
-#: Ticket 6.11c's phase-overlay corridor. Convention layered on the
-#: summation math below, not a derived bound (research 04:
+#: Phase-overlay corridor. Convention layered on the summation math below, not
+#: a derived bound: van Veen's "555" mnemonic, whose mathematically clean
+#: +5 dB point sits at ~55 deg and whose 60 deg is the rounded, easily
+#: visualized tolerance (research 04,
 #: docs/research/2026-08-31-tuning-methodology-deep-research/
-#: 04-structure-alignment-and-automation-prior-art.md) -- van Veen's "555"
-#: mnemonic, the mathematically clean +5 dB point sitting at ~55 deg and 60
-#: deg being the rounded, easily-visualized tolerance.
+#: 04-structure-alignment-and-automation-prior-art.md).
 PHASE_OVERLAY_TIGHT_DEG = 60.0
 
 #: The summation table's OWN additive boundary, not convention: at
-#: |dphi| = 120 deg two equal-level branches sum to exactly 0 dB (neither
-#: gain nor loss versus one branch alone); past it the sum falls below a
-#: single branch. Bob McCarthy, "Sound Systems: Design and Optimization"
-#: ("Summation" chapter) -- same research citation as above.
+#: |dphi| = 120 deg two equal-level branches sum to exactly 0 dB, and past
+#: it the sum falls below one branch alone (McCarthy, "Sound Systems:
+#: Design and Optimization", Summation; same research citation as above).
 PHASE_OVERLAY_ADDITIVE_DEG = 120.0
 
 
 class DelayLandscapeError(ValueError):
     """The banked curves cannot support a delay landscape.
 
-    Carries ``refusal_reason`` and the numbers behind it in ``detail``, so a
-    caller reads attributes set at the raise site instead of parsing the
-    message. The reason and the numbers are the contract; the message is
-    operator copy and may be reworded freely.
+    ``refusal_reason`` and the numbers in ``detail`` are the contract; the
+    message is operator copy and may be reworded freely.
     """
 
     def __init__(
@@ -115,17 +88,12 @@ def _curve(
 ) -> tuple[Any, Any, tuple[float, float]]:
     """Reconstruct one banked curve's complex transfer, exactly as banked.
 
-    Returns the grid, the transfer, and the driver's own SWEPT band. The band is
-    not the grid: :func:`~.spatial.lateral_pose_curve` resamples every curve onto
-    one shared evidence grid and keeps the band it actually swept in
-    ``band_hz``. Deriving the overlap from grid endpoints would therefore find
-    the same extent for both drivers on real bank data — the shoulders would
-    read as canonical however narrow the real overlap was, and the sum would
-    include bins neither driver was swept over.
-
-    ``expected_role`` is checked against the banked ``role`` because the two
-    curves reach the caller positionally: swapped, the model would delay and
-    invert the wrong branches and say nothing.
+    Returns the grid, the transfer, and the driver's own SWEPT band. The band
+    is not the grid: :func:`~.spatial.lateral_pose_curve` resamples every curve
+    onto one shared evidence grid and keeps the swept extent in ``band_hz``, so
+    an overlap derived from grid endpoints would read as canonical however
+    narrow the real one was. ``expected_role`` is checked against the banked
+    ``role`` because the two curves reach the caller positionally.
     """
 
     from .position_cycle import parse_curve_complex
@@ -150,12 +118,10 @@ def _curve(
 def _shoulders(lower_freqs, lower_band, upper_band, *, crossover_fc_hz: float):
     """The grid the sum is taken on, and the shoulders its depth is read at.
 
-    The two drivers sweep their own bands, so the sum is taken on the overlap
-    they SHARE — read from each curve's declared band, never from the grid it
-    was resampled onto. A crossover null lives in exactly that overlap, and the
-    shoulders are the canonical span clamped into it. Refused here is only what
-    no span can read: an overlap that does not bracket Fc, or one too coarse to
-    interpolate a shoulder from.
+    The sum is taken on the overlap the two DECLARED bands share, never on the
+    grid they were resampled onto, and the shoulders are the canonical span
+    clamped into it. Refused here is only what no span can read: an overlap
+    that does not bracket Fc, or one too coarse to interpolate a shoulder from.
     """
 
     lo = max(lower_band[0], upper_band[0])
@@ -206,15 +172,12 @@ def predicted_null_depth_db(
 ) -> float:
     """The null depth a coordinate would produce, from the two banked transfers.
 
-    One branch is sign-reversed and one is delayed, then they are summed and the
-    notch at Fc is read with :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db`
-    — the same subtraction an acoustic capture is graded with, so a computed
-    depth and a measured one are the same quantity in the same units — read at
-    the shoulders :func:`curve_shoulder_span` derives, over a narrower span than
-    canonical where the banked overlap forced them inward.
-
-    ``relative_delay_us`` follows ``null_walk``'s sign frame: positive delays
-    the UPPER branch, negative delays the lower.
+    One branch is sign-reversed and one delayed; the sum's notch at Fc is read
+    with :func:`~jasper.audio_measurement.analysis.crossover_null_depth_db` —
+    the same subtraction an acoustic capture is graded with, so computed and
+    measured depths are one quantity in one unit — at the shoulders
+    :func:`curve_shoulder_span` derives. ``relative_delay_us`` follows
+    ``null_walk``'s sign frame: positive delays the UPPER branch.
     """
 
     import numpy as np
@@ -235,16 +198,11 @@ def predicted_null_depth_db(
         lower_freqs, lower_band, upper_band, crossover_fc_hz=crossover_fc_hz
     )
 
-    # Resampled in POLAR form. A driver transfer at ~1 m carries milliseconds
-    # of acoustic delay, so its phasor turns a full circle every few hundred
-    # hertz; interpolating real and imaginary parts separately cuts the chord
-    # instead of following the arc and shrinks the magnitude between grid
-    # points. On a realistic null — one floored by level or driver mismatch —
-    # the two forms agree to a fraction of a dB, and they diverge only as the
-    # sum approaches a perfect cancellation, where the depth is numerically
-    # ill-conditioned in either form. Polar is kept because it is what the
-    # physics says and it costs nothing, not because a measured result hangs
-    # on it.
+    # Resampled in POLAR form: a driver transfer at ~1 m carries milliseconds of
+    # acoustic delay, so its phasor turns a full circle every few hundred hertz
+    # and interpolating real and imaginary parts would cut the chord, not the
+    # arc. The two forms diverge only as the sum approaches perfect
+    # cancellation, where the depth is ill-conditioned either way.
     lower = _resample(freqs, lower_freqs, lower_tf)
     upper = _resample(freqs, upper_freqs, upper_tf)
 
@@ -295,33 +253,16 @@ def _phase_overlay(
     lower_role: str,
     upper_role: str,
 ) -> dict[str, Any]:
-    """Ticket 6.11c: dphi(f) between the two branches' OWN banked curves.
+    """dphi(f) between the two branches' OWN banked curves — diagnostic only.
 
-    Diagnostic evidence, not a candidate's result: no delay and no inversion
-    applied here — this is the RAW phase relationship a delay candidate is
-    trying to fix, read on the shared grid across the corner octave
-    (Fc/2..2*Fc) clamped into the band both drivers actually share — the
-    same clamp :func:`curve_shoulder_span` applies
-    (:data:`~jasper.audio_measurement.analysis.CANONICAL_SHOULDER_RATIOS` is
-    exactly ``(0.5, 2.0)``).
-
-    Reuses the existing pair reader (:func:`_curve`) and the existing
-    shoulder/resample helpers (:func:`_shoulders`, :func:`_resample`) rather
-    than a second implementation of either.
-
-    ``implied_summation_db`` is the textbook two-EQUAL-LEVEL-phasor
-    summation figure, ``20*log10(2*cos(dphi/2))`` — magnitude-agnostic by
-    construction (the "2" assumes equal level), so it does not restate
-    :func:`predicted_null_depth_db`'s magnitude-aware complex sum; it is
-    what the raw phase ALONE implies. Clamped only at the formula's own
-    zero (perfect cancellation): wrapping ``dphi`` into (-180, 180] keeps
-    ``dphi/2`` inside [-90, 90] deg, where ``cos`` is never negative, so
-    ``2*cos(dphi/2)`` never needs a lower bound but the exact-zero case
-    still needs a floor before the log.
-
-    NO verdict field: :data:`PHASE_OVERLAY_TIGHT_DEG` and
-    :data:`PHASE_OVERLAY_ADDITIVE_DEG` back two read FACTS (a max and a
-    band fraction), never a pass/fail this function computes.
+    No delay and no inversion applied: this is the RAW phase relationship a
+    delay candidate is trying to fix, read on the shared grid across the corner
+    octave (Fc/2..2*Fc) clamped into the band both drivers share.
+    ``implied_summation_db`` is the two-EQUAL-LEVEL-phasor figure
+    ``20*log10(2*cos(dphi/2))``, magnitude-agnostic by construction, so it does
+    not restate :func:`predicted_null_depth_db`'s magnitude-aware complex sum.
+    No verdict field: the two corridor constants back read facts, not a
+    pass/fail.
     """
 
     import numpy as np
@@ -388,9 +329,8 @@ class DelayLandscape:
     best_predicted_null_depth_db: float
     confirmation_coordinates_us: tuple[float, ...]
     shoulders: ShoulderSpan
-    #: Ticket 6.11c: the raw phase relationship between the two banked
-    #: curves, independent of any candidate coordinate — see
-    #: :func:`_phase_overlay`.
+    #: The raw phase relationship between the two banked curves, independent of
+    #: any candidate coordinate. See :func:`_phase_overlay`.
     phase_overlay: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
@@ -404,9 +344,8 @@ class DelayLandscape:
             "best_coordinate_us": self.best_coordinate_us,
             "best_predicted_null_depth_db": self.best_predicted_null_depth_db,
             "confirmation_coordinates_us": list(self.confirmation_coordinates_us),
-            # Every depth above was read at THESE shoulders — narrower than
-            # canonical where clamped, which a reader comparing this landscape
-            # against an acoustic confirm has to know.
+            # Every depth above was read at THESE shoulders — narrower than canonical
+            # where clamped, which a reader comparing against an acoustic confirm needs.
             "shoulders": self.shoulders.to_dict(),
             "phase_overlay": self.phase_overlay,
         }
@@ -467,10 +406,9 @@ def compute_landscape(
         range(len(coordinates)),
         key=lambda i: (depths[i], -abs(coordinates[i] - spec.geometry_seed_us)),
     )
-    # The optimum plus its immediate neighbours -- three takes, or two when the
-    # optimum lands on a grid edge. They show whether the measured null sits
-    # where the model put it AND falls away either side of it; a single take
-    # cannot tell a real null from a lucky level.
+    # The optimum plus its immediate neighbours — two takes when the optimum
+    # lands on a grid edge. A single take cannot tell a real null from a
+    # lucky level.
     neighbours = tuple(
         coordinates[i]
         for i in (best_index - 1, best_index, best_index + 1)
@@ -495,26 +433,11 @@ def confirmation_verdict(
 ) -> dict[str, Any]:
     """Grade the acoustic confirmation against what the model predicted.
 
-    Outcomes, and none of them is an error:
-
-    * ``delay_resolved_robust`` — the measured null sits at the computed
-      optimum and reaches :data:`ROBUST_NULL_DEPTH_DB`.
-    * ``delay_resolved_weak`` — it sits there and is usable, but short of the
-      bar. Prescribe with that stated.
-    * ``model_break_at_alignment_band`` — either the deepest measured null is
-      NOT at the computed optimum, or the model promised a usable null there
-      and the room refused it. The two-transfer sum does not describe this
-      position — lobing, or somewhere the model does not reach — so no delay is
-      prescribed on the strength of the computation.
-    * ``axis_or_lobing_limited`` — the model agreed, and there is simply no
-      usable null to be had on this axis.
-    * ``confirmation_missing`` — no take covered the computed optimum.
-
-    **Depth is not compared directly.** A modelled cancellation can be
-    arbitrarily deep while a measured one floors on noise and room, so
-    "measured shallower than predicted" is the ordinary case. What the model
-    claims, and what is therefore checked, is WHERE the null is. The delta is
-    banked either way — it is the controllability evidence for this band.
+    None of the five verdicts is an error. Depth is not compared directly: a
+    modelled cancellation can be arbitrarily deep while a measured one floors
+    on noise and room, so "measured shallower than predicted" is the ordinary
+    case and what is checked is WHERE the null is. The delta is banked either
+    way, as this band's controllability evidence.
     """
 
     measured = {float(k): float(v) for k, v in measured_null_depth_db.items()}
@@ -545,16 +468,10 @@ def confirmation_verdict(
                 "prescribable_delay_us": None}
 
     deepest_measured = max(measured.values())
-    # What the model actually claims is WHERE the null is. Depth is not
-    # comparable: a modelled cancellation can be arbitrarily deep, while a
-    # measured one floors on noise and room, so "measured shallower than
-    # predicted" is the normal case and not evidence of anything. The delta is
-    # banked as evidence; it does not decide agreement.
-    # Read against the coordinates that were CONFIRMED, which is the optimum and
-    # its neighbours — not the whole grid. So this says "no confirmed neighbour
-    # beat the optimum", a narrower claim than "the null is here"; a null living
-    # somewhere else entirely is caught by `promised_unkept` below, when the
-    # model predicted a usable one and the room did not produce it.
+    # Read against the coordinates that were CONFIRMED — the optimum and its
+    # neighbours, not the whole grid — so this claims only "no confirmed
+    # neighbour beat the optimum". A null living somewhere else entirely is
+    # caught by `promised_unkept` below.
     located = at_optimum >= deepest_measured - MODEL_AGREEMENT_DB
     # The one depth claim that IS comparable: the model said this coordinate
     # would give a usable null, and the room did not.

@@ -38,10 +38,6 @@ restate either.
 | Read the reverse `JTS Mic` emit→ALSA-write latency | [USB microphone export latency](#usb-microphone-export-latency) |
 | Measure inter-speaker sync error for multi-room on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Check the DSP realizes a linearization as the fit says, offline | [Offline emit loop](#offline-emit-loop) |
-| Replay recorded tuning attempts through the improve/stop policy | [Attempts-loop replay](#attempts-loop-replay) |
-| See whether a session's cloud null evidence bound the fit | [Severed-twin replay](#severed-twin-replay) |
-| Ask whether a pooled flatness number answers a listener's question | [Metric-honesty views](#metric-honesty-views) |
-| Read H2/H3 vs frequency out of captures already on disk | [Harmonic-distortion replay](#harmonic-distortion-replay) |
 | Hold a field incident still in CI as a committed fixture | [Committed incident replay](#committed-incident-replay) |
 | Find what a measurement change actually moved, at value level | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
 | Detect, probe, or move the experimental USB turntable | [USB turntable experiment](#usb-turntable-experiment) |
@@ -682,155 +678,11 @@ on-device run.
 
 ---
 
-## Attempts-loop replay
-
-```sh
-PYTHONPATH=. .venv/bin/python -m jasper.cli.active_speaker_attempts_replay \
-  --repeat-floor captures/repeat-floor-20260731 \
-  --sessions captures/r11-loop-proof-corpus/sessions \
-  --out captures/r11-loop-proof-20260802
-```
-
-`jasper-active-speaker-attempts-replay`
-([`jasper/cli/active_speaker_attempts_replay.py`](../jasper/cli/active_speaker_attempts_replay.py),
-kernel in [`attempts_loop.py`](../jasper/active_speaker/attempts_loop.py)) asks
-**would the tuning loop have called this an improvement, or noise?** Fully
-offline — no hardware, no Pi, no microphone.
-
-- `--repeat-floor <dir>` is an unchanged-profile repeat study and is the
-  **control**: nothing was tuned between captures, so no consecutive change may
-  reach the claim floor. It is the only bank that knows the right answer in
-  advance. `--sessions <dir>` replays recorded commissioning bundles
-  oldest-first as an improvement arc, graded per driver role.
-- Writes `report.json`, `README.md` and one model-error store per run into
-  `--out`. **Replay never writes to the production store** at
-  `/var/lib/jasper/active_speaker_model_error.json` — a test pins that.
-- **Exit codes are three-state**, matching the [Offline emit loop](#offline-emit-loop):
-  `0` consistent, `1` a finding, `2` no verdict. Absence of evidence never reads
-  as a pass.
-
----
-
-## Severed-twin replay
-
-```sh
-PYTHONPATH=. .venv/bin/python scripts/severed-twin-replay.py \
-  --bank <banked-round>/pi-pull --ring <ring-snapshot> --calibration <umik.txt>
-```
-
-Re-fits a banked crossover-v2 session twice — once as recorded, once with the
-cloud verdict cut (`excluded_bands_hz=None`, the production `cloud is None`
-branch) — and diffs the fits: **did the null evidence actually bind, and what
-does the fit do without it?** It cannot say whether the wired answer was
-*right*; for that, the synthetic scenarios in
-[`tests/test_crossover_v2_boost_scenarios.py`](../tests/test_crossover_v2_boost_scenarios.py)
-inject the defect so the correct answer is known before the flow runs. Fully
-offline.
-
-- **It binds a capture to a session by content, never by filename** — the
-  sidecar's recorded `diagnostic` block against the banked `candidate.json`'s
-  `analysis` block, requiring a unique hit.
-- **It validates itself and refuses when it cannot.** It reproduces 19 of the
-  sidecar's values and prints no fit unless every one matches (exit 1
-  otherwise; a field the sidecar never recorded is a refusal too). Its module
-  docstring names the two things the gate does not reach — the post-T2 delay
-  refinement and the calibration sign convention. Read it before extending the
-  tool to a delay or level question.
-- **The fit engine is today's; the capture analysis is the banked era's.** A
-  banked candidate's numbers and a fresh replay's differ wherever the fit has
-  moved — cross-era evolution, not a fidelity failure. The wired-vs-severed diff
-  is a within-run comparison precisely so it does not depend on the difference.
-
----
-
-## Metric-honesty views
-
-```sh
-PYTHONPATH=. .venv/bin/python scripts/render-metric-views.py <receipts-dir> \
-    [--walk-logs <logs-dir>] [--json /tmp/metric-views.json]
-```
-
-Asks **is the pooled flatness number answering the question a listener asked?**
-Two properties of the shipped pooling say no, and both are visible in the
-receipt: the cloud grades on the linear `rfft` axis, so a band's graded bin
-count tracks its width in hertz rather than octaves (a measured 12.1:1
-per-octave overweight of 8–16 kHz against 250 Hz–2 kHz), and `combine_positions`
-is an unweighted power mean, so a coverage-edge position enters the headline
-with the listening seat's weight.
-
-- Every **measurement** comes from
-  [`flat_spec_views.py`](../jasper/active_speaker/flat_spec_views.py) — product
-  code, pure, pinned by `tests/test_flat_spec_views.py` — so the tool cannot
-  print a residual the product will not later compute identically.
-- **Three views, none of which grades anything:** `log_pooled_residual`
-  re-pools with equal weight per octave; `role_split_flatness` reports on-axis
-  and off-axis separately and never averages them; `directivity_table`
-  normalises every position to the on-axis reference. The session's one verdict
-  stays the report's `overall_passed` — a test fails the build if any view grows
-  a `passed` field.
-- `--walk-logs` is optional and best-effort. Rounds banked after the 2026-08-24
-  geometry ruling carry a signed `position_deg` on every retained cloud
-  position; older ones recover angles by joining `(index, attempt, role)`
-  against the walk driver's `released …` lines. `(index, attempt)` alone is
-  **not** unique — when covering logs disagree the join is declined and every
-  view degrades to role-only, which is honest.
-
----
-
-## Harmonic-distortion replay
-
-```sh
-PYTHONPATH=. .venv/bin/python scripts/harmonic-distortion-replay.py \
-  --state <state.json> --applied-profile <applied-profile.json> \
-  --captures <e0-dir> --dumps <dumps-dir> --calibration <umik.txt>
-```
-
-Reads **H2 and H3 versus frequency** out of already-banked MEASURE captures —
-no new recording, no Pi, no microphone. Every JTS sweep is Novak-synchronized,
-so harmonic images sit at exact pre-arrival offsets in each deconvolution. Math
-lives in [`distortion.py`](../jasper/audio_measurement/distortion.py); this
-script is the exploratory bench over a loose corpus.
-
-**For a banked ROUND, use the product instrument instead:**
-`jasper-read-distortion <bundle-dir> --dumps <ring> --state <flow-state>
---applied-profile <applied-profile.json>` takes a bundle rather than three loose
-directories, derives driver gains from the round's own state and the crossover
-corner from its applied-profile SSOT, and files `harmonic_distortion.json` where
-the evidence packet reads it.
-
-- **It needs a corpus with per-capture sidecars**; without them it cannot be
-  fidelity-gated and binds nothing.
-- **What the numbers mean.** Every value is dB below the fundamental at the same
-  excitation frequency, at that capture's drive (printed in dBFS) — there is no
-  absolute figure. A ratio rises wherever the FUNDAMENTAL dips, so read a peak
-  against the table's `fundΔ` column and the summary's absolute-energy peak bin
-  before blaming the driver. Each row carries a **measured noise floor** from a
-  phantom window between images; a starred value is an upper bound on the
-  driver, not a reading of it.
-- **Two band edges bite, and neither is Nyquist.** Order *N* is only real up to
-  `f2/N` (the sweep puts no energy above `f2`), so a 150–4000 Hz woofer sweep
-  yields honest H2 to 2 kHz and H3 to 1333 Hz. The bottom
-  `BAND_EDGE_TRIM_OCTAVES` (0.25 oct) is trimmed for the sweep's fade-in
-  excursion at `f1`. **The production deconvolution window cannot be used** —
-  `DECONV_PRE_GUARD_S` is 0.25 s and the H3 image leads the linear IR by
-  `L·ln 3` ≈ 1.34 s, so every image has wrapped off the front; the read
-  re-deconvolves the same bytes at `distortion.required_pre_guard_s`, leaving
-  production behaviour untouched.
-- **It validates itself twice and refuses when it cannot.** The program is
-  rebuilt from the round's banked `gain_plan_db` and must reproduce the recorded
-  `program_id`; then `analyze_program_capture` is re-run and compared on
-  whatever gate fields the sidecar carries — fail-closed, with the summary
-  printing the count actually compared. `max_residual_samples` and
-  `glitch_detected` are excluded (their estimator changed after these corpora
-  were banked); a disagreeing `glitch_detected` is read but **disclosed**.
-
----
-
 ## Committed incident replay
 
-Severed-twin needs the gitignored bank on the machine running it, so it cannot
-guard anything in CI. When an incident's defect is worth holding still, the
-other shape is a **committed, minimized fixture plus a characterization test** —
+A replay over a gitignored bank cannot guard anything in CI. When an incident's
+defect is worth holding still, the shape that can is a **committed, minimized
+fixture plus a characterization test** —
 [`tests/fixtures/crossover_v2_incident_20260810/`](../tests/fixtures/crossover_v2_incident_20260810/)
 with `tests/test_crossover_v2_incident_replay.py`, derived by
 [`scripts/derive-crossover-incident-fixture.py`](../scripts/derive-crossover-incident-fixture.py),

@@ -4,43 +4,13 @@
 
 """Immutable domain contracts for the crossover-v2 intervention loop (#2291).
 
-**What this module is for.** The v2 conductor owned measurement context,
-candidate context, prescription policy, verification semantics, and lifecycle
-in one mutable object.  On 2026-08-10 that produced a candidate whose
-crossover sections said 1,648.7 Hz while its trim/level arithmetic still read
-the session's configured 2,000 Hz, and a trim recorded as ``trim_rejected``
-that was nevertheless committed.  Both are single-source-of-truth failures, and
-both are addressed here by making the honest shape a *type* rather than a
-convention.
-
-**Dependency direction is one-way and load-bearing.** This module imports no
-``jasper.web`` and nothing from
-:mod:`jasper.active_speaker.crossover_v2_flow`; the flow imports these
-contracts, never the reverse.  That is the ``docs/extensibility.md``
-host-mediated-indirection invariant applied to a migration: the domain value
-cannot reach back into the host that produced it.
-
-**Not to be confused with**
-:mod:`jasper.active_speaker.crossover_contract`, which owns a different
-question — whether an *already applied* graph matches its declaration
-(tuning ownership, snapshot readiness, apply-transaction preconditions).  This
-module owns what a *proposed* intervention is.
-
-**Fingerprint envelope.** Every fingerprinted value here follows the shape the
-repository already uses in
-:mod:`jasper.audio_measurement.evidence_identity` — a ``_core()`` payload
-carrying ``schema_version`` and ``kind``, hashed by that module's canonical
-``json_fingerprint``.  There is deliberately no second hashing implementation:
-one canonicalizer, one digest domain.
-
-Phase 1 of #2291 introduced these types and wired
-:class:`InterventionProposal` alongside the planner; Phase 2b moved the
-prescription policy itself out of the conductor into
-:mod:`.intervention`, which builds a :class:`CandidateAcousticContext` for
-every candidate.  These types were defined and validated ahead of their
-producers — that is the point of contracts-first — and the phases that owed
-them have landed: 3b for the verification/adoption vocabulary, 3c for the
-round receipt.  Nothing here is inert.
+The honest shape as a TYPE rather than a convention, after the 2026-08-10
+defect where a candidate's sections said 1,648.7 Hz while its trim arithmetic
+read 2,000 Hz. Not :mod:`jasper.active_speaker.crossover_contract`, which owns
+whether an ALREADY APPLIED graph matches its declaration; this owns what a
+PROPOSED intervention is. Every fingerprinted value uses
+:mod:`jasper.audio_measurement.evidence_identity`'s ``_core()`` payload and
+``json_fingerprint``: one canonicalizer, one digest domain.
 """
 
 from __future__ import annotations
@@ -114,18 +84,13 @@ __all__ = [
 ]
 
 #: Bumped to 2 by decision 10 (#2600), which added the ``blend`` key to
-#: ``RoundReceipt.round_measurements``. The bump is what the receipt key-set
-#: guard's own remedy asks for: the version sat at 1 through three field
-#: additions in one week, so a reader could not tell two shapes apart by it,
-#: and the guard exists so that stops being true silently. A reader that
-#: branches on this should treat 1 as "no blend record, ever" rather than as
-#: "the blend record is absent for this round" — the two are different facts
-#: and only the version can separate them.
+#: ``RoundReceipt.round_measurements``. A reader that branches on this should
+#: treat 1 as "no blend record, ever" rather than as "the blend record is absent
+#: for this round" — different facts, and only the version separates them.
 SCHEMA_VERSION = 2
 
 #: What a banked round receipt calls itself — the discriminator a store routes
-#: on, so it is named here beside the type that emits it rather than spelled
-#: once in :meth:`RoundReceipt._core` and again at every writer.
+#: on, named beside the type that emits it.
 ROUND_RECEIPT_KIND = "jts_crossover_v2_round_receipt"
 
 
@@ -133,9 +98,8 @@ class CrossoverV2FlowError(RuntimeError):
     """The v2 session could not form a safe phase transition.
 
     Here rather than in the flow because two modules raise it and neither may
-    import the other: :mod:`.capture_plan` refuses a plan that cannot fit, and
-    the flow refuses a transition. ``angle_capture_spool.AngleRequestRefused``
-    subclasses it, which is what lets one ``except`` clause cover both.
+    import the other. ``angle_capture_spool.AngleRequestRefused`` subclasses it,
+    which is what lets one ``except`` clause cover both.
     """
 
 
@@ -143,14 +107,11 @@ class CrossoverV2ContractError(ValueError):
     """A crossover-v2 contract value is malformed, ambiguous, or inconsistent.
 
     Carries the :data:`PLAN_REFUSAL_REASONS` member a raise means, so a caller
-    turning one into a :class:`PlanRefusal` reads an attribute set at the raise
-    site instead of parsing the message. The reason is part of the contract;
-    the message is for an operator and may be reworded freely.
+    reads an attribute set at the raise site instead of parsing the message. The
+    reason is part of the contract; the message may be reworded freely.
     """
 
-    #: Overridden by the subclasses below. The generic default is honest: an
-    #: error that has not classified itself is exactly "some contract value is
-    #: invalid".
+    #: Overridden by the subclasses below; the generic default is honest.
     refusal_reason = "contract_invalid"
 
 
@@ -192,8 +153,7 @@ def _rounded(value: Any, digits: int) -> float | None:
     """``round(value, digits)`` for a real number, ``None`` for anything else.
 
     Keeps a diagnostic line's absent values as ``None`` rather than letting a
-    missing field become ``0.0`` — the same unknown-is-not-a-value rule every
-    other field on that line follows.
+    missing field become ``0.0``.
     """
     return round(float(value), digits) if isinstance(value, (int, float)) else None
 
@@ -209,23 +169,12 @@ def _text(value: Any, *, field_name: str) -> str:
 def detached_json(value: Any) -> Any:
     """One JSON-shaped value with no container shared with the caller.
 
-    Recursive on purpose. A shallow ``dict(value)`` detaches only the top
-    level, so a caller holding the *nested* dict it passed in could still
-    mutate a "frozen" proposal after construction — and the fingerprint, taken
-    once at construction, would no longer describe the object a reader sees.
-    That divergence is the exact failure mode these contracts exist to prevent,
-    one level down (#2307 gate note N1).
-
-    Leaves are returned as they are: this normalizes *containers*, not values,
-    so a numpy scalar or a small dataclass passes through untouched.
-
-    A copied list stays a ``list`` rather than becoming a tuple, and that is a
-    requirement rather than a preference: the shared fingerprinter's
-    ``_freeze_json`` admits ``type(value) is list`` exactly and refuses a tuple
-    as a non-JSON value. Detaching therefore changes no type the digest sees,
-    so no existing fingerprint moves. The copy is fresh, which is the whole
-    property — the caller holds no reference to any container inside the
-    result, so nothing it does afterwards can reach in.
+    Recursive on purpose: a shallow ``dict(value)`` detaches only the top level,
+    so a caller holding a NESTED dict it passed in could still mutate a frozen
+    proposal after its fingerprint was taken (#2307 gate note N1). Leaves are
+    returned as they are — this normalizes containers, not values. A copied list
+    stays a ``list`` because the shared fingerprinter's ``_freeze_json`` admits
+    ``type(value) is list`` exactly and refuses a tuple, so no digest moves.
     """
 
     if isinstance(value, Mapping):
@@ -240,9 +189,8 @@ def detached_json(value: Any) -> Any:
 def _json_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
     """A defensive DEEP copy of one JSON-shaped mapping, or ``{}`` for ``None``.
 
-    The copy matters, and its depth matters: a frozen dataclass holding a
-    caller's live dict — at any level — is immutable in name only. See
-    :func:`detached_json`.
+    The depth matters: a frozen dataclass holding a caller's live dict at any
+    level is immutable in name only. See :func:`detached_json`.
     """
 
     if value is None:
@@ -277,15 +225,11 @@ def _trim_map(value: Any, *, field_name: str) -> dict[str, float] | None:
 class ResponseCurve:
     """One magnitude response as exact, finite, fingerprintable points.
 
-    The planner's curves arrive as a ``(freqs_hz, db)`` pair of numpy arrays.
-    They are normalized to plain float tuples here for three reasons: a numpy
-    array is mutable (so a frozen dataclass holding one is not really frozen),
-    it is not JSON-canonicalizable by the shared fingerprinter, and a non-finite
-    bin must be refused rather than silently hashed.
-
-    Values are stored exactly — no rounding.  Rounding would be a precision
-    *policy*, and this module owns no policy; a fingerprint that changes when a
-    committed number changes is the whole contract.
+    The planner's ``(freqs_hz, db)`` numpy arrays are normalized to plain float
+    tuples: an array is mutable, is not JSON-canonicalizable by the shared
+    fingerprinter, and a non-finite bin must be refused rather than hashed.
+    Values are stored exactly — rounding would be a precision POLICY, and this
+    module owns none.
     """
 
     hz: tuple[float, ...]
@@ -336,28 +280,16 @@ def _curve_json(curve: "ResponseCurve | None") -> Any:
 class CandidateAcousticContext:
     """One candidate preset's crossover corner and the sections that realize it.
 
-    **This type exists to make the 2026-08-10 dual-Fc defect impossible.** The
-    planner used to receive candidate sections cornered at 1,648.7 Hz while
-    continuing to read the session's configured ``self._fc_hz`` (2,000 Hz) for
-    the overlap band, the straddle decision, the ripple trim solve, and the
-    realized branch-level match.  A context owns the corner *and* the sections
-    together, so there is nothing else to consult: a planner holding one of
-    these cannot ask a second question about which crossover it is planning.
+    A context owns the corner AND the sections together, so a planner holding
+    one cannot ask a second question about which crossover it is planning — the
+    2026-08-10 dual-Fc defect, made impossible.
 
-    Agreement is checked at construction and is **exact**, not toleranced.
-    :data:`jasper.active_speaker._common.REGION_FC_MATCH_TOLERANCE_HZ` exists for
-    a different question — comparing a corner that has round-tripped through
-    persisted JSON against a declaration — and its own comment says it "must
-    never bridge a real crossover setting change".  These sections are built
-    in-process from a single float (``dataclasses.replace(section,
-    fc_hz=float(fc_hz))``), so any inequality at all is a real disagreement.
-
-    A role with no sections is legitimate and preserved: per
-    :func:`jasper.active_speaker.branch_chain.sections_by_role`, a driver with
-    no crossover region runs full range in the emitted graph.  The invariant is
-    that every section which *exists* names this context's corner — not that
-    every role has one.  At least one section must exist overall, because a
-    context with no crossover anywhere describes no crossover.
+    Agreement is checked at construction and is EXACT, not toleranced: these
+    sections are built in-process from a single float, so any inequality is a
+    real disagreement (``REGION_FC_MATCH_TOLERANCE_HZ`` answers a different
+    question, about a corner round-tripped through persisted JSON). A role with
+    no sections is legitimate and preserved — a driver with no crossover region
+    runs full range — but at least one section must exist overall.
     """
 
     fc_hz: float
@@ -389,9 +321,8 @@ class CandidateAcousticContext:
                     raise CrossoverV2ContractError(
                         f"sections for role {name!r} must be CrossoverSection values"
                     )
-                # The invariant, in both directions: a section cornered
-                # anywhere other than this context's Fc is the mixed-Fc defect,
-                # and it fails closed rather than being silently re-cornered.
+                # A section cornered anywhere other than this context's Fc is
+                # the mixed-Fc defect; it fails closed, never re-cornered.
                 if float(section.fc_hz) != corner:
                     raise CandidateFcDisagreementError(
                         "candidate section Fc "
@@ -417,10 +348,9 @@ class CandidateAcousticContext:
     ) -> "CandidateAcousticContext":
         """Derive the corner from the sections themselves — the safest entry.
 
-        A caller that already holds one candidate's sections has no reason to
-        also carry an Fc, and carrying one is exactly how a session corner
-        reaches candidate planning.  The sections must be unanimous; a split
-        set has no single corner and fails closed.
+        A caller holding one candidate's sections has no reason to also carry an
+        Fc, and carrying one is how a session corner reaches candidate planning.
+        The sections must be unanimous; a split set fails closed.
         """
 
         corners = {
@@ -449,9 +379,8 @@ class CandidateAcousticContext:
         """The context a candidate of this SHAPE is planned and proposed at.
 
         ``None`` for the one shape that legitimately has no corner: a 1-way
-        main. Every other shape still fails closed on an empty section set, as
-        :meth:`from_sections` refuses. THE one derivation, asked by both the
-        planner and the proposal assembler.
+        main. THE one derivation, asked by both the planner and the proposal
+        assembler.
         """
 
         if len(roles) == 1 and not any(sections_by_role.values()):
@@ -498,46 +427,19 @@ class CandidateAcousticContext:
 class TrimStrategy(str, Enum):
     """Which inter-driver trim pair the planner committed, and why.
 
-    **The vocabulary this replaces was actively misleading.** The retired
-    fitter recorded ``linearization_outcome =
-    "trim_rejected" if wild else "fitted"``, where ``wild`` meant only that the
-    ripple scan drifted more than
-    ``LINEARIZATION_TRIM_SANITY_MARGIN_DB`` (6 dB) from the level-preserving
-    anchor.  Which pair was *committed* was decided separately and immediately
-    afterwards, by whichever pair realized the better inter-driver level.  On
-    2026-08-10 those two facts pointed opposite ways: the artifact said
-    ``trim_rejected`` and the −13.013 dB resolved trim was committed anyway.
-    The word "rejected" described a drift observation, not an outcome.
+    Every member names WHAT WAS COMMITTED; drift is a qualifier on a commitment,
+    never a substitute for one. The retired vocabulary recorded
+    ``trim_rejected`` for a drift observation while the drifted pair was
+    committed anyway — the 2026-08-10 defect.
 
-    Every member below therefore names **what was committed**.  Drift is a
-    qualifier on a commitment, never a substitute for one.
-
-    Reachability.  The planner returns the winning pair as data since #2291
-    Phase 2b, so a LIVE plan carries one of the precise members;
-    :attr:`RESOLVED_COMMITTED_AFTER_SANITY_DRIFT` is the one exception and is
-    unreachable from the live path (see its own doc).
-
-    :attr:`COMMITTED_PAIR_UNRECORDED` is the *artifact-derived* member: the
-    proposal assembled at the commit seam
-    (:func:`~.proposal.trim_strategy_for_outcome`, restored by #2392) reads the
-    ``linearization_outcome`` string the build stamped onto the candidate,
-    because that is the one trim fact the committing walk certainly holds — see
-    that function for why it holds no other — and the string does not record
-    which pair won the realized-level grading.  It states that evidence gap
-    rather than guessing a precise member.
-
-    It had a second, drift-qualified sibling until #2392 — the issue #2291
-    Phase 5c-iii left the question to — and that member is deleted rather than
-    restored, because the drift case turned out not to need one:
-    :attr:`~.plan_assembly.TrimDecision.outcome` is ``"trim_rejected"`` if and
-    only if :attr:`~.plan_assembly.TrimDecision.beyond_sanity_margin`, and
-    :func:`~.intervention.decide_trim` commits the anchor on exactly that
-    branch, so the string determines
-    :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely.  An "unrecorded"
-    name for a fact the artifact does record would understate the evidence.
-    ``test_the_unrecorded_drift_member_is_gone_and_referenced_nowhere`` keeps
-    the name itself out of the tree, which is why it is described here rather
-    than spelled.
+    :attr:`COMMITTED_PAIR_UNRECORDED` is the artifact-derived member: the
+    proposal assembled at the commit seam reads the ``linearization_outcome``
+    string the build stamped on the candidate, which does not record which pair
+    won the realized-level grading, so it states that gap rather than guessing.
+    It has no drift-qualified sibling: the string determines
+    :attr:`ANCHORED_COMMITTED_AFTER_SANITY_DRIFT` precisely, and
+    ``tests/test_crossover_v2_proposal.py::test_the_unrecorded_drift_member_is_gone_and_referenced_nowhere``
+    keeps that name out of the tree.
     """
 
     NOT_FITTED = "not_fitted"
@@ -552,24 +454,17 @@ class TrimStrategy(str, Enum):
     ANCHORED_COMMITTED_AFTER_SANITY_DRIFT = "anchored_committed_after_sanity_drift"
     """The scan drifted beyond the margin and the anchor was committed instead.
 
-    This is the only genuine fallback, and the only case an older reader would
-    have been right to call a rejection.
+    The only genuine fallback, and the only case an older reader would have been
+    right to call a rejection.
     """
 
     RESOLVED_COMMITTED_AFTER_SANITY_DRIFT = "resolved_committed_after_sanity_drift"
     """The scan drifted beyond the margin and was committed anyway.
 
-    **Historical.** This is the 2026-08-10 jts3 case, and it was legal under
-    the level-graded policy that shipped it — a drifted scan committed whenever
-    it levelled better, while the candidate recorded
-    ``linearization_outcome="trim_rejected"``.  #2291 Phase 2b deleted that
-    policy: the planner commits the anchor beyond the margin, so nothing in the
-    live path can produce this member any more.
-
-    It is RETAINED, not removed, because it is the honest name for what
-    already-persisted artifacts describe — a reader classifying the incident's
-    own candidate needs a member that says what happened.  Whatever else is
-    true of it, it must never be recorded under a name containing "rejected".
+    Unreachable from the live path: the planner commits the anchor beyond the
+    margin. RETAINED because it is the honest name for what already-persisted
+    artifacts describe, and whatever else is true of it, it must never be
+    recorded under a name containing "rejected".
     """
 
     COMMITTED_PAIR_UNRECORDED = "committed_pair_unrecorded"
@@ -585,8 +480,8 @@ class TrimStrategy(str, Enum):
 
 #: :attr:`~.plan_assembly.LinearizationPlan.outcome` for a round whose speaker
 #: has ONE branch. A sibling of ``"fitted"`` rather than that value, which maps
-#: to :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` and would claim a
-#: committed trim pair for a speaker that solved none.
+#: to :attr:`TrimStrategy.COMMITTED_PAIR_UNRECORDED` and would claim a committed
+#: trim pair for a speaker that solved none.
 LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
 
@@ -599,17 +494,12 @@ LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 class InterventionProposal:
     """One complete, fingerprinted prescription: everything committed, together.
 
-    The field list is #2291's, and the fields that are empty today are empty
-    *honestly* rather than absent — an intervention whose anchored/alternative
-    trim evidence or pre-apply predicted spec cannot be stated is exactly the
-    thing the incident review could not reconstruct, and a contract that
-    quietly omits them would hide the same gap again.  Each such field names
-    the phase that fills it.
-
-    :attr:`fingerprint` covers every committed value below, so any change to
-    the candidate, the crossover corner, a section, a trim, a filter, a
-    predicted curve, a spec report, or an evidence identity produces a
-    different digest.
+    Fields that are empty are empty HONESTLY rather than absent — an
+    intervention whose trim evidence or pre-apply predicted spec cannot be
+    stated is exactly what the incident review could not reconstruct.
+    :attr:`fingerprint` covers every committed value below, so any change to the
+    candidate, corner, section, trim, filter, curve, spec report or evidence
+    identity produces a different digest.
     """
 
     candidate: Any
@@ -821,10 +711,10 @@ PLAN_REFUSAL_REASONS = frozenset(
 class PlanRefusal:
     """The planner declined to produce a proposal, by a named reason.
 
-    A refusal is a *result*, never an exception escaping into the caller's
-    path, so the reason survives into logs and (from Phase 4) the household
-    surface.  ``reason`` is drawn from the closed
-    :data:`PLAN_REFUSAL_REASONS` set; ``detail`` is free text for an operator.
+    A refusal is a RESULT, never an exception escaping into the caller's path,
+    so the reason survives into logs and the household surface. ``reason`` is
+    drawn from the closed :data:`PLAN_REFUSAL_REASONS` set; ``detail`` is free
+    text for an operator.
     """
 
     reason: str
@@ -897,17 +787,13 @@ class SpecStatus(str, Enum):
 class VerificationResult:
     """Four independent verification answers, never collapsed into one verdict.
 
-    Keeping these separate is the whole point (#1868): on 2026-08-10 VERIFY
-    tracked the model to within 1.291 dB while the absolute crossover check
-    failed by +5.456 dB, and the run still read as passed.  A realization pass
-    must not be able to overwrite a benefit regression or a spec failure, and
-    "we do not know" must have somewhere to live — hence
-    :attr:`BenefitStatus.INDETERMINATE` and
-    :attr:`SpecStatus.UNEVALUABLE` rather than a default of success.
-
-    Consumed since #2291 Phase 3b, which computes the four statuses
-    independently and feeds them to :class:`AdoptionDecision`; Phase 1 fixed
-    the vocabulary and the invariants this rests on.
+    Keeping them separate is the point (#1868): on 2026-08-10 VERIFY tracked the
+    model to within 1.291 dB while the absolute crossover check failed by
+    +5.456 dB, and the run still read as passed. A realization pass must not be
+    able to overwrite a benefit regression or a spec failure, and "we do not
+    know" must have somewhere to live — hence
+    :attr:`BenefitStatus.INDETERMINATE` and :attr:`SpecStatus.UNEVALUABLE`
+    rather than a default of success.
     """
 
     capture_validity: CaptureValidity
@@ -935,9 +821,8 @@ class VerificationResult:
                 raise CrossoverV2ContractError(f"{name} must be a {kind.__name__}")
         if not isinstance(reason, str):
             raise CrossoverV2ContractError("reason must be a string")
-        # An unusable capture cannot have produced a graded answer: claiming
-        # one would be the "passed because the model matched" failure wearing a
-        # different hat.
+        # An unusable capture cannot have produced a graded answer: claiming one
+        # would be the "passed because the model matched" failure in a new hat.
         if capture_validity is CaptureValidity.UNUSABLE:
             if realization is not RealizationStatus.UNAVAILABLE:
                 raise CrossoverV2ContractError(
@@ -976,16 +861,11 @@ class VerificationResult:
 class EvidenceTrust(str, Enum):
     """Could this round measure the state it applied? (#2537)
 
-    The first of the adoption table's four axes. Safety and quality are both
-    read off measurements, so a round that could not measure has little for
-    them to read — but this does NOT gate them: safety is evaluated first and
-    checked first, precisely so a hazard visible in a bad capture is named as a
-    hazard rather than as an absence.
-
-    :attr:`UNTRUSTED` is the honest word for "no usable evidence", and it is
-    what the owner's own ruling turns on — *an unmeasured applied state cannot
-    be the least bad MEASURED tune*, so it comes off. It is deliberately not
-    called "failed": nothing about the correction is being asserted.
+    The first of the adoption table's four axes. It does NOT gate the others:
+    safety is evaluated and checked first, so a hazard visible in a bad capture
+    is named as a hazard rather than as an absence. :attr:`UNTRUSTED` is the
+    honest word for "no usable evidence" — deliberately not "failed", since
+    nothing about the correction is being asserted.
     """
 
     TRUSTED = "trusted"
@@ -997,8 +877,8 @@ class SafetyStatus(str, Enum):
 
     The adoption table's hard-stop axis, and the ONLY one that can pull a
     measured graph off for something other than the absence of evidence.
-    **Direction is the whole discriminator**: quieter than declared is a
-    quality signal to learn from, louder than declared is a hazard.
+    Direction is the discriminator: quieter than declared is a quality signal,
+    louder than declared is a hazard.
     """
 
     SAFE = "safe"
@@ -1008,17 +888,12 @@ class SafetyStatus(str, Enum):
 class QualityStatus(str, Enum):
     """How good is the measured result, once it is trusted and safe? (#2537)
 
-    Three-valued, and the third value is why: :attr:`MISSED` and
-    :attr:`REGRESSED` are not the same answer.
-
-    * :attr:`MISSED` — the round did not hit its target, and no better MEASURED
-      state is known. Keeping it is the least-bad measured tune, and the misses
-      become the next round's targets.
-    * :attr:`REGRESSED` — a better measured state IS known: the entry baseline
-      measured flatter than the applied graph, past the margin. That is the one
-      case where going back returns to a state this round itself measured, so
-      the owner's "reverting to an unknown measured state seems dumb" does not
-      cover it — the previous state is not unknown, it is the evidence.
+    Three-valued because :attr:`MISSED` and :attr:`REGRESSED` are not the same
+    answer. MISSED: the round did not hit its target and no better MEASURED
+    state is known, so keeping it is the least-bad measured tune and the misses
+    become the next round's targets. REGRESSED: the entry baseline measured
+    flatter than the applied graph, past the margin, so going back returns to a
+    state this round itself measured.
     """
 
     PASSED = "passed"
@@ -1029,33 +904,21 @@ class QualityStatus(str, Enum):
 class IterationHeadroom(str, Enum):
     """Is a flatter, more level result still plausibly reachable? (#2602)
 
-    The adoption table's FOURTH axis, and the owner's ruling it exists for:
-    *in-tolerance is not done*. Before it, :attr:`QualityStatus.PASSED` was
-    terminal — a round that realized its prediction and measured flatter ended
-    the series, whatever was left on the table. The round-3 review of
-    2026-08-16 is what that costs: a result inside every spec band, whose
-    tweeter was "largely in range but still not flat", and whose 250-2000 Hz
-    sat **2.37 dB above** 8000-16000 Hz — a tilt no reference choice moves.
+    The adoption table's FOURTH axis, for the owner's ruling that IN-TOLERANCE
+    IS NOT DONE: before it, :attr:`QualityStatus.PASSED` was terminal, and the
+    2026-08-16 round-3 review measured a result inside every spec band whose
+    250-2000 Hz sat 2.37 dB above 8000-16000 Hz.
 
     Two graded objectives, both read off the post-apply spec report and both
-    frame-invariant, which is what lets them be compared across rounds at all:
+    frame-invariant, which is what lets them be compared across rounds:
+    within-band flatness (the worst ``BandResult.max_ripple_db``) and
+    between-band level alignment (``flat_spec.spec_band_tilt``). They are the
+    exact orthogonal decomposition of a band's total deviation
+    (``max_deviation_db = level_deviation_db + max_ripple_db``), so the pair
+    covers the whole miss without double-counting.
 
-    * **within-band flatness** — the worst
-      :attr:`~jasper.active_speaker.flat_spec.BandResult.max_ripple_db`, each
-      band's own deviation from its OWN level.
-    * **between-band level alignment** — the largest step between two bands'
-      levels, :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`.
-
-    Those two are the exact orthogonal decomposition of a band's total
-    deviation (``max_deviation_db = level_deviation_db + max_ripple_db``, the
-    identity :class:`~jasper.active_speaker.flat_spec.BandResult` states), so
-    the pair covers the whole miss without either half double-counting the
-    other.
-
-    :attr:`EXHAUSTED` is the fail-closed answer, deliberately: an unreadable or
-    ungradable report cannot show that anything is reachable, and the honest
-    response to "we cannot tell" is to stop the series rather than to spend a
-    household's evening on rounds nothing is steering.
+    :attr:`EXHAUSTED` is the fail-closed answer: an unreadable report cannot
+    show that anything is reachable.
     """
 
     REACHABLE = "reachable"
@@ -1065,17 +928,11 @@ class IterationHeadroom(str, Enum):
 class AdoptionOutcome(str, Enum):
     """What the round did with the intervention.
 
-    Names mined from the R21 accept receipt's terminal vocabulary, which
-    already learned this lesson: a status says what actually happened
-    (``accepted_not_applied`` rather than ``applied``), and
-    ``recovery_required`` always travels with a typed reason.
-
-    :attr:`KEEP_FOR_ITERATION` replaced ``user_decision`` in #2537. The old
-    name described a screen nobody rendered — ``_act_on_adoption`` treated it
-    exactly like ``KEEP``, so a cell whose whole purpose was "do not claim
-    success" claimed success by silence. The new name says what the round
-    actually does with a trusted, safe, imperfect result: it keeps it, because
-    it is the best MEASURED state known, and it records what to fix next.
+    A status says what actually happened (``accepted_not_applied`` rather than
+    ``applied``), and ``recovery_required`` always travels with a typed reason —
+    the R21 accept receipt's terminal vocabulary.
+    :attr:`KEEP_FOR_ITERATION` says what the round does with a trusted, safe,
+    imperfect result: it keeps it, and records what to fix next.
     """
 
     KEEP = "keep"
@@ -1090,21 +947,14 @@ class AdoptionDecision:
 
     :attr:`AdoptionOutcome.RECOVERY_REQUIRED` is the one state that must never
     be reported as a restore: it means a restore was attempted and did not
-    complete, so the speaker is in neither the entry graph nor the intended
-    one.  Its reason is mandatory, mirroring the R21 receipt's
-    ``recovery_reason``.
+    complete, so the speaker is in neither the entry graph nor the intended one.
+    Its reason is mandatory.
 
-    ``row`` is the decision table's own stable identifier (#2537) — one of
-    :data:`ADOPTION_ROWS`.  It exists because ``outcome`` and ``reason``
-    together still cannot say *which rule fired*: two rows can share an
-    outcome (three of the seven restore, and the four that keep the graph split
-    two-and-two between ``keep`` and ``keep_for_iteration``) and a reason
-    travels from whichever
-    axis decided, so a driver chaining rounds mechanically would have to
-    re-derive the rule from the reason string.  The row is the thing that does
-    not move when a reason's wording does.
-
-    Consumed since #2291 Phase 3b, which applies the issue's adoption table.
+    ``row`` is the decision table's own stable identifier (#2537), one of
+    :data:`ADOPTION_ROWS`. ``outcome`` and ``reason`` together cannot say WHICH
+    RULE fired — two rows can share an outcome, and a reason travels from
+    whichever axis decided — and the row does not move when a reason's wording
+    does.
     """
 
     outcome: AdoptionOutcome
@@ -1151,17 +1001,10 @@ class AdoptionDecision:
 #: The adoption table's seven rows, as stable identifiers (#2537, #2602, #2656).
 #:
 #: Numbered after the owner's own ruling, which named four; row 5 is the fifth
-#: the ruling's principle *requires* and did not enumerate — see
-#: :class:`QualityStatus.REGRESSED` for why a measured regression is not a
-#: "keep for iteration".  Rows 6 and 7 are the rule working exactly
-#: as written below: a future row APPENDS, it never renumbers, so splitting the
-#: passing cell left row 1 meaning what it always meant, and splitting the
-#: missing one left row 2 meaning what it always meant.  The numbers are part
-#: of the identifier so a reader can line a receipt up against the table
-#: without a lookup.
-#:
-#: Eight identifiers for seven rows: :data:`ADOPTION_ROW_RESTORE_FAILED` is row
-#: 0 and sits OUTSIDE the table, for the reason its own comment gives.
+#: its principle requires. A future row APPENDS and never renumbers, so every
+#: existing row keeps its meaning, and the numbers are part of the identifier so
+#: a receipt lines up against the table without a lookup. Eight identifiers for
+#: seven rows: :data:`ADOPTION_ROW_RESTORE_FAILED` is row 0, outside the table.
 ADOPTION_ROW_KEEP = "row1_trusted_safe_passed"
 ADOPTION_ROW_KEEP_FOR_ITERATION = "row2_trusted_safe_missed"
 ADOPTION_ROW_RESTORE_UNSAFE = "row3_unsafe"
@@ -1169,22 +1012,15 @@ ADOPTION_ROW_RESTORE_UNTRUSTED = "row4_untrusted_evidence"
 ADOPTION_ROW_RESTORE_REGRESSION = "row5_trusted_safe_regressed"
 #: #2602's row, and the one that made the table four-axis: a round that PASSED
 #: on quality, with a flatter result still reachable. Appended rather than
-#: folded into :data:`ADOPTION_ROW_KEEP`, per the numbering rule above — row 1
-#: still means what it meant, "this round passed and the series is over", and
-#: the two now differ in the only way that matters to a household, which is
-#: whether another round is coming.
+#: folded into :data:`ADOPTION_ROW_KEEP`, which still means "this round passed
+#: and the series is over".
 ADOPTION_ROW_KEEP_ITERATING = "row6_trusted_safe_passed_reachable"
 #: #2656's row, and the mirror of row 6: a round that MISSED on quality, on a
-#: series whose round budget is spent. Row 2 means "missed, and another round
-#: is coming"; this means "missed, and that was the last one". They differ in
-#: the only way that matters to a household, which is the same way rows 1 and 6
-#: differ — whether another round is coming.
-#:
-#: NOT folded into :data:`ADOPTION_ROW_KEEP`, whose identifier says *passed*
-#: and this round did not. The OUTCOME is the same ``keep`` — the measured
-#: graph stays live, exactly as it does on row 2, because it is still the
-#: best measured state known — and this row is what stops that keep from
-#: reading as a pass on a receipt, a journal line, or a screen.
+#: series whose round budget is spent. Row 2 means "missed, and another round is
+#: coming"; this means "missed, and that was the last one". NOT folded into
+#: :data:`ADOPTION_ROW_KEEP`, whose identifier says *passed*. The OUTCOME is the
+#: same ``keep`` — the measured graph stays live — and this row is what stops
+#: that keep from reading as a pass.
 ADOPTION_ROW_KEEP_MISSED_EXHAUSTED = "row7_trusted_safe_missed_exhausted"
 #: Outside the table: a restore was attempted and did not complete, which no
 #: row describes because it is not a decision about the evidence at all.
@@ -1203,50 +1039,29 @@ ADOPTION_ROWS: frozenset[str] = frozenset({
 
 
 #: What a round records when the host cannot name the graph a capture was
-#: measured through — the honest filler for :attr:`RoundReceipt`'s two graph
-#: fingerprints and for
-#: :attr:`~jasper.active_speaker.crossover_v2.round_evidence.EntryBaseline.graph_fingerprint`.
+#: measured through — the filler for :attr:`RoundReceipt`'s two graph
+#: fingerprints and for ``round_evidence.EntryBaseline.graph_fingerprint``.
 #:
-#: The three ways that happens are all honest and none is a defect: no
-#: ``entry_graph_fingerprint`` seam is bound (every conductor unit test), the
-#: seam raised, or the speaker has no applied Layer-A profile yet (its
-#: first-ever round).  A capture that measured the speaker correctly must not be
-#: rejected because its provenance could not be named — provenance is on the
-#: record, never a gate.
-#:
-#: A NAMED sentinel rather than ``""`` because both that contract and this one
-#: require a non-empty trimmed identity on the write and the read side: an empty
-#: string would make ``from_dict`` refuse the whole record, so the round would
-#: silently lose its baseline to a missing *fingerprint*.  This word survives the
-#: round trip and says exactly what is true.
+#: The three ways it happens are all honest: no ``entry_graph_fingerprint`` seam
+#: bound, the seam raised, or the speaker has no applied Layer-A profile yet.
+#: Provenance is on the record, never a gate. A NAMED sentinel rather than ``""``
+#: because both contracts require a non-empty trimmed identity on write and
+#: read: an empty string would make ``from_dict`` refuse the whole record.
 ENTRY_GRAPH_FINGERPRINT_UNKNOWN = "unknown"
 
 
 #: What :attr:`RoundReceipt.proposal_fingerprint` identifies, as a closed word.
 #:
-#: **The field's meaning changed in #2392, and a durable record whose meaning
-#: changed silently is a record a later reader will misattribute.**
-#: Before #2392 the receipt was fed ``_tuning_attempt_id or
-#: candidate.fingerprint`` — both of which are a *candidate* fingerprint. Since
-#: #2392 it is fed :attr:`InterventionProposal.fingerprint`. The two cannot be
-#: told apart by inspection: every one of them is a 64-character SHA-256 hex
-#: digest from :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`,
-#: so "the formats are disjoint" was never available as a migration story.
-#:
-#: So the receipt SAYS which it is, and the three states are total:
-#:
-#: * key **absent** from a banked ``round_receipt.json`` — written before
-#:   #2392, therefore a candidate fingerprint.
-#: * ``"candidate"`` — written after #2392, but proposal assembly refused
-#:   (:func:`~.proposal.plan_intervention_proposal`) or the round was graded
-#:   from a state that predates the proposal, so the candidate identity is what
-#:   the round could honestly name.
-#: * ``"intervention_proposal"`` — the fingerprint of the
-#:   :class:`InterventionProposal` this round actually proposed.
-#:
-#: Closed rather than free text for :data:`PLAN_REFUSAL_REASONS`' reason: a
-#: typo'd kind on a write-once artifact is a mislabelled durable record, and
-#: failing closed at construction is the only place it can still be caught.
+#: The field's meaning changed in #2392 — before it the receipt was fed a
+#: CANDIDATE fingerprint, after it :attr:`InterventionProposal.fingerprint` —
+#: and the two cannot be told apart by inspection, since both are 64-character
+#: SHA-256 hex from ``evidence_identity.json_fingerprint``. So the receipt SAYS
+#: which it is, and the three states are total: the key ABSENT from a banked
+#: receipt means a candidate fingerprint; ``"candidate"`` means proposal
+#: assembly refused or the round was graded from a pre-proposal state;
+#: ``"intervention_proposal"`` is the proposal this round actually made.
+#: Closed rather than free text: a typo'd kind on a write-once artifact is a
+#: mislabelled durable record, catchable only at construction.
 PROPOSAL_FINGERPRINT_KINDS = frozenset({"candidate", "intervention_proposal"})
 
 
@@ -1255,21 +1070,15 @@ class RoundReceipt:
     """The immutable record one correction round leaves behind.
 
     #2291's receipt field list, bound together so a later round can treat the
-    currently active profile as its new entry graph without re-deriving
-    history.  ``restore_result`` is present only when a restore was attempted,
-    and a :attr:`AdoptionOutcome.RECOVERY_REQUIRED` adoption must carry one —
-    a recovery that cannot say what the restore did is not a receipt.
-
-    Produced since #2291 Phase 3c, by
-    :func:`~jasper.active_speaker.crossover_v2.round_evidence.build_round_receipt`,
-    and persisted as a write-once evidence-bundle artifact at
+    currently active profile as its new entry graph without re-deriving history.
+    ``restore_result`` is present only when a restore was attempted, and a
+    :attr:`AdoptionOutcome.RECOVERY_REQUIRED` adoption must carry one.
+    Persisted as a write-once evidence-bundle artifact at
     ``crossover_v2/<relay_session_id>/round_receipt.json``.
 
-    :attr:`proposal_fingerprint_kind` is REQUIRED rather than defaulted, and
-    that is the whole migration story of #2392: a receipt that cannot say what
-    its proposal fingerprint identifies is a receipt a later session will
-    misread, and a default would let a caller claim one regime by forgetting to
-    state the other.  See :data:`PROPOSAL_FINGERPRINT_KINDS`.
+    :attr:`proposal_fingerprint_kind` is REQUIRED rather than defaulted: a
+    default would let a caller claim one regime by forgetting to state the
+    other. See :data:`PROPOSAL_FINGERPRINT_KINDS`.
     """
 
     round_id: str
@@ -1284,29 +1093,20 @@ class RoundReceipt:
     adoption: AdoptionDecision
     #: The axes the adoption row was read off — trust, safety, quality, and
     #: since #2602 headroom — each as
-    #: ``{"status": ..., "reason": ..., "evidence": {...}}`` (#2537, #2602).
-    #: On the receipt rather than only in the journal because the receipt is
-    #: what the NEXT round reads: "keep, and here is what to fix" is only
-    #: actionable if the misses travel with it, and a journal line is not an
-    #: artifact a chained driver can fetch.  ``{}`` on a round graded before
-    #: this shipped, which is an absence and not "they all passed" — and a
-    #: three-key mapping is a round graded before #2602, not a headroom axis
-    #: that declined to answer.
+    #: ``{"status": ..., "reason": ..., "evidence": {...}}`` (#2537, #2602). On
+    #: the receipt because it is what the NEXT round reads. ``{}`` on a round
+    #: graded before this shipped, which is an absence and not "they all
+    #: passed"; a three-key mapping is a round graded before #2602.
     round_axes: Mapping[str, Any]
     restore_result: Mapping[str, Any]
     #: The round's own measured numbers that no verdict collapsed — the
     #: band-resolved realization the delta probe reported (#2649) and the
     #: per-position residual the post-apply cloud produced (§4.2). A THIRD
-    #: mapping beside the two above rather than keys folded into either,
-    #: because the three answer different questions and a reader has to be
-    #: able to tell them apart: ``round_axes`` is what the axes DECIDED,
-    #: ``evidence_identities`` is what the evidence WAS by name, and this is
-    #: what the round MEASURED and nothing graded. It exists because the next
-    #: bite commands from these numbers — a realization ratio per band says
-    #: where the model and the hardware disagreed, and a role-labelled
-    #: residual says whether a miss is the speaker's or the room's.
-    #: ``{}`` on a round graded before this shipped, and on one whose
-    #: instruments produced neither.
+    #: mapping rather than keys folded into either of the two above, because the
+    #: three answer different questions: ``round_axes`` is what the axes
+    #: DECIDED, ``evidence_identities`` is what the evidence WAS by name, and
+    #: this is what the round MEASURED and nothing graded. ``{}`` on a round
+    #: graded before this shipped, and on one whose instruments produced neither.
     round_measurements: Mapping[str, Any]
     evidence_identities: Mapping[str, Any]
     created_at: str
@@ -1434,58 +1234,36 @@ class RoundReceipt:
 # --------------------------------------------------------------------------- #
 
 # Total MIC POSITIONS in the pre-apply cloud, MEASURE's design-axis anchor
-# included — so the plan emits ``N − 1`` additional prompted positions after
-# MEASURE.
+# included, so the plan emits ``N − 1`` additional prompted positions after
+# MEASURE. Read that literally: the cloud carries ``N − 1`` SUMMED CURVES, not
+# N — the anchor is a per-driver MEASURE capture with no ``summed_response``.
 #
-# Read that literally: the cloud carries ``N − 1`` SUMMED CURVES, not N. The
-# anchor is a per-driver MEASURE capture, so ``_analyze_measure`` produces no
-# ``summed_response`` for it to contribute and only a modelled
-# ``predicted_sum``. The same holds for the post-apply group below, where
-# VERIFY's anchor DOES capture a summed sweep but is consumed by the tracking
-# verdict rather than joined to the group.
-#
-# 9 is chosen so that ``N − 1`` = 8 CURVES, which is what
-# docs/historical/linearization-campaign-2026-07.md fundamental 1's "N≈8–12 gated sweeps" floor
-# actually asks for (adjudication 3a, 2026-07-26: the first draft shipped 8
-# positions ⇒ 7 curves, meeting the floor in positions but not in the thing
-# that gets combined). Beyond that floor it is a WALL-CLOCK choice, not a
-# statistical optimum: S0's stability work (6-of-10 subsets,
-# docs/historical/linearization-campaign-2026-07.md "S0 executed") says more positions is
-# strictly better, and the session-length ceiling is what stops us at 9. Treat
-# it as a constant, never as a promise about accuracy.
+# 9 gives ``N − 1`` = 8 curves, the "N≈8-12 gated sweeps" floor of
+# docs/historical/linearization-campaign-2026-07.md fundamental 1. Beyond that
+# floor it is a WALL-CLOCK choice, not a statistical optimum: more positions is
+# strictly better and the session-length ceiling is what stops us at 9. Treat it
+# as a constant, never as a promise about accuracy.
 DEFAULT_CLOUD_MEASURE_POSITIONS = 9
 # VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
 # measured against the notch-excluded max (W6.7 ruling 1 —
 # `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
-# …and the key that number is compared against, which is why it lives beside
-# it. The absolute VERIFY tracking error used by both the live attempts loop
-# and the offline repeat-floor replay. Lower is better: zero is the model's
-# prediction of perfect realization, while the analyzer's value is what the
-# applied speaker actually realized.
+# …and the key that number is compared against, which is why it lives beside it:
+# the absolute VERIFY tracking error read by both the live attempts loop and the
+# offline repeat-floor replay. Lower is better.
 ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
 
-#: WHERE the two sides of #2291's before→after comparison were measured.
+#: WHERE the two sides of #2291's before→after comparison were measured — the
+#: one spot CHECK asks the household to stand the microphone on, where both the
+#: entry baseline and the post-apply VERIFY are taken. ``program_id`` equality
+#: cannot see position (a capture a metre away replays the identical program),
+#: so ``verification.MeasurementComparand`` carries this second identity and
+#: ``evaluate_benefit`` refuses a pair whose marks disagree.
 #:
-#: The mark is the one spot CHECK asks the household to stand the microphone on
-#: and MEASURE names ("this spot is the mark"), and both the entry baseline and
-#: the post-apply VERIFY are taken there. ``program_id`` equality cannot see
-#: position — a capture a metre away replays the identical program — so
-#: :class:`~jasper.active_speaker.crossover_v2.verification.MeasurementComparand`
-#: carries this second identity and
-#: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
-#: refuses a pair whose marks disagree.
-#:
-#: **One owner, deliberately.** Both sides must stamp the SAME string or every
-#: round grades
-#: :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_MARK_MISMATCH`,
-#: so the post-apply side imports this constant rather than spelling the
-#: literal a second time. It is a stable identity, not a coordinate: nothing
-#: measures where the mark physically is, and the flow makes no claim that two
-#: sessions' marks are the same place — only that within ONE round the mic did
-#: not move between the two captures, which is what the round's own
-#: choreography (baseline last in stage 1, VERIFY first in stage 2, no prompted
-#: move between them) is for.
+#: One owner, deliberately: both sides must stamp the SAME string. It is a
+#: stable identity, not a coordinate — nothing measures where the mark
+#: physically is, and no claim is made that two sessions' marks are the same
+#: place, only that within ONE round the mic did not move between the captures.
 REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 
 
@@ -1495,19 +1273,15 @@ REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 # --------------------------------------------------------------------------- #
 #
 # These live HERE rather than beside the engine's `MeasureSpec` for the reason
-# this package's own `__init__` gives for keeping its numpy-heavy modules
-# unexported: reaching a handful of string literals must not drag `numpy` and
-# the analysis stack into every importer. Read from their owning modules
-# (`spatial.POSITION_AXES`, `driver_acoustics.CAPTURE_GEOMETRIES`,
-# `program_analysis.polarity_label`) the vocabulary costs ~1,100 modules to
-# quote; declared here it costs none beyond this module, and
+# this package's `__init__` gives for keeping its numpy-heavy modules
+# unexported: quoting the vocabulary from its owning modules costs ~1,100
+# modules of import, declared here it costs none.
 # `tests/test_crossover_v2_engine_skeleton.py` pins every one of them equal to
-# its owner's spelling so the cheap copy cannot drift off the real one.
+# its owner's spelling so the cheap copy cannot drift.
 
-#: The three parameterizations of the one `measure` verb — ruling S1's
-#: "measuring is measuring" made visible in the data, and wave 4j's `kind`
-#: index column. A baseline, a candidate check and a re-measure differ by this
-#: word and by nothing else in the code that runs them.
+#: The three parameterizations of the one `measure` verb (ruling S1). A
+#: baseline, a candidate check and a re-measure differ by this word and by
+#: nothing else in the code that runs them.
 MEASURE_KIND_BASELINE = "baseline"
 MEASURE_KIND_CANDIDATE = "candidate"
 MEASURE_KIND_VERIFY = "verify"
@@ -1518,40 +1292,25 @@ MEASURE_KINDS = (
 )
 
 #: ``kind`` on the speaker's own per-take record, stamped by
-#: `record_store.BankedRecordStore.bank` as it envelopes the take. Records that
-#: do not carry it are not a take reader's input, whatever else is in the
-#: directory.
-#:
-#: Here rather than in `position_cycle` for `MEASURE_KIND_KEY`'s reason below,
-#: which is the same reason: `record_store` writes it and `record_index` reads
-#: it, so an owner either of them had to import from the other would put a
-#: cycle in the package graph to hold one string.
+#: `record_store.BankedRecordStore.bank`. Records without it are not a take
+#: reader's input, whatever else is in the directory. Here rather than in
+#: `position_cycle` because `record_store` writes it and `record_index` reads
+#: it, and an owner either had to import would put a cycle in the package graph.
 POSITION_EVIDENCE_KIND = "jts_crossover_v2_position_evidence"
 
 #: Where `bank` publishes one JSON record per accepted take, RELATIVE to the
-#: evidence store's artifacts root — the half that is the store's own namespace
-#: rather than any reader's own prefix onto it. `position_cycle` composes its
-#: untarred-bundle prefix onto this and `record_index` rescans the same files
-#: from inside the bundle, so the shared segments are spelled once.
-#:
-#: A record does not land at the relative path its writer passes:
-#: `publish_json_artifact` runs it through `_artifact_path`, which prefixes
-#: `{EVIDENCE_ROOT}/artifacts/`. Getting that wrong is not a loud failure — the
-#: glob simply matches nothing and a reader reports a walk that was never
-#: refused — which is what
-#: `test_the_glob_matches_a_record_the_REAL_store_wrote` exists for: it
-#: publishes through the real store and derives from the result, so the
-#: segments still written as literals here are pinned to the actual writer
-#: rather than to a second reading of it.
+#: evidence store's artifacts root — the store's own namespace, without any
+#: reader's prefix onto it. A record does not land at the relative path its
+#: writer passes: `publish_json_artifact` runs it through `_artifact_path`,
+#: which prefixes `{EVIDENCE_ROOT}/artifacts/`. Getting that wrong is silent —
+#: the glob matches nothing — which is what
+#: `test_the_glob_matches_a_record_the_REAL_store_wrote` exists for.
 BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
 
 #: The key a banked file carries its MEASUREMENT kind under. A record's own
-#: `kind` is its ARTIFACT kind — `position_cycle`'s readers accept a file only
-#: when that says `POSITION_EVIDENCE_KIND`, while a take selection filters by
-#: the measurement kind. Two questions, so two keys. Spelled here, with the
-#: three values it takes, because `record_store` writes it and
-#: `record_index` reads it: a second spelling in either would let the store's
-#: on-disk format and its readers drift apart.
+#: `kind` is its ARTIFACT kind, which `position_cycle`'s readers gate on, while
+#: a take selection filters by the measurement kind: two questions, two keys.
+#: Spelled here because `record_store` writes it and `record_index` reads it.
 MEASURE_KIND_KEY = "measure_kind"
 
 #: The two capture regimes. Owner: `driver_acoustics.CAPTURE_GEOMETRIES`.
@@ -1570,8 +1329,7 @@ POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)
 
 #: The driver branches a `polarity=inverted` measurement may flip. Owner:
 #: `profile.DRIVER_ROLES_BY_WAY[2]`. A polarity flip is a statement about two
-#: branches summing, so a 1-way's MeasureSpec names no inverted role and the
-#: 2-way pair stays the whole set a measurement can name.
+#: branches summing, so a 1-way's MeasureSpec names no inverted role.
 DRIVER_ROLE_WOOFER = "woofer"
 DRIVER_ROLE_TWEETER = "tweeter"
 DRIVER_ROLES = (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER)
@@ -1581,10 +1339,9 @@ POSITION_AXIS_HORIZONTAL = "horizontal"
 POSITION_AXIS_VERTICAL = "vertical"
 POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 
-#: The design axis, in `PositionGeometry`'s own spelling for it: a capture with
-#: no prompted move of its own is a design-axis capture at `0`, which is what
-#: `spatial._DESIGN_AXIS_GEOMETRY` declares. `None` is a different fact — "no
-#: side was declared" — and must never be minted here as a synonym for this.
+#: The design axis, in `PositionGeometry`'s own spelling: a capture with no
+#: prompted move of its own is a design-axis capture at `0`. `None` is a
+#: different fact — "no side was declared" — never a synonym for this.
 DESIGN_AXIS_DEG = 0
 
 #: The three states a plan §7 claim can be in; ``not_evaluated`` is first-class

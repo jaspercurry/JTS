@@ -7,27 +7,16 @@
 One spec states everything a capture of one measurement kind needs: the
 recording window, the mono/48 kHz format the analysis demands, the operator
 consent surface, and — for a session-spanning walk — the
-:class:`~jasper.capture_protocol.CapturePlan` the session follows. It is
-built by a per-kind builder (:func:`build_crossover_sweep_spec` here),
-validated strictly and loudly at the boundary, and handed to the session
-open, which re-runs :meth:`CaptureSpec.validate` before a tone can play.
+:class:`~jasper.capture_protocol.CapturePlan`. It is built by a per-kind builder
+(:func:`build_crossover_sweep_spec` here), validated strictly and loudly at the
+boundary, and re-validated at session open before a tone can play. The plan
+shape itself is owned by :mod:`jasper.capture_protocol`.
 
-The plan shape itself — :class:`~jasper.capture_protocol.CapturePlan`,
-:class:`~jasper.capture_protocol.CapturePlanEntry`,
-:class:`~jasper.capture_protocol.CaptureSpecError` and the attempt ceiling —
-is owned by :mod:`jasper.capture_protocol` and imported back here, so a
-session builder can state a plan without this module.
-
-Two boundaries are load-bearing and tested:
-
-  1. **Kind-agnostic.** ``kind`` is an open string. The schema validates every
-     other field but never enumerates kinds, so a new kind that fills the same
-     fields validates with zero schema changes.
-  2. **The consent surface is an allowlisted token vocabulary, not markup.**
-     ``theme`` carries *tokens* that a renderer maps to fixed values, never raw
-     CSS; ``screen`` is a list of known component types with escaped text. A
-     builder refuses to emit anything outside the vocabulary, so a bug never
-     ships a payload a renderer would have to reject.
+Two boundaries are load-bearing and tested: ``kind`` is an OPEN string, so a new
+kind that fills the same fields validates with zero schema changes; and the
+consent surface is an allowlisted TOKEN vocabulary, never markup — ``theme``
+carries tokens a renderer maps to fixed values, ``screen`` is a list of known
+component types with escaped text.
 """
 from __future__ import annotations
 
@@ -51,17 +40,10 @@ from jasper.capture_protocol import as_int as _as_int
 SCHEMA_VERSION = 1
 # The capture choreography a spec is stated against, independent of the JSON
 # schema above: additive fields stay schema-compatible while a choreography
-# change (setup binding, level stream, session-spanning plans) does not. Every
-# builder emits this value and a mismatch is a loud incompatibility, never a
-# negotiated downgrade.
-#
-# What this integer does NOT encode: whether a session is session-spanning.
-# That is carried by `capture_plan` presence alone (a `capture_plan` spec runs
-# the plan loop; a plan-free spec runs one capture). Do not reintroduce a
-# protocol-number test for plan-ness.
-#
-# Persisted placement proofs may carry an older value (see
-# active_speaker.capture_geometry).
+# change does not. A mismatch is a loud incompatibility, never a negotiated
+# downgrade. It does NOT encode whether a session is session-spanning — that is
+# carried by `capture_plan` presence alone. Persisted placement proofs may carry
+# an older value (see active_speaker.capture_geometry).
 CAPTURE_PROTOCOL_VERSION = 3
 
 
@@ -91,11 +73,10 @@ CALIBRATION_MODEL_KEYS = ("key", "label", "aliases")
 CLEAN_CAPTURE_POLICIES = ("refuse", "warn")
 CLOCK_DRIFT_MODES = ("ignore", "single_window", "critical")
 
-# `default_setup.calibration.mode` vocabulary: "serial" for a vendor lookup,
-# "upload" for a bring-your-own file. There is no "none" — a household record
-# is only ever written after a calibration successfully established, so the
-# hint is either present and actionable or absent entirely (`default_setup`
-# stays `None`). It describes how the ORIGINAL calibration was established.
+# `default_setup.calibration.mode` vocabulary. There is no "none": a household
+# record is only written after a calibration successfully established, so the
+# hint is either present and actionable or absent entirely. It describes how the
+# ORIGINAL calibration was established.
 DEFAULT_SETUP_CALIBRATION_MODES = ("serial", "upload")
 DEFAULT_SETUP_CALIBRATION_KEYS = (
     "mode", "model", "serial_display", "calibration_id", "resolvable",
@@ -148,8 +129,7 @@ class CaptureStimulus:
     """What the speaker plays during the capture window.
 
     ``label`` is display/telemetry only — never trusted for logic. A ``None``
-    stimulus on the spec means a passive record (no playback), e.g. a
-    noise-floor capture.
+    stimulus on the spec means a passive record (no playback).
     """
 
     played_by: str = "pi"
@@ -173,19 +153,15 @@ class CaptureValidity:
       - ``clean_capture``: ``"refuse"`` or ``"warn"`` if the capture device did
         not honor the EC/AGC/NS=false constraints.
       - ``allow_capability_fallback``: if a clean capture is impossible on this
-        device, degrade **gracefully and labeled** rather than dead-ending.
-        Pairs with ``clean_capture="refuse"`` to mean "refuse the clean path,
-        offer the labeled fallback."
-      - ``require_alignment``: the owning analysis has a hard alignment gate (a
-        weak/ambiguous result fails loud). False means alignment is absent or
-        observation-only; it must not be set speculatively before a calibrated
-        production gate exists.
+        device, degrade gracefully and LABELED rather than dead-ending.
+      - ``require_alignment``: the owning analysis has a hard alignment gate.
+        False means alignment is absent or observation-only, and it must not be
+        set before a calibrated production gate exists.
       - ``clock_drift``: per-kind handling of independent mic/playback clock
         drift. ``"ignore"`` for magnitude FR and level work; ``"single_window"``
         for timing comparisons that must stay within one recording;
-        ``"critical"`` reserved for the strictest sync paths. Deliberately
-        per-flow: a timing marker and an acoustic sweep do not share a
-        meaningful confidence scale.
+        ``"critical"`` for the strictest sync paths. Per-flow because a timing
+        marker and an acoustic sweep do not share a confidence scale.
     """
 
     clean_capture: str = "refuse"
@@ -254,15 +230,10 @@ class DefaultSetupCalibration:
     """A household's remembered measurement-mic calibration, as an OPTIONAL
     prefill hint — never binding.
 
-    Populated from ``jasper.correction.household_mic`` when a prior session on
-    this speaker established a calibration.
-
-    ``resolvable`` is a SEPARATE, freshly-checked flag from the fact that this
-    hint exists at all: ``calibration_id`` is re-resolved against the
-    calibration store at spec-build time (see
-    ``jasper.web.correction_setup._default_setup_calibration_for_spec``) and
-    the flag is set only when THAT resolves cleanly, rather than trusting that
-    an earlier resolve — used to build the hint's other fields — is still good.
+    ``resolvable`` is a SEPARATE, freshly-checked flag from the fact that the
+    hint exists: ``calibration_id`` is re-resolved against the calibration store
+    at spec-build time and the flag is set only when THAT resolves cleanly,
+    rather than trusting the earlier resolve that built the other fields.
     Defaults ``False`` and is omitted from the wire JSON in that case.
     """
 
@@ -301,17 +272,15 @@ class DefaultSetupCalibration:
         )
 
 
-# schema_version 1 is the pre-entries shape (no `entries`, byte-identical to
-# the original v3 contract); 2 is additive — per-capture heterogeneity
-# (crossover-measurement-productization-design.md §5.7). A plan's
-# schema_version and its `entries` presence are kept in strict lockstep by
-# validation (`_validate_capture_plan_entries`) so a reader never has to
+# schema_version 1 is the pre-entries shape; 2 is additive (per-capture
+# heterogeneity). A plan's schema_version and its `entries` presence are kept in
+# strict lockstep by `_validate_capture_plan_entries`, so a reader never has to
 # re-derive one from the other.
 CAPTURE_PLAN_SCHEMA_VERSIONS = (1, 2)
 CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION = 2
-# Per-entry presentation copy is OPAQUE like `presentation_variant` — the
-# schema bounds its size and value types, never its keys/vocabulary — but a
-# size ceiling keeps a spec from carrying an oversized payload.
+# Per-entry presentation copy is OPAQUE like `presentation_variant` — the schema
+# bounds its size and value types, never its keys — and this ceiling keeps a
+# spec from carrying an oversized payload.
 MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES = 4096
 
 
@@ -350,10 +319,8 @@ def ui_note(text: str) -> dict[str, str]:
 class CaptureSpec:
     """A kind-agnostic capture spec.
 
-    Build one with a per-kind builder (:func:`build_crossover_sweep_spec`),
-    serialize with ``to_dict()``, and reconstruct/validate inbound JSON with
-    ``from_dict()``. ``validate()`` is called by ``from_dict()`` and may be
-    called explicitly after a builder.
+    Build with a per-kind builder, serialize with ``to_dict()``, reconstruct and
+    validate inbound JSON with ``from_dict()``.
     """
 
     kind: str
@@ -384,39 +351,27 @@ class CaptureSpec:
     # stays on the speaker.
     position: int | None = None
     total_positions: int | None = None
-    # Optional kind-owned presentation variant. It may change consent copy only;
-    # the owning flow still controls sequencing, timeouts, and admission. The
-    # shared schema validates its shape without enumerating per-kind values.
+    # Optional kind-owned presentation variant: it may change consent copy only.
+    # The shared schema validates its shape without enumerating per-kind values.
     presentation_variant: str = ""
     acknowledgement: CaptureAcknowledgement | None = None
     # Optional per-run nonce (additive, empty for kinds that don't use it), so
     # a feed can distinguish THIS run's events from a previous run's.
     run_token: str = ""
-    # Optional household-mic prefill hint. See `DefaultSetupCalibration` —
-    # never binding.
+    # Optional household-mic prefill hint — never binding.
     default_setup_calibration: DefaultSetupCalibration | None = None
-    # Session-spanning capture plan: one session covers a driver's whole repeat
-    # SET. Presence — and ONLY presence — selects the plan loop over the
-    # single-capture path.
+    # Session-spanning capture plan. Presence — and ONLY presence — selects the
+    # plan loop over the single-capture path.
     capture_plan: CapturePlan | None = None
-    # The two clocks a household can run out of, in seconds, so a surface can
-    # say which one is running and which one expired (issue #1807). NOT a new
+    # The two clocks a household can run out of, in seconds (#1807). NOT a new
     # budget and NOT enforced here: both numbers are owned elsewhere and this
-    # field only PUBLISHES them. ``None`` renders nothing; a surface must not
-    # invent a number it was not told.
+    # field only PUBLISHES them. ``None`` renders nothing.
     time_budget: Mapping[str, int] | None = None
     # How long to wait for one capture to be answered, in seconds, minted by
-    # whichever flow knows what its own analysis costs.
-    #
-    # **A sibling of ``time_budget`` rather than a third key inside it**:
-    # ``time_budget`` is a CLOSED, all-keys-required set of the two clocks a
-    # HOUSEHOLD races and is spent on one rendered sentence, where this is a
-    # machine deadline, per-capture rather than per-session, and nameable only
-    # by the flows that run an expensive post-capture analysis. Folding it in
-    # would have made a required key of a number most kinds cannot compute.
-    #
-    # ``None`` — every kind that does not set it — means the reader keeps its
-    # own conservative floor.
+    # whichever flow knows what its own analysis costs. A sibling of
+    # ``time_budget`` rather than a third key inside it, which is a CLOSED,
+    # all-keys-required set of the two clocks a HOUSEHOLD races. ``None`` means
+    # the reader keeps its own conservative floor.
     result_wait_s: int | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
@@ -609,9 +564,8 @@ class CaptureSpec:
                 if isinstance(time_budget_raw, Mapping)
                 else None
             ),
-            # Absent stays absent: a spec that published no wait is not the
-            # same as one that published a default, and the reader's own
-            # fallback is the only honest answer for it.
+            # Absent stays absent: a spec that published no wait is not the same
+            # as one that published a default.
             result_wait_s=(
                 _as_int(data, "result_wait_s")
                 if data.get("result_wait_s") is not None
@@ -619,8 +573,7 @@ class CaptureSpec:
             ),
             # REQUIRED on the wire, with no default — a spec that states no
             # protocol is incompatible, not legacy. The dataclass field still
-            # defaults, so builders stay ergonomic; the strictness belongs on
-            # the parse boundary, not the constructor.
+            # defaults, so builders stay ergonomic.
             capture_protocol_version=_as_int(data, "capture_protocol_version"),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
@@ -644,8 +597,8 @@ class CaptureSpec:
                 f"{CAPTURE_PROTOCOL_VERSION}, "
                 f"got {self.capture_protocol_version}"
             )
-        # NB: kinds are deliberately NOT enumerated — a new kind needs no schema
-        # change. We validate the *shape*, never the *vocabulary* of kind.
+        # Kinds are deliberately NOT enumerated: validate the *shape*, never the
+        # *vocabulary* of kind.
         if self.sample_rate_hz != REQUIRED_SAMPLE_RATE_HZ:
             raise CaptureSpecError(
                 f"sample_rate_hz must be {REQUIRED_SAMPLE_RATE_HZ}, "
@@ -768,10 +721,9 @@ class CaptureSpec:
     def with_time_budget(self, *, step_s: int, session_s: int) -> CaptureSpec:
         """Return a copy publishing the two clocks this session actually runs.
 
-        Set at MINT time rather than by a spec builder, for the same reason
-        :meth:`with_return_url` is: a builder does not know which session its
-        spec ends up in, and ``session_s`` has to be the ceiling the session is
-        genuinely minted with or the quoted number is one nothing enforces.
+        Set at MINT time rather than by a spec builder: ``session_s`` has to be
+        the ceiling the session is genuinely minted with, or the quoted number is
+        one nothing enforces.
         """
         return replace(
             self, time_budget={"step_s": int(step_s), "session_s": int(session_s)}
@@ -780,19 +732,17 @@ class CaptureSpec:
     def with_result_wait(self, result_wait_s: int) -> CaptureSpec:
         """Return a copy publishing how long one capture may take to answer.
 
-        Set at MINT time by the flow that knows its own post-capture cost, for
-        the same reason :meth:`with_time_budget` is set there: a reader cannot
-        derive it, and a reader-side constant is a second copy of a number that
-        drifts the moment the analysis changes.
+        Set at MINT time by the flow that knows its own post-capture cost: a
+        reader cannot derive it, and a reader-side constant would drift the
+        moment the analysis changes.
         """
         return replace(self, result_wait_s=int(result_wait_s)).validate()
 
 
 # --- Validation helpers -------------------------------------------------------
 
-# The clocks ``CaptureSpec.time_budget`` may name. A CLOSED set, like every
-# other spec vocabulary: exactly these two are rendered, so an unknown key is
-# drift to catch here rather than a sentence nobody wrote.
+# The clocks ``CaptureSpec.time_budget`` may name. A CLOSED set: exactly these
+# two are rendered, so an unknown key is drift to catch here.
 TIME_BUDGET_KEYS = ("step_s", "session_s")
 
 
@@ -977,10 +927,7 @@ def _validate_acknowledgement(
 
 def _validate_capture_plan(capture_plan: CapturePlan | None) -> None:
     # `capture_plan` is optional and its PRESENCE is the only session-spanning
-    # signal — there is no protocol-number coupling. (Before the protocol-1/2
-    # deletion this was a biconditional with protocol 3; with one protocol both
-    # halves were vacuous, and requiring a plan would have broken every
-    # plan-free flow — room_sweep, level_ramp, sync_marker.)
+    # signal — there is no protocol-number coupling.
     if capture_plan is None:
         return
     if capture_plan.schema_version not in CAPTURE_PLAN_SCHEMA_VERSIONS:
@@ -1008,11 +955,9 @@ def _validate_capture_plan(capture_plan: CapturePlan | None) -> None:
 def _validate_capture_plan_entries(capture_plan: CapturePlan) -> None:
     """Reciprocal contract: schema_version 2 <=> entries present.
 
-    v1 payloads without entries stay exactly as strict as before this field
-    existed (``entries is None`` and ``schema_version == 1`` is the only
-    legal pre-Wave-3 shape). A plan that DOES carry entries must cover every
-    index ``0..capture_target-1`` exactly once — contiguous, unique — so the
-    session runner can always resolve "the entry for capture N" with no gaps.
+    A plan that carries entries must cover every index ``0..capture_target-1``
+    exactly once — contiguous, unique — so the session runner can always resolve
+    "the entry for capture N" with no gaps.
     """
     entries = capture_plan.entries
     if entries is None:
@@ -1124,15 +1069,12 @@ def _as_bool(data: Mapping[str, Any], key: str, *, default: bool = False) -> boo
     return value
 
 
-# Household-facing names for the commission tiers. The ids themselves
-# (``crossover_v2_flow.TIER_FULL`` / ``TIER_EXPRESS`` / ``TIER_REMOTE``) are the
-# flow's vocabulary; this is the only place they become copy, and an id with no
-# entry here contributes no line rather than leaking a raw slug onto a consent
-# screen.
-#
-# String literals rather than the flow's constants: ``crossover_v2_flow``
-# imports this module's caller, so reaching back for them would close an import
-# cycle. Kept in step with ``crossover_envelope_v2._TIER_LABELS`` by test.
+# Household-facing names for the commission tiers. The ids are the flow's
+# vocabulary; this is the only place they become copy, and an id with no entry
+# here contributes no line rather than leaking a raw slug onto a consent screen.
+# String literals rather than the flow's constants: ``crossover_v2_flow`` imports
+# this module's caller, so reaching back would close an import cycle. Kept in
+# step with ``crossover_envelope_v2._TIER_LABELS`` by test.
 _GUIDED_TIER_LABELS = {
     "full": "Full measurement",
     "express": "Quick tune",
@@ -1145,19 +1087,14 @@ def _guided_tier_step(
 ) -> str:
     """The one tier line a guided consent screen adds, or ``""``.
 
-    Both numbers are DERIVED — the capture count from the plan the household
-    is about to walk, the duration from :meth:`CapturePlan.estimated_minutes`.
-    Nothing here is hand-written, so this line can never quote a session other
-    than the one about to run.
+    Both numbers are DERIVED — the capture count from the plan the household is
+    about to walk, the duration from :meth:`CapturePlan.estimated_minutes` — so
+    this line can never quote a session other than the one about to run.
 
-    **Both numbers are THIS SESSION's, which since the two-stage split is one
-    stage of two.** The line therefore says so: an unqualified "Full
-    measurement: 10 measurements, about 8 minutes" beside a chooser that quoted
-    16 and 11 reads as a contradiction, when in fact it is the honest half. The
-    chooser (``_tier_action``) owns the whole-journey figure; this owns the
-    session in front of the household, and neither is allowed to state the
-    other's. It stays deliberately silent about WHICH stage this is, because
-    both stages render this same line.
+    Both are THIS SESSION's, which since the two-stage split is one stage of
+    two, and the line says so. The chooser (``_tier_action``) owns the
+    whole-journey figure; neither may state the other's. It stays silent about
+    WHICH stage this is, because both stages render this same line.
     """
     label = _GUIDED_TIER_LABELS.get(str(guided_tier or "").strip().lower())
     if not label or not walk or capture_plan is None:
@@ -1173,24 +1110,17 @@ def _guided_tier_step(
 def _courtesy_beeps_step(announced: tuple[int, ...], walk: int) -> str:
     """WHAT THE SPEAKER DOES, for the session in front of the household.
 
-    ``announced`` is the 1-based captures of this plan that open on the
-    courtesy prelude, derived by the caller from the plan's own index → phase
-    map (``crossover_v2_flow.announced_capture_indexes``). It is a *value*
-    rather than a rule this module re-derives, because which phases announce is
-    the measurement flow's decision and this module owns only how to say it.
+    ``announced`` is the 1-based captures of this plan that open on the courtesy
+    prelude, derived by the caller from the plan's own index → phase map. A
+    VALUE rather than a rule this module re-derives, because which phases
+    announce is the measurement flow's decision.
 
     Three shapes are stateable: every capture, the first alone, and the first
-    and the last. Shipped sessions produce the middle one (stage 2's walk); the
-    other two are the shapes a plan change reaches — the first-and-last is what
-    stage 1 renders with the lateral walk re-armed (its entry baseline plays
-    stage 2's anchor object and therefore announces too), and every-capture is
-    the pre-trim rule's own. **Anything else raises.** A consent screen that
-    cannot describe what the speaker will do must not be rendered with a
-    sentence that is nearly right — this is the exact defect the 2026-08-18 gate
-    round found, where "The first measurement has three short beeps" was shipped
-    against a stage 1 that beeps twice.
+    and the last. **Anything else raises** — a consent screen that cannot
+    describe what the speaker will do must not be rendered with a sentence that
+    is nearly right.
 
-    "has"/"tones" are load-bearing and survive from #1979 — see the call site.
+    "has"/"tones" are load-bearing (#1979) — see the call site.
     """
     if not announced or announced[0] < 1 or announced[-1] > walk:
         raise CaptureSpecError(
@@ -1243,80 +1173,53 @@ def build_crossover_sweep_spec(
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work: a clean log sweep, magnitude FR, drift-insensitive, with
-    consent copy that names the driver under test so the household measures
-    each driver in turn.
+    consent copy that names the driver under test.
 
-    ``stimulus_duration_ms`` defaults to the **kernel-side** sweep length the
-    active-crossover flow actually plays —
-    ``driver_acoustics.DEFAULT_DURATION_S`` — rather than a second, forked
-    sweep constant. The driver/summed capture sweep is written and deconvolved
-    from that one length (``web_measurement.capture_sweep_meta`` /
-    ``write_driver_sweep_wav``), and the deconvolution reference is regenerated
-    from the played ``sweep_meta``, so the spec must not advertise a different
-    duration: the recording window is sized from this. Sourcing it here keeps
-    ONE sweep definition.
+    ``stimulus_duration_ms`` defaults to the KERNEL-side sweep length the
+    active-crossover flow actually plays (``driver_acoustics.DEFAULT_DURATION_S``)
+    rather than a second, forked sweep constant. The capture sweep is written
+    and deconvolved from that one length and the deconvolution reference is
+    regenerated from the played ``sweep_meta``, so the spec must not advertise a
+    different duration: the recording window is sized from this.
 
-    ``duration_ms`` is the HARD recording deadline, and its clock starts when
-    the capture arms — before the sweep completes the speaker must load the
+    ``duration_ms`` is the HARD recording deadline, and its clock starts when the
+    capture arms — before the sweep completes the speaker must load the
     commissioning config, generate the sweep WAV, play the full sweep, release
-    the fan-in lane and roll the transient graph back. So the acoustic window
-    is **floored by ``hard_timeout_ms``**: the normal stop is the sweep
-    completing and the deadline is only the backstop, never the working margin.
+    the fan-in lane and roll the transient graph back. The acoustic window is
+    therefore FLOORED by ``hard_timeout_ms``: the normal stop is the sweep
+    completing, and the deadline is only the backstop.
 
-    ``capture_plan`` opts the spec into a session-spanning walk: one session for
-    the driver's whole repeat set. A plan requires an
+    ``capture_plan`` opts the spec into a session-spanning walk. It requires an
     ``acknowledgement_binding``, because placement gates run per capture.
 
-    ``guided_captures`` (> 0) declares that this summed session is a GUIDED
-    SPATIAL CLOUD of that many prompted CAPTURES — the count the household
-    counts down ("Measurement 4 of N"), NOT the smaller number of distinct mic
-    positions the session thinks in. ``N`` is per SESSION, so the two-stage
-    commission's two stages count separately; the shipped per-stage numbers
-    come from ``crossover_v2_flow.tier_display_info()`` and are not restated
-    here, where a plan change cannot reach them. The consent copy is written
-    against captures because that is what the household is promising about: one
-    held-still sweep each. It selects the consent surface to match — placement
-    instruction, steps, button, and acknowledgement policy/label all describe a
-    walk instead of a stationary mic — because the stationary copy makes a
-    whole-session promise ("I will not move it") that a cloud asks the
-    household to break on the very next screen. Per-sweep stillness stays
-    promised in every shape, because that one is still true. ``0`` keeps the
-    stationary copy, and that path stays reachable on purpose: the 1-entry
-    re-verify re-arm really does keep the mic still for its whole session.
+    ``guided_captures`` (> 0) declares a GUIDED SPATIAL CLOUD of that many
+    prompted CAPTURES — the count the household counts down, NOT the smaller
+    number of distinct mic positions the session thinks in — and ``N`` is per
+    SESSION, so a two-stage commission's stages count separately. It selects the
+    walk consent surface, because the stationary copy makes a whole-session
+    promise ("I will not move it") that a cloud asks the household to break on
+    the next screen. Per-sweep stillness stays promised in every shape. ``0``
+    keeps the stationary copy, which the 1-entry re-verify re-arm still earns.
 
-    ``guided_tier`` names WHICH guided instrument the household is consenting
-    to. It adds exactly one line to the consent steps — the tier and the plan's
-    own DERIVED duration (:meth:`CapturePlan.estimated_minutes`) — so a
-    household can tell a quick tune from a full measurement before the first
-    tone rather than by counting prompts afterwards. Only meaningful alongside
-    ``guided_captures``; ignored otherwise.
+    ``guided_tier`` names WHICH guided instrument is being consented to, adding
+    exactly one line (the tier plus the plan's own derived duration). Only
+    meaningful alongside ``guided_captures``; ignored otherwise.
 
     ``walk_shape`` is the ORIENTATION half of the guided consent screen: how far
     the walk reaches from the mark and that each position is prompted, in ONE
-    sentence below the steps, so a household knows the shape of the session
-    before the first tone instead of discovering it one prompt at a time.
-    Supplied by the caller that owns the plan —
-    :func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_shape`, derived
-    from the same table the per-entry screens are built from — because this
-    builder must not grow a second description of a walk it does not own.
+    sentence. Supplied by the caller that owns the plan
+    (:func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_shape`), so this
+    builder grows no second description of a walk it does not own. Deliberately
+    one sentence rather than an enumeration of every position; the per-entry
+    screens do the spoon-feeding.
 
-    Deliberately ONE sentence, not a ``Sequence[str]`` of every position: a
-    ten-item enumeration under a 73-word placement block is a wall, and a
-    household cannot act on the last prompted move while standing at the first.
-    The intent — no surprises — is kept by the sentence; the spoon-feeding is
-    the per-entry screens' job. Empty renders nothing, and like ``guided_tier``
-    it is only meaningful alongside ``guided_captures``.
+    ``reverify_lead`` is an OPT-IN first step for the 1-entry re-verify re-arm.
 
-    ``reverify_lead`` is an OPT-IN first step for the 1-entry re-verify re-arm:
-    the recovery is one sweep back at the mark, and the 2026-07-27 hardware
-    session abandoned it because no screen said so.
-
-    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
-    (``jasper.correction.household_mic``). A ``crossover_sweep`` capture has no
-    calibration-picker screen of its own, so without the hint every capture
-    logged ``crossover_v2_uncalibrated_capture`` even when the household had a
-    resolvable stored mic. It is applied silently when nothing has already been
-    chosen for the session.
+    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint. A
+    ``crossover_sweep`` capture has no calibration-picker screen of its own, so
+    without the hint every capture logged
+    ``crossover_v2_uncalibrated_capture`` even with a resolvable stored mic. It
+    is applied silently when nothing has already been chosen for the session.
     """
     if stimulus_duration_ms is None:
         # Lazy import: the kernel module pulls numpy/scipy, and the socket-
@@ -1353,10 +1256,9 @@ def build_crossover_sweep_spec(
         raise CaptureSpecError("driver capture geometry is unsupported")
     # Plan SHAPE, not plan presence, selects the summed consent copy: a guided
     # cloud asks the household to move the mic between captures, so the
-    # stationary policy's "I will not move it" promise would be false on the
-    # very first screen. ``guided_captures == 0`` (every pre-cloud caller,
-    # including the 1-entry re-verify re-arm, whose stationary promise is still
-    # TRUE) keeps the byte-identical stationary copy and policy id.
+    # stationary policy's "I will not move it" promise would be false on the very
+    # first screen. ``guided_captures == 0`` keeps the byte-identical stationary
+    # copy and policy id.
     walk = int(guided_captures or 0)
     if walk < 0:
         raise CaptureSpecError("guided_captures must not be negative")
@@ -1422,22 +1324,9 @@ def build_crossover_sweep_spec(
         steps.append(tier_line)
     if walk:
         # WHAT TO BRING, before the session rather than during it (#1941 R2).
-        # The 2026-07-30 field session reached the first prompted distance
-        # holding neither a tape measure nor a stand, because nothing had said
-        # to fetch either — expectation-setting that arrives at the moment it
-        # is needed has already failed.
-        #
-        # The tape measure is stated as the CONSEQUENCE of a fact the
-        # placement step used to carry unattached ("each one named with a
-        # distance"): a fact that motivates an action reads once and sticks,
-        # where the same fact floating in a placement paragraph reads as
-        # trivia. The stand is a RECOMMENDATION, not a requirement — the
-        # owner's ruling on #1941 Q3, and the honest shape: we cannot detect a
-        # hand-held mic, so refusing to proceed is not on the table, and the
-        # acknowledgement contract (``cloud_walk_acknowledgement_label``)
-        # deliberately does not promise one. Its "why" is one clause and is
-        # physical rather than exhortative, because "use a tripod!" without a
-        # reason is the kind of instruction a household skips.
+        # The stand is a RECOMMENDATION, not a requirement (owner ruling on #1941
+        # Q3): a hand-held mic is undetectable, so refusing to proceed is not on
+        # the table and ``cloud_walk_acknowledgement_label`` promises no stand.
         steps.append(
             "Bring a tape measure or ruler — every position is named with a "
             "distance from the mark. A stand or tripod for the microphone is "
@@ -1446,53 +1335,18 @@ def build_crossover_sweep_spec(
         )
     steps.append(placement_instruction)
     if walk:
-        # What the SPEAKER does, said before the first tone (work order D7 /
-        # issue #1804). The household has been told how long it takes, what to
-        # bring, and where to stand; this is the fourth thing an orientation
-        # screen owes them — what they are about to hear — because an
-        # unexplained burst of beeps at measurement level is the moment a
-        # first-time household stops the session.
+        # What the SPEAKER does, said before the first tone (#1804), and placed
+        # BEFORE "tap Start and stay quiet" (#1941 R1) so a household reading in
+        # order learns what the noise will be before sitting through it.
         #
-        # It sits BEFORE "tap Start and stay quiet" rather than after the
-        # whole block (#1941 R1): those seconds of silence are the seconds
-        # this sentence describes, so a household that reads in order learns
-        # what the noise will be before being asked to sit through it.
-        #
-        # Deliberately states no duration of its own: ``seconds`` is the
-        # LONGEST plan entry's whole capture window (quiet window + beeps +
-        # tone), which the step below already quotes honestly as the time to
-        # stay quiet. Reusing it here would advertise a 40-second "tone" that
-        # is nothing of the kind. "three" mirrors
-        # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT``,
-        # spelled out because a household counts beeps, and pinned by test.
-        #
-        # It says "HAS" and "TONES", and both words are load-bearing (#1979).
-        # It used to say "is … a rising tone", which was false for the two
-        # captures a household hears FIRST:
-        #
-        #   * "is" read as an exhaustive description of the whole measurement,
-        #     but CHECK opens on a 12 s room-noise window
-        #     (``program.DEFAULT_CHECK_AMBIENT_S``) BEFORE the beeps. "has"
-        #     names the elements and their order without claiming nothing
-        #     precedes them. This screen does not restate the window because
-        #     per-phase narration belongs to the live capture surface, not to
-        #     the consent screen.
-        #   * no program in the session plays exactly ONE rising tone: CHECK
-        #     plays four pilot chirps and no sweep at all, MEASURE plays two
-        #     pilots then six sweeps (2 drivers × ``MEASURE_REPEAT_COUNT``),
-        #     and a prompted cloud position plays two pilots then one sweep.
-        #     The plural is the one shape true of all three; a count here would
-        #     need three different sentences for three different phases.
-        #
-        # WHICH measurements beep is now DERIVED, not stated: since 2026-08-18
-        # the courtesy prelude announces a SESSION rather than a capture
-        # (``crossover_v2.programs.courtesy_prelude_for_phase``), so the beeps
-        # and the tones are two different populations and the caller hands this
-        # builder the first one. A hand-written "The first measurement…" was
-        # shipped and was FALSE for stage 1, whose entry baseline announces too
-        # — a consent screen that over-promises what the speaker will do is the
-        # same defect as one that under-promises it, and a sentence that cannot
-        # be checked against the plan is how either survives review.
+        # It states no duration of its own: ``seconds`` is the LONGEST plan
+        # entry's whole capture window, which the step below already quotes as
+        # the time to stay quiet. "three" mirrors
+        # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT``, spelled
+        # out because a household counts beeps, and pinned by test. "has" and
+        # "tones" are both load-bearing (#1979): CHECK opens on a room-noise
+        # window before the beeps, and no program plays exactly ONE rising tone.
+        # WHICH measurements beep is DERIVED from the plan, never hand-written.
         steps.append(
             _courtesy_beeps_step(tuple(int(i) for i in announced_captures), walk)
         )
@@ -1505,9 +1359,7 @@ def build_crossover_sweep_spec(
                 else f"Tap Start, then stay quiet for about {seconds} seconds"
             ),
             # Per-sweep stillness is true in EVERY shape — it is the
-            # whole-session promise the cloud breaks. The guided
-            # wording adds what happens between sweeps so the household
-            # is not surprised by the first move prompt.
+            # whole-session promise the cloud breaks.
             (
                 "Keep the microphone still until each sweep finishes, then "
                 "follow the on-screen prompt to move it"
@@ -1534,36 +1386,25 @@ def build_crossover_sweep_spec(
         theme=build_theme(accent=accent, font=font),
         screen=(
             # A SUMMED capture measures the speaker, not a named driver, so
-            # ``driver_label`` there is whatever the caller had to hand — the
-            # v2 cloud passed the literal "crossover" and the household read
-            # "Crossover — crossover" (flow-simplification §2.3). Name what is
-            # about to happen instead; the per-driver flows keep their label,
-            # which is genuinely informative for them.
+            # ``driver_label`` there is whatever the caller had to hand. Name
+            # what is about to happen instead; the per-driver flows keep their
+            # label, which is genuinely informative for them.
             ui_heading(
                 f"Crossover — {driver_label}" if is_driver else "Tune your speaker"
             ),
             ui_steps(steps),
             # The shape of the walk, in one sentence, between the steps and the
-            # Start button (work order D7's intent, #1941 R1's presentation).
-            # A ``note`` rather than a seventh step: it is not an instruction —
-            # nothing here is for the household to DO — and the renderer's
-            # component vocabulary is a closed allowlist, so this composes from
-            # the existing types rather than widening it.
-            #
-            # It replaced a ``ui_note`` lead plus a SECOND ``ui_steps`` list of
-            # every prompted position. Two stacked lists is the defect the
-            # owner reported: the eye cannot tell which one it is meant to act
-            # on, and the second was a walk's worth of moves the household
-            # could not act on yet. Absent for every caller that passes no
-            # shape, so no screen grows an empty section.
+            # Start button. A ``note`` rather than a seventh step: it is not an
+            # instruction, and the renderer's component vocabulary is a closed
+            # allowlist, so this composes from the existing types. Absent for
+            # every caller that passes no shape, so no screen grows an empty
+            # section.
             *((ui_note(str(walk_shape)),) if walk and walk_shape else ()),
-            # (A mic level meter does not belong here: every crossover
-            # consent screen — the v2 cloud, the legacy per-driver sweeps,
-            # and the 1-entry re-verify alike — feeds ``updateLevelMeters``
-            # only from the level-ramp protocol, so the component would
-            # never move and would read as a broken mic. The
-            # ``ui_level_meter`` BUILDER stays — the level-ramp flow still
-            # uses it.)
+            # (A mic level meter does not belong here: every crossover consent
+            # screen feeds ``updateLevelMeters`` only from the level-ramp
+            # protocol, so the component would never move and would read as a
+            # broken mic. The ``ui_level_meter`` BUILDER stays — the level-ramp
+            # flow still uses it.)
             ui_button(button_label, action="begin_capture"),
             ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the recording."),

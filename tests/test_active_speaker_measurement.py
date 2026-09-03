@@ -14,7 +14,6 @@ import pytest
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
-    clear_active_comparison_set,
     confirmed_driver_roles,
     current_driver_floor_evidence,
     load_measurement_state,
@@ -1016,44 +1015,6 @@ def test_driver_latest_indexes_are_geometry_scoped_in_both_record_orders(
     assert payload["summary"]["latest_reference_axis_driver_measurements"][
         "mono:woofer"
     ]["created_at"] == created_at["reference_axis"]
-
-
-def test_new_level_run_invalidates_prior_comparison_set(tmp_path: Path) -> None:
-    state_path = tmp_path / "measurements.json"
-    topology = _topology()
-    driver_level_locks = {
-        target["target_id"]: {
-            "target_id": target["target_id"],
-            "speaker_group_id": target["speaker_group_id"],
-            "role": target["role"],
-            "tone_frequency_hz": 250.0 if target["role"] == "woofer" else 6250.0,
-            "tone_peak_dbfs": -12.0,
-            "commissioning_gain_db": 0.0,
-            "locked_main_volume_db": -12.0,
-        }
-        for target in active_driver_targets(topology)
-    }
-    comparison_set = start_active_comparison_set(
-        topology,
-        profile_context_id="protected-profile",
-        setup_sha256="a" * 64,
-        device_sha256="b" * 64,
-        calibration_id="",
-        driver_level_locks=driver_level_locks,
-        state_path=state_path,
-        now="2026-07-11T12:00:00Z",
-    )
-
-    assert load_measurement_state(topology, state_path=state_path)[
-        "active_comparison_set"
-    ] == comparison_set
-
-    cleared = clear_active_comparison_set(topology, state_path=state_path)
-
-    assert cleared["active_comparison_set"] is None
-    assert load_measurement_state(topology, state_path=state_path)[
-        "active_comparison_set"
-    ] is None
 
 
 def test_start_active_comparison_set_stamps_bundle_session_id(

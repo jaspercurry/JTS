@@ -4,60 +4,34 @@
 
 """Read H2/H3 out of one round's banked MEASURE captures, and file the reading.
 
-The sibling of :mod:`.feature_classifier`, and deliberately the same shape: an
-OFFLINE instrument that reads captures a round already banked, writes one
-artifact into that round's own directory, and is then read by
-:func:`~.evidence_packet.build_crossover_evidence_packet`.  No Pi is touched,
-nothing is re-measured, and no capture is re-taken.
+An OFFLINE instrument, the same shape as :mod:`.feature_classifier`: it reads
+captures a round already banked, writes one artifact into that round's own
+directory, and is then read by
+:func:`~.evidence_packet.build_crossover_evidence_packet`. No Pi is touched
+and nothing is re-measured. There is no ABSOLUTE level — the corpus banks no
+SPL — so every number is "dB below the fundamental, at the drive this capture
+used", and the drive rides beside it in dBFS; the two are never published
+apart.
 
-**Why an artifact rather than a packet block that computes.**  Every JTS
-measurement sweep is Novak-synchronized, so a capture has always carried the
-speaker's harmonic distortion — the packet's own ``not_evaluated`` row has said
-so, and said that no round writes one.  Closing that row needs a writer, and the
-writer cannot be the packet: the packet reads JSON and publishes
-``privacy.raw_audio_excluded``, and it is built inside the prescription gates,
-where a per-capture re-deconvolution would turn a document read into an audio
-job.  So this module owns the audio, the packet owns the reading, and the join
-is a file — byte-identically the arrangement ``feature_classification.json``
-already has.
-
-What this cannot give is an ABSOLUTE level: the corpus banks no SPL anywhere.
-Every number here is "dB below the fundamental, at the drive this capture used",
-and the drive rides beside it in dBFS.  A distortion figure without its level
-names nothing, so the two are never published apart.
-
-The trap, and why the production window cannot be used
------------------------------------------------------
-:data:`~jasper.audio_measurement.program_analysis.DECONV_PRE_GUARD_S` is 0.25 s,
-which is right for its job.  The H3 image leads the linear IR by ``L·ln 3`` —
-about 1.34 s on a MEASURE woofer sweep.  Deconvolution is circular, so at the
-production window every harmonic image is wrapped off the front of the array.
+**The production window cannot be used.**
+:data:`~jasper.audio_measurement.program_analysis.DECONV_PRE_GUARD_S` is
+0.25 s, while the H3 image LEADS the linear IR by ``L·ln 3`` — about 1.34 s
+on a MEASURE woofer sweep. Deconvolution is circular, so at the production
+window every harmonic image is wrapped off the front of the array.
 :func:`~jasper.audio_measurement.distortion.read_segment_distortion`
 re-deconvolves the SAME capture bytes at
-:func:`~jasper.audio_measurement.distortion.required_pre_guard_s`, an
-analysis-side value for a parameter ``_deconvolve_window`` already exposes.
-Nothing production does changes.
+:func:`~jasper.audio_measurement.distortion.required_pre_guard_s`.
 
-The two gates, both of which refuse rather than report
-------------------------------------------------------
-1. **Program identity.**  The MEASURE program is REBUILT from the round's own
-   banked ``gain_plan_db`` and driver bands, and its ``program_id`` must equal
-   the id the session recorded.  That id is a SHA-256 over the full segment
-   schedule, so a match proves the reconstructed stimulus — hence every ``L``
-   the harmonic offsets derive from — is exactly the one that played.  Two
-   parameters the corpus never banked (the session volume, and the courtesy
-   prelude) are SOLVED against that same id rather than asserted; a solve a hash
-   accepts is worth more than an operator's assertion.  See
-   :func:`rebuild_measure_program`.
-2. **Analysis fidelity.**  The shipped ``analyze_program_capture`` is re-run and
-   its :data:`FIDELITY_FIELDS` compared against the sidecar's own ``diagnostic``
-   block — the analysis AS PERFORMED.  Only then is the read trusted, because it
-   rides that analysis's located anchors and clock-drift estimate.  Fail-closed:
-   a sidecar carrying NONE of the gate fields is refused (zero comparisons is
-   not a passed gate), a partial block is compared on exactly the fields it has,
-   and the count actually compared is published for every capture — on the ones
-   that PASSED as well as the ones that did not, because a capture gated on one
-   field and a capture gated on all five are not the same evidence.
+**Three gates, all of which refuse rather than report.** The MEASURE program
+is REBUILT from the round's own banked ``gain_plan_db`` and driver bands and
+must reproduce the ``program_id`` the session recorded — a SHA-256 over the
+full segment schedule, so a match proves every ``L`` the harmonic offsets
+derive from. The shipped ``analyze_program_capture`` is re-run and its
+:data:`FIDELITY_FIELDS` compared against the sidecar's own ``diagnostic``
+block, fail-closed: zero comparisons is not a passed gate, and the count
+actually compared is published for every capture. :func:`_scope_captures`
+decides which CAPTURES belong to the program, and refuses rather than
+guessing — read its docstring for the one seam it does not close.
 
 A third gate, and the one that is easiest to leave out
 ------------------------------------------------------
@@ -72,12 +46,9 @@ drive through every gate cleanly — and that residual is named in full in its
 docstring, along with the one change that retires it.  Read it before treating
 this module as all-clear.
 
-**Provenance of the method.**  This is the promotion of
-``scripts/harmonic-distortion-replay.py``, which established both gates, the
-band arithmetic, and the pooling rule against the 2026-08-17 and 2026-08-19
-corpora.  That script stays as the exploratory lab bench (it takes loose
-directories and prints a table); this module takes a banked round and files a
-document.  The math is not re-derived here — it is
+**Provenance of the method.**  Both gates, the band arithmetic and the pooling
+rule were established against the 2026-08-17 and 2026-08-19 corpora by a lab
+bench this module replaced.  The math is not re-derived here — it is
 :mod:`jasper.audio_measurement.distortion`'s, called.
 
 **One seam worth naming.**  Locating the schedule inside a capture uses
@@ -130,78 +101,60 @@ __all__ = [
 ]
 
 #: Bumped when a field changes MEANING, never for an additive widening — the
-#: rule :data:`~.evidence_packet.PACKET_SCHEMA_VERSION` keeps, for the reason it
-#: keeps it: a reader that ignores what it does not know is not misled by a new
-#: key, and bumping would invalidate every banked reading to no one's benefit.
+#: rule :data:`~.evidence_packet.PACKET_SCHEMA_VERSION` keeps: a reader that
+#: ignores what it does not know is not misled by a new key.
 HARMONICS_SCHEMA_VERSION = 1
 
 #: The artifact's own kind tag, so a file found loose says what it is.
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
 
-#: The orders read.  Not imported from
-#: :data:`~jasper.audio_measurement.distortion.DEFAULT_HARMONIC_ORDERS` even
-#: though it holds the same pair today: that constant bounds what the ANALYSIS
-#: kernel will separate, this one is the product's choice of what to publish,
-#: and a kernel that learned a 4th order should not silently widen a banked
-#: document's schema.  Ticket 1.4 names H2 and H3.
+#: The orders read. Not imported from
+#: :data:`~jasper.audio_measurement.distortion.DEFAULT_HARMONIC_ORDERS`
+#: even though it holds the same pair today: that constant bounds what the
+#: ANALYSIS kernel will separate, this one is the product's choice of what
+#: to publish.
 HARMONIC_ORDERS: tuple[int, ...] = (2, 3)
 
-#: Excitation frequencies the rows are sampled at.
-#:
-#: A fixed ladder rather than the full FFT grid, and the reason is the reader:
-#: this document is read by an LLM operator and by a human at a terminal, and a
-#: 2000-point curve per order per role is not read by either.  Roughly
-#: third-octave from 150 Hz, which is the resolution a distortion plot is
-#: conventionally read at.  Points outside a role's own band are omitted rather
-#: than published as null, so a row that exists is a row that was measured.
+#: Excitation frequencies the rows are sampled at. A fixed ladder rather than
+#: the full FFT grid, because this document is read by an LLM operator and
+#: by a human at a terminal. Roughly third-octave from 150 Hz. Points
+#: outside a role's own band are omitted rather than published as null, so
+#: a row that exists is a row that was measured.
 PROBE_FREQUENCIES_HZ: tuple[float, ...] = (
     150.0, 200.0, 300.0, 400.0, 600.0, 800.0, 1000.0,
     1500.0, 2000.0, 3000.0, 4000.0, 6000.0, 8000.0,
 )
 
-#: Session volumes tried when solving the program id.
+#: Session volumes tried when solving the program id: -40..0 dB in half-dB
+#: steps, ~80 program builds per courtesy-prelude value, and
+#: :func:`rebuild_measure_program` tries at most two.
 #:
-#: -40..0 dB in half-dB steps: ~80 program builds per courtesy-prelude value,
-#: and :func:`rebuild_measure_program` tries at most two.
-#:
-#: **This grid does NOT cover every value the flow can compose, and saying so
-#: would be false.** ``session_volume_plan.session_measurement_volume_db``
-#: returns ``min(reference, loudest_cap)`` as an UNQUANTIZED float; its
-#: reference half is ``seat_level_reference_volume_db``, which admits any finite
-#: value that is non-positive and strictly above the -60 dB emergency floor. So
-#: the true domain is the open interval (-60, 0] with no step at all, and this
-#: grid covers exactly two things: the codified -20 dB default, and a banked
-#: seat-level reference that happens to land on a half-dB. A box whose leveling
-#: step banked, say, -24.7 dB is NOT readable by this instrument — the solve
-#: fails, and :data:`PROGRAM_NOT_REPRODUCIBLE` names that cause explicitly
-#: rather than leaving the operator to infer a wrong one.
-#:
-#: Widening the grid is the wrong fix (a finer step multiplies builds and still
-#: cannot hit an arbitrary float). The durable fix is for the round to BANK its
-#: session volume, at which point the solve disappears entirely.
+#: **This grid does NOT cover every value the flow can compose.**
+#: ``session_volume_plan.session_measurement_volume_db`` returns an
+#: UNQUANTIZED float over the open interval (-60, 0], so the grid covers
+#: exactly the codified -20 dB default and a banked seat-level reference
+#: that happens to land on a half-dB. Anything else fails the solve, and
+#: :data:`PROGRAM_NOT_REPRODUCIBLE` names that cause explicitly. The
+#: durable fix is for the round to BANK its session volume.
 _DOWNSTREAM_GRID_DB: tuple[float, ...] = tuple(
     round(-40.0 + 0.5 * step, 1) for step in range(81)
 )
 
-#: Sidecar diagnostics compared against the replay.  Each is a value the banked
-#: analysis recorded about ITSELF, so a mismatch means the reconstruction reads
-#: different bytes than the session did.  Scoped to what a DISTORTION read
-#: actually rides on — the clock-drift estimate divided out of the reference,
-#: the repeat agreement that says the schedule was located consistently, and the
-#: integrity flags — rather than a longer list this instrument never consumes.
+#: Sidecar diagnostics compared against the replay. Each is a value the banked
+#: analysis recorded about ITSELF, so a mismatch means the reconstruction
+#: reads different bytes than the session did. Scoped to what a DISTORTION
+#: read rides on: the clock-drift estimate divided out of the reference,
+#: the repeat agreement, and the integrity flags.
 #:
-#: ``max_residual_samples`` and ``glitch_detected`` are deliberately ABSENT,
-#: both for one reason.  D7 (``b98e9380f``, 2026-08-18) replaced the estimator
-#: behind them; every capture banked before that commit records a value from the
-#: blunter instrument, so comparing either would report a deliberate product
-#: improvement as a broken reconstruction — the misattribution these gates exist
-#: to prevent.  A banked-vs-replay disagreement on ``glitch_detected`` is
-#: DISCLOSED per capture instead, because reading a capture the session rejected
-#: is a fact the reader is owed.
-#:
-#: ``alignment_confidence`` / ``anchor_delay_us`` are absent for a different
-#: reason: they are not deterministic across re-analyses of ONE capture, so they
-#: cannot be a fidelity signal for anything.  This read uses neither.
+#: ``max_residual_samples`` and ``glitch_detected`` are deliberately ABSENT.
+#: D7 (``b98e9380f``, 2026-08-18) replaced the estimator behind them, so
+#: every capture banked before that commit records a value from the blunter
+#: instrument and comparing either would report a deliberate product
+#: improvement as a broken reconstruction. A banked-vs-replay disagreement
+#: on ``glitch_detected`` is DISCLOSED per capture instead.
+#: ``alignment_confidence`` / ``anchor_delay_us`` are absent for a
+#: different reason: they are not deterministic across re-analyses of one
+#: capture, so they cannot be a fidelity signal for anything.
 FIDELITY_FIELDS: tuple[str, ...] = (
     "epsilon_ppm",
     "woofer_repeat_epsilon_ppm",
@@ -210,25 +163,22 @@ FIDELITY_FIELDS: tuple[str, ...] = (
     "linearity_ok",
 )
 
-#: How far a replayed fidelity field may sit from the banked one.  The banked
-#: values are rounded to 3 decimals by ``analysis_diagnostic_summary``, so this
-#: is five times the rounding grain — tight enough that a different capture
-#: cannot pass, loose enough that the rounding itself cannot fail.
+#: How far a replayed fidelity field may sit from the banked one. The banked
+#: values are rounded to 3 decimals by ``analysis_diagnostic_summary``, so
+#: this is five times the rounding grain — tight enough that a different
+#: capture cannot pass, loose enough that the rounding cannot fail.
 FIDELITY_TOLERANCE = 5e-3
 
-#: Decimal places the published dB figures carry.  One, because the pooling
-#: below is a median over sweeps whose own scatter is tenths of a dB, and a
-#: distortion ratio is read at that grain.  Digits past it would be arithmetic
-#: noise in a document that is content-fingerprinted downstream.
+#: Decimal places the published dB figures carry. One, because the pooling
+#: below is a median over sweeps whose own scatter is tenths of a dB.
+#: Digits past it would be arithmetic noise in a document that is
+#: content-fingerprinted downstream.
 _DB_DECIMALS = 1
 
 #: Decimal places for THD percent, which is a small number where the first
 #: significant digit often sits three places in.
 _PERCENT_DECIMALS = 3
 
-# --------------------------------------------------------------------------- #
-# refusals — named, because "no reading" must never arrive as an empty document
-# --------------------------------------------------------------------------- #
 
 #: The round banks no MEASURE capture this instrument can read.
 NO_ADMISSIBLE_CAPTURES = "no_admissible_captures"
@@ -242,19 +192,19 @@ STATE_UNREADABLE = "state_unreadable"
 #: Captures were found and every one of them failed a gate.
 NO_CAPTURE_PASSED_THE_GATES = "no_capture_passed_the_gates"
 
-#: No scope was supplied and the ring holds MEASURE captures this reader cannot
-#: attribute to one session — so it cannot say which of them were played
-#: through the program it rebuilt. See :func:`_scope_captures` for what reading
-#: them together would silently publish, and why neither other gate catches it.
+#: No scope was supplied and the ring holds MEASURE captures this reader
+#: cannot attribute to one session. See :func:`_scope_captures` for what
+#: reading them together would silently publish.
 RING_NOT_SCOPED_TO_ONE_SESSION = "ring_not_scoped_to_one_session"
 
 
 class HarmonicEvidenceRefused(Exception):
     """This instrument declined to produce a reading, by name.
 
-    ``reason`` is one of the module's refusal constants and ``evidence`` is what
-    it saw.  An exception rather than a partial artifact: a distortion document
-    that quietly covered half a round would be read as the round's answer.
+    ``reason`` is one of the module's refusal constants and ``evidence`` is
+    what it saw. An exception rather than a partial artifact: a distortion
+    document that quietly covered half a round would be read as the round's
+    answer.
     """
 
     def __init__(self, reason: str, evidence: Mapping[str, Any] | None = None):
@@ -291,34 +241,20 @@ def _banked_sweep_durations_s(
     #2923: a round composed since #2921 may have had either sweep FITTED to a
     declared duration limit — a continuous float no search grid can reach — so
     a round that banked the realized length (``V2ConductorSnapshot.
-    measure_sweep_durations_s``, written by :func:`~.crossover_v2_flow.
-    CrossoverV2Session.snapshot`) is read back EXACTLY here instead of
-    re-derived. ``None`` for every round banked before that field existed, and
-    the caller's existing nominal-duration reproduction is unchanged for them.
+    measure_sweep_durations_s``) is read back EXACTLY here instead of
+    re-derived. ``None`` for every round banked before that field existed.
 
     **Every VALUE's own failure mode is fail-soft: an unusable value makes
-    this return ``None``, never raise.** (A structurally unusable ``bands``
-    argument is a different question this function does not own — see
-    below.) Malformed or partial values (wrong type, non-finite,
-    non-positive, a missing role) are treated as absent — a hand-edited or
-    partially-written state file composes at nominal rather than raising, on
-    the same fail-soft rule the rest of this module reads state with.
-
-    A value that IS a positive finite float but is too short to close even
-    one cycle at f1 is caught the same way — but the ceiling checked against
-    is the band the COMPOSER will actually sweep, not the raw declared one.
-    :func:`~jasper.audio_measurement.program.build_measure_program` composes
-    over ``_intersect_band(band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)``
-    (150–23,000 Hz), so a declared upper edge at or above 24 kHz — an
-    ordinary tweeter/horn datasheet figure — clamps DOWN to 23,000 Hz before
-    Nyquist (24,000 Hz at this module's 48 kHz sample rate) ever enters the
-    question. Validating the RAW declared edge instead was the gate's #2923
-    fix-round-2 finding: a perfectly reproducible round with a real
-    datasheet-wide band failed the kernel's Nyquist check here and lost its
-    bank. This asks the SAME kernel function, about the SAME intersected
-    band the composer computes — both imported rather than restated, so
-    neither the "is this duration usable" rule nor the "what band does this
-    role actually sweep" rule can drift into a second copy of itself.
+    this return ``None``, never raise.** Malformed or partial values (wrong
+    type, non-finite, non-positive, a missing role) are treated as absent, and
+    so is a value too short to close one cycle at f1 — but the ceiling checked
+    against is the band the COMPOSER will actually sweep,
+    ``_intersect_band(band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)``
+    (150–23,000 Hz), not the raw declared one, so a datasheet-wide tweeter
+    band at or above 24 kHz clamps DOWN before Nyquist (24,000 Hz at this
+    module's 48 kHz sample rate) ever enters the question. Both the kernel
+    function and the intersection are imported rather than restated, so
+    neither rule can drift into a second copy.
     """
     raw = state.get("measure_sweep_durations_s")
     if not isinstance(raw, Mapping):
@@ -339,15 +275,12 @@ def _banked_sweep_durations_s(
             return None
         if not math.isfinite(value) or value <= 0.0:
             return None
-        # The band the composer will actually sweep over — same clamp, same
-        # constants, same function ``build_measure_program``'s own ``_band()``
-        # closure calls. Deliberately OUTSIDE the try/except below: a ``bands``
-        # argument that does not intersect the measurement window at all is
-        # not a malformed VALUE this function fails soft over — the caller's
-        # own unconditional ``RoleBand(..., FrequencyBand(*bands[role]))``
-        # already reaches this same intersection unguarded moments later on
-        # the nominal-composition path, so swallowing it here would not
-        # prevent the escape, only relocate it by one frame.
+        # The band the composer will actually sweep over — the same clamp, constants
+        # and function ``build_measure_program``'s own ``_band()`` closure calls.
+        # Deliberately OUTSIDE the try/except below: a ``bands`` argument that does
+        # not intersect the measurement window at all is not a malformed VALUE
+        # this function fails soft over, and the caller's own unconditional
+        # ``RoleBand(...)`` reaches the same intersection unguarded moments later.
         f1, f2 = _intersect_band(
             FrequencyBand(*bands[role]), MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ,
         )
@@ -380,37 +313,26 @@ def rebuild_measure_program(
 ):
     """The round's MEASURE program, verified against its banked ``program_id``.
 
-    Returns ``(program, downstream_gain_db, courtesy_prelude)``.  Raises
+    Returns ``(program, downstream_gain_db, courtesy_prelude)``. Raises
     :class:`HarmonicEvidenceRefused` when no grid point reproduces the id — a
     reconstruction that cannot prove itself must not be read, because every
     harmonic offset derives from the sweep ``L`` this program carries.
 
-    **Two unbanked parameters are solved here, not asserted.**  The session
-    volume was never banked, and neither was the courtesy prelude — whose value
-    for MEASURE *changed* when #2715 replaced the flat
-    ``COURTESY_PRELUDE_ENABLED`` global with the per-phase
-    ``courtesy_prelude_for_phase`` (``True`` before it, ``False`` after).  The
+    **Two unbanked parameters are solved here, not asserted:** the session
+    volume, and the courtesy prelude, whose MEASURE value CHANGED when #2715
+    replaced the flat ``COURTESY_PRELUDE_ENABLED`` global with the per-phase
+    ``courtesy_prelude_for_phase`` (``True`` before it, ``False`` after). The
     prelude moves the program bytes, so a corpus banked either side of that
-    commit reproduces under exactly one of the two values.  Pinning the shipped
-    rule alone would leave this instrument unable to read rounds banked before
-    that change.  The shipped rule is tried FIRST, so a current round is
-    answered by the product's own answer, and the search is safe in both
-    directions because the ``program_id`` hash is what accepts it: a wrong
-    prelude cannot match, it can only fail to.
+    commit reproduces under exactly one of the two values. The shipped rule is
+    tried FIRST, and the search is safe in both directions because the
+    ``program_id`` hash is what accepts it: a wrong prelude cannot match.
 
-    **A third parameter — the duration fit (#2921) — is READ, never solved.**
-    Unlike the session volume and the prelude, a fitted sweep's realized length
-    is a continuous float, so no grid could reach it. A round that banked it
-    (:func:`_banked_sweep_durations_s`) is composed at EXACTLY that length on
-    every attempt below, which is what lets a fitted round reproduce at all. A
-    round that did not bank it composes at nominal, exactly as before this
-    field existed — a fitted-but-unbanked round still, honestly, cannot
-    reproduce. A round that banked something but the value turned out
-    unusable falls back to the SAME nominal composition, but the refusal
-    below still says so accurately: "did not bank" and "banked something
-    unusable" are different facts about a round, and a refusal that reported
-    the second as the first would send an operator to fix a bank that was
-    never the problem.
+    **A third parameter — the duration fit (#2921) — is READ, never solved**,
+    a fitted sweep's realized length being a continuous float no grid could
+    reach. A round that banked it (:func:`_banked_sweep_durations_s`) is
+    composed at EXACTLY that length; one that did not, or that banked
+    something unusable, composes at nominal, and the refusal below keeps "did
+    not bank" and "banked something unusable" apart.
     """
     from jasper.audio_measurement.program import (
         FrequencyBand,
@@ -455,13 +377,11 @@ def rebuild_measure_program(
         RoleBand(role, index, FrequencyBand(*bands[role]))
         for index, role in enumerate(roles)
     )
-    # WHETHER the state carries a banking attempt at all, independent of
-    # whether that attempt turned out usable (:func:`_banked_sweep_durations_s`
-    # collapses both "never banked" and "banked something unusable" to the
-    # same ``None`` — the right call for COMPOSING, since either way the
-    # replay must fall back to nominal, but the WRONG call for the refusal
-    # note below, which must not tell an operator "this round did not bank"
-    # when the state file plainly shows that it did).
+    # WHETHER the state carries a banking attempt at all, independent of whether
+    # that attempt turned out usable: :func:`_banked_sweep_durations_s`
+    # collapses "never banked" and "banked something unusable" to the same
+    # ``None``, which is right for COMPOSING and wrong for the refusal note
+    # below.
     raw_banked_durations = state.get("measure_sweep_durations_s")
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
@@ -516,17 +436,12 @@ def rebuild_measure_program(
             "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
             "downstream_grid_db": [_DOWNSTREAM_GRID_DB[0], _DOWNSTREAM_GRID_DB[-1]],
             "downstream_grid_step_db": 0.5,
-            # Two booleans, not one: "was anything banked" and "was what was
-            # banked usable" are different facts, and collapsing them lost
-            # the distinction a present-but-unusable bank needs (#2923 fix
-            # round 2). A round absent from banking is (False, False); a
-            # round that banked something unusable is (True, False); a round
-            # whose bank was read and used to compose every attempt above is
-            # (True, True) — reaching THIS raise even so means the banked
-            # duration was fine and something else (gain plan, bands, or
-            # simply a ``want`` this program was never going to match) is
-            # the actual cause, exactly what the LESS-LIKELY-cause branch of
-            # ``duration_cause`` below says.
+            # Two booleans, not one: "was anything banked" and "was what was banked
+            # usable" are different facts (#2923 fix round 2). Absent from banking is
+            # (False, False); banked-something-unusable is (True, False); banked and
+            # used to compose every attempt above is (True, True) — reaching THIS
+            # raise even so means the banked duration was fine and something else is
+            # the actual cause.
             "measure_sweep_durations_banked": banked_durations_present,
             "measure_sweep_durations_usable": banked_durations is not None,
             "note": (
@@ -553,10 +468,9 @@ def _state_relay_session_id(state: Mapping[str, Any]) -> str | None:
 
     Two namespaces that look alike and are not: this is
     ``wired-dBetH8WEDOn8zCl5JMeAjQ``-shaped, while a ring sidecar stamps
-    ``79679a65c207``. Nothing banked maps between them, which is why this is
-    recorded for audit rather than compared for a refusal — see
-    :func:`_scope_captures` for the seam it makes auditable and what would
-    close it.
+    ``79679a65c207``, and nothing banked maps between them — which is why this
+    is recorded for audit rather than compared for a refusal. See
+    :func:`_scope_captures`.
     """
     value = state.get("session_id")
     return value if isinstance(value, str) and value else None
@@ -567,17 +481,13 @@ def _crossover_fc_hz(
 ) -> float:
     """The round's declared crossover corner, read from the applied-profile SSOT.
 
-    ``analyze_program_capture`` REFUSES a MEASURE capture without one
-    (``"MEASURE analysis requires priors.crossover_fc_hz"``), and the fidelity
-    gate runs that analysis, so this is a precondition rather than a nicety.
-
-    Read from :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`
-    (via :func:`~.evidence_packet._applied_profile_source`), never from the
-    flow state: what that state records about the previous apply is one apply
-    behind after any v2 apply and arbitrarily behind after an apply through a
-    door that never touches v2 state. A caller that wants a specific round's
-    corner passes that round's own banked applied-profile file, never a flow
-    state.
+    ``analyze_program_capture`` REFUSES a MEASURE capture without one, and the
+    fidelity gate runs that analysis, so this is a precondition rather than a
+    nicety. Read from
+    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`,
+    never from the flow state: what that state records about the previous
+    apply is one apply behind after any v2 apply and arbitrarily behind after
+    an apply through a door that never touches v2 state.
     """
     snapshot = (
         applied_profile.get("recomposition_snapshot")
@@ -617,20 +527,16 @@ def _crossover_fc_hz(
 def _bind_measure_captures(dumps_dir: Path) -> list[dict[str, Any]]:
     """Every MEASURE capture in the ring, bound to its sidecar by content.
 
-    Found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` and paired with the WAV
-    in the sidecar's own sibling ``wav/`` — the same rule
-    :func:`~.feature_classifier.load_round_captures` uses, so a ``--dumps`` path
-    cannot come to mean two different directories.
-
-    Sidecars are deduplicated by ``wav_sha256``: a corpus may hold several
-    re-analyses of one capture, and they are one capture, not several.
+    Found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` and paired with the
+    WAV in the sidecar's own sibling ``wav/`` — the same rule
+    :func:`~.feature_classifier.load_round_captures` uses. Sidecars are
+    deduplicated by ``wav_sha256``: several re-analyses of one capture are one
+    capture, not several.
 
     **Every capture is returned, with the session identity it banked attached,
     and NOTHING is filtered here.** Scoping is :func:`_scope_captures`'s,
-    because the honest response to a ring this reader cannot scope is a
-    REFUSAL, and a binder that silently returned fewer rows would make that
-    refusal impossible to reach — the shape that made the unscoped path
-    fail open in the first place.
+    because a binder that silently returned fewer rows would make that refusal
+    impossible to reach.
     """
     seen_sha: set[str] = set()
     bound: list[dict[str, Any]] = []
@@ -664,58 +570,35 @@ def _scope_captures(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The captures this round may be read from, and the scope that chose them.
 
-    Returns ``(captures, scope)``. Raises
-    :class:`HarmonicEvidenceRefused` rather than pooling captures whose
-    provenance this reader cannot establish.
+    Returns ``(captures, scope)``. Raises :class:`HarmonicEvidenceRefused`
+    rather than pooling captures whose provenance this reader cannot establish.
 
     **Why an unscoped ring is a refusal and not a default.** Every capture is
     read against ONE rebuilt program, and that program is where the published
     drive comes from — ``stimulus_peak_dbfs`` and ``effective_peak_dbfs`` are
-    the SEGMENT's, not the capture's. Hand a capture from a different round to
-    a program built from this round's gain plan and the drive is silently
-    wrong: measured on the shipped corpus, one capture read against a
-    neighbouring session's program reported ``-6.0 / -26.0`` where its own
-    program says ``-10.2 / -30.2`` — **4.2 dB**, on exactly the field this
-    module says must never be published apart from the ratio.
-
-    **Neither existing gate can see it, which is why this one exists.** The
-    program-identity gate proves the program matches the STATE, and both do
-    belong to this round; it says nothing about which captures were played
-    through it. The fidelity gate compares :data:`FIDELITY_FIELDS`, and every
-    one of them — clock drift, per-role repeat drift, the repeat level DELTA,
-    the linearity flag — is amplitude-invariant, so a 4.2 dB level error passes
-    all five unchanged.
-
-    So: a supplied ``session_id`` scopes to it, and an absent one is admitted
-    ONLY when the ring's MEASURE captures all carry one identity and that
-    identity is readable. The shipped corpus is the case worth naming — its
-    ring holds three distinct sessions, and reading it unscoped pooled all
-    three against one program.
+    the SEGMENT's, not the capture's. Measured on the shipped corpus, one
+    capture read against a neighbouring session's program reported
+    ``-6.0 / -26.0`` where its own program says ``-10.2 / -30.2`` — **4.2 dB**,
+    on exactly the field this module says must never be published apart from
+    the ratio. Neither other gate can see it: the program-identity gate says
+    nothing about which captures were played through the program, and every
+    :data:`FIDELITY_FIELDS` entry is amplitude-invariant. So a supplied
+    ``session_id`` scopes to it, and an absent one is admitted ONLY when the
+    ring's MEASURE captures all carry one readable identity.
 
     **What this does NOT guard, stated because it is the only unguarded seam
     left that can publish a wrong number.** The ``state`` is TRUSTED to belong
-    to the scope. Nothing here checks that the flow state the program was
+    to the scope: nothing here checks that the flow state the program was
     rebuilt from describes the same round the ``session_id`` selects, so a
-    caller passing a scope from one round and a state from another still
-    mis-attributes drive by exactly the mechanism above — and it does so
-    through every gate cleanly: 5/5 fidelity, zero refusals, and a
-    ``captures.scope`` block that looks authoritative. Reproduced on the
-    shipped corpus at scope ``79679a65c207`` with a neighbouring round's state,
-    which published ``-10.2/-30.2`` dBFS against a capture whose own program
-    says ``-6.0/-26.0``.
-
-    It is not guardable today, and the reason is specific rather than a
-    shrug: the state's own ``session_id`` is a RELAY id
-    (``wired-dBetH8WEDOn8zCl5JMeAjQ``) while the ring stamps the BUNDLE id
-    (``79679a65c207``) — different namespaces, no mapping between them in any
-    banked artifact — and the capture's ``provenance`` block, which would carry
-    the ``program_id`` that settles it outright, is empty on every sidecar in
-    both shipped corpora. **What retires this is the capture banking its own
-    program_id**; a reader could then compare it against the rebuilt one per
-    capture and refuse the mismatch, and this whole scope dance would become
-    redundant. Until then the state's relay id is at least RECORDED in the
-    artifact's ``program`` block, so a mis-scoped read is auditable after the
-    fact even though it cannot be refused at the time.
+    caller passing a scope from one round and a state from another
+    mis-attributes drive through every gate cleanly — 5/5 fidelity, zero
+    refusals, an authoritative-looking ``captures.scope`` block. It is not
+    guardable today: the state's ``session_id`` is a RELAY id while the ring
+    stamps the BUNDLE id, nothing banked maps between them, and the capture's
+    ``provenance`` block is empty on every sidecar in both shipped corpora.
+    **What retires this is the capture banking its own program_id.** Until
+    then the relay id is at least RECORDED in the artifact's ``program``
+    block, so a mis-scoped read is auditable after the fact.
     """
     if session_id is not None:
         return (
@@ -768,8 +651,8 @@ def _sign_convention(calibration_id: str) -> str:
     registry rather than pinned here.
 
     A vendor file states either the microphone's RESPONSE or a CORRECTION, and
-    the two differ by a sign. Getting it backwards moves every magnitude in the
-    read without moving one timing diagnostic, so nothing downstream would
+    the two differ by a sign. Getting it backwards moves every magnitude in
+    the read without moving one timing diagnostic, so nothing downstream would
     catch it — which is why the convention is resolved from the id the SESSION
     banked rather than from a default or a flag.
     """
@@ -789,9 +672,9 @@ def _calibration_for(captures: list[dict[str, Any]], text: str | None):
     """``(curve, description)`` for this round's captures, or ``(None, why)``.
 
     The convention comes from the FIRST bound capture's own
-    ``setup_calibration_id``, because that is the microphone the session
-    recorded using; a file parsed under the other convention would be applied
-    with its sign flipped.
+    ``setup_calibration_id``, that being the microphone the session recorded
+    using; a file parsed under the other convention would be applied with its
+    sign flipped.
     """
     if text is None:
         return None, {
@@ -846,10 +729,9 @@ def _glitch_disclosure(
 ) -> str | None:
     """A note when the bank and the replay disagree about capture integrity.
 
-    Not a gate (see :data:`FIDELITY_FIELDS`), but not nothing either: a capture
-    the session REJECTED and this read treats as clean is being included on the
-    strength of D7's re-derivation, and the reader should be told which ones
-    those are rather than discovering it from a capture count.
+    Not a gate (see :data:`FIDELITY_FIELDS`): a capture the session REJECTED
+    and this read treats as clean is being included on the strength of D7's
+    re-derivation, and the reader should be told which ones those are.
     """
     theirs, mine = banked.get("glitch_detected"), replayed.get("glitch_detected")
     if theirs is None or mine is None or bool(theirs) == bool(mine):
@@ -865,11 +747,10 @@ def _glitch_disclosure(
 def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
     """Gate one capture, then read every sweep segment's distortion.
 
-    Returns ``(readings, failures, disclosure, compared)``.  ``readings`` is
+    Returns ``(readings, failures, disclosure, compared)``. ``readings`` is
     empty when a gate failed — a capture whose analysis does not reproduce is
     not evidence about a speaker — and a sidecar carrying NONE of the gate
-    fields is refused outright rather than read ungated: zero comparisons is not
-    a passed gate.
+    fields is refused outright: zero comparisons is not a passed gate.
     """
     from jasper.audio_measurement import deconv
     from jasper.audio_measurement.distortion import read_segment_distortion
@@ -951,10 +832,8 @@ def _spread(values: Sequence[float]) -> float | None:
 
     ``None`` below two real values rather than 0.0, on the cross-seat block's
     rule: a sample standard deviation is UNDEFINED at n=1 and a zero would say
-    the repeats agreed.  ``statistics.stdev`` is used for the same two reasons
-    that block names — it RAISES at n < 2 instead of returning a silent NaN, and
-    it computes in exact arithmetic — and the ``len < 2`` guard is what stands
-    in front of it.
+    the repeats agreed. ``statistics.stdev`` RAISES at n < 2 instead of
+    returning a silent NaN, and the ``len < 2`` guard stands in front of it.
     """
     real = [value for value in values if math.isfinite(value)]
     if len(real) < 2:
@@ -979,19 +858,15 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     """One (capture, role)'s rows, pooled over that role's in-capture sweeps.
 
     **Pooling is per capture on purpose, and it is what makes the spread below
-    one kind.**  A MEASURE capture is one pose; the sweeps of one role inside it
-    are that pose's repeats, so their scatter is the RANDOM repeatability term —
-    byte-identically the statistic ``linearization_envelope.compute_sigma_curve``
-    owns and the runbook's σ table names.  Pooling across CAPTURES would mix
-    that with whatever differs between takes (pose, level, time), which is the
-    unseparated case, so this instrument does not do it: a round with two
-    MEASURE captures publishes two blocks, and a reader who wants them combined
-    can see what they are combining.
-
-    Pooling below is BY GRID INDEX, which is valid because every sweep of one
-    role shares one ``SweepMeta``, hence one FFT length and one masked grid —
-    asserted rather than assumed, because pooling by index lies silently
-    otherwise.
+    one kind.** A MEASURE capture is one pose, so the sweeps of one role
+    inside it are that pose's repeats and their scatter is the RANDOM
+    repeatability term — the statistic
+    ``linearization_envelope.compute_sigma_curve`` owns. Pooling across
+    CAPTURES would mix it with whatever differs between takes, which is the
+    unseparated case, so a round with two MEASURE captures publishes two
+    blocks. Pooling below is BY GRID INDEX, valid because every sweep of one
+    role shares one ``SweepMeta`` — asserted rather than assumed, because
+    pooling by index lies silently otherwise.
     """
     first = readings[0]
     if not all(np.array_equal(r.freqs_hz, first.freqs_hz) for r in readings):
@@ -1101,46 +976,31 @@ def read_round_harmonics(
 ) -> dict[str, Any]:
     """One round's H2/H3 reading, as the document the packet carries.
 
-    ``round_dir`` names the reading in the artifact (nothing is read from it
-    here — the captures live in the ring), ``dumps_dir`` is the ring root,
-    ``state`` is the flow state's parsed contents (its ``gain_plan_db`` and
-    ``candidate.program_id`` are what the MEASURE program is rebuilt from and
-    proved against — see ``applied_profile_path`` for where the crossover
-    corner comes from instead), and ``bands`` maps each driver role to its
+    ``round_dir`` names the reading in the artifact, ``dumps_dir`` is the ring
+    root, ``state`` is the flow state's parsed contents (its ``gain_plan_db``
+    and ``candidate.program_id`` are what the MEASURE program is rebuilt from
+    and proved against), and ``bands`` maps each driver role to its
     ``(f1, f2)``.
 
-    ``applied_profile_path`` is the applied-baseline-profile SSOT, which is
-    where the round's crossover corner is read from (see
-    :func:`_crossover_fc_hz`). Its absence, or an unreadable file, is reported
-    through :class:`HarmonicEvidenceRefused` rather than falling back to
-    anything the flow state records about a previous apply — which can be one
-    apply behind or arbitrarily behind the graph a round actually measured
-    through.
+    ``applied_profile_path`` is the applied-baseline-profile SSOT, where the
+    round's crossover corner is read from (:func:`_crossover_fc_hz`). Its
+    absence, or an unreadable file, is a refusal rather than a fallback to
+    what the flow state records about a previous apply.
 
-    ``session_id`` is the BUNDLE session id, and it is what says which of the
-    ring's captures this round's program was played through. Omitting it is NOT
-    "read everything": an unscoped ring whose captures do not all carry one
-    identity is REFUSED by name, because reading them together would publish
-    this round's drive against another round's capture — see
-    :func:`_scope_captures` for the measured size of that error and why neither
-    other gate can see it. The scope that was applied rides in the artifact.
+    ``session_id`` is the BUNDLE session id. Omitting it is NOT "read
+    everything": an unscoped ring whose captures do not all carry one
+    identity is REFUSED by name — see :func:`_scope_captures` for the
+    measured size of that error. The scope that was applied rides in the
+    artifact.
 
-    ``calibration_text`` is a vendor calibration file's CONTENTS, not a parsed
-    curve: the sign convention it must be read under depends on which
-    microphone this round's own captures recorded through, so the parse belongs
-    here where the sidecars are, not in a caller that would have to guess.
+    ``calibration_text`` is a vendor calibration file's CONTENTS, not a
+    parsed curve: the sign convention it must be read under depends on which
+    microphone this round's own captures recorded through.
 
     Raises :class:`HarmonicEvidenceRefused` rather than returning a partial
-    document.  Every capture that failed a gate is nonetheless COUNTED and its
+    document. Every capture that failed a gate is nonetheless COUNTED and its
     failures published, because a round where three of four captures failed
-    fidelity is a different round from one where all four passed, and a reader
-    given only the survivors could not tell them apart.
-
-    That promise depends on :func:`rebuild_measure_program` (called below,
-    unguarded) never leaking a bare exception for a malformed or unusable
-    banked value — see its own docstring and :func:`_banked_sweep_durations_s`
-    for the fail-soft contract this relies on (#2923 fix round: a below-one-
-    cycle banked duration used to escape as a raw ``ValueError`` instead).
+    fidelity is a different round from one where all four passed.
     """
     orders = tuple(int(order) for order in orders)
     applied_profile, profile_reason = _applied_profile_source(applied_profile_path)
@@ -1194,10 +1054,9 @@ def read_round_harmonics(
                 "failures": failures,
             })
             continue
-        # The count rides on a PASS too, not only on a refusal. A capture whose
+        # The count rides on a PASS too, not only on a refusal: a capture whose
         # sidecar carried one of the five gate fields passed a much weaker gate
-        # than one that carried all five, and published only on the refusal path
-        # those two are indistinguishable in the artifact.
+        # than one that carried all five.
         read.append({
             "wav_sha256_12": sha12,
             "fidelity_fields_compared": compared,
@@ -1234,23 +1093,17 @@ def read_round_harmonics(
             "solved_downstream_gain_db": downstream_db,
             "solved_courtesy_prelude": prelude,
             "crossover_fc_hz": round(fc_hz, 1),
-            # WHICH round's state this program was rebuilt from, in the state's
-            # own namespace. It cannot be compared against `captures.scope`
-            # (that is a BUNDLE id, this is a RELAY id, and nothing banked maps
-            # between them), so it guards nothing at read time — it is here so
-            # that the one seam `_scope_captures` cannot refuse is at least
-            # AUDITABLE afterwards: a reader who suspects a mis-scoped read can
-            # check this against the round the scope names. ``None`` when the
-            # state carries no id, which is itself the answer to "can I audit
-            # this one?".
+            # WHICH round's state this program was rebuilt from, in the state's own
+            # namespace. It cannot be compared against `captures.scope` (that is a
+            # BUNDLE id, this is a RELAY id, and nothing banked maps between them),
+            # so it guards nothing at read time — it is here so the one seam
+            # `_scope_captures` cannot refuse is at least AUDITABLE afterwards.
             "state_relay_session_id": _state_relay_session_id(state),
         },
         "captures": {
-            # WHICH captures this reading is of, and by what rule they were
-            # chosen. Published because the drive levels below come from the
-            # rebuilt program rather than from each capture, so a reader owes
-            # itself the answer to "were these all played through it?" — see
-            # `_scope_captures`.
+            # WHICH captures this reading is of, and by what rule they were chosen.
+            # Published because the drive levels below come from the rebuilt program
+            # rather than from each capture.
             "scope": scope,
             "n_read": len({block["wav_sha256_12"] for block in blocks}),
             "n_refused": len(refused),

@@ -6,93 +6,64 @@
 
 ``identify_interference_nulls(combined, band_hz=...) -> InterferenceNullReport``
 answers one question about a spatial cloud: **which dips in this speaker's
-measured response are interference nulls from a delayed copy of its own
-sound, and therefore uncorrectable by EQ?**
+measured response are interference nulls from a delayed copy of its own sound,
+and therefore uncorrectable by EQ?**
 
-Why this module exists — the blind spot it was built for. The combiner's
-power-mean-vs-median screen
+It exists because the combiner's power-mean-vs-median screen
 (:mod:`jasper.audio_measurement.spatial_combine`) flags bins where positions
-*disagree*, so it is structurally blind to a null that every position sees.
-That is not a hypothetical: on the plan's S0 session (2026-07-25) the screen
-excluded **0 of 5462 bins** in 8-16 kHz — the power-vs-median gap there
-measured **+1.27 dB** against its own >2 dB trigger — while a source-fixed
-comb sat inside that band cutting 5-7 dB nulls (docs/historical/linearization-campaign-2026-07.md,
-"S0 executed" section e.1). Position-invariance says "this is real"; it does
-not say "this is correctable". This gate is the second, orthogonal
-instrument: it asks whether a dip is a *rung of a null ladder* attributable
-to a *measured arrival*, and it is deliberately independent of the screen —
-consumers run both, plus ``geometry.locked``, and take the union.
+*disagree*, so it is structurally blind to a null every position sees. On the
+S0 session that screen excluded 0 of 5462 bins in 8-16 kHz — a +1.27 dB
+power-vs-median gap against its own >2 dB trigger — while a source-fixed comb
+sat inside that band cutting 5-7 dB nulls. Position-invariance says "this is
+real"; it does not say "this is correctable". The two instruments are
+deliberately independent: consumers run both, plus ``geometry.locked``, and
+take the union.
 
 The method, and the two independent instruments it insists agree:
 
-1. **Candidate arrival** — the cloud's per-position echo diagnostics,
-   admitted by :func:`~jasper.audio_measurement.spatial_combine.usable_echo_estimates`
-   and clustered by the same relative tolerance
-   :func:`~jasper.audio_measurement.spatial_combine.assess_geometry` uses. A
-   candidate needs at least ``MIN_CORROBORATING_POSITIONS`` positions; one
-   estimate is never enough to identify anything.
+1. **Candidate arrival** — the cloud's per-position echo diagnostics, admitted
+   and clustered by ``spatial_combine``'s own tolerances. A candidate needs at
+   least ``MIN_CORROBORATING_POSITIONS`` positions.
 2. **Candidate nulls** — local minima of the combined 1/6-octave diagnostic
-   curve inside the caller's band, each with a depth measured against its own
-   two flanking maxima (see ``NULL_DEPTH_STATISTIC`` for what exactly is read
-   off which curve, and why the two are not the same curve).
+   curve inside the caller's band, each with a depth against its own two
+   flanking maxima (``NULL_DEPTH_STATISTIC`` owns which curve is read where).
 3. **Depth-ceiling acquittal** — a two-path sum with reflection ratio ``r``
-   cannot cut a null deeper than ``20*log10((1+r)/(1-r))``. A dip deeper than
-   the candidate arrival's own ceiling (plus ``DEPTH_CEILING_MARGIN_DB``)
-   therefore **cannot** be that arrival, and is refused attribution *before*
-   the ladder is fitted, so it can never drag the fit. Acquitted is not
-   excluded: the dip is left alone, and the power-vs-median screen may still
-   catch it on its own.
+   cannot cut a null deeper than ``20*log10((1+r)/(1-r))``, so a dip deeper
+   than the candidate arrival's ceiling plus ``DEPTH_CEILING_MARGIN_DB``
+   cannot be that arrival and is refused attribution *before* the ladder is
+   fitted. Acquitted is not excluded: the dip is left alone.
 4. **Ladder fit** — the best single-tau ladder ``f_n = (n + 1/2) / tau`` with
    **tau free**, requiring at least ``MIN_LADDER_RUNGS`` *consecutive* rungs.
-   Free rather than anchored on the arrival because the two disagree by a
-   measured 6.67-7.54 % on the S0 corpus (see ``LADDER_ARRIVAL_TOLERANCE``);
-   consecutive because a non-adjacent pair pins nothing (see
-   ``MIN_LADDER_RUNGS``).
-5. **Corroboration, both ways.** The fitted ``tau`` must land within
-   ``LADDER_ARRIVAL_TOLERANCE`` of the arrival's, and the ``r`` the null
-   depths imply must land within ``R_AGREEMENT_TOLERANCE`` of the ``r`` the
-   arrival's envelope measured. Frequency-domain and time-domain evidence,
-   from two estimators that never see each other's answer.
+5. **Corroboration, both ways** — the fitted ``tau`` within
+   ``LADDER_ARRIVAL_TOLERANCE`` of the arrival's, and the ``r`` the null depths
+   imply within ``R_AGREEMENT_TOLERANCE`` of the ``r`` the arrival's envelope
+   measured. Frequency- and time-domain estimators that never see each other's
+   answer.
 6. **Classification** — per rung, ``position_invariant`` when that null is
-   individually present at **at least** ``POSITION_PRESENCE_FRACTION`` of the
-   cloud's positions, ``position_dependent`` otherwise; the report's own
-   roll-up is ``position_invariant`` only when every rung earned it. Anything
-   the steps above refuse is ``insufficient_evidence`` with a reason.
+   individually present at at least ``POSITION_PRESENCE_FRACTION`` of the
+   cloud's positions; the report's roll-up earns the word only when every rung
+   did. Anything refused above is ``insufficient_evidence`` with a reason.
 
-**What ``position_invariant`` does and does not claim.** Two limits, and both
-matter to any copy built on it.
+**What ``position_invariant`` does and does not claim.** It is a threshold, not
+"every position" — the exact counts ride every record
+(``positions_present`` / ``positions_total``), and a sentence claiming "at every
+position" must read those. And it cannot say where the null comes from:
+within one session, an origin that travels with the speaker and a room path
+that did not change while the session ran are indistinguishable. The vocabulary
+here is about the *evidence*; nothing in this module knows what a horn is.
 
-*It is a threshold, not "every position".* The claim is that the null was
-individually measurable at at least ``POSITION_PRESENCE_FRACTION`` of the
-positions in this cloud — on the S0 main leg that is ten of ten for two rungs
-and **eight of ten** for the third. The exact counts are on every record
-(``positions_present`` / ``positions_total``); a sentence that says "at every
-position" should be reading those, not this word.
+**Detection only.** Nothing here removes an echo or fills a null — the
+guardrail is "no EQ of interference-flagged bins, ever; they are reported
+instead", which is why the output is a registry of *reasons* carrying an
+identification's entire supporting arithmetic.
 
-*It cannot say where the null comes from.* Position-invariance within one
-session is consistent with an origin that travels with the speaker **or**
-with a path through the room that did not change while the session ran, and a
-single session cannot separate the two — S0 separated them only by physically
-moving the speaker. The vocabulary here is deliberately about the *evidence*,
-never about hardware. Nothing in this module knows what a horn is.
+Pure computation: numpy plus :mod:`jasper.audio_measurement.spatial_combine`.
+No I/O, no logging, no globals, no randomness, no product policy.
 
-Pure computation: numpy plus
-:mod:`jasper.audio_measurement.spatial_combine`. No I/O, no logging, no
-globals, no randomness, no product policy. Shipped with zero production
-callers by design; wired in by the plan's PR-4
-(:func:`jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`,
-landed 2026-07-26) into the session's cloud-group analysis.
-
-**Detection only.** Nothing here removes an echo or fills a null; the plan's
-guardrail ("No EQ of interference-flagged bins, ever; they are reported
-instead") is why the output is a registry of *reasons*, and why an
-identification's entire supporting arithmetic is carried on the record.
-
-**Every threshold below is calibrated on one speaker.** The JTS3 cdhorn, one
-evening, three geometries — the S0 corpus. Each constant states the
-population it was measured on and the headroom it has; several have a
-positive population and no measured negative one, and say so. Read the
-constant, not this paragraph, before trusting a number.
+**Every threshold below is calibrated on one speaker** — the JTS3 cdhorn, one
+evening, three geometries (the S0 corpus). Each constant states the population
+it was measured on and its headroom; several have a positive population and no
+measured negative one, and say so. Read the constant, not this paragraph.
 """
 from __future__ import annotations
 
@@ -115,150 +86,79 @@ from jasper.audio_measurement.spatial_combine import (
 # Null-finding tuning
 # --------------------------------------------------------------------------- #
 
-# The depth statistic, and why it reads two different curves.
-#
-# For a candidate minimum located on the combined 1/6-octave diagnostic
-# curve, this module reports
+# The depth statistic, and why it reads two different curves. For a candidate
+# minimum located on the combined 1/6-octave diagnostic curve:
 #
 #     depth_db = (power mean of the DIAGNOSTIC curve at the two flanking
 #                 maxima) - (the UNSMOOTHED power mean at the minimum's bin)
 #
-# **The null must be read unsmoothed.** A fractional-octave window whose
-# width is a real fraction of the comb period fills the null it is measuring.
-# Measured on synthetic two-path combs (tau 300 and 450 us x r 0.20/0.37/0.55
-# x rungs n=1..5, exact arithmetic, no noise —
-# test_smoothing_fills_a_null_far_more_than_it_shaves_a_peak): 1/6-octave
-# smoothing raises the null bottom by **0.13 to 5.98 dB**, i.e. by most of
-# the depth at the top of the band. A depth read off the smoothed curve at
-# both ends would report 3.7 dB where the truth is 10.7 dB.
+# **The null must be read unsmoothed.** A fractional-octave window whose width
+# is a real fraction of the comb period fills the null it is measuring: on
+# synthetic two-path combs, 1/6-octave smoothing raises the null bottom by
+# 0.13-5.98 dB, so a depth read smoothed at both ends reports 3.7 dB where the
+# truth is 10.7 dB.
 #
 # **The flank may be read smoothed, and should be.** The same sweep shows
-# smoothing lowers a comb *peak* by only **0.027 to 1.044 dB** — a null is a
-# narrow notch and a peak is a broad arch, so the same window costs them very
-# differently. Reading the two flanking maxima off the smoothed curve
-# therefore costs at most ~1 dB of depth while removing the variance of a
-# single unsmoothed bin, which on real captures is what made the difference:
-# with both ends unsmoothed, the S0 desk-edge leg's genuine 11.6 kHz rung read
-# 1.02 dB *above* its own arrival's physical ceiling (impossible, so noise)
-# and its r agreement missed the 0.05 the plan's acceptance asks for; with the
-# flank smoothed it reads 0.27 dB above and 0.0187.
+# smoothing lowers a comb PEAK by only 0.027-1.044 dB — a null is a narrow
+# notch, a peak a broad arch — so reading the flanking maxima smoothed costs at
+# most ~1 dB of depth while removing a single unsmoothed bin's variance. On the
+# S0 desk-edge leg that is the difference between the genuine 11.6 kHz rung
+# reading an impossible 1.02 dB above its arrival's physical ceiling and
+# reading 0.27 dB above it.
 #
-# **"Unsmoothed" means no fractional-octave smoothing — it does not mean the
-# raw capture grid.** ``combine_positions`` block-averages a too-fine grid in
-# linear power down to ``MAX_ANALYSIS_BINS`` before anything is combined, a
-# 32x reduction to ~1.465 Hz spacing on the S0 corpus, and this statistic
-# reads the result of that. The distinction is worth stating because a null is
-# exactly the shape a power average fills; the reason it is nonetheless
-# harmless here is that 1.465 Hz is three orders of magnitude under the
-# comb period being measured (3347 Hz at the S0 ladder's fitted 298.747 us,
-# which is the tau the calibration table below pins).
-#
-# Measured on the S0 main leg by lifting ``MAX_ANALYSIS_BINS`` and re-running
-# the whole gate — the raw 524289-bin grid against the shipped 16385 cap,
-# which realizes a 16384-bin curve. The rung SET is identical, and no quantity
-# this statistic feeds moves by more than hundredths: the identified rungs'
-# depths by at most **0.033 dB**, tau by 0.041 us, ``r_freq`` by 0.0003, and,
-# on the six-position tweeter-height cloud, the depth-ceiling acquittal's
-# margin by **0.026 dB** against that rule's 0.98 dB of one-sided headroom.
-# Both regimes stated because the acquittal is the tightest thing this
-# statistic feeds.
-#
-# RE-DERIVED 2026-08-22, and the digits are now ASSERTED rather than quoted.
-# The figures this block shipped with were the 2026-07-26 originals (depths
-# -0.029/+0.026/-0.004 dB, tau 0.074 us, r_freq 0.0013, margin 0.052 dB) and
-# had outlived two eras that moved the readings behind them — the 2026-07-27
-# corpus-reader alignment fix and the 2026-08-02 (#2045) prominence-vote
-# re-gate — because nothing anywhere asserted them. **The live authority is
-# test_the_analysis_grid_cap_costs_hundredths_of_a_db_end_to_end** in
-# tests/test_interference_nulls.py, which computes both sides and asserts
-# every MOVE above; re-derive from that test rather than from these digits.
-# Checked element-wise rather than summarised: three of those four figures
-# shrank, and the depth one GREW (worst-rung 0.029 -> 0.033 dB). The
-# conclusion held throughout anyway, for a stated reason and not a universal —
-# every move is still hundredths of a dB, and the tightest consumer, the
-# acquittal margin, halved.
-#
-# The decimation's own worst-bin CURVE contract is a different measurement on
-# a synthetic cloud, asserted by test_decimated_and_undecimated_curves_agree
-# in tests/test_spatial_combine.py.
+# "Unsmoothed" means no fractional-octave smoothing, NOT the raw capture grid:
+# ``combine_positions`` block-averages down to ``MAX_ANALYSIS_BINS`` first
+# (~1.465 Hz on the S0 corpus, three orders of magnitude under the 3347 Hz comb
+# period being measured). Lifting that cap moves nothing this statistic feeds by
+# more than hundredths of a dB —
+# test_the_analysis_grid_cap_costs_hundredths_of_a_db_end_to_end asserts every
+# move, and is the live authority.
 #
 # **So the statistic is a lower bound on the true depth**, understated by at
-# most the peak-shave term. That direction composes correctly with everything
-# it feeds: ``r_freq`` derived from it is a lower bound on r (so the agreement
-# gate can only refuse a true identification, never manufacture one), and the
-# ceiling test's margin below is calibrated with the bias in place.
+# most the peak-shave term. That direction composes: ``r_freq`` derived from it
+# is a lower bound on r, so the agreement gate can only refuse a true
+# identification, never manufacture one, and the ceiling test's margin below is
+# calibrated with the bias in place.
 NULL_DEPTH_STATISTIC = "flank(diagnostic) - null(unsmoothed)"
 
 # How far a flanking-maximum search may run, in octaves either side of a
-# candidate minimum.
+# candidate minimum. The flanking maxima define the "local envelope" a depth is
+# measured against, and beyond about half an octave the response's own shape —
+# baffle step, driver rolloff, the crossover region — dominates whatever comb
+# structure is present. Also bounded by the neighbouring candidate minima, so a
+# search can never step over one null to use the far side of another.
 #
-# The flanking maxima define the "local envelope" a depth is measured
-# against. The search is bounded so the envelope stays *local*: beyond about
-# half an octave the response's own shape — baffle step, driver rolloff, the
-# crossover region — dominates whatever comb structure is present, and a
-# "flank" found out there is not a comb peak. It is also bounded by the
-# neighbouring candidate minima, so a search can never step over one null to
-# use the far side of another as a flank.
-#
-# **Consequence, stated because it biases one of the tests below.** A dip
-# broader than about one octave has its flanks clipped by this bound, and its
-# depth is therefore understated. The S0 1.8 kHz lobing dip is exactly that
-# shape (its lower flank clips), reads 10.08 dB here against the 10.71 dB the
-# S0 report measured with hand-picked wider flanks, and is still acquitted by
-# the ceiling test — so the clip narrows that test's margin rather than
-# invalidating it. Understating depth is the safe direction for
-# identification (fewer, shallower nulls) and the unsafe direction for
-# acquittal, which is why ``DEPTH_CEILING_MARGIN_DB`` is calibrated on
-# readings taken *with* the clip in place rather than on the report's numbers.
-#
-# RE-DERIVED 2026-08-02 (#2045) for PR #1991's prominence vote, which re-gates
-# cloud_04 — one of the six tweeter-height positions this dip is measured on.
-# The DIRECTION is unchanged and is the load-bearing part: the clip still
-# understates the dip, still narrows the acquittal margin, and the constant is
-# still calibrated on clipped readings. The MAGNITUDE shrank materially,
-# though, and saying so is the point of a measured comment: the penalty was
-# 1.47 dB (10.71 - 9.24) and is now **0.63 dB** (10.71 - 10.08), so this bound
-# costs the acquittal test less than half what it used to.
+# **Consequence, because it biases the acquittal test.** A dip broader than
+# about one octave has its flanks clipped and its depth understated: the S0
+# 1.8 kHz lobing dip reads 10.08 dB here against 10.71 dB with hand-picked
+# wider flanks, a 0.63 dB penalty. Understating depth is the safe direction for
+# identification and the UNSAFE one for acquittal, which is why
+# ``DEPTH_CEILING_MARGIN_DB`` is calibrated on readings taken WITH the clip in
+# place.
 FLANK_SEARCH_MAX_OCT = 0.50
 
 # Minimum depth for a candidate minimum to enter the ladder fit at all, in dB.
 #
-# **This is a materiality cut, not a classifier, and the measurement is
-# emphatic about it.** Across the four S0 cloud groupings (re-derived by
-# test_s0_ladder_calibration_populations_bracket_the_constants):
+# **A materiality cut, not a classifier.** Across the four S0 cloud groupings
+# (re-derived by test_s0_ladder_calibration_populations_bracket_the_constants):
 #
 #   identified rungs                    12 records, 2.72 - 6.84 dB
 #   material minima no ladder explains   3 records, 2.88 - 4.15 dB
 #   minima under this floor             36 records, -1.86 - 2.44 dB
 #
-# MIDDLE ROW RE-DERIVED 2026-08-02 (#2045), 2.55 -> 2.88 dB, for PR #1991's
-# prominence vote re-gating cloud_04. The other two rows are unmoved at 2 dp,
-# and the populations still overlap almost completely — which is the whole
-# claim this table exists to make, and it is unchanged.
+# The first two populations overlap almost completely: no threshold on depth
+# alone tells a comb rung from an ordinary dip, and what identifies a null is
+# the ladder fit plus the two corroborations. This floor's job is narrower —
+# keeping numerically-trivial minima out of the candidate set, where a handful
+# can be assembled into a spurious ladder. Removed entirely, the S0 main leg's
+# four hand-width-low positions produced a 3-rung "ladder" at tau 290 us built
+# on two 1.3-1.6 dB dips instead of the real 8-16 kHz family.
 #
-# The first two populations **overlap almost completely**. No threshold on
-# depth alone tells a comb rung from an ordinary dip, and this constant does
-# not try: what identifies a null is the ladder fit plus the two
-# corroborations. The floor's job is narrower — keep numerically-trivial
-# minima (flat-bottom micro-extrema, curvature features on a sloping
-# response) out of the fit's candidate set, where a handful of them can be
-# assembled into a spurious ladder. Removing it entirely, on the S0 main
-# leg's four hand-width-low positions, produced a 3-rung "ladder" at tau
-# 290 us built on two 1.3-1.6 dB dips instead of the real 8-16 kHz family.
-#
-# **2.5 dB is the plan's own 8-16 kHz tolerance** (docs/historical/linearization-campaign-2026-07.md,
-# "The spec"), and that — not a measured gap, which does not exist here — is
-# where the default comes from. Excluding a band costs the correction real
-# bandwidth permanently, so the floor is set at the scale on which the spec
-# judges a deviation to matter at all. It is a judgement expressed in the
-# spec's own units: a 2.5 dB null is not harmless, it is the point below
-# which carving the band out of both correction *and* grading costs more than
-# it saves. The same posture ``DEFAULT_FLAG_THRESHOLD_DB`` takes in
-# spatial_combine — quote the plan, and say that it is the plan's number.
-#
-# It is a parameter (``min_depth_db``) precisely because that is a product
-# judgement, and this module holds no product policy. A caller with a
-# different tolerance should pass its own.
+# **2.5 dB is the plan's own 8-16 kHz tolerance**, not a measured gap: excluding
+# a band costs the correction real bandwidth permanently, so the floor sits at
+# the scale on which the spec judges a deviation to matter at all. It is a
+# parameter (``min_depth_db``) because that is a product judgement, and this
+# module holds no product policy.
 DEFAULT_MIN_NULL_DEPTH_DB = 2.5
 
 # --------------------------------------------------------------------------- #
@@ -276,10 +176,8 @@ DEFAULT_MIN_NULL_DEPTH_DB = 2.5
 # the window is the same fraction of the gap between rungs everywhere, so the
 # constant needs no companion bound on n.
 #
-# **0.15 spacings, against a measured worst case of 0.0933.** Measured
-# 2026-07-25 on the four S0 cloud groupings, each fitted independently, MAIN
-# LEG ROW RE-DERIVED 2026-08-02 (#2045) for PR #1991's prominence vote
-# (re-derived by test_s0_main_leg_identifies_the_8_to_16_khz_family and
+# **0.15 spacings, against a measured worst case of 0.0933** on the four S0
+# cloud groupings, each fitted independently (re-derived by
 # test_s0_ladder_calibration_populations_bracket_the_constants):
 #
 #   grouping                      rung errors (spacings)      worst
@@ -288,23 +186,12 @@ DEFAULT_MIN_NULL_DEPTH_DB = 2.5
 #   main leg, a hand-width low(4) 0.0933 / 0.0281 / 0.0299    0.0933
 #   desk front edge (3)           0.0926 / 0.0350 / 0.0242    0.0926
 #
-# Only the main-leg row moved. The vote re-gates cloud_04; the hand-width-low
-# and desk-edge groupings do not contain it, and the tweeter-height grouping
-# does but its rung errors are unchanged to four decimals (other columns of
-# its row did move — see R_AGREEMENT_TOLERANCE's table). The worst case is set
-# by a grouping that did not move, so this constant's headroom is unchanged.
-#
-# The worst reading is the **n=2 rung on every one of the four**, at
-# 0.0818-0.0933, against 0.0232-0.0350 for n=3 and n=4 — a systematic offset,
-# not scatter, and one this module does not model. (Two mechanisms are
-# available and neither is separated here: a 1/6-octave window biases a
-# located minimum toward the lower-level side of a sloping response, which is
-# steepest around 8-9 kHz on these captures; and the plan's own reading is
-# that "a real rim wave is not an ideal single-delay reflector".) 0.15 clears
-# it by 1.61x. It is not centred in a gap because there is no second
-# population to bound it from above — a looser tolerance does not admit a
-# *wrong* ladder so much as admit *more* ladders, which the consecutive-rung
-# requirement and the two corroborations are what actually screen.
+# The worst reading is the n=2 rung on all four, at 0.0818-0.0933 against
+# 0.0232-0.0350 for n=3 and n=4 — a systematic offset this module does not
+# model. 0.15 clears it by 1.61x. Not centred in a gap: there is no second
+# population to bound it from above, and a looser tolerance admits MORE
+# ladders rather than a wrong one, which the consecutive-rung requirement and
+# the two corroborations are what actually screen.
 RUNG_MATCH_TOLERANCE_SPACINGS = 0.15
 
 # Consecutive matched rungs required before a set of minima is a ladder.
@@ -314,46 +201,29 @@ RUNG_MATCH_TOLERANCE_SPACINGS = 0.15
 # pins nothing: any tau dividing the gap explains it, so an arbitrary pair of
 # dips can always be called rungs of something.
 #
-# **The counterfactual, on the acceptance corpus, with one rule mutated and
-# nothing else.** Measured 2026-07-26 on the S0 **main leg** (ten positions)
-# over **1.2-19 kHz**, at the shipped candidate pool, shipped depth-weighted
-# score and shipped tolerance — only ``_longest_consecutive`` replaced by
-# ``sorted``:
+# **The counterfactual**, on the S0 main leg (ten positions) over 1.2-19 kHz
+# with only ``_longest_consecutive`` replaced by ``sorted`` (re-derived by
+# test_contiguity_is_what_keeps_the_1_8_khz_dip_out_of_the_registry):
 #
 #   shipped        tau 298.75 us, rungs [2, 3, 4] at 8646 / 11627 / 14977 Hz,
 #                  24.18 % of the band excluded; the 1846.4 Hz minimum refused
 #                  ``outside_contiguous_run`` at 5.14 dB
-#   gaps allowed   tau 298.55 us, rungs [0, 2, 3, 4] at **1846** / 8646 /
-#                  11627 / 14977 Hz, 26.99 % excluded — n=1 skipped entirely
+#   gaps allowed   tau 298.55 us, rungs [0, 2, 3, 4] at 1846 / 8646 / 11627 /
+#                  14977 Hz, 26.99 % excluded — n=1 skipped entirely
 #
-# The extra rung is the **1.8 kHz lobing dip**, which the plan's two-mechanism
-# verdict establishes is a *different mechanism* from the comb — uncorrelated
-# with it across positions, and physically impossible for the ~320 us arrival
-# to have cut ("S0 executed" section b). Without this rule the gate excludes
-# it from correction as a comb rung, and passes both corroborations while
-# doing it (gap -7.13 %, agreement 0.0327 — the deepest rung sets r_freq, so
-# a wrong extra rung does not move it). Contiguity is the only thing standing
-# between the registry and that claim. Re-derived by
-# test_contiguity_is_what_keeps_the_1_8_khz_dip_out_of_the_registry.
-# FIGURES RE-DERIVED 2026-08-02 (#2045) for PR #1991's prominence vote, which
-# re-gates cloud_04 — the counterfactual itself is unchanged.
+# The extra rung is the 1.8 kHz lobing dip, a DIFFERENT mechanism from the comb
+# — uncorrelated with it across positions, and physically impossible for the
+# ~320 us arrival to have cut. Without contiguity the gate excludes it from
+# correction as a comb rung and passes both corroborations while doing it
+# (the deepest rung sets r_freq, so a wrong extra rung does not move it).
 #
-# **Two regimes where this counterfactual does *not* appear, stated so the one
-# above is not over-read.** At 5-19 kHz the two agree exactly (rungs [2, 3, 4]
-# either way): the 1.8 kHz dip is out of band, so there is nothing to skip a
-# rung to reach. And on the S0 **ground-plane** leg the mutation changes
-# nothing at any band, because that cloud is refused at
-# ``no_corroborating_arrivals`` before the fit ever runs. An earlier revision
-# of this comment cited a ground-plane "tau = 600 us matching n=3 and n=8"
-# figure that reproduces from no single pool/score/band at all — it had mixed
-# the admitted pool's *size* with a located-pool, count-scored fit. That is
-# the "a described grid is not a grid" failure ``spatial_combine``'s
-# ``RAHMONIC_MARGIN`` and ``EARLIER_ARRIVAL_DOMINANCE_DB`` both document
-# fixing, and it happened here in the constant this module calls load-bearing.
+# Two regimes where the counterfactual does NOT appear, so the one above is not
+# over-read: at 5-19 kHz the two agree exactly (the dip is out of band), and on
+# the S0 ground-plane leg the mutation changes nothing at any band, that cloud
+# being refused at ``no_corroborating_arrivals`` before the fit runs.
 #
 # Two, not three, because two adjacent rungs is the minimum that carries the
-# spacing information, and requiring three would refuse a ladder whose band
-# only holds two. One dip is not a ladder under any reading.
+# spacing information; three would refuse a ladder whose band only holds two.
 MIN_LADDER_RUNGS = 2
 
 # The fitted ladder's tau must land within this *relative* distance of the
@@ -364,36 +234,21 @@ MIN_LADDER_RUNGS = 2
 # :func:`~jasper.audio_measurement.spatial_combine.assess_geometry`, and a
 # second number meaning the same thing is a second number to drift.
 #
-# **The band must admit a measured gap, and this is the constant the plan
-# warned about.** On the S0 corpus the ladder tau sits systematically *below*
-# the directly measured arrival tau: -7.071 % (main leg, all 10), -6.671 %
-# (tweeter height, 6), -7.540 % (a hand-width low, 4), -7.058 % (desk front
-# edge, 3) — fitted taus of 297.96-298.90 us against arrival medians of
-# 320.27-322.26 us. The plan's own framing is that the S0 report saw
-# 293-308 us implied by the null frequencies against a 321.5 us median
-# arrival, "consistent ... at this resolution", and that a real rim wave is
-# not an ideal single-delay reflector. A band of the 1/6-octave smoothing
-# bandwidth alone (about +-6 %) would refuse every one of the four.
-# 0.15 clears the worst by 1.99x.
+# **The band must admit a measured gap.** On the S0 corpus the ladder tau sits
+# systematically BELOW the directly measured arrival tau: -7.071 % (main leg,
+# all 10), -6.671 % (tweeter height, 6), -7.540 % (a hand-width low, 4),
+# -7.058 % (desk front edge, 3) — fitted taus of 297.96-298.90 us against
+# arrival medians of 320.27-322.26 us, a real rim wave not being an ideal
+# single-delay reflector. A band of the 1/6-octave smoothing bandwidth alone
+# (about ±6 %) would refuse every one of the four; 0.15 clears the worst by
+# 1.99x. ``tests/test_interference_nulls.py``'s four-way calibration table
+# hard-asserts these figures and is the live authority.
 #
-# RE-DERIVED 2026-08-22: the four gaps above are the 2026-08-02 (#2045) era's,
-# not the 2026-07-25 originals this comment shipped with, and the difference is
-# real rather than cosmetic — the widest reading moved 7.424 -> 7.540 % and the
-# narrowest 7.153 -> 6.671 %, so a reader quoting this block as a bound on the
-# fitted tau's error was understating it at BOTH ends. Only the gap and arrival
-# columns moved (the corpus-reader alignment fix, then #1991's prominence vote);
-# ``desk edge`` contains neither re-gated capture and is byte-identical across
-# both, which is the control. **The live authority is
-# ``tests/test_interference_nulls.py``'s four-way calibration table**, which
-# hard-asserts every figure here against the corpus and carries the era notes;
-# this block restates them for a reader who has the module and not the corpus,
-# so re-derive from that test rather than from these digits.
-#
-# **Symmetric, though the measurement is not.** All four readings are
-# negative, and consistently so; that direction is recorded as an observation
-# about this speaker, not encoded as a rule. A one-sided band would bake one
-# rim wave's behaviour into a gate that has to work for waveguide edges, desk
-# bounces and enclosure diffraction it has never seen.
+# **Symmetric, though the measurement is not.** All four readings are negative
+# and consistently so, but that direction is an observation about this speaker,
+# not a rule: a one-sided band would bake one rim wave's behaviour into a gate
+# that has to work for waveguide edges, desk bounces and enclosure diffraction
+# it has never seen.
 LADDER_ARRIVAL_TOLERANCE = GEOMETRY_CLUSTER_TOLERANCE
 
 # Positions whose echo estimates must cluster before there is an arrival to
@@ -431,9 +286,9 @@ MIN_CORROBORATING_POSITIONS = 2
 # carries enough error to flip the sign of the difference. So do not read this
 # gate as one-sided; it is an absolute disagreement for a reason.
 #
-# **0.10, calibrated one-sided against a measured positive population.**
-# 2026-07-25, the four S0 cloud groupings, RE-DERIVED 2026-08-02 (#2045)
-# (re-derived by test_s0_ladder_calibration_populations_bracket_the_constants):
+# **0.10, calibrated one-sided against a measured positive population** — the
+# four S0 cloud groupings (re-derived by
+# test_s0_ladder_calibration_populations_bracket_the_constants):
 #
 #   grouping                      r_time    r_freq    agreement
 #   main leg, all 10 positions    0.3765    0.3438    0.0327
@@ -441,27 +296,14 @@ MIN_CORROBORATING_POSITIONS = 2
 #   main leg, a hand-width low(4) 0.3785    0.3374    0.0410
 #   desk front edge (3)           0.3559    0.3746    0.0187
 #
-# Two of the four rows moved, and only those two: PR #1991's prominence vote
-# re-gates cloud_04, which the main leg and the tweeter-height subgroup
-# contain and the other two do not.
-#
-# The r_freq column is that move alone. The r_time and agreement columns ALSO
-# carried pre-existing drift from the 2026-07-27 re-pin (PR-U1's corpus-reader
-# alignment fix), which had updated the tests but not this table — main leg
-# r_time 0.3750 and agreement 0.0260 were already stale before #1991. Both are
-# corrected here in passing rather than left half-current, since the whole
-# table is being re-derived from one measurement anyway.
-#
-# Worst 0.0410; 0.10 clears it by 2.44x. The worst reading is the hand-width-
-# low grouping's, which did not move, so the headroom is unchanged. **There is no measured negative
+# Worst 0.0410; 0.10 clears it by 2.44x. **There is no measured negative
 # population** and this constant does not pretend to bisect a gap: the S0
 # session produced exactly one real arrival-and-ladder pair, read four ways.
-# What it does bound is real — an agreement of 0.10 around r = 0.37 is about
-# 2 dB of disagreement about how deep a null the arrival can cut — and the
-# hazard it guards (a ladder attributed to an arrival too weak to have made
-# it) is guarded from the other side, independently, by the depth ceiling.
-# The number to watch when this ships against other hardware is the positive
-# population's *worst* reading, not this threshold.
+# What it does bound is real — 0.10 around r = 0.37 is about 2 dB of
+# disagreement about how deep a null the arrival can cut — and the hazard it
+# guards is guarded from the other side, independently, by the depth ceiling.
+# The number to watch on other hardware is the positive population's WORST
+# reading, not this threshold.
 R_AGREEMENT_TOLERANCE = 0.10
 
 # How far above the candidate arrival's physical null-depth ceiling a dip must
@@ -480,36 +322,25 @@ R_AGREEMENT_TOLERANCE = 0.10
 # right bound, and it is the conservative one — a bigger r means a deeper
 # permitted null means fewer acquittals.
 #
-# **1.25 dB, inside a measured 2.81 dB gap**, measured 2026-07-25 on the
-# S0 corpus at the shipped depth statistic, RE-DERIVED 2026-08-02 (#2045) for
-# PR #1991's prominence vote (re-derived by
-# test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling and
-# test_s0_ladder_calibration_populations_bracket_the_constants):
+# **1.25 dB, inside a measured 2.81 dB gap** on the S0 corpus at the shipped
+# depth statistic (re-derived by test_s0_acquits_the_1_8_khz_dip_by_depth_ceiling
+# and test_s0_ladder_calibration_populations_bracket_the_constants):
 #
-# * **Must not acquit — 12 genuine rungs**, the 8-16 kHz family across the
-#   four cloud groupings, reading **-4.05 to +0.27 dB** relative to their own
-#   ceiling. The ceiling figure is the binding one: the desk-edge leg's
-#   11.6 kHz rung genuinely reads 0.27 dB *over* its ceiling, which is what a
-#   3-position cloud's noise looks like against a bound this tight, and is why
-#   the margin cannot be zero.
-# * **Must acquit — the S0 1.8 kHz lobing dip**, on the six tweeter-height
-#   positions where the S0 report measured it deepest: **+3.08 dB** over the
-#   ceiling (10.08 dB measured against a 7.01 dB ceiling for r = 0.3829). The
-#   plan's "S0 executed" section b calls this dip *physically impossible* for
-#   the ~320 us arrival to have caused, on exactly this arithmetic, and the
-#   two-mechanism verdict rests on it.
+# * **Must not acquit — 12 genuine rungs**, the 8-16 kHz family across the four
+#   cloud groupings, reading -4.05 to +0.27 dB relative to their own ceiling.
+#   The desk-edge leg's 11.6 kHz rung genuinely reads 0.27 dB OVER its ceiling
+#   — what a 3-position cloud's noise looks like against a bound this tight,
+#   and why the margin cannot be zero.
+# * **Must acquit — the S0 1.8 kHz lobing dip**, +3.08 dB over the ceiling on
+#   the six tweeter-height positions (10.08 dB measured against a 7.01 dB
+#   ceiling for r = 0.3829), physically impossible for the ~320 us arrival to
+#   have caused.
 #
 # 1.25 sits 0.98 dB above the genuine population's ceiling and 1.83 dB below
-# the acquittal case. **It is NO LONGER CENTRED**, and that is the honest
-# reading rather than a rounding: until #1991 the gap was 1.96 dB and 1.25 sat
-# 0.98 dB from each end, but the vote deepened the acquitted dip 9.24 ->
-# 10.08 dB while the genuine population's ceiling held at +0.27 dB, so the gap
-# widened to 2.81 dB asymmetrically. The binding side is unchanged: this
-# constant is still 0.98 dB clear of acquitting a real rung, which is the
-# direction that matters, because an acquittal is what REMOVES a null from the
-# registry. **It is a 2.81 dB gap between 12 readings and 1**, from one
-# speaker and one session; that is thin, it is stated rather than smoothed
-# over, and the acquittal population is the one to widen first.
+# the acquittal case — deliberately NOT centred, since the binding side is the
+# 0.98 dB: an acquittal is what REMOVES a null from the registry. It is a
+# 2.81 dB gap between 12 readings and 1, from one speaker and one session; that
+# is thin, and the acquittal population is the one to widen first.
 #
 # An acquitted dip is **left alone**: it is refused attribution, recorded with
 # its reason, and *not* excluded by this gate. It may well be a real defect —
@@ -530,19 +361,15 @@ DEPTH_CEILING_MARGIN_DB = 1.25
 # construction, so a per-position reading and a combined reading are
 # comparable numbers rather than two conventions.
 #
-# **0.70, measured against 1.00 / 1.00 / 0.80** — the three identified rungs
-# of the S0 main leg's ten-position cloud (8.6 / 11.6 / 15.0 kHz), re-derived
-# by test_s0_main_leg_family_is_position_invariant. The 0.80 is the 15 kHz
-# rung: it is *located* at all ten positions and misses at two of them only
-# because its depth there (2.40 and 2.49 dB) falls a shade under the 2.5 dB
-# materiality floor. 0.70 is 0.10 below that worst reading.
+# **0.70, measured against 1.00 / 1.00 / 0.80** — the three identified rungs of
+# the S0 main leg's ten-position cloud, re-derived by
+# test_s0_main_leg_family_is_position_invariant. The 0.80 is the 15 kHz rung,
+# located at all ten positions and missing at two only because its depth there
+# (2.40 and 2.49 dB) falls a shade under the 2.5 dB materiality floor.
 #
-# **On a small cloud this fraction is coarsely quantised**, and a consumer
-# should know it: at three positions the only values are 0, 1/3, 2/3 and 1, so
-# 0.70 means "all three" there. The S0 desk-edge leg's 15 kHz rung reads 2/3
-# and is classified ``position_dependent`` for that reason — an honest verdict
-# on three positions, not a defect. The plan's own cloud is 8-12 positions
-# (fundamental 1), which is the regime this constant was chosen for.
+# **On a small cloud this fraction is coarsely quantised**: at three positions
+# the only values are 0, 1/3, 2/3 and 1, so 0.70 means "all three" there. The
+# regime it was chosen for is a 8-12 position cloud.
 POSITION_PRESENCE_FRACTION = 0.70
 
 # --------------------------------------------------------------------------- #
@@ -558,43 +385,26 @@ POSITION_PRESENCE_FRACTION = 0.70
 # the band out of both would fail in a way that still *looks* like a clean
 # report, so the failure needs a bound rather than a reviewer.
 #
-# **0.65, set above what a single-tau ladder can legitimately reach — this is
-# a backstop, not a tuning knob, and the distinction is the whole design.**
-# Two populations, measured 2026-07-25:
+# **0.65, set above what a single-tau ladder can legitimately reach — a
+# backstop, not a tuning knob.** Two populations:
 #
-# * **Real captures — 23.85 % to 30.74 %.** The S0 families across the four
-#   cloud groupings: 30.74 % on the main leg over 5-19 kHz (the widest,
-#   because that band is the narrowest the family is graded in) and
-#   23.85-25.35 % over 1.2-19 kHz. These are the 2026-08-02 (#2045) era's, not
-#   the 2026-07-25 originals this comment shipped with: #1991's prominence vote
-#   re-gated ``cloud_04`` and the fractions moved in the third decimal
-#   (30.85 -> 30.74 %, and the wide band's floor 23.91 -> 23.85 %), so the
-#   headroom below GREW. **The live authority is
-#   test_s0_exclusion_stays_far_below_the_runaway_cap**, which hard-asserts
-#   every figure here against the corpus; this block restates them for a reader
-#   who has the module and not the corpus, so re-derive from that test rather
-#   than from these digits.
-# * **Synthetic, deliberately pushed — ceiling 48.24 %**, over a committed
-#   grid of two-path clouds (delays 10-30 samples at 48 kHz, i.e. tau
-#   208-625 us, x r 0.15-0.80 x three analysis bands), re-derived by
-#   test_the_runaway_exclusion_cap_holds_over_the_committed_grid. The worst
-#   case is a dense ladder — six rungs of a 542 us comb inside a 10 kHz band.
+# * **Real captures — 23.85 % to 30.74 %**: the S0 families across the four
+#   cloud groupings, widest on the main leg over 5-19 kHz. Hard-asserted by
+#   test_s0_exclusion_stays_far_below_the_runaway_cap, the live authority.
+# * **Synthetic, deliberately pushed — ceiling 48.24 %**, over a committed grid
+#   of two-path clouds (tau 208-625 us × r 0.15-0.80 × three analysis bands),
+#   re-derived by test_the_runaway_exclusion_cap_holds_over_the_committed_grid.
+#   The worst case is a dense ladder: six rungs of a 542 us comb in a 10 kHz
+#   band.
 #
-# **That 48.24 % is not a runaway; it is the natural bound**, and the cap has
-# to sit above it or the guard would fire on correct behaviour. A null's
+# **That 48.24 % is not a runaway; it is the natural bound.** A null's
 # half-depth width grows as its depth shrinks, approaching half a rung spacing
-# either side as r falls, so a *complete* ladder's half-depth intervals
-# approach the whole band from below — near 50 %, which is what the sweep
-# tops out at. A guard set at 0.50 would therefore refuse a legitimate dense
-# comb, and refusing means refusing **every** identification in the report:
-# an expensive false positive. 0.65 clears the synthetic ceiling by 16.8
-# points and the real one by 34.3.
-#
-# **So this constant does not fire on any input either population contains**,
-# and that is stated rather than hidden: it is a bound on a failure class not
-# yet observed — a mis-fit, a widened interval, an overlap bug — chosen above
-# what the physics allows rather than inside it. A guard calibrated to bite
-# on correct data is a worse guard than one that never bites.
+# either side as r falls, so a COMPLETE ladder's intervals approach the whole
+# band from below — near 50 %. A guard at 0.50 would refuse a legitimate dense
+# comb, and refusing means refusing EVERY identification in the report. So this
+# constant fires on no input either population contains: it bounds a failure
+# class not yet observed (a mis-fit, a widened interval, an overlap bug),
+# chosen above what the physics allows rather than inside it.
 #
 # **When it binds, nothing is identified.** The report comes back empty with
 # ``reason = REASON_EXCLUSION_CAP`` and the attempted fraction on
@@ -637,20 +447,15 @@ CANDIDATE_NOT_MEASURABLE = "no_flanking_maxima"
 CANDIDATE_BELOW_MIN_DEPTH = "below_min_depth"
 CANDIDATE_DEPTH_EXCEEDS_CEILING = "depth_exceeds_arrival_ceiling"
 CANDIDATE_NO_MATCHING_RUNG = "no_matching_rung"
-# One shape carries this slug slightly loosely, and it is labelling only.
-# ``_assign_rungs`` keeps one candidate per rung: a second candidate inside
-# tolerance of an *in-run* rung loses that tie and is then reported here,
-# where "another candidate was closer to the same rung" would describe it
-# better. The refusal itself is right either way — the rung is already
-# identified, and reporting this one too would double-count a single null —
-# and the record still carries ``predicted_hz`` and ``rung_error_spacings``,
-# so the loss is legible. Reaching it needs two candidates inside one
-# rung-match window (0.3 spacings wide) that both survived the 1/6-octave
-# thinning — so the widest frequency ratio the window offers,
-# ``(n + 0.65) / (n + 0.35)``, must exceed ``2 ** (1/6)`` = 1.1225. That is
-# 1.857 / 1.222 / 1.128 at n = 0 / 1 / 2 and 1.090 at n = 3, i.e. **possible
-# only at n <= 2**, where a rung spacing is still a large fraction of its own
-# frequency. No corpus or synthetic case in this module's suite reaches it.
+# One shape carries this slug loosely, and it is labelling only: a second
+# candidate inside tolerance of an IN-RUN rung loses the tie in
+# ``_assign_rungs`` and is reported here, where "another candidate was closer
+# to the same rung" would describe it better. The refusal is right either way,
+# and ``predicted_hz`` / ``rung_error_spacings`` keep the loss legible.
+# Reaching it needs two candidates inside one 0.3-spacing rung-match window
+# that both survived the 1/6-octave thinning, so ``(n + 0.65) / (n + 0.35)``
+# must exceed ``2 ** (1/6)`` = 1.1225 — possible only at n <= 2. No corpus or
+# synthetic case in this module's suite reaches it.
 CANDIDATE_OUTSIDE_CONTIGUOUS_RUN = "outside_contiguous_run"
 
 
@@ -662,17 +467,10 @@ CANDIDATE_OUTSIDE_CONTIGUOUS_RUN = "outside_contiguous_run"
 def _frozen_evidence(record: object, evidence: Mapping[str, float]) -> None:
     """Replace ``record.evidence`` with an immutable copy, in ``__post_init__``.
 
-    A ``frozen=True`` dataclass stops the *field* being rebound; it says
-    nothing about the object the field points at, so a plain ``dict`` there
-    leaves the record mutable through its own attribute — and these records
-    are the audit trail, the one thing in this module that must read the same
-    later as it did when it was written. The arrays this stack returns are set
-    read-only for the same reason (``excluded`` here,
-    ``power_mean_db`` and friends in ``spatial_combine``); this is that rule
-    applied to the mappings.
-
-    The ``dict()`` copy is load-bearing: proxying the caller's mapping without
-    copying would leave it mutable through *their* reference.
+    ``frozen=True`` stops the FIELD being rebound and says nothing about the
+    mapping behind it, and these records are the audit trail. The ``dict()``
+    copy is load-bearing: proxying the caller's mapping without copying leaves
+    it mutable through THEIR reference.
     """
     object.__setattr__(record, "evidence", MappingProxyType(dict(evidence)))
 
@@ -681,9 +479,7 @@ def _frozen_evidence(record: object, evidence: Mapping[str, float]) -> None:
 class IdentifiedNull:
     """One rung of an identified interference ladder.
 
-    Every field is either a measurement or recomputable from ``evidence``;
-    nothing here is asserted. The rule this module holds itself to is the one
-    :mod:`~jasper.audio_measurement.spatial_combine` holds for refusals — a
+    Every field is either a measurement or recomputable from ``evidence``, so a
     reader with the record in front of them can re-derive the verdict.
 
     Args:
@@ -714,23 +510,18 @@ class IdentifiedNull:
         ``CLASSIFICATION_POSITION_DEPENDENT``. Never
         ``CLASSIFICATION_INSUFFICIENT_EVIDENCE`` — that is a report-level
         verdict, and a report carrying it has no identified nulls at all.
-      evidence: the supporting arithmetic, as plain floats. Read-only: it is
-        wrapped in a ``MappingProxyType`` at construction, because a frozen
-        dataclass freezes the *field*, not the mapping behind it, and this is
-        the record a later reader audits the verdict from. A consumer that
-        needs to serialise it — the plan's PR-6 persists the registry —
-        wraps it in ``dict()`` first; the values are plain floats, so nothing
-        else about the encoding is special. Keys, all of them measurements:
-        ``predicted_hz`` (the rung the fit put here), ``rung_error_spacings``
-        (how far the measurement sits from it, in rung spacings),
-        ``flank_lo_hz`` / ``flank_hi_hz`` (where the local envelope was read),
-        ``flank_baseline_db`` and ``null_level_db`` (its two terms, so
-        ``depth_db`` is recomputable), ``diag_depth_db`` (the same depth read
-        entirely on the diagnostic curve — the smoothing-filled figure, kept
-        because it is what sets ``f_lo_hz``/``f_hi_hz``),
+      evidence: the supporting arithmetic, as plain floats, wrapped read-only
+        in a ``MappingProxyType`` — a consumer serialising it wraps it in
+        ``dict()`` first. Keys, all measurements: ``predicted_hz`` (the rung the
+        fit put here), ``rung_error_spacings`` (how far the measurement sits
+        from it, in rung spacings), ``flank_lo_hz`` / ``flank_hi_hz`` (where the
+        local envelope was read), ``flank_baseline_db`` and ``null_level_db``
+        (its two terms, so ``depth_db`` is recomputable), ``diag_depth_db`` (the
+        same depth read entirely on the diagnostic curve — the smoothing-filled
+        figure, which is what sets ``f_lo_hz``/``f_hi_hz``),
         ``depth_ceiling_db`` (what the arrival's r permits, so the acquittal
-        that did *not* fire is auditable too), ``positions_present`` and
-        ``positions_total`` (the classification's own numbers).
+        that did NOT fire is auditable too), ``positions_present`` and
+        ``positions_total``.
     """
 
     f_lo_hz: float
@@ -753,11 +544,8 @@ class IdentifiedNull:
 class RefusedCandidate:
     """A measured minimum this gate declined to identify, and why.
 
-    Refusals are output, not silence. The registry is meant to answer "why is
-    this band excluded" *and* "why is that dip not", and the second question
-    is the one a household asks when a visible dip is left uncorrected — or
-    when a visible dip is corrected and they wondered whether it should have
-    been.
+    Refusals are output, not silence: the registry answers "why is this band
+    excluded" AND "why is that dip not".
 
     Args:
       f_center_hz: the located minimum.
@@ -815,16 +603,10 @@ class InterferenceNullReport:
         the ``REASON_*`` slugs.
       classification: the report-level verdict —
         ``CLASSIFICATION_INSUFFICIENT_EVIDENCE`` when ``reason`` is non-empty,
-        otherwise ``position_invariant`` only when **every** identified rung
-        earned it, and ``position_dependent`` as soon as one did not.
-
-        **The roll-up is the conservative direction on purpose.** It exists
-        for a consumer writing one headline without walking ``nulls``, and
-        the copy that headline licenses ("they stayed at the same frequency
-        at every mic position") would be false of a ladder with one rung that
-        moved. Over-claiming invariance is the defect class this whole
-        program is about; under-claiming only costs a softer sentence. A
-        consumer that wants per-rung nuance has it, on every rung.
+        otherwise ``position_invariant`` only when EVERY identified rung earned
+        it, and ``position_dependent`` as soon as one did not. Conservative on
+        purpose: over-claiming invariance is the defect class this program is
+        about, and a consumer wanting per-rung nuance has it on every rung.
       band_hz: the analysis band actually applied — echoed back because a
         rung index, an exclusion fraction and a "no candidates" refusal are
         all only interpretable against the band they were computed in.
@@ -1007,15 +789,13 @@ def _measure_candidates(
     ``CANDIDATE_NOT_MEASURABLE``.
 
     **When that happens, precisely.** ``_locate_minima`` returns interior
-    indices only, so a neighbouring bin always exists; what can be missing is
-    a bin inside the ``FLANK_SEARCH_MAX_OCT`` window, on a grid coarse enough
-    that half an octave falls inside one bin. On the plan's own grids (~1.5 Hz
-    after the combiner's decimation) that never happens, and a top-octave
-    rolloff — the shape one might expect to land here — does not either: a
-    monotonic run has no local minimum, so it never becomes a candidate at
-    all. The branch is therefore for a degenerate *capture*, and it refuses
-    rather than reading a flank from whichever bin happened to be nearest.
-    Pinned by test_a_grid_too_coarse_for_a_local_envelope_refuses_rather_than_invents_one.
+    indices only, so a neighbouring bin always exists; what can be missing is a
+    bin inside the ``FLANK_SEARCH_MAX_OCT`` window, on a grid coarse enough that
+    half an octave falls inside one bin. Shipped grids (~1.5 Hz after the
+    combiner's decimation) never reach it, and neither does a top-octave rolloff
+    — a monotonic run has no local minimum. The branch is for a degenerate
+    CAPTURE, and it refuses rather than reading a flank from whichever bin
+    happened to be nearest.
     """
     positions = _locate_minima(diag, band_idx, min_sep_oct, freqs)
     y = diag[band_idx]
@@ -1111,15 +891,13 @@ def _refine_tau(rungs: Sequence[int], freqs_hz: Sequence[float], assigned: Mappi
     """Least-squares ``tau`` for a fixed rung assignment.
 
     Minimising ``sum((f_k - (n_k+1/2)/tau)**2)`` over ``tau`` gives
-    ``tau = sum(m**2) / sum(f*m)`` with ``m = n + 1/2``. Closed form, so the
-    fit needs no optimiser and no starting-point policy.
+    ``tau = sum(m**2) / sum(f*m)`` with ``m = n + 1/2``. Closed form, so no
+    optimiser and no starting-point policy.
 
-    **Unweighted, on purpose.** Every matched rung's *location* is equally
-    informative here — that is already what ``RUNG_MATCH_TOLERANCE_SPACINGS``
-    assumes, being stated in rung spacings rather than scaled by depth.
-    Weighting by depth would make ``tau`` a function of the depth statistic,
-    whose own bias is frequency-dependent (``NULL_DEPTH_STATISTIC``), so a
-    systematically shallower top rung would quietly pull the delay.
+    **Unweighted, on purpose.** Weighting by depth would make ``tau`` a
+    function of the depth statistic, whose bias is frequency-dependent
+    (``NULL_DEPTH_STATISTIC``), so a systematically shallower top rung would
+    quietly pull the delay.
     """
     m = np.array([n + 0.5 for n in rungs], dtype=float)
     f = np.array([freqs_hz[assigned[n]] for n in rungs], dtype=float)
@@ -1162,18 +940,12 @@ def _fit_ladder(
 
     Scored by **total matched depth**, tie-broken by RMS rung error. Depth
     because a ladder that leaves the band's deepest null unexplained is a bad
-    hypothesis however tidily it fits the shallow ones: on the S0 main leg's
-    six tweeter-height positions **over 1.2-19 kHz**, a rung-count score
-    chose a 168.9 us ladder over the real 298.9 us one — both 3 rungs, the
-    wrong one tidier — by skipping the 6.31 dB null at 11.6 kHz entirely.
-    The band is part of the claim: over 5-19 kHz the two scores agree, because
-    the shallow low-frequency minima the count score preferred are out of
-    band and there is no tidier three-rung alternative to find.
-
-    RE-DERIVED 2026-08-02 (#2045), 6.36 -> 6.31 dB, for PR #1991's prominence
-    vote re-gating cloud_04 — one of these six tweeter-height positions. No
-    test pins this figure, so it drifted silently until the #2045 gate's
-    value-level sweep; the counterexample it supports is unchanged.
+    hypothesis however tidily it fits the shallow ones: on the S0 main leg's six
+    tweeter-height positions over 1.2-19 kHz, a rung-count score chose a
+    168.9 us ladder over the real 298.9 us one — both 3 rungs, the wrong one
+    tidier — by skipping the 6.31 dB null at 11.6 kHz. The band is part of the
+    claim: over 5-19 kHz the two scores agree, the shallow low-frequency minima
+    the count score preferred being out of band. No test pins that 6.31 dB.
 
     Returns ``(tau_s, {n: candidate index})`` for the longest consecutive run,
     or ``None`` when no hypothesis produced ``MIN_LADDER_RUNGS`` consecutive
@@ -1787,20 +1559,13 @@ def classify_dip_position_variance(
     the same reasoning ``_fit_ladder``'s own resolvability check already
     applies to rung spacing.
 
-    **What ``position_invariant`` means here, and what it must not be read
-    as.** It means the dip was individually measurable at at least
-    :data:`POSITION_PRESENCE_FRACTION` of the positions. It is **not** a
-    finding that the dip is a driver property, and it is **not** a licence to
-    EQ it. The module docstring's limit binds this function exactly as it
-    binds the registry: *position-invariance says "this is real"; it does not
-    say "this is correctable"*, and within one session it cannot separate an
-    origin that travels with the speaker from a room path that did not move.
-    ``docs/historical/attribution-stage-plan.md`` §5 rules on the same point for probe
-    P2 — a finding whose only support is position variance stays ``unsure``,
-    with P4 (rotating the speaker) as the adjudicator — and
-    :mod:`jasper.attribution.promotion` routes ``position_invariant`` to
-    ``carve``, not to gain. A consumer that grants an EQ *boost* because a
-    dip is position-invariant has inverted all three.
+    **What ``position_invariant`` means here.** The dip was individually
+    measurable at at least :data:`POSITION_PRESENCE_FRACTION` of the positions.
+    It is NOT a finding that the dip is a driver property and NOT a licence to
+    EQ it: the module docstring's limit binds this function exactly as it binds
+    the registry, and :mod:`jasper.attribution.promotion` routes
+    ``position_invariant`` to ``carve``, never to gain. A consumer that grants
+    an EQ BOOST because a dip is position-invariant has inverted that.
 
     ``position_dependent`` is the direction that carries a decision: the
     positions disagree, so the combined curve's dip is not a property of what
