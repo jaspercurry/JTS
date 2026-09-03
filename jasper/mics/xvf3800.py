@@ -870,9 +870,9 @@ def capture_channels() -> int | None:
 
     Pinned to the ^Capture: section — /proc/asound/<card>/stream0
     has Playback first (Channels: 2 for the XVF chip's playback
-    endpoint) then Capture (Channels: 6 on 6-ch firmware). A naive
-    `grep Channels:` returns the Playback value, which was the May
-    2026 reconciler bug that silently disabled software AEC."""
+    endpoint) then Capture (Channels: 6 on 6-ch firmware).
+    `grep Channels:` returns the Playback value, not Capture —
+    reading the wrong one silently disables software AEC."""
     return _capture_channels_for_card(alsa_card_name())
 
 

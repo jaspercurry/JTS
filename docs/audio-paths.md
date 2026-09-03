@@ -93,10 +93,7 @@ they are hearing safety, not transport arbitration.
 Each renderer has its own snd-aloop lane, and room-correction/test
 playback has a dedicated `correction_substream` lane. `jasper-fanin` sums
 those lanes and writes Ring A for CamillaDSP and **nothing else**.
-Production AEC consumes outputd's post-Camilla speaker monitor. This
-replaced the short-lived renderer-side dmix (`jasper_renderer_mix`) after
-AirPlay testing showed dmix's per-write timing could drop WiFi-bursty RTP
-packets.
+Production AEC consumes outputd's post-Camilla speaker monitor.
 
 ## Manual source selection
 

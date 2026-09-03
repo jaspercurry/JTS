@@ -540,8 +540,8 @@ unit_active_and_enabled() {
 # here), and every mic-bearing branch below then restarts jasper-voice
 # unconditionally. Plugging in a measurement microphone to take a room
 # measurement therefore took the assistant down with it: ~8 s of deafness
-# measured on jts3 (2026-08-18) for the chip-AEC bounce, and up to ~55 s worst
-# case (see jasper-aec-reconcile.service's TimeoutStartSec note).
+# measured on jts3 for the chip-AEC bounce, and up to ~55 s worst case (see
+# jasper-aec-reconcile.service's TimeoutStartSec note).
 #
 # Every condition is something a skip would silently lose, and anything
 # unknown answers "restart": a false restart costs a few seconds of annoyance,
@@ -1515,8 +1515,6 @@ enable_start_aec() {
     # successfully. Any chip-side param changes from a code deploy
     # (HPF cutoff, SHF_BYPASS, future tuning) would silently NOT
     # re-apply until the next reboot. `restart` forces re-execution.
-    # Discovered 2026-05-15 after a deploy left chip params at their
-    # previous boot-time values despite code expecting newer ones.
     run_systemctl restart jasper-aec-init.service
     run_systemctl restart jasper-aec-bridge.service
 }

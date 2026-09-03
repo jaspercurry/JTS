@@ -37,10 +37,6 @@ from .aec import _AEC_MIC_MUSIC_THRESHOLD, _parse_rms_window
 # `ref` through fan-in, CamillaDSP, outputd, and outputd's UDP speaker
 # monitor, then the bridge's 125 Hz HPF + (default) 0 dB pre-gain; it lands
 # in the low thousands of RMS there. A broken path stays at roughly 0-50 RMS.
-# (This describes the path; the thresholds below are unchanged. The older
-# "dsnoop + plug" wording described the bridge's retired ALSA reference —
-# U4/P7-1 — which was never how this probe's signal reached `ref` on a box
-# running the production default.)
 _PROBE_REF_PASS_THRESHOLD = 200
 _PROBE_SINE_PATH = "/tmp/jasper-doctor-probe-sine.wav"
 _PROBE_SINE_DURATION_S = 5.0
@@ -164,14 +160,6 @@ def _probe_aec_ref_path_locked() -> list[CheckResult]:
                 "active source and re-run.",
             ))
             return results
-        # NO /proc/asound LANE CHECK HERE ANY MORE (#2585). A third precheck
-        # used to read `_loopback_playback_active()` — an open fan-in INPUT lane
-        # under /proc/asound/Loopback — and refuse. It was PERMANENTLY INERT on a
-        # ring-armed box: no aloop input lane is open there by construction, so
-        # it read as protection while protecting nothing, and making it ring-
-        # aware would need a fan-in STATUS or lane-map read inside a helper that
-        # is deliberately /proc-only.
-        #
         # WHICH LAYERS HOLD THE PROPERTY NOW ("never play a test sine over live
         # audio"), stated explicitly because this is hearing-adjacent:
         #

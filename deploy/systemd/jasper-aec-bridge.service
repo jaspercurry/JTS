@@ -58,9 +58,8 @@ StartLimitBurst=4
 StartLimitAction=reboot
 
 # Stage 2 audio-protection: assign to jts-mic.slice with
-# MemorySwapMax=0. Today's stress test (2026-05-24) caught
-# aec-bridge accumulating 42 MB of VmSwap during sustained
-# memory pressure — exactly the failure mode this slice prevents.
+# MemorySwapMax=0 — bounds VmSwap accumulation under sustained
+# memory pressure.
 
 [Service]
 # Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
@@ -68,12 +67,12 @@ StartLimitAction=reboot
 # systemd considers it active. `WatchdogSec=30s` requires the daemon
 # to pat the watchdog every < 30 s; the daemon's heartbeat thread
 # only pats if its work loop has made progress recently (sentinel
-# pattern). If the loop wedges (PortAudio blocked in a syscall
-# holding the GIL — the 2026-05-11 incident), `WATCHDOG=1` stops
-# firing, this timer expires, and `Restart=on-watchdog` revives us
-# with a fresh process. Critically, this happens BEFORE the SIGTERM
-# timeout / SIGKILL that would otherwise corrupt snd-aloop's
-# kernel-side loopback_cable state and require a reboot.
+# pattern). If the loop wedges (PortAudio blocked in a syscall holding
+# the GIL), `WATCHDOG=1` stops firing, this timer expires, and
+# `Restart=on-watchdog` revives us with a fresh process. Critically,
+# this happens BEFORE the SIGTERM timeout / SIGKILL that would
+# otherwise corrupt snd-aloop's kernel-side loopback_cable state and
+# require a reboot.
 #
 # `TimeoutStopSec=5s` is the matching shorter SIGTERM grace period
 # (down from systemd's default 90 s). If the daemon can't shut down
@@ -100,27 +99,22 @@ EnvironmentFile=-/var/lib/jasper/usb_mic.env
 EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
 # `Restart=on-failure` covers non-zero exit + signals + watchdog
-# timeouts (per the table in systemd.service(5)). The previous
-# `on-watchdog` setting only restarted on watchdog timeout, so the
-# explicit `BridgeStalled` exit (code 1, raised by _aec_loop when
-# the mic queue stays empty for JASPER_AEC_STALL_RESTART_SEC) was
-# NOT being restarted — the service was just parked as failed, and
-# the wake-word path was offline until manual intervention. Hit in
-# production 2026-05-11.
+# timeouts (systemd.service(5)); `on-watchdog` alone does not restart
+# on the explicit `BridgeStalled` exit (code 1, raised by `_aec_loop`
+# when the mic queue stays empty for JASPER_AEC_STALL_RESTART_SEC).
 Restart=on-failure
 RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
 IOSchedulingPriority=4
 
-# AEC-bridge intentionally does NOT elect SCHED_FIFO. The G6 attempt
-# (CPUSchedulingPolicy=fifo + LimitRTTIME=200000) crash-looped the bridge: its
-# CPU-heavy startup (DTLN / WebRTC-AEC3 model load runs >200 ms) hit the RTTIME
-# hard limit while scheduled FIFO and was SIGKILLed (status=9/KILL) before it
-# finished starting — caught live on jts 2026-06-27 (jts3 has no XVF mic, so
-# process-wide bridge RT was never exercised pre-merge). The bridge keeps its
-# Nice=-10 + realtime IO priority (above) and runs SCHED_OTHER as it always
-# did. A future RT election must set the policy on the steady-state audio thread
+# AEC-bridge intentionally does NOT elect SCHED_FIFO:
+# CPUSchedulingPolicy=fifo + LimitRTTIME=200000 crash-loops the bridge — its
+# CPU-heavy startup (DTLN / WebRTC-AEC3 model load runs >200 ms) hits the
+# RTTIME hard limit while scheduled FIFO and gets SIGKILLed (status=9/KILL)
+# before it finishes starting. The bridge keeps its Nice=-10 + realtime IO
+# priority (above) and runs SCHED_OTHER as it always did. A future RT
+# election must set the policy on the steady-state audio thread
 # AFTER model load — not process-wide via systemd, which schedules the heavy
 # init under FIFO too. LimitRTPRIO=99 stays (harmless with no policy elected) so
 # that future option needs no unit change.
