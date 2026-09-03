@@ -17,7 +17,10 @@ silently masked as "unchanged".
 """
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -363,3 +366,57 @@ build_install_jts_ring_ioplug
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert dest_so.exists(), "failure branch must not remove the prior .so"
+
+
+@pytest.mark.skipif(not _has_bash(), reason="bash required")
+def test_record_provenance_does_not_rechmod_an_existing_state_dir(tmp_path):
+    """The default provenance path's parent is STATE_DIR itself
+    (/var/lib/jasper), so `install -d -m 0755 "$(dirname "$JTS_RING_IOPLUG_PROVENANCE")"`
+    re-chmods an EXISTING STATE_DIR on every deploy — the same trap #3879/#3930
+    closed elsewhere, left open here. Pin that an existing parent dir never
+    reaches `install` at all (via a fake `install` on PATH that records
+    invocations) and that its mode survives untouched."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_dir.chmod(0o770)  # mkdir(mode=...) is masked by umask; chmod isn't
+    provenance = state_dir / "ring-ioplug.provenance"
+    so = _fake_so(tmp_path, markers=())
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "install.calls"
+    fake_install = bin_dir / "install"
+    fake_install.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> "
+        + shlex.quote(str(calls))
+        + "\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_install.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    script = f"""
+set -euo pipefail
+REPO_DIR="{tmp_path}/repo"
+BUILD_USER="nobody"
+JTS_RING_ALSA_PLUGIN_DIR="{tmp_path}/plugindir"
+JTS_RING_IOPLUG_PROVENANCE="{provenance}"
+export JTS_RING_IOPLUG_PROVENANCE
+source "{RING_PLATFORM_SH}"
+record_ring_ioplug_provenance "{so}" deadbeef
+"""
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not calls.exists(), (
+        "record_ring_ioplug_provenance called `install -d` on an existing "
+        f"parent dir: {calls.read_text(encoding='utf-8') if calls.exists() else ''}"
+    )
+    assert stat.S_IMODE(state_dir.stat().st_mode) == 0o770

@@ -255,7 +255,13 @@ record_ring_ioplug_provenance() {
     local so_dest="$1" sha="$2"
     local caps
     caps="$(_jts_ring_ioplug_caps "${so_dest}")"
-    install -d -m 0755 "$(dirname "${JTS_RING_IOPLUG_PROVENANCE}")"
+    # `install -d -m` re-chmods an EXISTING dir — the default provenance
+    # path's parent is STATE_DIR itself, so this briefly narrowed an
+    # already-widened 0770 STATE_DIR on every deploy (same trap #3879/#3930
+    # closed elsewhere). Only create, never re-chmod.
+    local provenance_dir
+    provenance_dir="$(dirname "${JTS_RING_IOPLUG_PROVENANCE}")"
+    [[ -d "${provenance_dir}" ]] || install -d -m 0755 "${provenance_dir}"
     local tmp="${JTS_RING_IOPLUG_PROVENANCE}.tmp.$$"
     {
         echo "# Written by deploy/lib/install/ring-platform.sh. Do not hand-edit:"
