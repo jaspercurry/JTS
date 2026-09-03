@@ -20,5 +20,14 @@ TimeoutStopSec=10s
 Restart=always
 RestartSec=5
 
+# Idle process holding one system-bus connection; it polls the adapter over
+# that connection and never buffers audio.
+MemoryHigh=60M
+MemoryMax=100M
+
+# Optional and restartable: pairing is an occasional operator action, and
+# already-bonded devices reconnect without an agent registered.
+OOMScoreAdjust=-300
+
 [Install]
 WantedBy=multi-user.target
