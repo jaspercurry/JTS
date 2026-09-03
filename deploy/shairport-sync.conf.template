@@ -119,16 +119,19 @@ general = {
 };
 
 sessioncontrol = {
-    // Release the loopback device 1s after AP2 idle so other
-    // renderers (librespot, bluealsa-aplay) can take over
-    // immediately when the user switches sources. With
-    // `latest-source-wins` arbitration in jasper-mux the user's
-    // expectation is "I selected Spotify on my phone, it should
-    // play right now" — not "wait N seconds for the dead AirPlay
-    // session to time out." Keep small but non-zero so a brief
-    // transport glitch on Mac doesn't destroy the session and force
-    // re-establishing.
-    session_timeout = 1;
+    // 60 is the FLOOR shairport-sync accepts, not a tuned value:
+    // shairport.c:1203-1216 rejects anything in 1..59 with a warning and
+    // silently substitutes 60 (4.3.7 took any integer, so this lane ran
+    // at 1 until the 5.2.3 bump). 0 means "never time out", which holds
+    // the lane forever — strictly worse. So 60 is the only reachable
+    // value below "never".
+    // This is the passive path only. Source switching does NOT wait for
+    // it: `latest-source-wins` arbitration in jasper-mux actively calls
+    // the native D-Bus DropSession (jasper/mux.py) when another renderer
+    // claims the output, so "I selected Spotify, it should play right
+    // now" still holds. What changes is how long a dead AirPlay session
+    // squats the lane when nothing else claims it.
+    session_timeout = 60;
     // Fires BEFORE the connect-time volume push, so the volume hook above
     // can tell that snapshot from a user's nudge and mark it
     // `observation_initial` — which keeps connecting a sender from
@@ -158,6 +161,15 @@ alsa = {
     // USB-C dongle (APPLE_USB_C_DONGLE in jasper/audio_hardware/dac.py)
     // is S24_3LE, not S16_LE.
     output_format = "S32";
+    // Pinned for the same reason as output_rate/output_format above. 5.0
+    // added multichannel: `output_channels` now defaults to "auto" (match
+    // the source) while `six_channel_mode`/`eight_channel_mode` default to
+    // "on", so a sender may offer 5.1/7.1. This lane is `type plug` over a
+    // 2-channel slave (deploy/alsa/conf.d/61-jts-renderer-lanes.conf), and
+    // plug accepts any channel count — it would route/fold surround into
+    // stereo instead of letting shairport's own `mixdown` do it. Pinning 2
+    // keeps the 4.3.7 stereo-only behaviour this lane's geometry assumes.
+    output_channels = 2;
     use_mmap_if_available = "no";
     // Templated — see file header. Free-running ("yes") is the fallback
     // that stops chasing the sender clock entirely: it trades A/V sync
@@ -183,5 +195,4 @@ diagnostics = {
     // closed — this level-2 detail is ~55% of shairport's log volume
     // (~40 PTP-anchor lines/min).
     log_verbosity = 2;
-    log_show_file_and_line_numbers = "no";
 };

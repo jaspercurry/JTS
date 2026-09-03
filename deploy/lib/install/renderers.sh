@@ -84,6 +84,13 @@ install_renderers() {
     local need_build=0
     if [[ ! -x /usr/local/bin/shairport-sync ]]; then
         need_build=1
+    elif [[ "$(/usr/local/bin/shairport-sync -V 2>&1 | head -1)" != "${SHAIRPORT_SYNC_VERSION}-"* ]]; then
+        # `-V` prints "<version>-<feature>-<feature>..." (e.g.
+        # "5.2.3-AirPlay2-smi10-OpenSSL-..."), so the installed version is the
+        # text before the first "-". Without this gate the feature probes below
+        # pass on any AP2+pipe build and a pin bump is a silent no-op on every
+        # Pi that already has one.
+        need_build=1
     elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q "AirPlay2"; then
         need_build=1
     elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -qE -- '-pipe(-|$)'; then
@@ -115,9 +122,16 @@ install_renderers() {
         (
             cd "${tmpdir}/sps" || exit 1
             autoreconf -fi
+            # No systemd flag: upstream renamed --with-systemd to
+            # --with-systemd-startup in 5.0, and that flag only makes
+            # `make install` drop upstream's own unit file (configure.ac
+            # gates the whole systemd block on it and defines nothing for
+            # the binary). JTS installs deploy/systemd/shairport-sync.service
+            # itself, and requesting the flag would pull in `systemd-dev`
+            # just to resolve systemdsystemunitdir.
             ./configure --sysconfdir=/etc \
                 --with-alsa --with-soxr --with-avahi \
-                --with-ssl=openssl --with-systemd \
+                --with-ssl=openssl \
                 --with-airplay-2 \
                 --with-pipe \
                 --with-metadata --with-dbus-interface \
