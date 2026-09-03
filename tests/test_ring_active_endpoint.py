@@ -1488,7 +1488,7 @@ def test_the_ring_doctor_checks_are_still_registered():
     passed, because they call the function, not the registry. This asserts the
     registry.
     """
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime, audio_runtime_ring
     from jasper.cli.doctor._registry import registered_checks
 
     # Importing the module is what runs its @doctor_check decorators; naming the
@@ -1498,8 +1498,8 @@ def test_the_ring_doctor_checks_are_still_registered():
     # would spend a slot).
     expected = (
         audio_runtime.check_fanin_coupling,
-        audio_runtime.check_ring_conf_floor_render,
-        audio_runtime.check_ring_platform_assets,
+        audio_runtime_ring.check_ring_conf_floor_render,
+        audio_runtime_ring.check_ring_platform_assets,
     )
     registered = {entry.func.__name__ for entry in registered_checks()}
     for func in expected:
@@ -1522,21 +1522,21 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
     real one ("why won't this box ring?") unanswered, which is the same
     defect #2294 fixed for the floor half.
     """
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_ring
 
     record_active_dac("test_dac")
-    monkeypatch.setattr(audio_runtime, "latency_floor_for", lambda dac_id: None)
+    monkeypatch.setattr(audio_runtime_ring, "latency_floor_for", lambda dac_id: None)
 
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
-    roleful = audio_runtime.check_ring_conf_floor_render()
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
     assert "ROLEFUL" in roleful.detail
     assert "baseline-reemit --endpoint ring" in roleful.detail
 
     # A PASSIVE box gets exactly today's sentence — the note is additive, not a
     # rewrite, so the existing #2294 answer is untouched where it was right.
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: False)
-    passive = audio_runtime.check_ring_conf_floor_render()
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
     assert "ROLEFUL" not in passive.detail
     assert roleful.detail.startswith(passive.detail.rstrip())
@@ -1551,7 +1551,7 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     was really about, so it is pinned separately from the no-floor one.
     """
     from jasper.audio_hardware.dac import latency_floor_for
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_ring
     from jasper.fanin_coupling import RING_SLOT_FRAMES
 
     floor = latency_floor_for("hifiberry_dac8x")
@@ -1562,10 +1562,10 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
 
     record_active_dac("hifiberry_dac8x")
-    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
+    monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
 
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
-    roleful = audio_runtime.check_ring_conf_floor_render()
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
     assert "matches" in roleful.detail
     assert "ROLEFUL" in roleful.detail, (
@@ -1573,8 +1573,8 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
         "cannot ring — the ok must say why"
     )
 
-    monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: False)
-    passive = audio_runtime.check_ring_conf_floor_render()
+    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
     assert "ROLEFUL" not in passive.detail
 

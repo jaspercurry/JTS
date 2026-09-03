@@ -1348,9 +1348,9 @@ def test_every_detach_reason_has_its_own_remedy():
     tokens = re.findall(r'=> "([a-z_]+)"', block.group(1))
     assert len(tokens) >= 4, tokens
 
-    remedies = {t: doctor.audio_runtime._ring_detach_remedy(t) for t in tokens}
+    remedies = {t: doctor.audio_runtime_ring._ring_detach_remedy(t) for t in tokens}
     # The fallback text, identified by what only it says.
-    fallback = doctor.audio_runtime._ring_detach_remedy("__no_such_token__")
+    fallback = doctor.audio_runtime_ring._ring_detach_remedy("__no_such_token__")
     for token, text in remedies.items():
         assert text, token
         if token == "unavailable":

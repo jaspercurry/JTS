@@ -901,6 +901,12 @@ def check_dongle_headphone_at_max() -> CheckResult:
     )
 
 from . import audio_runtime as audio_runtime
+from .audio_runtime_ring import (
+    check_ring_conf_floor_render,
+    check_ring_geometry_coherence,
+    check_ring_ioplug_provenance,
+    check_ring_platform_assets,
+)
 from .audio_runtime import (
     _FANIN_EXPECTED_ALOOP_INPUTS,
     _OUTPUTD_EXPECTED_DAC_PCM,
@@ -918,10 +924,6 @@ from .audio_runtime import (
     check_fanin_tts_drops,
     check_fanin_ring_stall,
     check_outputd_service,
-    check_ring_conf_floor_render,
-    check_ring_geometry_coherence,
-    check_ring_ioplug_provenance,
-    check_ring_platform_assets,
 )
 
 __all__ = [

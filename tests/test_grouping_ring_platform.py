@@ -510,7 +510,7 @@ def test_the_doctor_stall_check_judges_the_grouping_ring(monkeypatch, tmp_path):
         return ring_assets.RingStallVerdict(present=False, detail="absent (test)")
 
     monkeypatch.setattr(ring_assets, "ring_stall_verdict", _spy)
-    result = doctor.audio_runtime.check_ring_reader_stall()
+    result = doctor.audio_runtime_ring.check_ring_reader_stall()
 
     assert GROUPING_RING_FILE in asked, (
         "check_ring_reader_stall must judge the grouping ring — its tuple is "

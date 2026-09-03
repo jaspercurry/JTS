@@ -561,7 +561,7 @@ def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
     ],
 )
 def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
-    from jasper.cli.doctor.audio_runtime import check_ring_transport_park
+    from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
     monkeypatch.setattr(
         transport_park,
@@ -611,7 +611,7 @@ def test_an_unproven_endpoint_warns_without_naming_a_park(
     ``unproven`` is False on that row: ADR-0184's seam keeps its unarmed-marker
     condition, so the two never describe one box.
     """
-    from jasper.cli.doctor.audio_runtime import check_ring_transport_park
+    from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
     state = transport_park.snapshot(topology, env)
     assert state["unproven_endpoint"] is unproven
@@ -780,7 +780,7 @@ def test_an_armed_endpoint_under_no_active_modes_discloses_off_composite(
     warn on every healthy composite box; it must stay ``ok`` on the same env
     that warns for the non-composite row directly above it.
     """
-    from jasper.cli.doctor.audio_runtime import check_ring_transport_park
+    from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
     state = transport_park.snapshot(topology, env)
     assert state["endpoint_armed_without_active_modes"] is armed_without_modes
@@ -823,7 +823,7 @@ def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
     SENTENCE is the snapshot's own, carried through rather than re-composed,
     so this surface cannot describe it differently from `/state` and the card.
     """
-    from jasper.cli.doctor.audio_runtime import check_ring_transport_park
+    from jasper.cli.doctor.audio_runtime_ring import check_ring_transport_park
 
     state = {
         "status": "ok",
