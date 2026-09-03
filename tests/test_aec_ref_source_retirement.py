@@ -23,18 +23,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jasper.cli import aec_bridge, aec_bridge_reference
+from jasper.cli import aec_bridge, aec_bridge_capture, aec_bridge_reference
 from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
 # The reference reader the retirement removed spanned the bridge entry point
-# and the transport module cut out of it, so both are in scope for the guards.
+# and the modules cut out of it that open capture devices, so all three are in
+# scope for the guards.
 BRIDGE_SOURCES = (
     BRIDGE_SOURCE,
+    REPO / "jasper" / "cli" / "aec_bridge_capture.py",
     REPO / "jasper" / "cli" / "aec_bridge_reference.py",
 )
-BRIDGE_MODULES = (aec_bridge, aec_bridge_reference)
+BRIDGE_MODULES = (aec_bridge, aec_bridge_capture, aec_bridge_reference)
 RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 
 RETIRED = "alsa"

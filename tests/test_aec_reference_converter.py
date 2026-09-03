@@ -9,19 +9,12 @@ delay or band change here does not fail loudly — it quietly stops cancelling
 echo, and the box answers itself. This pins the whole conversion (stereo fold,
 resample, high-pass, gain, clip, int16 framing) against the `scipy.signal`
 pipeline it replaced, and pins delivery-boundary continuity without scipy.
-
-The last file in this module is the one remaining scipy seam: which resampler
-the optional corpus USB mic gets, and therefore whether the resident daemon
-imports scipy at all.
 """
 from __future__ import annotations
-
-import sys
 
 import numpy as np
 import pytest
 
-from jasper.cli.aec_bridge import _usb_resampler
 from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
 from jasper.cli.aec_bridge_reference import (
     REF_CHANNELS,
@@ -140,45 +133,3 @@ def test_reference_frames_report_clipping_without_wrapping():
     assert 0 < batch.clipped_samples <= samples.size
     assert int(samples.min()) >= -32768 and int(samples.max()) <= 32767
 
-
-def test_a_card_already_at_the_mic_rate_is_not_resampled():
-    assert _usb_resampler(SAMPLE_RATE) == (None, 1, 1)
-
-
-@pytest.mark.parametrize(
-    ("usb_rate", "ratio", "wants_scipy"),
-    [
-        (8_000, (2, 1), False),
-        (24_000, (2, 3), False),
-        (32_000, (1, 2), False),
-        (48_000, (1, 3), False),
-        (96_000, (1, 6), False),
-        (44_100, (160, 441), True),
-        (22_050, (320, 441), True),
-    ],
-)
-def test_only_the_44_1_khz_family_makes_the_bridge_import_scipy(
-    usb_rate, ratio, wants_scipy,
-):
-    """Every integer-ratio card must stay on the numpy kernel.
-
-scipy here is resident RSS in a `MemorySwapMax=0` slice
-    (`jasper.dsp_numpy` owns the figure), paid for the life of the daemon, and
-    the numpy kernel is measurably faster at these ratios. Only 44.1 kHz
-    reduces to hundreds of polyphase branches, which numpy would run in a
-    Python loop inside the capture callback.
-    """
-    resample, up, down = _usb_resampler(usb_rate)
-
-    assert (up, down) == ratio
-    assert resample.__module__.startswith("scipy") is wants_scipy
-
-
-def test_a_44_1_khz_card_falls_back_to_numpy_when_scipy_is_absent(monkeypatch):
-    """A missing scipy must slow the corpus leg down, not kill its thread."""
-    monkeypatch.setitem(sys.modules, "scipy.signal", None)
-
-    resample, up, down = _usb_resampler(44_100)
-
-    assert (up, down) == (160, 441)
-    assert resample.__module__ == "jasper.dsp_numpy"
