@@ -24,7 +24,9 @@ import numpy as np
 # Leaf of the crossover_v2 DAG. Facts about the graph — the ONE biquad
 # evaluator, the emitter's filter vocabulary, the shelf steepness it actually
 # spells, the trim floor, the declared protection edges — are CONSUMED here,
-# the opposite of the lockstep rule the policy bounds below follow.
+# the opposite of the lockstep rule the policy bounds below follow: bounds
+# with a source are RESTATED, not imported;
+# tests/test_crossover_v2_driver_prescription.py pins each pair.
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
@@ -251,7 +253,7 @@ MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
 
 #: Slack on the COMPOSED BOOST comparison alone, dB, so the evaluator's own
 #: double-precision residue cannot decide a policy question. Needed only
-#: because ADR-0207 made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
+#: because ruling R8 (ADR-0207) made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
 #: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` the SAME number: a single filter at the
 #: rail composes to it exactly in arithmetic, and the biquad evaluates it to a
 #: residue whose SIGN depends on centre frequency and Q. Swept over 4,000
