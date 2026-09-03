@@ -480,12 +480,15 @@ reconcile_i2s_hat_boot() {
 }
 
 sync_i2s_hat_reboot_marker() {
-    local runtime_enabled=0 desired_enabled=0
+    # Any registered I2S profile, not just InnoMaker: a HAT can be the
+    # composite's child device rather than the top-level profile_id, so
+    # only the DESIRED id needs a child-devices lookup -- it is the one
+    # id this reconcile pass actually knows to look for.
+    local desired="$I2S_HAT_DESIRED_PROFILE" observed="$OBSERVED_OUTPUT_PROFILE_ID"
     [[ -n "$I2S_HAT_BOOT_CHANGED" && "$OBSERVED_OUTPUT_VALID" == "1" ]] || return 0
-    [[ "$OBSERVED_OUTPUT_PROFILE_ID" == "innomaker_hifi_amp_pro" ||
-       "$OBSERVED_OUTPUT_PAYLOAD" == *'"child_devices": ['*'"device_id": "innomaker_hifi_amp_pro"'*']'* ]] && runtime_enabled=1
-    [[ "$I2S_HAT_DESIRED_PROFILE" == "innomaker_hifi_amp_pro" ]] && desired_enabled=1
-    if [[ "$runtime_enabled" == "$desired_enabled" ]]; then
+    [[ -n "$desired" && "$OBSERVED_OUTPUT_PAYLOAD" == *'"child_devices": ['*"\"device_id\": \"$desired\""*']'* ]] &&
+        observed="$desired"
+    if [[ "$observed" == "$desired" ]]; then
         rm -f -- "$I2S_HAT_REBOOT_REQUIRED_PATH"
         return 0
     fi

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping
@@ -345,15 +346,18 @@ def write_i2s_hat_intent(
     profile_id: str | None,
     path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
 ) -> None:
-    target = Path(path)
-    if profile_id is None:
-        target.unlink(missing_ok=True)
-        return
-    if _registered_i2s_profile(profile_id) is None:
+    """Persist the desired I2S HAT profile, or an explicit "none" marker.
+
+    ``profile_id=None`` writes the key with an empty value rather than
+    removing the file: an explicitly-saved "none" (the operator chose
+    unmanaged) is a distinct, persisted state from the file never having
+    existed at all (reconcile_boot_config's opt-in gate — #i2s-hat-intent).
+    """
+    if profile_id is not None and _registered_i2s_profile(profile_id) is None:
         raise ValueError(f"unsupported I2S audio-HAT profile: {profile_id!r}")
     atomic_write_text(
-        target,
-        f"{I2S_HAT_INTENT_KEY}={profile_id}\n",
+        Path(path),
+        f"{I2S_HAT_INTENT_KEY}={profile_id or ''}\n",
         mode=0o660,
         group_from_parent=True,
     )
@@ -612,25 +616,26 @@ def _without_managed_role_lines(content: str) -> str:
     return _collapse_empty_all_sections("".join(output))
 
 
-def _managed_i2s_hat_block(content: str) -> str | None:
-    """The exact JTS-owned I2S HAT block substring, or ``None`` if absent.
+@dataclass(frozen=True)
+class I2sHatCollision:
+    """A registered I2S overlay found outside JTS's managed block.
 
-    Comparing this substring (rather than the whole boot config) between two
-    renders tells whether JTS's OWN declaration changed, independent of
-    where an unrelated managed block (the USB data-role block) happens to
-    land relative to it.
+    Surfaced instead of written: two competing I2S machine drivers on one
+    boot config is never a state JTS writes on its own initiative, so the
+    caller gets this back instead of a rendered change to apply.
     """
-    start = content.find(I2S_HAT_BLOCK_BEGIN)
-    if start == -1:
-        return None
-    end = content.find(I2S_HAT_BLOCK_END, start)
-    if end == -1:
-        raise ValueError("JTS I2S audio-HAT block is missing its end marker")
-    return content[start : end + len(I2S_HAT_BLOCK_END)]
+
+    managed_overlay: str
+    colliding_overlays: tuple[str, ...]
 
 
-def _without_managed_i2s_hat(content: str) -> str:
-    """Strip the JTS-owned I2S HAT block only, whatever overlay it names.
+def _without_managed_i2s_hat(content: str) -> tuple[str, str | None]:
+    """Strip the JTS-owned I2S HAT block, whatever overlay it names.
+
+    Returns ``(content_without_block, block_overlay)`` — the second element
+    is the overlay the removed block declared, or ``None`` if no managed
+    block was present. It is the one parser for the managed block: no
+    separate substring scan exists to drift out of sync with it.
 
     Everything outside the ``BEGIN``/``END`` markers survives untouched —
     a hand-written ``dtoverlay=`` line is never JTS's to delete, even one
@@ -638,6 +643,7 @@ def _without_managed_i2s_hat(content: str) -> str:
     """
     output: list[str] = []
     in_managed_block = False
+    block_overlay: str | None = None
     for line in content.splitlines(keepends=True):
         stripped = line.strip()
         if stripped == I2S_HAT_BLOCK_BEGIN:
@@ -653,40 +659,58 @@ def _without_managed_i2s_hat(content: str) -> str:
         if in_managed_block:
             if stripped and not stripped.startswith("#"):
                 match = _OVERLAY_LINE_RE.match(line)
-                if match is None or "," in line.split("#", 1)[0]:
+                if (
+                    match is None
+                    or "," in line.split("#", 1)[0]
+                    or block_overlay is not None
+                ):
                     raise ValueError("unexpected directive in JTS I2S HAT block")
+                block_overlay = match.group(1)
             continue
         output.append(line)
     if in_managed_block:
         raise ValueError("JTS I2S audio-HAT block is missing its end marker")
-    return _collapse_empty_all_sections("".join(output))
+    return _collapse_empty_all_sections("".join(output)), block_overlay
 
 
 def render_i2s_hat_boot_config(
     content: str, profile_id: str | None
-) -> tuple[str, tuple[str, ...]]:
+) -> tuple[str, bool, I2sHatCollision | None]:
     """Render the managed I2S HAT block for ``profile_id`` (or remove it).
 
-    Returns ``(rendered_content, warnings)``. A hand-written ``dtoverlay=``
-    line is never deleted — including one already naming the overlay this
-    call is about to manage — so a collision surfaces as a warning instead
-    of silently folding the manual line into the managed block.
+    Returns ``(rendered_content, changed, collision)``. A hand-written
+    ``dtoverlay=`` line is never deleted. Enabling a profile (``profile_id``
+    not ``None``) while ANY registered I2S overlay -- the same one or a
+    different one -- already sits outside the managed block REFUSES rather
+    than writes: ``rendered_content`` comes back byte-identical to
+    ``content``, ``changed`` is ``False``, and ``collision`` names what
+    collided, for the caller to disclose without silently compounding a
+    hand-written line with a managed one. Clearing (``profile_id=None``)
+    never refuses -- removing JTS's own block cannot create a collision.
     """
     profile: DacProfile | None = None
     if profile_id is not None:
         profile = _registered_i2s_profile(profile_id)
         if profile is None:
             raise ValueError(f"unsupported I2S audio-HAT profile: {profile_id!r}")
-    cleaned = _without_managed_i2s_hat(content).rstrip()
+    cleaned, prior_overlay = _without_managed_i2s_hat(content)
+    cleaned = cleaned.rstrip()
+    if profile is not None:
+        assert profile.dtoverlay is not None
+        colliding = configured_i2s_overlays(cleaned)
+        if colliding:
+            return (
+                content,
+                False,
+                I2sHatCollision(
+                    managed_overlay=profile.dtoverlay,
+                    colliding_overlays=colliding,
+                ),
+            )
+    new_overlay = profile.dtoverlay if profile is not None else None
+    changed = prior_overlay != new_overlay
     if profile is None:
-        return cleaned + ("\n" if cleaned else ""), ()
-    assert profile.dtoverlay is not None
-    warnings = tuple(
-        f"hand-written dtoverlay={overlay} left in place; JTS now also "
-        f"manages dtoverlay={profile.dtoverlay} for the {profile.label} "
-        "intent — remove the stale line by hand if it no longer applies"
-        for overlay in configured_i2s_overlays(cleaned)
-    )
+        return cleaned + ("\n" if cleaned else ""), changed, None
     last_line = cleaned.splitlines()[-1].strip().lower() if cleaned else ""
     section_prefix = "" if last_line == "[all]" else "[all]\n"
     separator = "\n" if last_line == "[all]" else "\n\n"
@@ -697,7 +721,7 @@ def render_i2s_hat_boot_config(
         f"{I2S_HAT_BLOCK_END}\n"
     )
     rendered = f"{cleaned}{separator}{block}" if cleaned else block
-    return rendered, warnings
+    return rendered, changed, None
 
 
 def render_boot_config(content: str, desired_role: UsbDataRole) -> str:
@@ -729,9 +753,17 @@ def reconcile_boot_config(
     boot_config_path: str | Path,
     udc_class_dir: str | Path,
     i2s_hat_intent_path: str | Path | None = None,
-) -> tuple[UsbPortRoleState, bool, bool, str | None, bool, tuple[str, ...]]:
+) -> tuple[UsbPortRoleState, bool, bool, str | None, bool, I2sHatCollision | None]:
+    # The intent FILE must exist, not just the path argument -- a box the
+    # operator never pointed at a saved intent (no file yet, distinct from
+    # one that exists and explicitly says "none") gets NOTHING touched,
+    # managed block included (see the jts3 incident this guards).
+    intent_declared = i2s_hat_intent_path is not None and Path(
+        i2s_hat_intent_path
+    ).is_file()
     desired_profile = None
-    if i2s_hat_intent_path is not None:
+    if intent_declared:
+        assert i2s_hat_intent_path is not None
         desired_profile = read_i2s_hat_intent(i2s_hat_intent_path)
     config_path = Path(boot_config_path)
     if not config_path.is_file():
@@ -740,9 +772,9 @@ def reconcile_boot_config(
             boot_config_path=boot_config_path,
             udc_class_dir=udc_class_dir,
         )
-        if i2s_hat_intent_path is not None and state.board_topology != "unsupported":
+        if intent_declared and state.board_topology != "unsupported":
             raise FileNotFoundError(f"boot config does not exist: {config_path}")
-        return state, False, False, desired_profile, False, ()
+        return state, False, False, desired_profile, False, None
     original = config_path.read_text(encoding="utf-8")
     initial = resolve_usb_port_role(
         board_model=read_text_property(model_path),
@@ -750,18 +782,13 @@ def reconcile_boot_config(
         active_role=observed_active_role(udc_class_dir),
     )
     if initial.board_topology == "unsupported":
-        return initial, False, False, desired_profile, False, ()
+        return initial, False, False, desired_profile, False, None
     hat_changed = False
-    hat_warnings: tuple[str, ...] = ()
+    hat_collision: I2sHatCollision | None = None
     with_hat = original
-    # No --i2s-hat-intent-file at all: leave every dtoverlay= line (managed or
-    # hand-written) exactly as found. That is the explicit per-box opt-in —
-    # a box the operator never pointed at an intent file keeps whatever
-    # overlay it booted with (see the jts3 incident this guards).
-    if i2s_hat_intent_path is not None:
-        with_hat, hat_warnings = render_i2s_hat_boot_config(original, desired_profile)
-        hat_changed = _managed_i2s_hat_block(original) != _managed_i2s_hat_block(
-            with_hat
+    if intent_declared:
+        with_hat, hat_changed, hat_collision = render_i2s_hat_boot_config(
+            original, desired_profile
         )
     desired_role = resolve_usb_port_role(
         board_model=initial.board_model,
@@ -788,7 +815,7 @@ def reconcile_boot_config(
         boot_config=rendered,
         active_role=initial.active_role,
     )
-    return state, changed, hat_changed, desired_profile, durability_failed, hat_warnings
+    return state, changed, hat_changed, desired_profile, durability_failed, hat_collision
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -812,7 +839,7 @@ def main(argv: list[str] | None = None) -> int:
     hat_changed = False
     desired_hat_profile: str | None = None
     durability_failed = False
-    hat_warnings: tuple[str, ...] = ()
+    hat_collision: I2sHatCollision | None = None
     if args.reconcile_boot:
         result = reconcile_boot_config(
             model_path=args.model_file,
@@ -826,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
             hat_changed,
             desired_hat_profile,
             durability_failed,
-            hat_warnings,
+            hat_collision,
         ) = result
     else:
         state = resolve_system_usb_port_role(
@@ -864,8 +891,15 @@ def main(argv: list[str] | None = None) -> int:
             "event=hardware.boot_config_changed "
             f"reboot_required={int(state.reboot_required)}"
         )
-    for warning in hat_warnings:
-        print(f"event=hardware.i2s_hat_boot_config_conflict detail={warning!r}")
+    if hat_collision is not None:
+        # STDOUT here is the payload the shell scrapes with sed; a prose
+        # line mixed into it would corrupt that parse. STDERR only.
+        print(
+            "event=hardware.i2s_hat_boot_config_conflict "
+            f"managed_overlay={hat_collision.managed_overlay} "
+            f"colliding_overlays={','.join(hat_collision.colliding_overlays)}",
+            file=sys.stderr,
+        )
     return os.EX_IOERR if durability_failed else 0
 
 

@@ -1212,11 +1212,31 @@ def test_i2s_hat_payload_reports_modes_and_truthful_restart(monkeypatch, tmp_pat
     assert payload["visibility"] == "visible"
     assert payload["available"] is True
     assert payload["shared_usb_data_port"] is True
+    assert payload["warnings"] == []
     assert all(text in _SOUND_MODULE.read_text() for text in ("Enabling this setting reserves this shared port for gadget/peripheral use after restart, so it can no longer host a USB output DAC and output moves to the HAT.", "ordinary powered micro-USB host cable: it supplies 5 V", "Use a VBUS-isolated data connection/adapter or leave the port disconnected."))
 
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
     assert sound_setup._i2s_hat_payload(intent_path=intent)["available"] is False
+
+
+def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path):
+    intent = tmp_path / "i2s_hat.env"
+    boot_config = tmp_path / "config.txt"
+    boot_config.write_text("[all]\ndtoverlay=merus-amp\n", encoding="utf-8")
+    sound_setup.write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
+    monkeypatch.setattr(
+        sound_setup,
+        "_output_hardware_dict",
+        lambda: {"usb_data_role": {"board_topology": "shared_otg_port"}},
+    )
+
+    payload = sound_setup._i2s_hat_payload(
+        intent_path=intent, boot_config_path=boot_config
+    )
+
+    assert payload["desired_profile_id"] == "innomaker_hifi_amp_pro"
+    assert len(payload["warnings"]) == 1
 
 
 def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):

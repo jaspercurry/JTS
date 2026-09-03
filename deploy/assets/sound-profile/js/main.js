@@ -600,12 +600,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var hat = i2sHat;
     if (!hat || hat.visibility === 'hidden') return '';
     var profiles = hat.profiles || [];
-    // Nothing saved yet: pre-select the classified I2S DAC (if any) as a
-    // suggestion the operator still has to confirm with Save.
-    var selectedId = hat.desired_profile_id || hat.detected_profile_id || '';
+    // The select always shows the SAVED value, never an unsaved suggestion —
+    // a change-driven control that silently pre-picked something the
+    // operator never chose would save it on the next unrelated edit.
+    var selectedId = hat.desired_profile_id || '';
     var desiredLabel = hat.desired_profile_id ? i2sHatProfileLabel(profiles, hat.desired_profile_id) : 'None / unmanaged';
     var detectedLabel = hat.detected_profile_id ? i2sHatProfileLabel(profiles, hat.detected_profile_id) : '';
+    var offerDetected = hat.detected_profile_id && hat.detected_profile_id !== hat.desired_profile_id;
     var issue = hat.intent_error ? 'Saved setting could not be read: ' + hat.intent_error : hat.reason;
+    var warnings = hat.warnings || [];
     var options = '<option value=""' + (selectedId ? '' : ' selected') + '>None / unmanaged</option>' +
       profiles.map(function(p) {
         return '<option value="' + escapeHtml(p.id) + '"' +
@@ -618,9 +621,15 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
           '<select id="set-i2s-hat"' + (!hat.available ? ' disabled' : '') +
             ' aria-label="I²S audio HAT">' + options + '</select>' +
           '<p class="setting-row__hint">Saved: ' + escapeHtml(desiredLabel) +
-            '. Detected: ' + escapeHtml(detectedLabel || 'none') + '.</p>' +
+            '. Detected: ' + escapeHtml(detectedLabel || 'none') + '.' +
+            (offerDetected ? ' <button type="button" class="btn btn--ghost" data-act="use-detected-i2s-hat" data-id="' +
+              escapeHtml(hat.detected_profile_id) + '"' + (!hat.available ? ' disabled' : '') +
+              '>Use detected: ' + escapeHtml(detectedLabel) + '</button>' : '') + '</p>' +
         '</div>' +
         (issue ? '<p class="setting-row__hint">' + escapeHtml(issue) + '</p>' : '') +
+        warnings.map(function(w) {
+          return '<p class="setting-row__hint output-template-warning">' + escapeHtml(w) + '</p>';
+        }).join('') +
         (hat.restart_required ? '<div class="info-card info-card--accent" role="status">' +
           '<p><strong>Restart required.</strong> The saved boot setting changed.</p>' +
           '<a class="btn btn--primary" href="/system/">Open Restart control</a></div>' : '') +
@@ -5111,18 +5120,20 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
   }
 
-  async function saveI2sHat(input) {
-    input.disabled = true;
+  async function saveI2sHatProfileId(profileId, input) {
+    if (input) input.disabled = true;
     try {
       var resp = await fetch('./i2s-hat', {
         method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify({profile_id: input.value || null})
+        body: JSON.stringify({profile_id: profileId || null})
       });
       var payload = await resp.json();
       if ('desired_profile_id' in payload) i2sHat = payload;
       if (!resp.ok && 'desired_profile_id' in payload)
         return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
       if (!resp.ok) throw new Error(payload.error || 'I²S HAT setting failed');
+      if (payload.warnings && payload.warnings.length)
+        return status(payload.warnings[0], true);
       status(payload.restart_required ?
         'I²S HAT setting saved. Restart required.' : 'I²S HAT setting saved.');
     } catch (e) {
@@ -5363,6 +5374,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
     else if (act === 'refresh-output-topology') { refreshOutputTopology(); }
+    else if (act === 'use-detected-i2s-hat') { saveI2sHatProfileId(id, t); }
     else if (act === 'output-template-axis') {
       setOutputTemplateAxis(
         t.getAttribute('data-axis') || '',
@@ -5619,7 +5631,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
     else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
-    else if (ev.target.id === 'set-i2s-hat') saveI2sHat(ev.target);
+    else if (ev.target.id === 'set-i2s-hat') saveI2sHatProfileId(ev.target.value, ev.target);
     else if (ev.target.id === 'set-volume-floor') {
       var floor = Number(ev.target.value);
       setVolumeFloorDraft(floor);
