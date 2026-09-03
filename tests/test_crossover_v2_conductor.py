@@ -153,7 +153,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     alignment_to_candidate_fields,
     _min_positions_for_two_wide_offsets,
     _pose,
-    assert_cloud_plan_fits_relay_capacity,
     back_off_gain,
     build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
@@ -205,7 +204,7 @@ from jasper.active_speaker.flat_spec import (
     evaluate_flat_spec,
     spec_convergence_residual,
 )
-from jasper.capture_relay.session import (
+from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
 )
@@ -5881,9 +5880,9 @@ def test_the_consent_beeps_sentence_matches_what_the_session_plays(
 
     The 2026-08-18 gate round found a hand-written "The first measurement has
     three short beeps" shipped against a stage 1 that beeps TWICE — its entry
-    baseline plays stage 2's anchor object and announces too. The literal pin
-    in ``tests/test_capture_relay_kinds.py`` could not see it: a substring
-    assertion is true of a sentence that is false of the session.
+    baseline plays stage 2's anchor object and announces too. A prior literal
+    pin could not see it: a substring assertion is true of a sentence that is
+    false of the session.
 
     So this walks the other way round. For each capture index it asks the
     SESSION what that phase plays and looks for a courtesy tone in the composed
@@ -6151,15 +6150,13 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert reparsed.capture_plan.entries == spec.capture_plan.entries
 
 
-def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves():
-    """The v2 flow's retry budget is POLICY, not the relay's transport limit.
+def test_shipped_v2_plans_keep_their_own_retry_budget():
+    """The v2 flow's retry budget is POLICY, not the sanity ceiling.
 
     Both builders once passed ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS``
     verbatim, which was harmless only while the two constants happened to be
-    equal at 8. Raising the relay ceiling to 32 for multi-position capture
-    plans would otherwise have quadrupled these shipped flows' retry budget and
-    changed their wire bytes as a side effect. Pin each flow's budget to this
-    flow's own constants, and pin that both stay storable.
+    equal at 8. Pin each flow's budget to this flow's own constants, and pin
+    that both stay within the sanity ceiling.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         CAPTURE_PLAN_MAX_ATTEMPTS,
@@ -6167,9 +6164,7 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
         build_v2_verify_capture_plan,
     )
     from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-    from jasper.capture_relay.spec import LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
 
-    assert CAPTURE_PLAN_MAX_ATTEMPTS == LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS == 8
     assert CAPTURE_PLAN_MAX_ATTEMPTS <= MAX_CAPTURE_PLAN_ATTEMPTS
 
     cloud = build_v2_capture_plan(_roles(), FC_HZ)
@@ -6179,8 +6174,8 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
     # 10 + GEOMETRY_RETRY_POSITIONS + CLOUD_RETAKE_ALLOWANCE = 17 attempts;
     # ``cloud_capture_target()``/``cloud_plan_max_attempts()`` keep their
     # whole-journey meaning (16 / 23 since stage 2's pose set gained the design
-    # axis on 2026-08-24), which is what the relay-capacity guard and
-    # jasper-doctor read as the conservative bound.
+    # axis on 2026-08-24), which is what jasper-doctor reads as the
+    # conservative bound.
     assert cloud.capture_target == 10
     assert cloud.max_attempts == 17
     assert cloud_capture_target() == 16
@@ -6188,74 +6183,7 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
     assert cloud.max_attempts < cloud_plan_max_attempts()
     assert one_entry.capture_target == 1
     assert one_entry.max_attempts == CAPTURE_PLAN_MAX_ATTEMPTS
-    # The re-verify re-arm stays at or below the legacy ceiling, so it never
-    # probes the relay's capability endpoint and keeps working against a
-    # pre-capacity Worker. The cloud plan is above it BY DESIGN — that probe is
-    # exactly the fail-closed gate PR-3a shipped for this plan.
-    assert one_entry.max_attempts <= LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
-    assert cloud.max_attempts > LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
     assert cloud.max_attempts <= MAX_CAPTURE_PLAN_ATTEMPTS
-
-
-def test_worst_case_cloud_plan_fits_the_relay_index_space():
-    """The choreography constants and the relay's blob-index ceiling are
-    coupled: PR-3a sized ``MAX_CAPTURE_PLAN_ATTEMPTS`` from PR-3b's declared
-    maxima, so raising a cloud constant past what the relay can carry must fail
-    here — hardware-free — rather than stranding an operator on a refused blob
-    index at position 20.
-
-    The worst case is the WHOLE journey's draw and it is now EXACTLY at the
-    ceiling — 32 of 32 — which is why ``MAX_CLOUD_MEASURE_POSITIONS`` came down
-    to 11 when #2291 added a stage-1 entry (see that constant's own arithmetic).
-    The equality is asserted rather than the inequality alone: at zero headroom
-    the next entry anyone adds must be a deliberate decision about what to spend
-    it out of, not a test that quietly still passes."""
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-
-    assert_cloud_plan_fits_relay_capacity()
-    worst_entries = cloud_capture_target(
-        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
-    # The work order's own arithmetic, spelled out:
-    # 2 (CHECK+MEASURE) + (N_MAX-1) + M + retries <= the relay ceiling.
-    assert (
-        2
-        + (MAX_CLOUD_MEASURE_POSITIONS - 1)
-        + DEFAULT_CLOUD_VERIFY_POSITIONS
-        + GEOMETRY_RETRY_POSITIONS
-    ) <= MAX_CAPTURE_PLAN_ATTEMPTS
-    assert worst_entries == 18
-    assert (
-        cloud_plan_max_attempts(
-            cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-            cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-        )
-        == 25
-        <= MAX_CAPTURE_PLAN_ATTEMPTS
-    )
-    # …and the two stage-1 groups the cloud arithmetic above does not count.
-    #
-    # The walk counts UNCONDITIONALLY: no stage-1 plan arms it, but an
-    # operator's staged angle walk builds one on any session and its six
-    # poses ride the same blob-index space, so the ceiling still has to carry
-    # it. A term guarded on a flag would have reported 0 here for exactly the
-    # shape that still spends six of them.
-    worst = dict(
-        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
-    #
-    # Both numbers came down by one on 2026-08-18 when
-    # ``DEFAULT_CLOUD_VERIFY_POSITIONS`` moved to its floor, and BACK UP on
-    # 2026-08-24 when the geometry ruling put the design axis into the
-    # post-apply pose set. So the worst case saturates the ceiling exactly
-    # again: 32 of 32, zero headroom. Stated as the number PLUS the bound so
-    # the next producer that wants an entry has to change this line and decide
-    # what it is spending, rather than pass a test that quietly still holds.
-    assert flow.relay_plan_attempts_required(
-        **worst
-    ) == 32 <= MAX_CAPTURE_PLAN_ATTEMPTS == 32
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
