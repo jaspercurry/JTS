@@ -559,15 +559,15 @@ wheels = [
 
 [[package]]
 name = "google-auth"
-version = "2.53.0"
+version = "2.57.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "pyasn1-modules" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/ad/ff781329bbbdc0974a098d996e89c9e1f7024262f9e3eec442fbb9ad1ac6/google_auth-2.53.0.tar.gz", hash = "sha256:e7e6aa16f6bee7b2b264830fd04f08087a1d5a836df516251a5d15327b246c9c", size = 335844, upload-time = "2026-05-15T20:53:07.928Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/64/55f316b729f92a552d26e00aa3b1542b2e149d0a5efe2842afff0cac7af7/google_auth-2.57.0.tar.gz", hash = "sha256:9b4f96d6a1feb5f7201231f47cfb3de08d8f176f8a61f9e461555116e95a8789", size = 370794, upload-time = "2026-08-25T19:18:26.419Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/c9/db44165ba7c581268c6d46017ef63339110378305062830104fc7fa144cb/google_auth-2.53.0-py3-none-any.whl", hash = "sha256:6e7449917c599b35126a99ec268ec6880301f2fea41dce198fe8fd83ff642b68", size = 246071, upload-time = "2026-05-15T20:53:05.609Z" },
+    { url = "https://files.pythonhosted.org/packages/00/f3/8508a702c094af5f6e89773f4dfdeee74913df0f41a02c21b5e7dc3d75cd/google_auth-2.57.0-py3-none-any.whl", hash = "sha256:180dafe015cfb62193bea26b677500fab5b9fd51a1e825ebf3ad9b182047ae59", size = 259728, upload-time = "2026-08-24T21:55:08.449Z" },
 ]
 
 [package.optional-dependencies]
@@ -603,7 +603,7 @@ wheels = [
 
 [[package]]
 name = "google-genai"
-version = "2.9.0"
+version = "2.22.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -617,9 +617,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/51/75/81c01294db3a3005dc8a807ed889a10ecd66ef89462c118adcffa5f7981c/google_genai-2.9.0.tar.gz", hash = "sha256:a8a10e9113f460cc668c1d9deeb62ba393ad1ba704bf3166d5a0f32a434f9415", size = 595700, upload-time = "2026-06-19T08:23:42.718Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/f1/f2f31b2a6bd826bc2cb73068df880954a026474c03a4315637d20cc13965/google_genai-2.22.0.tar.gz", hash = "sha256:9fa3b5d9ddb635005d8ab2d6206fb2b3d7204b66965bbce7de13ecd1a866ebcd", size = 684719, upload-time = "2026-09-02T18:06:02.906Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/17/bb2cdd0a6c6fec32f14e85735917d1052f82430b1de58c2b606740740419/google_genai-2.9.0-py3-none-any.whl", hash = "sha256:2a79e2b08e8439f5f25c2b42f98e3f3e8ea4be9c9265f5d7321580dbaf2764f4", size = 950790, upload-time = "2026-06-19T08:23:40.995Z" },
+    { url = "https://files.pythonhosted.org/packages/de/96/0120d214958cb54f2b9c48da9f564a0e6eae269e9dd702415fb1d0551cc7/google_genai-2.22.0-py3-none-any.whl", hash = "sha256:c514001c45470cc0a942440ae1b8215445d12bfb6c373aac94637127e1f74ec6", size = 1088792, upload-time = "2026-09-02T18:06:00.629Z" },
 ]
 
 [[package]]
@@ -829,12 +829,12 @@ requires-dist = [
     { name = "evdev", marker = "sys_platform == 'linux' and extra == 'streambox'", specifier = ">=2.0" },
     { name = "google-api-python-client", marker = "extra == 'full'", specifier = ">=2.150" },
     { name = "google-api-python-client", marker = "extra == 'streambox'", specifier = ">=2.150" },
-    { name = "google-auth", marker = "extra == 'full'", specifier = ">=2.36" },
-    { name = "google-auth", marker = "extra == 'streambox'", specifier = ">=2.36" },
+    { name = "google-auth", marker = "extra == 'full'", specifier = ">=2.56.0" },
+    { name = "google-auth", marker = "extra == 'streambox'", specifier = ">=2.56.0" },
     { name = "google-auth-oauthlib", marker = "extra == 'full'", specifier = ">=1.2" },
     { name = "google-auth-oauthlib", marker = "extra == 'streambox'", specifier = ">=1.2" },
-    { name = "google-genai", marker = "extra == 'full'", specifier = "==2.9.0" },
-    { name = "google-genai", marker = "extra == 'streambox'", specifier = "==2.9.0" },
+    { name = "google-genai", marker = "extra == 'full'", specifier = "==2.22.0" },
+    { name = "google-genai", marker = "extra == 'streambox'", specifier = "==2.22.0" },
     { name = "gtfs-realtime-bindings", marker = "extra == 'full'", specifier = "==2.2.0" },
     { name = "gtfs-realtime-bindings", marker = "extra == 'streambox'", specifier = "==2.2.0" },
     { name = "httpx", marker = "extra == 'full'", specifier = "==0.28.1" },
