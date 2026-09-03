@@ -8,44 +8,18 @@ read was the room (#3501).
 Between :func:`~jasper.audio_measurement.gating.f_trusted_floor_hz` and
 :func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz` ONE point
 cannot separate speaker from room; the limit is information-theoretic, not
-tooling, and one extra capture breaks it. Move the mic from ~1 m to ~12 in on
-the woofer axis — still inside the driver's far field — and the direct sound
-gains ``20*log10(r_far/r_close)`` on the room while the bounce paths hardly move.
-
-What this module computes, given the two impulse responses:
-
-1. **Where to stand.** The piston geometry lives beside its sibling in
-   :mod:`jasper.active_speaker.branch_chain`
-   (:func:`~jasper.active_speaker.branch_chain.recommended_distance`), read
-   from the driver's diameter and crossover corner.
-2. **The correction.** Scale the close IR by ``r_close/r_far``, delay it by the
-   geometric ``(r_far - r_close)/c``, then SUB-SAMPLE align it to the far IR's
-   own direct arrival. A subtraction cancels only to the depth its phase error
-   allows — ``residual/direct = 2*|sin(pi*f*dt)|`` (gate-research-results.md,
-   document 2 section B3) — so the achieved lag and the cancellation-depth
-   budget at the band edges are published beside every number they bound.
-3. **The verdict, per band.** Where the corrected close read agrees with the
-   far read, the far read was speaker-dominated; where they disagree and the
-   subtraction residual is large, the far read was the room.
-
-**The gate has three sources and says which one it had.** A declared rig
-geometry (:class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`)
-gives each window its own first bounce, and the close capture's is the longer
-one because that excess path grows as the direct path shrinks. An explicit
-gate overrides that; with neither, the gate is the pipeline's own
-reflection-search ceiling. Whichever it was, the window each capture's
-declared geometry allows is published beside the gate actually used.
-
-**Every number carries its frame.** Window shape, lead, taper, smoothing
-fraction, grid, transform length, alignment band and upsample ride in the
-report's ``frame`` block: one banked feature reads a materially different
-depth under each defensible frame (#3495; the evidence is
-``captures/recommission-day2-2026-09-01/p1-position-window/P1-REPORT.md``).
-
-Distances are DECLARED by the caller, never read from the sidecar: today's
-sidecars pin ``mark_distance_m = 1.0`` for every pose (a per-row distance
-lands on #3498). Where a sidecar disagrees with the declared value, both are
-published and the declared one is used.
+tooling, and one extra capture breaks it. Moving the mic from ~1 m to ~12 in
+on the woofer axis — still inside the driver's far field — gains the direct
+sound ``20*log10(r_far/r_close)`` on the room while the bounce paths hardly
+move.
+The close IR is scaled by ``r_close/r_far``, delayed by the geometric
+``(r_far - r_close)/c`` and sub-sample aligned to the far IR's own direct
+arrival; the subtraction cancels only to ``residual/direct =
+2*|sin(pi*f*dt)|`` (gate-research-results.md document 2 section B3), so the
+achieved lag and its cancellation-depth budget ride beside every number they
+bound. Every number also carries the frame it was read under (#3495), and
+distances are DECLARED by the caller, never read from the sidecar, which pins
+``mark_distance_m = 1.0`` for every pose today (#3498).
 """
 
 from __future__ import annotations
@@ -171,30 +145,18 @@ REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
 REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
 
 
-# --------------------------------------------------------------------------- #
-# what a subtraction can promise
-# --------------------------------------------------------------------------- #
-
-
 def cancellation_depth_db(f_hz: float, lag_s: float) -> float | None:
     """How deep a subtraction can go at ``f_hz`` given a timing error ``lag_s``,
     or ``None`` when the ratio is zero and the depth is unbounded.
 
     ``residual/direct = |1 - exp(-j*2*pi*f*dt)| = 2*|sin(pi*f*dt)|`` --
-    gate-research-results.md document 2, section B3 (derived there from first
-    principles, not cited to a paper). ``-Infinity`` is not a number JSON can
-    carry, so an unbounded depth publishes ``null`` rather than a token a
-    strict parser rejects.
+    gate-research-results.md document 2, section B3. ``-Infinity`` is not a
+    number JSON can carry, so an unbounded depth publishes ``null``.
     """
     ratio = 2.0 * abs(math.sin(math.pi * float(f_hz) * float(lag_s)))
     if ratio <= 0.0:
         return None
     return 20.0 * math.log10(ratio)
-
-
-# --------------------------------------------------------------------------- #
-# the comparison
-# --------------------------------------------------------------------------- #
 
 
 #: Where the gate length actually used came from. The declared word is the
@@ -218,12 +180,11 @@ def declared_clean_window_ms(
     """This rig's reflection-free window at ``distance_m``, ms, or ``None``.
 
     The first bounce's EXCESS path over the direct one grows as the mic nears
-    the speaker, so a close capture's clean window is longer than the far
-    one's — which is half of why the close capture can say anything the far
-    one cannot. ``None`` when the declared geometry cannot be evaluated there
-    at all (:class:`~jasper.audio_measurement.measurement_geometry.DeclaredGeometry`
-    accepts 0.15-3 m), so a mic closer than the declaration allows keeps the
-    caller's gate — or the default — rather than inventing a window.
+    the speaker, so a close capture's clean window is the longer one — half of
+    why the close capture can say what the far one cannot. ``None`` when the
+    declared geometry cannot be evaluated there at all (it accepts 0.15-3 m),
+    so a mic closer than the declaration allows keeps the caller's gate, or
+    the default, rather than inventing a window.
     """
     try:
         return 1e3 * replace(geometry, distance_m=float(distance_m)).first_bounce_s()
@@ -246,11 +207,9 @@ def _power_ratio_db(
     """The band's power ratio in dB, or ``None`` when there is no data to read.
 
     A band with no bins, or with no reference power to divide by, has no
-    answer -- and ``-Infinity`` is not a number JSON can carry, so the report
-    publishes ``null`` rather than a token a strict parser rejects. A
-    numerator at or below zero is not the same absence: a perfectly
-    cancelled residual is the best possible read, so it floors at
-    :data:`RESIDUAL_FLOOR_DB` rather than reading as no data.
+    answer, and ``-Infinity`` is not a number JSON can carry. A numerator at
+    or below zero is not the same absence: a perfectly cancelled residual is
+    the best possible read, so it floors at :data:`RESIDUAL_FLOOR_DB`.
     """
     if not mask.any():
         return None
@@ -263,10 +222,9 @@ def _power_ratio_db(
     return 10.0 * math.log10(num / den)
 
 
-# This verb publishes a per-band VERDICT by design: #3501 asked for the
-# comparison, not for more evidence. Its sibling `gate_sweep` publishes
-# evidence only and leaves the attribution to its reader; that difference is
-# deliberate, not drift.
+# This verb publishes a per-band VERDICT by design (#3501 asked for the
+# comparison, not for more evidence); its sibling `gate_sweep` publishes
+# evidence only and leaves the attribution to its reader.
 def _verdict(
     *,
     points: int,
@@ -285,10 +243,9 @@ def _verdict(
         return VERDICT_UNRESOLVED, UNRESOLVED_OUTSIDE_VALIDITY
     if not alignment_trusted:
         return VERDICT_UNRESOLVED, UNRESOLVED_LOW_CONFIDENCE
-    # Shape and level both have to agree. The detrended delta is blind to
-    # level, so a wrongly declared distance reads as agreeing shapes over a
-    # subtraction that never cancelled; that is a finding about the
-    # declaration, not a verdict about the speaker.
+    # Shape and level both have to agree: the detrended delta is blind to level,
+    # so a wrongly declared distance reads as agreeing shapes over a
+    # subtraction that never cancelled — a finding about the declaration.
     within_tolerance = rms_delta_db <= tolerance_db
     cancelled = residual_rel_direct_db < ROOM_RESIDUAL_FLOOR_DB
     if within_tolerance and cancelled:
@@ -377,13 +334,12 @@ def compare_impulse_responses(
 
     Returns the whole report as plain data: ``frame``, ``geometry``,
     ``validity``, ``alignment`` and one ``windows`` entry per declared gate
-    length, each carrying a :data:`SPEC_BANDS`-shaped band table. Nothing is
-    printed and nothing is written.
+    length. Nothing is printed and nothing is written.
 
     **Both alignment segments are cut at the SHORTER of the two gates**
     (published as ``alignment.alignment_gate_ms``): the far capture's clean
-    window is the bound because its first bounce arrives earliest, and one
-    lag aligned over a far segment that reached into room arrivals is then
+    window is the bound because its first bounce arrives earliest, and one lag
+    aligned over a far segment that reached into room arrivals would be
     inherited by every band of the corrected close IR.
     """
     for window_name, gate_ms in (
@@ -590,11 +546,9 @@ def compare_impulse_responses(
                 measured_shift_s - geometric_delay_s
             ) * 1e6,
             "residual_lag_us": residual_lag_s * 1e6,
-            # The refine cannot resolve below one upsampled correlation bin, so
-            # a residual that reads zero means "under the floor", not "exact".
-            # The budget is priced at the floor for that reason: a subtraction
-            # advertised as infinitely deep is a promise the instrument cannot
-            # keep.
+            # The refine cannot resolve below one upsampled correlation bin, so a
+            # residual that reads zero means "under the floor", not "exact". The
+            # budget is priced at the floor for that reason.
             "residual_lag_floor_us": lag_floor_s * 1e6,
             "confidence": float(confidence),
             "at_search_edge": bool(at_edge),
