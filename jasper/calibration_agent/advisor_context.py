@@ -43,7 +43,6 @@ _INPUT_ALLOWED_FIELDS = {
     "echo_cancellation",
     "noise_suppression",
     "auto_gain_control",
-    "capture_transport",
 }
 _BROWSER_AUDIO_ALLOWED_FIELDS = {
     "available",

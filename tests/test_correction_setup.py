@@ -29,7 +29,6 @@ import logging
 from contextlib import contextmanager, nullcontext
 from types import MappingProxyType, SimpleNamespace
 import threading
-import time
 import urllib.error
 import urllib.request
 from email.message import Message
@@ -39,7 +38,6 @@ import pytest
 
 from pathlib import Path
 
-from jasper.capture_relay.spec import CAPTURE_PROTOCOL_VERSION
 from jasper.web import correction_setup, correction_tuning
 from jasper.web._systemd import no_hold
 from jasper.active_speaker.runtime_contract import (
@@ -132,155 +130,15 @@ def test_render_page_embeds_csrf_meta_and_fetch_helpers():
     assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in js
 
 
-def test_capture_relay_ui_contract_is_wired():
-    body = correction_setup._render_page("jts.local").decode()
-    js = _module_js()
-
-    assert 'data-envelope-section="capture-handoff"' in body
-    assert 'id="relay-panel"' not in body
-    assert 'id="relay-start-capture"' not in body
-    assert 'id="relay-tap-link"' in body
-    # Issue #3069: the pre-Start local-capture toggle is gone. Desktop capture
-    # on the relay path opens #relay-tap-link in a new tab exactly like the
-    # phone does, instead of flipping the session into a local-capture mode
-    # that dead-ends in startMicCapture's non-secure-context refusal.
-    assert 'id="local-capture-fallback"' not in body
-    assert "localCaptureFallbackBtn" not in js
-    assert "postJson('relay/capture'" in js
-    assert "function endpoint(path)" in js
-    assert "return '/correction/' + path;" in js
-    assert "function publicRoomUrl(value)" in js
-    assert "readinessBlockerAction.href = publicRoomUrl(action.href);" in js
-    assert "if (relayConfigured)" in js
-    assert "detectMicrophones();" in js
-    assert "repeat_main_position:" not in js
-    assert "s.state === 'awaiting_repeat_capture'" in js
-    assert "function relayPrimaryAction()" not in js
-    assert "KNOWN_ACTION_ENDPOINTS" in js
-    assert "env.sections" in js
-
-
-def test_non_secure_context_refusal_points_at_enabling_the_relay():
-    # Issue #3069 follow-up (zone-owner direction): JTS local pages are
-    # plain HTTP by design -- secure-context capture lives only at the
-    # relay's publicly trusted origin, never at a local HTTPS hop. This
-    # refusal only fires for relay-disabled installs (relay-configured ones
-    # never reach local capture at all -- see
-    # test_capture_relay_ui_contract_is_wired above), so its remedy names
-    # the actual enable surface, JASPER_CAPTURE_RELAY_BASE -- the same one
-    # _require_relay_base()'s own operator message names -- instead of
-    # steering the household toward a scheme switch.
-    js = _module_js()
-
-    assert "This install has the capture relay " in js
-    assert "disabled; set JASPER_CAPTURE_RELAY_BASE and deploy the relay + " in js
-    assert "capture page to turn on microphone capture from this page." in js
-    assert "reopen this page over HTTPS" not in js
-
-
-def test_capture_relay_next_position_ui_hides_expired_link():
-    js = _module_js()
-
-    assert "hideEl(relayLinkRow, true);" in js
-    assert "Measurement received. Wait for the next instruction on this page." in js
-    assert "snapshot.state === 'needs_next_position'" in js
-    assert "Move the microphone to position" in js
-
-
-def test_relay_polling_continues_while_backend_uploads_capture():
-    js = _module_js()
-    relay_awaiting = "if (relayMode && ("
-    relay_branch = js[js.index(relay_awaiting) : js.index("upload-capture handler")]
-
-    assert relay_awaiting in relay_branch
-    assert "s.state === 'awaiting_capture'" in relay_branch
-    assert "s.state === 'awaiting_repeat_capture'" in relay_branch
-    assert "pollTimer = setTimeout(pollState, 500)" in relay_branch
-    assert relay_branch.index("pollTimer = setTimeout(pollState, 500)") < relay_branch.index(
-        "workletNode"
-    )
-
-
-def test_relay_repeat_polling_covers_the_pre_arm_phone_window():
-    js = _module_js()
-    start = js.index("if (s.state === 'needs_repeat_capture')")
-    end = js.index("s.state === 'awaiting_capture'", start)
-    branch = js[start:end]
-
-    assert "s.relay.status === 'starting'" in branch
-    assert "s.relay.status === 'awaiting_phone'" in branch
-    assert "pollTimer = setTimeout(pollState, 500)" in branch
-    assert "refreshEnvelope()" in branch
-
-
-def test_relay_capture_client_uses_registration_token(monkeypatch):
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN", "  pi-secret  ")
-    monkeypatch.setattr(correction_setup, "_ensure_loop", lambda: object())
-
-    def fake_run_coroutine_threadsafe(coro, loop):
-        coro.close()
-        return object()
-
-    monkeypatch.setattr(
-        correction_setup.asyncio,
-        "run_coroutine_threadsafe",
-        fake_run_coroutine_threadsafe,
-    )
-    correction_setup._set_relay_capture(None)
-    seen = {}
-
-    def open_capture(client, relay_base, capture_origin, return_url):
-        seen["registration_token"] = client._registration_token
-        seen["relay_base"] = relay_base
-        seen["capture_origin"] = capture_origin
-        seen["return_url"] = return_url
-        return SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        )
-
-    async def run_and_consume(client, pi_session):
-        raise AssertionError("background runner is stubbed")
-
-    kind = correction_setup.RelayCaptureKind(
-        label="room_sweep",
-        open=open_capture,
-        run_and_consume=run_and_consume,
-    )
-    try:
-        result = correction_setup._run_relay_capture(
-            kind,
-            "https://relay.test",
-            return_url="http://jts5.local/correction/",
-            idle_hold=no_hold,
-        )
-    finally:
-        correction_setup._set_relay_capture(None)
-
-    assert result == {
-        "tap_link": "https://capture.test/#s=cap_1",
-        "status": "awaiting_phone",
-    }
-    assert seen == {
-        "registration_token": "pi-secret",
-        "relay_base": "https://relay.test",
-        "capture_origin": "capture.jasper.tech",
-        "return_url": "http://jts5.local/correction/",
-    }
-
-
 def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
     stop_event = threading.Event()
     cleanup_started = threading.Event()
     release_cleanup = threading.Event()
 
-    def open_capture(_client, _relay_base, _capture_origin, _return_url):
-        return SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        )
+    def open_capture():
+        return SimpleNamespace(pi_session=object())
 
-    async def run_and_consume(_client, _pi_session):
+    async def run_and_consume(_pi_session):
         await asyncio.to_thread(stop_event.wait)
         cleanup_started.set()
         await asyncio.to_thread(release_cleanup.wait)
@@ -294,8 +152,6 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
                 run_and_consume=run_and_consume,
                 request_stop=stop_event.set,
             ),
-            "https://relay.test",
-            return_url="http://jts.local/correction/crossover/",
             idle_hold=no_hold,
         )
         response = correction_setup._request_relay_stop("crossover_sweep:")
@@ -311,32 +167,6 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
         assert correction_setup._get_relay_capture()["status"] == "stopped"
     finally:
         release_cleanup.set()
-
-
-def test_a_wired_holder_is_named_wired_not_phone_mic_relay():
-    """A WIRED session's slot-busy refusal must not read as a phone-flow
-    message on a box with no phone in the loop: the raise must read the
-    actual holder rather than assume the phone-mic relay is always the one
-    blocking.
-    """
-    correction_setup._set_relay_capture(None)
-    try:
-        assert correction_setup._begin_relay_capture(
-            "crossover_v2:session", local=True
-        )
-        with pytest.raises(ValueError, match=r"wired capture \(crossover_v2:session\)"):
-            correction_setup._run_relay_capture(
-                correction_setup.RelayCaptureKind(
-                    label="crossover_v2:session",
-                    open=lambda *_a: None,
-                    run_and_consume=lambda *_a: None,
-                ),
-                "https://relay.test",
-                return_url="http://jts.local/correction/crossover/",
-                idle_hold=no_hold,
-            )
-    finally:
-        correction_setup._set_relay_capture(None)
 
 
 class _RecordingIdleHold:
@@ -401,13 +231,10 @@ def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
     release_runner = threading.Event()
     runner_entered = threading.Event()
 
-    def open_capture(_client, _relay_base, _capture_origin, _return_url):
-        return SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        )
+    def open_capture():
+        return SimpleNamespace(pi_session=object())
 
-    async def run_and_consume(_client, _pi_session):
+    async def run_and_consume(_pi_session):
         runner_entered.set()
         await asyncio.to_thread(release_runner.wait)
 
@@ -419,13 +246,11 @@ def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
                 open=open_capture,
                 run_and_consume=run_and_consume,
             ),
-            "https://relay.test",
-            return_url="http://jts.local/correction/crossover/",
             idle_hold=idle_hold,
         )
         # Held from the moment the POST returns — before the runner has even
         # been scheduled, which is the window a phone-only session sits in.
-        assert idle_hold.events == [("acquire", "relay:crossover_v2:session")]
+        assert idle_hold.events == [("acquire", "capture:crossover_v2:session")]
         assert runner_entered.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert idle_hold.active == 1
 
@@ -441,8 +266,8 @@ def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
     wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0, "the completed session released its hold"
     assert idle_hold.events == [
-        ("acquire", "relay:crossover_v2:session"),
-        ("release", "relay:crossover_v2:session"),
+        ("acquire", "capture:crossover_v2:session"),
+        ("release", "capture:crossover_v2:session"),
     ]
 
 
@@ -456,13 +281,10 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
     """
     idle_hold = _RecordingIdleHold()
 
-    def open_capture(_client, _relay_base, _capture_origin, _return_url):
-        return SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        )
+    def open_capture():
+        return SimpleNamespace(pi_session=object())
 
-    async def run_and_consume(_client, _pi_session):
+    async def run_and_consume(_pi_session):
         raise RuntimeError("the measurement link timed out")
 
     correction_setup._set_relay_capture(None)
@@ -473,8 +295,6 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
                 open=open_capture,
                 run_and_consume=run_and_consume,
             ),
-            "https://relay.test",
-            return_url="http://jts.local/correction/crossover/",
             idle_hold=idle_hold,
         )
         wait_until_sync(
@@ -486,8 +306,8 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
     wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0
     assert idle_hold.events == [
-        ("acquire", "relay:crossover_v2:verify"),
-        ("release", "relay:crossover_v2:verify"),
+        ("acquire", "capture:crossover_v2:verify"),
+        ("release", "capture:crossover_v2:verify"),
     ]
 
 
@@ -497,13 +317,10 @@ def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     """A failed spawn must not leave a hold nobody will ever release."""
     idle_hold = _RecordingIdleHold()
 
-    def open_capture(_client, _relay_base, _capture_origin, _return_url):
-        return SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        )
+    def open_capture():
+        return SimpleNamespace(pi_session=object())
 
-    async def run_and_consume(_client, _pi_session):
+    async def run_and_consume(_pi_session):
         raise AssertionError("never scheduled")
 
     def _refuse(coro, _loop):
@@ -522,8 +339,6 @@ def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
                     open=open_capture,
                     run_and_consume=run_and_consume,
                 ),
-                "https://relay.test",
-                return_url="http://jts.local/correction/crossover/",
                 idle_hold=idle_hold,
             )
     finally:
@@ -531,7 +346,7 @@ def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
 
     assert idle_hold.active == 0
     assert idle_hold.labels == [
-        "relay:crossover_v2:session", "relay:crossover_v2:session",
+        "capture:crossover_v2:session", "capture:crossover_v2:session",
     ]
 
 
@@ -572,22 +387,18 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
             request_retake=None,
         )
 
-    def _fake_run_relay_capture(kind, relay_base, *, return_url, idle_hold):
+    def _fake_run_relay_capture(kind, *, idle_hold):
         seen["orchestrator"] = idle_hold
-        return {"tap_link": "https://capture.test/#s=cap_1", "status": "awaiting_phone"}
+        return {"status": "awaiting_phone"}
 
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
 
     monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
-    monkeypatch.setattr(correction_setup, "_require_relay_base", lambda: "https://relay.test")
     monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
     monkeypatch.setattr(correction_setup, "_run_relay_capture", _fake_run_relay_capture)
-    monkeypatch.setattr(
-        correction_setup, "_request_local_return_url", lambda _h, _p: "http://jts.local/",
-    )
 
     correction_setup._handle_crossover_v2_relay(
         None, verify_only=False, idle_hold=idle_hold,
@@ -656,289 +467,21 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
             request_retake=None,
         )
 
-    def _fake_run_relay_capture(kind, relay_base, *, return_url, idle_hold):
+    def _fake_run_relay_capture(kind, *, idle_hold):
         seen["kind"] = kind
-        return {"tap_link": "https://capture.test/#s=cap_1", "status": "awaiting_phone"}
+        return {"status": "awaiting_phone"}
 
     monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
-    monkeypatch.setattr(
-        correction_setup, "_require_relay_base", lambda: "https://relay.test",
-    )
     monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
     monkeypatch.setattr(correction_setup, "_run_relay_capture", _fake_run_relay_capture)
-    monkeypatch.setattr(
-        correction_setup, "_request_local_return_url",
-        lambda _h, _p: "http://jts.local/",
-    )
 
     correction_setup._handle_crossover_v2_relay(None, verify_only=verify_only)
 
     assert seen["verify_only"] is verify_only
     assert seen["kind"].label == expected_label
 
-
-# ---------- #1860: level-ramp kinds now hold the idle-exit tracker too ------
-#
-# level_ramp:room and level_ramp:crossover both run the human-paced control
-# loop in _run_relay_level_match (suspend_capture_timeout'd on the room side;
-# leased on the crossover side), whose only whole-run backstop is the relay's
-# own TTL (900s, jasper.capture_relay.session.DEFAULT_TTL_S) rather than a
-# short per-capture watchdog. That means, like crossover-v2 (#1854/#1856),
-# they can outlive the 600s inbound-idle window. The generic hold lifecycle
-# (acquire before spawn; release on completion/failure/never-spawned) is
-# already pinned kind-agnostically against _run_relay_capture itself above;
-# these tests instead pin the two NEW call sites' wiring: each handler must
-# forward a REAL idle_hold into _run_relay_capture rather than the retired
-# hardcoded no_hold, and the dispatch must read it off the handler cfg.
-
-
-def test_room_level_ramp_threads_the_idle_hold_into_the_relay_orchestrator(
-    monkeypatch,
-):
-    """_handle_relay_level_match must forward its idle_hold, not a hardcoded
-    no_hold, into _run_relay_capture (#1860)."""
-    from jasper.correction.session import SessionState
-
-    idle_hold = _RecordingIdleHold()
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-        suspend_capture_timeout=lambda: None,
-        resume_capture_timeout=lambda: None,
-    )
-    monkeypatch.setattr(
-        correction_setup, "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-
-    seen = {}
-
-    def fake_run(kind, relay_base, *, return_url, idle_hold):
-        seen["label"] = kind.label
-        seen["idle_hold"] = idle_hold
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-
-    correction_setup._handle_relay_level_match(
-        SimpleNamespace(headers={"Host": "jts3.local"}),
-        idle_hold=idle_hold,
-    )
-
-    assert seen["label"] == "level_ramp:room"
-    assert seen["idle_hold"] is idle_hold
-
-
-def test_room_level_ramp_holds_the_idle_exit_for_the_whole_ramp(monkeypatch):
-    """The room level ramp keeps the socket-activated wizard alive for its
-    whole run, exactly like the crossover-v2 session (#1854/#1856): the hold
-    is taken before the runner is scheduled and released only once the ramp
-    (``_run_relay_level_match``) reaches a terminal state — never earlier.
-    """
-    from jasper.capture_relay import correction_adapter
-    from jasper.correction.session import SessionState
-
-    idle_hold = _RecordingIdleHold()
-    release_ramp = threading.Event()
-    ramp_entered = threading.Event()
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-        suspend_capture_timeout=lambda: None,
-        resume_capture_timeout=lambda: None,
-    )
-    monkeypatch.setattr(
-        correction_setup, "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-    monkeypatch.setattr(
-        correction_adapter,
-        "open_capture",
-        lambda _client, _spec, **_kwargs: SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        ),
-    )
-
-    async def fake_run_relay_level_match(*_args, **_kwargs):
-        ramp_entered.set()
-        await asyncio.to_thread(release_ramp.wait)
-
-    monkeypatch.setattr(
-        correction_setup, "_run_relay_level_match", fake_run_relay_level_match,
-    )
-
-    correction_setup._set_relay_capture(None)
-    try:
-        correction_setup._handle_relay_level_match(
-            SimpleNamespace(headers={"Host": "jts3.local"}),
-            idle_hold=idle_hold,
-        )
-        # Held from the moment the POST returns — before the ramp has even
-        # started, which is the window a phone-only session sits in.
-        assert idle_hold.events == [("acquire", "relay:level_ramp:room")]
-        assert ramp_entered.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
-        assert idle_hold.active == 1
-
-        release_ramp.set()
-        wait_until_sync(
-            lambda: correction_setup._get_relay_capture()["status"] == "complete"
-        )
-        assert correction_setup._get_relay_capture()["status"] == "complete"
-    finally:
-        release_ramp.set()
-        correction_setup._set_relay_capture(None)
-
-    wait_until_sync(lambda: not idle_hold.active)
-    assert idle_hold.active == 0, "the completed ramp released its hold"
-    assert idle_hold.events == [
-        ("acquire", "relay:level_ramp:room"),
-        ("release", "relay:level_ramp:room"),
-    ]
-
-
-def test_room_level_ramp_releases_the_idle_hold_when_the_ramp_fails(monkeypatch):
-    """Every terminal path releases — a refused/failed ramp included, exactly
-    as #1856 requires of the crossover-v2 kinds. A hold that only released on
-    the happy path would trade a killed ramp for an immortal wizard."""
-    from jasper.capture_relay import correction_adapter
-    from jasper.correction.session import SessionState
-
-    idle_hold = _RecordingIdleHold()
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-        suspend_capture_timeout=lambda: None,
-        resume_capture_timeout=lambda: None,
-    )
-    monkeypatch.setattr(
-        correction_setup, "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-    monkeypatch.setattr(
-        correction_adapter,
-        "open_capture",
-        lambda _client, _spec, **_kwargs: SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        ),
-    )
-
-    async def fake_run_relay_level_match(*_args, **_kwargs):
-        raise RuntimeError("the measurement link timed out")
-
-    monkeypatch.setattr(
-        correction_setup, "_run_relay_level_match", fake_run_relay_level_match,
-    )
-
-    correction_setup._set_relay_capture(None)
-    try:
-        correction_setup._handle_relay_level_match(
-            SimpleNamespace(headers={"Host": "jts3.local"}),
-            idle_hold=idle_hold,
-        )
-        wait_until_sync(
-            lambda: correction_setup._get_relay_capture()["status"] == "failed"
-        )
-        assert correction_setup._get_relay_capture()["status"] == "failed"
-    finally:
-        correction_setup._set_relay_capture(None)
-
-    wait_until_sync(lambda: not idle_hold.active)
-    assert idle_hold.active == 0
-    assert idle_hold.events == [
-        ("acquire", "relay:level_ramp:room"),
-        ("release", "relay:level_ramp:room"),
-    ]
-
-
-def test_room_level_ramp_dispatch_reads_idle_hold_from_cfg():
-    """The #1860 ramp route must read idle_hold off the handler cfg, the same
-    seam #1856 pinned for /crossover/v2/* — anchored on the route's OWN ``if
-    path ==`` dispatch (not just "the substring exists somewhere in
-    _make_handler") so a regression at that specific call site is caught.
-    """
-    dispatch = inspect.getsource(correction_setup._make_handler)
-    route, handler_name = '"/relay/level-match"', "_handle_relay_level_match"
-    anchor = f"if path == {route}:"
-    route_at = dispatch.index(anchor)
-    handler_at = dispatch.index(handler_name, route_at)
-    window = dispatch[handler_at:handler_at + 300]
-    assert 'idle_hold=cfg["idle_hold"]' in window, (
-        f"{handler_name} dispatch does not thread cfg['idle_hold']: {window!r}"
-    )
-
-
-def test_relay_commit_and_stop_have_one_atomic_winner():
-    stopped = threading.Event()
-    kind = "crossover_sweep:driver"
-
-    correction_setup._set_relay_capture(None)
-    try:
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        assert correction_setup._get_relay_capture()["status"] == "starting"
-        correction_setup._publish_relay_waiting(
-            kind,
-            "https://capture.test/#s=cap_1",
-        )
-        assert correction_setup._begin_relay_commit(kind) is True
-        assert correction_setup._get_relay_capture()["status"] == "committing"
-        with pytest.raises(ValueError, match="no matching phone capture"):
-            correction_setup._request_relay_stop("crossover_sweep:")
-        assert not stopped.is_set()
-
-        correction_setup._set_relay_capture(None)
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        assert correction_setup._request_relay_stop("crossover_sweep:")["status"] == "stopping"
-        assert stopped.is_set()
-        assert correction_setup._begin_relay_commit(kind) is False
-    finally:
-        correction_setup._set_relay_capture(None)
-
-
-def test_relay_finishing_and_stop_have_one_atomic_winner():
-    stopped = threading.Event()
-    kind = "crossover_sweep:driver"
-
-    correction_setup._set_relay_capture(None)
-    try:
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        correction_setup._publish_relay_waiting(
-            kind,
-            "https://capture.test/#s=cap_1",
-        )
-        assert correction_setup._begin_relay_finishing(kind) is True
-        assert correction_setup._get_relay_capture()["status"] == "finishing"
-        with pytest.raises(ValueError, match="no matching phone capture"):
-            correction_setup._request_relay_stop("crossover_sweep:")
-        assert correction_setup._begin_relay_commit(kind) is True
-        assert correction_setup._get_relay_capture()["status"] == "committing"
-        assert not stopped.is_set()
-
-        correction_setup._set_relay_capture(None)
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        assert correction_setup._request_relay_stop("crossover_sweep:")["status"] == "stopping"
-        assert correction_setup._begin_relay_finishing(kind) is False
-        assert stopped.is_set()
-    finally:
-        correction_setup._set_relay_capture(None)
 
 
 def test_relay_stop_callback_is_atomic_with_starting_state():
@@ -954,147 +497,10 @@ def test_relay_stop_callback_is_atomic_with_starting_state():
         response = correction_setup._request_relay_stop("crossover_sweep:")
         assert response["status"] == "stopping"
         assert stopped.is_set()
-        waiting = correction_setup._publish_relay_waiting(
-            kind,
-            "https://capture.test/#s=cap_1",
-        )
+        waiting = correction_setup._publish_relay_waiting(kind)
         assert waiting["status"] == "stopping"
-        assert waiting["tap_link"] == "https://capture.test/#s=cap_1"
     finally:
         correction_setup._set_relay_capture(None)
-
-
-def test_relay_capture_failure_names_the_ramp_reason_not_the_exception_class(caplog):
-    """A level-match ramp refusal (LevelMatchRefused) must surface its stable
-    ramp code as the adapter_failed `reason=`, never the bare exception class
-    name — and the published /status error must be the homeowner message,
-    not the raw code (the 2026-07-16 jts3 finding)."""
-    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
-
-    refusal = describe_ramp_refusal("agc_suspected")
-
-    def open_capture(_client, _relay_base, _capture_origin, _return_url):
-        return SimpleNamespace(
-            tap_link="https://capture.test/#s=cap_1",
-            pi_session=object(),
-        )
-
-    async def run_and_consume(_client, _pi_session):
-        raise LevelMatchRefused(refusal)
-
-    correction_setup._set_relay_capture(None)
-    caplog.set_level(logging.WARNING, logger="jasper.web.correction_setup")
-    try:
-        correction_setup._run_relay_capture(
-            correction_setup.RelayCaptureKind(
-                label="level_ramp:room",
-                open=open_capture,
-                run_and_consume=run_and_consume,
-            ),
-            "https://relay.test",
-            return_url="http://jts.local/correction/",
-            idle_hold=no_hold,
-        )
-        wait_until_sync(
-            lambda: (correction_setup._get_relay_capture() or {}).get("status")
-            == "failed"
-        )
-        relay = correction_setup._get_relay_capture()
-    finally:
-        correction_setup._set_relay_capture(None)
-
-    assert relay is not None
-    assert relay["status"] == "failed"
-    assert relay["error"] == refusal.user_message
-    assert "reason=agc_suspected" in caplog.text
-    assert "reason=LevelMatchRefused" not in caplog.text
-
-
-def test_relay_failure_message_translates_timeout_never_a_bare_exception_string():
-    """Hardware run 19: a phone-relay connection death during a driver
-    sweep surfaced the literal programmer string "The read operation timed
-    out" (Python's ``socket.timeout``/``TimeoutError`` message) unchanged on
-    the wizard's status line -- ``renderRelay`` in
-    ``deploy/assets/correction/js/crossover/main.js`` just echoes
-    ``relay.error``. A timeout-family exception must translate to a human
-    sentence naming the measurement-page connection and the retry path; every
-    other exception (not evidenced as a wizard-facing problem) is unaffected."""
-
-    timeout_exc = TimeoutError("The read operation timed out")
-    message = correction_setup._relay_failure_message(timeout_exc)
-    assert message != "The read operation timed out"
-    # Names the surface the household should act on. #1941 R4 made that noun
-    # device-agnostic — the capturing browser may be a laptop or a UMIK-2 host.
-    assert "measurement page" in message.lower()
-    assert "timed out" in message.lower()
-    assert "try this step again" in message.lower() or "again" in message.lower()
-
-    # socket.timeout is TimeoutError (aliased since Python 3.10) and
-    # asyncio.TimeoutError is the same builtin since Python 3.11 (this
-    # project's floor) -- both must translate identically.
-    import asyncio
-    import socket
-
-    assert correction_setup._relay_failure_message(
-        socket.timeout("The read operation timed out")
-    ) == message
-    assert correction_setup._relay_failure_message(
-        asyncio.TimeoutError("The read operation timed out")
-    ) == message
-    assert correction_setup._relay_failure_message(
-        concurrent.futures.TimeoutError()
-    ) == message
-
-    # Untouched: a non-timeout exception still falls back to str(exc), and
-    # LevelMatchRefused still carries its own pre-translated homeowner copy.
-    assert correction_setup._relay_failure_message(
-        ValueError("device mismatch")
-    ) == "device mismatch"
-
-    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
-
-    refusal = describe_ramp_refusal("agc_suspected")
-    assert (
-        correction_setup._relay_failure_message(LevelMatchRefused(refusal))
-        == refusal.user_message
-    )
-
-
-def test_relay_failure_message_translates_incompatible_page_to_an_action():
-    """A stale capture page (protocol mismatch after a Pi-side deploy) used
-    to surface ``CapturePageIncompatible``'s raw ``str(exc)`` — "capture page
-    is incompatible with this speaker (expected protocol 3, observed 2,
-    build '20260711.1')" — on the wizard's relay status line via the generic
-    fallback. That's journal copy, not household copy: the fix is simply to
-    reload the phone page, so the mapped message must say that and carry no
-    protocol jargon. The technical detail stays in the
-    ``event=capture_relay.page_incompatible`` log line."""
-
-    from jasper.capture_relay.session import (
-        CapturePageIncompatible,
-        validate_capture_page,
-    )
-
-    # The real raise site, not a hand-built exception: a v2-declaring page
-    # against a v3 spec, exactly the stale-page shape a Pi deploy produces.
-    with pytest.raises(CapturePageIncompatible) as excinfo:
-        validate_capture_page(
-            {
-                "schema_version": 1,
-                "capture_protocol_version": 2,
-                "supported_capture_protocol_versions": [1, 2],
-                "capture_page_build": "20260711.1",
-            },
-            SimpleNamespace(capture_protocol_version=3),
-        )
-
-    message = correction_setup._relay_failure_message(excinfo.value)
-    assert message == (
-        "The measurement page is out of date for this speaker. "
-        "Close that tab and open a fresh link from this page."
-    )
-    for jargon in ("protocol", "incompatible", "build", "observed"):
-        assert jargon not in message.lower()
 
 
 def test_relay_failure_message_sanitizes_local_seam_oserror_to_internal_error_copy():
@@ -1124,22 +530,6 @@ def test_relay_failure_message_sanitizes_local_seam_oserror_to_internal_error_co
     assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     assert "Errno" not in message
     assert "/etc/camilladsp" not in message
-
-
-def test_relay_failure_reason_names_config_rejected_not_camilla_unavailable():
-    """W6 hardware run 4 finding J: a healthy CamillaDSP daemon that REJECTED a
-    config (e.g. "Use of missing mixer 'split_active_2way'") used to surface
-    ``reason=CamillaUnavailable`` here too -- the same misleading collapse as
-    ``capture_relay.session``'s failure logger, since a live-but-rejecting
-    daemon and a dead/unreachable one raised the identical exception type.
-    ``CamillaConfigRejected`` (jasper.camilla) falls through
-    ``_relay_failure_reason``'s generic ``type(exc).__name__`` tail exactly
-    like ``ValueError``/``OSError`` do -- no branch added here."""
-    from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
-
-    exc = CamillaConfigRejected("Use of missing mixer 'split_active_2way'")
-    assert isinstance(exc, CamillaUnavailable)  # every `except CamillaUnavailable` still catches it
-    assert correction_setup._relay_failure_reason(exc) == "CamillaConfigRejected"
 
 
 def test_run_async_timeout_waits_for_coroutine_cleanup():
@@ -1226,1384 +616,6 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
     worker.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
 
-async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeypatch):
-    from jasper.active_speaker.crossover_v2.capture_source import CaptureStopped
-    from jasper.correction import coordinator
-
-    host_events = []
-    purged = []
-
-    class Session:
-        session_id = "active-crossover"
-        noise_floor_db = None
-
-        async def cancel_level_match(self):
-            return True
-
-    class Client:
-        def post_host_event(self, _session_id, _pull_token, payload):
-            host_events.append(payload)
-
-        def delete(self, session_id, _pull_token):
-            purged.append(session_id)
-
-        def status(self, *_args):  # pragma: no cover - Stop wins first
-            raise AssertionError("Stop must win before another relay poll")
-
-    pi_session = SimpleNamespace(
-        session_id="cap-stop",
-        pull_token="pull",
-        spec=SimpleNamespace(
-            capture_protocol_version=CAPTURE_PROTOCOL_VERSION,
-            kind="level_ramp",
-        ),
-    )
-
-    async def acquire_measurement_gate():
-        return None
-
-    async def release_measurement_gate(**_kwargs):
-        return None
-
-    monkeypatch.setattr(
-        coordinator,
-        "_acquire_measurement_gate",
-        acquire_measurement_gate,
-    )
-    monkeypatch.setattr(
-        coordinator,
-        "_release_measurement_gate",
-        release_measurement_gate,
-    )
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
-
-    with pytest.raises(CaptureStopped, match="capture stopped"):
-        await correction_setup._run_relay_level_match(
-            Session(),
-            Client(),
-            pi_session,
-            geometry="near_field_driver:mono:woofer",
-            run_token="run-stop",
-            stop_requested=lambda: True,
-        )
-
-    assert host_events[-1]["ramp"]["state"] == "cancelled"
-    assert host_events[-1]["ramp"]["terminal"] is True
-    assert purged == ["cap-stop"]
-
-
-async def test_level_pump_refreshes_status_after_host_event_timeout(monkeypatch):
-    """A slow acknowledgement cannot manufacture microphone feed loss."""
-    from contextlib import asynccontextmanager
-
-    from jasper.capture_relay import session as relay_session
-    from jasper.correction import coordinator, level_match, playback
-
-    status_reads = []
-    host_events = []
-    purged = []
-
-    class Session:
-        session_id = "room-level"
-        noise_floor_db = -40.0
-        input_device = None
-        mic_calibration = None
-
-        async def run_level_match(
-            self,
-            _geometry,
-            *,
-            read_status,
-            post_host_event,
-            **_ports,
-        ):
-            post_host_event({"phase": "ramp_progress"})
-            for _attempt in range(50):
-                if read_status().get("event"):
-                    return SimpleNamespace(
-                        locked=True,
-                        ramp=SimpleNamespace(error=None),
-                    )
-                await asyncio.sleep(0.01)
-            pytest.fail("status was never refreshed after the host-event timeout")
-
-    class Client:
-        def post_host_event(self, _session_id, _pull_token, payload):
-            host_events.append(dict(payload))
-            raise TimeoutError("response timed out after the write")
-
-        def status(self, _session_id, _pull_token):
-            status_reads.append(True)
-            return {"event": {"level_batch": {"samples": []}}}
-
-        def delete(self, session_id, _pull_token):
-            purged.append(session_id)
-
-    class Camilla:
-        async def get_volume_db(self, *, best_effort):
-            return -30.0
-
-        async def set_volume_db(self, _db, *, best_effort):
-            return True
-
-    class TonePlayer:
-        def __init__(self, _path):
-            pass
-
-        async def play(self):
-            return None
-
-        def cancel(self):
-            return None
-
-    class EventVerifier:
-        def __init__(self, _pi_session):
-            pass
-
-        def verify(self, event):
-            return event
-
-    @asynccontextmanager
-    async def measurement_window():
-        yield
-
-    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: Camilla())
-    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
-    monkeypatch.setattr(playback, "TonePlayer", TonePlayer)
-    monkeypatch.setattr(
-        level_match,
-        "parse_level_batch",
-        lambda *_args, **_kwargs: [
-            SimpleNamespace(rms_dbfs=-40.0, seq=1, t_client_ms=1)
-        ],
-    )
-    monkeypatch.setattr(relay_session, "PhoneEventVerifier", EventVerifier)
-    monkeypatch.setattr(relay_session, "validate_capture_page", lambda *_args: None)
-    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
-
-    await correction_setup._run_relay_level_match(
-        Session(),
-        Client(),
-        SimpleNamespace(
-            session_id="cap-level",
-            pull_token="pull",
-            spec=SimpleNamespace(
-                capture_protocol_version=CAPTURE_PROTOCOL_VERSION,
-                kind="level_ramp",
-            ),
-        ),
-        geometry="listening_position",
-        run_token="run-level",
-    )
-
-    assert host_events == [
-        {"phase": "ramp_progress"},
-        {"phase": "ramp_progress"},
-    ]
-    assert status_reads
-    assert purged == ["cap-level"]
-
-
-async def test_relay_level_match_unlocked_raises_refused_and_posts_mapped_message(
-    monkeypatch,
-):
-    """A ramp terminal that never locks must raise the typed LevelMatchRefused
-    (not a bare ValueError carrying the raw ramp code) and the phone terminal
-    must see the mapped homeowner message, not "agc_suspected" verbatim (the
-    2026-07-16 jts3 finding). Mirrors
-    test_level_pump_refreshes_status_after_host_event_timeout's fixture shape
-    (a status feed carrying `level_batch` so the pump admits samples and the
-    adapter calls into `run_level_match`), but the fake session's ramp never
-    locks."""
-    from contextlib import asynccontextmanager
-
-    from jasper.capture_relay import session as relay_session
-    from jasper.correction import coordinator, level_match, playback
-    from jasper.correction.level_match import LevelMatchRefused, describe_ramp_refusal
-
-    host_events = []
-    purged = []
-
-    class Session:
-        session_id = "room-level"
-        noise_floor_db = -40.0
-        input_device = None
-        mic_calibration = None
-
-        async def run_level_match(self, _geometry, **_kwargs):
-            return SimpleNamespace(
-                locked=False,
-                ramp=SimpleNamespace(error="agc_suspected", error_detail=None),
-            )
-
-    class Client:
-        def post_host_event(self, _session_id, _pull_token, payload):
-            host_events.append(dict(payload))
-
-        def status(self, _session_id, _pull_token):
-            return {"event": {"level_batch": {"samples": []}}}
-
-        def delete(self, session_id, _pull_token):
-            purged.append(session_id)
-
-    class Camilla:
-        async def get_volume_db(self, *, best_effort):
-            return -30.0
-
-        async def set_volume_db(self, _db, *, best_effort):
-            return True
-
-    class TonePlayer:
-        def __init__(self, _path):
-            pass
-
-        async def play(self):
-            return None
-
-        def cancel(self):
-            return None
-
-    class EventVerifier:
-        def __init__(self, _pi_session):
-            pass
-
-        def verify(self, event):
-            return event
-
-    @asynccontextmanager
-    async def measurement_window():
-        yield
-
-    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: Camilla())
-    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: "tone.wav")
-    monkeypatch.setattr(playback, "TonePlayer", TonePlayer)
-    monkeypatch.setattr(
-        level_match,
-        "parse_level_batch",
-        lambda *_args, **_kwargs: [
-            SimpleNamespace(rms_dbfs=-40.0, seq=1, t_client_ms=1)
-        ],
-    )
-    monkeypatch.setattr(relay_session, "PhoneEventVerifier", EventVerifier)
-    monkeypatch.setattr(relay_session, "validate_capture_page", lambda *_args: None)
-    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
-
-    refusal = describe_ramp_refusal("agc_suspected")
-
-    with pytest.raises(LevelMatchRefused) as excinfo:
-        await correction_setup._run_relay_level_match(
-            Session(),
-            Client(),
-            SimpleNamespace(
-                session_id="cap-level",
-                pull_token="pull",
-                spec=SimpleNamespace(
-                    capture_protocol_version=CAPTURE_PROTOCOL_VERSION,
-                    kind="level_ramp",
-                ),
-            ),
-            geometry="listening_position",
-            run_token="run-level",
-        )
-
-    assert excinfo.value.code == "agc_suspected"
-    assert excinfo.value.user_message == refusal.user_message
-    terminal_events = [e for e in host_events if e.get("ramp", {}).get("terminal")]
-    assert terminal_events, host_events
-    assert terminal_events[-1]["ramp"]["error"] == refusal.user_message
-    assert terminal_events[-1]["ramp"]["error"] != "agc_suspected"
-    assert terminal_events[-1]["ramp"]["state"] == "error"
-    assert purged == ["cap-level"]
-
-
-async def test_relay_host_event_retries_one_transient_timeout(monkeypatch):
-    attempts = []
-
-    class Client:
-        def post_host_event(self, _session_id, _pull_token, payload):
-            attempts.append(payload)
-            if len(attempts) == 1:
-                raise TimeoutError("relay response timed out")
-
-    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
-    await correction_setup._post_relay_host_event(
-        Client(),
-        SimpleNamespace(session_id="cap-retry", pull_token="pull"),
-        {"phase": "setup_validated"},
-    )
-
-    assert attempts == [
-        {"phase": "setup_validated"},
-        {"phase": "setup_validated"},
-    ]
-
-
-async def test_relay_host_event_does_not_retry_nontransient_4xx(monkeypatch):
-    from jasper.capture_relay.client import RelayError
-
-    attempts = []
-
-    class Client:
-        def post_host_event(self, _session_id, _pull_token, payload):
-            attempts.append(payload)
-            raise RelayError("host event failed: 404", 404)
-
-    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
-    with pytest.raises(RelayError, match="404"):
-        await correction_setup._post_relay_host_event(
-            Client(),
-            SimpleNamespace(session_id="cap-gone", pull_token="pull"),
-            {"phase": "setup_validated"},
-        )
-
-    assert attempts == [{"phase": "setup_validated"}]
-
-
-async def test_room_host_event_exhausted_429_is_definitive(monkeypatch):
-    """The bounded retry does not turn a final rate limit into ambiguity."""
-    from jasper.capture_relay.client import RelayError
-
-    attempts = []
-
-    class Client:
-        def post_host_event(self, _session_id, _pull_token, payload):
-            attempts.append(payload)
-            raise RelayError("host event failed: 429", 429)
-
-    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_RETRY_DELAY_S", 0)
-    with pytest.raises(RelayError, match="429"):
-        await correction_setup._post_room_sweep_host_event(
-            Client(),
-            SimpleNamespace(session_id="cap-rate-limit", pull_token="pull"),
-            {"phase": "sweep_started"},
-        )
-
-    assert attempts == [
-        {"phase": "sweep_started"},
-        {"phase": "sweep_started"},
-    ]
-
-
-async def test_relay_control_request_enforces_wall_clock_deadline():
-    started = threading.Event()
-    release = threading.Event()
-
-    def stalled_body():
-        started.set()
-        release.wait(timeout=1.0)
-
-    began = time.monotonic()
-    try:
-        with pytest.raises(asyncio.TimeoutError):
-            await correction_setup._run_relay_control_request(
-                stalled_body,
-                hard_timeout_s=0.02,
-            )
-    finally:
-        release.set()
-
-    assert started.is_set()
-    assert time.monotonic() - began < 0.25
-
-
-async def test_timed_out_relay_write_cannot_finish_after_newer_terminal_event(
-    monkeypatch,
-):
-    started = threading.Event()
-    release = threading.Event()
-    history = []
-
-    class Client:
-        def post_host_event(self, _session_id, _pull_token, payload):
-            if payload["phase"] == "old":
-                started.set()
-                release.wait(timeout=1.0)
-            history.append(payload["phase"])
-
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    monkeypatch.setattr(
-        correction_setup,
-        "_RELAY_LEVEL_CONTROL_EXECUTOR",
-        executor,
-    )
-    monkeypatch.setattr(correction_setup, "_RELAY_HOST_EVENT_ATTEMPTS", 1)
-    client = Client()
-    pi_session = SimpleNamespace(session_id="cap-ordered", pull_token="pull")
-    try:
-        with pytest.raises(asyncio.TimeoutError):
-            await correction_setup._post_relay_host_event(
-                client,
-                pi_session,
-                {"phase": "old"},
-                hard_timeout_s=0.02,
-            )
-        assert started.is_set()
-
-        terminal = asyncio.create_task(
-            correction_setup._post_relay_host_event(
-                client,
-                pi_session,
-                {"phase": "terminal"},
-                hard_timeout_s=0.5,
-            )
-        )
-        await asyncio.sleep(0.02)
-        assert history == []
-
-        release.set()
-        await terminal
-    finally:
-        release.set()
-        executor.shutdown(wait=True)
-
-    assert history == ["old", "terminal"]
-
-
-def test_relay_level_control_budget_stays_inside_default_feed_guard():
-    from jasper.audio_measurement.ramp import MeasurementRamp
-
-    assert correction_setup._RELAY_CONTROL_TIMEOUT_S < (
-        correction_setup._RELAY_REGISTER_TIMEOUT_S
-    )
-    assert correction_setup._RELAY_LEVEL_PUMP_MAX_BLOCK_S == pytest.approx(4.75)
-    assert correction_setup._RELAY_LEVEL_PUMP_MAX_BLOCK_S < (
-        MeasurementRamp().feed_timeout_s
-    )
-
-
-def test_relay_capture_return_url_uses_request_host(monkeypatch):
-    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
-    handler = SimpleNamespace(headers={"Host": "jts5.local"})
-
-    assert (
-        correction_setup._request_local_return_url(handler, "/correction/")
-        == "http://jts5.local/correction/"
-    )
-
-
-def test_relay_capture_return_url_falls_back_to_configured_hostname(monkeypatch):
-    monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
-    handler = SimpleNamespace(headers={"Host": "bad/host"})
-
-    assert (
-        correction_setup._request_local_return_url(handler, "/correction/sync")
-        == "http://jts3.local/correction/sync"
-    )
-
-
-def test_room_level_match_returns_to_relay_native_room_page(monkeypatch):
-    import asyncio
-
-    from jasper.capture_relay import correction_adapter
-    from jasper.correction.session import SessionState
-
-    lifecycle = []
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-        suspend_capture_timeout=lambda: lifecycle.append("suspend"),
-        resume_capture_timeout=lambda: lifecycle.append("resume"),
-    )
-    seen = {}
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(
-        correction_setup,
-        "_get_or_create_session",
-        lambda: session,
-    )
-
-    def fake_run(kind, relay_base, *, return_url, idle_hold):
-        seen.update({
-            "kind": kind,
-            "relay_base": relay_base,
-            "return_url": return_url,
-        })
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_relay_level_match",
-        lambda *args, **kwargs: asyncio.sleep(0),
-    )
-    monkeypatch.setattr(
-        correction_adapter,
-        "open_capture",
-        lambda _client, spec, **_kwargs: seen.update(spec=spec)
-        or SimpleNamespace(),
-    )
-
-    payload = correction_setup._handle_relay_level_match(
-        SimpleNamespace(headers={"Host": "jts3.local"})
-    )
-
-    assert payload["session_id"] == "room-session"
-    assert seen["kind"].label == "level_ramp:room"
-    assert seen["relay_base"] == "https://relay.jasper.tech"
-    assert seen["return_url"] == "http://jts3.local/correction/room/"
-    seen["kind"].open(object(), "relay", "capture", "return")
-    assert seen["spec"].setup_collect_positions is False
-
-    asyncio.run(seen["kind"].run_and_consume(object(), object()))
-    assert lifecycle == ["suspend", "resume"]
-
-
-def test_room_sweep_and_verify_return_to_relay_native_room_page(monkeypatch):
-    from jasper.correction.session import SessionState
-
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-        current_position=0,
-        total_positions=1,
-        input_device={"label": "UMIK-2"},
-        mic_calibration=None,
-        level_match_snapshot=lambda: {"last": {"ramp": {"state": "locked"}}},
-    )
-    seen = []
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-
-    def fake_run(kind, relay_base, *, return_url, idle_hold):
-        seen.append((kind.label, relay_base, return_url))
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-    handler = SimpleNamespace(headers={"Host": "jts3.local"})
-
-    correction_setup._handle_relay_capture(handler)
-    session.state = SessionState.NEEDS_REPEAT_CAPTURE
-    correction_setup._handle_relay_capture(handler)
-    session.state = SessionState.APPLIED
-    correction_setup._handle_relay_verify(handler)
-
-    assert seen == [
-        (
-            "room_sweep",
-            "https://relay.jasper.tech",
-            "http://jts3.local/correction/room/",
-        ),
-        (
-            "room_repeat",
-            "https://relay.jasper.tech",
-            "http://jts3.local/correction/room/",
-        ),
-        (
-            "room_verify",
-            "https://relay.jasper.tech",
-            "http://jts3.local/correction/room/",
-        ),
-    ]
-
-
-def test_room_relay_repeat_consumes_repeat_capture_only(monkeypatch, tmp_path):
-    import asyncio
-
-    from jasper.capture_relay import correction_adapter
-    from jasper.correction.session import SessionState
-
-    consumed = []
-    playback = []
-    registered = {}
-
-    async def restore_level_match_volume(_setter):
-        return True
-
-    async def on_repeat_capture_uploaded(path):
-        consumed.append(("repeat", path))
-
-    async def on_capture_uploaded(_path):
-        pytest.fail("repeat WAV must not enter the distinct-position path")
-
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.NEEDS_REPEAT_CAPTURE,
-        current_position=1,
-        total_positions=6,
-        input_device={"label": "UMIK-2"},
-        mic_calibration=None,
-        noise_floor_db=None,
-        repeat_capture_path_for_position=lambda _idx: tmp_path / "repeat.wav",
-        restore_level_match_volume=restore_level_match_volume,
-        on_repeat_capture_uploaded=on_repeat_capture_uploaded,
-        on_capture_uploaded=on_capture_uploaded,
-    )
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
-
-    def fake_run(kind, _relay_base, *, return_url, idle_hold):
-        registered["kind"] = kind
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_relay_measurement_sweep",
-        lambda *_args, **kwargs: playback.append(kwargs["repeat"]),
-    )
-    opened = {}
-
-    def fake_open_room_sweep_capture(_client, **kwargs):
-        opened.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(
-        correction_adapter,
-        "open_room_sweep_capture",
-        fake_open_room_sweep_capture,
-    )
-
-    def fake_run_and_store(_client, _pi_session, path, *, on_armed):
-        on_armed(SimpleNamespace(device={"label": "UMIK-2"}, noise_floor=None))
-        return SimpleNamespace(device={"label": "UMIK-2"}, noise_floor=None)
-
-    monkeypatch.setattr(correction_adapter, "run_and_store", fake_run_and_store)
-
-    correction_setup._handle_relay_capture(
-        SimpleNamespace(headers={"Host": "jts3.local"})
-    )
-    registered["kind"].open(object(), "relay", "capture", "return")
-    asyncio.run(registered["kind"].run_and_consume(object(), object()))
-
-    assert registered["kind"].label == "room_repeat"
-    assert opened == {
-        "position": 1,
-        "total_positions": 6,
-        "relay_base": "relay",
-        "capture_origin": "capture",
-        "return_url": "return",
-        "guided_setup": False,
-        "presentation_variant": "trust_repeat",
-    }
-    assert playback == [True]
-    assert consumed == [("repeat", tmp_path / "repeat.wav")]
-
-
-def test_room_relay_alignment_policy_is_observe_only_and_logs_proxy(monkeypatch):
-    from jasper.capture_relay.spec import build_room_sweep_spec
-
-    pi_session = SimpleNamespace(
-        session_id="relay-room",
-        spec=build_room_sweep_spec(),
-    )
-    session = SimpleNamespace(
-        capture_quality=[{
-            "direct_arrival": {
-                "available": True,
-                "direct_to_pre_arrival_db": 27.5,
-            }
-        }]
-    )
-    events = []
-
-    def capture_event(_logger, event, **fields):
-        events.append((event, fields))
-
-    monkeypatch.setattr(correction_setup, "log_event", capture_event)
-
-    correction_setup._assert_room_relay_alignment_policy(pi_session)
-    correction_setup._log_room_relay_alignment(
-        session,
-        pi_session,
-        capture_kind="measurement",
-    )
-
-    assert events == [(
-        "capture_relay.alignment",
-        {
-            "session_id": "relay-room",
-            "capture_kind": "measurement",
-            "metric": "direct_to_pre_arrival_db",
-            "mode": "observe",
-            "required": False,
-            "available": True,
-            "value_db": 27.5,
-            "reason": None,
-        },
-    )]
-
-
-def test_room_relay_refuses_a_spec_that_claims_an_unimplemented_hard_gate():
-    pi_session = SimpleNamespace(
-        spec=SimpleNamespace(
-            validity=SimpleNamespace(require_alignment=True),
-        )
-    )
-
-    with pytest.raises(RuntimeError, match="observation-only"):
-        correction_setup._assert_room_relay_alignment_policy(pi_session)
-
-
-@pytest.mark.parametrize("repeat", [False, True], ids=["measurement", "repeat"])
-@pytest.mark.parametrize(
-    "failure",
-    ["complete_timeout", "start_oserror", "start_503"],
-    ids=["ambiguous-complete", "ambiguous-network", "ambiguous-server"],
-)
-def test_room_relay_sweep_keeps_capture_alive_when_event_is_unconfirmed(
-    monkeypatch,
-    repeat,
-    failure,
-):
-    """Measurement and repeat preserve every ambiguous relay event outcome."""
-    from contextlib import asynccontextmanager
-
-    from jasper.capture_relay.client import RelayError
-    from jasper.correction import coordinator
-
-    events = []
-    playback = []
-    restored = []
-
-    @asynccontextmanager
-    async def measurement_window():
-        yield
-
-    async def post_host_event(_client, _pi_session, payload, *, hard_timeout_s):
-        events.append((dict(payload), hard_timeout_s))
-        if failure == "complete_timeout" and payload["phase"] == "sweep_complete":
-            raise asyncio.TimeoutError
-        if failure == "start_oserror" and payload["phase"] == "sweep_started":
-            raise OSError("response lost")
-        if failure == "start_503" and payload["phase"] == "sweep_started":
-            raise RelayError("relay response unavailable", 503)
-
-    class Session:
-        current_position = 1
-        total_positions = 6
-
-        async def ensure_level_match_volume(self, _setter):
-            return True
-
-        async def prepare_and_play_sweep(
-            self,
-            _play_sweep,
-            *,
-            runtime_probe_async,
-        ):
-            playback.append("measurement")
-
-        async def prepare_and_play_repeat_sweep(
-            self,
-            _play_sweep,
-            *,
-            runtime_probe_async,
-        ):
-            playback.append("repeat")
-
-        async def restore_level_match_volume(self, _setter):
-            restored.append(True)
-            return True
-
-    class Camilla:
-        async def set_volume_db(self, _db, *, best_effort):
-            return True
-
-        async def get_runtime_status(self, *, best_effort):
-            return {}
-
-    client = SimpleNamespace(
-        post_host_event=lambda *_args, **_kwargs: pytest.fail(
-            "Room sweep events must use the bounded async relay path"
-        )
-    )
-    pi_session = SimpleNamespace(session_id="cap-repeat", pull_token="pull")
-    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
-    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_async",
-        lambda awaitable, *, timeout: asyncio.run(awaitable),
-    )
-
-    correction_setup._run_relay_measurement_sweep(
-        Session(),
-        Camilla(),
-        client=client,
-        pi_session=pi_session,
-        repeat=repeat,
-    )
-
-    assert playback == ["repeat" if repeat else "measurement"]
-    assert restored == [True]
-    assert [event[0]["phase"] for event in events] == [
-        "sweep_started",
-        "sweep_complete",
-    ]
-    assert all(
-        timeout == correction_setup._RELAY_CONTROL_TIMEOUT_S
-        for _payload, timeout in events
-    )
-
-
-@pytest.mark.parametrize("repeat", [False, True], ids=["measurement", "repeat"])
-@pytest.mark.parametrize("status", [404, 429], ids=["gone", "rate-limited"])
-def test_room_relay_sweep_stops_before_playback_on_definitive_4xx(
-    monkeypatch,
-    repeat,
-    status,
-):
-    """A rejected recorder session must never trigger Room sweep audio."""
-    from contextlib import asynccontextmanager
-
-    from jasper.capture_relay.client import RelayError
-    from jasper.correction import coordinator
-
-    events = []
-    playback = []
-    restored = []
-
-    @asynccontextmanager
-    async def measurement_window():
-        yield
-
-    async def post_host_event(_client, _pi_session, payload, *, hard_timeout_s):
-        events.append((dict(payload), hard_timeout_s))
-        raise RelayError("relay event was refused", status)
-
-    class Session:
-        current_position = 1 if repeat else 0
-        total_positions = 6
-
-        async def ensure_level_match_volume(self, _setter):
-            return True
-
-        async def prepare_and_play_sweep(self, _play_sweep, *, runtime_probe_async):
-            playback.append("measurement")
-
-        async def prepare_and_play_repeat_sweep(
-            self,
-            _play_sweep,
-            *,
-            runtime_probe_async,
-        ):
-            playback.append("repeat")
-
-        async def restore_level_match_volume(self, _setter):
-            restored.append(True)
-            return True
-
-    class Camilla:
-        async def set_volume_db(self, _db, *, best_effort):
-            return True
-
-        async def get_runtime_status(self, *, best_effort):
-            return {}
-
-    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
-    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_async",
-        lambda awaitable, *, timeout: asyncio.run(awaitable),
-    )
-
-    with pytest.raises(RelayError, match="event was refused"):
-        correction_setup._run_relay_measurement_sweep(
-            Session(),
-            Camilla(),
-            client=SimpleNamespace(),
-            pi_session=SimpleNamespace(session_id="relay-gone", pull_token="pull"),
-            repeat=repeat,
-        )
-
-    assert playback == []
-    assert restored == [True]
-    assert [event[0]["phase"] for event in events] == [
-        "sweep_started",
-        "sweep_failed",
-    ]
-
-
-def test_room_relay_capture_refuses_changed_mic_before_playback(
-    monkeypatch, tmp_path
-):
-    import asyncio
-
-    from jasper.capture_relay import correction_adapter
-    from jasper.correction.session import SessionState
-
-    playback = []
-    restored = []
-    registered = {}
-
-    async def restore_level_match_volume(_setter):
-        restored.append(True)
-        return True
-
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-        current_position=0,
-        total_positions=6,
-        input_device={"label": "UMIK-2"},
-        mic_calibration=None,
-        noise_floor_db=None,
-        capture_path_for_position=lambda _idx: tmp_path / "position.wav",
-        restore_level_match_volume=restore_level_match_volume,
-    )
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
-
-    def fake_run(kind, _relay_base, *, return_url, idle_hold):
-        registered["kind"] = kind
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_relay_measurement_sweep",
-        lambda *_args, **_kwargs: playback.append(True),
-    )
-
-    def fake_run_and_store(_client, _pi_session, _path, *, on_armed):
-        on_armed(SimpleNamespace(device={"label": "Phone mic"}, noise_floor=None))
-        pytest.fail("a changed microphone must stop before capture consumption")
-
-    monkeypatch.setattr(correction_adapter, "run_and_store", fake_run_and_store)
-
-    correction_setup._handle_relay_capture(
-        SimpleNamespace(headers={"Host": "jts3.local"})
-    )
-    phone_events = []
-    client = SimpleNamespace(
-        post_host_event=lambda _sid, _token, payload: phone_events.append(payload)
-    )
-    pi_session = SimpleNamespace(session_id="relay-session", pull_token="pull")
-    with pytest.raises(ValueError, match="microphone changed"):
-        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
-
-    assert playback == []
-    assert restored == [True]
-    assert phone_events == [
-        {
-            "phase": "sweep_failed",
-            "error": correction_setup._ROOM_SWEEP_PHONE_FAILURE,
-            "error_code": "room_sweep_unavailable",
-        }
-    ]
-    assert "Phone mic" not in str(phone_events)
-
-
-@pytest.mark.parametrize(
-    "state",
-    [
-        pytest.param("needs_noise_capture", id="position"),
-        pytest.param("needs_repeat_capture", id="trust-repeat"),
-    ],
-)
-def test_room_relay_capture_refuses_changed_calibration_before_playback(
-    monkeypatch,
-    tmp_path,
-    state,
-):
-    import asyncio
-
-    from jasper.capture_relay import correction_adapter
-    from jasper.correction.session import SessionState
-
-    playback = []
-    restored = []
-    registered = {}
-
-    async def restore_level_match_volume(_setter):
-        restored.append(True)
-        return True
-
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState(state),
-        current_position=1,
-        total_positions=6,
-        input_device={"label": "UMIK-2"},
-        mic_calibration=SimpleNamespace(
-            calibration_id="cal-1",
-            provider="test",
-        ),
-        noise_floor_db=None,
-        capture_path_for_position=lambda _idx: tmp_path / "position.wav",
-        repeat_capture_path_for_position=lambda _idx: tmp_path / "repeat.wav",
-        restore_level_match_volume=restore_level_match_volume,
-    )
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
-
-    def fake_run(kind, _relay_base, *, return_url, idle_hold):
-        registered["kind"] = kind
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_relay_measurement_sweep",
-        lambda *_args, **_kwargs: playback.append(True),
-    )
-
-    def fake_run_and_store(_client, _pi_session, _path, *, on_armed):
-        on_armed(SimpleNamespace(device={"label": "UMIK-2"}, noise_floor=None))
-        pytest.fail("changed calibration must stop before capture consumption")
-
-    monkeypatch.setattr(correction_adapter, "run_and_store", fake_run_and_store)
-
-    correction_setup._handle_relay_capture(
-        SimpleNamespace(headers={"Host": "jts3.local"})
-    )
-    session.mic_calibration = SimpleNamespace(
-        calibration_id="cal-2",
-        provider="test",
-    )
-    phone_events = []
-    client = SimpleNamespace(
-        post_host_event=lambda _sid, _token, payload: phone_events.append(payload)
-    )
-    pi_session = SimpleNamespace(session_id="relay-session", pull_token="pull")
-
-    with pytest.raises(ValueError, match="calibration changed"):
-        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
-
-    assert playback == []
-    assert restored == [True]
-    assert phone_events[0]["error_code"] == "room_sweep_unavailable"
-    assert "cal-2" not in str(phone_events)
-
-
-def test_room_relay_verify_refuses_changed_calibration_before_playback(
-    monkeypatch,
-    tmp_path,
-):
-    import asyncio
-
-    from jasper.capture_relay import session as relay_session
-    from jasper.correction.session import SessionState
-
-    playback = []
-    restored = []
-    registered = {}
-
-    async def restore_level_match_volume(_setter):
-        restored.append(True)
-        return True
-
-    session = SimpleNamespace(
-        session_id="room-session",
-        state=SessionState.APPLIED,
-        input_device={"label": "UMIK-2"},
-        mic_calibration=SimpleNamespace(
-            calibration_id="cal-1",
-            provider="test",
-        ),
-        level_match_snapshot=lambda: {"last": {"ramp": {"state": "locked"}}},
-        verify_capture_path=lambda: tmp_path / "verify.wav",
-        restore_level_match_volume=restore_level_match_volume,
-    )
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
-
-    def fake_run(kind, _relay_base, *, return_url, idle_hold):
-        registered["kind"] = kind
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_async",
-        lambda *_args, **_kwargs: playback.append(True),
-    )
-
-    def fake_run_capture(_client, _pi_session, *, on_armed):
-        on_armed(SimpleNamespace(device={"label": "UMIK-2"}))
-        pytest.fail("changed calibration must stop before verify capture")
-
-    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
-    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
-
-    correction_setup._handle_relay_verify(
-        SimpleNamespace(headers={"Host": "jts3.local"})
-    )
-    session.mic_calibration = SimpleNamespace(
-        calibration_id="cal-2",
-        provider="test",
-    )
-    phone_events = []
-    client = SimpleNamespace(
-        post_host_event=lambda _sid, _token, payload: phone_events.append(payload)
-    )
-    pi_session = SimpleNamespace(session_id="relay-session", pull_token="pull")
-
-    with pytest.raises(ValueError, match="calibration changed"):
-        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
-
-    assert playback == []
-    assert restored == [True]
-    assert phone_events[0]["error_code"] == "room_sweep_unavailable"
-    assert "cal-2" not in str(phone_events)
-
-
-def test_room_verify_checks_level_microphone_before_playback(monkeypatch, tmp_path):
-    import asyncio
-
-    from jasper.capture_relay import session as relay_session
-    from jasper.correction.session import SessionState
-
-    binding_id = "room-session-12345"
-    uploaded = []
-    restored = []
-
-    async def restore_level_match_volume(_set_volume):
-        restored.append(True)
-
-    async def on_verify_capture_uploaded(path):
-        uploaded.append(path.read_bytes())
-
-    session = SimpleNamespace(
-        session_id=binding_id,
-        state=SessionState.APPLIED,
-        input_device={"label": "UMIK-2"},
-        mic_calibration=None,
-        level_match_snapshot=lambda: {"last": {"ramp": {"state": "locked"}}},
-        verify_capture_path=lambda: tmp_path / "verify.wav",
-        restore_level_match_volume=restore_level_match_volume,
-        on_verify_capture_uploaded=on_verify_capture_uploaded,
-    )
-    registered = {}
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
-    monkeypatch.setattr(correction_setup, "_maybe_auto_revert", lambda _sess: None)
-
-    def fake_run(kind, _relay_base, *, return_url, idle_hold):
-        registered.update(kind=kind, return_url=return_url)
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-
-    def fake_run_capture(_client, _pi_session, *, on_armed):
-        relay_session._call_state_callback(
-            on_armed,
-            SimpleNamespace(
-                device={"label": "UMIK-2"},
-            ),
-        )
-        return SimpleNamespace(wav=b"RIFFverify", device={"label": "UMIK-2"})
-
-    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
-    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
-
-    def close_playback(coro, *, timeout):
-        assert timeout == 90.0
-        coro.close()
-
-    monkeypatch.setattr(correction_setup, "_run_async", close_playback)
-
-    correction_setup._handle_relay_verify(
-        SimpleNamespace(headers={"Host": "jts3.local"})
-    )
-    asyncio.run(registered["kind"].run_and_consume(object(), object()))
-
-    assert registered["return_url"] == "http://jts3.local/correction/room/"
-    assert uploaded == [b"RIFFverify"]
-    assert restored == [True]
-
-
-@pytest.mark.parametrize(
-    ("failure", "expected_upload", "expected_phases"),
-    [
-        pytest.param(
-            "complete_timeout",
-            [b"RIFFfresh-verify"],
-            ["sweep_started", "sweep_complete"],
-            id="ambiguous-complete",
-        ),
-        pytest.param(
-            "start_oserror",
-            [b"RIFFfresh-verify"],
-            ["sweep_started", "sweep_complete"],
-            id="ambiguous-network",
-        ),
-        pytest.param(
-            "start_503",
-            [b"RIFFfresh-verify"],
-            ["sweep_started", "sweep_complete"],
-            id="ambiguous-server",
-        ),
-        pytest.param(
-            "start_404",
-            [],
-            ["sweep_started"],
-            id="definitive-start-refusal",
-        ),
-        pytest.param(
-            "start_429",
-            [],
-            ["sweep_started"],
-            id="exhausted-rate-limit-refusal",
-        ),
-    ],
-)
-def test_room_relay_verify_host_event_failure_contract(
-    monkeypatch,
-    tmp_path,
-    failure,
-    expected_upload,
-    expected_phases,
-):
-    """Verify preserves ambiguity but aborts on a definitive relay refusal."""
-    import asyncio
-    from contextlib import asynccontextmanager
-
-    from jasper.capture_relay.client import RelayError
-    from jasper.capture_relay import session as relay_session
-    from jasper.correction import coordinator
-    from jasper.correction.session import SessionState
-
-    events = []
-    uploaded = []
-    registered = {}
-
-    @asynccontextmanager
-    async def measurement_window():
-        yield
-
-    async def post_host_event(
-        _client,
-        _pi_session,
-        payload,
-        *,
-        hard_timeout_s,
-    ):
-        events.append((dict(payload), hard_timeout_s))
-        if failure == "complete_timeout" and payload["phase"] == "sweep_complete":
-            raise asyncio.TimeoutError
-        if failure == "start_oserror" and payload["phase"] == "sweep_started":
-            raise OSError("response lost")
-        if failure == "start_503" and payload["phase"] == "sweep_started":
-            raise RelayError("relay response unavailable", 503)
-        if failure in {"start_404", "start_429"} and payload["phase"] == "sweep_started":
-            status = 404 if failure == "start_404" else 429
-            raise RelayError("relay event was refused", status)
-
-    class Session:
-        session_id = "room-verify-timeout"
-        state = SessionState.APPLIED
-        input_device = {"label": "UMIK-2"}
-        mic_calibration = None
-
-        def level_match_snapshot(self):
-            return {"last": {"ramp": {"state": "locked"}}}
-
-        def verify_capture_path(self):
-            return tmp_path / "verify.wav"
-
-        async def ensure_level_match_volume(self, _setter):
-            return True
-
-        async def start_verify_sweep(self, _play_sweep, *, runtime_probe_async):
-            return None
-
-        async def restore_level_match_volume(self, _setter):
-            return True
-
-        async def on_verify_capture_uploaded(self, path):
-            uploaded.append(path.read_bytes())
-
-    class Camilla:
-        async def set_volume_db(self, _db, *, best_effort):
-            return True
-
-        async def get_runtime_status(self, *, best_effort):
-            return {}
-
-    def fake_run(kind, _relay_base, *, return_url, idle_hold):
-        registered.update(kind=kind, return_url=return_url)
-        return {"tap_link": "https://capture.jasper.tech/#redacted"}
-
-    def fake_run_capture(_client, _pi_session, *, on_armed):
-        relay_session._call_state_callback(
-            on_armed,
-            SimpleNamespace(device={"label": "UMIK-2"}),
-        )
-        return SimpleNamespace(wav=b"RIFFfresh-verify", device={"label": "UMIK-2"})
-
-    direct_events = []
-
-    def direct_host_event(_session_id, _pull_token, payload):
-        # Progress events must use the bounded ordered helper patched above.
-        direct_events.append(dict(payload))
-
-    client = SimpleNamespace(post_host_event=direct_host_event)
-    pi_session = SimpleNamespace(session_id="relay-verify", pull_token="pull")
-    monkeypatch.setattr(
-        correction_setup,
-        "_require_relay_base",
-        lambda: "https://relay.jasper.tech",
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
-    monkeypatch.setattr(correction_setup, "_camilla", Camilla)
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", fake_run)
-    monkeypatch.setattr(correction_setup, "_post_relay_host_event", post_host_event)
-    monkeypatch.setattr(
-        correction_setup,
-        "_run_async",
-        lambda awaitable, *, timeout: asyncio.run(awaitable),
-    )
-    monkeypatch.setattr(correction_setup, "_maybe_auto_revert", lambda _sess: None)
-    monkeypatch.setattr(coordinator, "measurement_window", measurement_window)
-    monkeypatch.setattr(relay_session, "run_capture", fake_run_capture)
-    monkeypatch.setattr(relay_session, "purge", lambda *_args: None)
-
-    correction_setup._handle_relay_verify(
-        SimpleNamespace(headers={"Host": "jts3.local"})
-    )
-    if failure in {"start_404", "start_429"}:
-        with pytest.raises(RelayError, match="event was refused"):
-            asyncio.run(registered["kind"].run_and_consume(client, pi_session))
-    else:
-        asyncio.run(registered["kind"].run_and_consume(client, pi_session))
-
-    assert uploaded == expected_upload
-    assert [event[0]["phase"] for event in events] == expected_phases
-    assert direct_events == []
-    assert all(
-        event[0]["capture_kind"] == "verify"
-        and event[1] == correction_setup._RELAY_CONTROL_TIMEOUT_S
-        for event in events
-    )
-
-
 def test_render_page_delegates_correction_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
     leader_paths = []
@@ -2664,7 +676,6 @@ def test_local_capture_setup_rejects_a_stale_session_before_binding(monkeypatch)
     )
     sess = SimpleNamespace(
         session_id="current-run",
-        capture_transport="local",
         state=SessionState.NEEDS_NOISE_CAPTURE,
     )
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
@@ -2695,7 +706,6 @@ def test_local_capture_setup_sanitizes_and_binds_current_session(monkeypatch):
 
     class Session:
         session_id = "current-run"
-        capture_transport = "local"
         state = SessionState.NEEDS_NOISE_CAPTURE
         input_device = None
         mic_calibration = None
@@ -2724,7 +734,6 @@ def test_local_noise_upload_rejects_unbound_setup_before_reading_body(monkeypatc
         rfile=io.BytesIO(b"WAVE"),
     )
     sess = SimpleNamespace(
-        capture_transport="local",
         local_capture_setup_bound=False,
         state=SessionState.NEEDS_NOISE_CAPTURE,
     )
@@ -2752,7 +761,6 @@ def test_local_noise_upload_requires_completed_level_lock_before_body(
         rfile=io.BytesIO(b"WAVE"),
     )
     sess = SimpleNamespace(
-        capture_transport="local",
         local_capture_setup_bound=True,
         state=SessionState.NEEDS_NOISE_CAPTURE,
         autolevel=AutolevelData(status=AutolevelStatus(status)),
@@ -2761,61 +769,6 @@ def test_local_noise_upload_requires_completed_level_lock_before_body(
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
 
     with pytest.raises(correction_setup.RequestConflict, match="lock the measurement"):
-        correction_setup._handle_upload_noise(handler)
-
-    assert handler.rfile.tell() == 0
-
-
-def test_relay_noise_upload_is_rejected_before_body_read(monkeypatch):
-    """Issue #2041: /upload-noise is the local-browser capture path — it
-    schedules the sweep through `_schedule_measurement_sweep`, which never
-    reasserts a locked measurement volume (it just trusts the whole-session
-    park left behind by AutolevelController, a local-only object). A relay
-    session's level match instead restores household listening volume the
-    moment it locks and only reasserts around its own `/relay/capture`
-    sweep, so relay must never be allowed through this endpoint at all —
-    checking "is the relay level match locked" here would not be enough,
-    since the sweep would still play at the wrong volume. Before this fix,
-    a relay-transport session hit no gate at all and could ride this
-    endpoint straight through to analysis with no level match of any kind.
-    """
-    from jasper.correction.session import SessionState
-
-    handler = SimpleNamespace(
-        headers={"Content-Length": "4"},
-        rfile=io.BytesIO(b"WAVE"),
-    )
-    sess = SimpleNamespace(
-        capture_transport="relay",
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
-
-    with pytest.raises(correction_setup.RequestConflict, match="local-only"):
-        correction_setup._handle_upload_noise(handler)
-
-    assert handler.rfile.tell() == 0
-
-
-def test_local_noise_upload_gate_unchanged_alongside_relay_refusal(monkeypatch):
-    """Regression pair for the #2041 fix: restructuring the transport check
-    into an early return must not change what a *local* session sees — it
-    still reaches the pre-existing bind-setup conflict (not the new relay
-    refusal, and not a silent pass-through)."""
-    from jasper.correction.session import SessionState
-
-    handler = SimpleNamespace(
-        headers={"Content-Length": "4"},
-        rfile=io.BytesIO(b"WAVE"),
-    )
-    sess = SimpleNamespace(
-        capture_transport="local",
-        local_capture_setup_bound=False,
-        state=SessionState.NEEDS_NOISE_CAPTURE,
-    )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
-
-    with pytest.raises(correction_setup.RequestConflict, match="bind the local"):
         correction_setup._handle_upload_noise(handler)
 
     assert handler.rfile.tell() == 0
@@ -2835,7 +788,6 @@ def test_local_noise_upload_rearms_watchdog_on_async_loop_before_body(
     events = []
 
     class Session:
-        capture_transport = "local"
         local_capture_setup_bound = True
         state = SessionState.NEEDS_NOISE_CAPTURE
         current_position = 0
@@ -2890,7 +842,6 @@ def test_local_autolevel_rejects_unbound_setup_before_audio_side_effects(
     from jasper.correction.session import SessionState
 
     sess = SimpleNamespace(
-        capture_transport="local",
         local_capture_setup_bound=False,
         state=SessionState.NEEDS_NOISE_CAPTURE,
     )
@@ -2908,7 +859,6 @@ def test_local_autolevel_rejects_stale_restart_after_lock(monkeypatch):
     )
 
     sess = SimpleNamespace(
-        capture_transport="local",
         local_capture_setup_bound=True,
         state=SessionState.NEEDS_NOISE_CAPTURE,
         autolevel=AutolevelData(status=AutolevelStatus.LOCKED),
@@ -2989,17 +939,6 @@ def test_read_wav_body_rejects_large_or_incomplete_body():
 
     with pytest.raises(correction_setup.BadRequest, match="incomplete"):
         correction_setup._read_wav_body(Incomplete())
-
-
-def test_render_page_includes_placement_advice():
-    """The WiiM-style 'lay flat, bottom toward speakers, no case' is
-    the only mic-positioning guidance we can give on iOS (no mic-
-    selection API). Pin it so a copy edit doesn't accidentally drop
-    it."""
-    body = correction_setup._render_page("jts.local").decode()
-    assert "screen up" in body or "screen-up" in body
-    assert "bottom edge" in body
-    assert "remove its case" in body
 
 
 def test_render_page_requests_constraints_explicitly():
@@ -3142,11 +1081,6 @@ def test_local_capture_binds_realized_input_before_level_matching():
         "setRunTransportLocked(true)"
     )
 
-    relay_start = body.split("async function startRelayMeasurement()", 1)[1]
-    relay_start = relay_start.split("async function startMeasurement()", 1)[0]
-    assert relay_start.index("sessionId = resp.session_id") < relay_start.index(
-        "setRunTransportLocked(true)"
-    )
     assert "rememberLocalCapture(null)" in start_fn
     assert "localRunOwnerSessionId = sessionId" in start_fn
 
@@ -3209,11 +1143,8 @@ def test_live_status_locks_transport_and_restores_tab_session_identity():
     assert "localRunOwnerSessionId === serverSessionId" in sync
     assert "sessionId = localRunOwnedByThisTab ? serverSessionId : null" in sync
     assert "snapshot.local_capture_setup_bound === true" in sync
-    assert "setRelayMode(snapshot.capture_transport === 'relay')" in sync
     assert "setRunTransportLocked(liveRun)" in sync
-    assert poll.index("syncSessionMechanics(s)") < poll.index(
-        "renderRelayStatusFromSnapshot(s)"
-    )
+    assert "syncSessionMechanics(s)" in poll
 
 
 def test_local_capture_resource_failures_clean_up_stream_and_blob_url():
@@ -3225,16 +1156,6 @@ def test_local_capture_resource_failures_clean_up_stream_and_blob_url():
 
     assert "stopMicStream()" in worklet
     assert "URL.revokeObjectURL(blobUrl)" in worklet
-
-
-def test_relay_tap_link_is_visible_only_while_waiting_for_phone():
-    js = _module_js()
-    start = js.index("function renderRelayCapture(relay)")
-    end = js.index("function setRelayMode", start)
-    fn = js[start:end]
-
-    assert "relay.status === 'awaiting_phone'" in fn
-    assert "relay.status === 'complete'" in fn
 
 
 def test_render_page_does_not_loop_mic_back_to_speaker():
@@ -3715,42 +1636,6 @@ def test_e2e_apply_reaches_the_dsp_despite_failed_measurement_evidence(monkeypat
         server.server_close()
 
 
-@pytest.mark.parametrize(
-    ("route", "handler_name"),
-    [
-        ("/relay/capture", "_handle_relay_capture"),
-        ("/relay/level-match", "_handle_relay_level_match"),
-        ("/relay/verify", "_handle_relay_verify"),
-    ],
-)
-def test_e2e_relay_refusal_returns_typed_homeowner_failure(
-    monkeypatch,
-    route,
-    handler_name,
-):
-    # **_kwargs swallows /relay/level-match's idle_hold=cfg["idle_hold"]
-    # (#1860) — the other two routes call their handler with just `self`.
-    def fake(_handler, **_kwargs):
-        raise ValueError("raw relay/session diagnostic")
-
-    monkeypatch.setattr(correction_setup, handler_name, fake)
-    server, base = _start_server()
-    try:
-        e = request_with_csrf(
-            base,
-            route,
-            b"{}",
-            content_type="application/json",
-            expect_status=409,
-        )
-        body = json.loads(e.read().decode())
-        assert body["failure"]["code"] == "phone_capture_unavailable"
-        assert "raw relay/session diagnostic" not in str(body)
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
 @pytest.mark.parametrize("route", ["/interpret", "/propose"])
 def test_e2e_spend_cap_exceeded_returns_429_with_honest_json(monkeypatch, route):
     """The spend-cap refusal maps to HTTP 429 (distinct from RequestConflict's
@@ -3957,33 +1842,6 @@ def test_calibration_upload_card_defaults_to_the_response_convention():
     assert "selected" not in sign_select.split('value="correction"', 1)[1]
 
 
-def test_relay_upload_states_the_response_convention_not_a_phone_key(
-    tmp_path, monkeypatch,
-):
-    """The phone page has no sign control and posts no sign key, so the Pi
-    states the convention itself rather than defaulting one it was never
-    given. A stray key from some future page is NOT silently honoured — the
-    page-side half of that contract is pinned by
-    tests/test_capture_page_js.py's
-    test_capture_page_upload_never_declares_a_sign_convention.
-    """
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
-
-    record = correction_setup._relay_calibration_from_setup({
-        "calibration": {
-            "mode": "upload",
-            "filename": "lab.txt",
-            "content": "20 -1\n100 0\n1000 1\n",
-            "label": "Lab mic",
-            "sign_convention": "correction",
-        },
-    })
-
-    assert record is not None
-    assert record.sign_convention == "response"
-    assert record.curve.correction_db == [1.0, 0.0, -1.0]
-
-
 def test_e2e_calibration_upload_bad_file_returns_400(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
     server, base = _start_server()
@@ -4056,150 +1914,72 @@ def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
         server.server_close()
 
 
-def test_relay_setup_cannot_override_position_count_and_applies_calibration(
-    tmp_path,
-    monkeypatch,
-):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
-    sess = SimpleNamespace(
-        current_position=0,
-        total_positions=5,
-        mic_calibration=None,
+def _stored_umik2(tmp_path, *, serial="810-8494"):
+    """Establish a UMIK-2 calibration and remember it as the household mic."""
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
     )
 
-    correction_setup._apply_relay_setup_to_session(
-        sess,
-        {
-            "total_positions": 3,
-            "calibration": {
-                "mode": "upload",
-                "filename": "lab.txt",
-                "content": "20 -1\n100 0\n1000 1\n",
-                "label": "Lab mic",
-            },
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="minidsp",
+        model="minidsp_umik2",
+        label="miniDSP UMIK-2",
+        source="https://vendor.example/cal.txt",
+        serial=serial,
+        root=tmp_path / "cal",
+    )
+    write_household_mic(
+        household_mic_from_calibration(record, serial=serial),
+        path=tmp_path / "household_mic.json",
+    )
+    return record
+
+
+def _setup_reference(record, *, model="minidsp_umik2"):
+    """The reference shape the measurement source mints from the record."""
+    return {
+        "calibration": {
+            "mode": "stored",
+            "calibration_id": record.calibration_id,
+            "model": model,
         },
-    )
-
-    assert sess.total_positions == 5
-    assert sess.mic_calibration is not None
-    assert sess.mic_calibration.provider == "manual_upload"
-    assert sess.mic_calibration.point_count == 3
+    }
 
 
-def test_relay_setup_position_count_is_never_phone_authority():
-    sess = SimpleNamespace(
-        current_position=2,
-        total_positions=5,
-        mic_calibration=object(),
-    )
-
-    correction_setup._apply_relay_setup_to_session(
-        sess,
-        {
-            "total_positions": 1,
-            "calibration": {"mode": "none"},
-        },
-    )
-
-    assert sess.total_positions == 5
-    assert sess.mic_calibration is None
-
-
-# --- Wave-2 household-mic persistence -----------------------------------------
-#
-# jasper/correction/household_mic.py: nothing about the measurement mic used
-# to persist across sessions. These tests pin the write points (relay flow —
-# shared by room and crossover — and the local/laptop flow), the
-# never-blocks-on-mismatch replace behavior, the capture-spec prefill hint,
-# and the room wizard's server-rendered banner.
-
-
-def test_relay_calibration_success_saves_household_mic_shared_by_room_and_crossover(
-    tmp_path, monkeypatch, caplog,
-):
-    """Room and crossover both drive their level match through
-    `_run_relay_level_match`, which calls `_apply_relay_setup_to_session` ->
-    `_relay_calibration_from_setup` for BOTH flows (see that function's
-    docstring). Exercising this one shared entry point exercises the write
-    for both flows at once — there is no separate room-only or
-    crossover-only write path."""
+def test_household_mic_replaced_on_a_different_model(tmp_path, monkeypatch, caplog):
+    """A different mic is never refused: the new success replaces the record
+    and says so with the model pair."""
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
     caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
 
-    sess = SimpleNamespace(
-        current_position=0, total_positions=5, mic_calibration=None,
-    )
-    correction_setup._apply_relay_setup_to_session(
-        sess,
-        {
-            "calibration": {
-                "mode": "upload",
-                "filename": "lab.txt",
-                "content": "20 -1\n100 0\n1000 1\n",
-                "label": "Lab mic",
-                "model": "other",
-            },
-        },
-    )
-    assert sess.mic_calibration is not None
-
+    from jasper.audio_measurement import calibration
     from jasper.correction.household_mic import read_household_mic
 
-    record = read_household_mic(path=household_path)
-    assert record is not None
-    assert record.model_key == "other"
-    assert record.calibration_id == sess.mic_calibration.calibration_id
-    assert "event=correction.household_mic_saved" in caplog.text
-    assert "model=other" in caplog.text
-
-
-def test_relay_calibration_mismatch_replaces_household_mic_never_blocks(
-    tmp_path, monkeypatch, caplog,
-):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
-
-    first = SimpleNamespace(
-        current_position=0, total_positions=5, mic_calibration=None,
+    first = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path / "cal",
     )
-    correction_setup._apply_relay_setup_to_session(
-        first,
-        {
-            "calibration": {
-                "mode": "upload",
-                "filename": "lab.txt",
-                "content": "20 -1\n100 0\n1000 1\n",
-                "label": "Lab mic",
-                "model": "other",
-            },
-        },
-    )
-
+    correction_setup._save_household_mic(first)
     caplog.clear()
-    second = SimpleNamespace(
-        current_position=0, total_positions=1, mic_calibration=None,
-    )
-    correction_setup._apply_relay_setup_to_session(
-        second,
-        {
-            "calibration": {
-                "mode": "upload",
-                "filename": "lab2.txt",
-                "content": "20 -2\n100 0\n1000 2\n",
-                "label": "New lab mic",
-                "model": "dayton_imm6",
-            },
-        },
-    )
 
-    # Never blocked: the second, DIFFERENT mic still established successfully.
-    assert second.mic_calibration is not None
-
-    from jasper.correction.household_mic import read_household_mic
+    second = calibration.store_calibration(
+        text="20 -2\n100 0\n1000 2\n",
+        provider="manual_upload",
+        model="dayton_imm6",
+        label="New lab mic",
+        source="uploaded:lab2.txt",
+        root=tmp_path / "cal",
+    )
+    correction_setup._save_household_mic(second)
 
     record = read_household_mic(path=household_path)
     assert record is not None
@@ -4209,9 +1989,7 @@ def test_relay_calibration_mismatch_replaces_household_mic_never_blocks(
     assert "new_model=dayton_imm6" in caplog.text
 
 
-def test_same_model_different_serial_also_replaces_household_mic(
-    tmp_path, monkeypatch, caplog,
-):
+def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, caplog):
     """Within one model, a different physical unit (serial_hash) is still a
     mic swap: the record is replaced and household_mic_replaced fires with a
     `changed=serial` discriminator — while the serial hashes themselves stay
@@ -4222,43 +2000,24 @@ def test_same_model_different_serial_also_replaces_household_mic(
     caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
 
     from jasper.audio_measurement import calibration
-
-    def fake_fetch(*, model_key, serial, orientation, root, opener=None):
-        return calibration.store_calibration(
-            text=f"20 -1\n100 0\n1000 1\n# unit {serial}\n",
-            provider="minidsp",
-            model=model_key,
-            label="miniDSP UMIK-2",
-            source="https://vendor.example/cal.txt",
-            serial=serial,
-            orientation=orientation,
-            root=root,
-        )
-
-    monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
-
-    for serial in ("810-1111", "810-2222"):
-        sess = SimpleNamespace(
-            current_position=0, total_positions=5, mic_calibration=None,
-        )
-        correction_setup._apply_relay_setup_to_session(
-            sess,
-            {
-                "calibration": {
-                    "mode": "serial",
-                    "model": "minidsp_umik2",
-                    "serial": serial,
-                },
-            },
-        )
-        assert sess.mic_calibration is not None
-
     from jasper.audio_measurement.calibration import serial_hash
     from jasper.correction.household_mic import read_household_mic
 
-    record = read_household_mic(path=household_path)
-    assert record is not None
-    assert record.serial_hash == serial_hash("810-2222")
+    for serial in ("810-1111", "810-2222"):
+        record = calibration.store_calibration(
+            text=f"20 -1\n100 0\n1000 1\n# unit {serial}\n",
+            provider="minidsp",
+            model="minidsp_umik2",
+            label="miniDSP UMIK-2",
+            source="https://vendor.example/cal.txt",
+            serial=serial,
+            root=tmp_path / "cal",
+        )
+        correction_setup._save_household_mic(record, serial=serial)
+
+    stored = read_household_mic(path=household_path)
+    assert stored is not None
+    assert stored.serial_hash == serial_hash("810-2222")
     assert "event=correction.household_mic_replaced" in caplog.text
     assert "changed=serial" in caplog.text
     # Hashes never ride the event line.
@@ -4270,291 +2029,19 @@ def test_household_mic_write_failure_never_blocks_the_calibration(
     tmp_path, monkeypatch, caplog,
 ):
     """The documented never-block invariant: persisting the household record
-    is best-effort. A write failure logs one WARN and the calibration that
-    triggered it still establishes successfully."""
+    is best-effort. A write failure logs one WARN and the caller continues."""
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
     caplog.set_level(logging.WARNING, logger="jasper.web.correction_setup")
 
+    from jasper.audio_measurement import calibration
     from jasper.correction import household_mic
 
     def boom(record, *, path):
         raise OSError("disk full")
 
     monkeypatch.setattr(household_mic, "write_household_mic", boom)
-
-    sess = SimpleNamespace(
-        current_position=0, total_positions=5, mic_calibration=None,
-    )
-    correction_setup._apply_relay_setup_to_session(
-        sess,
-        {
-            "calibration": {
-                "mode": "upload",
-                "filename": "lab.txt",
-                "content": "20 -1\n100 0\n1000 1\n",
-                "label": "Lab mic",
-                "model": "other",
-            },
-        },
-    )
-
-    assert sess.mic_calibration is not None  # calibration still established
-    assert not household_path.exists()
-    assert "failed to persist household mic record" in caplog.text
-
-
-# --- Wave-2 addendum: mode="stored" — the one-tap "Using {mic} — confirm" ------
-#
-# The phone page's one-tap confirm (a separate capture-page PR, gated on the
-# spec hint's `resolvable` flag) replays the household's own calibration_id
-# back to the Pi as `setup.calibration = {mode: "stored", calibration_id,
-# model}`. These tests cover both origins a stored calibration can have
-# (vendor-cached fetch and manual upload — resolve_household_mic_calibration's
-# ID lookup handles both identically) and the named-rejection shape on a miss.
-
-
-def test_relay_calibration_stored_mode_resolves_vendor_cached(
-    tmp_path, monkeypatch, caplog,
-):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
-
-    from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import read_household_mic
-
-    record = calibration.store_calibration(
-        text="20 -1\n100 0\n1000 1\n",
-        provider="minidsp",
-        model="minidsp_umik2",
-        label="miniDSP UMIK-2",
-        source="https://vendor.example/cal.txt",
-        serial="810-8494",
-        root=tmp_path / "cal",
-    )
-    # Seed the household record the same way `_save_household_mic` would have
-    # after the original vendor fetch, including the serial_display the
-    # confirm flow has no raw serial to re-derive.
-    from jasper.correction.household_mic import (
-        household_mic_from_calibration,
-        write_household_mic,
-    )
-
-    write_household_mic(
-        household_mic_from_calibration(record, serial="810-8494"),
-        path=household_path,
-    )
-    caplog.clear()
-
-    sess = SimpleNamespace(
-        current_position=0, total_positions=1, mic_calibration=None,
-    )
-    correction_setup._apply_relay_setup_to_session(
-        sess,
-        {
-            "calibration": {
-                "mode": "stored",
-                "calibration_id": record.calibration_id,
-                "model": "minidsp_umik2",
-            },
-        },
-    )
-    assert sess.mic_calibration is not None
-    assert sess.mic_calibration.calibration_id == record.calibration_id
-
-    saved = read_household_mic(path=household_path)
-    assert saved is not None
-    assert saved.calibration_id == record.calibration_id
-    assert saved.provider == "minidsp"  # re-derived from the resolved record
-    # A re-confirm of the SAME mic is not a swap: no _replaced event, and the
-    # "...8494" display survives even though the confirm payload carried no
-    # raw serial to re-derive it from.
-    assert saved.serial_display == "8494"
-    assert "event=correction.household_mic_saved" in caplog.text
-    assert "event=correction.household_mic_replaced" not in caplog.text
-
-
-def test_relay_calibration_stored_mode_refuses_on_device_mismatch(
-    tmp_path, monkeypatch, caplog,
-):
-    """The 2026-07-20 incident, reproduced end to end: a `mode="stored"`
-    re-confirm for the household's UMIK-2 calibration, but THIS capture's
-    reported device is a Dayton iMM-6C. Must refuse to apply (returns None —
-    the caller's existing uncalibrated-analysis path takes over), must NOT
-    re-persist the household record, and must log the new distinct
-    mismatch event (never blocking the capture itself)."""
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
-
-    from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import (
-        household_mic_from_calibration,
-        read_household_mic,
-        write_household_mic,
-    )
-
-    record = calibration.store_calibration(
-        text="20 -1\n100 0\n1000 1\n",
-        provider="minidsp",
-        model="minidsp_umik2",
-        label="miniDSP UMIK-2",
-        source="https://vendor.example/cal.txt",
-        serial="810-8494",
-        root=tmp_path / "cal",
-    )
-    seeded = household_mic_from_calibration(record, serial="810-8494")
-    write_household_mic(seeded, path=household_path)
-    before = household_path.read_text()
-    caplog.clear()
-
-    resolved = correction_setup._relay_calibration_from_setup(
-        {
-            "calibration": {
-                "mode": "stored",
-                "calibration_id": record.calibration_id,
-                "model": "minidsp_umik2",
-            },
-        },
-        device={"label": "iMM-6C", "device_id": "some-dayton-device-id"},
-    )
-
-    assert resolved is None  # refused, never a crash or a partial apply
-    # Never re-persisted: the file on disk is byte-identical to the seed.
-    assert household_path.read_text() == before
-    saved = read_household_mic(path=household_path)
-    assert saved is not None
-    assert saved.model_key == "minidsp_umik2"  # unchanged, not overwritten
-
-    assert "event=correction.calibration_device_identity_mismatch" in caplog.text
-    assert "stored_model=minidsp_umik2" in caplog.text
-    assert "iMM-6C" in caplog.text
-    assert "event=correction.household_mic_saved" not in caplog.text
-    assert "event=correction.household_mic_replaced" not in caplog.text
-
-
-def test_relay_calibration_stored_mode_matching_device_still_applies(
-    tmp_path, monkeypatch, caplog,
-):
-    """Same shape, matching device: the fix must not regress the ordinary
-    re-confirm path — see also
-    `test_relay_calibration_stored_mode_resolves_vendor_cached`, which pins
-    the no-device (``device=None``) call shape unaffected."""
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-    caplog.set_level(logging.INFO, logger="jasper.web.correction_setup")
-
-    from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import household_mic_from_calibration, write_household_mic
-
-    record = calibration.store_calibration(
-        text="20 -1\n100 0\n1000 1\n",
-        provider="minidsp",
-        model="minidsp_umik2",
-        label="miniDSP UMIK-2",
-        source="https://vendor.example/cal.txt",
-        serial="810-8494",
-        root=tmp_path / "cal",
-    )
-    write_household_mic(
-        household_mic_from_calibration(record, serial="810-8494"), path=household_path,
-    )
-    caplog.clear()
-
-    resolved = correction_setup._relay_calibration_from_setup(
-        {
-            "calibration": {
-                "mode": "stored",
-                "calibration_id": record.calibration_id,
-                "model": "minidsp_umik2",
-            },
-        },
-        device={"label": "UMIK-2 (2752:002b)"},
-    )
-    assert resolved is not None
-    assert resolved.calibration_id == record.calibration_id
-    assert "event=correction.calibration_device_identity_mismatch" not in caplog.text
-    assert "event=correction.household_mic_saved" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("device", "expect_applied"),
-    (
-        ({"label": "iMM-6C"}, False),
-        ({"label": "UMIK-2 (2752:002b)"}, True),
-        (None, True),  # no device offered → unchanged, previous behavior
-    ),
-)
-def test_apply_relay_setup_threads_device_into_the_identity_guard(
-    tmp_path, monkeypatch, device, expect_applied,
-):
-    """`_apply_relay_setup_to_session` must pass its `device` through to
-    `_relay_calibration_from_setup`, the way
-    `correction_crossover_v2.resolve_relay_calibration` already does — without
-    it `_stored_calibration_model_mismatch` early-returns on an empty label and
-    the refusal is unreachable for every relay flow that binds through this
-    helper (issue #1660)."""
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-
-    from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import (
-        household_mic_from_calibration,
-        write_household_mic,
-    )
-
-    record = calibration.store_calibration(
-        text="20 -1\n100 0\n1000 1\n",
-        provider="minidsp",
-        model="minidsp_umik2",
-        label="miniDSP UMIK-2",
-        source="https://vendor.example/cal.txt",
-        serial="810-8494",
-        root=tmp_path / "cal",
-    )
-    write_household_mic(
-        household_mic_from_calibration(record, serial="810-8494"), path=household_path,
-    )
-
-    sess = SimpleNamespace(
-        current_position=0, total_positions=1, mic_calibration=None,
-    )
-    correction_setup._apply_relay_setup_to_session(
-        sess,
-        {
-            "calibration": {
-                "mode": "stored",
-                "calibration_id": record.calibration_id,
-                "model": "minidsp_umik2",
-            },
-        },
-        device=device,
-    )
-
-    if expect_applied:
-        assert sess.mic_calibration is not None
-        assert sess.mic_calibration.calibration_id == record.calibration_id
-    else:
-        assert sess.mic_calibration is None
-
-
-def test_relay_calibration_stored_mode_resolves_upload(tmp_path, monkeypatch):
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
-    household_path = tmp_path / "household_mic.json"
-    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
-
-    from jasper.audio_measurement import calibration
-    from jasper.correction.household_mic import (
-        household_mic_from_calibration,
-        read_household_mic,
-        write_household_mic,
-    )
 
     record = calibration.store_calibration(
         text="20 -1\n100 0\n1000 1\n",
@@ -4564,47 +2051,142 @@ def test_relay_calibration_stored_mode_resolves_upload(tmp_path, monkeypatch):
         source="uploaded:lab.txt",
         root=tmp_path / "cal",
     )
-    write_household_mic(household_mic_from_calibration(record), path=household_path)
+    correction_setup._save_household_mic(record)
 
-    sess = SimpleNamespace(
-        current_position=0, total_positions=1, mic_calibration=None,
+    assert not household_path.exists()
+    assert "failed to persist household mic record" in caplog.text
+
+
+# --- The capture's setup.calibration reference --------------------------------
+#
+# The measurement source mints the reference from the household record
+# (correction_crossover_v2_wired._wired_setup_reference) and the analyze seam
+# resolves it back through correction_crossover_v2.resolve_setup_calibration.
+# These drive that production seam.
+
+
+def test_setup_reference_resolves_the_remembered_calibration(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    monkeypatch.setenv(
+        "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
-    correction_setup._apply_relay_setup_to_session(
-        sess,
-        {
-            "calibration": {
-                "mode": "stored",
-                "calibration_id": record.calibration_id,
-                "model": "other",
-            },
-        },
+    from jasper.web import correction_crossover_v2 as v2host
+
+    record = _stored_umik2(tmp_path)
+    resolved = v2host.resolve_setup_calibration(_setup_reference(record), None)
+    assert resolved is not None
+    assert resolved.calibration_id == record.calibration_id
+
+
+def test_setup_reference_resolves_an_uploaded_calibration(tmp_path, monkeypatch):
+    """An upload-provenance record resolves identically: the reference names a
+    calibration_id, not how the household established it."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    monkeypatch.setenv(
+        "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
-    assert sess.mic_calibration is not None
-    assert sess.mic_calibration.calibration_id == record.calibration_id
+    from jasper.audio_measurement import calibration
+    from jasper.correction.household_mic import (
+        household_mic_from_calibration,
+        write_household_mic,
+    )
+    from jasper.web import correction_crossover_v2 as v2host
 
-    saved = read_household_mic(path=household_path)
-    assert saved is not None
-    assert saved.provider == "manual_upload"
-    assert saved.serial_display is None  # uploads never carry a serial
+    record = calibration.store_calibration(
+        text="20 -1\n100 0\n1000 1\n",
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path / "cal",
+    )
+    write_household_mic(
+        household_mic_from_calibration(record),
+        path=tmp_path / "household_mic.json",
+    )
+    resolved = v2host.resolve_setup_calibration(
+        _setup_reference(record, model="other"), None,
+    )
+    assert resolved is not None
+    assert resolved.calibration_id == record.calibration_id
 
 
-def test_relay_calibration_stored_mode_unresolvable_id_is_named_rejection(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize(
+    ("device", "expect_applied"),
+    (
+        ({"label": "iMM-6C"}, False),          # a DIFFERENT registered model
+        ({"label": "UMIK-2 (2752:002b)"}, True),
+        ({"label": "Some Unbranded Capture"}, True),  # nothing to contradict
+        ({}, True),                            # no label reported
+        (None, True),                          # no device offered at all
+    ),
+)
+def test_setup_reference_refuses_a_different_mic(
+    tmp_path, monkeypatch, device, expect_applied,
 ):
-    """Mirrors an invalid vendor serial: the resolution failure raises loudly
-    (never crashes, never silently no-ops) with an operator-facing message,
-    and the session's prior calibration is left untouched because the
-    exception fires before `_apply_relay_setup_to_session` can assign it."""
+    """The 2026-07-20 incident: the reference names the household's UMIK-2 but
+    THIS capture reports a Dayton iMM-6C. Refusing answers None, so the
+    caller's uncalibrated-analysis path takes over — never a blocked capture,
+    and never a re-persisted wrong pairing."""
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     household_path = tmp_path / "household_mic.json"
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    from jasper.web import correction_crossover_v2 as v2host
 
-    sess = SimpleNamespace(
-        current_position=0, total_positions=1, mic_calibration="previous",
+    record = _stored_umik2(tmp_path)
+    before = household_path.read_text()
+
+    resolved = v2host.resolve_setup_calibration(_setup_reference(record), device)
+
+    if expect_applied:
+        assert resolved is not None
+        assert resolved.calibration_id == record.calibration_id
+    else:
+        assert resolved is None
+    assert household_path.read_text() == before  # never re-persisted either way
+
+
+def test_setup_reference_mismatch_is_journalled(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    monkeypatch.setenv(
+        "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
+    caplog.set_level(logging.WARNING, logger="jasper.correction.household_mic")
+    from jasper.web import correction_crossover_v2 as v2host
+
+    record = _stored_umik2(tmp_path)
+    v2host.resolve_setup_calibration(
+        _setup_reference(record), {"label": "iMM-6C", "device_id": "dayton"},
+    )
+    assert "event=correction.calibration_device_identity_mismatch" in caplog.text
+    assert "stored_model=minidsp_umik2" in caplog.text
+
+
+def test_setup_reference_without_a_calibration_resolves_to_nothing(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    monkeypatch.setenv(
+        "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
+    )
+    from jasper.web import correction_crossover_v2 as v2host
+
+    assert v2host.resolve_setup_calibration(None, None) is None
+    assert v2host.resolve_setup_calibration({}, None) is None
+    assert v2host.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) \
+        is None
+
+
+def test_a_stale_setup_reference_is_a_named_rejection(tmp_path, monkeypatch):
+    """A reference to a calibration that is no longer on disk raises loudly
+    with household-facing copy, rather than silently measuring uncalibrated."""
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
+    household_path = tmp_path / "household_mic.json"
+    monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
+    from jasper.web import correction_crossover_v2 as v2host
+
     with pytest.raises(ValueError, match="no longer available"):
-        correction_setup._apply_relay_setup_to_session(
-            sess,
+        v2host.resolve_setup_calibration(
             {
                 "calibration": {
                     "mode": "stored",
@@ -4612,24 +2194,23 @@ def test_relay_calibration_stored_mode_unresolvable_id_is_named_rejection(
                     "model": "minidsp_umik2",
                 },
             },
+            None,
         )
-    assert sess.mic_calibration == "previous"  # never overwritten on failure
     assert not household_path.exists()  # no write on a resolution miss
 
 
-def test_relay_calibration_stored_mode_requires_calibration_id(tmp_path, monkeypatch):
+def test_a_setup_reference_without_an_id_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "cal"))
     monkeypatch.setenv(
         "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(tmp_path / "household_mic.json"),
     )
-    sess = SimpleNamespace(
-        current_position=0, total_positions=1, mic_calibration=None,
-    )
+    from jasper.web import correction_crossover_v2 as v2host
+
     with pytest.raises(ValueError, match="calibration_id is required"):
-        correction_setup._apply_relay_setup_to_session(
-            sess,
-            {"calibration": {"mode": "stored", "model": "minidsp_umik2"}},
+        v2host.resolve_setup_calibration(
+            {"calibration": {"mode": "stored", "model": "minidsp_umik2"}}, None,
         )
+
 
 
 def test_e2e_calibration_fetch_success_saves_household_mic(tmp_path, monkeypatch):
@@ -5087,53 +2668,6 @@ def test_calibration_device_mismatch_ignores_manual_and_absent():
 # recorded). This is `_calibration_device_mismatch`'s sibling: that gate
 # catches "vendor curve on the phone's OWN built-in mic"; this one catches
 # "vendor curve for a DIFFERENT external measurement mic than reported".
-
-
-def test_stored_calibration_model_mismatch_detects_different_supported_model():
-    record = types.SimpleNamespace(model="minidsp_umik2")
-    msg = correction_setup._stored_calibration_model_mismatch(
-        record, {"label": "iMM-6C"},
-    )
-    assert msg is not None
-    assert "UMIK-2" in msg
-    assert "iMM-6C" in msg
-
-
-def test_stored_calibration_model_mismatch_allows_matching_device():
-    record = types.SimpleNamespace(model="minidsp_umik2")
-    # Exact vendor label, and the real-world browser-reported USB descriptor
-    # suffix shape (parenthetical VID:PID) both match.
-    assert correction_setup._stored_calibration_model_mismatch(
-        record, {"label": "UMIK-2"},
-    ) is None
-    assert correction_setup._stored_calibration_model_mismatch(
-        record, {"label": "UMIK-2 (2752:002b)"},
-    ) is None
-
-
-def test_stored_calibration_model_mismatch_preserves_current_behavior_when_absent():
-    # No device reported at all → nothing to contradict the stored choice with.
-    record = types.SimpleNamespace(model="minidsp_umik2")
-    assert correction_setup._stored_calibration_model_mismatch(record, None) is None
-    assert correction_setup._stored_calibration_model_mismatch(
-        record, {"label": ""},
-    ) is None
-    # The record itself carries no recognized model identity (a legacy/manual
-    # upload) → preserve current (apply) behavior per the same "no identity,
-    # no check" rule.
-    unrecognized = types.SimpleNamespace(model="other")
-    assert correction_setup._stored_calibration_model_mismatch(
-        unrecognized, {"label": "iMM-6C"},
-    ) is None
-
-
-def test_stored_calibration_model_mismatch_allows_unrecognized_device_label():
-    # A device label that matches NO known model's aliases is not a positive
-    # mismatch — only a positive match to a DIFFERENT model trips the gate.
-    record = types.SimpleNamespace(model="minidsp_umik2")
-    assert correction_setup._stored_calibration_model_mismatch(
-        record, {"label": "Unknown USB Microphone"},
-    ) is None
 
 
 def test_render_page_emits_registry_model_aliases():
@@ -6486,7 +4020,6 @@ def test_the_autolevel_ramp_holds_one_claim_and_moves_it(monkeypatch):
 
             self.autolevel = AutolevelData(status=AutolevelStatus.IDLE)
             self.state = SessionState.NEEDS_NOISE_CAPTURE
-            self.capture_transport = "local"
             self.local_capture_setup_bound = True
 
         async def reserve_autolevel_run(self):

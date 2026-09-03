@@ -1326,9 +1326,7 @@ def _opened_conductor(monkeypatch, v2host, prepared):
         return _run
 
     monkeypatch.setattr(v2host, "_build_wired_run", _builder)
-    prepared.open(
-        object(), "http://relay.test", "http://origin.test", "http://return.test",
-    )
+    prepared.open()
     return captured["conductor"]
 
 
@@ -1486,35 +1484,6 @@ def test_a_live_hold_reaches_the_envelope_on_the_relay_block():
         assert "position_pending" not in setup._get_relay_capture_for("crossover_v2:")
 
 
-def test_the_slot_names_which_source_the_live_session_opened_on():
-    """WHICH transport is running, for the whole in-flight life of the slot.
-
-    Two surfaces have no other way to ask (#2881): the browser, which cannot
-    otherwise tell "no phone link YET" from a wired session's "no phone link
-    EVER" and sat on "creating the link" for the whole round; and the closing
-    screen, which has to know whose move the all-spots-measured confirm is.
-
-    Pinned across the registration hop as well as the claim, because
-    ``_publish_relay_waiting`` REBUILDS the dict — a field it dropped would be
-    present exactly until the session became reachable.
-    """
-    from jasper.active_speaker.crossover_v2.capture_source import (
-        SOURCE_RELAY,
-        SOURCE_WIRED,
-    )
-    from jasper.web import correction_setup as setup
-
-    for local, expected in ((True, SOURCE_WIRED), (False, SOURCE_RELAY)):
-        setup._set_relay_capture(None)
-        assert setup._begin_relay_capture("crossover_v2:session", local=local)
-        try:
-            assert setup._get_relay_capture()["source"] == expected
-            setup._publish_relay_waiting("crossover_v2:session", "https://t/#s=x")
-            assert setup._get_relay_capture_for("crossover_v2:")["source"] == expected
-        finally:
-            setup._set_relay_capture(None)
-
-
 def test_a_finished_session_stops_advertising_its_hold():
     """The strand check. A hold published into durable state could outlive the
     session holding it; riding the relay slot means the existing terminal
@@ -1526,7 +1495,7 @@ def test_a_finished_session_stops_advertising_its_hold():
         assert setup._get_relay_capture_for("crossover_v2:")["position_pending"]
         # The runner's own terminal publish, verbatim in shape.
         setup._set_relay_capture(
-            {"status": "complete", "kind": "crossover_v2:session", "tap_link": "x"}
+            {"status": "complete", "kind": "crossover_v2:session"}
         )
         assert setup._relay_position_gate is None
         relay = setup._get_relay_capture_for("crossover_v2:")

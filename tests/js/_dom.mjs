@@ -40,8 +40,6 @@ export const CROSSOVER_IDS = [
   "crossover-walk-detail",
   "crossover-walk-action",
   "crossover-relay-status",
-  "crossover-relay-link",
-  "crossover-relay-qr",
   "crossover-relay-stop",
   "capture-status",
 ];

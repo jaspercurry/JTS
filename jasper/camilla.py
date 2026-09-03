@@ -216,11 +216,9 @@ class CamillaConfigRejected(CamillaUnavailable):
     e.g. "Use of missing mixer 'split_active_2way'") into the same
     ``CamillaUnavailable`` a dead/unreachable daemon raises, so the journal
     logged ``reason=CamillaUnavailable`` while Camilla was up and answering.
-    Both generic failure loggers key off ``reason=type(exc).__name__``
-    (``jasper.capture_relay.session._run_with_failure_cues`` and
-    ``jasper.web.correction_setup._relay_failure_reason``), so this class name
-    alone gets an honest ``reason=CamillaConfigRejected`` in both places — no
-    call site needed to change.
+    The generic failure loggers key off ``reason=type(exc).__name__``, so this
+    class name alone gets an honest ``reason=CamillaConfigRejected`` wherever
+    one of them fires — no call site needed to change.
     """
 
 

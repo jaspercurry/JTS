@@ -70,17 +70,6 @@ from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_RENDER_GAP_FRAMES,
 )
 
-#: The measurement slot's source vocabulary: WHICH capture is answering, a
-#: session-level fact published for the whole in-flight life of the slot
-#: (``correction_setup._begin_relay_capture``) and read by the status envelope
-#: and the wizard.
-SOURCE_RELAY = "relay"
-
-#: The Pi-attached measurement-mic provider (#2662 W2b,
-#: :mod:`jasper.web.correction_crossover_v2_wired`): the Pi plays AND records
-#: on one host. Every crossover-v2 session opens on it.
-SOURCE_WIRED = "wired"
-
 
 class CaptureBeginRefused(RuntimeError):
     """The conductor refused a provider's ``begin_capture`` request.

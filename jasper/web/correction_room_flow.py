@@ -82,18 +82,9 @@ __TABS__
   <a id="readiness-blocker-action" class="btn hidden" href=""></a>
 </section>
 
-<section id="capture-handoff" data-envelope-section="capture-handoff" class="info-card hidden" aria-live="polite">
-  <p id="capture-handoff-copy" class="hint"></p>
-  <div id="relay-link-row" class="relay-link-row hidden">
-    <a id="relay-tap-link" class="btn btn--primary" href="#" target="_blank" rel="noopener">Open measurement page</a>
-    <div id="relay-qr" class="relay-qr"></div>
-  </div>
-  <p id="relay-status" class="relay-status"></p>
-</section>
-
 <section id="placement" data-envelope-section="placement" class="info-card hidden">
   <h2 class="section__title">Place the microphone</h2>
-  <p id="placement-instruction">Put the microphone at head height where you normally listen. If it's a phone, lay it flat screen up, point the bottom edge toward the speakers, and remove its case. Keep the room quiet.</p>
+  <p id="placement-instruction">Put the microphone at head height where you normally listen, aimed as its calibration file says, and keep the room quiet.</p>
   <div id="position-prompt" class="note-box hidden">
     <p style="margin:0; font-weight:600">Move to position <span id="position-current">2</span> of <span id="position-total">__DEFAULT_ROOM_POSITION_COUNT__</span>.</p>
     <p class="hint" style="margin-top:0.3em">Move about 30 cm from the previous position, keep the microphone at ear height, then continue.</p>

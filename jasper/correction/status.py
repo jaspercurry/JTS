@@ -356,7 +356,6 @@ def _session_common_payload(session: Any) -> dict[str, Any]:
         "strategy_choice": session.strategy_choice,
         "correction_strategy": _correction_strategy_payload(session),
         "input_device": session.input_device,
-        "capture_transport": getattr(session, "capture_transport", "local"),
         "mic_calibration": _mic_calibration_payload(session),
         "browser_audio_report": session.browser_audio_report,
         "repeat_quality": session.repeat_quality,

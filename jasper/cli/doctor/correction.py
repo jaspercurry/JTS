@@ -77,8 +77,8 @@ def check_correction_web_service() -> CheckResult:
 
 # One rendered line from _systemd.py's _log_deferred_exit: "systemd idle-exit
 # deferred: 2 active requests/holds after 7530s idle, busy for 7530s
-# (threshold 600s, holds: relay:level_ramp:room)" — optionally followed by the
-# " — busy past ...LEAKED hold..." note, which is what pushes it to WARNING.
+# (threshold 600s, holds: capture:crossover_v2:session)" — optionally followed
+# by the " — busy past ...LEAKED hold..." note, which pushes it to WARNING.
 # Captures (busy_for_seconds, holds).
 _DEFERRED_HOLD_RE = re.compile(
     r"idle-exit deferred: \d+ active requests/holds after [\d.]+s idle, "
@@ -94,10 +94,9 @@ def check_correction_idle_exit_holds() -> CheckResult:
 
     ``IdleShutdownTracker.hold()`` (jasper/web/_systemd.py, issue #1854/#1856)
     keeps correction-web's socket-activated process alive across background
-    session work that generates no inbound HTTP traffic: a crossover-v2 cloud
-    session, and — since #1860 — the two human-paced level-ramp kinds
-    (``level_ramp:room``, ``level_ramp:crossover``). Past
-    ``HOLD_LEAK_WARN_AFTER_SEC`` of unbroken busy time, ``_systemd.py`` itself
+    session work that generates no inbound HTTP traffic: a crossover-v2
+    measurement session. Past ``HOLD_LEAK_WARN_AFTER_SEC`` of unbroken busy
+    time, ``_systemd.py`` itself
     escalates its rate-limited "idle-exit deferred" line from INFO to
     WARNING, because no legitimate session runs that long. This check reads
     that same escalation from the unit's journal so a stuck hold shows up

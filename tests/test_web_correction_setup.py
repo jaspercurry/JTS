@@ -187,7 +187,7 @@ def test_render_has_one_root_for_each_envelope_section():
     html = _render()
     section_ids = {
         "current-correction", "run-defaults", "readiness-blocker",
-        "capture-handoff", "placement", "capture-setup",
+        "placement", "capture-setup",
         "local-certificate-warning", "level-check", "position-capture",
         "measurement-review", "apply-status", "verification",
         "result-proof", "tuning", "reports",
@@ -545,8 +545,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/autolevel/cancel", "/upload-noise", "/upload-capture",
         "/local-capture/setup",
         "/calibration/fetch", "/calibration/upload", "/apply", "/reset",
-        "/session/delete", "/relay/level-match", "/relay/capture",
-        "/relay/verify",
+        "/session/delete",
         "/balance/start", "/balance/ramp", "/balance/meter",
         "/balance/lock", "/balance/stop", "/balance/apply",
         "/balance/reset",
