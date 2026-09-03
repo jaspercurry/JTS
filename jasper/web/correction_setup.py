@@ -56,7 +56,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from jasper.active_speaker.crossover_v2.capture_source import SOURCE_WIRED
 from jasper.audio_measurement import room_boundary
 
 from ..log_event import log_event
@@ -481,15 +480,7 @@ def _begin_relay_capture(
             and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
         ):
             return False
-        # WHICH provider is answering, published for the whole in-flight life
-        # of the slot (``_publish_relay_waiting`` carries it forward) and read
-        # by the status envelope and the wizard. The vocabulary is the capture
-        # seam's own, not a second one.
-        _relay_capture = {
-            "status": "starting",
-            "kind": kind_label,
-            "source": SOURCE_WIRED,
-        }
+        _relay_capture = {"status": "starting", "kind": kind_label}
         _relay_stop_request = request_stop
         _relay_position_gate = position_gate
         _relay_complete_request = request_complete

@@ -114,7 +114,6 @@ from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
 )
-from .crossover_v2.capture_source import SOURCE_WIRED
 from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
 # The round-outcome vocabulary this screen renders. Imported rather than
 # re-typed: the four codes are picked by the web host's ``_post_apply_grade``,
@@ -1483,14 +1482,9 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     a fit that is about to produce the very thing the household is waiting for.
     Stop rides the relay block as it does on every in-session screen.
 
-    **The confirm itself belongs to whoever can reach it** (#2881). On a RELAY
-    session the phone owns Retake / Continue on its own confirm screen, and
-    this screen stays actionless and points there. On a WIRED session there is
-    no phone: the same two moves are the household's, here, so the screen mints
-    them against the endpoints the wired runner already listens on
-    (``/v2/complete``, ``/v2/retake``). They are not new machinery and not new
-    decisions — the same two the confirm screen has always offered, minted for
-    the surface that can actually show them. Both carry ``show_during_relay``
+    **The confirm itself belongs to the household, here** (#2881): the screen
+    mints Save / Record-again against the endpoints the runner already listens
+    on (``/v2/complete``, ``/v2/retake``). Both carry ``show_during_relay``
     because the session they belong to is by definition still in flight.
 
     **…but NOT while a capture is held.** Tapping "Record the last spot again"
@@ -1508,8 +1502,7 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
     held = bool(_mapping(status.get("relay")).get("position_pending"))
-    on_wire = _wired_session(status)
-    wired = on_wire and not running and not held
+    wired = not running and not held
     if running:
         verdict = (
             "JTS is working out your correction from the measurements — this "
@@ -1520,13 +1513,11 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "All spots measured. Save this measurement, or record the last "
             "spot again."
         )
-    elif on_wire:
+    else:
         # Held. The only way to reach this screen with a hold open is a retake
         # the household just asked for, so point at the step that is waiting
         # rather than repeat that everything is measured.
         verdict = "Re-recording one spot — follow the step below."
-    else:
-        verdict = "All spots measured — confirm on the measurement page."
     return _envelope(
         screen="closing",
         active_step="measure",
@@ -2615,37 +2606,6 @@ def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
 
 def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(status.get("crossover_v2"))
-
-
-def _wired_session(status: Mapping[str, Any]) -> bool:
-    """Whether the session in flight is measuring on the WIRED source.
-
-    Reads the transport the slot itself published (``relay.source``,
-    ``correction_setup._begin_relay_capture``) rather than inferring it from an
-    absent ``tap_link``: "no phone link" is also what a relay session looks like
-    for the second before registration returns, and a screen that guessed would
-    offer the household a control the wrong session cannot serve.
-
-    False with no session in flight, which is what a caller minting live
-    controls wants — the seams those controls POST to are dropped with the
-    slot, so an offer outliving the session would be an offer to a 409.
-    """
-    return str(_mapping(status.get("relay")).get("source") or "") == SOURCE_WIRED
-
-
-def _follow_the_prompts(status: Mapping[str, Any]) -> str:
-    """WHERE the household reads the next spot's instruction, as a clause.
-
-    Two measuring screens have to name the place, and on the WIRED source
-    there is no measurement page to name — the walkthrough under the
-    live-session block is where each spot's prompt renders (#2881). One
-    definition rather than the same conditional written at both sites.
-    """
-    return (
-        "follow the step below"
-        if _wired_session(status)
-        else "follow the prompts on the measurement page"
-    )
 
 
 def _step_payload(active_step: str, done_steps: set[str]) -> list[dict[str, str]]:
@@ -3928,9 +3888,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                f"JTS is measuring from a few different spots — "
-                f"{_follow_the_prompts(status)}. Moving the microphone between "
-                "spots is what lets JTS tell the speaker apart from the room."
+                "JTS is measuring from a few different spots — follow the "
+                "step below. Moving the microphone between spots is what lets "
+                "JTS tell the speaker apart from the room."
             ),
             next_action=None,
             status=status,
@@ -3944,10 +3904,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                f"JTS is measuring from a few spots either side of the mark, "
-                f"and then back on it — {_follow_the_prompts(status)}. "
-                "Moving the microphone is what shows how the speaker's drivers "
-                "hand over to each other away from the middle."
+                "JTS is measuring from a few spots either side of the mark, "
+                "and then back on it — follow the step below. Moving the "
+                "microphone is what shows how the speaker's drivers hand over "
+                "to each other away from the middle."
             ),
             next_action=None,
             status=status,

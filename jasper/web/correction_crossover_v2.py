@@ -5624,8 +5624,6 @@ def _hand_released_plan_shape(plan_shape: Any) -> Any:
 def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
     """Mint one session on the measurement mic (#2662 W2b).
 
-    Answers ``pi_session`` + ``tap_link``; the link is empty by construction.
-
     **No Pi-minted per-capture result wait.** The wait #2706 put on the spec was
     the Fc sweep's compute ceiling plus its measured overhead; with no sweep to
     bound, the Pi publishes nothing and ``resultWaitMs`` falls back to the

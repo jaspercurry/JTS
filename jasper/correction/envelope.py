@@ -1235,8 +1235,6 @@ def build_envelope(
             failure = public_failure(CORRECTION_AUTO_REVERT_FAILED)
         else:
             failure = session_failure(getattr(session, "error", None))
-    if failure is not None and session.state.value != "failed":
-        next_action = None
     tuning_llm = _tuning_llm(screen)
     if failure is not None or session.state.value == "analyzing":
         tuning_llm["offered"] = False

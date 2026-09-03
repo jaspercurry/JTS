@@ -420,7 +420,7 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
     monkeypatch.setattr(v2host, "_mint_wired_session", _fake_mint)
     monkeypatch.setattr(v2host, "_build_wired_run", _fake_runner)
 
-    prepared.open(object(), "http://relay.test", "http://origin.test", "http://return.test")
+    prepared.open()
 
     return captured["conductor"], (v2host.load_v2_state() or {})
 

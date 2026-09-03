@@ -1520,15 +1520,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (String(env.state) === 'failed' && !failure) {
       throw new Error('room-correction failure/state mismatch');
     }
-    // No review-screen exemption any more. It was scoped to ONE pairing —
-    // screen `review` carrying `measurement_evidence_unsafe` — and the nanny
-    // burn-down retired that code, so the pairing is unreachable and the
-    // exemption exempted nothing. Deleting it is behaviour-preserving by
-    // construction: the clause it removes evaluated to "throw" for every other
-    // combination already. It is NOT a claim that a non-failed session carries
-    // no failure — a session whose ramp terminal never advances `state` still
-    // carries one, and those were outside the exemption before and are
-    // outside it now.
     if (failure && String(env.state) !== 'failed') {
       throw new Error('room-correction failure/screen mismatch');
     }

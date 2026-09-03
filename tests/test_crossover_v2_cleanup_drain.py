@@ -158,7 +158,7 @@ def _wired_row(
             complete_event=threading.Event(),
             poll_interval_s=0.01,
         )
-        await runner(None, _session())
+        await runner(_session())
 
     return _Row(id=id, persist=persist, drive=_drive)
 
