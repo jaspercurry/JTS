@@ -308,13 +308,13 @@ def test_failed_inactive_renderer_is_not_disguised_as_idle() -> None:
 #
 # The jts5 shape: CamillaDSP plays an active graph into an snd-aloop lane that
 # nothing drains while outputd captures the passive lane, so the speaker emits
-# digital silence with every daemon "healthy". ``transport_coherence_errors``
+# digital silence with every daemon "healthy". ``transport_coherence_report``
 # already detected it for doctor; these pin that /state stops calling it ready.
 
 # #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING
 # along with the endpoint, so this shape no longer reports a capture MISMATCH —
 # there is no registered capture to mismatch against. The unpaired-device arm of
-# `transport_coherence_errors` reports it instead. Same box, same verdict
+# `transport_coherence_report` reports it instead. Same box, same verdict
 # (parked), different sentence.
 _ROUTE_DISCONNECTED = (
     "post-DSP route has no registered outputd capture for "
@@ -430,7 +430,7 @@ def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> N
     fail-SAFED it to ``loopback`` and the detector then compared a ring-armed
     outputd against a loopback plan it had invented.
     """
-    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
     from jasper.fanin_coupling import VALID_COUPLINGS
 
     # The premise that made the substitution lossy: the shape name this box

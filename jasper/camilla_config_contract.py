@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from jasper.fanin_coupling import (
+    RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
     RING_PCM_DEVICES,
     RING_PLAYBACK_DEVICE,
@@ -91,33 +92,37 @@ DEFAULT_PIPE_SINK_FORMAT = "S16_LE"
 # compatibility through the driver-domain round-trip tests.
 DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 
-# The post-DSP ALSA transport's two halves, paired. RING devices are DELIBERATELY
-# ABSENT and this is a decision, not an omission: a ring has no outputd capture
-# PCM at all — outputd reads the ring FILE directly, so there is no second half
-# to pair. What is left in the map is the RETIRED snd-aloop pair, kept only so a
-# box that has not reconciled onto the ring still reports a coherent account of
-# the lane it names. Adding an entry would invent a snd-aloop lane
-# that nothing opens, and `transport_coherence_report` reads the ABSENCE as
-# meaningful: a Camilla graph naming a ring under a LOOPBACK plan has no
-# registered capture. What that means then depends on WHICH ring — the stereo
-# ring is the contradiction it reports, the ACTIVE ring is the documented arm
-# waypoint it notes — but either way the absence is what routes it there.
-# The snd-aloop ACTIVE pair is ABSENT for the SAME reason the rings are, and it
-# joined them rather than being special-cased: #2534 deleted its PCM definitions
-# and the ACTIVE ring is now the one legal ACTIVE endpoint, so no box has an
-# outputd capture half for it either. The audio-hardware reconciler's WRITE of
-# JASPER_OUTPUTD_CONTENT_PCM died with the lane — no box declares a content PCM
-# now — but the reconciler still RESOLVES this map once per pass, against the
-# constant RETIRED_ALOOP_PLAYBACK_DEVICE, and hard-exits 66 when the lookup
-# misses. That gate is a deliberate boot-time fail-loud tripwire (and the only
-# trigger for the #2489 clockless park); ADR-0186 rules it and this entry stay.
+# The post-DSP ALSA transport's two halves, paired. Every ABSENCE is a decision:
+# a ring has no outputd capture PCM at all (outputd reads the ring FILE), and
+# #2534 deleted the snd-aloop ACTIVE lane's PCM definitions. Adding an entry
+# would invent a lane nothing opens; `transport_coherence_report` reads the
+# absence as meaningful and owns what each missing pairing MEANS, through
+# UNPAIRED_POST_DSP_PLAYBACK_DEVICES below.
 #
-# So the entry below is NOT trimmable on its own: its key is exactly the
-# constant the gate feeds in, so deleting it while the gate stands parks EVERY
-# box on EVERY reconcile. The gate goes first, or the two go together.
+# The one entry is NOT trimmable on its own: the audio-hardware reconciler
+# resolves this map once per pass against RETIRED_ALOOP_PLAYBACK_DEVICE and
+# hard-exits 66 when the lookup misses, so deleting it while that gate stands
+# parks EVERY box on EVERY reconcile. ADR-0186 rules the gate and this entry
+# stay; the gate goes first, or the two go together.
 _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
     RETIRED_ALOOP_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
 }
+
+# Every endpoint a post-DSP CamillaDSP graph can name, paired or not.
+POST_DSP_PLAYBACK_DEVICES = frozenset(
+    (
+        RETIRED_ALOOP_PLAYBACK_DEVICE,
+        ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+)
+# PAIRING only — "is there a registered outputd capture for this playback
+# device" — never disposition: the two rings get opposite dispositions from the
+# same absent pairing, and ``transport_coherence_report`` owns that split.
+UNPAIRED_POST_DSP_PLAYBACK_DEVICES = (
+    POST_DSP_PLAYBACK_DEVICES - _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE.keys()
+)
 
 
 def outputd_capture_device_for_playback(playback_device: object) -> str | None:

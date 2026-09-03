@@ -1374,7 +1374,7 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
 # #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING with
 # the endpoint itself, so this shape stopped reporting a capture MISMATCH — there
 # is no registered capture left to mismatch against, and the unpaired-device arm
-# of `transport_coherence_errors` reports it instead. Same box, same verdict, a
+# of `transport_coherence_report` reports it instead. Same box, same verdict, a
 # different sentence. Kept as one constant so the two tests that read it cannot
 # drift apart from each other.
 _ROUTE_UNPAIRED = (
