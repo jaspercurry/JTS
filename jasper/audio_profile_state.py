@@ -27,6 +27,7 @@ from .chip_aec.health import (
 from .chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
+from .mics.xvf3800 import AEC_MIC_DEVICE_ENV, CHIP_AEC_ENABLED_ENV
 
 
 # The operator's audio-input selection, written by the /aec wizard and read
@@ -350,7 +351,7 @@ def runtime_env_from_mapping(
 
     return RuntimeAecEnv(
         primary_device=env_value(env, "JASPER_MIC_DEVICE", "Array", process_env=process_env),
-        aec_device=env_value(env, "JASPER_AEC_MIC_DEVICE", "Array", process_env=process_env),
+        aec_device=env_value(env, AEC_MIC_DEVICE_ENV, "Array", process_env=process_env),
         mic_variant=env_value(env, "JASPER_XVF_VARIANT", "", process_env=process_env),
         mic_geometry=env_value(env, "JASPER_XVF_GEOMETRY", "", process_env=process_env),
         mic_display_name=env_value(
@@ -372,7 +373,7 @@ def runtime_env_from_mapping(
             process_env=process_env,
         ),
         chip_enabled=parse_env_bool(
-            env_value(env, "JASPER_AEC_CHIP_AEC_ENABLED", "0", process_env=process_env),
+            env_value(env, CHIP_AEC_ENABLED_ENV, "0", process_env=process_env),
             default=False,
         ),
         raw_device=env_value(
