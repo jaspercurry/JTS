@@ -136,17 +136,14 @@ GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
 # (safe by construction — no DAC, no driver to over-drive); see
 # _flat_graph_allowed.
 GRAPH_PROGRAM_BAKE_PIPE = "program_bake_pipe"
-# The PARKED graph (issue #2135): a roleful/protected topology that has declared
-# drivers but has not yet staged an all-muted active startup graph. Every
-# physical output is hard-muted and no unmuted route exists from any capture
-# channel to any playback channel, so it is legal for ANY topology — but it is a
-# HOLDING state, never a tuning. It is deliberately NOT interchangeable with
-# GRAPH_ALL_MUTED_ACTIVE_STARTUP: the staged graph carries real per-driver
-# crossover/limiter/protective-HP wiring that survives an unmute, while a parked
-# graph carries none of it and must therefore never be preserved in preference
-# to a staged graph. See ``_parked_graph_allowed`` for the independent proof and
-# ``safe_graph_for_current_topology`` for where it sits in the decision order
-# (last, after every real graph has been considered).
+# The PARKED graph: a roleful topology with declared drivers but no staged
+# all-muted startup graph yet. Every physical output is hard-muted and no
+# unmuted route exists, so it is legal for ANY topology — but it is a HOLDING
+# state, never a tuning, and NOT interchangeable with
+# GRAPH_ALL_MUTED_ACTIVE_STARTUP: the staged graph carries per-driver
+# crossover/limiter/protective-HP wiring that survives an unmute and must never
+# be passed over for a parked graph. Proof: ``_parked_graph_allowed``; decision
+# order: ``safe_graph_for_current_topology`` (last).
 GRAPH_PARKED_ALL_MUTED = "parked_all_muted"
 GRAPH_UNKNOWN = "unknown"
 GRAPH_UNSAFE = "unsafe"
@@ -263,38 +260,21 @@ FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER: FlatProgramGraphBlockCode = (
     "flat_graph_protected_tweeter"
 )
 
-# The snd-aloop ACTIVE lane's playback PCM — RETIRED as an endpoint. #2534
-# deleted its PCM definitions; this change deletes its MEMBERSHIP below, so no
-# graph naming it can be a legal outputd endpoint any more.
-#
-# The name survives for the TESTS, and that is the whole reason — measured, not
-# assumed. Production readers of this constant: ZERO (the only other mention in
-# `jasper/` is the comment below). The refusal is a SET-COMPLEMENT —
-# `resolve_live_active_endpoint` asks `named in OUTPUTD_LEGAL_ENDPOINT_DEVICES`
-# and declines everything else — so no guard names this device at all; an
-# earlier version of this comment claimed one did, which was the opposite of
-# what the code does.
-#
-# What still reads it is the suite: 39 references across five modules pin that a
-# graph persisted before the retirement, or a stale hand-rolled asoundrc, is
-# REFUSED by name. Deleting the constant would make those tests spell the retired
-# device as a bare literal, which is strictly worse than one named constant.
-# Deleting it would also not remove the string from the tree: the sibling
-# `jasper.camilla_config_contract.ACTIVE_OUTPUTD_PLAYBACK_DEVICE` holds the same
-# literal and does have live production readers.
+# The snd-aloop ACTIVE lane's playback PCM — RETIRED as an endpoint, and absent
+# from the legal set below, so no graph naming it can be a legal outputd
+# endpoint. It has zero production readers; the name survives because the suite
+# pins that a graph persisted before the retirement is refused BY NAME, and a
+# bare literal there would be worse than one named constant.
 OUTPUTD_ACTIVE_PLAYBACK_DEVICE = "outputd_active_content_playback"
-# Every playback device a legal outputd ENDPOINT graph may name. ONE member:
-# the ACTIVE RING is now the only transport carrying POST-crossover per-driver
-# channels to outputd. It stays a frozenset rather than collapsing to a single
-# `==` because membership is the seam the endpoint width probe reads — it must
-# reject everything outside this set, notably the STEREO ring (which carries a
-# full-range program no active graph may target) and the retired snd-aloop lane
-# above.
+# Every playback device a legal outputd ENDPOINT graph may name. ONE member: the
+# ACTIVE RING is the only transport carrying POST-crossover per-driver channels
+# to outputd. A frozenset rather than a single `==` because membership is the
+# seam the endpoint width probe reads — it must reject everything outside the
+# set, notably the STEREO ring and the retired lane above.
 #
-# Redeclared (deliberately, like OUTPUTD_ACTIVE_PLAYBACK_DEVICE itself) rather
-# than imported from jasper.fanin_coupling: this module is the runtime
-# VERIFIER's independent copy of the endpoint vocabulary, and the contract test
-# pins the copies equal.
+# Redeclared rather than imported from jasper.fanin_coupling: this module is the
+# runtime VERIFIER's independent copy of the endpoint vocabulary, and a contract
+# test pins the copies equal.
 OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE = "jts_ring_active_playback"
 OUTPUTD_LEGAL_ENDPOINT_DEVICES = frozenset((
     OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
@@ -631,28 +611,14 @@ def roleful_identity_confirmed(
 ) -> bool:
     """Whether every ASSIGNED lane of a ROLEFUL topology is confirmed by ear.
 
-    The one place this fact is stated, because two owners need the same answer:
-    :func:`safe_graph_for_current_topology` (which graph may be selected) and
-    the ``/sound/setup/`` identity endpoint (whether a write must park the
-    speaker). It reads the topology directly — the household's confirmation
-    lives there and nowhere else, so there is no marker file to drift.
-
-    Scope is deliberate and narrow:
-
-    * **Roleful only.** A passive full-range topology carries no crossover, so
-      an unconfirmed lane is a channel-swap annoyance, not a driver hazard.
-      ``requires_roleful_graph`` False answers True here and the flat rungs are
-      untouched.
-    * **Assigned lanes only.** An unassigned channel has no physical output to
-      confirm; it is already a topology blocker in its own right.
-
-    This is the UNVERIFIED direction. Its mirror —
-    ``test_safe_graph_preserves_staged_startup_after_identity_confirmation`` —
-    guards the CONFIRM direction, that flipping a lane back to verified must
-    not bounce a staged all-muted graph. The two do not meet: that test lands on
-    the ``GRAPH_ALL_MUTED_ACTIVE_STARTUP`` rung, which this predicate never
-    gates, and it reads a stale flag on the staged METADATA while this reads the
-    topology. Only the two approved-active-runtime rungs consult this.
+    Stated once because two owners need the same answer:
+    :func:`safe_graph_for_current_topology` and the ``/sound/setup/`` identity
+    endpoint. It reads the topology directly, so there is no marker file to
+    drift. Scope is narrow on purpose: a passive full-range topology carries no
+    crossover, so an unconfirmed lane there is a channel-swap annoyance rather
+    than a driver hazard and answers True; an unassigned channel has no physical
+    output to confirm and is already a topology blocker of its own. Only the two
+    approved-active-runtime rungs consult this.
     """
 
     contract = contract or classify_output_contract(topology)
@@ -669,35 +635,25 @@ def roleful_identity_confirmed(
 def topology_sink_is_composite(topology: OutputTopology) -> bool:
     """True iff the saved topology's output sink spans MULTIPLE child DACs.
 
-    Keyed on ``len(hardware.child_devices) >= 2`` — a *plurality* of child DACs,
-    each its own USB clock domain (``dac.py``'s only ``kind="composite"``
-    profile is the dual-Apple 4-ch, ``child_profile_ids=(apple, apple)``). A
-    *single* child (``len == 1``) is the opposite: one coherent stereo sink on
-    one clock. The shipped-default dongle and hifiberry paths both populate
-    ``child_devices=(card,)`` for stable serial identity, so that single entry
-    must NOT read as composite — pre-2026-07 this was written as a bare
-    ``if child_devices:`` truthiness check, which wrongly classified every
-    shipped-default box (DEFECT 2 in ``topology_supports_shm_ring``).
+    Keyed on ``len(hardware.child_devices) >= 2`` — a PLURALITY of child DACs,
+    each its own USB clock domain. A SINGLE child is the opposite: one coherent
+    stereo sink on one clock, and the shipped-default dongle and hifiberry paths
+    both populate ``child_devices=(card,)`` for stable serial identity, so that
+    entry must NOT read as composite (a bare truthiness check here once
+    misclassified every shipped-default box).
 
-    Two callers need this same distinction for different reasons, so it is named
-    once here rather than spelled twice: ``topology_supports_shm_ring`` (the
-    STEREO ring carries a full-range stereo program, which a 4-ch composite is
-    not — a ROLEFUL composite's post-crossover program rides the ACTIVE ring
-    instead, see :func:`active_ring_channels_for_topology`) and
-    ``flat_graph_program_dest_map`` (outputd fans the stereo program across
-    child DACs, so program channel *i* is not physical output *i* — it is the
-    single output that child *i* declares).
+    Named once because two callers need the distinction for different reasons:
+    ``topology_supports_shm_ring`` and ``flat_graph_program_dest_map``.
     """
 
     return len(topology.hardware.child_devices) >= 2
 
 
 # The channel count Ring B carries for a ring-eligible topology. The rings move
-# a full-range STEREO program: everything upstream of CamillaDSP is stereo (the
-# fan-in mixer is 2-channel and says so — ``mixer.rs``'s ``CHANNELS: u32 = 2``,
-# "Not configurable"), and on a ring-eligible box CamillaDSP's output is the
-# same stereo program. Named rather than spelled ``2`` at each site so the one
-# place that decides ring width is greppable.
+# a full-range STEREO program: everything upstream of CamillaDSP is stereo
+# (``mixer.rs``'s ``CHANNELS: u32 = 2``, "Not configurable"), and on a
+# ring-eligible box CamillaDSP's output is the same stereo program. Named so the
+# one place that decides ring width is greppable.
 RING_STEREO_PROGRAM_CHANNELS = 2
 
 
@@ -706,54 +662,31 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
 
     The single ring-eligibility answer, phrased as a WIDTH rather than a
     boolean: the ring's four ends (fan-in, the two ioplug PCMs, outputd) must
-    each declare the same geometry, and a predicate that only says yes/no leaves
-    every one of them to re-derive the number. ``None`` means no ring geometry
-    exists for this topology at all — :func:`topology_supports_shm_ring` is
-    derived from exactly that.
+    each declare the same geometry, and a yes/no predicate leaves every one of
+    them to re-derive the number. :func:`topology_supports_shm_ring` derives
+    from exactly this.
 
-    The topology-contract citizenship for rings (audio-graph consolidation P2):
-    Ring A/Ring B carry a full-range **stereo** program on a single coherent
-    ALSA sink, so :data:`RING_STEREO_PROGRAM_CHANNELS` is the answer for an
-    explicit, valid passive layout — stereo or MONO. An UNCONFIGURED topology
-    has no declared speaker layout and remains parked, so it has no Ring B.
-
-    **Mono rides the stereo ring: a mono BOX is not a mono SIGNAL PATH.** Every
-    ring end stays two channels wide on a mono cabinet — the fan-in mixer is
-    2-channel, CamillaDSP emits two (both program channels folded onto the one
-    declared output, complement hard muted), and the reconciler clears
-    ``JASPER_OUTPUTD_ACTIVE_CHANNELS`` for a non-active box so outputd opens the
-    DAC at stereo. The fold lives in the GRAPH, downstream of them all. The
-    exclusion this replaces was right that a 1-channel ring is not
-    representable, and wrong that a mono box wants one.
+    Ring A/Ring B carry a full-range STEREO program on a single coherent ALSA
+    sink, so :data:`RING_STEREO_PROGRAM_CHANNELS` is the answer for an explicit
+    valid passive layout — stereo or MONO. **A mono BOX is not a mono SIGNAL
+    PATH**: every ring end stays two channels wide on a mono cabinet (the fan-in
+    mixer is 2-channel, CamillaDSP emits two with the complement hard muted, and
+    outputd opens the DAC at stereo), because the fold lives in the GRAPH,
+    downstream of them all.
 
     Everything else has no Ring B:
 
-    - roleful / protected / subwoofer topologies (``requires_roleful_graph``).
-      Their POST-crossover per-driver program rides the ACTIVE ring — its own
-      PCM, its own file and its own width, answered by
-      :func:`active_ring_channels_for_topology` and gated by outputd's endpoint
-      marker. So the answer here is "no Ring B", not "a wider Ring B";
-    - composite sinks (dual-Apple — TWO+ ``hardware.child_devices``). **The
-      reason is WIDTH and program, not the transport.** Ring B carries the
-      full-range STEREO program; a composite drives four physical outputs across
-      two child DACs, which is not a stereo program, so there is no Ring B for
-      it — the same "no Ring B, not a wider Ring B" answer the roleful bullet
-      above gives. What is NOT the reason, since P8b item 1b: that the ring
-      ioplug cannot serve a composite. It can — the ring is the CamillaDSP →
-      outputd hop and the composite split lives downstream of it, so a ROLEFUL
-      composite's post-crossover program rides the ACTIVE ring, answered by
-      :func:`active_ring_channels_for_topology`. A PASSIVE stereo composite
-      resolves neither ring and stays on loopback. The exclusion is
-      keyed on ``len(child_devices) >= 2`` — a *plurality* of child DACs, each its
-      own USB clock domain (``dac.py``'s only ``kind="composite"`` profile is the
-      dual-Apple 4-ch, ``child_profile_ids=(apple, apple)``). A *single* child
-      (``len == 1``) is the opposite: one coherent stereo sink on one clock, which
-      IS exactly what the ring drives — the single-Apple-dongle and single
-      registered DAC (hifiberry) paths both populate ``child_devices=(card,)`` for
-      stable serial identity, and that single entry must NOT disqualify the ring.
-      (Pre-2026-07 this read ``if child_devices:`` — a bare truthiness check that
-      wrongly refused every shipped-default box, since observed hardware always
-      records its one child. See DEFECT 2.).
+    - roleful / protected / subwoofer topologies. Their POST-crossover
+      per-driver program rides the ACTIVE ring — its own PCM, file and width,
+      answered by :func:`active_ring_channels_for_topology`. "No Ring B", not
+      "a wider Ring B";
+    - composite sinks, for WIDTH and program rather than transport: Ring B
+      carries the full-range stereo program and a composite drives four outputs
+      across two child DACs. A ROLEFUL composite's post-crossover program rides
+      the ACTIVE ring; a PASSIVE stereo composite resolves neither ring and
+      stays on loopback. Keyed on ``len(child_devices) >= 2`` — see
+      :func:`topology_sink_is_composite` for why a single child must not
+      disqualify the ring.
     """
     contract = classify_output_contract(topology)
     if contract.requires_roleful_graph:
@@ -780,70 +713,30 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
 def active_ring_channels_for_topology(topology: OutputTopology) -> int | None:
     """Channels the ACTIVE ring would carry for this topology, or ``None``.
 
-    The width of the THIRD ring (``jts_ring_active_playback`` /
-    ``active-content.ring``), which carries a roleful box's POST-crossover
-    per-driver program from CamillaDSP to outputd. It is deliberately a SEPARATE
-    function from :func:`ring_channels_for_topology` rather than a widening of
-    it, and the separation is the whole point:
+    The width of the THIRD ring (``jts_ring_active_playback``), which carries a
+    roleful box's POST-crossover per-driver program from CamillaDSP to outputd.
+    A SEPARATE function from :func:`ring_channels_for_topology` rather than a
+    widening of it: that one answers for Ring B and is stamped into the
+    ``pcm.jts_ring_playback`` conf.d block, so returning the ACTIVE width there
+    would land it in the STEREO ring's block — invisible on a 2-way box, where
+    the active width is also 2. One field per ring end.
 
-    - ``ring_channels_for_topology`` answers for **Ring B**, the full-range
-      stereo program, and must keep returning ``None`` for a roleful topology.
-      Its answer is stamped into the ``pcm.jts_ring_playback`` conf.d block. If
-      it returned the ACTIVE width for a roleful box, that width would land in
-      the STEREO ring's block — and on a 2-way box, where the active width is
-      also 2, the corruption is numerically invisible.
-    - This function answers for the **active ring** only. One field per ring
-      end; never one field for two ends.
+    Returns the COMMISSIONED active width — the roleful outputs the saved
+    topology actually assigns — never the DAC profile's declared capability.
 
-    Returns the topology's COMMISSIONED active width — the number of roleful
-    outputs the saved topology actually assigns — not the DAC profile's declared
-    capability. jts3's DAC8x declares an 8-channel active-lane capability while
-    its commissioned graph drives 2; the ring is built to what is driven.
+    A COMPOSITE roleful sink is ANSWERED here, not refused: the ring is the
+    CamillaDSP → outputd hop and the composite split lives downstream of it,
+    inside outputd. The duplicate / contiguity / accept-set guards below run
+    unchanged, and on a saved dual-Apple ``active_2_way`` they see flat
+    contiguous indices ``0..3`` and answer 4 — ``physical_output_index`` and
+    ``child_devices[].physical_output_indexes`` are ONE flat index space, not
+    child-relative.
 
-    **A COMPOSITE (multi-child) ROLEFUL SINK IS ANSWERED HERE, NOT REFUSED**
-    (P8b item 1b). It is the one shape this function ever excluded for a reason
-    that did not survive re-derivation. The old exclusion said "the ring ioplug
-    is a single coherent device spanning one clock domain, which a multi-child
-    composite is not" — but the ring is the **CamillaDSP → outputd** hop, and the
-    composite split lives entirely DOWNSTREAM of it, inside outputd, which reads
-    one interleaved period and calls ``deinterleave_4ch_to_dual_stereo``. The
-    ring never sees a child. The transport it replaces — the raw snd-aloop
-    lane — is equally one device on one clock domain and carries this exact
-    composite in production today. The exclusion was right as a ring-v2 SCOPE
-    call and wrong as a physics claim.
-
-    What the composite arm does NOT do is relax anything: it deletes the early
-    refusal and lets the duplicate / contiguity / accept-set guards below run
-    unchanged. On a real saved dual-Apple ``active_2_way`` those guards see flat
-    contiguous indices ``0..3`` and answer **4** — because
-    ``speaker_groups[].channels[].physical_output_index`` and
-    ``hardware.child_devices[].physical_output_indexes`` are ONE flat index
-    space, not child-relative: ``OutputTopology._validate_references`` bounds the
-    channel index by ``hardware.physical_output_count`` (4 for this profile),
-    ``topology_hardware_from_state`` assigns child ordinal *i* the pair
-    ``[2i, 2i+1]``, ``_dual_apple_clock_issues`` BLOCKS any composite whose child
-    indexes are not ``range(4)`` exactly once, and
-    :func:`jasper.output_topology.cross_child_group_verdicts` looks a channel's
-    index up directly in the child-owned map. So no child-ordinal composition is
-    needed here; had the indices been child-relative the duplicate guard would
-    have fired (two outputs both claiming 0) and this would return ``None`` with
-    a named refusal rather than stamp a wrong width.
-
-    Ring B stays excluded for a composite — see
-    :func:`ring_channels_for_topology`. One field per ring end.
-
-    ``None`` — no active ring — for:
-
-    - any topology that does not require a roleful graph. Those boxes have no
-      active ring. An explicit passive stereo single sink may use Ring B;
-      explicit mono, unconfigured, invalid, and passive composite layouts use
-      neither ring. A PASSIVE stereo composite requires no roleful graph, so it
-      gets no active ring here and no Ring B there — it stays on loopback;
-    - a roleful topology whose assignments do not resolve to a coherent
-      contiguous output width (an output with no assigned physical index, or a
-      declared roleful set the ring layout's ``2..=8`` accept-set cannot carry).
-      Fail-CLOSED: an indeterminate width must never be stamped into a conf.d
-      block that the ioplug attach then compares field-by-field.
+    ``None`` — no active ring — for any topology that does not require a roleful
+    graph, and for a roleful topology whose assignments do not resolve to a
+    coherent contiguous width inside the ring layout's accept-set. Fail-CLOSED:
+    an indeterminate width must never be stamped into a conf.d block the ioplug
+    attach then compares field-by-field.
     """
     contract = classify_output_contract(topology)
     if not contract.requires_roleful_graph:
@@ -878,28 +771,15 @@ MAX_RING_CHANNELS = 8
 def topology_supports_shm_ring(topology: OutputTopology) -> bool:
     """True iff the saved topology can be driven by the STEREO ``shm_ring`` coupling.
 
-    DERIVED from :func:`ring_channels_for_topology` — a topology is
-    stereo-ring-eligible exactly when a Ring B width exists for it. Two functions
-    answering the same question independently is how the boolean and the width
-    would drift; the reasons live in that function's docstring.
+    DERIVED from :func:`ring_channels_for_topology`, so the boolean and the
+    width cannot drift; the reasons live in that function's docstring.
 
-    **This stays False for a roleful topology, and widening it is forbidden.**
-    A roleful box's ring is the ACTIVE ring, which is a different transport with
-    a different width, a different device name and a different file — reached
-    through :func:`active_ring_channels_for_topology` and the endpoint marker,
-    never by making this predicate say yes. Two consumers make the one-liner
-    dangerous: the unattended ``--auto`` default pass would AUTO-ARM every
-    roleful box in the fleet through gates that would then pass, and
-    ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects exactly
-    the boxes a widened predicate would re-expose. Pinned by
-    ``tests/test_ring_active_endpoint.py``.
-
-    The real consumers are TWO: ``jasper.fanin.coupling_reconcile``'s
-    ``ring_topology_ready`` (the arm preflight) and
-    :func:`safe_graph_for_current_topology` (the graph seeder's flat branch).
-    ``resolve_auto_decision`` reaches it only transitively through the injected
-    ``ring_topology`` gate, and multiroom bond-formation checks the PERSISTED
-    coupling value rather than this predicate."""
+    **This stays False for a roleful topology, and widening it is forbidden.** A
+    roleful box's ring is the ACTIVE ring — a different transport, width, device
+    name and file, reached through :func:`active_ring_channels_for_topology` and
+    the endpoint marker. Widening it would auto-arm every roleful box in the
+    fleet through the unattended ``--auto`` pass and re-expose the boxes
+    ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects."""
     return ring_channels_for_topology(topology) is not None
 
 
@@ -908,25 +788,16 @@ def flat_program_graph_block(
 ) -> FlatProgramGraphBlock | None:
     """Typed refusal for a flat full-range *program* graph, or ``None``.
 
-    The program lane (``jasper.sound.camilla_yaml.emit_sound_config`` and the
-    ``/sound`` / correction callers it backs) emits a 2-channel passthrough with
-    no per-driver crossover or protection. It may reach the DAC only for one
-    complete explicit passive mono/stereo layout. Unconfigured, invalid,
-    subwoofer, and roleful/protected layouts are all blocked; the latter would
-    otherwise send full range to a compression-driver tweeter.
+    The program lane emits a 2-channel passthrough with no per-driver crossover
+    or protection, so it may reach the DAC only for one complete explicit
+    passive mono/stereo layout. Unconfigured, invalid, subwoofer and
+    roleful/protected layouts are blocked; the last would send full range to a
+    compression-driver tweeter (hearing, AGENTS.md #1).
 
-    Returns one stable refusal code plus household-readable detail when the
-    graph is blocked, or ``None`` only when
-    :func:`topology_allows_flat_dac_graph` permits it. Policy callers branch on
-    the code; prose is presentation only. This is a *topology* predicate, not a
-    graph check. Verifying a graph that should be protective — an active
-    baseline — is :func:`classify_camilla_graph`'s job.
-
-    Fail-closed: a corrupt/unreadable saved topology returns a reason (block)
-    rather than raising, so a caller can never read "safe" out of a topology it
-    could not load. Callers own the policy and the structured logging:
-    :class:`jasper.sound.graph_carrier.CarrierCannotHostEq` for ``/sound``,
-    ``CorrectionRuntimeSafetyError`` for room correction.
+    A TOPOLOGY predicate, not a graph check — verifying a graph that should be
+    protective is :func:`classify_camilla_graph`'s job. Policy callers branch on
+    the returned code; prose is presentation only. Fail-closed: a corrupt saved
+    topology returns a block rather than raising.
     """
     try:
         contract = classify_output_contract(topology or load_output_topology_strict())
@@ -1035,28 +906,20 @@ def flat_graph_program_dest_map(
 ) -> tuple[int, ...] | None:
     """Which playback channel each program channel drives, or ``None``.
 
-    The ONE answer to "where does the flat graph put the program". The renderer
-    builds its mixer, its per-dest chains and its mutes from this; the checker
-    asks it whether a live channel reached an undeclared output. One derivation
-    is what keeps those two incapable of disagreeing.
+    The ONE answer to "where does the flat graph put the program": the renderer
+    builds its mixer, per-dest chains and mutes from it, and the checker asks it
+    whether a live channel reached an undeclared output.
 
-    Playback-channel index and physical-output index are ONE space: a
-    composite's children own a contiguous pair each
-    (``hardware.child_devices[].physical_output_indexes``) and outputd
-    deinterleaves in that order, so an entry is both a dest and an output.
+    Playback-channel index and physical-output index are ONE space — a
+    composite's children own a contiguous pair each and outputd deinterleaves in
+    that order — so an entry is both a dest and an output. Two shapes resolve:
+    **indexed** (not a composite, every claimed output inside ``width``: program
+    channel *i* drives output *i*) and **composite-paired** (a multi-child sink
+    whose children declare exactly ONE ``full_range`` output each: program
+    channel *i* drives child *i*'s output, which is why a dual-Apple stereo box
+    sits on outputs 0 and 2 and the identity answer is wrong for it).
 
-    Two shapes resolve:
-
-    * **indexed** — not a composite, every claimed output inside ``width``:
-      program channel *i* drives output *i*.
-    * **composite-paired** — a multi-child sink whose children declare exactly
-      ONE ``full_range`` output each, all inside ``width``: program channel *i*
-      drives child *i*'s output. A dual-Apple stereo box sits on outputs 0 and 2
-      this way, which is exactly why the identity answer is wrong for it.
-
-    ``None`` is UNDECIDED and both callers fail closed on it: the renderer mutes
-    and folds nothing, and :func:`_flat_graph_allowed` refuses a graph wider than
-    the program rather than guess where its live channels landed.
+    ``None`` is UNDECIDED and both callers fail closed on it.
     """
 
     from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
@@ -1087,38 +950,24 @@ def flat_graph_muted_outputs(
 ) -> frozenset[int]:
     """Playback channels a ``width``-wide flat graph must hard-mute.
 
-    The flat emitter routes each program channel to the physical output
-    :func:`flat_graph_program_dest_map` names for it, so every channel the saved
-    topology does not claim as ``full_range`` would otherwise send full-range
-    program to an output the household never declared — a mis-wired or
-    undeclared driver receiving full range. Muting them is how the
-    flat lane satisfies "no emission on undeclared outputs" BY CONSTRUCTION;
+    Every channel the saved topology does not claim as ``full_range`` would
+    otherwise send full-range program to an output the household never declared.
+    Muting them satisfies "no emission on undeclared outputs" BY CONSTRUCTION;
     :func:`_flat_graph_allowed` then re-proves it structurally off the emitted
     YAML rather than trusting the emitter.
 
-    Muting is index-wise, so it is withheld unless
-    :func:`flat_graph_program_dest_map` resolves where the program actually
-    lands — muting by a mapping nobody has established would silence a working
-    speaker.
+    Withheld — EMPTY, mute nothing — unless
+    :func:`flat_graph_program_dest_map` resolves where the program lands, since
+    muting by an unestablished mapping would silence a working speaker, and for
+    three cases where silencing would only disguise a louder failure:
+    an **unconfigured** topology (runtime selection parks the speaker instead),
+    a **roleful/protected** topology (the flat graph is illegal there whatever
+    is muted, and refusing it is :func:`_flat_graph_allowed`'s job), and **every
+    channel unclaimed** (muting all of them ships a silently silent speaker;
+    the unmuted graph lets the checker refuse it with a reason).
 
-    Returns EMPTY — mute nothing — when that fails, and for three more cases
-    where the flat lane has no business silencing anything:
-
-    * **unconfigured** topology (no speaker groups): the renderer may still
-      produce the byte-identical stereo artifact, but runtime selection refuses
-      it and parks the speaker because no output is declared.
-    * **roleful/protected** topology: the flat graph is illegal there whatever
-      is muted, and refusing it is :func:`_flat_graph_allowed`'s job (issue
-      #2145 owns making that refusal park instead of abort). Silencing channels
-      here would only disguise it.
-    * **every channel unclaimed**: muting all of them would ship a silently
-      silent speaker. Emitting the unmuted graph instead leaves the checker to
-      refuse it with an operator-readable reason — the fail-loud direction.
-
-    A corrupt/unreadable topology also returns empty: the renderer must not
-    guess, and the graph it emits is still checked — ``classify_camilla_graph``
-    and ``safe_graph_for_current_topology`` both fail closed on that topology,
-    so the deploy still stops, at the layer that can say why.
+    A corrupt topology also returns empty: the emitted graph is still checked,
+    so the deploy stops at the layer that can say why.
     """
 
     if width <= 0:
@@ -1200,21 +1049,14 @@ def _required_mono_fold_output(
 ) -> int | None:
     """The playback channel a flat graph on ``topology`` MUST fold onto, if any.
 
-    Delegated WHOLE to ``jasper.sound.camilla_yaml.flat_graph_channel_plan`` —
-    the renderer's own answer to "which channel folds where" — so the checker
-    cannot demand a fold the renderer would not emit, nor accept a box the
-    renderer would have folded. Every case the plan withholds the fold for
-    (unconfigured, roleful/protected, corrupt, composite sink) is withheld here
-    too, without this side re-deriving, or drifting from, any of those rules.
+    Delegated WHOLE to ``jasper.sound.camilla_yaml.flat_graph_channel_plan``, so
+    the checker cannot demand a fold the renderer would not emit nor accept a
+    box the renderer would have folded. Imported lazily: a top-level edge back
+    would be circular.
 
-    Imported lazily, mirroring :func:`_playback_is_program_bake_pipe`: the
-    active-speaker package pulls ``jasper.sound.camilla_yaml`` at module scope,
-    so a top-level edge back would be circular.
-
-    ``None`` when the graph's own width is unreadable or non-positive. A plan
-    derived at width 0 is degenerate — its mute set and the complement of the
-    assigned output are both empty, which reads as "fold" — and a graph whose
-    width cannot be read is already refused on its own summary issues.
+    ``None`` when the graph's own width is unreadable or non-positive — a plan
+    derived at width 0 is degenerate (its mute set and the complement of the
+    assigned output are both empty, which reads as "fold").
     """
 
     if not isinstance(playback_channels, int) or isinstance(playback_channels, bool):
@@ -1231,18 +1073,16 @@ def _flat_mono_fold_proved(text: str, fold_output: int) -> bool:
     ``fold_output``, at the clip-safe gain, and really runs.
 
     Derived at ``classify_camilla_graph``'s scope like the mute set, so
-    :func:`_flat_graph_allowed` stays text-free. Three facts, all required:
+    :func:`_flat_graph_allowed` stays text-free. Three required facts:
 
-    * the pipeline's Mixer steps are exactly one un-bypassed ``master_gain``. A
-      mixer the pipeline never runs folds nothing, and a second Mixer could
-      re-route what this one summed. ``bypassed:`` is read for the same reason
-      the mute proof reads it — CamillaDSP skips the step entirely, so the
-      mapping below would otherwise attest a fold that never happens;
+    * the pipeline's Mixer steps are exactly one un-bypassed ``master_gain`` — a
+      mixer the pipeline never runs folds nothing, a second could re-route what
+      this one summed, and CamillaDSP skips a ``bypassed:`` step entirely;
     * that mixer feeds ``fold_output`` from BOTH program channels, neither
       source muted, order-free (a mixer is a sum);
     * each feed carries :data:`~jasper.camilla_emit.MONO_SUM_GAIN_DB` and its
-      polarity. The gain is contract, not decoration: two unity feeds sum 6 dB
-      hotter, and a mono track then clips against ``volume_limit: 0.0``.
+      polarity: two unity feeds sum 6 dB hotter and a mono track then clips
+      against ``volume_limit: 0.0``.
 
     Fails closed on anything unparseable or unexpected.
     """
@@ -1312,13 +1152,11 @@ def _flat_graph_allowed(
     required_mono_fold: int | None = None,
     mono_fold_proved: bool = False,
 ) -> GraphSafety:
-    # Program-bake exemption (Stage B): a flat program graph whose playback is a
-    # File/pipe sink (the active-leader's camilla#1 bake, NOT a DAC) is safe
-    # regardless of the saved speaker topology — no DAC is attached, so no driver
-    # can be over-driven and the full-range-to-tweeter invariant cannot fire.
-    # Narrow and additive: it keys strictly on the File-pipe playback, so an
-    # ALSA-sink flat graph (the dangerous full-range-to-DAC direction) takes the
-    # roleful-topology block below unchanged.
+    # Program-bake exemption: a flat program graph whose playback is a File/pipe
+    # sink, not a DAC, is safe regardless of the saved topology — no driver can
+    # be over-driven, so the full-range-to-tweeter invariant cannot fire. It
+    # keys strictly on the File-pipe playback, so an ALSA-sink flat graph takes
+    # the roleful-topology block below unchanged.
     if program_bake_pipe:
         return GraphSafety(
             classification=GRAPH_PROGRAM_BAKE_PIPE,
@@ -1339,32 +1177,24 @@ def _flat_graph_allowed(
     playback_channels = summary.get("playback_channels")
     full_range_outputs = flat_full_range_outputs(contract)
     # The invariant is "no emission on an output the topology does not claim".
-    # A channel proved to be hard muted emits nothing, so it cannot reach an
-    # undeclared output and must not be held against the topology. Everything
-    # else is LIVE. `hard_muted_outputs` is proved structurally off the graph by
-    # `_flat_hard_muted_outputs`, never taken from the renderer's intent — a
-    # wide graph whose surplus channel is UNMUTED is refused here exactly as it
-    # was before, under this same issue code and with the same message.
+    # A channel proved hard muted emits nothing; everything else is LIVE.
+    # `hard_muted_outputs` is proved structurally off the graph, never taken
+    # from the renderer's intent.
     #
     # How the live set is judged depends on what is known about the sink:
     #
     # * a RESOLVED `program_dest_map` — dest index IS physical output index, so
-    #   the exact question can be asked: is any LIVE channel an output the
-    #   topology does not claim? This is what makes muting the WRONG channel
-    #   useless (a mono box that silences its claimed output still has a live
-    #   channel landing on an undeclared one), and since the map also resolves a
-    #   composite pairing it is what catches a wide composite graph whose program
-    #   landed on the child-A pair instead of one output per child.
+    #   the exact question can be asked. This is what makes muting the WRONG
+    #   channel useless, and (since the map also resolves a composite pairing)
+    #   what catches a wide composite graph whose program landed on the child-A
+    #   pair instead of one output per child.
     # * UNDECIDED mapping on a graph WIDER than the program — refuse. Counting
-    #   cannot speak here: the surplus dests are hard muted, so a graph feeding
-    #   the wrong outputs has exactly as many live channels as the right one and
-    #   the count is blind to the difference. #3219 widened the emitter and
-    #   recorded that the refusal lands with the mapping; this is it.
-    # * UNDECIDED mapping at the program's own width — count, as before: more
-    #   live channels than assigned outputs means at least one lands somewhere
-    #   undeclared under ANY injective mapping. The pre-existing rule, unchanged
-    #   — it is why a 2-wide dual-Apple stereo box on outputs 0 and 2 is not
-    #   refused.
+    #   cannot speak: the surplus dests are hard muted, so a graph feeding the
+    #   wrong outputs has exactly as many live channels as the right one.
+    # * UNDECIDED mapping at the program's own width — count: more live channels
+    #   than assigned outputs means at least one lands somewhere undeclared
+    #   under ANY injective mapping. This is why a 2-wide dual-Apple stereo box
+    #   on outputs 0 and 2 is not refused.
     if isinstance(playback_channels, int) and not isinstance(playback_channels, bool):
         live_outputs = frozenset(range(playback_channels)) - hard_muted_outputs
     else:
@@ -1377,11 +1207,9 @@ def _flat_graph_allowed(
             undeclared = sorted(live_outputs - full_range_outputs)
             # The RECIPROCAL of "no emission on an undeclared output": a
             # declared output that nothing feeds. Only the program's dests (and
-            # the fold, which sums onto one of them) carry program at all, so a
-            # declared output outside that set gets the mixer's mute-floor feed
-            # and the speaker is silent while every mute reads correct. #3219
-            # recorded this hole against the mapping; the map is what makes it
-            # decidable, so the refusal lands here with it.
+            # the fold, which sums onto one of them) carry program, so a declared
+            # output outside that set gets the mixer's mute-floor feed and the
+            # speaker is silent while every mute reads correct.
             carries_program = frozenset(program_dest_map) | (
                 frozenset() if required_mono_fold is None
                 else frozenset({required_mono_fold})
@@ -1447,21 +1275,15 @@ def _flat_graph_allowed(
                 "A flat full-range graph requires a complete saved passive "
                 "mono or stereo layout.",
             ))
-    # The fold, re-proved. Muting the complement satisfies "no emission on an
-    # undeclared output" but leaves a mono cabinet playing the program's LEFT
-    # channel only — half the record, and quietly wrong rather than loudly
-    # wrong, which is exactly the class a structural check must catch. The
-    # renderer already refuses to emit an unfolded mono graph; this is the
-    # checker's independent proof off the emitted YAML, so the single-owner
-    # principle the mutes rest on holds for the fold too.
+    # The fold, re-proved off the emitted YAML. Muting the complement satisfies
+    # "no emission on an undeclared output" but leaves a mono cabinet playing
+    # the program's LEFT channel only — quietly wrong rather than loudly wrong.
     #
-    # BELOW the ladder above, and deliberately: that ladder explains why the
-    # saved LAYOUT forbids a flat graph, and a box refused only for a missing
-    # fold has a perfectly good layout. Refusing here instead of before it
-    # keeps the operator from being sent to re-save a topology that is already
-    # right. `required_mono_fold` is the RENDERER's own plan
-    # (`_required_mono_fold_output`), so a topology the renderer would not fold
-    # is never asked to.
+    # BELOW the layout ladder above, deliberately: a box refused only for a
+    # missing fold has a perfectly good layout, so refusing here keeps the
+    # operator from re-saving a topology that is already right.
+    # `required_mono_fold` is the RENDERER's own plan, so a topology the
+    # renderer would not fold is never asked to.
     if required_mono_fold is not None and not mono_fold_proved:
         allowed = False
         issues.append(_issue(
@@ -1894,20 +1716,15 @@ def _baseline_gain_limiter_safe(
 # is correct by construction from failing its own proof on the last digit.
 _LINEARIZATION_BOOST_EPS_DB: float = 1e-3
 
-#: The one NUMERIC refusal in this walk, named apart from the shape refusals.
-#:
-#: Public because two other seams key on it rather than re-deriving the
-#: condition: ``safe_graph_for_current_topology`` refuses to fall silently past
-#: an active graph that carries it (#2758's migration shape), and the deploy
-#: transcript prints it. A shape refusal says the graph is not the emitter's;
-#: this one says the graph IS the emitter's and its arithmetic no longer holds,
-#: which is a different sentence with a different remedy (re-emit, not
-#: re-commission).
+#: The one NUMERIC refusal in this walk, named apart from the shape refusals
+#: because two other seams key on it rather than re-deriving the condition. A
+#: shape refusal says the graph is not the emitter's; this one says the graph IS
+#: the emitter's and its arithmetic no longer holds — a different remedy
+#: (re-emit, not re-commission).
 LINEARIZATION_HEADROOM_UNPROVEN_CODE = "active_linearization_headroom_unproven"
 
-#: Journal name for the same event. A grep contract, so a rename is visible as
-#: one — this module says almost nothing on its own logger, and a numeric
-#: refusal that leaves no trace is how a silent speaker gets diagnosed twice.
+#: Journal name for the same event — a grep contract, so a rename is visible as
+#: one.
 EVENT_LINEARIZATION_HEADROOM_UNPROVEN = (
     "active_speaker.linearization_headroom_unproven"
 )
@@ -1916,54 +1733,29 @@ EVENT_LINEARIZATION_HEADROOM_UNPROVEN = (
 def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     """How much branch-chain peak THIS graph has already paid for.
 
-    Since #1808 the quantity proved against this allowance is the branch
-    chain's evaluated PEAK (``crossover ⊗ linearization ⊗ trim``), not the sum
-    of the chain's positive filter gains — see
-    :func:`_consume_linearization_chain`. The allowance itself, below, is
-    unchanged: it is still what the emitter set aside, and the emitter now
-    sets aside the peak plus ``branch_chain.HEADROOM_MARGIN_DB``, so a graph
-    correct by construction proves with exactly that margin of slack.
-
     The magnitude of the program-domain ``active_baseline_headroom`` gain —
     the pre-split common attenuation the emitter folds baseline headroom,
-    room-correction boost, and (since PR-L5) linearization boost into —
-    **minus the contributors that are not linearization's**. A branch whose
-    boosts total no more than what is left cannot drive the chain past unity,
-    so the CamillaDSP 0 dB ceiling holds by arithmetic rather than by a policy
-    number written down twice.
+    room-correction boost and linearization boost into — MINUS the contributors
+    that are not linearization's. A branch whose peak is no more than what is
+    left cannot drive the chain past unity, so the CamillaDSP 0 dB ceiling holds
+    by arithmetic rather than by a policy number written down twice.
 
-    Attributing the share matters, and reading the whole magnitude was wrong
-    (adversarial review S1, reproduced): that gain also absorbs room-correction
-    boost, so on a cut-only linearization sitting behind, say, 8 dB of room
-    boost, a tampered +5 dB linearization filter "spent" headroom that was
-    already committed to the room PEQs and the graph proved safe while the two
-    together could clip. Room-PEQ boost is recoverable from the graph — the
-    filters are named and their gains are readable — so it is subtracted here,
-    exactly as the emitter added it.
+    Attributing the share matters: reading the whole magnitude let a tampered
+    +5 dB linearization filter "spend" headroom already committed to the room
+    PEQs, and prove safe while the two together could clip. Room-PEQ boost is
+    recoverable from the graph, so it is subtracted exactly as the emitter added
+    it.
 
-    **Residual slack, stated rather than hidden**: ``output_trim_db`` (the
-    household's manual headroom / loudness-match attenuation) is also folded
-    into the same gain and is NOT recoverable from the graph. The emitter only
-    ever adds it when preference EQ is present, so on a graph with no
-    preference filters this allowance is exact; with preference EQ it is
-    generous by at most that trim. Generous, never tight — the failure
-    direction is a tamper spending the household's own trim as boost headroom,
-    which is bounded and far narrower than the pre-fix behaviour.
+    **Residual slack, stated rather than hidden**: ``output_trim_db`` is folded
+    into the same gain and is NOT recoverable, so with preference EQ present
+    this allowance is generous by at most that trim — never tight. The emitter
+    also adds a caller-supplied ``baseline_headroom_db`` while this subtracts
+    the module default; they agree only because every production path takes the
+    default 0.0, which a test pins.
 
-    **One stated coincidence**: the emitter adds a CALLER-SUPPLIED
-    ``baseline_headroom_db`` (validated 0..40), while this subtracts the module
-    DEFAULT :data:`~jasper.active_speaker.camilla_yaml.BASELINE_HEADROOM_DB`.
-    They agree only because every production emit path takes the default, which
-    is 0.0 — pinned by a test rather than left to be discovered. A caller that
-    passed a non-default value would make this allowance generous by exactly
-    that amount (never tight, the same direction as the ``output_trim_db``
-    slack above), and the pin is what would catch it.
-
-    Returns 0.0 when the filter is absent or non-negative — which is the
-    driver-domain (follower) graph, where the leader owns Layer B/C and no
-    program-domain headroom exists. That graph therefore proves the ORIGINAL
-    cut-only invariant, which is the correct fail-closed answer: a follower
-    has nothing to absorb a boost with.
+    Returns 0.0 when the filter is absent or non-negative — the driver-domain
+    (follower) graph, which has no program-domain headroom and therefore proves
+    the original cut-only invariant: a follower has nothing to absorb a boost.
     """
     if _filter_type(payload, "active_baseline_headroom") != "Gain":
         return 0.0
@@ -2012,21 +1804,16 @@ def _linearization_chain_peak_db(
     gain_name: str,
 ) -> tuple[float, float]:
     """The realized peak of this branch's emitted chain — ``(dB, Hz)``,
-    re-derived from the graph, never from the candidate that produced it
-    (#1808).
+    re-derived from the graph, never from the candidate that produced it.
 
-    ``crossover ⊗ linearization ⊗ trim``, the same three terms and the same
-    :func:`jasper.active_speaker.branch_chain.branch_chain_peak` the
-    emitter charges ``active_baseline_headroom`` with, so a graph that is
-    correct by construction cannot fail its own proof on a modelling
-    difference. The frequency rides along so a refusal can NAME where the
-    chain peaks rather than only how high. Every input comes from the payload: the Linkwitz-Riley
-    corner/order out of the named BiquadCombos this walk already validated,
-    the biquad params out of the named linearization filters, and the trim out
-    of the branch's baseline Gain.
+    ``crossover ⊗ linearization ⊗ trim``, through the same
+    :func:`jasper.active_speaker.branch_chain.branch_chain_peak` the emitter
+    charges ``active_baseline_headroom`` with, so a graph correct by
+    construction cannot fail its own proof on a modelling difference. The
+    frequency rides along so a refusal can NAME where the chain peaks.
 
-    A trim that is absent or unreadable is treated as 0 dB (no credited
-    attenuation), which over-states the peak — the safe direction for a proof.
+    A trim that is absent or unreadable is treated as 0 dB, which over-states
+    the peak — the safe direction for a proof.
     """
     from .branch_chain import CrossoverSection, branch_chain_peak
 
@@ -2057,30 +1844,18 @@ def _linearization_filter_safe(
     biquad_types: tuple[str, ...],
     max_gain_db: float,
 ) -> bool:
-    """One named linearization Biquad proves its declared type is one of the
-    allowed ``biquad_types`` for its slot, and that its gain is inside what
-    this graph can carry -- the same posture
-    ``linearization_fit.fit_driver_linearization`` enforces at fit time,
-    re-proved independently here against the emitted graph. The shelf slot
-    allows Highshelf OR Lowshelf (#1668 CD-horn backbone); the peak slot
-    allows Peaking; the taper slot allows Highshelf.
+    """One named linearization Biquad proves its type and gain for its slot.
 
-    ``max_gain_db`` is the per-filter REALIZATION cap
-    (``camilla_yaml.MAX_LINEARIZATION_BOOST_DB``), the same bound the fit
-    engine re-proves on every emitted filter: past it an RBJ biquad's
-    Q-dependent transition stops being a faithful realization of the shape
-    that was asked for. Cuts are unconditionally safe (any negative gain
-    passes, as they always did).
+    The shelf slot allows Highshelf or Lowshelf, the peak slot Peaking, the
+    taper slot Highshelf — the same posture the fit engine enforces, re-proved
+    independently here against the emitted graph.
 
-    It is NOT the clipping rail. That is the whole chain's business — a boost
-    is safe when the branch it sits in cannot drive the program above the
-    attenuation the graph provably applies ahead of the split — and it is
-    proved once per branch in :func:`_consume_linearization_chain`, over the
-    evaluated ``crossover ⊗ linearization ⊗ trim`` peak (#1808). Per-filter
-    this check used to carry the allowance too, which would refuse an
-    ordinary legitimate graph under the peak rule: a +6 dB boost sitting
-    inside its own crossover's stopband costs nothing and would be rejected
-    against a charge of zero."""
+    ``max_gain_db`` is the per-filter REALIZATION cap: past it an RBJ biquad's
+    Q-dependent transition stops being a faithful realization of the shape asked
+    for. Cuts are unconditionally safe. It is NOT the clipping rail — that is
+    the whole chain's business, proved once per branch in
+    :func:`_consume_linearization_chain` over the evaluated peak, because a
+    +6 dB boost sitting inside its own crossover's stopband costs nothing."""
 
     if _filter_type(payload, name) != "Biquad":
         return False
@@ -2101,69 +1876,37 @@ def _consume_linearization_chain(
     notes: list[dict[str, str]] | None = None,
 ) -> tuple[int, bool]:
     """Advance ``cursor`` past a well-formed, provably-safe Layer-1a
-    linearization run (#1668) for ``role``: an optional named leading shelf
-    (Highshelf rising-slope OR Lowshelf CD-horn backbone), then 0..N named
-    peaking filters, then an optional named trailing Highshelf taper — in the
-    emitter's own naming convention
-    (``camilla_yaml.driver_linearization_shelf_name`` /
-    ``driver_linearization_peak_name`` / ``driver_linearization_taper_name``,
-    re-exported via ``graph_evidence``).
+    linearization run for ``role``: an optional named leading shelf, then 0..N
+    named peaking filters, then an optional trailing Highshelf taper, in the
+    emitter's own naming convention.
 
-    SELF-PROVING from the graph text alone -- unlike bass-extension (a
-    business decision an external profile/candidate declares, so its
-    presence/shape must be threaded in as evidence), a linearization
-    filter's full shape (which role, shelf/peak/taper slot, how many peaks) is
-    entirely recoverable from its own name + params. So no
-    ``linearization_summary`` parameter needs threading through this
-    module's public entry points (``classify_camilla_graph`` /
-    ``classify_bass_extension_graph``) or their ~8 external callers the way
-    ``bass_profile_summary`` does — this stays a purely-local addition to
-    ``_baseline_output_chain``.
+    SELF-PROVING from the graph text alone — a linearization filter's full shape
+    is recoverable from its own name and params, so unlike bass-extension no
+    external evidence parameter needs threading through this module's public
+    entry points or their callers.
 
     ``notes`` is an optional sink for the ONE refusal a caller cannot
     reconstruct from a bare ``False``: the headroom proof is a NUMERIC
-    comparison, and its failure used to surface only as the caller's
-    ``active_output_driver_chain_unrecognized`` — "does not use the exact
-    ordered emitter chain", when the order was right and the arithmetic was
-    not. An issue appended here carries the peak, the allowance and the
-    FREQUENCY, so the operator reads what failed instead of inferring it. It
-    is a sink rather than a return value because every other refusal in this
-    walk is honestly a shape refusal and needs no words.
+    comparison, and its failure otherwise surfaced as the caller's shape
+    refusal. An issue appended here carries the peak, the allowance and the
+    FREQUENCY.
 
-    Returns ``(new_cursor, ok)``. ``ok`` is False iff a recognized
-    linearization-named filter proves UNSAFE (wrong Biquad subtype for its
-    slot, or gain outside what the graph can carry) — fail closed, exactly
-    like every other named-filter proof in this module. The shelf slot accepts
-    Highshelf or Lowshelf; the taper slot accepts only Highshelf. A name at
-    ``cursor`` that does not match the linearization naming convention is not
-    an error: zero filters are consumed, and the ordinary tail check the caller
-    runs next decides whether what remains (unshifted) is a legal chain.
+    Returns ``(new_cursor, ok)``; ``ok`` is False iff a recognized
+    linearization-named filter proves UNSAFE (wrong Biquad subtype for its slot,
+    or gain outside what the graph can carry). A name at ``cursor`` outside the
+    convention is not an error: zero filters are consumed and the caller's tail
+    check decides whether what remains is a legal chain.
 
-    **Boost accounting (PR-L5, re-derived at the realized peak by #1808).**
-    Cuts are unconditionally safe. A boost is safe only if the graph
-    attenuates the program by at least as much ahead of the split, so this
-    walk EVALUATES the branch chain it just proved the shape of — the
-    crossover BiquadCombos, the linearization biquads, and the branch's own
-    baseline Gain — and proves its peak against
-    :func:`_linearization_boost_allowance_db`.
-
-    Until 2026-07-28 the walk summed the chain's positive gains instead. That
-    sum is an upper bound on the peak, so it never permitted an unsafe graph;
-    what it did was force the emitter to CHARGE the same loose bound, and the
-    2026-07-28 JTS3 profile paid 22.458 dB of program attenuation for a branch
-    whose realized peak was +4.00 dB (#1808). Emitter and prover have to agree
-    about one number, so both moved to the exact one — the same
-    ``branch_chain.branch_chain_peak_db``, over the same three terms.
-
-    That is not a weakening: the peak IS the quantity "how much does this
-    branch put above unity", and the sum was a proxy for it. It does newly
-    permit a boost that its own crossover fully removes (a filter deep in a
-    branch's stopband now costs nothing and proves nothing), which is
-    physically correct — such a filter cannot clip — and is separately
-    prevented from being GENERATED by the fit-band bound (#1809). Per-filter,
-    the realization cap still binds. On a graph with no program-domain
-    headroom the allowance is 0.0, and a cut-only chain's peak is <= 0, so
-    that graph proves exactly what it proved before.
+    **Boost accounting.** Cuts are unconditionally safe. A boost is safe only if
+    the graph attenuates the program by at least as much ahead of the split, so
+    this walk EVALUATES the branch chain whose shape it just proved — the
+    crossover BiquadCombos, the linearization biquads and the branch's own
+    baseline Gain — against :func:`_linearization_boost_allowance_db`. The peak,
+    not the sum of positive gains: emitter and prover must agree about one
+    number, and charging the loose sum once cost a real profile 22.458 dB of
+    program attenuation for a branch peaking at +4.00 dB. It newly permits a
+    boost its own crossover fully removes, which is physically correct and is
+    separately prevented from being GENERATED by the fit-band bound.
     """
 
     index = cursor
@@ -2316,12 +2059,9 @@ def _baseline_output_chain(
             return None
         crossovers.append((direction, name))
         cursor += 1
-    # Layer-1a driver linearization (#1668 PR-D): immediately after the
-    # crossover HP/LP, before bass-extension — mirrors the bass-extension
-    # slot above but is SELF-PROVING from the graph text alone (see
-    # _consume_linearization_chain's docstring for why no external "what
-    # linearization SHOULD be here" evidence needs threading through this
-    # module's callers the way bass_extension's boolean does).
+    # Layer-1a driver linearization: immediately after the crossover HP/LP,
+    # before bass-extension, and SELF-PROVING from the graph text alone (see
+    # _consume_linearization_chain).
     cursor, linearization_ok = _consume_linearization_chain(
         chain, cursor, payload, assignment.role,
         crossovers=tuple(crossovers), notes=notes,
@@ -2780,13 +2520,10 @@ def _active_graph_evidence(
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     # Parse the text ONCE. `payload` gives the two distinct parse-error codes
-    # this module's callers branch on (camilla_yaml_unparseable vs
-    # camilla_yaml_not_object — which the shared view collapses to
-    # parsed_ok=False) AND backs the baseline path's raw-dict filter accessors +
-    # subset pipeline-name lookup. The normalised view for the predicate calls
-    # below is built from that SAME dict via view_from_yaml_dict (list-only, like
-    # the candidate dialect — not the sugar-reading view_from_camilla_dict), so
-    # the same text is never yaml.safe_load-ed twice.
+    # callers branch on (which the shared view collapses to parsed_ok=False) and
+    # backs the baseline path's raw-dict accessors; the normalised view is built
+    # from that SAME dict via view_from_yaml_dict (list-only, like the candidate
+    # dialect), so the text is never yaml.safe_load-ed twice.
     try:
         payload = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -3033,17 +2770,14 @@ def _active_graph_evidence(
             "active graph unmutes a tweeter output without proving software protection",
         ))
 
-    # Local-subwoofer audible-protection guard (commissioning/startup) — the
-    # non-baseline analogue of the baseline sub re-proof below. A sub output that
-    # is UNMUTED (audible) MUST be band-limited (LR4 low-pass) + excursion-limited;
-    # a full-range feed to a powered sub is exactly the corrupted/tampered-statefile
-    # hazard the re-proof exists to catch (the honest emitter keeps the sub muted in
-    # the commissioning sequence, but restore_active_camilla_solo loads a
-    # guarded_commissioning graph off disk). The baseline path proves the sub
-    # separately — with its non-positive gain — inside is_baseline_like; the
-    # commissioning sub lane has no gain filter, so only LP + limiter are provable.
-    # Gated not-baseline-like so a baseline graph (different limiter name) is never
-    # tripped by this check. Mirrors the tweeter audible guard above.
+    # Local-subwoofer audible-protection guard (commissioning/startup): an
+    # UNMUTED sub output MUST be band-limited (LR4 low-pass) and
+    # excursion-limited, because a full-range feed to a powered sub is the
+    # tampered-statefile hazard this re-proof exists to catch. The commissioning
+    # sub lane has no gain filter, so only LP + limiter are provable here; the
+    # baseline path proves the sub with its non-positive gain inside
+    # is_baseline_like, and this is gated not-baseline-like so it never trips on
+    # one.
     if not is_baseline_like:
         for index in sorted(unmuted_outputs & sub_outputs):
             if not sub_audible_guard_present(
@@ -3170,12 +2904,11 @@ def _active_graph_evidence(
                 ))
         else:
             # Driver-domain (follower) prefix: the leader baked Layer B/C, so
-            # this graph carries NO program-domain prefix. Prove (a) the
-            # inter-speaker channel-select runs strictly before the
-            # intra-speaker split, and (b) no program-domain headroom gain
-            # leaked in (its presence would mean an un-relocated Layer B/C on
-            # the follower). channel-select is a Mixer step, read from the
-            # parsed pipeline order rather than the Filter-only GraphView.
+            # this graph carries NO program-domain prefix. Prove the
+            # inter-speaker channel-select runs strictly before the intra-speaker
+            # split, and that no program-domain headroom gain leaked in (its
+            # presence would mean an un-relocated Layer B/C). channel-select is a
+            # Mixer step, read from the parsed pipeline order.
             if _channel_select_mixer_name not in mixer_names:
                 issues.append(_issue(
                     "blocker",
@@ -3271,13 +3004,11 @@ def _active_graph_evidence(
                     ),
                 ))
             else:
-                # The emitter folds the bass-management HP into the lowest driver's
-                # role-grouped Filter step (one step targets all of that role's
-                # outputs — both stereo sides), so the HP is proven once against
-                # the whole lowest-driver output set. Active mains: woofer
-                # (roleful). Passive mains: full_range (not roleful, keyed by the
-                # full_range role). A mixed-mode set would split, but main mode is
-                # uniform in the supported topologies.
+                # The emitter folds the bass-management HP into the lowest
+                # driver's role-grouped Filter step (one step targets all of that
+                # role's outputs), so the HP is proven once against the whole
+                # lowest-driver output set — woofer for active mains, full_range
+                # for passive.
                 low_role = next(
                     (
                         by_output[index].role
@@ -3358,11 +3089,9 @@ def _active_graph_evidence(
             )
             if crossovers is None:
                 # The NUMERIC refusal reports itself, with the peak, the
-                # allowance and the frequency; only fall back to the shape
-                # sentence when the shape is genuinely what failed. Saying both
-                # would put "does not use the exact ordered emitter chain" next
-                # to an arithmetic failure and send the reader after the wrong
-                # defect — which is exactly what this walk did before #2758.
+                # allowance and the frequency; fall back to the shape sentence
+                # only when the shape is genuinely what failed, or a reader is
+                # sent after the wrong defect.
                 if chain_notes:
                     issues.extend(chain_notes)
                 else:
@@ -3718,36 +3447,28 @@ def _parked_graph_allowed(
 ) -> GraphSafety:
     """Prove, independently of the emitter, that a PARKED graph is all-muted.
 
-    A parked graph is accepted because this function CHECKS that it is silent —
-    never because verification is skipped for a trusted filename or source
-    marker. Four structural facts, all read off the parsed graph:
+    A parked graph is accepted because this function CHECKS that it is silent,
+    never because verification is skipped for a trusted filename or marker. Four
+    structural facts, all read off the parsed graph:
 
-    1. ``devices.playback.type`` is ``File``. No DAC is attached, so no driver
-       can be over-driven whatever the topology says — the same load-bearing key
-       ``_playback_is_program_bake_pipe`` uses for the program-bake exemption.
+    1. ``devices.playback.type`` is ``File`` — no DAC attached, so no driver can
+       be over-driven whatever the topology says.
     2. The pipeline is **exhaustively** the parked shape: one leading ``Mixer``
        step, then exactly ``width`` ``Filter`` steps, step *i* targeting channel
-       *i* alone with ``names`` equal to exactly that channel's mute filter.
-       Nothing else may appear — no extra step, no extra name inside a step, no
-       reordering.
+       *i* alone with ``names`` equal to that channel's mute filter. No extra
+       step, no extra name inside a step, no reordering.
     3. Every playback channel's mute is a real hard mute — a ``Gain`` at
-       ``STARTUP_MUTE_GAIN_DB`` with ``mute: true`` — proved by the same
-       ``output_hard_muted_and_wired`` primitive the staged startup graph's
-       crash-recovery invariant uses.
-    4. The playback width covers every physical output the saved topology
-       assigns, so no declared driver sits outside the muted set.
+       ``STARTUP_MUTE_GAIN_DB`` with ``mute: true``.
+    4. The playback width covers every physical output the topology assigns, so
+       no declared driver sits outside the muted set.
 
-    **Why fact 2 must be exhaustive, stated exactly.** Fact 1 alone bounds the
-    damage (a File sink reaches no driver), but it is NOT a substitute for fact
-    3: a graph could be repointed at a DAC by a later edit while the pipeline
-    stayed generous. Earlier revisions of this checker only required that a hard
-    mute be *present somewhere* in each channel's chain, which the review panel
-    falsified three ways — a ``+240 dB`` ``Gain`` appended as a fourth pipeline
-    step, the same gain injected into an existing mute step's ``names`` list
-    (CamillaDSP applies a step's filters in order, so a gain after the mute
-    re-amplifies), and a ``Dither`` step appended (which *generates* signal into
-    a muted channel). All three now fail: anything that is not byte-for-byte the
-    parked shape is refused, so "muted" cannot be undone by addition.
+    Fact 2 must be exhaustive because fact 1 bounds the damage but does not
+    replace fact 3: a graph could be repointed at a DAC by a later edit while
+    the pipeline stayed generous. Requiring only that a mute be present
+    SOMEWHERE in each chain admits a ``+240 dB`` ``Gain`` appended as a fourth
+    step, the same gain injected into an existing mute step's ``names`` (filters
+    apply in order, so a gain after the mute re-amplifies), and an appended
+    ``Dither`` step, which generates signal into a muted channel.
 
     Fails closed on every unmet fact and on an unparseable graph.
     """
@@ -3867,13 +3588,10 @@ def classify_camilla_graph(
 
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
-    # The two issue sources are kept APART because they answer different
-    # questions, and the tail below gates the PARKED verdict on only one of
-    # them (#2145). ``topology_issues`` describe the saved speaker LAYOUT (a
-    # half-assigned mid-edit draft); ``graph_issues`` describe the CamillaDSP
-    # config TEXT in hand (a missing volume_limit). Merged, they were
-    # indistinguishable, which is how a topology blocker came to refuse a graph
-    # it cannot make unsafe.
+    # The two issue sources are kept APART because the tail below gates the
+    # PARKED verdict on only one: ``topology_issues`` describe the saved speaker
+    # LAYOUT, ``graph_issues`` the CamillaDSP config TEXT in hand. Merged, a
+    # topology blocker refuses a graph it cannot make unsafe.
     topology_issues: list[dict[str, str]] = list(contract.issues)
     graph_issues: list[dict[str, str]] = []
     path_s = str(config_path) if config_path is not None else None
@@ -3903,25 +3621,20 @@ def classify_camilla_graph(
             "jts_outputd_stereo",
             "jts_legacy_stereo",
             "jts_generated_stereo",
-            # The active-leader camilla#1 program bake is also a flat (no-Layer-A)
-            # program graph; it reaches the flat path so the File-sink exemption
-            # in _flat_graph_allowed can clear it regardless of topology.
+            # The camilla#1 program bake is also a flat (no-Layer-A) program
+            # graph, and reaches the flat path so the File-sink exemption in
+            # _flat_graph_allowed can clear it regardless of topology.
             CAMILLA_CLASS_PROGRAM_BAKE,
         }
         or path_name in {"outputd-cutover.yml", "v1.yml"}
     )
     if is_flat:
         # Detect the File/pipe playback ONCE here (this scope has the config
-        # text); _flat_graph_allowed stays text-free. The exemption keys strictly
-        # on the File-pipe sink, so an ALSA-sink flat graph stays subject to the
-        # roleful-topology block.
+        # text) so _flat_graph_allowed stays text-free; the exemption keys
+        # strictly on the File-pipe sink.
         program_bake_pipe = _playback_is_program_bake_pipe(text)
-        # Which playback channels this graph provably cannot emit on, read off
-        # the graph here (same text-free split as program_bake_pipe above) so
-        # _flat_graph_allowed can ask "does it emit anywhere undeclared?"
-        # instead of the width proxy it used to. The mono fold is the same
-        # split once more: the topology says whether one is owed, the text says
-        # whether it is there.
+        # Same text-free split for the mute set and the mono fold: the topology
+        # says whether a fold is owed, the text says whether it is there.
         required_mono_fold = _required_mono_fold_output(
             topology, playback_channels=summary.get("playback_channels")
         )
@@ -3983,48 +3696,25 @@ def classify_camilla_graph(
 
     issues = topology_issues + graph_issues
     if issues:
-        # A PROVED-PARKED graph is refused only by its OWN blockers (#2145).
+        # A PROVED-PARKED graph is refused only by its OWN blockers.
         #
-        # Every other classification is refused whenever ANYTHING is wrong,
-        # because every other graph drives the DAC: if the saved topology is
-        # half-assigned, a graph built against it can send the wrong band to a
-        # tweeter. The parked graph cannot. Its safety is STRUCTURAL and was
-        # just proved by `_parked_graph_allowed` against the graph's own bytes:
-        # a `File` sink, a pipeline that is exhaustively one Mixer plus one
-        # mute-only Filter per output, and a wired hard mute on every output.
+        # Every other classification is refused whenever anything is wrong,
+        # because every other graph drives the DAC: against a half-assigned
+        # topology it can send the wrong band to a tweeter. The parked graph
+        # cannot — its safety is STRUCTURAL and was just proved by
+        # `_parked_graph_allowed` against the graph's own bytes.
         #
-        # The load-bearing pair is the pipeline exactness plus the hard mutes —
-        # NOT the File sink on its own. A File sink is not proof that no DAC is
-        # reached: the program-bake exemption in this same function exists
-        # because a File sink can feed outputd's pipe, and outputd drives the
-        # DAC. So the silence guarantee is that every output is hard-muted and
-        # the pipeline provably cannot add anything back, whatever consumes the
-        # sink. ("Exhaustively" bounds the PIPELINE steps; the mixer's internal
-        # mapping is checked by the mute proof, not by step counting.)
+        # The load-bearing pair is the pipeline exactness plus the hard mutes,
+        # NOT the File sink alone: a File sink can feed outputd's pipe, and
+        # outputd drives the DAC. None of those facts can be falsified by a
+        # topology blocker, so refusing on one only prevented the box from
+        # parking.
         #
-        # None of those facts can be falsified by a topology blocker, so
-        # refusing on one only prevented the box from parking — it never made it
-        # quieter.
-        #
-        # Keyed on the VERDICT (`GRAPH_PARKED_ALL_MUTED`), not on the claimed
-        # input class: `_parked_graph_allowed` returns that classification if
-        # and only if all four structural facts hold, and `GRAPH_UNSAFE`
-        # otherwise. So a graph that merely CLAIMS the parked source marker and
-        # fails its proof cannot reach the exemption.
-        #
-        # Stated honestly, that key is defence in depth rather than the load-
-        # bearing guard: `graph.allowed` is already False for a failed proof, so
-        # keying on the claimed marker instead would refuse the same graphs, and
-        # no test distinguishes the two (verified by mutation — the swap
-        # survives the suite). It is kept because it makes the exemption's
-        # precondition legible at the point of use, and because it stays correct
-        # if a future classification ever returns `allowed=True` alongside a
-        # parked-looking marker.
-        #
-        # `graph_issues` still gate: they describe this graph's own text, so
-        # they are exactly the class of defect that CAN make it unsafe.
-        # `topology_issues` are reported either way — the deploy proceeds, but
-        # it proceeds LOUDLY, with each blocker in the transcript.
+        # Keyed on the VERDICT, not on the claimed input class, so a graph that
+        # merely CLAIMS the parked source marker and fails its proof cannot
+        # reach the exemption. `graph_issues` still gate — they describe this
+        # graph's own text — while `topology_issues` are reported either way, so
+        # the deploy proceeds LOUDLY.
         parked_proof_holds = graph.classification == GRAPH_PARKED_ALL_MUTED
         gating = graph_issues if parked_proof_holds else issues
         return GraphSafety(
@@ -4487,20 +4177,16 @@ async def classify_active_bass_extension_graph(
     """Canonical live-active boundary with readback inside the sandwich.
 
     Both sides of the fingerprint comparison MUST come from CamillaDSP.
-    ``read_active_graph_text`` already does — it is CamillaDSP's own
-    re-serialization of the running graph (``GetConfig``), which default-fills
-    every key the config omits. The statefile-selected file does NOT: it is
-    JTS-authored text whose emitters leave defaulted keys out entirely. So it
-    is put through CamillaDSP's ``ReadConfig`` — ``canonicalize_graph_text``,
-    i.e. :meth:`jasper.camilla.CamillaController.normalize_config_raw` — before
-    being fingerprinted. Comparing the raw file against the readback instead
-    can never match, and fails CLOSED, so the whole gate silently refuses
-    everything (the 2026-08-06 bonded-pair outage).
+    ``read_active_graph_text`` is its own re-serialization of the running graph,
+    which default-fills every omitted key; the statefile-selected file is
+    JTS-authored text that leaves defaults out, so it goes through CamillaDSP's
+    ``ReadConfig`` (``canonicalize_graph_text``) before being fingerprinted.
+    Comparing the raw file against the readback can never match and fails
+    CLOSED, so the whole gate would silently refuse everything.
 
-    ``canonicalize_graph_text`` is a required caller-injected seam on purpose.
-    Injected, so CamillaDSP stays the single authority on its own schema and
-    this module holds no copy of its defaults. Required rather than defaulted,
-    so a new caller cannot re-open the same silent trap by omitting it.
+    ``canonicalize_graph_text`` is a REQUIRED caller-injected seam: injected so
+    CamillaDSP stays the single authority on its own schema, required so a new
+    caller cannot re-open the same silent trap by omitting it.
     """
 
     reason = "live graph authority could not be proved"
@@ -4524,10 +4210,9 @@ async def classify_active_bass_extension_graph(
 
         # Both CamillaDSP queries share the ONE await window this sandwich
         # brackets, so the authority re-read below still covers every await.
-        # Safe to gather because every caller hands both callables the SAME
-        # CamillaController, whose `_call` holds its lock for the whole call —
-        # so these serialize rather than interleaving two requests on one
-        # pycamilladsp websocket.
+        # Safe to gather: every caller hands both callables the SAME
+        # CamillaController, whose `_call` holds its lock for the whole call, so
+        # these serialize rather than interleaving on one websocket.
         active_result, canonical_result = await asyncio.gather(
             _invoke_active_graph_reader(read_active_graph_text),
             _invoke_active_graph_reader(
@@ -4919,20 +4604,15 @@ def _linearization_headroom_regression(
 ) -> tuple[dict[str, str], ...]:
     """The numeric headroom refusals carried by any of ``graphs``.
 
-    Empty whenever none of them failed THAT way — which includes every graph
-    that is allowed, every graph refused on shape, and the absent-graph case.
-    So a caller can ask "did this box's own active graph regress on the
-    headroom arithmetic?" without re-deriving the condition, and a new refusal
-    reason cannot silently start firing a migration guard written for this one.
+    Empty whenever none of them failed THAT way, so a caller can ask "did this
+    box's own active graph regress on the headroom arithmetic?" without
+    re-deriving the condition, and a new refusal reason cannot silently start
+    firing a migration guard written for this one.
 
-    DE-DUPLICATED, order-preserving, because on a commissioned box the two
-    graphs asked here are usually the SAME FILE: the applied-baseline authority
-    points at the artifact the statefile already loads, so both classifications
-    carry the identical refusal and the deploy transcript printed every blocker
-    twice. Keyed on the whole issue rather than on the code, so two branches
-    that genuinely both regressed still report one line each — the message
-    names the role and the numbers, which is exactly what a reader needs when
-    the woofer and the tweeter fail differently.
+    DE-DUPLICATED, order-preserving: on a commissioned box the two graphs asked
+    here are usually the SAME FILE. Keyed on the whole issue rather than the
+    code, so two branches that genuinely both regressed still report one line
+    each with their own role and numbers.
     """
     seen: list[dict[str, str]] = []
     for graph in graphs:
@@ -4965,33 +4645,21 @@ def safe_graph_for_current_topology(
 ) -> SafeGraphDecision:
     """Select the only safe persisted CamillaDSP graph for this topology.
 
-    **A ROLEFUL box's ring is a different question, and this function answers it
-    differently.** The flat branch selects one PRE-RENDERED file, because a flat
-    graph is the same on every box. A roleful box's graph is per-speaker —
-    its crossover, its corrections — so there is nothing to pick between: the
-    graphs that carry it (the applied baseline, the staged all-muted startup) are
-    emitted by the commissioning path, naming the ACTIVE ring, because
-    ``resolve_output_layout`` is the single place that chooses the active
-    endpoint device. So the roleful branches below are
-    unchanged and correct on an armed box — they preserve or select whatever the
-    box's own graphs declare.
+    The flat branch selects one PRE-RENDERED file, because a flat graph is the
+    same on every box. A roleful box's graph is per-speaker, so there is nothing
+    to pick between: the applied baseline and the staged all-muted startup are
+    emitted by the commissioning path and the roleful branches below preserve or
+    select whatever the box's own graphs declare.
 
-    The residual an armed roleful box carries is therefore a STALE ARTIFACT, not
-    a wrong selection: if its on-disk baseline still names the pre-arm ALSA lane,
-    preserving it is the correct thing to do with the graph the box has, and the
-    box de-arms itself on the next CamillaDSP restart. Closing that is what
-    ``jasper-active-speaker baseline-reemit --endpoint ring`` is FOR — it
-    publishes the re-emitted graph over the artifact this function selects and
-    repoints the statefile at it, which is also why it is step ONE of the arm
-    ladder rather than a tidy-up after it. The doctor's ``check_fanin_coupling``
-    reports the gap in the meantime — it derives the expected playback device
-    from the endpoint marker, so it names the exact mismatch rather than reading
-    green through it. This function deliberately does NOT add a refusal of its
-    own: blocking here would
-    turn a recoverable stale artifact into a box that cannot seed a graph at all.
+    An armed roleful box's residual is therefore a STALE ARTIFACT, not a wrong
+    selection — an on-disk baseline still naming the pre-arm ALSA lane is the
+    graph the box has, and ``jasper-active-speaker baseline-reemit --endpoint
+    ring`` is what closes it (step ONE of the arm ladder). This function
+    deliberately adds no refusal of its own: blocking here would turn a
+    recoverable stale artifact into a box that cannot seed a graph at all.
 
-    The PARKED shape needs nothing either way — its sink is a ``File``, so it is
-    DAC- and transport-agnostic by construction."""
+    The PARKED shape needs nothing either way — its ``File`` sink is DAC- and
+    transport-agnostic by construction."""
 
     from jasper.active_speaker.baseline_profile import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
@@ -5065,19 +4733,14 @@ def safe_graph_for_current_topology(
         current_graph
         and current_graph.allowed
         and topology_allows_flat_dac_graph(contract)
-        # A program-bake pipe is allowed by the verifier (no DAC, no driver to
-        # over-drive) but is NOT a selectable solo graph: its File sink feeds the
-        # snapserver FIFO, not the DAC, so preserving it on a solo speaker would
-        # leave the DAC silent. Selecting/wiring camilla#1 is a later Stage-B
-        # slice; this selector must never pick the pipe bake as a speaker's own
-        # output graph.
+        # A program-bake pipe is allowed by the verifier but is NOT a selectable
+        # solo graph: its File sink feeds the snapserver FIFO, so preserving it
+        # on a solo speaker would leave the DAC silent.
         and current_graph.classification != GRAPH_PROGRAM_BAKE_PIPE
-        # The PARKED graph (#2135) is the same shape of trap and is excluded for
-        # the same reason: it is legal for ANY topology (File sink, every output
-        # muted), so without this it would be "preserved" forever after reset.
-        # Reset first writes the unconfigured, parked state; once the household
-        # saves an explicit passive layout, this exclusion lets the selector
-        # fall through to `select_flat` below rather than keep /dev/null.
+        # The PARKED graph is the same shape of trap: legal for ANY topology, so
+        # without this it would be "preserved" forever after a reset. The
+        # exclusion lets the selector fall through to `select_flat` once the
+        # household saves an explicit passive layout.
         and current_graph.classification != GRAPH_PARKED_ALL_MUTED
     ):
         return SafeGraphDecision(
@@ -5088,13 +4751,10 @@ def safe_graph_for_current_topology(
             current_graph=current_graph,
             preferred_graph=preferred_graph,
         )
-    # An approved active runtime graph drives roleful lanes at program level. It
-    # is only legal while the household still vouches for WHICH driver hangs on
-    # each of those lanes — a fact this selector was blind to until #2814, so a
-    # re-pinned (or explicitly un-confirmed) box re-selected its baseline on the
-    # next reconcile and resumed audio through drivers nobody had re-checked.
-    # Unconfirmed, both rungs below fall through to the staged all-muted /
-    # parked selection; confirming every assigned lane again releases them.
+    # An approved active runtime graph drives roleful lanes at program level, so
+    # it is only legal while the household still vouches for WHICH driver hangs
+    # on each lane. Unconfirmed, both rungs below fall through to the staged
+    # all-muted / parked selection; confirming every assigned lane releases them.
     identity_confirmed = roleful_identity_confirmed(topology, contract)
     if (
         current_graph
@@ -5111,19 +4771,14 @@ def safe_graph_for_current_topology(
             preferred_graph=preferred_graph,
         )
     # Deadlock guard (re-commission on an already-commissioned box). While a
-    # protected startup-load session is deliberately holding the staged
-    # all-muted startup anchor as the durable graph, the reconciler that load
-    # KICKED must NOT restore the saved baseline over it: doing so moves the
-    # durable statefile off the anchor, and commission-load's PRE-AUDIO
-    # precondition gate (`commission_active_graph_not_staged`) then refuses,
-    # because per-driver commissioning "requires the all-muted staged config to
-    # be the persisted boot config first". So the anchor-preserve is
-    # hoisted ABOVE the baseline-restore rung below — but ONLY while the hold is
-    # in flight. The marker is ephemeral (/run), so a NORMAL boot never sees it
-    # and the baseline-restore rung fires exactly as before; a commissioned box
-    # still comes back to audio on reboot. Preserving an all-muted anchor is the
-    # safe direction (silent, never loud), so this needs no identity gate of its
-    # own — #2814's gate stays on the approved-runtime rungs it protects.
+    # protected startup-load session holds the staged all-muted anchor as the
+    # durable graph, the reconciler that load KICKED must NOT restore the saved
+    # baseline over it: that moves the durable statefile off the anchor and
+    # commission-load's pre-audio gate then refuses. So the anchor-preserve is
+    # hoisted ABOVE the baseline-restore rung, but ONLY while the hold is in
+    # flight — the marker is ephemeral (/run), so a normal boot never sees it.
+    # Preserving an all-muted anchor is the safe direction, so this needs no
+    # identity gate of its own.
     if (
         current_graph
         and current_graph.allowed
@@ -5210,23 +4865,16 @@ def safe_graph_for_current_topology(
     )
     staged_path = staged_graph.config_path
     # A commissioned box whose OWN boot graph stopped proving on the headroom
-    # arithmetic must not be quietly re-pointed at the all-muted startup graph
-    # (#2758). That fall is legal — the staged graph really is safe — and it is
-    # exactly what makes it dangerous here: the deploy stays GREEN, the speaker
-    # goes SILENT, and it is sticky, because the next deploy preserves the
-    # all-muted graph it just selected and nothing on the deploy path re-emits
-    # the baseline. Refuse instead, carrying the numbers, so a human is
-    # summoned to `baseline-reemit` rather than a household discovering it.
-    # Having the DEPLOY run that re-emit itself is issue #2847; this is the
-    # half that makes the failure loud, which is the half that has to exist.
+    # arithmetic must not be quietly re-pointed at the all-muted startup graph.
+    # That fall is legal, which is what makes it dangerous: the deploy stays
+    # GREEN, the speaker goes SILENT, and it is sticky, because the next deploy
+    # preserves the all-muted graph it just selected. Refuse instead, carrying
+    # the numbers, so a human is summoned to `baseline-reemit`.
     #
-    # Narrow on purpose, and each clause earns its place. Only the NUMERIC
-    # refusal (`LINEARIZATION_HEADROOM_UNPROVEN_CODE`) fires it: a shape refusal
-    # is a different defect with a different remedy, and every OTHER reason a
-    # box lands on the staged anchor — mid-commission with no baseline at all,
-    # or the #2814 identity-unconfirmed hold, where the graph stays `allowed`
-    # and is skipped rather than refused — is a state this ladder is SUPPOSED
-    # to resolve silently and green.
+    # Narrow on purpose: only the NUMERIC refusal fires it. A shape refusal is a
+    # different defect with a different remedy, and every other reason a box
+    # lands on the staged anchor is a state this ladder is SUPPOSED to resolve
+    # silently and green.
     regressed = _linearization_headroom_regression(current_graph, preferred_graph)
     if regressed:
         return SafeGraphDecision(
@@ -5276,32 +4924,23 @@ def safe_graph_for_current_topology(
     if staged_graph and staged_graph.issues:
         issues.extend(staged_graph.issues)
     if not staged_path:
-        # Third outcome (issue #2135): there is NO staged graph at all — the
-        # household declared a roleful topology and paused before crossover
-        # preview. Park the speaker silent rather than refuse, so the box can
-        # still take deploys while it sits in that limbo.
+        # Third outcome: NO staged graph at all — a roleful topology declared and
+        # paused before crossover preview. Park the speaker silent rather than
+        # refuse, so the box can still take deploys in that limbo.
         #
-        # Deliberately gated on "no staged locator", not on "no usable staged
-        # graph": a staged graph that EXISTS but fails its safety proof keeps
-        # blocking with its blockers below. That is a commissioning bug, not a
-        # paused household, and papering over it with silence would hide it.
+        # Gated on "no staged LOCATOR", not "no usable staged graph": a staged
+        # graph that exists but fails its safety proof keeps blocking below,
+        # because that is a commissioning bug rather than a paused household.
         #
-        # This branch is also LAST on purpose — every real graph above (approved
-        # runtime, applied baseline, staged all-muted) has already been
-        # considered, so a parked file can never shadow a graph that carries
-        # actual driver protection. Recovery needs no operator action: the
-        # moment commissioning stages a startup graph, `select_active_startup`
-        # above wins on the next root hardware-reconcile/deploy convergence pass.
+        # LAST on purpose — every real graph above has already been considered,
+        # so a parked file can never shadow one carrying driver protection.
         parked_text, parked_graph = build_parked_muted_graph(
             topology, config_path=parked_config_path
         )
         if parked_text is not None and parked_graph.allowed:
-            # No `event=` line here: this function is a pure decision and is
-            # also reached by read-only callers. The stable
-            # `event=active_speaker.runtime_graph decision=parked_muted` line is
-            # emitted by `apply_safe_graph_decision_to_statefile`, on every apply
-            # that resolves to parked — including one that finds the statefile
-            # already pointing at the parked config and writes nothing.
+            # No `event=` line here: this function is a pure decision reached
+            # also by read-only callers. `apply_safe_graph_decision_to_statefile`
+            # emits the stable `decision=parked_muted` line instead.
             selected = str(parked_muted_config_path(parked_config_path))
             return SafeGraphDecision(
                 status=PARKED_MUTED_STATUS,
@@ -5311,17 +4950,13 @@ def safe_graph_for_current_topology(
                 current_graph=current_graph,
                 preferred_graph=preferred_graph,
                 fallback_graph=parked_graph,
-                # Proceeding is not the same as being clean (#2145). Parking is
-                # now reachable for a topology that still carries blockers, so
-                # the decision REPORTS them: `ok` stays True (it is derived from
-                # `status`, never from `issues`), the deploy continues, and the
-                # household still sees each blocker in the install transcript.
-                # Deliberately `contract.issues` alone — exactly the set the
-                # parked verdict declined to refuse on — rather than the wider
-                # `issues` list above, which also collects "no candidate at this
-                # path" noise from graphs a parked box is EXPECTED not to have.
-                # On a blocker-free topology this is empty, so the clean parked
-                # decision is unchanged.
+                # Proceeding is not the same as being clean: parking is
+                # reachable for a topology that still carries blockers, so the
+                # decision REPORTS them while `ok` stays True (derived from
+                # `status`, never from `issues`). Deliberately `contract.issues`
+                # alone — the set the parked verdict declined to refuse on —
+                # rather than the wider `issues` list, which also collects "no
+                # candidate at this path" noise a parked box is expected to have.
                 issues=tuple(contract.issues),
             )
         issues.append(_issue(
@@ -5410,19 +5045,11 @@ def apply_safe_graph_decision_to_statefile(
     materialise_safe_graph_decision(decision, topology=topology)
     if decision.status == PARKED_MUTED_STATUS:
         # Logged HERE, not at decision time: the decision function is also
-        # reached by read-only callers (`runtime-safe-graph` without
-        # --write-statefile, the correction reset probe, the multiroom follower's
-        # restore candidates), and a `decision=parked_muted` line from those
-        # would read as "the box was just parked" when nothing was written.
-        #
-        # It DOES fire on a statefile no-op (the `_path_matches` return below),
-        # and that is deliberate: `_materialise_parked_muted_config` above has
-        # already RE-PROVED the parked graph all-muted by this point, so real
-        # work happened. (Re-proved, not rewritten — that function returns early
-        # without touching the file when the on-disk bytes already match.)
-        # The line means "this apply resolved to parked", not
-        # "the statefile changed" — moving it below the compare would silence a
-        # parked box on every deploy after the first.
+        # reached by read-only callers, and a `decision=parked_muted` line from
+        # those would read as "the box was just parked" when nothing was written.
+        # It DOES fire on a statefile no-op, deliberately: the parked graph has
+        # already been RE-PROVED all-muted by this point, and the line means
+        # "this apply resolved to parked", not "the statefile changed".
         log_event(
             logger,
             "active_speaker.runtime_graph",
@@ -5500,16 +5127,13 @@ def _materialise_parked_muted_config(
     except (OSError, UnicodeError):
         pass  # absent, unreadable, or not text — fall through and rewrite
     target.parent.mkdir(parents=True, exist_ok=True)
-    # CamillaDSP preflight before these bytes become the box's boot graph. An
-    # unloadable parked config would crash-loop jasper-camilla, which is a worse
-    # outcome than the blocked deploy this whole path replaces — so a rejected
-    # graph degrades back to blocked rather than shipping. Checked on a temp
-    # sibling so a rejected graph never lands on the real name. The name is
-    # per-invocation unique (mkstemp) rather than a fixed dotfile: two writers in
-    # this shared dir — install's outputd and camilla#2 passes, or a concurrent
-    # web flow — would otherwise unlink each other's probe mid-validation. A
-    # missing camilladsp binary (dev host, CI) passes through, the same
-    # `ok_to_apply` contract protected staging uses.
+    # CamillaDSP preflight before these bytes become the box's boot graph: an
+    # unloadable parked config would crash-loop jasper-camilla, a worse outcome
+    # than the blocked deploy this path replaces, so a rejected graph degrades
+    # back to blocked. Checked on a per-invocation-unique temp sibling (mkstemp,
+    # not a fixed dotfile) so two concurrent writers in this shared dir cannot
+    # unlink each other's probe mid-validation. A missing camilladsp binary
+    # passes through, the same `ok_to_apply` contract protected staging uses.
     handle, probe_name = tempfile.mkstemp(
         dir=target.parent, prefix=f".{target.name}.check-", suffix=".yml"
     )
