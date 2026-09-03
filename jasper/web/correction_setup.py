@@ -1359,7 +1359,7 @@ async def _read_room_correction_readiness(cam: Any) -> dict[str, Any]:
 async def _classify_live_bass_extension_graph(cam: Any):
     """Prove the live graph and every bass authority in one canonical read."""
 
-    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
     from jasper.active_speaker.runtime_contract import (
         classify_active_bass_extension_graph,

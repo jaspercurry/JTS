@@ -18,7 +18,7 @@ from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
 )
-from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
 from jasper.active_speaker.environment import read_camilla_statefile_config_path
 from jasper.active_speaker.path_safety import (

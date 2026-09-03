@@ -2,18 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Frequency-response smoothing and resampling for the magnitude
-response display + filter design.
-
-We use power-mean (RMS-of-amplitude) smoothing rather than dB-mean,
-because dB-mean over-emphasizes deep nulls — Toole (Sound Reproduction
-3rd ed., Ch. 4) and Welti are clear on this. REW and Acourate also
-default to power-mean.
-
-For the V1 scope (modal-range PEQ from a single-position measurement)
-we don't need RT60 / Schroeder estimation — that's Phase 2+ when
-multi-position averaging adds value. So this module is intentionally
-small.
+"""Frequency-response smoothing and resampling for the magnitude response display + filter
+design. Power-mean (RMS-of-amplitude) smoothing, not dB-mean, which over-emphasizes deep nulls
+(Toole, *Sound Reproduction* 3rd ed. Ch. 4; Welti; REW and Acourate default to it too).
 """
 from __future__ import annotations
 
@@ -40,15 +31,10 @@ MIN_SHOULDER_SAMPLES = 2
 class ShoulderSpan:
     """Where a null depth's shoulders were read, and how far in they were forced.
 
-    Two banked per-driver curves overlap only where both drivers were swept,
-    and a real 2-way overlaps by less than the canonical two octaves (the
-    reference speaker's is 1.32). The span is the canonical one clamped into
-    that overlap.
-
-    **A clamped depth is not the same quantity as a full-span one:** shoulders
-    inside the crossover's own rolloff sit below the passband either side of
-    it, so the subtraction reads smaller than a canonical read of the same sum.
-    That is what these fields exist to say.
+    A real 2-way overlaps by less than the canonical two octaves (the reference speaker's is
+    1.32); the span is the canonical one clamped into that overlap. **A clamped depth is not
+    the same quantity as a full-span one** — shoulders inside the crossover's own rolloff sit
+    below the passband, so the subtraction reads smaller.
     """
 
     crossover_fc_hz: float
@@ -81,12 +67,8 @@ class ShoulderSpan:
 
     @property
     def usable(self) -> bool:
-        """Whether a shoulder can be placed either side of Fc at all.
-
-        Not a quality bar — narrowness is disclosed, not refused. This is the
-        floor below which there is nothing to read.
-        """
-
+        """Not a quality bar — narrowness is disclosed, not refused. The floor below which
+        there is nothing to read."""
         return (
             self.used_hz[0] < self.crossover_fc_hz < self.used_hz[1]
             and self.samples_below_fc >= MIN_SHOULDER_SAMPLES
@@ -110,13 +92,8 @@ class ShoulderSpan:
 def shoulder_span(
     freqs, *, crossover_fc_hz: float, overlap_hz: tuple[float, float]
 ) -> ShoulderSpan:
-    """Derive the shoulders a null depth can honestly be read at.
-
-    ``overlap_hz`` is the band both branches carry evidence over; ``freqs`` is
-    the grid the depth will be read on. One owner, beside the subtraction that
-    consumes it, so a computed proposal and an acoustic confirm place their
-    shoulders by the same rule.
-    """
+    """``overlap_hz`` is the band both branches carry evidence over. One owner, beside the
+    subtraction that consumes it, so a proposal and an acoustic confirm agree."""
 
     lower_ratio, upper_ratio = CANONICAL_SHOULDER_RATIOS
     grid = np.asarray(freqs, dtype=float)
@@ -139,25 +116,16 @@ def crossover_null_depth_db(
     *,
     shoulders_hz: tuple[float, float] | None = None,
 ) -> float:
-    """How deep the notch at Fc sits below the passband either side of it.
+    """THE definition of null depth in this repo: the mean of the two shoulders minus the level
+    at Fc, read off an already calibrated, already gated magnitude curve. Positive is a notch.
 
-    THE definition of null depth in this repo: the mean of the two shoulders
-    minus the level at Fc, read off an already calibrated, already gated
-    magnitude curve. Positive is a notch; a flat sum reads near zero.
+    Shoulders default to :data:`CANONICAL_SHOULDER_RATIOS` times Fc; a caller may narrow them
+    with ``shoulders_hz`` (from :func:`shoulder_span`) rather than letting :func:`numpy.interp`
+    clamp silently at the grid edge.
 
-    The shoulders are :data:`CANONICAL_SHOULDER_RATIOS` times Fc unless the
-    caller states narrower ones with ``shoulders_hz``, from
-    :func:`shoulder_span`. Stating them beats letting :func:`numpy.interp` clamp
-    at the grid edge: the number is the same either way, but only one of the two
-    says which frequencies it read, and a clamped read has to be disclosed.
-
-    Homed here rather than beside its acoustic caller because both consumers
-    live ABOVE this package: `active_speaker.driver_acoustics` reads it off a
-    captured WAV and `crossover_v2.delay_landscape` off a modelled sum, and
-    `jasper.audio_measurement` may import neither of them (the boundary SSOT
-    guard). Shared measurement math lives below the boundary and consumers
-    import down; two spellings of this subtraction would be two null depths,
-    and the walk that grades them could not tell which it had.
+    Homed here, not beside its acoustic caller, because both consumers (``active_speaker.
+    driver_acoustics``, ``crossover_v2.delay_landscape``) live ABOVE this package and
+    ``jasper.audio_measurement`` may import neither (the boundary SSOT guard).
     """
     lower_hz, upper_hz = (
         (
@@ -178,25 +146,15 @@ def smooth_fractional_octave(
     magnitude_db: np.ndarray,
     fraction: int = 48,
 ) -> np.ndarray:
-    """1/N-octave magnitude smoothing in linear power.
-
-    Args:
-      freqs: linear-spaced frequency grid (e.g. from rfftfreq), in Hz.
-      magnitude_db: matching magnitude in dB.
-      fraction: 1/N-octave. 48 ≈ "psychoacoustic detail" (REW
-        terminology). 3 = audiometric. Higher fractions are sharper.
-
-    Returns:
-      Smoothed magnitude in dB on the same grid.
-    """
+    """1/N-octave magnitude smoothing in linear power. ``fraction`` 48 ~= "psychoacoustic
+    detail" (REW terminology), 3 = audiometric; higher is sharper."""
     if fraction <= 0:
         raise ValueError(f"fraction must be positive, got {fraction}")
     if len(freqs) != len(magnitude_db):
         raise ValueError(
             f"length mismatch: freqs={len(freqs)} magnitude={len(magnitude_db)}"
         )
-    # dB → linear power for averaging (the right thing for
-    # acoustic energy — dB-mean would over-emphasize deep nulls).
+    # dB -> linear power for averaging; dB-mean would over-emphasize deep nulls.
     power = 10.0 ** (magnitude_db / 10.0)
     factor = 2.0 ** (1.0 / (2.0 * fraction))
 
@@ -213,8 +171,7 @@ def smooth_fractional_octave(
         lo_idx = np.maximum(0, lo_idx)
         hi_idx = np.maximum(lo_idx + 1, np.minimum(n, hi_idx))
 
-        # Prefix sums preserve the exact inclusive window bounds above while
-        # reducing every power mean to two indexed reads and a subtraction.
+        # Prefix sums reduce every power mean to two indexed reads and a subtraction.
         prefix_dtype = np.result_type(power.dtype, np.float64)
         prefix = np.empty(n + 1, dtype=prefix_dtype)
         prefix[0] = 0
@@ -239,8 +196,7 @@ def smooth_fractional_octave(
                 reverse_prefix[n - lo_idx] + reverse_prefix[n - hi_idx],
                 prefix[hi_idx] + prefix[lo_idx],
             )
-            # If even the better-direction subtraction is ill-conditioned,
-            # take only that rare window through the exact scalar reduction.
+            # If even the better-direction subtraction is ill-conditioned, fall back per-window.
             suspect = (subtraction_scale > 0) & (
                 window_sum
                 <= np.finfo(prefix_dtype).eps * 1e12 * subtraction_scale
@@ -254,9 +210,7 @@ def smooth_fractional_octave(
                 )
 
     if not finite:
-        # Prefix subtraction can contaminate windows after NaN/+inf or a
-        # cumulative overflow. Preserve the former scalar behavior there;
-        # finite measurement curves take the vectorized path above.
+        # Prefix subtraction can contaminate windows after NaN/+inf or overflow; scalar fallback.
         for i in range(n):
             f = freqs[i]
             if f <= 0:
@@ -282,13 +236,8 @@ def resample_log(
     f_max: float = 20000.0,
     n_points: int = 480,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Resample a frequency response onto a log-spaced grid.
-
-    Browser uPlot / canvas charts want log-frequency display, and
-    480 points across 20 Hz – 20 kHz is roughly 1/48-octave —
-    enough detail for the modal range and tractable for a JSON
-    payload to the iPhone.
-    """
+    """480 points across 20 Hz-20 kHz is roughly 1/48-octave — enough detail for the modal
+    range and tractable for a JSON payload to the iPhone."""
     if n_points < 2:
         raise ValueError(f"n_points must be ≥ 2, got {n_points}")
     if f_max <= f_min:
@@ -302,38 +251,17 @@ def resample_log(
 def spatial_average_db(
     magnitudes_db: list[np.ndarray],
 ) -> np.ndarray:
-    """Power-mean averaging of multiple positions' magnitude responses.
-
-    Per Toole / Welti / Olive: room responses average sensibly in
-    LINEAR POWER (squared amplitude), not in dB. Power averaging
-    correctly reflects how the ear integrates energy from
-    decorrelated reflection paths across positions, while dB
-    averaging would over-emphasize deep nulls (a single -30 dB null
-    at one position would drag the whole region down even if the
-    other four positions have flat response there).
-
-    For Phase 2 simplicity we power-average across the WHOLE
-    spectrum. The strict Schroeder split (vector-mean below, power-
-    mean above) requires keeping complex H(f) per position rather
-    than just the magnitude, which our pipeline doesn't currently
-    do — we drop phase right after deconvolution. Power-mean
-    everywhere is what HouseCurve and most simpler tools do, and
-    Toole's published target curves were derived from power-averaged
-    measurements. Strict Schroeder split is a Phase 3 refinement.
-
-    Args:
-      magnitudes_db: list of N dB arrays, each on the same frequency
-        grid. Empty list raises ValueError; 1 element returns itself.
-
-    Returns:
-      Averaged magnitude in dB.
-    """
+    """Per Toole/Welti/Olive: room responses average sensibly in LINEAR POWER, not dB — dB
+    averaging over-emphasizes deep nulls (a single -30 dB null at one position would drag the
+    whole region down even with flat response elsewhere). Power-averaged across the WHOLE
+    spectrum (no vector-mean/power-mean Schroeder split — this pipeline drops phase after
+    deconvolution). Empty list raises ``ValueError``; 1 element returns itself."""
     if not magnitudes_db:
         raise ValueError("need at least one magnitude array")
     if len(magnitudes_db) == 1:
         return magnitudes_db[0].astype(np.float64)
     stack = np.stack([m.astype(np.float64) for m in magnitudes_db], axis=0)
-    # dB → linear power → mean → linear power → dB
+    # dB -> linear power -> mean -> dB
     power = 10.0 ** (stack / 10.0)
     mean_power = power.mean(axis=0)
     return 10.0 * np.log10(np.maximum(mean_power, 1e-12))
@@ -347,35 +275,18 @@ def deviation_metrics(
     f_low: float = 50.0,
     f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
 ) -> dict[str, float]:
-    """Absolute deviation-from-target stats over a single band.
+    """ABSOLUTE deviation-from-target stats over one band — says nothing about before/after on
+    its own; the verify path diffs two calls over the same band (see `before_after_delta`).
 
-    Returns RMS deviation, max deviation, and the number of grid
-    points in the band. This is an ABSOLUTE readout of one curve vs
-    the target — it says nothing about before/after improvement on
-    its own. The verify path calls this on both the pre-correction
-    measured curve and the post-correction verify curve *over the
-    same band* and takes the difference to get an honest measured
-    delta (see `before_after_delta`); the browser renders that
-    server-computed delta rather than deriving improvement itself.
+    ``f_low`` defaults to 50 Hz, not 20 Hz: the iPhone built-in mic's ~24 dB/octave HPF starts
+    around 250 Hz (Apple hardware spec), so 20-50 Hz is dominated by the mic's own HPF + noise
+    floor, not the room — including it produced absurd "max 56 dB deviation" readings that were
+    mic artifacts.
 
-    f_low default 50 Hz (not 20 Hz): the iPhone built-in mic has a
-    steep ~24 dB/octave high-pass filter starting around 250 Hz
-    (Apple hardware spec). Below ~50 Hz, what the mic actually
-    captures is dominated by the mic's HPF + system noise floor,
-    not the room. Including 20-50 Hz in the deviation summary
-    produced absurd numbers (e.g. "max 56 dB deviation") that were
-    iPhone-mic artifacts, not room reality, and scared users who'd
-    otherwise have a perfectly fine correction.
-
-    f_high defaults to the room-correction ceiling
-    (:data:`jasper.audio_measurement.room_boundary.ROOM_BOUNDARY_DEFAULT_HZ`,
-    350 Hz today), above which we don't try to correct. That default is
-    routed through the boundary SSOT rather than re-declared: this metric is
-    shared by acceptance, the verify before/after delta, and the envelope, so
-    a hard-coded copy here would silently cap all three at 350 Hz after the
-    ceiling goes per-room (issue #1787, plan RC1). The 50 Hz low edge is NOT
-    the seam — it is the mic-physics floor described above — so it stays a
-    literal owned here.
+    ``f_high`` defaults to :data:`jasper.audio_measurement.room_boundary.ROOM_BOUNDARY_DEFAULT_HZ`,
+    routed through the boundary SSOT rather than re-declared (a hard-coded copy would silently
+    cap acceptance/verify/envelope at 350 Hz once the ceiling goes per-room, #1787). The 50 Hz
+    low edge is NOT that seam — it's the mic-physics floor above — so it stays a literal here.
     """
     band = (freqs >= f_low) & (freqs <= f_high)
     if not band.any():
@@ -399,39 +310,17 @@ def before_after_fill_segments(
     f_low: float = 50.0,
     f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
 ) -> list[dict[str, Any]]:
-    """Tag each contiguous in-band segment as improved or regressed.
+    """Tag each contiguous in-band segment as improved or regressed, so the browser fills the
+    before/after chart area from server-computed data rather than deriving it.
 
-    For the before/after visualization the browser fills the area
-    between the pre-correction measured curve and the post-correction
-    verify curve, coloured by whether the correction moved that region
-    *toward* the target (improved) or *away* from it (regressed). This
-    function computes that classification on the Pi so the browser
-    only renders server-computed data.
+    "Improved" means ``|after - target| < |before - target|`` at that grid point; a tie or a
+    move further from target reads "regressed" — improvement is never claimed without evidence.
+    Returned segments carry inclusive grid index ranges (`i_lo`/`i_hi`) plus frequency bounds.
 
-    "Improved" means the post-correction curve is closer to the target
-    than the pre-correction curve at that grid point:
-    ``|after − target| < |before − target|``. Anything not strictly
-    improved (moved further from target, or held at the same distance)
-    is "regressed" — we do not claim improvement without evidence.
-
-    Only the same `[f_low, f_high]` band `deviation_metrics` uses is
-    tagged; the returned segments carry inclusive grid index ranges
-    (`i_lo`/`i_hi`) plus their frequency bounds so the caller can slice
-    the exact before/after arrays it already holds. Contiguous runs of
-    the same tone are merged into one segment.
-
-    All three curves must share the same frequency grid (they do in the
-    verify path — every capture resamples onto the same log grid).
-
-    Coupling note: tones are computed here from the RAW curves on the
-    480-point log grid, but the browser draws the fill between its
-    DISPLAY curves, which may be chart-smoothed. That is safe today
-    because the chart's default smoothing is 'none' and its smoothing
-    option preserves the grid (same length, same frequencies), so the
-    `i_lo`/`i_hi` indices still address the right points. A future
-    client-side change that RESAMPLES the display curves onto a
-    different grid would silently break this index alignment — keep
-    display transforms grid-preserving or re-map the indices.
+    Coupling note: tones are computed from the RAW 480-point log grid, but the browser draws
+    the fill on its DISPLAY curves, which may be chart-smoothed. Safe today because the chart's
+    smoothing preserves the grid; a future RESAMPLING display transform would break this index
+    alignment.
     """
     if not (len(freqs) == len(before_db) == len(after_db) == len(target_db)):
         raise ValueError(
@@ -445,7 +334,7 @@ def before_after_fill_segments(
 
     before_err = np.abs(before_db - target_db)
     after_err = np.abs(after_db - target_db)
-    # Strict improvement only: ties and regressions both read "regressed".
+    # Strict improvement only: ties read "regressed".
     improved = after_err < before_err
 
     segments: list[dict[str, Any]] = []
@@ -465,8 +354,7 @@ def before_after_fill_segments(
     for raw in band_idx[1:]:
         idx = int(raw)
         tone_here = bool(improved[idx])
-        # A gap in the band index (shouldn't happen for a contiguous
-        # mask, but be robust) or a tone flip closes the current run.
+        # A gap in the band index or a tone flip closes the current run.
         if idx != prev + 1 or tone_here != run_tone:
             _emit(run_start, prev, run_tone)
             run_start = idx
@@ -485,20 +373,10 @@ def before_after_delta(
     f_low: float = 50.0,
     f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
 ) -> dict[str, Any]:
-    """Honest MEASURED before/after readout over one consistent band.
-
-    Both `before_metrics` and `after_metrics` are computed by
-    `deviation_metrics` over the SAME `[f_low, f_high]` band, so the
-    delta compares like with like — this is the single guard against
-    the band-mismatch trap (verify used 50–350 Hz while the design's
-    predicted "before" was over the strategy band, so a naive delta
-    would subtract different bands). `delta.rms_db` / `delta.max_db`
-    are positive when the correction reduced deviation.
-
-    Returns the two metric dicts, the delta, and `fill_segments` for
-    the before/after visualization — everything the browser needs to
-    render, computed on the Pi.
-    """
+    """Honest MEASURED before/after readout: both metrics computed by `deviation_metrics` over
+    the SAME band, guarding against a band-mismatch trap (verify used 50-350 Hz while a design's
+    predicted "before" was over the strategy band). `delta.rms_db`/`delta.max_db` are positive
+    when the correction reduced deviation."""
     before = deviation_metrics(
         before_db, target_db, freqs, f_low=f_low, f_high=f_high,
     )
@@ -527,21 +405,13 @@ def normalize_to_band(
     f_low: float = 200.0,
     f_high: float = 1000.0,
 ) -> np.ndarray:
-    """Normalize a magnitude response so its average dB level across
-    [f_low, f_high] is 0.
-
-    Why: a measured response has arbitrary absolute level (mic gain,
-    speaker SPL, distance). What matters for filter design is the
-    SHAPE relative to the target. We anchor at the 200–1000 Hz
-    midband — where speaker directivity is well-controlled and the
-    iPhone-mic compensation is most accurate.
-
-    Returns the magnitude shifted so band-mean = 0 dB.
-    """
+    """Shift so [f_low, f_high]'s average dB level is 0 — a measured response has arbitrary
+    absolute level (mic gain, speaker SPL, distance), and filter design cares about SHAPE.
+    Anchored at 200-1000 Hz, where speaker directivity is well-controlled and the iPhone-mic
+    compensation is most accurate."""
     band = (freqs >= f_low) & (freqs <= f_high)
     if not band.any():
-        # Fall back to the full-range mean. Shouldn't hit this in
-        # practice — our resample_log range covers 20–20k.
+        # Fall back to the full-range mean; resample_log's range covers 20-20k so this is rare.
         ref = float(np.mean(magnitude_db))
     else:
         ref = float(np.mean(magnitude_db[band]))
@@ -650,21 +520,13 @@ def compression_curve(
 def _offset_invariant_rms_and_max(
     measured: np.ndarray, predicted: np.ndarray
 ) -> tuple[float, float]:
-    """RMS and max-absolute of ``measured - predicted``, mean-centered.
+    """RMS and max-absolute of ``measured - predicted``, mean-centered so a uniform gain
+    difference (mic sensitivity, session volume) does not by itself read as a tracking error.
 
-    Mean-centering makes the comparison level-offset-invariant: a uniform gain
-    difference between measured and predicted (e.g. mic sensitivity, session
-    volume) does not by itself read as a tracking error.
-
-    **Pass a REAL prediction.** Because the error is mean-centered, a CONSTANT
-    ``predicted`` array (all-zero, or any other constant) collapses this into
-    plain flatness-vs-band-mean on ``measured`` alone — which is precisely the
-    retired per-capture flatness construction the flat-linearization plan's
-    PR-5 removed (see ``program_analysis``'s comment near ``ANALYSIS_KIND``).
-    That reading is single-position, exclusion-blind, and is NOT the speaker's
-    flatness; ``active_speaker.flat_spec`` owns that claim on the spatial
-    cloud. Use this comparator only where both sides are real curves being
-    compared against each other.
+    **Pass a REAL prediction.** A CONSTANT ``predicted`` array collapses this into plain
+    flatness-vs-band-mean on ``measured`` alone — the retired per-capture construction PR-5
+    removed. That reading is single-position, exclusion-blind, and NOT the speaker's flatness
+    (``active_speaker.flat_spec`` owns that claim on the spatial cloud).
     """
     error = measured - predicted
     error -= float(np.mean(error))
@@ -706,37 +568,20 @@ def notch_excluded_tracking_error_db(
     notch_exclusion_db: float,
     notch_reference_db=None,
 ) -> tuple[float, float]:
-    """Tracking error, excluding bins inside a deep PREDICTED notch.
+    """Same as :func:`tracking_error_db`, but first drops any bin whose PREDICTED level sits
+    more than ``notch_exclusion_db`` below the band's own predicted median — inside a deep
+    predicted notch, depth is hypersensitive to sub-dB branch differences and is not a
+    meaningful tracking signal (W6.7 ruling 1: a 27.8 dB "max" tracking error was entirely a
+    shifted predicted notch).
 
-    Same level-offset-invariant RMS/max as :func:`tracking_error_db`, but first
-    drops any bin whose PREDICTED level sits more than ``notch_exclusion_db``
-    below this band's own predicted median. Inside a deep predicted
-    interference notch, the notch depth is hypersensitive to sub-dB/
-    sub-degree branch differences, so depth agreement there is not a
-    meaningful tracking signal — see the VERIFY comparator in
-    ``jasper.active_speaker.crossover_v2_flow`` (W6.7 ruling 1, the run-7
-    hardware bug where a 27.8 dB "max" tracking error was entirely a shifted
-    predicted notch, not a broadband alignment problem).
+    Deliberately asymmetric: keys on the PREDICTED level only, never measured — a deep MEASURED
+    notch where the prediction is flat is the wrong-polarity/wrong-alignment discriminant and
+    must count in full (pinned by the case-A/case-B fixtures in
+    ``tests/test_audio_measurement_harmonics.py``). ``notch_reference_db`` supplies the
+    unsmoothed predicted curve when ``predicted_db`` has been smoothed.
 
-    The exclusion key is deliberately asymmetric: it reads the PREDICTED
-    level only, never the measured one. ``notch_reference_db`` may supply the
-    corresponding unsmoothed predicted curve when ``predicted_db`` has been
-    smoothed for a like-for-like tracking comparison. This preserves genuine
-    modeled-notch identity without comparing a smoothed capture to an
-    unsmoothed prediction. A deep MEASURED notch at bins where the prediction
-    is flat is the wrong-polarity / wrong-alignment discriminant — real
-    evidence the applied graph does not sum as the candidate predicted — and
-    must count in full. Keying on the measured level would exclude exactly
-    that evidence and silently pass a broken apply (pinned by the case-A/
-    case-B fixtures in ``tests/test_audio_measurement_harmonics.py``).
-
-    Falls back to the full band when every bin would be excluded (a
-    degenerate all-notch band), so the comparator is never computed over an
-    empty set.
-
-    The bin set itself is :func:`notch_excluded_band_mask`'s, so a caller that
-    needs to know WHICH bins this graded reads them from that one owner rather
-    than re-deriving the rule.
+    Falls back to the full band when every bin would be excluded. Bin set owned by
+    :func:`notch_excluded_band_mask`.
     """
     frequencies = np.asarray(freqs, dtype=np.float64)
     measured = np.asarray(measured_db, dtype=np.float64)
@@ -761,25 +606,15 @@ def notch_excluded_band_mask(
     notch_exclusion_db: float,
     notch_reference_db=None,
 ) -> np.ndarray:
-    """The bins :func:`notch_excluded_tracking_error_db` actually grades.
+    """A **full-grid** boolean mask: in-band, minus any bin whose PREDICTED level sits more
+    than ``notch_exclusion_db`` below the band's own predicted median (see
+    :func:`notch_excluded_tracking_error_db`). Falls back to the whole band when every bin
+    would be excluded.
 
-    A **full-grid** boolean mask: in-band, minus any bin whose PREDICTED level
-    sits more than ``notch_exclusion_db`` below the band's own predicted
-    median. See :func:`notch_excluded_tracking_error_db` for why the exclusion
-    keys on the prediction and never on the measurement, and for the
-    all-notch fallback (every bin excluded ⇒ the whole band is kept, so the
-    caller is never handed an empty set).
-
-    **The single owner of that bin choice.** It is public because a second
-    consumer needs the same bins and must not re-derive the rule: rung P1's
-    frame fit
-    (:func:`jasper.audio_measurement.frame_fit.fit_frame`, called from
-    ``program_analysis._analyze_verify``) estimates the cross-frame
-    ``(offset, tilt)`` from the bins this comparison TRUSTS. Fitting a
-    straight line through a deep predicted notch lets the notch's own depth
-    lever the slope — measured on a 25 dB notch at a band edge, an injected
-    −0.800 dB/octave frame came back **+0.226**, the wrong sign — which would
-    then be "removed" from the residual as if it were instrument tilt.
+    **The single owner of that bin choice** — a second consumer, rung P1's frame fit
+    (:func:`jasper.audio_measurement.frame_fit.fit_frame`), must use the same bins: fitting a
+    straight line through a deep predicted notch lets the notch's depth lever the slope
+    (measured: a 25 dB notch flipped an injected -0.800 dB/octave frame to +0.226).
     """
     frequencies = np.asarray(freqs, dtype=np.float64)
     predicted = np.asarray(predicted_db, dtype=np.float64)

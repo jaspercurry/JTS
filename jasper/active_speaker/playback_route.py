@@ -4,16 +4,11 @@
 
 """Active-speaker playback route capability contract.
 
-The output topology can describe every physical DAC lane, but active-speaker
-test/apply audio reaches hardware through a narrower runtime route. This module
-keeps that distinction explicit so UI and DSP builders do not infer capability
-from physical output count alone.
-
-Route resolution itself (the stable ``hw:CARD=`` identity, the DAC-agnostic
-transport plan) lives on :mod:`jasper.output_topology` — the runtime owner that
-already reads env and the topology's card identity. This module is a thin
-active-speaker reader over :func:`~jasper.output_topology.resolve_output_layout`:
-it adds the speaker-group demand accounting and the route-fit issues.
+Active-speaker test/apply audio reaches hardware through a narrower runtime route than
+the full DAC output topology describes. Route resolution itself (stable ``hw:CARD=``
+identity, DAC-agnostic transport plan) lives on :mod:`jasper.output_topology`; this
+module is a thin reader over :func:`~jasper.output_topology.resolve_output_layout` that
+adds speaker-group demand accounting and route-fit issues.
 """
 
 from __future__ import annotations
@@ -39,9 +34,7 @@ from ._common import issue as _issue
 
 logger = logging.getLogger(__name__)
 
-# Re-exported for backwards compatibility — these constants moved to
-# jasper.output_topology (the resolution owner) but several active-speaker
-# callers import them from here.
+# Re-exported: constants moved to jasper.output_topology; kept importable here.
 __all__ = [
     "ACTIVE_PLAYBACK_DEVICE_ENV",
     "ACTIVE_PLAYBACK_ROUTE_KIND",
@@ -60,12 +53,8 @@ __all__ = [
 
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
 
-# The witness that answered :func:`resolve_live_active_endpoint`: the durable
-# CamillaDSP graph itself. Its own token rather than a reuse of
-# ``OUTPUTD_ACTIVE_LANE_SOURCE`` because the two are different claims — "the
-# marker selects this transport" vs "the box's graph IS on this transport" —
-# and a test that could not tell them apart would pass on an unarmed box, where
-# both witnesses answer the same device, while proving nothing.
+# Witness for :func:`resolve_live_active_endpoint`: the graph itself, distinct
+# from ``OUTPUTD_ACTIVE_LANE_SOURCE`` ("marker selects" vs "graph IS on").
 LOADED_GRAPH_SOURCE = "loaded_graph"
 
 
@@ -114,16 +103,10 @@ class ActiveLaneCapabilityGap:
 
 @dataclass(frozen=True)
 class UnrecognizedDacProfile:
-    """A saved layout needs the active outputd lane, but ``device_id`` has no
-    registered :class:`~jasper.audio_hardware.dac.DacProfile` to read that
-    capability off.
-
-    Distinct from :class:`ActiveLaneCapabilityGap` on purpose: a gap is proof
-    the DAC cannot drive the layout; this is the absence of proof either way.
-    Treating it as a gap would block a save on hardware the registry has
-    simply never met (see :func:`active_lane_capability_gap`'s docstring) —
-    every caller except doctor's remedy keeps ignoring it exactly as it did
-    ignore the old two-valued ``None``.
+    """A saved layout needs the active outputd lane, but ``device_id`` has no registered
+    :class:`~jasper.audio_hardware.dac.DacProfile` to read that capability off. Distinct
+    from :class:`ActiveLaneCapabilityGap`: a gap is proof the DAC cannot drive the
+    layout, this is absence of proof either way.
     """
 
     device_id: str
@@ -137,24 +120,13 @@ def active_lane_capability_gap(
 ) -> ActiveLaneCapabilityGap | UnrecognizedDacProfile | None:
     """Return why ``topology`` can never reach hardware on this DAC, or None.
 
-    The one predicate for a permanently-undrivable pairing: the layout needs a
-    roleful (crossover / protected / subwoofer) graph, but the resolved
-    ``DacProfile`` declares no active outputd lane. CamillaDSP then plays the
-    roleful graph into the active loopback lane while outputd captures the
-    passive one, and the speaker emits digital silence with every daemon
-    healthy. Re-running a reconciler cannot fix it — only a different layout
-    or different hardware can.
-
-    Every surface that explains this state (``/state`` audio health, doctor's
-    remedy, the ``/sound/setup/`` save guard) resolves it here and phrases its
-    own sentence; the predicate itself has one owner.
-
-    Three-valued on purpose: an unrecognized ``device_id`` has no profile to
-    read a capability off, so it returns :class:`UnrecognizedDacProfile`
-    rather than either guessing a gap that would block a save on hardware the
-    registry simply has not met, or collapsing into the same ``None`` a
-    genuinely capable DAC returns — a caller that only wants the definite gap
-    should narrow with ``isinstance(gap, ActiveLaneCapabilityGap)``.
+    The one predicate for a permanently-undrivable pairing: the layout needs a roleful
+    graph, but the resolved ``DacProfile`` declares no active outputd lane -- the
+    speaker then emits digital silence with every daemon healthy. Only a different
+    layout or hardware fixes it. Three-valued: an unrecognized ``device_id`` returns
+    :class:`UnrecognizedDacProfile` rather than a guessed gap or ``None``; a caller
+    wanting only the definite gap narrows with ``isinstance(gap,
+    ActiveLaneCapabilityGap)``.
     """
 
     from jasper.active_speaker.runtime_contract import (
@@ -171,8 +143,7 @@ def active_lane_capability_gap(
         return None
     return ActiveLaneCapabilityGap(
         device_id=device_id,
-        # The registry owns the DAC's name; the topology's saved label is
-        # detection data that can be stale.
+        # Registry owns the DAC's name; the topology's saved label can be stale.
         device_label=profile.label or topology.hardware.device_label or device_id,
     )
 
@@ -196,72 +167,32 @@ def resolve_live_active_endpoint(
 ) -> tuple[str | None, str]:
     """The playback endpoint this box's active graph is CURRENTLY on.
 
-    ONE derivation, for every seam that RE-EMITS or RE-DERIVES an active graph
-    the box is already running. Those seams must not *choose* an endpoint — the
-    box is on one, and a re-emit that answers a different one moves the speaker
-    without anyone asking. :func:`resolve_active_playback_device` answers the
-    other question ("which endpoint should a graph be emitted against?") and
-    stays the right call for a FRESH emit.
+    ONE derivation for every seam that RE-EMITS or RE-DERIVES an active graph the box
+    already runs -- such a seam must not *choose* an endpoint, only confirm the one the
+    box is on. :func:`resolve_active_playback_device` answers the other question (which
+    endpoint a FRESH emit should target).
 
-    THE GRAPH IS UPSTREAM TRUTH, so it is asked first. The endpoint marker
-    (``JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT``) is *derived by*
-    ``jasper-audio-hardware-reconcile`` from the classification of the graph the
-    statefile points at, so in every state where the two disagree the graph is
-    the half the reconcilers are converging toward:
+    THE GRAPH IS UPSTREAM TRUTH, asked first: the endpoint marker
+    (``JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT``) is *derived from* the graph by
+    ``jasper-audio-hardware-reconcile``, so on disagreement the graph is what
+    reconcilers converge toward. Only
+    :data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES` (a
+    ONE-member set since #2285 P2 retired the snd-aloop ACTIVE endpoint) is adopted from
+    the graph; anything else falls through to the chooser below, which already honours
+    an explicit ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE`` override. The MARKER answers
+    only when the graph does not (a fresh box has no statefile) -- DEFAULT-SAFE, not
+    fail-loud.
 
-    * Mid-arm (``baseline-reemit --endpoint ring`` has run, the hardware
-      reconciler has not): graph=ring, marker=clear. Following the marker here
-      re-emits the ALSA lane over the rung that was just completed and the
-      ladder cannot finish — which is exactly how a deploy landing in this
-      window used to de-arm a box.
-    * Legacy mid-rollback (graph=aloop, marker=ring) — reachable only as STATE
-      LEFT BEHIND, never as a new act: the rollback that produced it was retired
-      with the aloop endpoint. Following the graph still refuses the retired
-      device rather than adopting it; the way out is forward, by re-arming.
-    * Marker set, graph moved back by something else: following the graph
-      converges with the next hardware reconcile, which will clear the marker
-      from that same graph.
+    ``(None, MISSING_SOURCE)`` passes through unchanged, so a caller threading this into
+    ``recompose_applied_baseline_yaml(playback_device=...)`` lands on that function's
+    own snapshot default.
 
-    ONLY THE ACTIVE LANE'S OWN TRANSPORT is adopted from the graph
-    (:data:`~jasper.active_speaker.runtime_contract.OUTPUTD_LEGAL_ENDPOINT_DEVICES`,
-    a ONE-member set since #2285 P2 retired the snd-aloop ACTIVE endpoint),
-    because that is the whole question this function exists to answer. The set
-    is still read as a membership rather than an equality: it is the one place
-    that decides what is legal, and the legacy-mid-rollback bullet above is
-    exactly a graph naming something outside it. Anything else the graph might
-    name — a stale stereo lane left in the
-    statefile, a lab PCM, a grouped pipe sink — is not a third answer to
-    "which transport", and adopting it would hand the active emitter a device
-    its own forbidden-token guard then refuses mid-save. Those fall through to
-    the chooser below, which already honours an explicit
-    ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE`` override, so a lab box reaches the
-    same device by the route that owns lab overrides.
-
-    The MARKER is the second witness, not a peer: it answers only when the graph
-    does not. A fresh box has no statefile at all and must still deploy, so this
-    is DEFAULT-SAFE rather than fail-loud — and it is never worse than the
-    alternative it replaced, because an armed box with an unreadable statefile
-    still reads its ring endpoint off the marker where the applied snapshot
-    would have named the ALSA lane.
-
-    ``(None, MISSING_SOURCE)`` — a topology that resolves no active endpoint at
-    all — is passed through rather than invented over, so a caller threading
-    this into ``recompose_applied_baseline_yaml(playback_device=...)`` lands on
-    that function's own snapshot default and stays byte-identical to before.
-
-    COST: one statefile read plus one config read, fresh, per call — nothing is
-    cached, deliberately, because a re-emit that acted on a stale endpoint is the
-    defect this exists to prevent. That is right for the four cold seams that
-    call it (a deploy reconcile, a wizard save, a bass-extension apply, and the
-    commissioning wizard's applied-summed measurement load); a future
-    caller on a warm path should know it is paying two file reads each time and
-    snapshot the answer itself rather than making this one lie.
+    COST: one statefile read plus one config read, fresh, per call -- uncached by
+    design, because acting on a stale endpoint is the defect this prevents. A caller on
+    a warm path should snapshot the answer itself.
     """
 
-    # Lazy: coupling_reconcile is the arm/disarm transition module and pulls in
-    # the whole fan-in env layer; this reader is one function on it and every
-    # caller here is a cold path. runtime_contract is the owner of which devices
-    # are legal active endpoints — read, never restated.
+    # Lazy: runtime_contract owns which devices are legal active endpoints.
     from jasper.active_speaker.runtime_contract import OUTPUTD_LEGAL_ENDPOINT_DEVICES
     from jasper.fanin.ring_health import read_loaded_camilla_graph
 
@@ -271,15 +202,9 @@ def resolve_live_active_endpoint(
         named = device.strip()
         if named in OUTPUTD_LEGAL_ENDPOINT_DEVICES:
             return named, LOADED_GRAPH_SOURCE
-        # The graph names a sink that is not the active lane's transport (ONE
-        # since #2285 P2 retired the snd-aloop ACTIVE endpoint; the retired name
-        # now falls here like any other stranger) — a stale stereo lane, a lab
-        # PCM, a pipe, or that retired lane. Declining it is
-        # correct (see above), but the moment of observation should be visible:
-        # the doctor's coupling check will report the incoherence later, and a
-        # journal line here is what says the endpoint derivation SAW it and
-        # deferred to the chooser rather than never having looked. DEBUG, not
-        # WARNING: a lab box is in this branch legitimately on every call.
+        # Graph names a sink outside the legal set (stale lane, lab PCM, pipe,
+        # or the retired aloop endpoint). DEBUG not WARNING: a lab box hits
+        # this branch legitimately on every call.
         log_event(
             logger,
             "active_speaker.live_endpoint",
@@ -340,11 +265,10 @@ def active_playback_route_capability(
 ) -> ActivePlaybackRouteCapability:
     """Return the active-speaker runtime route capacity.
 
-    Thin reader: the route half (resolved device, source, transport width,
-    subwoofer support) comes from the resolved ``OutputLayout``; this function
-    adds the speaker-group demand accounting and the route-fit issues. Physical
-    DAC output count is not enough — the active-speaker transport width is
-    profile-declared because it can differ from the DAC's analog output count.
+    Thin reader: route half (device, source, transport width, subwoofer
+    support) comes from the resolved ``OutputLayout``; this adds speaker-group
+    demand accounting and route-fit issues. Transport width is
+    profile-declared, not the DAC's analog output count.
     """
 
     layout: OutputLayout = resolve_output_layout(

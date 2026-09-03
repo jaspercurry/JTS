@@ -329,9 +329,11 @@ lanes (`-p no:randomly`).
 
   *As-built notes (2026-07-28).* Shipped as
   [`jasper/audio_measurement/room_boundary.py`](../jasper/audio_measurement/room_boundary.py),
-  [`jasper/correction/applied_speaker_evidence.py`](../jasper/correction/applied_speaker_evidence.py),
-  and [`tests/test_correction_boundary_ssot.py`](../tests/test_correction_boundary_ssot.py)
-  + `tests/test_correction_applied_speaker_evidence.py`. Four
+  the applied-candidate read now split between
+  [`jasper/active_speaker/crossover_contract.py`](../jasper/active_speaker/crossover_contract.py)'s
+  `legacy_manual_preservation_state` and
+  [`jasper/active_speaker/candidate_bank.py`](../jasper/active_speaker/candidate_bank.py),
+  and [`tests/test_correction_boundary_ssot.py`](../tests/test_correction_boundary_ssot.py). Four
   deltas from the text above, all deliberate:
   (i) the SSOT is homed in **`audio_measurement`, not `correction`**.
   The reason is *not* a strict layer order — `correction` and

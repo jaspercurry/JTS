@@ -28,6 +28,19 @@ SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
 ACTIVE_BASELINE_KIND = "jts_speaker_baseline_profile"
 
+#: WHICH AXIS the level fact was matched on.
+#:
+#: Stated rather than assumed because where woofer beaming and horn directivity
+#: mismatch, the on-axis, listening-window and power-response ratios differ and
+#: **there is no single correct level**. A tool that matched one of them and did
+#: not say which has published a number whose meaning cannot be recovered.
+#:
+#: The value is derived, not chosen: the level fact is computed from the MEASURE
+#: capture's per-driver responses, and ``spatial._DESIGN_AXIS_GEOMETRY`` places
+#: every such capture at ``degrees=0``, one mark distance out. So the match is
+#: ON AXIS — neither the listening window nor the power response.
+LEVEL_MATCH_AXIS = "design_axis_0deg"
+
 DRIVER_ROLES_BY_WAY: dict[int, tuple[str, ...]] = {
     # 1-way is the passive main: a single full-range driver per side, with no
     # inter-driver crossover region. A local subwoofer is optional — when one is

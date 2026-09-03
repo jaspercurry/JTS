@@ -24,7 +24,6 @@ from typing import Any
 
 from jasper.log_event import log_event
 
-from .baseline_profile import baseline_profile_state_path
 from .commission_ramp import ramp_state_path
 from .crossover_preview import crossover_preview_path
 from .design_draft import DEFAULT_DESIGN_DRAFT_PATH, DESIGN_DRAFT_PATH_ENV
@@ -36,7 +35,11 @@ from .staging import (
     staged_config_path,
     staged_metadata_path,
 )
-from .startup_load import commission_load_state_path, startup_load_state_path
+from .state_paths import (
+    baseline_profile_state_path,
+    commission_load_state_path,
+    startup_load_state_path,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -1917,6 +1917,53 @@ def test_cli_co_metrics_writes_the_result(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# measured per-angle directivity (#3865)
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_directivity_writes_the_per_angle_table(tmp_path):
+    """Three bearings through ``main``, and the band split adds back up.
+
+    ``d_i = level_offset_db + shape_i`` is the whole contract of the split, so
+    it is checked at the bin the band itself named as its worst.
+    """
+    from jasper.cli.round_views import main
+
+    round_dir = _make_round_dir(
+        tmp_path, "r1",
+        position_curves={
+            "cloud_verify_02": ("onax", _flat_curve()),
+            "cloud_verify_04": ("offax", _flat_curve(offset_db=-3.0, ripple_db=1.0)),
+            "cloud_verify_06": ("offax", _flat_curve(offset_db=-6.0)),
+        },
+        position_degrees={
+            "cloud_verify_02": 0.0, "cloud_verify_04": 30.0, "cloud_verify_06": 45.0,
+        },
+    )
+
+    assert main(["directivity", str(round_dir)]) == 0
+
+    table = json.loads((round_dir / "directivity.json").read_text())["directivity"]
+    assert table["evaluable"] is True
+    assert table["angles_recorded"] is True
+    assert table["reference_position_ids"] == ["cloud_verify_02"]
+    assert [row["degrees"] for row in table["rows"]] == [0.0, 30.0, 45.0]
+
+    flat_off_axis = next(row for row in table["rows"] if row["degrees"] == 45.0)
+    assert flat_off_axis["level_offset_db"] == pytest.approx(-6.0, abs=1e-9)
+
+    freqs = np.asarray(table["freqs_hz"], dtype=float)
+    rippled = next(row for row in table["rows"] if row["degrees"] == 30.0)
+    assert len(rippled["bands"]) == len(flat_spec.SPEC_BANDS)
+    for band in rippled["bands"]:
+        assert band["evaluable"] is True
+        worst = int(np.argmin(np.abs(freqs - band["shape_max_hz"])))
+        assert rippled["normalized_db"][worst] == pytest.approx(
+            band["level_offset_db"] + band["shape_max_db"], abs=1e-9,
+        )
+
+
+# --------------------------------------------------------------------------- #
 # the gate ladder, stamped onto the round's own spec verdict
 # --------------------------------------------------------------------------- #
 

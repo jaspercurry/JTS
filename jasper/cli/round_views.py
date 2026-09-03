@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, nine subcommands — each a thin argparse wrapper over
+One console script, ten subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. A round directory is EITHER a banked round tree or
 a live session bundle still on the speaker
@@ -64,6 +64,12 @@ Subcommands:
   on-axis curve and the pooled horizontal window. Co-metrics only: they
   inform, they never gate or veto — ``entry``/``frozen``/``per-seat`` etc.
   above stay the acceptance path. Writes ``audibility_co_metrics.json``.
+* ``directivity <round-dir>`` — every cloud seat as its departure from the
+  on-axis reference, split per graded band into a level offset (that band's
+  directivity index, which a trim can remove) and the shape residual it
+  cannot. Observed only: no grade moves. Writes ``directivity.json``. A round
+  banked before the seat bearings were written still answers, with
+  ``angles_recorded`` false — read it as role-labelled, never as 0°.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout, except ``repeat-floor``, whose record is published by
@@ -89,6 +95,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     agreement_table,
     audibility_co_metrics,
     default_agreement_lo_hz,
+    directivity_view,
     entry_state_grade,
     frozen_reference_grade,
     load_banked_round,
@@ -444,6 +451,38 @@ def _cmd_co_metrics(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_directivity(args: argparse.Namespace) -> int:
+    banked = _load_round(args.round_dir)
+    table = directivity_view(banked)
+    payload = {
+        "round_dir": str(banked.round_dir),
+        "banked": banked.inputs.banked,
+        "directivity": table.to_dict(),
+    }
+    written = _write(payload, args.out, _default_out(banked, "directivity.json"))
+    # Both clauses only inside the evaluable arm: an absent reference forces
+    # `angles_recorded` false whatever the round banked, so reading it out
+    # there would tell an operator their bearings are missing when they are not.
+    if table.evaluable:
+        n_not_evaluable = sum(1 for row in table.rows if not row.evaluable)
+        summary = (
+            f"{len(table.rows)} seat(s), {n_not_evaluable} not-evaluable, against "
+            f"{len(table.reference_position_ids)} {table.reference_role} seat(s); "
+            + (
+                "angles recorded" if table.angles_recorded
+                else "angles NOT recorded (role-labelled only)"
+            )
+        )
+    else:
+        summary = f"NOT AVAILABLE ({table.not_evaluated_reason})"
+    print(
+        f"directivity [observed only, no grade moves]: {summary}"
+        f"{f' -> {written}' if written else ''}",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _band_sweep_line(band: Any) -> str:
     """One band's gate read as the operator reads it: which band, then whether
     that band's own worst bin is the room or the speaker.
@@ -543,9 +582,9 @@ def build_parser() -> argparse.ArgumentParser:
             "The round-grading comparison views: entry-state grading, "
             "frozen-reference grading, per-seat curves, session-to-session "
             "repeatability and the banked repeat floor, per-seat agreement, "
-            "audibility co-metrics, the gate sweep read onto the spec verdict, "
-            "and the shared frequency view — over banked rounds and live "
-            "sessions."
+            "audibility co-metrics, measured per-angle directivity, the gate "
+            "sweep read onto the spec verdict, and the shared frequency view "
+            "— over banked rounds and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -640,6 +679,14 @@ def build_parser() -> argparse.ArgumentParser:
     co_metrics.add_argument("round_dir", help=_ROUND_DIR_HELP)
     co_metrics.add_argument("--out", default=None, help="write the result here (- for stdout)")
     co_metrics.set_defaults(func=_cmd_co_metrics)
+
+    directivity = sub.add_parser(
+        "directivity",
+        help="every cloud seat's departure from on-axis, split per band into level and shape — observed only",
+    )
+    directivity.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    directivity.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    directivity.set_defaults(func=_cmd_directivity)
 
     spec_sweep = sub.add_parser(
         "spec-sweep",

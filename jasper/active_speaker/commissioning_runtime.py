@@ -2,37 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded live-DSP transaction for admitted summed commissioning captures.
+"""Exact live-DSP state snapshot/restore for commissioning transactions.
 
-The evidence host owns runs, attempts, artifacts, playback, capture, and
-lifecycle progress.  This adapter owns the smaller hardware-facing boundary:
-one writer-lock transaction which applies a server-derived summed graph, keeps
-it live through the supplied admitted capture callback, and restores the exact
-entry graph and listening volume before releasing the lock.
-
-No scheduler or second safety-profile model lives here.  The optional pure
-``prepare_summed_excitation`` helper only intersects two current adjacent
-driver targets into Shared's existing excitation admission values.
+Restore is fail-closed: it reinstates the exact entry graph, config path and
+listening volume observed at snapshot, under the caller's writer lock.  The
+pure ``prepare_summed_excitation`` helper only intersects two adjacent driver
+targets into Shared's existing excitation admission values.
 """
 
 from __future__ import annotations
 
-import copy
-import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generic, Literal, TypeAlias, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 import yaml
 
-from jasper.audio_measurement.admitted_playback import (
-    GeneratedExcitationWav,
-)
-from jasper.audio_measurement.delay_graph import (
-    DelayCandidateConfirmation,
-)
 from jasper.audio_measurement.evidence_identity import (
     ExactDspStateIdentity,
     NormalizedActiveRawIdentity,
@@ -42,29 +29,11 @@ from jasper.audio_measurement.excitation_admission import (
     ExcitationLimits,
     ExcitationRequest,
     FrequencyBand,
-    ProtectionEvidence,
-)
-from jasper.audio_measurement.excitation_artifacts import (
-    GenerationAdmissionArtifact,
-    PlaybackAdmissionArtifact,
-)
-from jasper.audio_measurement.null_walk import (
-    MAX_DSP_DELAY_US,
-    DelayCandidate,
-    DelayWalkScope,
-    NullWalkError,
-    NullWalkSpec,
 )
 from jasper.output_topology import OutputTopology
 
-from .camilla_yaml import STARTUP_MUTE_GAIN_DB
 from .driver_safety import evaluate_driver_safety_profile
 from .excitation_safety_plan import declared_level_ceiling_dbfs
-from .graph_evidence import (
-    driver_baseline_gain_name,
-    driver_delay_name,
-    output_commission_mute_name,
-)
 from .measurement import active_driver_targets
 from .profile import ADJACENT_PAIRS_BY_WAY
 from .test_signal_plan import (
@@ -73,11 +42,7 @@ from .test_signal_plan import (
     SUMMED_SWEEP_DURATION_S,
 )
 
-logger = logging.getLogger(__name__)
-
 T = TypeVar("T")
-SummedGraphKind: TypeAlias = Literal["normal", "reverse", "delay"]
-
 ReadActiveRaw = Callable[[], Awaitable[str | None]]
 CanonicalizeRaw = Callable[[str], Awaitable[str | None]]
 ApplyActiveRaw = Callable[[str], Awaitable[bool]]
@@ -85,7 +50,6 @@ ReadConfigPath = Callable[[], Awaitable[str | None]]
 ReadListeningVolume = Callable[[], Awaitable[float | None]]
 SetListeningVolume = Callable[[float], Awaitable[bool]]
 LoadConfigPath = Callable[[str], Awaitable[bool]]
-RecordMutationIntent = Callable[[ExactDspStateIdentity], Awaitable[None]]
 
 
 class CommissioningRuntimeError(ValueError):
@@ -132,25 +96,6 @@ class CommissioningRuntimePort:
             )
 
 
-def _role(value: Any, *, field: str) -> str:
-    role = value.strip().lower() if isinstance(value, str) else ""
-    if not role:
-        raise CommissioningRuntimeError(f"{field} must be a non-empty role")
-    return role
-
-
-def _channels(value: Any, *, field: str) -> tuple[int, ...]:
-    if type(value) is not tuple or not value:
-        raise CommissioningRuntimeError(f"{field} must be a non-empty tuple")
-    if any(type(channel) is not int or channel < 0 for channel in value):
-        raise CommissioningRuntimeError(
-            f"{field} must contain non-negative integers"
-        )
-    if len(set(value)) != len(value):
-        raise CommissioningRuntimeError(f"{field} must not contain duplicates")
-    return tuple(sorted(value))
-
-
 def _volume(value: Any, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CommissioningRuntimeError(f"{field} must be finite and non-positive")
@@ -178,204 +123,10 @@ def _parse_active_raw(value: str | None, *, field: str) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class SummedGraphRequest:
-    """One exact adjacent-region graph audition requested by the evidence host.
-
-    ``normal_active_raw`` is emitted/composed by the Active host.  This adapter
-    never invents a second graph emitter: it adds only canonical per-output
-    isolation mutes, plus one target-scoped zero-gain inversion lane for reverse
-    or two target-scoped bounded relative-delay lanes for delay.
-    """
-
-    kind: SummedGraphKind
-    normal_active_raw: str
-    lower_role: str
-    upper_role: str
-    lower_channels: tuple[int, ...]
-    upper_channels: tuple[int, ...]
-    listening_volume_db: float
-    topology_id: str
-    topology_fingerprint: str
-    delay_spec: NullWalkSpec | None = None
-    delay_candidate: DelayCandidate | None = None
-    delay_scope: DelayWalkScope | None = None
-
-    def __post_init__(self) -> None:
-        if self.kind not in {"normal", "reverse", "delay"}:
-            raise CommissioningRuntimeError("kind must be normal, reverse, or delay")
-        lower_role = _role(self.lower_role, field="lower_role")
-        upper_role = _role(self.upper_role, field="upper_role")
-        if lower_role == upper_role:
-            raise CommissioningRuntimeError("summed region roles must differ")
-        lower_channels = _channels(self.lower_channels, field="lower_channels")
-        upper_channels = _channels(self.upper_channels, field="upper_channels")
-        if set(lower_channels) & set(upper_channels):
-            raise CommissioningRuntimeError("summed region channels must be disjoint")
-        _parse_active_raw(self.normal_active_raw, field="normal_active_raw")
-        volume = _volume(self.listening_volume_db, field="listening_volume_db")
-        topology_id = (
-            self.topology_id.strip() if isinstance(self.topology_id, str) else ""
-        )
-        if not topology_id:
-            raise CommissioningRuntimeError("topology_id is required")
-        topology_fingerprint = self.topology_fingerprint
-        if (
-            not isinstance(topology_fingerprint, str)
-            or len(topology_fingerprint) != 64
-            or any(ch not in "0123456789abcdef" for ch in topology_fingerprint)
-        ):
-            raise CommissioningRuntimeError(
-                "topology_fingerprint must be a lowercase SHA-256"
-            )
-        if self.kind == "delay":
-            if not isinstance(self.delay_spec, NullWalkSpec):
-                raise CommissioningRuntimeError("delay_spec is required for delay")
-            if not isinstance(self.delay_candidate, DelayCandidate):
-                raise CommissioningRuntimeError(
-                    "delay_candidate is required for delay"
-                )
-            if self.delay_scope != "active_crossover":
-                raise CommissioningRuntimeError(
-                    "summed delay scope must be active_crossover"
-                )
-            if {
-                self.delay_spec.positive_delay_target,
-                self.delay_spec.negative_delay_target,
-            } != {lower_role, upper_role}:
-                raise CommissioningRuntimeError(
-                    "delay targets must be the exact adjacent roles"
-                )
-            expected_candidate = self.delay_spec.dsp_candidate(
-                self.delay_candidate.relative_delay_us
-            )
-            if self.delay_candidate != expected_candidate:
-                raise CommissioningRuntimeError(
-                    "delay_candidate must be the exact bound spec candidate"
-                )
-        elif any(
-            value is not None
-            for value in (
-                self.delay_spec,
-                self.delay_candidate,
-                self.delay_scope,
-            )
-        ):
-            raise CommissioningRuntimeError(
-                "delay-only fields must be omitted for stationary graphs"
-            )
-        object.__setattr__(self, "lower_role", lower_role)
-        object.__setattr__(self, "upper_role", upper_role)
-        object.__setattr__(self, "lower_channels", lower_channels)
-        object.__setattr__(self, "upper_channels", upper_channels)
-        object.__setattr__(self, "listening_volume_db", volume)
-        object.__setattr__(self, "topology_id", topology_id)
-        object.__setattr__(self, "topology_fingerprint", topology_fingerprint)
-
-
-@dataclass(frozen=True)
-class CommissioningFreshReadback:
-    """One immutable, fresh observation of the still-live candidate."""
-
-    graph: NormalizedActiveRawIdentity
-    active_raw: str
-    config_path: str
-    listening_volume_db: float
-    delay_confirmation: DelayCandidateConfirmation | None
-    bass_profile_summary: Mapping[str, Any] | None = None
-
-
-FreshCommissioningReadback: TypeAlias = Callable[
-    [], Awaitable[CommissioningFreshReadback]
-]
-
-
-@dataclass(frozen=True)
-class CommissioningLiveContext:
-    """Candidate plus a read-only fresh-observation seam under the writer lock."""
-
-    graph: NormalizedActiveRawIdentity
-    active_raw: str
-    config_path: str
-    listening_volume_db: float
-    delay_confirmation: DelayCandidateConfirmation | None
-    fresh_readback: FreshCommissioningReadback
-    bass_profile_summary: Mapping[str, Any] | None = None
-
-    def __post_init__(self) -> None:
-        if not callable(self.fresh_readback):
-            raise CommissioningRuntimeError("fresh_readback must be callable")
-
-
-@dataclass(frozen=True)
-class AdmittedCaptureCallbackResult(Generic[T]):
-    """Feature-owned admitted playback/capture outcome returned under the lock."""
-
-    generation: GenerationAdmissionArtifact
-    playback: PlaybackAdmissionArtifact
-    stimulus: GeneratedExcitationWav
-    protection_evidence: ProtectionEvidence
-    payload: T
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.generation, GenerationAdmissionArtifact):
-            raise CommissioningRuntimeError(
-                "generation must be a GenerationAdmissionArtifact"
-            )
-        if not isinstance(self.playback, PlaybackAdmissionArtifact):
-            raise CommissioningRuntimeError(
-                "playback must be a PlaybackAdmissionArtifact"
-            )
-        if not isinstance(self.stimulus, GeneratedExcitationWav):
-            raise CommissioningRuntimeError("stimulus must be a GeneratedExcitationWav")
-        if not isinstance(self.protection_evidence, ProtectionEvidence):
-            raise CommissioningRuntimeError(
-                "protection_evidence must be ProtectionEvidence"
-            )
-        if self.playback.generation != self.generation:
-            raise CommissioningRuntimeError(
-                "playback must retain the exact generation artifact"
-            )
-        if not self.playback.admission.allowed:
-            raise CommissioningRuntimeError("playback admission must be allowed")
-        if self.playback.admission.protection_evidence != self.protection_evidence:
-            raise CommissioningRuntimeError(
-                "playback admission must retain the supplied protection evidence"
-            )
-        if not self.protection_evidence.current:
-            raise CommissioningRuntimeError("protection evidence must be current")
-        if (
-            self.stimulus.generation_artifact_fingerprint
-            != self.generation.artifact.fingerprint
-        ):
-            raise CommissioningRuntimeError(
-                "stimulus must retain the exact generation artifact"
-            )
-        if (
-            self.stimulus.excitation_plan_fingerprint
-            != self.generation.admission.request.excitation_plan_fingerprint
-        ):
-            raise CommissioningRuntimeError(
-                "stimulus must retain the exact excitation plan"
-            )
-
-    @property
-    def admission_id(self) -> str:
-        return self.generation.admission_id
-
-
-CaptureCallback: TypeAlias = Callable[
-    [CommissioningLiveContext], Awaitable[AdmittedCaptureCallbackResult[T]]
-]
-
-
-@dataclass(frozen=True)
 class RestoreObservation:
     graph: NormalizedActiveRawIdentity
     config_path: str
     listening_volume_db: float
-
-
-RecordMutationRestored = Callable[[RestoreObservation], Awaitable[None]]
 
 
 class _OperationFailure(RuntimeError):
@@ -394,99 +145,8 @@ class _Predecessor:
     exact: ExactDspStateIdentity
 
 
-@dataclass(frozen=True)
-class _SummedTopologyBinding:
-    group_id: str
-    lower_all_channels: tuple[int, ...]
-    upper_all_channels: tuple[int, ...]
-    all_role_channels: tuple[tuple[str, tuple[int, ...]], ...]
-    output_channels: tuple[int, ...]
-
-
-@dataclass(frozen=True)
-class _ScopedDelayLane:
-    delay_name: str
-    identity_name: str
-    offset_name: str
-
-
 def _active_identity(raw: str | None, *, field: str) -> NormalizedActiveRawIdentity:
     return NormalizedActiveRawIdentity(_parse_active_raw(raw, field=field))
-
-
-def _topology_binding(
-    request: SummedGraphRequest,
-    topology: OutputTopology,
-) -> _SummedTopologyBinding:
-    def role_channels(groups: list[Any], role: str) -> tuple[int, ...]:
-        values = [
-            channel.physical_output_index
-            for group in groups
-            for channel in group.channels
-            if channel.role == role
-        ]
-        if not values or any(type(value) is not int or value < 0 for value in values):
-            raise CommissioningRuntimeError(
-                "summed topology roles must resolve to physical output channels"
-            )
-        return tuple(sorted(cast(list[int], values)))
-
-    active_groups = [
-        group
-        for group in topology.speaker_groups
-        if group.mode in {"active_2_way", "active_3_way"}
-    ]
-    matches: list[Any] = []
-    for group in active_groups:
-        way_count = 2 if group.mode == "active_2_way" else 3
-        if (request.lower_role, request.upper_role) not in ADJACENT_PAIRS_BY_WAY[
-            way_count
-        ]:
-            continue
-        lower = role_channels([group], request.lower_role)
-        upper = role_channels([group], request.upper_role)
-        if lower == request.lower_channels and upper == request.upper_channels:
-            matches.append(group)
-    if len(matches) != 1:
-        raise CommissioningRuntimeError(
-            "summed roles and channels must bind one exact current adjacent region"
-        )
-    group = matches[0]
-    target_channels = request.lower_channels + request.upper_channels
-    if len(target_channels) != 2:
-        raise CommissioningRuntimeError(
-            "summed region must bind exactly two adjacent physical channels"
-        )
-    lower_all = role_channels(active_groups, request.lower_role)
-    upper_all = role_channels(active_groups, request.upper_role)
-    all_roles = sorted(
-        {channel.role for item in active_groups for channel in item.channels}
-    )
-    all_role_channels = tuple(
-        (role, role_channels(active_groups, role)) for role in all_roles
-    )
-    assigned_outputs = [
-        channel.physical_output_index
-        for item in topology.speaker_groups
-        for channel in item.channels
-    ]
-    if (
-        not assigned_outputs
-        or any(type(value) is not int or value < 0 for value in assigned_outputs)
-        or len(set(assigned_outputs)) != len(assigned_outputs)
-    ):
-        raise CommissioningRuntimeError(
-            "summed topology must have unique physical output assignments"
-        )
-    assigned = cast(list[int], assigned_outputs)
-    output_channels = tuple(range(max(assigned) + 1))
-    return _SummedTopologyBinding(
-        group.id,
-        lower_all,
-        upper_all,
-        all_role_channels,
-        output_channels,
-    )
 
 
 async def _snapshot(port: CommissioningRuntimePort) -> _Predecessor:
@@ -521,285 +181,6 @@ async def snapshot_exact_dsp_state(
     if not isinstance(port, CommissioningRuntimePort):
         raise CommissioningRuntimeError("port must be CommissioningRuntimePort")
     return (await _snapshot(port)).exact
-
-
-def _filter_params(
-    graph: Mapping[str, Any],
-    name: str,
-    *,
-    filter_type: str,
-) -> dict[str, Any]:
-    filters = graph.get("filters")
-    definition = filters.get(name) if isinstance(filters, Mapping) else None
-    params = definition.get("parameters") if isinstance(definition, Mapping) else None
-    if (
-        not isinstance(definition, Mapping)
-        or definition.get("type") != filter_type
-        or not isinstance(params, Mapping)
-    ):
-        raise CommissioningRuntimeError(
-            f"server-derived graph has no {filter_type} filter {name!r}"
-        )
-    return cast(dict[str, Any], params)
-
-
-def _filter_channels(graph: Mapping[str, Any], name: str) -> tuple[int, ...]:
-    pipeline = graph.get("pipeline")
-    placements: list[tuple[int, ...]] = []
-    if isinstance(pipeline, list):
-        for step in pipeline:
-            if not isinstance(step, Mapping) or step.get("type") != "Filter":
-                continue
-            names = step.get("names")
-            channels = step.get("channels")
-            if not isinstance(names, list) or not isinstance(channels, list):
-                continue
-            placements.extend(
-                tuple(sorted(channels)) for item in names if item == name
-            )
-    if len(placements) != 1:
-        raise CommissioningRuntimeError(
-            f"filter {name!r} must occur in exactly one pipeline step"
-        )
-    return placements[0]
-
-
-def _normal_graph(
-    request: SummedGraphRequest,
-    binding: _SummedTopologyBinding,
-) -> dict[str, Any]:
-    graph = _parse_active_raw(request.normal_active_raw, field="normal_active_raw")
-    devices = graph.get("devices")
-    volume_limit = devices.get("volume_limit") if isinstance(devices, Mapping) else None
-    if (
-        not isinstance(devices, dict)
-        or isinstance(volume_limit, bool)
-        or not isinstance(volume_limit, (int, float))
-        or not math.isfinite(float(volume_limit))
-        or float(volume_limit) > 0.0
-    ):
-        raise CommissioningRuntimeError(
-            "server-derived graph must retain a non-positive volume ceiling"
-        )
-    devices["volume_limit"] = min(float(volume_limit), request.listening_volume_db)
-    filters = graph.get("filters")
-    if isinstance(filters, Mapping) and any(
-        isinstance(name, str)
-        and (
-            name.startswith("as_commission_")
-            or (
-                name.startswith("as_out")
-                and name.endswith("_commission_mute")
-            )
-        )
-        for name in filters
-    ):
-        raise CommissioningRuntimeError(
-            "server-derived normal graph must not predeclare runtime lanes or mutes"
-        )
-    maximum_delay_ms = MAX_DSP_DELAY_US / 1000.0
-    for role, all_channels in (
-        (request.lower_role, binding.lower_all_channels),
-        (request.upper_role, binding.upper_all_channels),
-    ):
-        gain_name = driver_baseline_gain_name(role)
-        gain = _filter_params(graph, gain_name, filter_type="Gain")
-        if type(gain.get("inverted")) is not bool:
-            raise CommissioningRuntimeError(
-                f"baseline gain {gain_name!r} has no exact inversion flag"
-            )
-        if _filter_channels(graph, gain_name) != all_channels:
-            raise CommissioningRuntimeError(
-                f"baseline gain {gain_name!r} is not on all current role channels"
-            )
-    delay_by_role: dict[str, float] = {}
-    for role, all_channels in binding.all_role_channels:
-        delay_name = driver_delay_name(role)
-        delay = _filter_params(graph, delay_name, filter_type="Delay")
-        delay_value = delay.get("delay")
-        if (
-            isinstance(delay_value, bool)
-            or not isinstance(delay_value, (int, float))
-            or not math.isfinite(float(delay_value))
-            or delay.get("unit") != "ms"
-            or float(delay_value) < 0.0
-            or float(delay_value) > maximum_delay_ms
-        ):
-            raise CommissioningRuntimeError(
-                f"driver delay {delay_name!r} must be within 0-{maximum_delay_ms:g} ms"
-            )
-        if _filter_channels(graph, delay_name) != all_channels:
-            raise CommissioningRuntimeError(
-                f"driver delay {delay_name!r} is not on all current role channels"
-            )
-        delay_by_role[role] = float(delay_value)
-    if request.kind == "delay":
-        assert request.delay_spec is not None
-        try:
-            maximum_candidate_us = max(
-                abs(
-                    request.delay_spec.fine_grid_coordinate(
-                        request.delay_spec.fine_grid_index_min
-                    )
-                ),
-                abs(
-                    request.delay_spec.fine_grid_coordinate(
-                        request.delay_spec.fine_grid_index_max
-                    )
-                ),
-            )
-        except NullWalkError as exc:
-            raise CommissioningRuntimeError(
-                "delay walk grid is outside the shared DSP bound"
-            ) from exc
-        baseline_common_ms = max(
-            delay_by_role[request.lower_role],
-            delay_by_role[request.upper_role],
-        )
-        if baseline_common_ms * 1000.0 + maximum_candidate_us > MAX_DSP_DELAY_US:
-            raise CommissioningRuntimeError(
-                "delay walk has no safe headroom above the emitter baseline"
-            )
-    return graph
-
-
-def _stationary_candidate(
-    request: SummedGraphRequest,
-    normal: dict[str, Any],
-    binding: _SummedTopologyBinding,
-) -> dict[str, Any]:
-    candidate = copy.deepcopy(normal)
-    if request.kind == "reverse":
-        _append_scoped_lane(
-            request,
-            binding,
-            candidate,
-            role=request.upper_role,
-            channels=request.upper_channels,
-            inverted=True,
-        )
-    _append_output_isolation(request, binding, candidate)
-    return candidate
-
-
-def _append_output_isolation(
-    request: SummedGraphRequest,
-    binding: _SummedTopologyBinding,
-    graph: dict[str, Any],
-) -> None:
-    """Append the one canonical final mute tail derived from current topology."""
-
-    filters = graph.get("filters")
-    pipeline = graph.get("pipeline")
-    if not isinstance(filters, dict) or not isinstance(pipeline, list):
-        raise CommissioningRuntimeError(
-            "server-derived graph has no mutable filters and pipeline"
-        )
-    audible = set(request.lower_channels) | set(request.upper_channels)
-    if len(audible) != 2 or not audible <= set(binding.output_channels):
-        raise CommissioningRuntimeError(
-            "summed target must be two exact current physical outputs"
-        )
-    for channel in binding.output_channels:
-        name = output_commission_mute_name(channel)
-        if name in filters:
-            raise CommissioningRuntimeError(
-                "server-derived graph collides with commissioning output mutes"
-            )
-        is_audible = channel in audible
-        filters[name] = {
-            "type": "Gain",
-            "parameters": {
-                "gain": 0.0 if is_audible else STARTUP_MUTE_GAIN_DB,
-                "inverted": False,
-                "mute": not is_audible,
-            },
-        }
-        pipeline.append(
-            {"type": "Filter", "channels": [channel], "names": [name]}
-        )
-
-
-def _scoped_lane_names(
-    request: SummedGraphRequest,
-    binding: _SummedTopologyBinding,
-    role: str,
-) -> _ScopedDelayLane:
-    token = json_fingerprint(
-        {
-            "topology_id": request.topology_id,
-            "group_id": binding.group_id,
-            "role": role,
-        }
-    )[:16]
-    return _ScopedDelayLane(
-        delay_name=f"as_commission_{token}_delay",
-        identity_name=f"as_commission_{token}_identity",
-        offset_name=f"as_commission_{token}_offset",
-    )
-
-
-def _append_scoped_lane(
-    request: SummedGraphRequest,
-    binding: _SummedTopologyBinding,
-    graph: dict[str, Any],
-    *,
-    role: str,
-    channels: tuple[int, ...],
-    inverted: bool,
-    offset_delay_ms: float = 0.0,
-) -> _ScopedDelayLane:
-    lane = _scoped_lane_names(request, binding, role)
-    filters = graph.get("filters")
-    pipeline = graph.get("pipeline")
-    if not isinstance(filters, dict) or not isinstance(pipeline, list):
-        raise CommissioningRuntimeError(
-            "server-derived graph has no mutable filters and pipeline"
-        )
-    if any(
-        name in filters
-        for name in (lane.delay_name, lane.identity_name, lane.offset_name)
-    ):
-        raise CommissioningRuntimeError(
-            "server-derived graph collides with commissioning lane names"
-        )
-    filters[lane.delay_name] = {
-        "type": "Delay",
-        "parameters": {"delay": 0.0, "unit": "ms"},
-    }
-    filters[lane.offset_name] = {
-        "type": "Delay",
-        "parameters": {"delay": offset_delay_ms, "unit": "ms"},
-    }
-    filters[lane.identity_name] = {
-        "type": "Gain",
-        "parameters": {"gain": 0.0, "inverted": inverted, "mute": False},
-    }
-    pipeline.append(
-        {
-            "type": "Filter",
-            "channels": list(channels),
-            "names": [lane.offset_name, lane.delay_name, lane.identity_name],
-        }
-    )
-    return lane
-
-
-def _source_header(raw: str) -> str:
-    markers = [
-        line
-        for line in raw.splitlines()
-        if line.startswith("# Source: ") and line == line.strip()
-    ]
-    if len(markers) != 1:
-        raise CommissioningRuntimeError(
-            "server-derived graph must retain one exact source marker"
-        )
-    return markers[0]
-
-
-def _dump_graph(graph: Mapping[str, Any], *, source_header: str) -> str:
-    return f"{source_header}\n{yaml.safe_dump(dict(graph), sort_keys=False)}"
 
 
 @dataclass(frozen=True)
@@ -984,6 +365,7 @@ class PreparedSummedExcitation:
     request: ExcitationRequest
     limits: ExcitationLimits
     minimum_cooldown_s: float
+
 
 def prepare_summed_excitation(
     topology: OutputTopology,

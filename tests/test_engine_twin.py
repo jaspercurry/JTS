@@ -4,8 +4,8 @@
 
 """The twin serves every shape of setup its 25 importers need.
 
-``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1 budgets the twin *"as part of the
-engine, not as a follow-up"*, and asks for proof it can carry the load:
+The twin is budgeted *"as part of the engine, not as a follow-up"* (ruling S4,
+ADR-0228), against proof it can carry the load:
 ``tests/crossover_v2_fixtures.py`` is 1,950 lines imported by 26 test files
 totalling 57,079, and 25 of the 26 construct a session through it.
 

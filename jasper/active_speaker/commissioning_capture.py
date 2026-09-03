@@ -4,13 +4,11 @@
 
 """Bridge: mic-backed acoustic verdict -> commissioning measurement record.
 
-[`driver_acoustics`](driver_acoustics.py)'s ``analyze_driver_capture`` turns a
-phone-mic sweep capture into a real acoustic verdict, but it had no caller (the
-runtime commissioning loop did not exist yet). This module is that caller: per
-driver it derives the expected passband
-from the compiled preset's crossover regions, runs the acoustic analysis on a
-captured sweep WAV, maps the verdict to a
-[`measurement`](measurement.py) outcome, and records it through
+This module is the commissioning-side caller of
+[`driver_acoustics`](driver_acoustics.py)'s ``analyze_driver_capture``: per
+driver it derives the expected passband from the compiled preset's crossover
+regions, runs the acoustic analysis on a captured sweep WAV, maps the verdict
+to a [`measurement`](measurement.py) outcome, and records it through
 ``record_driver_measurement`` / ``record_summed_validation`` with the *real*
 ``observed_mic_dbfs`` plus the acoustic verdict block as new evidence on the
 same record (the gap ``driver_acoustics``'s module docstring describes).
@@ -77,23 +75,6 @@ if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
 
 logger = logging.getLogger(__name__)
-
-# Crossover lifecycle events reserved for later slices/phases -- declared here
-# (docs/active-crossover-information-design.md "Structured events") so a grep
-# for the event name finds a documented reason it is silent, not a missing
-# call site. No code path in this lane emits any of these; a unit test in
-# tests/test_active_speaker_commissioning_capture.py pins that.
-RESERVED_CROSSOVER_EVENTS = (
-    # Slice 3 (measured candidate selection) produces the proposal this fires
-    # for; Slice 1 wires only the lifecycle events themselves.
-    "correction.crossover_proposal_ready",
-    # Level locking already ships under correction.crossover_driver_level_*
-    # names in jasper/web/correction_crossover_backend.py. Renaming a shipped
-    # event onto this namespace is a deliberate future migration, not
-    # something this lane does silently.
-    "correction.crossover_level_locked",
-    "correction.crossover_level_failed",
-)
 
 
 def driver_crossover_fcs(preset: ActiveSpeakerPreset, role: str) -> tuple[float, ...]:

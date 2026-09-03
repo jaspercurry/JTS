@@ -136,6 +136,7 @@ def test_every_bundled_preset_declares_the_ruled_stop() -> None:
     }
 
     assert declared == {
+        "bc_de250_dayton_e150he44_v1.json": 85,
         "epique_e150he44_eminence_f110m8_safe_v1.json": 85,
     }
 

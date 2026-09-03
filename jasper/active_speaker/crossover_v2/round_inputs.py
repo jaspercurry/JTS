@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from jasper.active_speaker.baseline_profile import (
-    DEFAULT_STATE_PATH as APPLIED_PROFILE_DEFAULT_PATH,
+from jasper.active_speaker.state_paths import (
+    DEFAULT_BASELINE_PROFILE_STATE_PATH as APPLIED_PROFILE_DEFAULT_PATH,
 )
 from jasper.active_speaker.crossover_v2.durable_state import (
     DEFAULT_V2_STATE_PATH as STATE_DEFAULT_PATH,

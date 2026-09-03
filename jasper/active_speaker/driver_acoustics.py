@@ -623,9 +623,9 @@ def _overlap_band_levels(
 ) -> tuple[dict[str, Any], ...]:
     """The deconvolved magnitude AT each crossover Fc, with its confidence band.
 
-    A view of the one level fact, not a second definition of it (ruling S8,
-    docs/REFACTOR-TUNING-2026-08.md). ``level_db`` is a POINT: ``mag_db``
-    interpolated at ``fc`` off the 1/24-octave-smoothed magnitude, never a mean
+    A view of the one level fact, not a second definition of it (ruling S8 --
+    see ADR-0228). ``level_db`` is a POINT: ``mag_db`` interpolated at ``fc``
+    off the 1/24-octave-smoothed magnitude, never a mean
     over ``[lo_hz, hi_hz]`` — that span is the confidence neighbourhood which
     must hold ``OVERLAP_MIN_BINS`` bins, and the window the SNR verdict spans.
 

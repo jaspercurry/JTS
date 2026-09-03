@@ -303,13 +303,13 @@ def _index_html(
     {current_html}
   </section>
 
-  <form method="post" action="./save">
-    {csrf}
-    <section class="section">
-      <div class="section__head">
-        <h2 class="section__title">Set weather location</h2>
-      </div>
+  <section class="section">
+    <div class="section__head">
+      <h2 class="section__title">Set weather location</h2>
+    </div>
 
+    <form method="post" action="./save">
+      {csrf}
       <div class="field">
         <label for="location">Location</label>
         <input id="location" name="location" type="text"
@@ -350,8 +350,8 @@ def _index_html(
       <div class="form-actions">
         <button type="submit" class="btn btn--primary">Save</button>
       </div>
-    </section>
-  </form>
+    </form>
+  </section>
 
   <form method="post" action="./clear" class="clear-form">
     {csrf}

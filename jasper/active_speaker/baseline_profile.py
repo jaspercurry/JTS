@@ -91,10 +91,11 @@ from .playback_route import (
     resolve_active_playback_device,
 )
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
-from .profile import snapshot_declares_single_branch
+from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
 from . import passive_profile as _passive
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .startup_hold import release_staged_startup_hold
+from .state_paths import baseline_profile_state_path
 from .staging import build_passive_mains_preset, compile_preset_from_crossover_preview
 
 if TYPE_CHECKING:
@@ -105,9 +106,7 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
-DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_baseline_profile.json")
 DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
-STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 _DEFAULT_PERSISTED_BASS_PROFILE = object()
 
@@ -213,10 +212,6 @@ def _bass_extension_graph_summary(
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def baseline_profile_state_path(path: str | Path | None = None) -> Path:
-    return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
 
 
 def baseline_config_path(path: str | Path | None = None) -> Path:
@@ -1953,7 +1948,7 @@ def _compare_level_sittings(
 
     So a gap here is neither a fault nor a verdict on either number — the
     sittings are taken at different distances and on different axes, which
-    ``intervention.LEVEL_MATCH_AXIS`` explains has no single correct answer.
+    ``profile.LEVEL_MATCH_AXIS`` explains has no single correct answer.
     ``frame`` therefore names both: the MEASURE sweep's axis is that constant,
     while the other sitting's geometry is per-capture and is disclosed by the
     guided captures' own placement attestation. A level gap whose frames the
@@ -1966,11 +1961,6 @@ def _compare_level_sittings(
     unconditionally because it describes the captures rather than whichever
     condition was the reason.
     """
-    # Local, like this module's other cross-package reads: the axis constant is
-    # all that is wanted from crossover_v2, and importing it at module scope
-    # would pull that package into every baseline-profile import.
-    from .crossover_v2.intervention import LEVEL_MATCH_AXIS
-
     frame: dict[str, Any] = {"crossover_sweep_axis": LEVEL_MATCH_AXIS}
     if not candidate_trims_db:
         return [], frame

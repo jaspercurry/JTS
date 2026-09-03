@@ -4,10 +4,10 @@
 
 """A whole tuning session, in memory, with every seam under the test's thumb.
 
-The twin ``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1 budgets *"as part of the
-engine, not as a follow-up"*: **permanent test infrastructure for the permanent
-engine** (ruling S4), replacing what ``tests/crossover_v2_fixtures.py`` does for
-the 25 of its 26 importers that need a session harness.
+The twin is budgeted *"as part of the engine, not as a follow-up"*: **permanent
+test infrastructure for the permanent engine** (ruling S4, ADR-0228), replacing
+what ``tests/crossover_v2_fixtures.py`` does for the 25 of its 26 importers that
+need a session harness.
 
 The census's blunt version: *"the new engine has to ship a ``FakeSeams``
 -equivalent on day one or 54,000 lines of test have nowhere to land."* This is

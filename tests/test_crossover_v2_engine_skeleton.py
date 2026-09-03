@@ -4,8 +4,8 @@
 
 """The engine skeleton's externally observable behaviour.
 
-``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1. Three things can break here and
-each gets one pin at one altitude: ruling S12's surface is complete and loud;
+Three things can break here and each gets one pin at one altitude: ruling
+S12's surface is complete and loud (ADR-0228);
 the two held lifetimes open once and give back everything they took; and MS-14
 refuses to BANK without ever refusing to play.
 """

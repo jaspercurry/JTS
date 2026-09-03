@@ -80,8 +80,9 @@ logger = logging.getLogger(__name__)
 # compile state. Names registered in jasper.sound.camilla_yaml._JTS_GENERATED_RE
 # so a /sound or /correction read while bonded recognises them as JTS-generated
 # (never "custom"). DELIBERATELY leader-specific paths so neither clobbers the
-# solo baseline profile state at baseline_profile.DEFAULT_STATE_PATH — that
-# record must survive the bond so the unbond restore can re-apply the solo
+# solo baseline profile state at
+# state_paths.DEFAULT_BASELINE_PROFILE_STATE_PATH — that record must survive
+# the bond so the unbond restore can re-apply the solo
 # active baseline — and so neither collides with the active-FOLLOWER arm's files
 # (a box is a leader xor a follower at a time, but separate files keep the two
 # arms from ever fighting over one path).

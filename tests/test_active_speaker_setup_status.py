@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from importlib.resources import files
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -189,8 +190,8 @@ def _applied_acoustic_profile(
         profile["candidate_fingerprint"] = "candidate-fp"
         preset = json.loads(
             (
-                Path(__file__).resolve().parent
-                / "fixtures"
+                Path(str(files("jasper.active_speaker")))
+                / "presets"
                 / "bc_de250_dayton_e150he44_v1.json"
             ).read_text(encoding="utf-8")
         )

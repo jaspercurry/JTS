@@ -1269,7 +1269,7 @@ REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 
 # --------------------------------------------------------------------------- #
 # The engine's measure/analyze parameter vocabulary
-# (docs/REFACTOR-TUNING-2026-08.md §3 wave 1, ruling S12)
+# (ruling S12 -- see ADR-0228)
 # --------------------------------------------------------------------------- #
 #
 # These live HERE rather than beside the engine's `MeasureSpec` for the reason

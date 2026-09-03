@@ -4,40 +4,19 @@
 
 """Decision-class + band-specific SNR gate — the split SNR policy.
 
-docs/active-crossover-information-design.md ("Level control and SNR") splits
-SNR trust by what the number is used FOR, not by one blanket threshold:
+docs/active-crossover-information-design.md ("Level control and SNR") splits SNR trust by what
+the number is used FOR: magnitude/trim decisions need 25 dB SNR (confident), 20-25 dB (reduced
+confidence), refused below 20 dB; null/alignment decisions need roughly 35 dB in the overlap
+band (a null of depth D needs about D + 10 dB), and a scalar noise-floor reading is NOT
+sufficient evidence there — only a real per-band measurement is.
 
-* **Magnitude / trim decisions** (a driver's level, its overlap-band trim) are
-  usable well before an alignment decision is: 25 dB SNR is the confident
-  floor, 20-25 dB is a reduced-confidence result, and below 20 dB the capture
-  is refused with a report of how many dB are missing.
-* **Null / alignment decisions** (reverse-polarity depth, the delay walk) need
-  far more: a null of depth D cannot be measured with less than about D + 10
-  dB of SNR in the overlap band, so alignment evidence needs roughly 35 dB
-  there — and a plain scalar noise-floor reading (e.g. a 1 kHz tone level) is
-  explicitly NOT sufficient evidence for that call; only a real per-band
-  noise measurement is.
+Two halves: :func:`band_levels_dbfs` (the FFT band-power estimator, shared with room correction
+via ``jasper.correction.acoustic_quality``) and :func:`band_snr_verdicts` (the decision-class
+verdict builder; ``jasper.active_speaker.driver_acoustics`` is the first consumer).
 
-This module is the single place that turns raw per-band signal/noise levels
-into that split, per-band verdict. It has two halves:
-
-* :func:`band_levels_dbfs` — the FFT band-power estimator, relocated verbatim
-  from ``jasper.correction.session._band_levels_dbfs`` (which now delegates
-  through ``jasper.correction.acoustic_quality`` with Room's band table) so
-  room correction and active-crossover commissioning share one implementation
-  instead of two forks.
-* :func:`band_snr_verdicts` — the decision-class-aware verdict builder.
-  ``jasper.active_speaker.driver_acoustics`` (per-driver and summed-crossover
-  analysis) is the first consumer; room correction does not call this yet.
-
-Pure-data / pure-function: no I/O, no product policy, no CamillaDSP or
-playback awareness — mirrors the "one measurement-quality model with
-consumer-specific policy values" DRY invariant in the design doc. numpy is a
-module-level import here (``band_levels_dbfs`` needs it for the FFT); callers
-that stay numpy/scipy-free until a measurement actually runs (e.g. the
-socket-activated ``/sound/`` wizard via
-``jasper.active_speaker.driver_acoustics``) import this module LAZILY inside a
-function, not at their own module top.
+Pure-data/pure-function: no I/O, no product policy, no CamillaDSP or playback awareness. numpy
+is module-level (the FFT needs it); callers that must stay numpy/scipy-free until a measurement
+runs import this module LAZILY inside a function instead.
 """
 from __future__ import annotations
 
@@ -49,12 +28,9 @@ import numpy as np
 from jasper.audio_measurement import deconv
 from jasper.audio_measurement.quality_model import QualityModel
 
-# Six bands spanning the trusted phone-mic analysis window. The first four are
-# byte-identical to jasper.correction.acoustic_quality.SNR_BANDS_HZ (room
-# correction's shipped table, pinned by test_audio_measurement_snr_policy.py so
-# the two never drift apart). "mid" and "treble" extend the table up through a
-# tweeter's crossover range, which room correction (a sub-1 kHz PEQ concern)
-# never needed.
+# Six bands spanning the trusted phone-mic analysis window. First four are byte-identical to
+# jasper.correction.acoustic_quality.SNR_BANDS_HZ (pinned by test_audio_measurement_snr_policy.py);
+# "mid"/"treble" extend the table up through a tweeter's crossover range.
 CROSSOVER_SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
     ("sub_bass", 20.0, 80.0),
     ("bass", 80.0, 160.0),
@@ -77,21 +53,10 @@ _ALIGNMENT_BAND_METHODS = frozenset({
     "paired_signal_window_deconvolution",
 })
 
-# Per-band verdict severity, worst last. Used to reduce a list of per-band
-# verdicts to a single "worst" verdict for a frequency window. "unknown" is
-# deliberately absent — it carries no evidence, so it never outranks a real
-# verdict (see worst_band_verdict).
-#
-# These words are NOT quality_model's TrustLevel ("high"/"medium"/"low") and
-# must not be unified into it, however alike the two look — the magnitude
-# class even reads the same two thresholds. A TrustLevel LABELS a number; this
-# REFUSES a decision, ships a `shortfall_db` saying how many dB would clear it,
-# and is scoped per decision class, so one capture is legitimately
-# magnitude-"ok" and alignment-"insufficient" at the same time. Two trust
-# labels contradicting each other on one number would be a bug; two refusals
-# disagreeing about two different decisions is the whole point of the split
-# policy. `program_analysis.ALIGNMENT_SNR_REFUSAL_VERDICT` names the worst
-# member for what it is.
+# Per-band verdict severity, worst last; "unknown" is deliberately absent (no evidence, never
+# outranks a real verdict). NOT quality_model's TrustLevel, despite reading the same two
+# magnitude thresholds: a TrustLevel LABELS a number, this REFUSES a decision and is scoped per
+# decision class, so one capture is legitimately magnitude-"ok" and alignment-"insufficient".
 _VERDICT_RANK: dict[str, int] = {"ok": 0, "reduced": 1, "insufficient": 2}
 
 
@@ -117,76 +82,29 @@ def band_levels_dbfs(
 ) -> list[dict[str, Any]]:
     """Band-INTEGRATED level of ``samples``, in true dBFS, per band with bins.
 
-    Each entry's ``level_dbfs`` is ``20*log10`` of the band's RMS amplitude:
-    exactly the number a band-pass filter followed by an RMS meter would
-    read. A -20 dBFS sine inside one band puts -20.0 in that band's row; a
-    signal whose energy is split across bands has its total recovered by
-    summing the bands' powers.
+    Each entry's ``level_dbfs`` is ``20*log10`` of the band's RMS amplitude — what a band-pass
+    filter followed by an RMS meter would read.
 
-    **This was wrong until issue #1838** and the defect is worth naming,
-    because both the old shape and the fix are load-bearing. The previous
-    implementation returned ``sqrt(mean(power[mask])) / x.size`` — a per-BIN
-    mean, i.e. a PSD-like quantity, not band power. Three consequences:
+    Fixed in #1838: the previous per-BIN-mean (PSD-like) implementation read low by
+    ``7.27 + 10*log10(n_bins)`` dB and was not even a stable statistic — ``n_bins`` scales with
+    input length, so the SAME stationary noise over 1/2/4 s read -111.4/-114.4/-117.1 dBFS. That
+    was benign while every consumer used it in a ratio (SNR verdicts cancel it), until #1829's
+    absolute per-driver level solve read the room 18-39 dB too quiet and killed a field session.
 
-    * It read low by ``7.27 + 10*log10(n_bins)`` dB — 25 dB on a 60 Hz-wide
-      band from a 1 s frame, 42 dB across ``mid`` — and a quiet room's upper
-      bands saturated flat against :data:`DBFS_FLOOR`, destroying the
-      evidence outright.
-    * It was not even a stable statistic: ``n_bins`` scales with the input's
-      own length, so the SAME stationary noise measured over 1/2/4 s read
-      -111.4/-114.4/-117.1 dBFS. A ratio between two levels therefore only
-      cancelled when both sides were computed over an equal-length window.
-    * It was benign for years because every consumer used it in such a
-      ratio (an SNR verdict). Issue #1829 made it an ABSOLUTE authority —
-      the MEASURE per-driver level solve — and the cancellation stopped: the
-      solve read the room 18-39 dB too quiet, backed MEASURE off 30-34 dB,
-      and the field session died on its own buried pilots.
+    Parseval-exact: one-sided ``rfft`` bins weighted to two-sided energy, Hann window-energy
+    loss divided out by its own ``sum(w**2)``. UNBIASED against closed-form white-noise band
+    power; residual spread (chi-square, up to ~0.8 dB on a 60-bin band) is not an accuracy
+    budget — a full-band total matches true RMS to <0.05 dB.
 
-    The estimator is Parseval-exact: the one-sided ``rfft`` bins are weighted
-    back to two-sided energy (all but DC and, for an even-length input,
-    Nyquist), and the Hann window's energy loss is divided out by its own
-    ``sum(w**2)`` rather than a hard-coded 3/8, so the correction stays right
-    for any window this ever uses. Against closed-form band power for white
-    noise it is UNBIASED; the residual spread is the chi-square variance of a
-    finite-bin estimate (up to ~0.8 dB observed on the narrowest 60-bin band
-    from a 1 s frame, shrinking as bins grow) and is not an accuracy budget.
-    A full-band total, where that variance is negligible, matches the true
-    RMS to <0.05 dB.
+    ``window="rectangular"`` is a non-stationary-input escape hatch, not free choice: Hann
+    re-weights a swept sine's energy by WHEN it occurs, reading a 4 s sweep's band split wrong
+    by tens of dB and varying with capture length (#1847). Pass ``rectangular`` for a
+    sweep/chirp capture — ``capture_band_snr`` does; every other caller keeps the Hann default,
+    including ``driver_acoustics._capture_band_levels``'s sweep-capture gate, whose own bias is
+    measured but unreached in production (see that docstring before reviving it).
 
-    **``window`` picks "hann" (default) or "rectangular" — this is a
-    non-stationary-input escape hatch, not free choice.** Hann is correct
-    for the stationary ambient this reads by default, but a sweep is
-    non-stationary: the window re-weights a swept sine's frequencies by WHEN
-    they occur in the capture — a 4 s sweep's reported band split was wrong
-    by tens of dB, and it varied with capture length (issue #1847; measured
-    ~-10 dB on ``sub_bass``, ~1.5 dB of capture-length dependence, on room
-    correction's own ~11 s sweep). Pass ``window="rectangular"`` for a
-    sweep/chirp capture instead: an unwindowed FFT weights every sample
-    equally regardless of when its energy lands in time, which is what a
-    non-stationary signal needs. It is the same choice
-    ``sweep_band_crest_factor_db``'s own validation test makes
-    (:mod:`jasper.audio_measurement.program_analysis`,
-    ``test_sweep_band_crest_factor_matches_the_rendered_sweep``), and it
-    matches that function's analytical dwell-time law to within 0.3 dB on
-    room correction's own sweep shape (see
-    ``test_band_levels_dbfs_rectangular_window_matches_the_sweep_law`` in
-    ``tests/test_audio_measurement_snr_policy.py``). ``capture_band_snr``
-    (room correction's sweep-capture disclosure path) passes
-    ``window="rectangular"`` for exactly this reason; every OTHER caller —
-    the ambient/noise reports here, and
-    ``driver_acoustics._capture_band_levels``'s own sweep-capture SC-1 SNR
-    gate — still reads through the Hann default. That gate's bias has since
-    been MEASURED (issue #2010, 2026-08-01) and is real, but no production
-    caller reaches it, so it keeps the Hann default deliberately rather than
-    trading a characterised dead error for an uncharacterised one. The
-    numbers, the reachability evidence, and what reviving it would need live
-    at that consumer, in ``_capture_band_levels``'s own docstring.
-
-    Bounds the FFT input the same way
-    :func:`~jasper.audio_measurement.deconv.deconvolve` does
-    (``deconv.cap_capture_length``), since callers pass uploaded WAVs
-    (ambient noise, capture band levels) limited only by the HTTP body cap —
-    unbounded would otherwise drive this rfft + hanning to OOM on the 1 GB Pi.
+    Bounds the FFT input via ``deconv.cap_capture_length``, since callers pass uploaded WAVs
+    limited only by the HTTP body cap — unbounded would drive rfft+hanning to OOM on the 1 GB Pi.
     """
     if window not in ("hann", "rectangular"):
         raise ValueError(f"band_levels_dbfs: unknown window {window!r}")
@@ -199,23 +117,18 @@ def band_levels_dbfs(
         windowed = x * win
         window_energy = float(np.sum(win ** 2))
     else:
-        # window == "rectangular": x * ones(N) == x and sum(ones(N)**2) == N,
-        # so both the ones() array and the elementwise multiply are skipped
-        # outright — ~2x N x 8 bytes avoided on the path whose own docstring
-        # below names OOM risk on an uploaded WAV up to the 30 s cap.
+        # rectangular: x * ones(N) == x and sum(ones(N)**2) == N, so both are skipped outright.
         windowed = x
         window_energy = float(x.size)
     spectrum = np.fft.rfft(windowed)
     freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
     power = np.abs(spectrum) ** 2
-    # One-sided -> two-sided energy: every bin except DC (and Nyquist, which
-    # only exists for an even-length input) stands for a conjugate pair.
+    # One-sided -> two-sided: every bin but DC (and Nyquist, even-length only) is a conjugate pair.
     power = power * 2.0
     power[0] = power[0] / 2.0
     if x.size % 2 == 0:
         power[-1] = power[-1] / 2.0
-    # Parseval + window-energy normalization: mean-square of the unwindowed
-    # signal in a band = (two-sided band energy) / (N * sum(w**2)).
+    # Parseval + window-energy normalization.
     denom = float(x.size) * window_energy
     out: list[dict[str, Any]] = []
     for band_id, low, high in bands:
@@ -303,29 +216,15 @@ def excitation_covered_bands(
 ) -> dict[str, bool]:
     """Which bands lie ENTIRELY inside the swept-sine reference's excited range.
 
-    A regularized deconvolution (:func:`jasper.audio_measurement.deconv.regularized_deconvolution_full`)
-    divides by the reference sweep's own spectrum, clamped by a fixed
-    (frequency-independent) Tikhonov epsilon. Outside ``[f1_hz, f2_hz]`` — and
-    right at that edge, where the sweep's fade-in/out tapers its energy toward
-    zero — the reference carries essentially no deliberate energy, so that
-    division is dominated by epsilon rather than real signal. Right at the
-    knee where the reference's power crosses epsilon, the regularized inverse
-    has a well-known resonant peak (its gain is maximized exactly where
-    ``|X(f)|**2 == epsilon``, tapering in both directions) that amplifies
-    whatever is on the OTHER side of the division — real driver output for a
-    signal capture, incoherent room noise for an ambient capture — well
-    beyond its true level. A signal capture usually swamps this artifact (a
-    near-mic'd driver is loud); an ambient capture has nothing to swamp it
-    with, so the artifact dominates and the reported noise floor is overstated
-    by tens of dB.
+    A regularized deconvolution divides by the reference sweep's own spectrum, clamped by a
+    fixed Tikhonov epsilon. Outside ``[f1_hz, f2_hz]`` the reference carries no deliberate
+    energy, so the division is dominated by epsilon and its regularized inverse resonates
+    right at the knee, amplifying whatever is on the OTHER side (room noise for an ambient
+    capture) well beyond its true level — reporting a noise floor overstated by tens of dB.
 
-    A band that is not fully covered by the reference is not safe to read
-    from the deconvolved domain at all — callers should fall back to a
-    non-deconvolved (raw) measurement for that band instead of trusting this
-    resonance-corrupted value. This check is deliberately exact (no margin):
-    widening it to "give the fade some berth" would also flag bands that
-    empirically read fine today (e.g. a band starting 20 Hz above ``f1_hz``),
-    trading a real bug for an unforced regression.
+    An uncovered band is not safe to read from the deconvolved domain; callers should fall back
+    to a raw measurement instead. Deliberately exact (no margin): widening it would also flag
+    bands that empirically read fine today.
     """
 
     lo_hz, hi_hz = float(f1_hz), float(f2_hz)
@@ -344,50 +243,23 @@ def apply_noise_band_fallback(
 ) -> list[dict[str, Any]]:
     """Robust-delta adjustment, with a raw-ambient fallback for uncovered bands.
 
-    ``noise_bands`` is the deconvolved-domain per-band noise report (e.g.
-    :func:`magnitude_band_levels` on a deconvolved+windowed ambient IR).
-    ``robust_bands``/``baseline_bands`` are the matching non-deconvolved
-    ambient reports (:func:`framed_ambient_band_report` at ``percentile=95``
-    and ``percentile=50``). ``covered`` is
-    :func:`excitation_covered_bands`'s per-band verdict for whether the
-    reference sweep actually excited that band.
+    For a COVERED band: the deconvolved level plus the small robust-minus-baseline delta (a
+    non-stationarity correction). For an UNCOVERED band: the deconvolved level is a Tikhonov
+    regularization artifact (see :func:`excitation_covered_bands`), so this reports the raw
+    robust (p95) ambient level instead — UNLESS that reading is itself floor-clamped at
+    :data:`DBFS_FLOOR`, in which case the deconvolved+delta value is kept as least-bad. Each
+    band carries a diagnostic ``"basis"`` key recording which path was taken.
 
-    For a COVERED band, this is the pre-existing behavior unchanged: the
-    deconvolved level plus the small robust-minus-baseline delta (a
-    non-stationarity correction — see :func:`framed_ambient_band_report`'s
-    docstring). For an UNCOVERED band, the deconvolved level is a Tikhonov
-    regularization artifact, not a measurement (see
-    :func:`excitation_covered_bands`), so this reports the raw robust (p95)
-    ambient level directly instead — UNLESS that raw reading is itself
-    floor-clamped at :data:`DBFS_FLOOR` (no real precision to trust either),
-    in which case the deconvolved+delta value is kept as the least-bad
-    available estimate. Each returned band carries a diagnostic ``"basis"``
-    key (``"deconvolved"`` or ``"raw_ambient_fallback"``) recording which path
-    was taken.
+    **The fallback changes the band's UNITS** — a ``"deconvolved"`` band is a gated
+    transfer-function level (``20*log10|Y/X|``, per-bin power MEAN); a
+    ``"raw_ambient_fallback"`` band is a band-INTEGRATED RMS dBFS over ungated one-second
+    frames. The substitution is not a constant offset, nor stable in sweep length (SC-1 SNR
+    units defect, 2026-08-01: error ran -22.08 to +11.11 dB at 8 s and -13.32 to +27.44 dB at
+    1 s on the summed-crossover capture).
 
-    **The fallback changes the band's UNITS, and a caller that subtracts it
-    from a deconvolved signal level must account for that.** A
-    ``"deconvolved"`` band is a gated transfer-function level (dimensionless,
-    ``20*log10|Y/X|``, per-bin power MEAN); a ``"raw_ambient_fallback"`` band
-    is a band-INTEGRATED RMS in true dBFS over ungated one-second frames.
-    Three things differ — the division by ``|X(f)|``, the per-bin-mean vs
-    band-sum statistic, and the observation window (a <=7 ms gated impulse
-    response vs 1 s of room) — so the substitution is not a constant offset
-    and its sign is not stable. It is not even stable in the SWEEP LENGTH: on
-    the summed-crossover capture the error ran -22.08 to +11.11 dB at an 8 s
-    sweep and -13.32 to +27.44 dB at 1 s, because the raw substitute gets no
-    sweep processing gain while the deconvolved side does (SC-1 SNR units
-    defect, 2026-08-01). Any number quoted for this substitution has to name
-    the sweep length it was measured at — and note that the summed sweep's
-    length is ``min(SUMMED_SWEEP_DURATION_S, both drivers' declared limits)``,
-    so 8 s is its ceiling, not its typical value.
-
-    This is a correct substitution for the case it was built for (issue #1563:
-    a WIDE per-driver near-field sweep, where the uncovered bands are the ones
-    the gate does not read and the deconvolved value there is a Tikhonov
-    artifact). It is not a licence to mix domains inside a gated band. A
-    consumer whose gate reads uncovered bands should narrow its band table to
-    the excited range instead.
+    Correct for what it was built for (#1563: a WIDE per-driver near-field sweep where the
+    uncovered bands are ones the gate doesn't read) — not a licence to mix domains inside a
+    gated band; a consumer whose gate reads uncovered bands should narrow its band table instead.
     """
 
     robust_by_id = {item["band_id"]: item for item in robust_bands}
@@ -448,29 +320,11 @@ def _band_overlaps(band_hz: Any, lo_hz: float, hi_hz: float) -> bool:
 
 
 def _worst_snr_key(band: Mapping[str, Any]) -> float:
-    """A band's ``estimated_snr_db`` as a comparable tie-break key.
-
-    Lower sorts worse. The consumer of the winning entry's SNR reads a number
-    the measurement must actually support, so it wants the minimum:
-    ``jasper.web.correction_crossover_backend``'s completion-time level
-    correction subtracts it from the solver's requirement to size a
-    playback-level shortfall.
-
-    A missing or unparseable number sorts as ``+inf`` — the most PERMISSIVE
-    value — so such a band never displaces one carrying a real number. That
-    is the safe direction: neither consumer can act on a number it does not
-    have, so electing the numberless band would silently REMOVE the cap and
-    the correction rather than tighten them.
-
-    Non-finite numbers share that bucket, ``-inf`` included. That looks
-    backwards for ``-inf`` (arithmetically the worst possible SNR) and is
-    deliberate: ``-inf`` is a degenerate sentinel, not a measurement, so it
-    is no more actionable than a missing value. It is also unreachable
-    through :func:`band_snr_verdicts`, which is the only builder of these
-    entries — a ``-inf`` SNR verdicts ``insufficient`` in every decision
-    class, so verdict RANK selects such a band before this key is ever
-    consulted against an ``ok`` sibling.
-    """
+    """Lower sorts worse. A missing/unparseable number sorts ``+inf`` (most PERMISSIVE) so it
+    never displaces a real number — the safe direction, since electing a numberless band would
+    silently remove the cap. ``-inf`` shares that bucket too: it's a degenerate sentinel, not a
+    measurement, and unreachable anyway (:func:`band_snr_verdicts` always verdicts it
+    "insufficient", so verdict RANK selects it before this key is consulted)."""
     snr = _to_float(band.get("estimated_snr_db"))
     if snr is None or not math.isfinite(snr):
         return math.inf
@@ -484,37 +338,14 @@ def worst_band_verdict(
 ) -> dict[str, Any] | None:
     """The single worst entry in ``bands`` overlapping ``[lo_hz, hi_hz]``.
 
-    Two quantities are read off the returned entry, and "worst" has to mean
-    the right thing for both:
+    ``verdict`` (insufficient > reduced > ok) dominates the selection — one ``insufficient``
+    band vetoes its ``ok`` siblings regardless of SNR. Among entries of EQUAL verdict rank the
+    LOWEST ``estimated_snr_db`` wins (the minimum over the window, not table order — #2026: a
+    positional pick graded against a band up to 17 dB too permissive). See :func:`_worst_snr_key`
+    for the ``+inf``/``-inf`` tie-break.
 
-    * ``verdict`` — the REFUSAL signal. Ranks insufficient > reduced > ok, and
-      dominates the selection: one ``insufficient`` band vetoes its ``ok``
-      siblings however good its own SNR is.
-    * ``estimated_snr_db`` — the number the live consumer grades against.
-      ``jasper.web.correction_crossover_backend``'s completion-time level
-      correction subtracts it from the solver's requirement to size a
-      playback-level shortfall (magnitude class — the route
-      ``analyze_driver_capture`` and
-      ``program_analysis._driver_response`` feed). Among entries of EQUAL
-      verdict rank the LOWEST one wins, so this is the minimum over the
-      window, not whichever band happened to come first in the table (issue
-      #2026: a positional pick graded against a band up to 17 dB more
-      permissive than the true worst, and made the reported figure depend on
-      table order).
-
-      Both consumers therefore read a stricter number than before #2026: a
-      null caps nearer, and a level correction sizes a larger shortfall — so a
-      session can solve to a HIGHER capture level than it used to. That is the
-      corrected behaviour, not a new demand; see :func:`_worst_snr_key`.
-
-    An entry whose ``verdict`` is "unknown" (or anything unrecognized) never
-    wins — it carries no evidence, so it can neither veto nor clear the
-    window. Returns ``None`` when no *evidenced* band overlaps the window
-    (nothing overlaps, or everything that does is "unknown") — callers read
-    that as "unknown" for the whole window: a partial-pass rule shared by
-    :func:`band_snr_verdicts` (reducing over its own ``relevant_hz``) and
-    ``jasper.active_speaker.driver_acoustics`` (reducing over one overlap-band
-    Fc window) — one rule, not two.
+    An entry whose ``verdict`` is "unknown" never wins. Returns ``None`` when no evidenced band
+    overlaps the window — callers read that as "unknown" for the whole window.
     """
     worst: dict[str, Any] | None = None
     worst_rank = -1
@@ -543,20 +374,12 @@ def _band_verdict(
     estimated_snr_db: float | None,
     model: QualityModel,
 ) -> tuple[str, float | None]:
-    """(verdict, raw shortfall_db) for one band's estimated SNR.
-
-    ``shortfall_db`` is unrounded here; :func:`band_snr_verdicts` rounds it
-    (matching ``estimated_snr_db``'s rounding) at the point it builds the
-    band entry.
-    """
+    """(verdict, raw shortfall_db); ``shortfall_db`` is unrounded here, rounded by the caller."""
     if estimated_snr_db is None:
         return "unknown", None
     if decision_class == DECISION_CLASS_ALIGNMENT:
-        # A scalar (or missing) noise floor is not sufficient evidence for a
-        # null/alignment call, even when a number was computable — degrade to
-        # "unknown" rather than gate on an untrustworthy figure ("Level
-        # control and SNR": "a 1 kHz scalar level is not sufficient evidence
-        # that a broadband room or driver sweep has 20 dB SNR").
+        # A scalar noise floor is not sufficient evidence for a null/alignment call, even when
+        # computable — degrade to "unknown" rather than gate on an untrustworthy figure.
         if method not in _ALIGNMENT_BAND_METHODS:
             return "unknown", None
         if estimated_snr_db >= model.alignment_snr_ok_db:
@@ -582,26 +405,14 @@ def band_snr_verdicts(
 ) -> dict[str, Any]:
     """The SC-1 per-band SNR verdict block for one decision.
 
-    ``capture_bands`` is the signal side (e.g. :func:`band_levels_dbfs` on the
-    accepted sweep capture); ``noise_bands`` is the matching band-specific
-    noise-floor report (same shape, matched to ``capture_bands`` by
-    ``band_id``) when available. ``noise_floor_dbfs_scalar`` is a
-    single-number noise-floor fallback — usable evidence for a
-    ``"magnitude"`` decision, but never sufficient on its own for an
-    ``"alignment"`` decision (see :func:`_band_verdict`).
+    ``noise_floor_dbfs_scalar`` is usable evidence for "magnitude" but never sufficient alone
+    for "alignment" (see :func:`_band_verdict`). ``estimated_snr_db`` is populated whenever
+    computable, even when ``verdict`` reads "unknown" — ``verdict``, not the number's presence,
+    is what callers must gate on.
 
-    ``estimated_snr_db`` is populated whenever a number is computable
-    (real per-band evidence OR the scalar fallback), even for a band whose
-    ``verdict`` reads "unknown" because the decision class rejects that
-    evidence type — the number stays visible for diagnostics; ``verdict`` (not
-    the presence of a number) is the trust signal callers must gate on.
-
-    ``relevant_hz`` scopes which bands can veto the OVERALL verdict: every
-    band in ``capture_bands`` gets its own entry (useful for diagnostics even
-    outside the window), but ``worst_relevant``/``verdict`` are computed only
-    from bands overlapping ``relevant_hz`` — a bad octave outside the window a
-    decision actually depends on must not refuse the whole capture (the
-    partial-pass rule in "Level control and SNR").
+    ``relevant_hz`` scopes which bands can veto the OVERALL verdict: every band gets its own
+    entry, but ``worst_relevant``/``verdict`` only reduce over bands overlapping ``relevant_hz``
+    — a bad octave outside the window a decision depends on must not refuse the whole capture.
     """
     if decision_class not in DECISION_CLASSES:
         raise ValueError(f"unknown decision_class: {decision_class!r}")
@@ -628,10 +439,8 @@ def band_snr_verdicts(
         if noise_band is not None:
             noise_level = _to_float(noise_band.get("level_dbfs"))
             if noise_level is not None:
-                # Verdict and displayed evidence share the measurement's
-                # meaningful one-decimal precision. Without this normalization
-                # a binary-float 19.999999 result displayed as 20.0 dB failed
-                # the inclusive 20 dB reduced-confidence threshold.
+                # One-decimal rounding: an unrounded 19.999999 would fail the inclusive 20 dB
+                # threshold while displaying as 20.0 dB.
                 estimated_snr_db = round(capture_level - noise_level, 1)
                 method = band_method
         if method == "none" and noise_floor_dbfs_scalar is not None:
