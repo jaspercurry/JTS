@@ -4,8 +4,8 @@
 
 import pytest
 
+from jasper.chip_aec_health import ACTION_RECOMMISSION, AlignmentHealth
 from jasper.audio_profile_state import (
-    ALIGNMENT_RECOMMISSION_ACTION,
     AecIntent,
     MicProbe,
     RuntimeAecEnv,
@@ -36,15 +36,16 @@ _EXTRA_BEAMS_INTENT = AecIntent(
     chip_aec_150_enabled=True,
     chip_aec_210_enabled=True,
 )
+_READY = AlignmentHealth("ready")
 _READY_CHIP_RUNTIME = RuntimeAecEnv(
     primary_device="udp:9876",
     chip_enabled=True,
-    chip_aec_alignment_status="ready",
+    chip_aec_alignment=_READY,
 )
 _EXTRA_BEAMS_RUNTIME = RuntimeAecEnv(
     primary_device="udp:9876",
     chip_enabled=True,
-    chip_aec_alignment_status="ready",
+    chip_aec_alignment=_READY,
     chip_aec_150_device="udp:9887",
     chip_aec_210_device="udp:9888",
 )
@@ -71,9 +72,11 @@ _REFUSING_GATE = {
 
 def _disclosed_runtime(**kwargs) -> RuntimeAecEnv:
     return RuntimeAecEnv(
-        chip_aec_alignment_status="disclosed_stale",
-        chip_aec_alignment_reason="output DAC has no codified chip-AEC calibration",
-        chip_aec_alignment_action="Run sudo jasper-aec-commission",
+        chip_aec_alignment=AlignmentHealth(
+            "disclosed_stale",
+            "output DAC has no codified chip-AEC calibration",
+            "Run sudo jasper-aec-commission",
+        ),
         **kwargs,
     )
 
@@ -105,12 +108,10 @@ _STATUS_CASES = {
     "managed-xvf-fault-parks": {
                 "runtime": RuntimeAecEnv(
                     primary_device="udp:9876", chip_enabled=False,
-                    chip_aec_alignment_status="fault",
-                    chip_aec_alignment_reason=(
-                        "chip-AEC bridge failed after alignment reapply"
-                    ),
-                    chip_aec_alignment_action=(
-                        "Inspect jasper-aec-bridge, then run the reconciler"
+                    chip_aec_alignment=AlignmentHealth(
+                        "fault",
+                        "chip-AEC bridge failed after alignment reapply",
+                        "Inspect jasper-aec-bridge, then run the reconciler",
                     ),
                 ),
                 "equals": {
@@ -146,7 +147,7 @@ _STATUS_CASES = {
                 "intent": AecIntent(mode="auto", profile_selection="xvf_chip_aec"),
                 "runtime": RuntimeAecEnv(
                     primary_device="udp:9876", aec_device="L16K6Ch",
-                    chip_enabled=True, chip_aec_alignment_status="ready",
+                    chip_enabled=True, chip_aec_alignment=_READY,
                     chip_aec_150_device="udp:9887", chip_aec_210_device="udp:9888",
                 ),
                 "mic": _MISMATCHED_XVF,
@@ -215,11 +216,12 @@ _STATUS_CASES = {
                 "intent": AecIntent(mode="auto", profile_selection="auto"),
                 "runtime": RuntimeAecEnv(
                     primary_device="udp:9876", raw_device="udp:9877",
-                    chip_enabled=False, chip_aec_alignment_status="disclosed_stale",
-                    chip_aec_alignment_reason=(
-                        "output DAC has no codified chip-AEC calibration"
+                    chip_enabled=False,
+                    chip_aec_alignment=AlignmentHealth(
+                        "disclosed_stale",
+                        "output DAC has no codified chip-AEC calibration",
+                        "Run sudo jasper-aec-commission",
                     ),
-                    chip_aec_alignment_action="Run sudo jasper-aec-commission",
                 ),
                 "chip_gate": _UNCODIFIED_GATE,
                 "equals": {
@@ -236,12 +238,11 @@ _STATUS_CASES = {
                 "intent": AecIntent(mode="auto", profile_selection="auto"),
                 "runtime": RuntimeAecEnv(
                     primary_device="Array", chip_enabled=False,
-                    chip_aec_alignment_status="disclosed_stale",
-                    chip_aec_alignment_reason=(
-                        "echo cancellation unavailable until DFU flash to 6-channel firmware"
-                    ),
-                    chip_aec_alignment_action=(
-                        "Re-flash the XVF to 6-channel firmware"
+                    chip_aec_alignment=AlignmentHealth(
+                        "disclosed_stale",
+                        "echo cancellation unavailable until DFU flash to "
+                        "6-channel firmware",
+                        "Re-flash the XVF to 6-channel firmware",
                     ),
                 ),
                 "mic": MicProbe(
@@ -270,9 +271,11 @@ _STATUS_CASES = {
         ),
         "runtime": RuntimeAecEnv(
             primary_device="udp:9876", chip_enabled=True,
-            chip_aec_alignment_status="disclosed_stale",
-            chip_aec_alignment_reason="proof no longer describes this box",
-            chip_aec_alignment_action=ALIGNMENT_RECOMMISSION_ACTION,
+            chip_aec_alignment=AlignmentHealth(
+                "disclosed_stale",
+                "proof no longer describes this box",
+                ACTION_RECOMMISSION,
+            ),
         ),
         "chip_gate": {"status": "approved", "auto_allowed": True},
         "equals": {"audio_profile": {"commission_recommended": True}},
@@ -283,10 +286,10 @@ _STATUS_CASES = {
         ),
         "runtime": RuntimeAecEnv(
             primary_device="udp:9876", chip_enabled=True,
-            chip_aec_alignment_status="disclosed_stale",
-            chip_aec_alignment_reason="proof no longer describes this box",
-            chip_aec_alignment_action=(
-                "Wait for jasper-outputd to restart, then run the reconciler"
+            chip_aec_alignment=AlignmentHealth(
+                "disclosed_stale",
+                "proof no longer describes this box",
+                "Wait for jasper-outputd to restart, then run the reconciler",
             ),
         ),
         "chip_gate": {"status": "approved", "auto_allowed": True},
@@ -380,7 +383,7 @@ _STATUS_CASES = {
         ),
         "runtime": RuntimeAecEnv(
             primary_device="udp:9876", aec_device="XVF3800",
-            chip_enabled=True, chip_aec_alignment_status="ready",
+            chip_enabled=True, chip_aec_alignment=_READY,
         ),
         "mic": MicProbe(
             xvf_present=True, capture_channels=6, recommended_channels=6,
@@ -507,10 +510,12 @@ def test_an_alignment_record_classifies_only_the_selection_it_was_written_for(
             primary_device="udp:9876",
             chip_enabled=True,
             chip_aec_210_device="udp:9888",
-            chip_aec_alignment_status="disclosed_stale",
-            chip_aec_alignment_reason="output DAC has no codified chip-AEC calibration",
-            chip_aec_alignment_action="Run sudo jasper-aec-commission",
-            chip_aec_alignment_selection=stamp,
+            chip_aec_alignment=AlignmentHealth(
+                "disclosed_stale",
+                "output DAC has no codified chip-AEC calibration",
+                "Run sudo jasper-aec-commission",
+                stamp,
+            ),
         ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
@@ -526,7 +531,7 @@ def test_an_alignment_record_classifies_only_the_selection_it_was_written_for(
     assert profile["state"] == state
     assert profile["action"] == action
     assert profile["commission_recommended"] is (
-        action == ALIGNMENT_RECOMMISSION_ACTION
+        action == ACTION_RECOMMISSION
     )
     assert profile["chip_aec_gate"]["status"] == "needs_calibration"
     assert profile["active"] == "xvf_chip_aec"
@@ -547,8 +552,9 @@ def _chip_box(
             primary_device="udp:9876",
             aec_device=aec_device,
             chip_enabled=True,
-            chip_aec_alignment_status=alignment_status,
-            chip_aec_alignment_reason="chip-AEC alignment lost its proof",
+            chip_aec_alignment=AlignmentHealth(
+                alignment_status, "chip-AEC alignment lost its proof",
+            ),
         ),
         MicProbe(
             xvf_present=True,

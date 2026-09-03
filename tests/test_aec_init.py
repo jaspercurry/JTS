@@ -275,17 +275,14 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
 
 
 @pytest.mark.parametrize(
-    "changes, expected_disclosure_fields",
+    "changes, discloses",
     [
-        ({"xvf_serial": "replacement"}, ("xvf_serial",)),
-        (
-            {"output_hardware_key": "usb-serial:replacement"},
-            ("output_hardware_key",),
-        ),
+        ({"xvf_serial": "replacement"}, True),
+        ({"output_hardware_key": "usb-serial:replacement"}, True),
         # The DAC identity is part of the hardware class K was measured
         # against, so it is hardware-class divergence — the loud kind, still
         # not a park.
-        ({"output_id": "different_dac"}, ("output_id",)),
+        ({"output_id": "different_dac"}, True),
         # xvf_variant/beam_plan/output_format carry no timing story
         # (ADR-0190): moving all three produces no divergence, so nothing is
         # disclosed at all — the chip arms clean.
@@ -295,12 +292,12 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
                 "beam_plan": "other_plan",
                 "output_format": "S32_LE",
             },
-            (),
+            False,
         ),
     ],
 )
 def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
-    monkeypatch, disclosure_file, changes, expected_disclosure_fields
+    monkeypatch, disclosure_file, changes, discloses
 ) -> None:
     # ADR-0101: the proof stopped describing this box, nothing observably
     # broke. The banked K is applied and the chip armed; what the household
@@ -317,12 +314,10 @@ def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
-    if expected_disclosure_fields:
-        disclosure_text = disclosure_file.read_text(encoding="utf-8")
-        for field in expected_disclosure_fields:
-            assert field in disclosure_text
-    else:
-        assert not disclosure_file.exists()
+    # What the disclosure SAYS is pinned once, on the judge
+    # (tests/test_chip_aec_health.py); this altitude owns only whether one was
+    # published at all.
+    assert disclosure_file.exists() is discloses
 
 
 def test_an_older_schema_artifact_is_treated_as_nothing_banked(
@@ -381,9 +376,7 @@ def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [row.sys_delay]
-    disclosure = disclosure_file.read_text(encoding="utf-8")
-    assert row.label in disclosure
-    assert "jasper-aec-commission" in disclosure
+    assert disclosure_file.exists()
 
 
 def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
