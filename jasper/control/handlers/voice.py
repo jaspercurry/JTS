@@ -81,6 +81,7 @@ class VoiceRoutes(ControlHandlerMixin):
             cmd,
             missing_error="voice_daemon not running (socket not found)",
             log_label=f"session {cmd}",
+            refusal_event="session.manual_refused" if cmd.startswith("START") else None,
         )
         if result is None:
             return

@@ -41,6 +41,103 @@ class _PendingReader:
         return await self._reply
 
 
+class _FakeClock:
+    """Deterministic stand-in for time.monotonic()/asyncio.sleep() so the
+    connect-retry budget tests run instantly instead of over real
+    wall-clock seconds."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, secs: float) -> None:
+        self.now += secs
+
+
+async def test_voice_socket_command_retries_connect_until_socket_appears(
+    monkeypatch,
+):
+    """voice_daemon creates its control socket last during startup. A
+    connect landing just before that must not surface as a hard 503 --
+    it should retry within the bounded budget and succeed once the
+    socket appears."""
+    clock = _FakeClock()
+    monkeypatch.setattr(uds.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(uds.asyncio, "sleep", clock.sleep)
+
+    reader, writer = _connection(b'{"result":"OK"}\n')
+    attempts = 0
+
+    async def flaky_connect(_path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise FileNotFoundError(_path)
+        return reader, writer
+
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", flaky_connect)
+
+    result = await uds._voice_socket_command("/run/jasper/voice.sock", "START")
+
+    assert result == {"result": "OK"}
+    assert attempts == 3
+    assert clock.now == pytest.approx(2 * uds._CONNECT_RETRY_INTERVAL_SEC)
+
+
+async def test_voice_socket_command_gives_up_after_retry_budget(monkeypatch):
+    """A socket that never appears (daemon genuinely down, not merely
+    restarting) still fails -- but only after the bounded budget, not on
+    the first connect."""
+    clock = _FakeClock()
+    monkeypatch.setattr(uds.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(uds.asyncio, "sleep", clock.sleep)
+
+    attempts = 0
+
+    async def always_missing(_path):
+        nonlocal attempts
+        attempts += 1
+        raise FileNotFoundError(_path)
+
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", always_missing)
+
+    with pytest.raises(FileNotFoundError):
+        await uds._voice_socket_command("/run/jasper/voice.sock", "START")
+
+    assert attempts > 1, "gave up on the first attempt instead of retrying"
+    assert clock.now >= uds._CONNECT_RETRY_BUDGET_SEC
+    # Bounded: doesn't retry forever past the budget.
+    assert clock.now < uds._CONNECT_RETRY_BUDGET_SEC + uds._CONNECT_RETRY_INTERVAL_SEC
+
+
+async def test_voice_socket_command_retries_connection_refused_too(monkeypatch):
+    """A stale socket file mid-teardown/startup race refuses the connect
+    (ECONNREFUSED) rather than ENOENT -- same transient condition, same
+    retry."""
+    clock = _FakeClock()
+    monkeypatch.setattr(uds.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(uds.asyncio, "sleep", clock.sleep)
+
+    reader, writer = _connection(b'{"result":"OK"}\n')
+    attempts = 0
+
+    async def flaky_connect(_path):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            raise ConnectionRefusedError(_path)
+        return reader, writer
+
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", flaky_connect)
+
+    result = await uds._voice_socket_command("/run/jasper/voice.sock", "START")
+
+    assert result == {"result": "OK"}
+    assert attempts == 2
+
+
 async def test_mux_command_is_one_bounded_json_exchange(monkeypatch):
     reader, writer = _connection(b'{"active_source":"idle"}\n')
     opener = AsyncMock(return_value=(reader, writer))

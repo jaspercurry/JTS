@@ -729,6 +729,148 @@ async def test_read_device_hold_action_skips_release_when_start_never_lands(
     assert calls == [("POST", "/session/start", None)]
 
 
+def test_is_retryable_hold_start_matrix():
+    start = KeyAction("POST", "/session/start", {})
+    end = KeyAction("POST", "/session/end", {})
+    unreachable_body = b'{"error":"x","reason":"voice_daemon_unreachable"}'
+
+    assert bridge_mod._is_retryable_hold_start(
+        start, ControlResponse(409, b'{"result":"BUSY"}'),
+    )
+    assert bridge_mod._is_retryable_hold_start(
+        start, ControlResponse(503, unreachable_body),
+    )
+    # A genuine refusal (spend cap, muted, paused, measuring) is also a
+    # 503 but carries no voice_daemon_unreachable reason -- must not be
+    # retried, since a fast retry cannot fix any of those.
+    assert not bridge_mod._is_retryable_hold_start(
+        start, ControlResponse(503, b'{"result":"CAP"}'),
+    )
+    assert not bridge_mod._is_retryable_hold_start(
+        start, ControlResponse(200, b'{"result":"OK"}'),
+    )
+    assert not bridge_mod._is_retryable_hold_start(start, None)
+    # Same status/body on a different path or method never retries.
+    assert not bridge_mod._is_retryable_hold_start(
+        end, ControlResponse(503, unreachable_body),
+    )
+
+
+async def test_read_device_hold_action_retries_voice_unreachable_start_until_ready(
+    monkeypatch,
+):
+    """A press landing in the ~2s gap after a jasper-voice restart -- before
+    its control socket exists -- gets 503 {"reason":
+    "voice_daemon_unreachable"} back from jasper-control (its own bounded
+    connect retry, jasper.control.uds._connect_voice_socket, not having
+    closed the gap yet). The bridge keeps retrying at HOLD_START_RETRY_SEC
+    cadence for as long as the key stays held, same as the existing
+    BUSY/409 retry, instead of dropping the press."""
+    monkeypatch.setattr(bridge_mod, "HOLD_START_RETRY_SEC", 0.01)
+    calls: List[tuple[str, str, Optional[dict]]] = []
+
+    class _Event:
+        def __init__(self, value: int):
+            self.type = 1
+            self.code = 217
+            self.value = value
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            yield _Event(1)
+            await asyncio.sleep(0.03)
+            yield _Event(0)
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = _profile(
+        keymap={
+            217: HoldAction(
+                on_press=KeyAction("POST", "/session/start", {}),
+                on_release=KeyAction("POST", "/session/end", {}),
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        if path == "/session/start" and len(calls) == 1:
+            return ControlResponse(
+                503,
+                b'{"error":"voice_daemon not running (socket not found)",'
+                b'"reason":"voice_daemon_unreachable"}',
+            )
+        return ControlResponse(200, b'{"result":"OK"}')
+
+    await _read_device("/dev/input/event9", device, post)
+
+    assert calls == [
+        ("POST", "/session/start", None),
+        ("POST", "/session/start", None),
+        ("POST", "/session/end", None),
+    ]
+
+
+async def test_read_device_hold_action_does_not_retry_other_503_reasons(
+    monkeypatch,
+):
+    """A genuine refusal (spend CAP, muted, paused, measuring) is also a
+    503, but carries no voice_daemon_unreachable reason -- retrying it
+    every HOLD_START_RETRY_SEC would just hammer a refusal a fast retry
+    cannot fix."""
+    monkeypatch.setattr(bridge_mod, "HOLD_START_RETRY_SEC", 0.01)
+    calls: List[tuple[str, str, Optional[dict]]] = []
+
+    class _Event:
+        def __init__(self, value: int):
+            self.type = 1
+            self.code = 217
+            self.value = value
+
+    class _FakeDev:
+        def __init__(self, path):
+            self.info = types.SimpleNamespace(
+                bustype=5, vendor=0x2717, product=0x32B9,
+            )
+            self.name = "WiiM Remote 2"
+
+        async def async_read_loop(self):
+            yield _Event(1)
+            await asyncio.sleep(0)
+            yield _Event(0)
+
+        def close(self):
+            pass
+
+    _install_fake_evdev(monkeypatch, input_device=_FakeDev)
+
+    device = _profile(
+        keymap={
+            217: HoldAction(
+                on_press=KeyAction("POST", "/session/start", {}),
+                on_release=KeyAction("POST", "/session/end", {}),
+            )
+        },
+    )
+
+    async def post(method: str, path: str, body: Optional[dict]) -> ControlResponse:
+        calls.append((method, path, body))
+        return ControlResponse(503, b'{"result":"CAP"}')
+
+    await _read_device("/dev/input/event9", device, post)
+
+    assert calls == [("POST", "/session/start", None)]
+
+
 async def test_hold_retry_rechecks_pressed_after_retry_timer(monkeypatch):
     """If release lands just as the retry timer fires, don't start a
     fresh manual session after the user has let go."""
