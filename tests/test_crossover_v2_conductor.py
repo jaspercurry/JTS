@@ -16,9 +16,10 @@ observe apply — ``fakes.apply_done = True`` / ``fakes.apply_failed_code``
 simulate the HOST's own auto-apply (fired from a trusted MEASURE accept)
 completing or failing, read through the ``apply_complete``/``apply_failed``
 seams exactly as the real host wires them
-(jasper.web.correction_crossover_v2_relay.build_v2_run_and_consume). The conductor
-itself never performs the apply — see test_correction_crossover_v2_endpoints.py
-for the host-level auto-apply trigger + background-thread wiring.
+(jasper.web.correction_crossover_v2_wired.build_v2_wired_run_and_consume). The
+conductor itself never performs the apply — see
+test_correction_crossover_v2_endpoints.py for the host-level auto-apply
+trigger + background-thread wiring.
 """
 from __future__ import annotations
 
@@ -6212,11 +6213,7 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     # capture flow" / "What v2 is" -- tier_display_info() is the derivation of
     # record for that number).
     # The bare-defaults scenario below is 10 captures ⇒ 1800 + (10-3)*120 =
-    # 2640 s. Both scenarios are HAND-WALKED shapes, which ride the 900 s relay
-    # default; neither number fits inside it and this test must not be read as
-    # claiming otherwise. What the split buys is a lower worst case and a fresh
-    # TTL per stage. (A REMOTE stage sizes its link from this ceiling instead —
-    # `correction_crossover_v2_relay.relay_link_ttl_s`, issue #2509.)
+    # 2640 s. What the split buys is a lower worst case per stage.
     assert session_wall_clock_ceiling_s(shipped) == 2640.0
     assert session_wall_clock_ceiling_s(
         build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
