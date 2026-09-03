@@ -106,8 +106,29 @@ def _alignment_record(tmp_path: Path) -> Path:
 
 
 def _publish_record(tmp_path: Path, health: AlignmentHealth) -> None:
-    """Stand in for jasper-aec-init: leave one pass's record behind."""
+    """Leave a record behind from a pass that already finished.
+
+    The reconciler clears the record before it restarts jasper-aec-init, so
+    this is the leftover of an EARLIER pass, never the verdict of the one under
+    test — for that, see `_publishing_init_systemctl`.
+    """
     _alignment_record(tmp_path).write_text(health.to_shell(), encoding="utf-8")
+
+
+def _publishing_init_systemctl(tmp_path: Path, health: AlignmentHealth) -> Path:
+    """A systemctl double whose jasper-aec-init restart publishes `health` and
+    then succeeds — the shape of the real oneshot, which writes its record
+    during the run the reconciler is waiting on.
+    """
+    return _systemctl_double(
+        tmp_path,
+        "init-publishes-systemctl",
+        "if [[ \"$*\" == 'restart jasper-aec-init.service' ]]; then\n"
+        "cat > \"$JASPER_AEC_ALIGNMENT_RECORD_FILE\" <<'JTSRECORD'\n"
+        f"{health.to_shell()}"
+        "JTSRECORD\n"
+        "fi\n",
+    )
 
 
 def _fake_mixer_tools(tmp_path: Path) -> tuple[Path, Path]:
@@ -810,7 +831,7 @@ def test_reconcile_discloses_an_applied_alignment_its_proof_no_longer_matches(
     # `disclosed_stale` verdict; the reconciler copies that into the env file
     # verbatim, and the stack stays up.
     env_file = _stage(tmp_path, "Array", mode="auto", channels=6)
-    _publish_record(
+    fake = _publishing_init_systemctl(
         tmp_path,
         alignment_health(
             chip_aec_health.APPLIED,
@@ -819,7 +840,9 @@ def test_reconcile_discloses_an_applied_alignment_its_proof_no_longer_matches(
         ),
     )
 
-    result = _run_reconcile(tmp_path, "--reason", "test")
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
 
     assert result.returncode == 0, result.stderr
     body = env_file.read_text()
@@ -847,7 +870,7 @@ def test_a_disclosure_reason_reaches_the_env_file_without_apostrophes(
     # and by systemd's parser, so the daemons and this script would disagree
     # on the value. Strip them at the boundary instead.
     env_file = _stage(tmp_path, "Array", mode="auto", channels=6)
-    _publish_record(
+    fake = _publishing_init_systemctl(
         tmp_path,
         AlignmentHealth(
             chip_aec_health.STATUS_DISCLOSED_STALE,
@@ -857,7 +880,9 @@ def test_a_disclosure_reason_reaches_the_env_file_without_apostrophes(
         ),
     )
 
-    result = _run_reconcile(tmp_path, "--reason", "test")
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
 
     assert result.returncode == 0, result.stderr
     reason = _env_assignments(env_file)["JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON"]
@@ -3003,16 +3028,19 @@ def _armed_chip_aec_box(tmp_path: Path, alignment: str = "ready") -> None:
     stack with jasper-aec-init's disclosure standing.
     """
     _stage(tmp_path, "Array", mode="auto", channels=6)
+    extra_env = {}
     if alignment == "disclosed_stale":
-        _publish_record(
-            tmp_path,
-            alignment_health(
-                chip_aec_health.APPLIED,
-                selection="auto",
-                identity_diff=("xvf_serial",),
-            ),
+        extra_env["JASPER_SYSTEMCTL"] = str(
+            _publishing_init_systemctl(
+                tmp_path,
+                alignment_health(
+                    chip_aec_health.APPLIED,
+                    selection="auto",
+                    identity_diff=("xvf_serial",),
+                ),
+            )
         )
-    first = _run_reconcile(tmp_path, "--reason", "install")
+    first = _run_reconcile(tmp_path, "--reason", "install", extra_env=extra_env)
     assert first.returncode == 0, first.stderr
     # Sanity: the baseline pass really did arm the chip-AEC path and restart
     # voice. Without this the "skipped" assertions below could pass against a
