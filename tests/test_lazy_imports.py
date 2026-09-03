@@ -684,7 +684,13 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
     [
         pytest.param(
             "jasper.control.server",
-            ("dbus_next", "jasper.multiroom.reconcile"),
+            (
+                "dbus_next",
+                "jasper.multiroom.reconcile",
+                "numpy",
+                "scipy",
+                "sounddevice",
+            ),
             id="jasper-control",
         ),
         pytest.param(
@@ -705,8 +711,11 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
 
     These daemons name ``dbus_next`` only inside ``except`` tuples, and
     ``jasper.multiroom.reconcile`` only behind a bonded-box branch, so both
-    belong behind function-local imports. The smallest supported box is a
-    415 MB Pi Zero 2 W (issue #3697).
+    belong behind function-local imports. The measurement stack
+    (``numpy``/``scipy``/``sounddevice``) belongs to the oneshot commissioners;
+    jasper-control reaches their persisted state through stdlib-only record
+    modules instead. The smallest supported box is a 415 MB Pi Zero 2 W
+    (issue #3697).
     """
     probe = (
         "import sys\n"

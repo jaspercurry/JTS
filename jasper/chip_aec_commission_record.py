@@ -38,7 +38,9 @@ class CommissionOutcome:
     state: str = ""
     detail: str = ""
     updated_at: str = ""
-    schema_version: int = SCHEMA_VERSION
+    # None when the record on disk declared no usable version: a later
+    # read-modify-write must not stamp an unknown record as this schema.
+    schema_version: int | None = SCHEMA_VERSION
 
     @classmethod
     def now(cls, *, state: str, detail: str) -> CommissionOutcome:
@@ -57,7 +59,7 @@ class CommissionOutcome:
         return {"running": running, "state": self.state, "detail": self.detail}
 
 
-def read(path: Path = OUTCOME_PATH) -> CommissionOutcome | None:
+def read(path: Path) -> CommissionOutcome | None:
     """The record at ``path``, or None when it is absent or unreadable."""
     try:
         with open(path) as handle:
@@ -71,7 +73,7 @@ def read(path: Path = OUTCOME_PATH) -> CommissionOutcome | None:
         state=_text(data.get("state")),
         detail=_text(data.get("detail")),
         updated_at=_text(data.get("updated_at")),
-        schema_version=version if isinstance(version, int) else SCHEMA_VERSION,
+        schema_version=version if isinstance(version, int) else None,
     )
 
 

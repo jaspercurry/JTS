@@ -851,7 +851,23 @@ def test_aec_commission_409_while_a_run_is_active(
     status, body = _post(f"{base}/aec/commission", None)
 
     assert status == 409
-    assert body["commission"]["running"] is True
+    assert body["commission"] == {"running": True, "state": "", "detail": ""}
+
+
+def test_aec_commission_502_when_the_unit_will_not_start(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(srv_mod, "_start_aec_commission", lambda: False)
+
+    status, body = _post(f"{base}/aec/commission", None)
+
+    assert status == 502
+    assert body["code"] == "aec_commission_start_failed"
+    assert body["commission"] == {"running": False, "state": "", "detail": ""}
 
 
 def test_aec_commission_concurrent_second_click_starts_nothing(
