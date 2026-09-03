@@ -2,18 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Who may start one more capture, and what it costs (#2291 Phase 5a-vi).
+"""Who may start one more capture, and what it costs.
 
-The meter in front of a capture: one prompted position gets its planned
-capture plus at most :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION` extras, pooled
-across everyone who can ask (bounded-retry ruling #2086, recorded in
-docs/historical/crossover-measurement-v2-campaign-record.md). This module
-DECIDES and does not act — the session owns every irreversible half, so a
-pure gate asked the same question twice answers the same way. No household
-vocabulary lives here: a refusal leaves as a kind plus an opaque reason code
-and :mod:`.refusal_copy` renders the sentence. Registry projections and the
-apply-failure probe arrive as stated arguments, the probe as a callable so
-it is invoked only on the hold branch.
+This module DECIDES and does not act — the session owns every irreversible
+half, so a pure gate asked the same question twice answers the same way. No
+household vocabulary lives here: a refusal leaves as a kind plus an opaque
+reason code and :mod:`.refusal_copy` renders the sentence. Bounded-retry
+ruling #2086, recorded in
+docs/historical/crossover-measurement-v2-campaign-record.md.
 """
 
 from __future__ import annotations
@@ -277,18 +273,17 @@ def assess_begin(
 
     ``verify_hold`` is the session's "this is VERIFY and no apply has been
     observed" — VERIFY is soft-held until one is. No shipped session reaches
-    that hold since the two-stage split (work order D10): stage 1 has no VERIFY
-    index and stage 2's session is constructed ``applied=True``, so no new
-    design may depend on it. A TERMINAL auto-apply failure refuses outright
-    rather than holding toward a dishonest capture_timeout.
+    that hold since the two-stage split (D10): stage 1 has no VERIFY index and
+    stage 2's session is constructed ``applied=True``, so no new design may
+    depend on it. A TERMINAL auto-apply failure refuses outright rather than
+    holding toward a dishonest capture_timeout.
 
-    Neither closing condition normally arrives here (#2086): both are settled
-    at the REJECTION that closed the slot, so a household is never handed a
-    "try again" screen whose button is about to end the session.
-    :data:`REFUSE_EXTRAS_SPENT` and :data:`REFUSE_NON_RETRIABLE` are the
-    backstops for a begin that reaches a settled slot anyway, and the ``code``
-    on the former is the condition actually observed at this slot, never a
-    generic exhaustion code that would erase what went wrong.
+    Neither closing condition normally arrives here — both are settled at the
+    REJECTION that closed the slot (#2086 item 3, ADR-0227). :data:`REFUSE_EXTRAS_SPENT`
+    and :data:`REFUSE_NON_RETRIABLE` are the backstops for a begin that reaches
+    a settled slot anyway, and the ``code`` on the former is the condition
+    actually observed at this slot, never a generic exhaustion code that would
+    erase what went wrong.
     """
     if verify_hold:
         failure_code = apply_failure_code()
@@ -323,15 +318,11 @@ def assess_begin(
     )
 
 
-# The other half of the bounded-retry ruling (#2086 item 3).
+# The other half of the bounded-retry ruling — see ADR-0227 (#2086 item 3).
 # :func:`assess_begin` answers "may one more capture start"; this answers
 # "this take was rejected — is there an honest next take, or is this the
-# outcome". The answer belongs at the verdict rather than at the next
-# begin, so a household is never shown a retry screen whose button only
-# leads to a pre-play refusal. TWO conditions close a slot and the begin
-# gate refuses on both, so both settle here or the same lie returns by a
-# second door: the meter running out, and a rejection naming a condition
-# no further take can clear.
+# outcome". Two conditions close a slot: the meter running out, and a
+# rejection naming a condition no further take can clear.
 
 #: The slot still has extras. Nothing settles; the household retries as before.
 SETTLE_RETRY_REMAINS = "retry_remains"

@@ -1080,14 +1080,14 @@ def build_conductor_state(
         if failure_code == getattr(conductor, "last_failure_code", None)
         else None
     )
-    # Let the journey learn about a restore it could not see (#2616): a
-    # durable-state writer that clears ``applied`` holds no conductor, so a live
-    # session whose speaker was restored out from under it keeps ``applied``
-    # True in memory and the write below would put that stale True back. The
-    # durable state is the authority on whether a restore HAPPENED and the
-    # journey owns the flag, so this tells the journey and writes what it says.
-    # Scoped to the SAME session, because a prior session's restore says nothing
-    # about this one.
+    # Let the journey learn about a restore it could not see (#2616): durable
+    # state is the authority on whether a restore HAPPENED, the journey owns
+    # the flag, so this tells the journey and writes what it says. Scoped to
+    # the SAME session — a prior session's restore says nothing about this
+    # one. ``snap.applied`` is the staleness check: a durable-state writer
+    # with no conductor (the web host) already cleared ``applied`` on disk,
+    # and without this the live conductor's stale True would be written
+    # straight back on the next persist.
     if (
         prior.get("applied") is False
         and prior.get("session_id") == snap.session_id
