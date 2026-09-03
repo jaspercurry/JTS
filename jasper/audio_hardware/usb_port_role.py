@@ -501,6 +501,38 @@ def _without_legacy_comment(content: str) -> str:
     return "".join(line for index, line in enumerate(lines) if index not in remove)
 
 
+def _collapse_empty_all_sections(content: str) -> str:
+    """Collapse adjacent bare ``[all]`` headers separated only by blank lines.
+
+    ``render_boot_config`` and ``render_i2s_hat_boot_config`` each append a
+    fresh ``[all]`` header when the file doesn't already end in one, then
+    strip only their own block's directives on the next pass -- leaving the
+    now-empty header behind. Two (or more) adjacent ``[all]`` headers with
+    nothing but blank lines between them are equivalent to one, so this
+    heals both new growth and an already-bloated file in one pass.
+
+    Only a header with no trailing comment is treated as droppable: a line
+    like ``[all]  # keep me`` is never our own emission (the writer always
+    emits a bare ``[all]``), so it and any comment it carries are left
+    untouched rather than silently merged away.
+    """
+    lines = content.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.strip().lower() == "[all]":
+            cursor = index + 1
+            while cursor < len(lines) and not lines[cursor].strip():
+                cursor += 1
+            if cursor < len(lines) and lines[cursor].strip().lower() == "[all]":
+                index = cursor
+                continue
+        output.append(line)
+        index += 1
+    return "".join(output)
+
+
 def _without_managed_role_lines(content: str) -> str:
     lines = content.splitlines(keepends=True)
     output: list[str] = []
@@ -536,7 +568,7 @@ def _without_managed_role_lines(content: str) -> str:
         output.append(line)
     if in_managed_block:
         raise ValueError("JTS USB data-role block is missing its end marker")
-    return "".join(output)
+    return _collapse_empty_all_sections("".join(output))
 
 
 def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
@@ -582,7 +614,7 @@ def _without_managed_i2s_hat(content: str, *, overlay: str) -> str:
         output.append(line)
     if in_managed_block:
         raise ValueError("JTS I2S audio-HAT block is missing its end marker")
-    return "".join(output)
+    return _collapse_empty_all_sections("".join(output))
 
 
 def render_i2s_hat_boot_config(content: str, profile_id: str | None) -> str:

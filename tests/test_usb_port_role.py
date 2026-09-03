@@ -358,6 +358,49 @@ dtoverlay=dwc2,dr_mode=peripheral
     assert render_boot_config(rendered, "host") == rendered
 
 
+def _has_adjacent_empty_all_sections(text: str) -> bool:
+    """True if two ``[all]`` headers appear with only blank lines between."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().lower() != "[all]":
+            continue
+        cursor = index + 1
+        while cursor < len(lines) and not lines[cursor].strip():
+            cursor += 1
+        if cursor < len(lines) and lines[cursor].strip().lower() == "[all]":
+            return True
+    return False
+
+
+@pytest.mark.parametrize(
+    "boot_config",
+    [
+        pytest.param("[cm4]\notg_mode=1\n\n[all]\nfoo=1\n", id="clean"),
+        pytest.param(
+            "[cm4]\notg_mode=1\n\n" + ("[all]\n\n" * 7) + "[all]\nfoo=1\n",
+            id="stray_all_sections",
+        ),
+    ],
+)
+def test_render_boot_config_heals_stray_all_sections_and_is_idempotent(
+    boot_config: str,
+) -> None:
+    once = render_boot_config(boot_config, "host")
+    twice = render_boot_config(once, "host")
+
+    assert twice == once
+    assert once.count(MANAGED_BLOCK_BEGIN) == 1
+    assert not _has_adjacent_empty_all_sections(once)
+
+
+def test_render_boot_config_never_drops_a_commented_all_header() -> None:
+    boot_config = "[cm4]\notg_mode=1\n\n[all]  # keep me\n\n[all]\nfoo=1\n"
+
+    rendered = render_boot_config(boot_config, "host")
+
+    assert "[all]  # keep me" in rendered
+
+
 def test_reconcile_boot_config_preserves_unrelated_conditional_role(
     tmp_path: Path,
 ) -> None:
