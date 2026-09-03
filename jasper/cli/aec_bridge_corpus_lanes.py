@@ -37,7 +37,7 @@ from jasper.cli.aec_bridge import (
     BridgeConfig,
     _add_loop_emitter,
     _bridge_stats,
-    _env_bool,
+    env_bool,
     logger,
 )
 from jasper.cli.aec_bridge_engines import Aec3Engine, EngineSelector
@@ -239,7 +239,7 @@ def _build_usb_optional_paths(
         usb_webrtc_label = "usb_webrtc/aec3_edge_combo_80"
         usb_webrtc_display_label = USB_AEC3_CORPUS_LABEL
         if (
-            _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
+            env_bool(AEC3_SWEEP_ENV_FLAG, "0")
             and config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
         ):
             # In USB AEC3 sweep mode the normal usb_webrtc leg becomes the
@@ -261,7 +261,7 @@ def _build_usb_optional_paths(
             config.out_port_usb_webrtc,
             usb_webrtc_display_label,
         )
-        if _env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
+        if env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
             try:
                 from jasper.aec_engines import dtln_models
                 from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
@@ -310,7 +310,7 @@ def _build_aec3_sweep_paths(
 ) -> tuple[list[SweepPath], Callable[[bytes, bytes], None]]:
     """Build configured sweep variants and their per-frame dispatcher."""
     aec3_sweep_paths: list[SweepPath] = []
-    if (not production_chip_aec_enabled) and _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
+    if (not production_chip_aec_enabled) and env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
         if (
             config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
             and usb_raw_q is None
@@ -391,7 +391,7 @@ def _build_dtln_optional_path(
     dtln_emitter = None
     dtln_wanted = (
         not production_chip_aec_enabled
-    ) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0")
+    ) and env_bool("JASPER_AEC_DTLN_ENABLED", "0")
     _bridge_stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
     if dtln_wanted:
         try:

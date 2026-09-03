@@ -4,57 +4,11 @@
 
 """Serve one round's evidence, take a prescription back, and stage it.
 
-The three parts of the prescriber loop, and deliberately nothing between them:
-``packet`` emits the evidence document, the operator hands it to whatever
-reader they are talking to, ``propose`` reads the answer back through the
-strict gate, and ``stage`` puts an accepted one where the next round will find
-it. **Who calls the model is not this tool's business** — there is no
-model client, no API key, no spend cap and no network here, which is what keeps
-the harness usable with a human doing the reasoning, with a laptop agent over
-SSH, or with a paste into a browser.
-
-``status`` is the fourth verb and the odd one out: it writes nothing and gates
-nothing. Sequencing in this loop is a set of artifact-dependency refusals
-rather than a workflow engine, which is cheap to run and expensive to be
-dropped into the middle of — so one verb says where a speaker stands, and it
-derives that from the SAME builders the three doors read rather than from a
-second walk of the same tree.
-
-``propose`` and ``stage`` run the SAME gate on the same document; the only
-difference is that ``stage`` banks the result. That is deliberate — a staging
-verb with a laxer check would be the second, weaker reader this design exists to
-avoid — so ``propose`` is the dry run of ``stage`` rather than a different
-question, and an operator who wants to see the answer before committing to it
-runs the first and then the second.
-
-**Emit the packet ONCE, and judge against that file.** ``propose`` and
-``stage`` take ``--packet <file>`` and read it AS the evidence, which is the
-intended flow: run ``packet`` on the box, hand the file to whoever writes the
-prescription, then run ``propose``/``stage`` against the same file. Rebuilding
-the packet a second time is what used to make staging a fingerprint dance — a
-rebuild on another machine resolves ``--drivers``, ``--applied-profile``, ``--repeat-floor``
-and ``--declared-geometry`` against whatever THAT machine has, so it fingerprints
-differently and the document written against the first one is refused
-against the second, leaving an operator to paste a fingerprint across by
-hand. Nothing here re-stamps a
-fingerprint and nothing ever will: the echo is provenance, and a tool that
-rewrote it would make every accepted prescription unprovable. What ``--packet``
-removes is the second packet, so the echo matches by construction.
-
-Conventions mirror :mod:`jasper.cli.correction_bundle` and the workbench plan's
-§5.0 CLI note: ``argparse`` subcommands, a per-subcommand ``--json``,
-``main() -> int``, non-zero exit on failure, and ``-`` for stdin.
-
-**Exit codes are part of the contract**, because the caller of this tool is
-often a script: ``0`` accepted (``status``, which accepts nothing, exits ``0``
-when it read the evidence), ``1`` the evidence could not be read, ``2`` the
-prescription was refused, ``3`` an accepted prescription could not be staged. A
-refusal is not a crash — it is the loop working — so it prints the
-machine-readable reason on stdout as JSON when asked, and the human sentence on
-stderr either way. ``3`` is its own code rather than folded into ``1`` because
-the two send an operator to different places: ``2`` means fix the prescription,
-``3`` means fix the speaker's filesystem, and a script that could not tell them
-apart would retry the wrong one.
+``packet`` emits the evidence, ``propose`` reads an answer back through the
+strict gate, ``stage`` runs the SAME gate and banks it, ``status`` only
+reports. No model client, API key or network lives here. Emit the packet ONCE
+and pass it as ``--packet <file>``; a rebuild fingerprints differently. Exit
+codes: 0 accepted, 1 evidence unreadable, 2 refused, 3 staging failed.
 """
 
 from __future__ import annotations
@@ -138,42 +92,22 @@ EXIT_EVIDENCE_UNREADABLE = 1
 EXIT_REFUSED = 2
 EXIT_STAGE_FAILED = 3
 
-#: Authority tier for the generated tool-menu index
-#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). One tool,
-#: one owner: the generator reads this rather than the runbook restating it.
-#: Three of the four verbs only read; `stage` is the one that writes.
+#: Authority tier for the generated tool-menu index (ADR-0204).
 AUTHORITY_TIER = "advisory (`stage` mutates)"
 
-#: What happens to a document sitting in the spool, said once. ``stage`` says it
-#: at the moment of banking and ``status`` says it to an operator who arrived
-#: later and found one waiting — the same fact at two moments, so a second
-#: wording here would be a second answer to "what becomes of this file".
+#: What happens to a document in the spool; ``stage`` and ``status`` both say it.
 STAGED_LIFECYCLE_NOTE = "the next round takes it once and consumes it"
 
-#: Why the staged section has nothing to report. A slug in the packet's own
-#: style, so the section that reads a file the packet never sees still answers
-#: in the vocabulary the other three answer in.
+#: Why the staged section has nothing to report.
 SPOOL_UNREADABLE_REASON = "permission_denied"
 
 
 def _read_packet_file(path: Path) -> dict[str, Any]:
     """One already-emitted packet, read as the evidence rather than rebuilt.
 
-    The whole point of the flag: a packet emitted on the speaker and a packet
-    rebuilt on a laptop fingerprint differently, because the rebuild resolves
-    ``--drivers``/``--applied-profile``/``--repeat-floor``/
-    ``--declared-geometry`` against whatever that machine has. So the answer to a packet was either re-fingerprinted
-    by hand — provenance laundering, and the one thing the echo exists to
-    prevent — or judged against evidence it was not written for. Reading the
-    FILE removes the second packet entirely; the fingerprint then matches by
-    construction.
-
-    Every ``packet_*`` reader the gate uses takes the packet as a VALUE and
-    tolerates any shape, so a file that parses is a usable evidence source and
-    one that does not answers the tool's own "the evidence could not be read"
-    exit. ``OSError`` is deliberately not caught: an unreadable path is the same
-    failure as an unreadable bundle and both commands already map it to that
-    exit.
+    A rebuild on another machine resolves the flags against what THAT machine
+    has and so fingerprints differently. ``OSError`` is deliberately not
+    caught: the caller maps it to the unreadable-evidence exit.
     """
     try:
         packet = json.loads(path.read_text(encoding="utf-8"))
@@ -190,35 +124,21 @@ def _read_packet_file(path: Path) -> dict[str, Any]:
 
 
 def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
-    """The packet, as a value — already separate from every verb's printing.
+    """The packet, as a value, separate from every verb's printing.
 
-    ``_cmd_packet``, ``_cmd_status`` and ``_gate`` each catch this call's
-    errors their own way (different exception tuples, different exit codes),
-    which is why the value door stops here rather than inside a shared
-    try/except: one mapping could not serve three different contracts.
-
-    ``--packet`` short-circuits the build: the two sources are exclusive, and
-    :func:`_evidence_source_error` has already refused an invocation that named
-    both. Which SHAPE the positional is, and where the design draft and the
-    applied profile therefore live, is
+    ``--packet`` short-circuits the build. Which shape the positional is, and
+    where the design draft and applied profile therefore live, is
     :func:`~jasper.active_speaker.crossover_v2.round_inputs.round_inputs`'
-    answer — the same resolver ``jasper-round-views`` reads a round through, so
-    a live session directory and a banked round tree mean the same thing to
-    both tools. Those defaults are resolved THERE rather than at the argparse
-    default, so "the operator passed this flag" stays answerable — which is
-    what that refusal is decided on, and which is why an explicit flag is
-    applied here rather than folded into the resolver.
+    answer, resolved there rather than at the argparse default so "the operator
+    passed this flag" stays answerable.
     """
     if args.packet:
         return _read_packet_file(Path(args.packet))
     inputs = round_inputs(Path(args.session_dir))
     return build_crossover_evidence_packet(
         inputs.session_dir,
-        # No default for the flow state, unlike the two below: the web host
-        # rewrites it as a round runs, and a rebuild fingerprints what it read
-        # — so a defaulted state would move a packet's fingerprint between
-        # `packet` and the `propose`/`stage` that judges against it minutes
-        # later, which is the mismatch `--packet` exists to remove.
+        # No default for the flow state: the web host rewrites it as a round
+        # runs, so a defaulted state would move the packet's fingerprint.
         state_path=Path(args.state) if args.state else None,
         driver_draft_path=(
             Path(args.drivers) if args.drivers else inputs.design_draft_path
@@ -239,9 +159,8 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
-#: The flags that exist ONLY to feed a rebuild, and are therefore refused
-#: beside ``--packet``. ``--state`` is not among them: ``stage`` reads it for
-#: the round ordinal, which is not evidence, so it is refused per-verb below.
+#: Flags that exist ONLY to feed a rebuild, and are refused beside ``--packet``.
+#: ``--state`` is not among them: ``stage`` reads it for the round ordinal.
 _REBUILD_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
     ("--drivers", "drivers"),
     ("--applied-profile", "applied_profile"),
@@ -253,16 +172,8 @@ _REBUILD_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
 def _evidence_source_error(args: argparse.Namespace) -> str | None:
     """ONE evidence source per invocation, or the sentence that says why not.
 
-    Two sources cannot both be the evidence, and the failure of letting them
-    try is silent: the rebuild wins, the document echoes the file's fingerprint,
-    and the operator is told their prescription answers the wrong round. So a
-    rebuild input named beside ``--packet`` is refused rather than ignored.
-
     ``--state`` is the exception, and only on ``stage``: that verb reads it for
-    the round ordinal — a fact about the SERIES, not about the round's
-    evidence — and hard-refuses without it, so refusing it here would make
-    ``stage --packet`` unreachable. On ``propose`` it feeds nothing but the
-    rebuild, so it is refused with the rest.
+    the round ordinal and hard-refuses without it.
     """
     if not args.packet:
         if args.session_dir is None:
@@ -306,13 +217,7 @@ def _cmd_packet(args: argparse.Namespace) -> int:
 def _print_packet_summary(packet: dict[str, Any]) -> None:
     """The four things a reader should see before trusting the document.
 
-    Printed to stderr so it never contaminates a piped packet: the fingerprint
-    a prescription must echo, the region a proposal must sit inside, the
-    count of questions this round cannot answer — which is the number most
-    worth noticing and the easiest to skip past in 48 KB of JSON — and, per
-    role, the trim this round's own measurement resolved beside the trim
-    already applied, so a re-solve is visible before a prescriber decides
-    whether to pin it rather than only after (on the receipt's ``delta_db``).
+    Printed to stderr so it never contaminates a piped packet.
     """
     region = packet.get("crossover_region") or {}
     print(
@@ -360,30 +265,10 @@ def _gate(
 ]:
     """The document, the validated prescription, what it becomes, what judged it.
 
-    Shared WHOLE by ``propose`` and ``stage``, which is the property that makes
-    the first a true dry run of the second. A staging verb with its own copy of
-    these calls would be a second reader of the same document, and the two would
-    drift on the day one of them learns a new bound.
-
-    The fourth value is the classification evidence read out of the packet, and
-    it is returned rather than re-derived by ``stage`` for the same reason: it
-    is what ``stage_prescription`` banks for the take's gate re-run, and a
-    second read of the packet could hand the spool verdicts the gate above
-    never saw. ``None`` for the blend class, which has no such bar.
-
-    **ONE door for two classes.** The document names its own ``kind`` and that
-    is what picks the gate — there is no ``--class`` flag and deliberately no
-    inference from the shape. A flag would let an operator hand a blend document
-    to the per-driver gate and be told its filters were malformed rather than
-    that it was the wrong file; inference would make the answer depend on which
-    optional fields happened to be present. The discriminator is the thing the
-    document already asserts about itself, and a document naming neither kind is
-    refused by whichever gate its ``kind`` most nearly matches — which, for a
-    document naming nothing, is the blend one, exactly as before.
-
-    ``BlendPrescriptionRefused`` for a refusal from either gate (the caller
-    reports it and exits ``2``), ``CrossoverEvidencePacketError``/``OSError``
-    when the inputs cannot be read at all (exit ``1``).
+    Shared WHOLE by ``propose`` and ``stage``, which is what makes the first a
+    true dry run of the second. The document's own ``kind`` picks the gate.
+    Raises ``BlendPrescriptionRefused`` (exit 2) or
+    ``CrossoverEvidencePacketError``/``OSError`` (exit 1).
     """
     packet = _load_packet(args)
     payload = _read_payload(args.prescription)
@@ -392,9 +277,6 @@ def _gate(
     classifications: tuple[FeatureVerdict, ...] | None = None
     if document.get("kind") == DRIVER_PRESCRIPTION_KIND:
         # The class's own size bound, applied the moment the class is known.
-        # `read_prescription_bytes` above has already stopped anything too large
-        # to parse, under the family's ceiling and the family's slug — bytes
-        # that will not parse have no class to be refused in the name of.
         check_driver_document_size(payload)
         classifications = packet_feature_classifications(packet)
         prescription = read_driver_prescription(
@@ -404,11 +286,8 @@ def _gate(
             classifications=classifications,
             incumbent_filters=packet_incumbent_linearization(packet),
         )
-        # `fitted=None` and not an oversight: at propose/stage time this round
-        # has not measured, so no per-driver fit exists to merge the document
-        # into. The merge happens when a round builds its candidate, with the
-        # fit it just produced. What this prints is therefore what the document
-        # contributes, not the branch map the graph will carry.
+        # `fitted=None` is deliberate: at propose/stage time no per-driver fit
+        # exists yet. The merge happens when a round builds its candidate.
         candidate_fields = driver_prescription_to_candidate_fields(
             prescription, fitted=None
         )
@@ -421,24 +300,13 @@ def _gate(
         )
         candidate_fields = blend_prescription_to_candidate_fields(prescription)
     if prescription is None:
-        # Unreachable today — `read_blend_prescription` returns None only for a
-        # null document, and `read_prescription_bytes` has already refused one.
-        # Written as a branch rather than an `assert` because `python -O`
-        # strips asserts, and a stripped narrowing would turn an impossible
-        # state into an AttributeError three lines down instead of a named
-        # exit. Same reason `linearization_fit`'s cut-only invariant raises.
-        # Raised into the refusal vocabulary rather than returned as a special
-        # case, so both commands have exactly one arm that handles "this is not
-        # a prescription we can use".
+        # Unreachable today. A branch rather than an `assert` because `python -O`
+        # strips asserts and a stripped narrowing would raise AttributeError.
         raise BlendPrescriptionRefused(
             BLEND_PRESCRIPTION_MALFORMED, "the prescription document was empty"
         )
-    # The candidate fields are computed INSIDE the gate, above, because each
-    # seam re-asks its own route and can therefore refuse too. Computed by the
-    # caller instead, a prescription that reached a seam by some other path
-    # would crash the process instead of exiting with the contract's refusal
-    # code — which would make the seam's own guard the one thing the CLI could
-    # not report.
+    # Candidate fields are computed INSIDE the gate above, because each seam
+    # re-asks its own route and can refuse with the contract's exit code.
     return payload, prescription, candidate_fields, classifications
 
 
@@ -479,34 +347,20 @@ def _cmd_propose(args: argparse.Namespace) -> int:
 
 
 def _band_phrase(lo: float, hi: float) -> str:
-    """One frequency span, spelled the one way this tool spells it.
-
-    Named because ``status`` prints the crossover region and ``propose`` prints
-    the band a blend prescription was bounded by, and those are the same span
-    read at two moments — two format strings would drift the day one of them
-    gained a decimal.
-    """
+    """One frequency span, spelled the one way this tool spells it."""
     return f"{lo:.1f}-{hi:.1f} Hz"
 
 
 def _passband_phrase(role: str, lo: float, hi: float) -> str:
-    """One role's declared band. Same reason as :func:`_band_phrase`.
+    """One role's declared band, to whole hertz.
 
-    Coarser than the region on purpose: a driver's declared band is a
-    manufacturer figure rounded to whole hertz, and printing it to a tenth
-    would suggest a precision the declaration does not have.
+    A manufacturer figure; a tenth would suggest precision it does not have.
     """
     return f"{role} {lo:.0f}-{hi:.0f} Hz"
 
 
 def _scope(prescription: BlendPrescription | DriverPrescription) -> str:
-    """What this prescription's filters were bounded BY, in one phrase.
-
-    Two classes, two bounds, and the summary has to name the one that actually
-    applied: an operator told "over 1200-2400 Hz" about a per-driver
-    prescription would read the crossover region into a document that was never
-    checked against it.
-    """
+    """What this prescription's filters were bounded BY, in one phrase."""
     if isinstance(prescription, DriverPrescription):
         return ", ".join(
             _passband_phrase(role, lo, hi)
@@ -519,15 +373,7 @@ def _scope(prescription: BlendPrescription | DriverPrescription) -> str:
 def _displaced_phrase(prescription: DriverPrescription) -> str:
     """What staging this document deletes, in one line, or that nobody knows.
 
-    Three answers, kept apart because they send an operator somewhere
-    different: the evidence carried no incumbent (go and find out what the
-    speaker is playing before you total a role); it carried one and this
-    document replaces nothing; it replaces filters, and here is how far above
-    them the prescribed cascade ends up. Only the last is the 2026-08-22 shape.
-
-    It reports and never refuses — see
-    :func:`~.driver_prescription._check_displaced` for the mechanism test that
-    decision rests on.
+    Reports and never refuses.
     """
     count = prescription.displaced_filters
     if count is None:
@@ -552,16 +398,7 @@ def _displaced_phrase(prescription: DriverPrescription) -> str:
 def _vouch_phrase(prescription: DriverPrescription) -> str:
     """Which filters a banked verdict backs, in one line, or that nobody knows.
 
-    The three answers ``_displaced_phrase`` draws, for the same reason —
-    "nobody read the evidence", "it was read and everything is backed", and
-    "it was read and these are not" send an operator somewhere different. Only
-    the third asks for a judgement. A fourth line covers the empty document,
-    which has no filters to say either about.
-
-    It reports and never refuses. Until 2026-08-23 the unvouched filters were
-    refused instead, which meant a role could never keep an incumbent shelf: the
-    fit engine placed it and no verdict vouches for it, so naming the role
-    deleted it (#2863). See
+    Reports and never refuses: see
     :func:`~.driver_prescription._check_classification` for the ruling.
     """
     unvouched = prescription.unvouched_filters
@@ -576,8 +413,7 @@ def _vouch_phrase(prescription: DriverPrescription) -> str:
     if not unvouched:
         return f"vouched: all {total} filter(s) sit on a banked defect verdict"
     # By ``(role, freq)`` rather than by position, so a basis shorter than the
-    # filter list names the RIGHT filters — the same match the receipt's own
-    # basis is keyed on.
+    # filter list names the RIGHT filters — the receipt's own basis key.
     backed = {
         (basis.role, basis.filter_freq_hz)
         for basis in prescription.classification_basis
@@ -602,18 +438,11 @@ def _print_prescription(
 ) -> None:
     """The human summary, shared by both verbs and both classes.
 
-    Extracted rather than copied when the second class arrived, and the exact
-    wording of both lines is preserved: ``stage``'s "for round N" sits where it
-    always did, because a test in a real subprocess reads that sentence to prove
-    the CLI's logging configuration did not swallow the operator's own output.
-
-    The per-driver class gets two more lines, after the filters, and both are
-    disclosures the gate makes rather than bounds it applies. What the document
-    DELETES, because a document of that class is a TOTAL for every role it names
-    and the filters printed above are therefore also a deletion of whatever
-    those roles carry — the fact the 2026-08-22 round had no way to see (#2863).
-    And which of those filters a banked verdict BACKS, which stopped being a
-    refusal on 2026-08-23 and became this line.
+    ``stage``'s "for round N" wording is read by a real-subprocess test proving
+    the CLI's logging configuration did not swallow the operator's output. The
+    per-driver class gets two more lines after the filters — what the document
+    deletes, and which filters a banked verdict backs — both disclosures the
+    gate makes rather than bounds it applies.
     """
     print(
         f"{verb} {prescription.prescription_class} prescription{qualifier}: "
@@ -622,9 +451,7 @@ def _print_prescription(
     )
     for entry in prescription.filters:
         role = f"{entry['role']} " if "role" in entry else ""
-        # The entry's OWN type, and its Q only when the type has one. The line
-        # spelled a literal "Peaking" while that was the only type either class
-        # admitted; the driver door now takes the emitter's whole set, and a
+        # The entry's OWN type, and its Q only when the type has one: a
         # Lowshelf printed as a Peaking at a Q the emitter drops would be an
         # operator report disagreeing with the graph it describes.
         biquad_type = str(entry.get("biquad_type") or "Peaking")
@@ -635,11 +462,9 @@ def _print_prescription(
             file=sys.stderr,
         )
     if isinstance(prescription, DriverPrescription):
-        # Only when there IS one, unlike the two lines below — those always have
-        # something to say and a pin is rare. Printed first because it is the
-        # one thing here that moves a LEVEL rather than a shape: an operator
-        # reading a filter list has to be told the round will not solve the trim
-        # underneath it.
+        # Only when there IS one, unlike the two lines below. Printed first
+        # because it is the one thing here that moves a LEVEL rather than a
+        # shape.
         if prescription.pinned_trim_db:
             pins = ", ".join(
                 f"{role} {db:+.2f} dB" for role, db in prescription.pinned_trim_db
@@ -655,18 +480,10 @@ def _print_prescription(
 def _next_round_ordinal(state_path: str | None) -> int:
     """Which round a prescription staged now would be the instruction for.
 
-    Through ``series_position_from_state`` — the reader that lives beside the
-    writer of the receipt it parses — so the ordinal this stamps and the ordinal
-    the round checks it against are the same function reading the same key. A
-    second derivation here (``round_receipt.round_ordinal + 1`` spelled by
-    hand) would be a second owner of the series' own arithmetic, and it would
-    drift the first time that reader learns a new shape to refuse.
-
-    ``--state`` is REQUIRED for this, and the caller enforces it: without the
-    state file that reader resolves every unreadable shape to the first round,
-    which is a real answer for a round that is really starting over and a
-    fabricated one for a prescription being filed against a series it cannot
-    see.
+    Through ``series_position_from_state``, so the ordinal this stamps and the
+    ordinal the round checks it against are one function reading one key.
+    ``--state`` is REQUIRED and the caller enforces it: without it that reader
+    resolves every unreadable shape to the first round.
     """
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
@@ -696,13 +513,9 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         ordinal = _next_round_ordinal(args.state)
     except BlendPrescriptionRefused as exc:
         # FIRST. Every exception this handler names is a ``ValueError``
-        # subclass — the refusal, the packet error, and ``JSONDecodeError`` —
-        # and today they are siblings, so neither arm can swallow the other
-        # whichever way round they are written. The order is here for the edit
-        # that stops that being true: an arm widened to ``except ValueError``
-        # below would report every refused prescription as an unreadable input,
-        # handing a prescriber exit ``1`` with no reason slug, which is the one
-        # outcome the closed refusal vocabulary exists to prevent.
+        # subclass, so an arm widened to ``except ValueError`` below would
+        # report every refused prescription as an unreadable input — exit 1
+        # with no reason slug.
         if args.json:
             print(json.dumps(exc.to_dict(), indent=2, sort_keys=True))
         print(f"refused ({exc.reason}): {exc.detail}", file=sys.stderr)
@@ -712,8 +525,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
         json.JSONDecodeError,
     ) as exc:
         # The last two are the state file's own failure modes: it is read here
-        # rather than by the packet builder, so its unreadability is this
-        # command's to report.
+        # rather than by the packet builder.
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_EVIDENCE_UNREADABLE
 
@@ -746,9 +558,6 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-# --------------------------------------------------------------------------- #
-# status
-# --------------------------------------------------------------------------- #
 
 
 def _block(packet: dict[str, Any] | None, name: str) -> dict[str, Any]:
@@ -760,13 +569,9 @@ def _block(packet: dict[str, Any] | None, name: str) -> dict[str, Any]:
 def _reason(block: dict[str, Any], packet_error: str) -> str:
     """Why a section has nothing to report, from whichever layer knows.
 
-    The packet builder's failure wins when there is one, because then no block
-    was built at all and the block's own silence would be reported as the
-    round's rather than as the bundle's. Below that, the block's own
-    ``_absence`` reason — ``source_absent`` and ``field_null`` are different
-    facts and this verb passes both through untranslated. "not reported" only
-    when a block says unavailable and names no reason; inventing one would be
-    this tool asserting something the packet declined to.
+    The packet builder's failure wins when there is one; below that, the
+    block's own ``_absence`` reason, passed through untranslated. "not
+    reported" only when a block says unavailable and names no reason.
     """
     if packet_error:
         return packet_error
@@ -777,28 +582,13 @@ def _reason(block: dict[str, Any], packet_error: str) -> str:
 def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
     """One side of the packet's incumbent block, classified but not reconciled.
 
-    The packet reports each side either as the correction itself or as an
-    absence, and deliberately makes no judgement between its two records — so
-    neither does this. A status line that preferred one would hide exactly the
-    round where the receipt and the applied profile disagreed, which is the
-    thing reporting them side by side exists to catch.
-
-    An empty list is ``available`` with zero filters, and that is not pedantry:
-    "the round recorded an incumbent and it was empty" and "no round receipt
-    was readable" are the two facts a prescription author most needs kept
-    apart, because a prescription is a TOTAL and the second means they do not
-    know what they are totalling.
-
-    **The reason is echoed only from the absence shape the packet builder
-    writes.** This block is the one place a value read VERBATIM out of a
-    bundle artifact reaches the report, so a receipt whose ``incumbent`` is
-    some other object would otherwise print that object's ``reason`` key as
-    though the builder had explained something. Checking the ``status`` field
-    reduces that to the shape the builder actually authors; it does not
-    eliminate it, because a receipt that mimics the shape is indistinguishable
-    from one the builder wrote without the packet recording which of the two it
-    is. That residue is terminal output only — this verb gates nothing — and is
-    pinned below rather than left for the next reader to rediscover.
+    The packet makes no judgement between its two records, so neither does
+    this. An empty list is ``available`` with zero filters: "the round recorded
+    an empty incumbent" and "no receipt was readable" are the two facts a
+    prescription author most needs kept apart, because a prescription is a
+    TOTAL. The reason is echoed only from the absence shape the packet builder
+    writes, so a receipt whose ``incumbent`` is some other object cannot print
+    that object's ``reason`` key as though the builder had explained something.
     """
     if isinstance(value, list):
         return {"available": True, "n_filters": len(value)}
@@ -826,9 +616,7 @@ def _declared_section(
     """What this speaker says its drivers are, through the per-driver gate's reader.
 
     :func:`~.evidence_packet.packet_driver_passbands_hz` is what bounds a
-    per-driver prescription, so asking it here is asking the question the door
-    will ask. Reading ``drivers.passbands_hz`` out of the block by hand would
-    be a second opinion about where in the document that bound lives.
+    per-driver prescription, so asking it here asks the question the door will.
     """
     passbands = packet_driver_passbands_hz(packet)
     roles = sorted(passbands)
@@ -860,18 +648,11 @@ def _banked_section(
 ) -> dict[str, Any]:
     """The round, and the two banked bounds a prescription of either class needs.
 
-    The region bounds a blend document and the classified features are what a
-    per-driver filter must be shown to be aimed at, so both ride inside the
-    banked section rather than beside it: they are facts about this round's
-    evidence, and they are absent for the same reasons the round is.
-
-    ``walk`` is the exception to "absent for the same reasons": the packet's
-    ``lateral_poses`` block is filled by ACCEPTED takes, while ``available``
-    above needs a ``round_receipt.json``, which is only written once a graded
-    post-apply VERIFY completes. A measurement-only angle walk therefore banks
-    poses and no receipt, and without this sub-block the operator who staged it
-    — or the driver polling this verb for it — would read the round's silence
-    as the walk's.
+    The region and the classified features ride inside the banked section: they
+    are facts about this round's evidence and absent for the same reasons the
+    round is. ``walk`` is the exception — ``lateral_poses`` is filled by
+    ACCEPTED takes while ``available`` needs a ``round_receipt.json``, so a
+    measurement-only angle walk banks poses and no receipt.
     """
     region = packet_region_band_hz(packet)
     verdicts = packet_feature_classifications(packet)
@@ -904,8 +685,7 @@ def _banked_section(
             else _reason(lateral, packet_error)
         ),
     }
-    # A walk at mark height reads exactly the sentence it read before elevation
-    # was sayable: "0 deg" is not a raise worth a clause.
+    # "0 deg" is not a raise worth a clause.
     raised = [deg for deg in walk["elevations_deg"] if deg]
     round_block = _block(packet, "round")
     session = _block(packet, "session")
@@ -955,22 +735,12 @@ def _banked_section(
 def _staged_section() -> dict[str, Any]:
     """Whether an instruction is waiting for the next round. The stat, not a peek.
 
-    No packet argument, and that is the point: the spool lives on the speaker
-    rather than in any bundle, so a prescription waiting for the next round is
-    a fact whichever directory the operator named — including a directory that
-    turned out not to be a bundle at all.
-
-    The spool sits under ``/var/lib/jasper/``, which the installer owns
-    ``root:jasper`` at 0770, so an operator running this verb as a login user
-    outside that group cannot even traverse to the file and gets
-    ``PermissionError`` out of the stat — which used to be a traceback and is
-    now the fourth section reporting unavailable with its reason, the shape
-    the three evidence sections beside it already use. ``pending`` is ``None``
-    rather than ``False`` there: "no document is waiting" and "nobody could
-    look" are different facts, and a prescriber told the first would stage over a
-    document it never saw. The refusal is NOT swallowed at the spool — ``stage``
-    still needs the real error — so the catch lives here, in the one verb whose
-    contract is a partial answer.
+    No packet argument: the spool lives on the speaker rather than in any
+    bundle. The spool sits under ``/var/lib/jasper/`` at root:jasper 0770, so
+    an operator outside that group gets ``PermissionError`` from the stat and
+    this section reports unavailable with that reason. ``pending`` is ``None``
+    rather than ``False`` there — "no document is waiting" and "nobody could
+    look" are different facts. ``stage`` still sees the real error.
     """
     path = str(prescription_spool_path())
     try:
@@ -1004,14 +774,9 @@ def _applied_section(
     """The packet's two BLEND records — and they answer different questions.
 
     ``from_round_receipt`` is what the round said it derived from;
-    ``from_applied_profile`` is what the speaker is playing now, read from the
-    applied-profile SSOT. They should agree, and the packet reports both rather
-    than reconciling them.
-
-    The packet keeps a third under ``incumbent.linearization``, the per-driver
-    correction each branch carries, and this verb does not surface it yet
-    (#2863's follow-up). Named here rather than left as a silent omission: a
-    reader would otherwise take these two lines for the whole answer.
+    ``from_applied_profile`` is what the speaker is playing now. They should
+    agree, and the packet reports both rather than reconciling them. The third,
+    ``incumbent.linearization``, is not surfaced here yet (#2863 follow-up).
     """
     block = _block(packet, "incumbent")
     from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
@@ -1031,28 +796,13 @@ def _status_sections(
 ) -> dict[str, Any]:
     """Declared, banked, staged, applied — through the doors' own readers.
 
-    Every fact in these four comes from
+    Every fact comes from
     :func:`~.evidence_packet.build_crossover_evidence_packet` and the named
-    readers the gate itself calls — three of them today
-    (:func:`~.evidence_packet.packet_region_band_hz`,
-    :func:`~.evidence_packet.packet_driver_passbands_hz`,
-    :func:`~.evidence_packet.packet_feature_classifications`), with the gate's
-    fourth (:func:`~.evidence_packet.packet_incumbent_linearization`) not yet
-    called here — plus the spool's own
-    :func:`~.prescription_spool.staged_prescription_pending`. **No second
-    walk of the bundle.** A status verb with its own tree reader would answer a
-    slightly different question from the door beside it, and the day they
-    disagreed the operator would believe the one that was not enforcing
-    anything.
-
-    Every packet reader tolerates ``None``, so a bundle that could not be read
-    at all needs no special case: each section resolves to unavailable carrying
-    the builder's own error as its reason.
-
-    Each section carries a ``summary`` sentence, and it is the SAME sentence
-    the human report prints — a printer that phrased its own would be a second
-    wording of each fact, and the ``--json`` reader and the terminal reader
-    would end up told different things.
+    readers the gate itself calls, plus the spool's own
+    :func:`~.prescription_spool.staged_prescription_pending`. No second walk of
+    the bundle. Every packet reader tolerates ``None``, so an unreadable bundle
+    needs no special case. Each section's ``summary`` is the SAME sentence the
+    human report prints, so ``--json`` and terminal readers agree.
     """
     return {
         "declared": _declared_section(packet, packet_error),
@@ -1069,13 +819,11 @@ def _next_actions(
     crossover_url: str,
     declaration_url: str,
 ) -> list[str]:
-    """What this speaker can do next, derived from what it does and does not have.
+    """What this speaker can do next, derived from what it has and has not.
 
     Artifact dependencies, not a workflow: each line is the consequence of one
-    artifact being present or absent, and the tool that would refuse for want
-    of it is named so an operator can tell "not yet" from "broken". Nothing
-    here sequences anything — the refusals do that, and they do it whether or
-    not this verb was ever run.
+    artifact being present or absent, and names the tool that would refuse for
+    want of it. Nothing here sequences anything — the refusals do that.
     """
     banked = sections["banked"]
     declared = sections["declared"]
@@ -1117,9 +865,7 @@ def _next_actions(
             )
         elif not declared["available"]:
             # Both halves, because the reason tells the two apart and the
-            # operator may not be able to act on either alone: a draft that
-            # exists is a path away, and a speaker that was never commissioned
-            # has no path to point harder at yet.
+            # operator may not be able to act on either alone.
             out.append(
                 f"no declared driver band is available ({declared['reason']}) — "
                 "pass --drivers <design draft JSON>, or declare the drivers at "
@@ -1128,12 +874,8 @@ def _next_actions(
             )
         else:
             # "readable", not "banked": this arm also covers an artifact that
-            # WAS banked and whose every row the typed reader dropped. Saying
-            # "not banked" there would send an operator to look for a file that
-            # is sitting right in the round directory. The action is the same
-            # either way — run the classifier — so one honest sentence covers
-            # both, and the reason (``source_absent`` vs "not reported") is
-            # what tells them apart.
+            # WAS banked and whose every row the typed reader dropped. The
+            # action is the same either way, and the reason tells them apart.
             out.append(
                 "no readable feature classification for this round "
                 f"({classification['reason']}) — run `jasper-classify-features`; "
@@ -1148,12 +890,9 @@ def _next_actions(
 
     applied_profile = sections["applied"]["from_applied_profile"]
     if not applied_profile["available"]:
-        # Keyed on the packet's answer and carrying its reason, on the
-        # ``--drivers`` line's rule above rather than the ``--state`` line's
-        # below: this is optional evidence whose absence has more than one
-        # cause, and "the flag was passed and the file was unreadable" and
-        # "the bundle itself could not be read" send an operator somewhere
-        # different from "you did not pass it".
+        # Keyed on the packet's answer and carrying its reason: this is optional
+        # evidence whose absence has more than one cause, and "unreadable file"
+        # sends an operator somewhere different from "you did not pass it".
         out.append(
             f"no applied profile is available ({applied_profile['reason']}) — "
             "pass --applied-profile <applied baseline profile JSON>; without it "
@@ -1173,12 +912,10 @@ def _next_actions(
     elif staged["pending"]:
         out.append(f"a prescription is already staged — {STAGED_LIFECYCLE_NOTE}")
 
-    # `seat_level_reference_volume_db()` already fails soft to `None` both
-    # when this box never ran the leveling step and when /var/lib/jasper does
-    # not exist at all (a laptop checkout) -- the same shape
-    # `staged_prescription_pending()` above relies on -- so no on-box guard
-    # is needed here. A banked reference adds NO line: the absence of this
-    # warning is itself the signal, so a converged box stays uncluttered.
+    # `seat_level_reference_volume_db()` already fails soft to `None` both when
+    # this box never ran the leveling step and when /var/lib/jasper does not
+    # exist at all. A banked reference adds NO line: the absence of this warning
+    # is itself the signal.
     if seat_level_reference_volume_db() is None:
         out.append(
             "no seat-level measurement reference is banked — measurement "
@@ -1193,11 +930,9 @@ def _next_actions(
     return out
 
 
-#: Tier 0's front door (ADR-0204): the reading order an SSH-only agent lands
-#: on before any of the three operator docs. Methodology answers HOW
-#: (sequence, traps, thresholds); the runbook answers WHICH TOOL AND HOW TO
-#: RUN IT; the doctrine answers WHAT IS ALLOWED and binds the other two. Names
-#: only -- `_doc_path` resolves each to wherever it actually is on this box.
+#: Tier 0's front door (ADR-0204): the reading order an SSH-only agent lands on
+#: before any of the three operator docs. Names only — `_doc_path` resolves
+#: each to wherever it actually is on this box.
 _READING_ORDER: tuple[tuple[str, str, str], ...] = (
     ("methodology guide", "tuning-methodology.md",
      "sequence, traps, adjudicated thresholds"),
@@ -1208,23 +943,18 @@ _READING_ORDER: tuple[tuple[str, str, str], ...] = (
 )
 
 #: Where deploy/lib/install/python-runtime.sh's install_jasper() copies the
-#: three operator docs. Existence is checked rather than assumed, so a
-#: laptop checkout that was never deployed falls back to the repo path
-#: instead of pointing an operator at a file that is not there.
+#: three operator docs. Existence is checked rather than assumed.
 _INSTALLED_DOCS_DIR = Path("/opt/jasper/docs")
-#: The checkout's own docs/, anchored to this package (the repo root is
-#: three parents above this file), never the CWD — status runs from
-#: anywhere. Resolves to a nonexistent site-packages sibling under a venv
-#: install, which the existence check below treats as any other absence.
+#: The checkout's own docs/, anchored to this package rather than the CWD.
+#: Resolves to a nonexistent site-packages sibling under a venv install, which
+#: the existence check below treats as any other absence.
 _REPO_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 
 
 def _doc_path(filename: str) -> str:
     """The first of (installed, checkout) that exists, else the bare repo name.
 
-    The last fallback is an identifier, not a location: a box with neither
-    directory still gets the doc named in repo-relative spelling rather
-    than a path fabricated to look present.
+    The last fallback is an identifier, not a location.
     """
     for candidate in (_INSTALLED_DOCS_DIR / filename, _REPO_DOCS_DIR / filename):
         if candidate.exists():
@@ -1235,9 +965,8 @@ def _doc_path(filename: str) -> str:
 def _print_reading_order() -> None:
     """The cold-start front door, printed before anything this verb measures.
 
-    Orientation only -- the doctrine's hard stops are enforced in code
-    regardless of whether anyone reads this line (ADR-0204 point 3), so
-    there is nothing here to gate and nothing to get wrong by skipping it.
+    Orientation only — the doctrine's hard stops are enforced in code
+    regardless of whether anyone reads this line (ADR-0204 point 3).
     """
     print("read in order:")
     for n, (label, filename, gives) in enumerate(_READING_ORDER, start=1):
@@ -1246,8 +975,7 @@ def _print_reading_order() -> None:
 
 
 def _print_status(payload: dict[str, Any]) -> None:
-    """The front-door reading order, then the report from the section
-    summaries rather than a second phrasing of them."""
+    """The reading order, then the report from the section summaries."""
     _print_reading_order()
     print(f"{'speaker:':9} {payload['speaker']['hostname']}")
     for name in ("declared", "banked", "staged", "applied"):
@@ -1262,16 +990,11 @@ def status_document(
 ) -> dict[str, Any]:
     """Where this speaker stands, and what it can do next, as a value.
 
-    Exactly what :func:`_print_status` prints and what ``status --json``
-    dumps. The packet is a parameter rather than ``argparse.Namespace`` so a
-    caller that already built one can hand it in directly instead of walking
-    the bundle a second time.
-
-    **A partial answer beats no answer**, so an unreadable bundle does not stop
-    the report: the packet's failure becomes every evidence section's reason,
-    and the spool — which lives on the speaker, not in the bundle — is reported
-    truthfully regardless. A prescription waiting for the next round is a fact
-    about this speaker whichever directory the operator happened to name.
+    Exactly what :func:`_print_status` prints and what ``status --json`` dumps.
+    The packet is a parameter rather than an ``argparse.Namespace`` so a caller
+    that already built one need not walk the bundle again. An unreadable bundle
+    does not stop the report: the packet's failure becomes every evidence
+    section's reason, and the spool is reported truthfully regardless.
     """
     crossover_url = speaker_url(CROSSOVER_PAGE_PATH)
     declaration_url = speaker_url(SOUND_SETUP_PAGE_PATH)
@@ -1297,26 +1020,18 @@ def status_document(
 def _cmd_status(args: argparse.Namespace) -> int:
     """Where this speaker stands, and what it can do next. Writes nothing.
 
-    Loads the packet from ``args`` and hands it to :func:`status_document`,
-    then prints the result — the exit code still tells a script which of two
-    things happened: :data:`EXIT_EVIDENCE_UNREADABLE` when the packet could
-    not be built, matching this tool's contract that ``1`` means the evidence
-    could not be read. The report prints either way.
-
-    Unlike its three siblings the human report goes to STDOUT. For them stdout
-    is reserved for a document a pipe consumes and the human gloss goes to
-    stderr so it cannot contaminate it; this verb emits no document unless
-    ``--json`` asks for one, and a report whose only copy went to stderr would
-    be invisible to the SSH agent that is this verb's main reader.
+    The report prints either way; the exit code still says which of two things
+    happened, :data:`EXIT_EVIDENCE_UNREADABLE` when the packet could not be
+    built. Unlike its three siblings the human report goes to STDOUT: this verb
+    emits no document unless ``--json`` asks for one, and a report whose only
+    copy went to stderr would be invisible to the SSH agent reading it.
     """
     packet: dict[str, Any] | None = None
     packet_error = ""
     if args.session_dir is None:
-        # The runbook's own step 1 ("Orient"): on a virgin speaker no session
-        # dir exists yet, so there is nothing to point this verb at. Every
-        # section below already tolerates ``packet=None`` (its own contract,
-        # stated above), so this reuses that path rather than inventing a
-        # second, partial report shape for the no-session case.
+        # On a virgin speaker no session dir exists yet. Every section below
+        # already tolerates ``packet=None``, so this reuses that path rather
+        # than inventing a second report shape.
         packet_error = (
             "no session_dir given -- this speaker has no crossover-v2 "
             "session yet"
@@ -1338,9 +1053,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 #: What ``--state`` is, said once. The verbs differ only in whether they can
 #: proceed without it — ``stage`` cannot, the other three degrade and say so —
-#: so the sentence that describes the FILE has one owner and each verb appends
-#: its own requirement. A shared "Optional" on a verb that hard-refuses without
-#: it is a `--help` that contradicts the command.
+#: so each verb appends its own requirement to this sentence.
 _STATE_HELP = (
     "the crossover-v2 flow state JSON, banked separately from the bundle"
 )
@@ -1355,13 +1068,9 @@ _STATE_HELP_REQUIRED = (
 )
 
 
-#: What ``--drivers`` is, and where it points when not given. A blend
-#: prescription never needs it, and a per-driver one is refused by name
-#: without a readable file here — which is the packet's own honesty rule
-#: applied to a second evidence source. Defaulted (rather than left ``None``)
-#: so an operator running this CLI on the speaker itself does not have to name
-#: a file that is already sitting there; a laptop or a speaker that was never
-#: commissioned reads it as unavailable, same as before.
+#: What ``--drivers`` is, and where it points when not given. Defaulted rather
+#: than left ``None`` so an operator on the speaker itself need not name a file
+#: already sitting there; a laptop reads it as unavailable.
 _DRIVERS_HELP = (
     "the active-speaker design draft JSON, which carries the confirmed "
     "driver-safety profile. Defaults to the round's own banked copy, or "
@@ -1374,9 +1083,7 @@ _DRIVERS_HELP = (
 
 #: What ``--applied-profile`` is, defaulted on the same terms as ``--drivers``.
 #: NOT interchangeable with ``--state``: what the flow state records about a
-#: previous apply is one apply behind the graph whenever a round has applied
-#: and arbitrarily behind it whenever a graph was applied through a door that
-#: never touches v2 state.
+#: previous apply is at least one apply behind the graph.
 _APPLIED_PROFILE_HELP = (
     "the applied baseline profile JSON — this speaker's record of what it is "
     "PLAYING. Defaults to the round's own banked copy, or "
@@ -1388,8 +1095,7 @@ _APPLIED_PROFILE_HELP = (
 
 
 #: What ``--repeat-floor`` is, defaulted on the same terms as the two above.
-#: Without it the accuracy budget reports the repeat floor unmeasured and the
-#: stopping thresholds fall back to the codified assumptions, saying so.
+#: Without it the accuracy budget reports the repeat floor unmeasured.
 _REPEAT_FLOOR_HELP = (
     "the banked repeat floor JSON — this rig's measured touched-nothing "
     "repeat spread. Defaults to the round's own banked copy, or "
@@ -1400,8 +1106,7 @@ _REPEAT_FLOOR_HELP = (
 
 
 #: What ``--declared-geometry`` is, defaulted on the same terms as the three
-#: above. Without it the packet reports no room and the offline entanglement
-#: floor stays unknown.
+#: above. Without it the packet reports no room.
 _DECLARED_GEOMETRY_HELP = (
     "the household's declared rig geometry JSON — the speaker/mic heights and "
     "distance `jasper-declare-geometry set` stores. Defaults to the round's "
@@ -1412,13 +1117,10 @@ _DECLARED_GEOMETRY_HELP = (
 )
 
 
-#: What ``--packet`` is, and why it exists. The packet a laptop rebuilds is not
-#: the packet the speaker emitted — the rebuild resolves ``--drivers``,
-#: ``--applied-profile``, ``--repeat-floor`` and ``--declared-geometry``
-#: against whatever THAT machine has — so the two fingerprint differently and a document answering one is
-#: refused against the other. Emitting once and judging against the file
-#: removes the second packet rather than teaching anything to re-stamp a
-#: fingerprint, which would make the echo worthless as provenance.
+#: What ``--packet`` is, and why it exists: a packet a laptop rebuilds resolves
+#: the four evidence flags against whatever THAT machine has, so the two
+#: fingerprint differently and a document answering one is refused against the
+#: other. Nothing here re-stamps a fingerprint.
 _PACKET_HELP = (
     "an evidence packet JSON file (what `packet` emitted), used AS this "
     "round's evidence instead of rebuilding one. Emit the packet ONCE on the "
@@ -1463,13 +1165,11 @@ def _add_evidence_args(
         ),
     )
     # Not `required=True` even for ``stage``: argparse would refuse before the
-    # two speaker-level questions are asked, and the command owns a sentence
-    # that says WHY the flag matters here. The check lives in `_cmd_stage`.
+    # two speaker-level questions are asked. The check lives in `_cmd_stage`.
     parser.add_argument("--state", default=None, help=state_help)
-    # `None` at the parser, resolved to the on-Pi path in `_load_packet`: the
-    # default is still TRUE (omitting the flag reads it), and keeping it out of
-    # the namespace is what lets `_evidence_source_error` tell an operator who
-    # named the flag from one who did not.
+    # `None` at the parser, resolved to the on-Pi path in `_load_packet`:
+    # keeping it out of the namespace is what lets `_evidence_source_error`
+    # tell an operator who named the flag from one who did not.
     parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
     parser.add_argument("--applied-profile", default=None, help=_APPLIED_PROFILE_HELP)
     parser.add_argument("--repeat-floor", default=None, help=_REPEAT_FLOOR_HELP)
@@ -1479,8 +1179,7 @@ def _add_evidence_args(
     if packet_source:
         parser.add_argument("--packet", default=None, help=_PACKET_HELP)
     else:
-        # So every verb's namespace answers the question `_load_packet` asks,
-        # rather than the loader reaching for an attribute only two verbs have.
+        # So every verb's namespace answers the question `_load_packet` asks.
         parser.set_defaults(packet=None)
 
 
@@ -1535,7 +1234,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # First, because it is where an operator who has just arrived starts.
     status = sub.add_parser(
         "status",
         help="print declared / banked / staged / applied state and what is next",
@@ -1598,26 +1296,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # A10. Without this the tool's structured events have no handler at all:
+    # Without this the tool's structured events have no handler at all:
     # ``logging.lastResort`` emits WARNING and above, so
-    # ``event=crossover_v2.prescription_staged`` — written by
-    # ``stage_prescription`` at INFO, right after the atomic write — reached
-    # neither an operator's terminal nor the journal. This CLI is the only
-    # supported staging path, so that made the one state transition it performs
-    # unobservable: a prescription could be banked, or silently REPLACE another,
-    # with nothing anywhere saying so.
-    #
-    # ``basicConfig`` at INFO in ``main``, which is what the seven sibling CLIs
-    # that emit ``event=`` lines do (``sound``, ``aec_commission``,
-    # ``aec_init``, …) rather than something new. Deliberately NOT
-    # ``_logging.configure_verbose_logging``: that helper is for CLIs with a
-    # ``--verbose`` flag and floors at WARNING without one, which is exactly the
-    # level that hid this event. Its FORMAT is reused, so the one place the
-    # shared shape is written down stays the only place.
-    #
-    # In ``main`` rather than at import, because a module that configures the
-    # root logger on import imposes its choice on every importer — including
-    # the test suite and any tool that reaches in for ``read_prescription_bytes``.
+    # ``event=crossover_v2.prescription_staged`` (INFO) reached neither an
+    # operator's terminal nor the journal, leaving the one state transition
+    # this CLI performs unobservable. Deliberately NOT
+    # ``_logging.configure_verbose_logging``, which floors at WARNING without a
+    # ``--verbose`` flag; its FORMAT is reused. In ``main`` rather than at
+    # import, because configuring the root logger on import imposes that choice
+    # on every importer.
     logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     args = build_parser().parse_args(argv)
     result: int = args.func(args)

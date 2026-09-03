@@ -29,14 +29,12 @@ from jasper.audio_measurement.ramp import (
     RampState,
 )
 from jasper.correction.level_match import (
-    DriftVerdict,
     LevelLockStore,
     LevelMatchRefused,
     LevelMatchSession,
     MeasurementLevelLock,
     MicGeometry,
     RelayLevelFeed,
-    check_level_drift,
     describe_ramp_refusal,
     parse_level_batch,
     phone_reported_abort,
@@ -354,8 +352,8 @@ def test_lock_from_ramp_attested_is_byte_identical():
 def test_lock_from_ramp_unattested_verified_reads_as_trustworthy():
     # A verified-unattested run has agc_frozen=False at the wire/RampData
     # level (by design — see LevelSample), but agc_verified=True. The lock
-    # must read as trustworthy (agc_frozen=True) so downstream consumers
-    # (check_level_drift) treat it identically to an attested lock.
+    # must read as trustworthy (agc_frozen=True) so a downstream consumer
+    # treats it identically to an attested lock.
     data = RampData(
         state=RampState.LOCKED,
         locked_main_volume_db=-18.0,
@@ -411,72 +409,6 @@ def test_lock_store_is_per_geometry():
     store.discard(MicGeometry.NEAR_FIELD_DRIVER.value)
     assert store.get(MicGeometry.NEAR_FIELD_DRIVER.value) is None
     assert store.get(MicGeometry.LISTENING_POSITION.value) is listen
-
-
-# --- drift check (raw band levels, uniform-shift rule) ------------------------
-
-
-def test_drift_uniform_shift_is_amp_moved():
-    ref = [70.0, 72.0, 68.0, 71.0]
-    cur = [66.0, 68.0, 64.0, 67.0]  # uniform -4 dB
-    r = check_level_drift(ref, cur, same_geometry=True)
-    assert r.verdict == DriftVerdict.AMP_MOVED
-    assert r.mean_shift_db == pytest.approx(-4.0)
-    assert r.max_band_deviation_db == pytest.approx(0.0, abs=1e-9)
-
-
-def test_drift_geometry_change_is_not_flagged():
-    ref = [70.0, 72.0, 68.0, 71.0]
-    cur = [50.0, 52.0, 48.0, 51.0]  # uniform -20 dB but geometry changed
-    r = check_level_drift(ref, cur, same_geometry=False)
-    assert r.verdict == DriftVerdict.GEOMETRY_CHANGED  # expected, never "amp moved"
-
-
-def test_drift_non_uniform_is_acoustic():
-    ref = [70.0, 70.0, 70.0, 70.0]
-    cur = [70.0, 70.0, 62.0, 70.0]  # one band dipped: a room mode, not a level shift
-    r = check_level_drift(ref, cur, same_geometry=True)
-    assert r.verdict == DriftVerdict.ACOUSTIC
-
-
-def test_drift_large_shift_with_scatter_is_suspected_not_ok():
-    # The review's classifier hole: a genuine 6+ dB amp move measured with
-    # >2 dB band scatter matched neither AMP_MOVED nor ACOUSTIC and fell
-    # through to "level is consistent". That quadrant must be non-OK.
-    ref = [70.0, 70.0, 70.0, 70.0]
-    cur = [64.0, 64.0, 64.0, 58.5]  # mean -7.4, max_dev 4.1
-    r = check_level_drift(ref, cur, same_geometry=True)
-    assert r.verdict == DriftVerdict.LEVEL_SHIFT_SUSPECTED
-    assert "re-level" in r.message
-
-
-def test_drift_small_change_is_ok():
-    ref = [70.0, 72.0, 68.0]
-    cur = [70.5, 71.5, 68.2]
-    assert check_level_drift(ref, cur, same_geometry=True).verdict == DriftVerdict.OK
-
-
-def test_drift_agc_unfrozen_disables_the_rule():
-    ref = [70.0, 72.0, 68.0]
-    cur = [60.0, 62.0, 58.0]  # would be AMP_MOVED, but reference is AGC-compressed
-    r = check_level_drift(ref, cur, same_geometry=True, agc_frozen=False)
-    assert r.verdict == DriftVerdict.UNKNOWN
-
-
-def test_drift_mismatched_bands_is_unknown():
-    assert (
-        check_level_drift([70.0], [70.0, 71.0], same_geometry=True).verdict
-        == DriftVerdict.UNKNOWN
-    )
-    assert check_level_drift([], [], same_geometry=True).verdict == DriftVerdict.UNKNOWN
-
-
-def test_drift_env_knobs_override_thresholds(monkeypatch):
-    # Loosen the uniform threshold so a 4 dB shift no longer counts as an amp move.
-    monkeypatch.setenv("JASPER_RAMP_DRIFT_UNIFORM_DB", "6.0")
-    ref = [70.0, 70.0, 70.0]
-    cur = [66.0, 66.0, 66.0]  # uniform -4 dB, now below the 6 dB threshold
-    assert check_level_drift(ref, cur, same_geometry=True).verdict == DriftVerdict.OK
 
 
 # --- ramp terminal refusal copy (2026-07-16 jts3: every refusal names its

@@ -4,22 +4,12 @@
 
 """Where one round's evidence inputs are, for the two shapes a round comes in.
 
-A round's evidence packet is built from the commissioning bundle plus five
-files that live OUTSIDE it: the crossover-v2 flow state, the design draft, the
-applied baseline profile, the repeat floor and the declared rig geometry.
-
-* **live**, on the box: the bundle IS the session directory, and the five are
-  the on-Pi SSOT files their owning modules declare — read here from those
-  owners, never re-spelled. The flow state is a record of ONE SESSION and a
-  dozen session directories are retained against one state file, so it is
-  handed to the session it names alone (:func:`_live_state_path`).
-* **banked**: the bundle is copied to ``<round-dir>/bundle/<session>/`` and
-  the five are frozen beside it under the fixed names below.
-
-:attr:`RoundInputs.banked` travels with the paths because it is the one thing
-a reader cannot re-derive from them: a banked round's five siblings are frozen
-copies of what the speaker was wearing, a live round's are the speaker's
-current files and move under the reader.
+A round's packet is built from the commissioning bundle plus five siblings: the
+flow state, the design draft, the applied baseline profile, the repeat floor
+and the declared rig geometry. **live**: the bundle IS the session directory
+and the five are the on-Pi SSOT paths their owning modules declare. **banked**:
+the bundle is copied to ``<round-dir>/bundle/<session>/`` and the five are
+frozen beside it under the filenames below.
 """
 
 from __future__ import annotations
@@ -73,25 +63,20 @@ APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 
-#: The household's declared rig geometry, whose single writer is
-#: ``jasper-declare-geometry set``. Aliased here like the four above so the
-#: banked copy and the live path have one owner.
+#: The household's declared rig geometry; single writer
+#: ``jasper-declare-geometry set``.
 DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
 
-#: Why a LIVE session resolves to no flow state. A code rather than prose: it
-#: is what a reader decides on, and it reaches an operator through the
-#: ``verify_pose.reason`` field the views already publish. One slug for every
-#: such case — no consumer has ever told them apart.
+#: Why a LIVE session resolves to no flow state. One slug for every such case;
+#: it reaches an operator through the published ``verify_pose.reason`` field.
 STATE_SESSION_UNKNOWN = "state_session_unknown"
 
 
 class RoundViewsError(CrossoverEvidencePacketError):
     """A round directory could not be read into a comparable view.
 
-    A subclass rather than a sibling so the prescriber's one "the evidence
-    could not be read" arm keeps catching every shape of that failure: a
-    directory this resolver refuses is, in that tool's own vocabulary, not a
-    crossover-v2 session bundle.
+    A subclass of :class:`CrossoverEvidencePacketError` so the prescriber's one
+    "the evidence could not be read" arm keeps catching every shape of it.
     """
 
 
@@ -99,13 +84,10 @@ class RoundViewsError(CrossoverEvidencePacketError):
 class RoundInputs:
     """The six paths one round's evidence packet is built from.
 
-    The five optional paths are ``None`` for a banked round that did not bank
-    that sibling, and :attr:`state_path` is also ``None`` for a live round
-    whose flow state belongs to a different session
-    (:func:`_live_state_path`) — absence the packet builder already reports
-    inside the document rather than raising on. :attr:`state_reason` is the
-    code for that second case and empty otherwise; a reader that only wants
-    the paths can ignore it.
+    A path is ``None`` where a banked round did not bank that sibling, and
+    :attr:`state_path` is also ``None`` for a live round whose flow state
+    belongs to another session — :attr:`state_reason` carries the code for that
+    second case and is empty otherwise.
     """
 
     session_dir: Path
@@ -121,18 +103,12 @@ class RoundInputs:
 def _live_state_path(session_dir: Path) -> tuple[Path | None, str]:
     """The speaker's flow state, but only when it is THIS session's.
 
-    There is ONE flow state on a speaker and up to twelve retained session
-    directories, so a live bundle that is not the current round would
-    otherwise be handed another round's verify curve, verdicts and ordinal —
-    numbers that are wrong rather than missing. The two ids are compared in
-    the one namespace they share: the state's own ``session_id`` is a RELAY
-    id, and the bundle files its round artifacts under that same id
-    (``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``, which is what
-    :func:`~.evidence_packet.round_artifact_dir` returns).
-
-    A state file that is absent or unreadable is NOT refused here: nothing
-    claims it belongs to another round, and the packet builder already reports
-    an unreadable input inside the document it builds.
+    One flow state exists per speaker against up to twelve retained session
+    directories. The two ids are compared in the one namespace they share: the
+    state's ``session_id`` is a RELAY id, and the bundle files its round
+    artifacts under that same id (:func:`~.evidence_packet.round_artifact_dir`).
+    An absent or unreadable state file is not refused here — nothing claims it
+    belongs to another round.
     """
     round_dir, _reason = round_artifact_dir(session_dir)
     if round_dir is None:
@@ -159,10 +135,7 @@ def _sibling(round_dir: Path, name: str) -> Path | None:
 def round_inputs(path: Path) -> RoundInputs:
     """Resolve ``path`` — a banked round tree or a live session bundle.
 
-    Raises :class:`RoundViewsError` when it is neither, naming both shapes:
-    the two failures send an operator to different places, and a message that
-    named only one would read as "bank this first" to somebody who had pointed
-    at a session directory one level off.
+    Raises :class:`RoundViewsError` when it is neither, naming both shapes.
     """
     path = Path(path)
     bundle_dir = path / "bundle"

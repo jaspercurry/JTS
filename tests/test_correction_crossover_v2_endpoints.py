@@ -2658,7 +2658,7 @@ def test_the_envelope_route_actually_runs_the_preflight():
     # ...and BEFORE the envelope is built, or it would stamp a status nobody
     # reads.
     assert source.index("attach_stage2_preflight(status)") < source.index(
-        "build_crossover_envelope_logged(status)"
+        "_build_envelope_logged(status)"
     )
 
 
@@ -8025,7 +8025,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     monkeypatch.setattr(reset_flow, "handle_status", lambda *, relay=None: ({}, 200))
     monkeypatch.setattr(reset_flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
-        "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+        "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
     )
 

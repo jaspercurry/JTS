@@ -6,7 +6,7 @@
 > on JTS3 + UMIK-2 and the `JASPER_CROSSOVER_FLOW` default flipped to
 > `v2` on 2026-07-19. **Current operational truth — how to run it, the failure
 > taxonomy, and the W6 bug catalog — now lives in
-> [tuning-operator-runbook.md](tuning-operator-runbook.md); the file map and
+> [tuning-operator-runbook.md](../tuning-operator-runbook.md); the file map and
 > invariants live in
 > [crossover-v2-engine-design.md](crossover-v2-engine-design.md).**
 > Read this doc for the decision archaeology. W5b (2026-07-24) deleted the
@@ -183,7 +183,7 @@ adds phase — the high-credibility view for a crossover product).
 > trigger moved from a human tap to the auto-apply completing. Current
 > operational truth (screen names, reason codes, the RESULT screen shape)
 > lives in
-> [`historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md)
+> [`historical/crossover-measurement-v2-campaign-record.md`](crossover-measurement-v2-campaign-record.md)
 > gotcha #18. The rest of this section is preserved for design-rationale
 > archaeology — read it for the "why," not for the current screen
 > sequence.
@@ -204,9 +204,9 @@ adds phase — the high-credibility view for a crossover product).
 > amendment's own flow-simplification PR-U1/PR-U3 figures (16 captures at
 > Full, 7 at Express) share the same fate, so neither generation of the
 > numbers is restated here. Current operational truth:
-> [`tuning-operator-runbook.md`](tuning-operator-runbook.md)
+> [`tuning-operator-runbook.md`](../tuning-operator-runbook.md)
 > "The capture flow" / "What it is"; why the cloud is necessary at all:
-> [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md) fundamental 1.
+> [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md) fundamental 1.
 
 One mic position for the whole session: **~1 m on the listening axis**
 (tweeter height, facing the speaker; picture on the placement screen). The
@@ -818,7 +818,7 @@ complete citation list (Keele JAES 1974; Farina log-sine; Bryan/Kolar/Abel AES
 2010 Paper 8169; Gamper HSCMA 2017 + public MATLAB; REW acoustic-timing-reference
 + USB-mic guidance; VituixCAD excess-group-delay; TI SLLA122 ±50/±100 ppm) — is
 preserved verbatim in
-[crossover-measurement-deep-research-2026-07-18.md](crossover-measurement-deep-research-2026-07-18.md).
+[crossover-measurement-deep-research-2026-07-18.md](../research/crossover-measurement-deep-research-2026-07-18.md).
 Read it with §3's corrections in hand: the drift budget there is stated as
 gap-scaled (corrected to event-separation-scaled), the 10–20 cm distance is
 proposed for alignment (corrected to ≥1 m listening-axis), and the REW 30%

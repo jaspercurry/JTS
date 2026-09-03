@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import hashlib
 import inspect
 import logging
 import os
+import subprocess
+import sys
 import threading
 import wave
 from dataclasses import replace
@@ -1178,19 +1179,7 @@ def test_generated_stimulus_schema_round_trip_and_tamper_refusal(tmp_path: Path)
 
 
 def test_guarded_module_has_no_direct_powerful_host_reference():
-    source = Path(guarded.__file__).read_text()
-    tree = ast.parse(source)
-    imported = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module is not None
-    }
-    imported.update(
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    )
+    # The import graph, in a fresh interpreter, so a transitive pull counts too.
     forbidden = (
         "jasper.active_speaker",
         "jasper.camilla",
@@ -1198,11 +1187,16 @@ def test_guarded_module_has_no_direct_powerful_host_reference():
         "jasper.dsp_apply",
         "jasper.web",
     )
-    assert not any(
-        module == prefix or module.startswith(f"{prefix}.")
-        for module in imported
-        for prefix in forbidden
+    probe = (
+        "import sys, jasper.audio_measurement.admitted_playback;"
+        f"print(sorted(m for m in sys.modules if any("
+        f"m == p or m.startswith(p + '.') for p in {forbidden!r})))"
     )
+    out = subprocess.check_output(
+        [sys.executable, "-c", probe], text=True, stderr=subprocess.STDOUT
+    )
+    assert out.strip() == "[]"
+
     parameters = inspect.signature(play_admitted_wav).parameters
     assert "issue_current_inputs" in parameters
     assert not {"camilla", "dsp", "host", "writer_lock"} & set(parameters)

@@ -17,7 +17,6 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass
 from typing import Any, Mapping
 
 DRIVER_PLACEMENT_POLICY_ID = "driver_same_distance_v1"
@@ -37,12 +36,6 @@ REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID = "driver_reference_axis_v1"
 # sweep. Consenting to one is not consenting to the other, so they cannot share
 # an id — and the stationary id must stay reachable, because the 1-entry
 # re-verify re-arm still makes exactly the stationary promise.
-#
-# Not added to ``SUMMED_CAPTURE_GEOMETRY_BY_POLICY``: that map exists for the
-# LEGACY summed-alignment evidence path (``crossover_contract``'s
-# ``latest_summed_validations``), which the v2 session does not feed — it
-# writes no ``placement_proof`` at all. Adding it there would claim a
-# geometry for evidence this policy never produces.
 CLOUD_WALK_PLACEMENT_POLICY_ID = "summed_guided_cloud_v1"
 COMPARISON_SET_SCHEMA_VERSION = 2
 PLACEMENT_PROOF_SCHEMA_VERSION = 1
@@ -82,9 +75,6 @@ DRIVER_CAPTURE_GEOMETRY_BY_POLICY = {
     REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID: "reference_axis",
 }
 DRIVER_CAPTURE_GEOMETRIES = frozenset(DRIVER_CAPTURE_GEOMETRY_BY_POLICY.values())
-SUMMED_CAPTURE_GEOMETRY_BY_POLICY = {
-    SUMMED_PLACEMENT_POLICY_ID: "reference_axis",
-}
 
 
 def driver_repeat_binding(
@@ -263,88 +253,6 @@ def driver_capture_geometry(
         role=role,
         target_fingerprint=target_fingerprint,
         capture_kind="driver",
-    )
-
-
-def summed_capture_geometry(
-    placement_proof: Mapping[str, Any] | None,
-    active_comparison_set: Mapping[str, Any] | None = None,
-    *,
-    speaker_group_id: str = "",
-    target_fingerprint: str = "",
-) -> str:
-    """Resolve summed analysis geometry from a complete fixed-axis proof.
-
-    Missing historical/operator-only proof remains near-field and therefore
-    cannot enter the automatic alignment decision boundary. A proved relay
-    capture can only resolve to the fixed reference axis.
-    """
-
-    if not isinstance(placement_proof, Mapping):
-        return "near_field"
-    return _capture_geometry_from_proof(
-        placement_proof,
-        active_comparison_set,
-        geometry_by_policy=SUMMED_CAPTURE_GEOMETRY_BY_POLICY,
-        speaker_group_id=speaker_group_id,
-        role="summed",
-        target_fingerprint=target_fingerprint,
-        capture_kind="summed",
-    )
-
-
-@dataclass(frozen=True)
-class CrossoverLevelReference:
-    """One protected driver reference for automatic level match."""
-
-    speaker_group_id: str
-    role: str
-    tone_frequency_hz: float
-    placement_instruction: str
-
-    @property
-    def target_id(self) -> str:
-        return f"{self.speaker_group_id}:{self.role}"
-
-    @property
-    def geometry(self) -> str:
-        return driver_level_geometry(
-            self.speaker_group_id, self.role, "near_field"
-        )
-
-
-def crossover_level_reference(
-    preset_payload: Mapping[str, Any],
-    *,
-    speaker_group_id: str,
-    role: str,
-) -> CrossoverLevelReference:
-    """Resolve one driver's preset-derived, protection-bounded level tone."""
-
-    from .profile import (
-        ActiveSpeakerConfigError,
-        ActiveSpeakerPreset,
-    )
-    try:
-        preset = ActiveSpeakerPreset.from_mapping(dict(preset_payload))
-    except ActiveSpeakerConfigError as exc:
-        raise ValueError("applied crossover preset is invalid") from exc
-
-    from .test_signal_plan import driver_test_signal_plan
-
-    group_id = str(speaker_group_id or "").strip()
-    role_id = str(role or "").strip().lower()
-    if not group_id or not role_id:
-        raise ValueError("crossover level target requires a group and driver role")
-    plan = driver_test_signal_plan(preset, role_id)
-    frequency = plan.get("frequency_hz")
-    if plan.get("status") != "ready" or not isinstance(frequency, (int, float)):
-        raise ValueError(f"no protected level tone is available for {role_id}")
-    return CrossoverLevelReference(
-        speaker_group_id=group_id,
-        role=role_id,
-        tone_frequency_hz=float(frequency),
-        placement_instruction=driver_placement_instruction(role_id),
     )
 
 

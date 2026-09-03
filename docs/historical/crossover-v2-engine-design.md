@@ -3,12 +3,12 @@
 > **Status: historical design record.** ADR-0198 removed the unwired engine
 > methods and seams described by parts of this file. Current `TuningSession`
 > has an `open` / `measure` / `close` surface and four `EngineSeams` fields;
-> [`session.py`](../jasper/active_speaker/crossover_v2/session.py) and
-> [`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py)
+> [`session.py`](../../jasper/active_speaker/crossover_v2/session.py) and
+> [`session_seams.py`](../../jasper/active_speaker/crossover_v2/session_seams.py)
 > own that shape. Current operation, Apply, verification, and restore behavior
-> lives in the [tuning operator runbook](tuning-operator-runbook.md), with the
+> lives in the [tuning operator runbook](../tuning-operator-runbook.md), with the
 > boundary decision in
-> [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md). The material
+> [ADR-0198](../adr/0198-the-unwired-engine-verb-half-is-deleted.md). The material
 > below is retained as design provenance, not as a specification for new work.
 
 ## The measure verb
@@ -16,7 +16,7 @@
 The loop's vocabulary was **measure · analyze · recommend · save**; ADR-0198
 (#3342) deleted `analyze`, `recommend` and `save` as engine methods. `measure`
 is the one verb left, returning its own typed outcome, in
-[`crossover_v2/session.py`](../jasper/active_speaker/crossover_v2/session.py).
+[`crossover_v2/session.py`](../../jasper/active_speaker/crossover_v2/session.py).
 
 | Verb | Returns | What it owns |
 |---|---|---|
@@ -32,7 +32,7 @@ visible as such rather than absent.
 also usable as an async context manager (`__aenter__` / `__aexit__`), with
 `is_open`, `graph_fingerprint` and `banked_record_ids` as its read surface.
 Every side effect it can have crosses one of **four fields on `EngineSeams`**
-([`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py)),
+([`session_seams.py`](../../jasper/active_speaker/crossover_v2/session_seams.py)),
 frozen and injected exactly as `V2FlowSeams` is, so a test double is a complete
 substitute rather than a partial one:
 
@@ -45,7 +45,7 @@ substitute rather than a partial one:
 
 **Three of the four are declared in `session_seams.py`; `play` is not.**
 `PlaybackTransaction` lives in
-[`playback_transaction.py`](../jasper/active_speaker/crossover_v2/playback_transaction.py),
+[`playback_transaction.py`](../../jasper/active_speaker/crossover_v2/playback_transaction.py),
 which is why a `session_seams`-only reading undercounts the seams at three. It
 sits on `EngineSeams` beside the three lifetime slots even though ruling S1
 calls it *internal to* `measure`: that distinction is about **vocabulary** — the
@@ -73,7 +73,7 @@ the transport is CamillaDSP over a websocket and every production caller is
 already on the event loop. It was **one decision for all of them, not one per
 seam**, and it carries a second half — each release path shields its cleanup,
 so a cancelled `close()` cannot leave the fader at measurement level. See
-[ADR-0179](adr/0179-the-tuning-engines-seams-are-async-and-a-release-completes-before-cancellation-propagates.md).
+[ADR-0179](../adr/0179-the-tuning-engines-seams-are-async-and-a-release-completes-before-cancellation-propagates.md).
 
 ## What is wired today, and what is not
 
@@ -100,7 +100,7 @@ at HEAD the shape is ahead of it:
 ## The measurement session graph
 
 `MeasurementSessionGraph`
-([`crossover_v2/session_graph.py`](../jasper/active_speaker/crossover_v2/session_graph.py))
+([`crossover_v2/session_graph.py`](../../jasper/active_speaker/crossover_v2/session_graph.py))
 fills the `SessionGraph` seam for the measure stage. It exists because **the
 graph the routed stimuli play through was already a session constant**: every
 argument `camilla_yaml.emit_active_speaker_program_config` takes at the
@@ -224,7 +224,7 @@ it is idempotent and a no-op when nothing is held.
 ### Duck composition, and what survives the parameter
 
 The release algebra the owner inherits is
-[ADR-0004](adr/0004-duck-release-algebra-and-reference.md)'s
+[ADR-0004](../adr/0004-duck-release-algebra-and-reference.md)'s
 `min(reference, current + own depth)` — give back this holder's own attenuation
 and nothing else, and never end above the level that should be in effect. **Both
 halves are load-bearing**, and the failure modes are opposite: replaying an
@@ -262,7 +262,7 @@ a graceful default, the other withholds evidence.
 ## The playback transaction
 
 `play_program`
-([`program_playback.py`](../jasper/active_speaker/program_playback.py)) is the
+([`program_playback.py`](../../jasper/active_speaker/program_playback.py)) is the
 one entry that plays a compiled excitation program (CHECK / MEASURE) through the
 speaker's real DSP chain. It composes two things:
 
@@ -299,7 +299,7 @@ uploads one encrypted WAV. No live phone↔Pi feedback mid-capture and no
 per-repeat gestures.
 
 **Pi = the session owner.** `CrossoverV2Session` in
-[`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) holds one
+[`crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py) holds one
 session's mutable state, the injected seams, the locks, and the acts that cannot
 be undone or repeated (play, publish, apply, commit, journal). It is also the
 **adapter** for its one caller, the web host — which is why a one-line
@@ -309,7 +309,7 @@ to drive a session; `snapshot` / `hydrate` carry phase persistence.
 
 **The decisions are not there.** Every verdict rule, admission policy, prior,
 program composition, fit, spatial close and grade lives in
-[`jasper/active_speaker/crossover_v2/`](../jasper/active_speaker/crossover_v2/__init__.py)
+[`jasper/active_speaker/crossover_v2/`](../../jasper/active_speaker/crossover_v2/__init__.py)
 — one module per organ, each pure and separately testable, and that package's
 own `__init__` is the index of what each sibling owns. The session reads its
 state, calls an organ, and records what came back.
@@ -317,13 +317,13 @@ state, calls an organ, and records what came back.
 **The direction is the invariant: the session imports the package; the package
 never imports the session or the web host.**
 `test_no_domain_module_imports_the_host_or_the_legacy_flow` in
-[`test_crossover_v2_journey.py`](../tests/test_crossover_v2_journey.py) holds
+[`test_crossover_v2_journey.py`](../../tests/test_crossover_v2_journey.py) holds
 that line. When a decision starts being made in the session file it belongs in
 an organ; when session state or a seam starts being read in an organ it belongs
 in the session file.
 
 **Analysis = pure functions.** `analyze_program_capture` in
-[`program_analysis.py`](../jasper/audio_measurement/program_analysis.py) maps
+[`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py) maps
 `(ExcitationProgram, WAV, cal, geometry, priors) → ProgramAnalysis` with no
 hidden state, so every verdict is reproducible offline from the stored
 artifacts.
@@ -331,7 +331,7 @@ artifacts.
 **All side effects cross one boundary.** `V2FlowSeams` carries six required
 seams (`play`, `analyze`, `publish_check`, `publish_candidate`, `apply_complete`,
 `apply_failed`) plus optional ones a session can run without. The web host
-([`correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py)) binds
+([`correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py)) binds
 the real ones; tests inject fakes. Two names still say *conductor* on purpose —
 `V2ConductorSnapshot` and `V2ConductorContext`, with `resolve_conductor_context`
 and `persist_conductor_state` beside them: they are persistence- and
@@ -387,9 +387,9 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
    single-valued and has no lookup, so each measure session overwrites it and a
    failed one leaves it `None`, with every candidate still sitting write-once in
    its bundle. `handle_v2_republish`
-   ([`correction_crossover_v2_republish.py`](../jasper/web/correction_crossover_v2_republish.py))
+   ([`correction_crossover_v2_republish.py`](../../jasper/web/correction_crossover_v2_republish.py))
    locates one by its own fingerprint through
-   [`candidate_bank.py`](../jasper/active_speaker/candidate_bank.py) (the single
+   [`candidate_bank.py`](../../jasper/active_speaker/candidate_bank.py) (the single
    owner of where banked candidates live), re-verifies it through
    `MeasuredCrossoverCandidate.from_mapping` — the same recompute-and-compare
    apply runs; there is no second hasher — and republishes it with its
@@ -449,7 +449,7 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
     — the fit engine's own vocabulary and per-filter-cap invariants are not
     assumed to have survived a JSON round-trip. The safety-posture rationale is
     owned by
-    [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
+    [`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md).
 12. **A submitted graph is proven live before anything plays.**
     `confirm_graph_is_live` normalizes the submitted YAML through CamillaDSP's
     own `ReadConfig` and compares fingerprints strictly. Text equality against
@@ -462,26 +462,26 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
     `SUMMED_SWEEP_PHASES` play into the already-active production graph — and
     that emit derives its whole `devices:` block from the resolved playback
     endpoint in one call (`active_emit_devices` in
-    [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py)), capture lane
+    [`camilla_yaml.py`](../../jasper/active_speaker/camilla_yaml.py)), capture lane
     and wire format and latency geometry together. A ring-armed speaker's
     playback endpoint is the ACTIVE ring, not Ring B: naming only the sink would
     sweep into one ring while CamillaDSP captured a lane nobody feeds — silence
     with every daemon healthy. Which endpoint a roleful box resolves is **not**
     this document's to state; the authority is
-    [`audio-paths.md`](audio-paths.md).
+    [`audio-paths.md`](../audio-paths.md).
 14. **Every band a per-driver decision is graded over is clamped to the band that
     driver's own sweep excited.** `overlap_band_hz` does it for the GCC
     alignment, trim solve, ripple and VERIFY tracking; `branch_snr_band_hz` does
     it per branch for the capture-SNR verdict. The clamp's contract, its named
     residual, and why an EMPTY window still cannot enfranchise an unexcited row
     are **code-owned**: read `branch_snr_band_hz`'s docstring in
-    [`program_analysis.py`](../jasper/audio_measurement/program_analysis.py).
+    [`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py).
 15. **A prescribed round is opened AT what it was prescribed, and never inherits
     one.** Four things can be prescribed — blend and driver stage through
     `jasper-crossover-prescriber`; alignment and topology arrive as request-body
     keys on session open and refuse the WHOLE session at the tap. The four
     classes, the two entry surfaces and the severity split are tabulated once, in
-    [`testing-tooling.md`](testing-tooling.md#the-other-two-prescriptions-do-not-come-through-this-door-2773).
+    [`testing-tooling.md`](../testing-tooling.md#the-other-two-prescriptions-do-not-come-through-this-door-2773).
     Two consequences are this document's: a **topology** pin replaces the
     session's own corner *and* preset at both stages (via
     `fc_sweep.recornered_preset`), so the fit, the de-embedding, the emitted
@@ -495,34 +495,34 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
 
 ## File map
 
-[`crossover_v2/__init__.py`](../jasper/active_speaker/crossover_v2/__init__.py)
+[`crossover_v2/__init__.py`](../../jasper/active_speaker/crossover_v2/__init__.py)
 is the organ package's own index — read it for what each sibling module owns.
 Design prose lives in each module's docstring. What that index does not cover:
 
 | File | What it owns |
 |---|---|
-| [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) | `CrossoverV2Session` — session state, seams, irreversible acts, the host adapter; the capture-plan builders, tier/plan shape, cloud prompts. |
-| [`session_volume_plan.py`](../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: the `min(−20, max(caps))` SSOT plus open/close/abandon and the restore-once latch. |
-| [`volume_owner.py`](../jasper/volume_owner.py) | The one owner of CamillaDSP's main fader and its four ranked claim kinds. Sits at `jasper/` root, outside the organ package, so the package index does not cover it. |
-| [`measured_crossover_candidate.py`](../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact. |
-| [`candidate_bank.py`](../jasper/active_speaker/candidate_bank.py) | Where banked candidates live on disk, and finding one by its own fingerprint. |
-| [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The Layer-1a correction envelope: per-bin allowed depth and the terms it takes the `min` across. |
-| [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py) | The Layer-1a fit engine: `fit_driver_linearization` and its budgets, bands, give-back, and the trim solve. |
-| [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
-| [`crossover_envelope_v2.py`](../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
-| [`delta_probe.py`](../jasper/active_speaker/delta_probe.py) | The realized-vs-commanded map for an applied correction change, and its four verdicts. |
-| [`web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
-| [`web/correction_crossover_v2_republish.py`](../jasper/web/correction_crossover_v2_republish.py) | The republish door: re-publish a banked candidate by fingerprint so apply can reach it. |
-| [`web/correction_crossover_v2_relay.py`](../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider: plan-walk hosting, the phone phase ladder, purge grace, link-TTL policy. |
-| [`web/correction_crossover_v2_wired.py`](../jasper/web/correction_crossover_v2_wired.py) | The WIRED capture provider: source resolution, the local plan walk, the answer mint. |
-| [`audio_measurement/wired_capture.py`](../jasper/audio_measurement/wired_capture.py) | The wired capture engine: registry-anchored device probe, parameterized S32_LE ALSA capture with exact gap accounting, the ≥128-zero dropout scan, 32-bit WAV encode. |
-| [`audio_measurement/program.py`](../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |
-| [`audio_measurement/program_analysis.py`](../jasper/audio_measurement/program_analysis.py) | The pure analysis: locate/segment, drift, gated transfer functions, the configured-Fc composition, prediction, VERIFY tracking. |
-| [`audio_measurement/timeline_slip.py`](../jasper/audio_measurement/timeline_slip.py) | The sub-sample timeline-step gate and the residual per-driver phase exposure it cannot close (`SLIP_GATE_SAMPLES`). |
-| [`audio_measurement/spatial_combine.py`](../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner and the echo/geometry diagnostics. numpy only. |
-| [`audio_measurement/interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py) | The interference-null identification gate and the per-position variance classifier. |
-| [`audio_measurement/frame_fit.py`](../jasper/audio_measurement/frame_fit.py) | The frame between two curves about to be differenced — the model and its disclosure record, no band and no verdict. |
-| [`attribution/`](../jasper/attribution/__init__.py) | Mechanism attribution's schema and persistence half: findings, the declaration registry, promotion, bundle-lifetime storage. |
+| [`crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py) | `CrossoverV2Session` — session state, seams, irreversible acts, the host adapter; the capture-plan builders, tier/plan shape, cloud prompts. |
+| [`session_volume_plan.py`](../../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: the `min(−20, max(caps))` SSOT plus open/close/abandon and the restore-once latch. |
+| [`volume_owner.py`](../../jasper/volume_owner.py) | The one owner of CamillaDSP's main fader and its four ranked claim kinds. Sits at `jasper/` root, outside the organ package, so the package index does not cover it. |
+| [`measured_crossover_candidate.py`](../../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact. |
+| [`candidate_bank.py`](../../jasper/active_speaker/candidate_bank.py) | Where banked candidates live on disk, and finding one by its own fingerprint. |
+| [`linearization_envelope.py`](../../jasper/active_speaker/linearization_envelope.py) | The Layer-1a correction envelope: per-bin allowed depth and the terms it takes the `min` across. |
+| [`linearization_fit.py`](../../jasper/active_speaker/linearization_fit.py) | The Layer-1a fit engine: `fit_driver_linearization` and its budgets, bands, give-back, and the trim solve. |
+| [`camilla_yaml.py`](../../jasper/active_speaker/camilla_yaml.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
+| [`crossover_envelope_v2.py`](../../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
+| [`delta_probe.py`](../../jasper/active_speaker/delta_probe.py) | The realized-vs-commanded map for an applied correction change, and its four verdicts. |
+| [`web/correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |
+| [`web/correction_crossover_v2_republish.py`](../../jasper/web/correction_crossover_v2_republish.py) | The republish door: re-publish a banked candidate by fingerprint so apply can reach it. |
+| [`web/correction_crossover_v2_relay.py`](../../jasper/web/correction_crossover_v2_relay.py) | The relay capture provider: plan-walk hosting, the phone phase ladder, purge grace, link-TTL policy. |
+| [`web/correction_crossover_v2_wired.py`](../../jasper/web/correction_crossover_v2_wired.py) | The WIRED capture provider: source resolution, the local plan walk, the answer mint. |
+| [`audio_measurement/wired_capture.py`](../../jasper/audio_measurement/wired_capture.py) | The wired capture engine: registry-anchored device probe, parameterized S32_LE ALSA capture with exact gap accounting, the ≥128-zero dropout scan, 32-bit WAV encode. |
+| [`audio_measurement/program.py`](../../jasper/audio_measurement/program.py) | The excitation-program model and its composers. Pure data, no safety decisions. |
+| [`audio_measurement/program_analysis.py`](../../jasper/audio_measurement/program_analysis.py) | The pure analysis: locate/segment, drift, gated transfer functions, the configured-Fc composition, prediction, VERIFY tracking. |
+| [`audio_measurement/timeline_slip.py`](../../jasper/audio_measurement/timeline_slip.py) | The sub-sample timeline-step gate and the residual per-driver phase exposure it cannot close (`SLIP_GATE_SAMPLES`). |
+| [`audio_measurement/spatial_combine.py`](../../jasper/audio_measurement/spatial_combine.py) | The spatial-cloud combiner and the echo/geometry diagnostics. numpy only. |
+| [`audio_measurement/interference_nulls.py`](../../jasper/audio_measurement/interference_nulls.py) | The interference-null identification gate and the per-position variance classifier. |
+| [`audio_measurement/frame_fit.py`](../../jasper/audio_measurement/frame_fit.py) | The frame between two curves about to be differenced — the model and its disclosure record, no band and no verdict. |
+| [`attribution/`](../../jasper/attribution/__init__.py) | Mechanism attribution's schema and persistence half: findings, the declaration registry, promotion, bundle-lifetime storage. |
 
 ---
 
@@ -541,7 +541,7 @@ file's warranty rather than a fresh derivation: they were themselves a merge of
 `HANDOFF-crossover-measurement-v2.md`, so **every claim there carries the reading
 its source carried**, and the per-pass record of what each of those readings did
 and did not re-verify is
-[`historical/crossover-measurement-v2-verification-log.md`](historical/crossover-measurement-v2-verification-log.md).
+[`historical/crossover-measurement-v2-verification-log.md`](crossover-measurement-v2-verification-log.md).
 Two consequences worth stating: invariants 13 and 15 say *"this document's"* and
 were written when that meant the runbook — they still read correctly under this
 owner — and a moved claim is only as fresh as its last pass in that log.

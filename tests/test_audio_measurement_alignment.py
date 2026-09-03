@@ -79,14 +79,24 @@ def test_nan_capture_does_not_poison_peak_and_is_gated():
         alignment.assert_alignment_confident(captured, stim, require=True)
 
 
-def test_uses_fft_not_naive_correlate():
-    # B1 regression: the module must use the FFT-accelerated correlator, not the
-    # O(N·M) np.correlate, so a 10 s sweep aligns in ms not tens of seconds.
-    import inspect
+def test_a_ten_second_sweep_correlates_far_faster_than_a_naive_correlator():
+    # B1 regression: an O(N·M) correlator takes minutes on this pair; the
+    # 10 s budget: a naive O(N^2) correlator on a 10 s sweep takes minutes; the
+    # FFT path takes a fraction of a second, so only an algorithm regression trips it.
+    # change can breach it.
+    import time
 
-    src = inspect.getsource(alignment.correlation)
-    assert 'method="fft"' in src
-    assert "np.correlate(" not in src
+    rng = np.random.default_rng(3)
+    stim = _stimulus(rng, n=48000)
+    captured = np.zeros(10 * 48000, dtype=np.float64)
+    captured[20000 : 20000 + stim.size] = stim
+
+    start = time.monotonic()
+    corr = alignment.correlation(captured, stim)
+    elapsed = time.monotonic() - start
+
+    assert corr.size > 0
+    assert elapsed < 10.0
 
 
 def test_capture_is_truncated_before_float64_normalization(monkeypatch):

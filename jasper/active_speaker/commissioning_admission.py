@@ -97,8 +97,8 @@ ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS = -12.0
 ACTIVE_DRIVER_CAPTURE_REPEAT_COUNT = 1
 # The relay's armed-to-sweep deadline must also contain the controlled ambient
 # interval, longest protected sweep, graph load/readback/restore, and relay
-# posts. Keep an explicit nine-second operations budget instead of accepting a
-# profile cooldown that can only time out after the phone starts recording.
+# posts, so the budget is explicit rather than a profile cooldown that can only
+# time out after the phone starts recording.
 ACTIVE_DRIVER_CAPTURE_GRAPH_AND_RELAY_BUDGET_S = 9.0
 MAX_AUTOMATIC_DRIVER_COOLDOWN_S = max(
     0.0,
@@ -118,11 +118,9 @@ logger = logging.getLogger(__name__)
 class ActiveCommissioningAdmissionError(RuntimeError):
     """Active could not prove or persist one automatic capture attempt.
 
-    ``refusal_codes`` carries the underlying closed-vocabulary refusal slugs
-    when the failure was an admission decision rather than a structural fault
-    (issue #1820). They are forensics for the caller's payload and the journal;
-    the exception MESSAGE is household copy, because ``web_commissioning``
-    surfaces ``str(exc)`` in a ``/sound/`` issue list.
+    ``refusal_codes`` carries closed-vocabulary refusal slugs as forensics; the
+    MESSAGE is household copy, because ``web_commissioning`` surfaces
+    ``str(exc)`` in a ``/sound/`` issue list (#1820).
     """
 
     def __init__(
@@ -448,11 +446,9 @@ def _context_fingerprint(
 def parse_running_graph(running_config_raw: str | None) -> dict[str, Any]:
     """One parseable CamillaDSP graph as an object, unrepaired.
 
-    Extracted from :func:`running_graph_fingerprint` so a caller that hashes a
-    SUBSET of the graph — see
-    :func:`~jasper.active_speaker.crossover_v2.tuning_scope.tuning_scope_fingerprint`
-    — parses and refuses it the same way, rather than spelling a second
-    tolerance for an unparseable readback.
+    Shared with callers that hash a SUBSET of the graph (see
+    :func:`~jasper.active_speaker.crossover_v2.tuning_scope.tuning_scope_fingerprint`)
+    so both refuse an unparseable readback identically.
     """
 
     try:
@@ -548,10 +544,9 @@ def prepare_capture_plan(
     duration_limit = effective_sweep_duration_limit_s(
         safety_profile, str(target["target_fingerprint"])
     )
-    # "Longest sweep that fits this limit" is the same question the MEASURE
-    # composer asks, so both ask one function. It answers exactly: a duration
-    # even a hair over the limit is refused by prepare_driver_excitation_plan's
-    # strict ``>`` below, so a tolerance here would only defer that refusal.
+    # The same "longest sweep that fits this limit" the MEASURE composer asks,
+    # answered exactly: prepare_driver_excitation_plan's strict ``>`` below
+    # refuses a duration even a hair over, so a tolerance here defers nothing.
     try:
         fitted_duration = phase_closing_duration_s(
             f1, f2, at_or_below_s=duration_limit, sample_rate=DEFAULT_SAMPLE_RATE,
@@ -729,53 +724,33 @@ def issue_protection_evidence(
             load_target.get("speaker_group_id") == target.get("speaker_group_id")
             and load_target.get("role") == target.get("role")
         ),
-        # An empty required-filter list is a legitimate, operator-confirmed
-        # profile state (fingerprint-bound) — e.g. a woofer target that
-        # declares zero protective filters because protective high-passes
-        # are tweeter machinery. Playback protection for such a target rides
-        # the limiter/headroom/mask checks elsewhere in this same report,
-        # which are computed independently and unaffected here. So
-        # ``all(filter_checks)`` is vacuously True when zero requirements
-        # were declared for this target; it stays a hard refusal only when
-        # requirements ARE declared but can't be verified (no resolved
-        # output index to check against).
+        # An empty required-filter list is a legitimate fingerprint-bound
+        # profile state (a woofer declares no protective high-pass), so
+        # ``all(filter_checks)`` is vacuously True there; protection for such a
+        # target rides the limiter/headroom/mask checks in this same report.
+        # A hard refusal only when requirements ARE declared and cannot be
+        # verified against a resolved output index.
         "required_filters_present": (
             False
             if filter_requirements and output_index is None
             else all(filter_checks)
         ),
         "target_limiter_present": limiter_ok,
-        # PROTECTION, not transport: "the graph CamillaDSP is actually running
-        # reads the source I expect." The expectation is DERIVED FROM THE
-        # RUNNING GRAPH'S OWN playback device rather than compared against a
-        # constant, which makes this the live counterpart of the end-to-end
-        # coupling ``active_emit_devices`` emits — the same both-ends-agree
-        # invariant, asserted on the read-back instead of on the emit.
-        # The constant it replaces accepted the snd-aloop tap paired with ANY
-        # sink, so a graph whose sink is the ring while its source is still
-        # ``plug:jasper_capture`` passed — and under ``shm_ring`` fan-in stops
-        # feeding that tap, so such a graph captures a device nobody writes and
+        # PROTECTION, not transport: the running graph must read the source its
+        # OWN playback device implies — the live counterpart of the both-ends-
+        # agree coupling ``active_emit_devices`` emits. A ring sink paired with
+        # an aloop source captures a device nobody writes under ``shm_ring`` and
         # sweeps into digital silence with every daemon healthy.
         #
-        # THE DELTA IS EXACTLY TWO CELLS, and it is worth naming both rather
-        # than calling this "stronger" and leaving the other half implied:
-        # {ring sink, aloop source} moves from accepted to REFUSED — the silent
-        # sweep; and {ring sink, ring source} moves from refused to ACCEPTED —
-        # the capability, since ``fanin.coupling_reconcile
-        # .ring_endpoint_anchor_converged`` DEMANDS that same pair on an armed
-        # box, so before this the two gates were mutually unsatisfiable.
-        #
-        # WHAT THE NEW CELL PROVES IS COHERENCE, NOT LIVENESS, and the gap is
-        # deliberate: this reads no env, so it cannot know the box's coupling —
-        # a ring/ring graph on a LOOPBACK-coupled box is self-consistent, passes
-        # here, and still captures a ring nobody writes. Teaching this check the
-        # box would make a protection check read reconciler env; the liveness
-        # conjunct belongs to the load preflight's armed-transport gate instead
-        # — shipped as `commissioning_transport_armed` in
+        # {ring sink, ring source} must be ACCEPTED here:
+        # `fanin.coupling_reconcile.ring_endpoint_anchor_converged` demands that
+        # pair on an armed box, so refusing it makes the two gates mutually
+        # unsatisfiable. This proves COHERENCE, not liveness: it reads no env,
+        # so a ring/ring graph on a LOOPBACK-coupled box passes here. The
+        # liveness conjunct is `commissioning_transport_armed` in
         # `startup_load.build_driver_commission_load_preflight` (#2412 Wave 3).
-        #
-        # The samplerate conjunct is a separate axis and is unchanged — the
-        # ring does not alter the graph's sample rate.
+        # The samplerate conjunct below is a separate axis; the ring does not
+        # alter the graph's sample rate.
         "capture_route_current": (
             devices.get("samplerate") == DEFAULT_SAMPLE_RATE
             and capture.get("device") == expected_capture_device
@@ -955,13 +930,8 @@ def _record_stale_protection_report(
 ) -> tuple[str, ...]:
     """Name the failing live-protection sub-checks; never mask the refusal.
 
-    Before this, ``passed=False`` on the live protection report left no
-    record of which of its ~11 named boolean sub-checks failed: no event
-    named the failing keys, and the report JSON was never written anywhere,
-    so diagnosing the actual admission wall required re-running the sweep
-    and guessing. This is observability only — it never changes the
-    admission outcome, and a persistence failure here is WARN-logged and
-    swallowed rather than masking the caller's real refusal.
+    Observability only: it never changes the admission outcome, and a
+    persistence failure is WARN-logged and swallowed.
     """
 
     checks = report.get("checks")
@@ -1033,13 +1003,10 @@ async def play_admitted_driver_capture(
     generation or playback admission.
 
     ``timeout_margin_s`` is added to the *realized* sweep duration
-    (``meta.duration_s``, already phase-rounded by
-    ``synchronized_sweep_metadata``) to bound the aplay deadman -- never a
-    fixed literal. A duration-decoupled literal can leave near-zero (or
-    negative) margin for process spawn + ALSA open + EOF drain once the
-    kernel's phase-closure rounding lands close to the nominal request, which
-    is exactly what made this sweep time out on every hardware run before
-    the derivation moved here.
+    (``meta.duration_s``, phase-rounded by ``synchronized_sweep_metadata``) to
+    bound the aplay deadman, never to a fixed literal: a decoupled literal
+    leaves near-zero margin for process spawn, ALSA open and EOF drain once the
+    kernel's phase-closure rounding lands near the nominal request.
     """
 
     initial_raw = await read_running_config()
@@ -1080,21 +1047,11 @@ async def play_admitted_driver_capture(
         protection_evidence=initial_evidence,
     )
     if not decision.allowed:
-        # Issue #1820, isolated-driver path. This branch used to raise with a
-        # detail string built by joining the raw refusal enum values, and
-        # ``web_commissioning``'s ``except ActiveCommissioningAdmissionError``
-        # arm puts ``str(exc)`` straight into an issue message that ``/sound/``
-        # renders — so "driver excitation generation refused:
-        # safety_profile_identity_mismatch" was one refusal away from the
-        # household's screen. The raw codes are FORENSICS and now go to the
-        # journal (and ride the exception as ``refusal_codes`` for the caller's
-        # payload, exactly like the sibling ``PlaybackAdmissionRefused`` arm
-        # already does); the exception message is the one sentence the operator
-        # can act on. Same family of causes as that sibling — an identity or a
-        # protection proof went stale between preparing and admitting — so it
-        # names the same action, from the sibling's own constant rather than a
-        # second copy of the sentence (#1832): "names the same action" written
-        # as a hand-typed literal is a claim a green suite cannot check.
+        # ``web_commissioning`` puts ``str(exc)`` straight into a ``/sound/``
+        # issue message, so the raw codes stay FORENSICS on the journal and on
+        # ``refusal_codes`` (#1820). Same family of causes as the sibling
+        # ``PlaybackAdmissionRefused`` arm, so it reuses that arm's constant
+        # rather than a second copy of the sentence (#1832).
         refusal_codes = tuple(reason.value for reason in decision.refusal_reasons)
         failed_checks: tuple[str, ...] = ()
         if not initial_evidence.current:

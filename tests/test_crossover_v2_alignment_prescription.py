@@ -53,7 +53,6 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
-    build_and_prove_candidate_config,
     compile_candidate_config,
     prove_candidate_config,
 )
@@ -1678,9 +1677,8 @@ def test_a_prescribed_arm_is_proved_by_the_ordinary_derivation():
     carry the prescribed number cannot reach a speaker.
     """
     candidate = _candidate_for(-450.0)
-    yaml_text = build_and_prove_candidate_config(
-        candidate, playback_device="hw:ActiveDAC",
-    )
+    yaml_text = compile_candidate_config(candidate, playback_device="hw:ActiveDAC")
+    prove_candidate_config(candidate, yaml_text)
     # The headroom recompute ran on THIS candidate's graph.
     assert "active_baseline_headroom" in yaml_text
 

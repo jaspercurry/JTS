@@ -4,17 +4,11 @@
 
 """Measurement quality checks for sweep captures.
 
-The DSP math can produce a curve for almost any WAV, including a
-clipped, silent, or browser-processed recording. This module turns the
-raw capture into explicit quality facts before deconvolution so the UI,
-debug bundles, doctor, and future calibration agent all reason from the
-same evidence.
-
-The thresholds are supplied by a :class:`~jasper.audio_measurement.quality_model.QualityModel`
-profile so the room, driver, and level-ramp layers can differ by data rather
-than by forked constants; :func:`assess_capture` defaults to the ``ROOM``
-profile, which carries the pre-extraction values verbatim. QualityModel
-profiles are the sole source of capture-quality thresholds.
+The DSP math produces a curve for almost any WAV, including a clipped, silent,
+or browser-processed recording; this module states the capture's quality facts
+before deconvolution. Thresholds come only from a
+:class:`~jasper.audio_measurement.quality_model.QualityModel` profile
+(:func:`assess_capture` defaults to ``ROOM``), never from constants here.
 """
 from __future__ import annotations
 
@@ -26,12 +20,7 @@ import numpy as np
 
 from jasper.audio_measurement.quality_model import ROOM, QualityModel, Severity
 
-# `Severity` is imported, not re-declared: the words live with the thresholds
-# (quality_model, "Verdict vocabulary"). Which subset of them a module emits is
-# a fact about its call sites, not about the word set. Kept importable from
-# here because callers already spell it `quality.Severity`.
 
-# Default used by the local dBFS conversion helper.
 DBFS_FLOOR = ROOM.dbfs_floor
 
 
@@ -125,19 +114,10 @@ def assess_capture(
 ) -> CaptureQuality:
     """Assess a browser-uploaded sweep capture.
 
-    Failures are conditions that make deconvolution unsafe or known-bad.
-    Warnings are conditions where the run can continue, but downstream
-    tools and humans should treat the result as lower confidence.
-
-    truncated_from_samples is the capture's length BEFORE the caller
-    bounded it for memory (see deconv.cap_capture_length). When it
-    exceeds the assessed length, a `capture_truncated` warning is
-    emitted so the truncation is visible at /status / bundle / doctor,
-    not just in the journal.
-
-    quality_model selects the layer's threshold profile (clip, dBFS floor,
-    peak/RMS gates). Defaults to ROOM, whose values equal the pre-extraction
-    constants, so existing callers are unaffected.
+    ``truncated_from_samples`` is the capture's length BEFORE the caller bounded
+    it for memory (:func:`~jasper.audio_measurement.deconv.cap_capture_length`);
+    exceeding the assessed length emits a ``capture_truncated`` warning.
+    ``quality_model`` selects the layer's threshold profile.
     """
     if captured.ndim != 1:
         raise ValueError(f"captured must be mono 1-D, got {captured.shape}")

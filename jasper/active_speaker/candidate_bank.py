@@ -4,22 +4,19 @@
 
 """Find a previously-minted measured candidate in the on-box bundle store.
 
-**Why this exists.** The v2 apply door is single-slot: it applies whatever
-``state["candidate"]`` currently names, and that slot is rewritten by every
-measure session and cleared by a failed one. The candidates themselves are
-durable — each MEASURE publishes its artifact write-once into a commissioning
-bundle — so "the candidate is unreachable" is a *state* problem, never a
-*storage* one. This module is the read half of the fix: locate a banked
-candidate by its own fingerprint so a door can make it live again.
+The v2 apply door is single-slot, but every published candidate is durable, so
+this is the read half: locate a banked candidate by its own fingerprint. This
+module owns the fingerprint SCAN — :mod:`jasper.correction.applied_speaker_evidence`
+delegates here rather than restating the glob. Not the only place production
+spells that path: ``correction_crossover_v2._reopen_candidate_artifact`` builds
+it too, resolving an already-known session id rather than searching.
 
 **One owner for the fingerprint SCAN.** The glob below describes the on-disk
 shape
-(``<bundle>/evidence/v1/artifacts/crossover_v2/<relay_session_id>/candidate.json``),
-and :mod:`jasper.correction.applied_speaker_evidence` — which answers the
-neighbouring question, "which banked candidate is the APPLIED one" — reads it
-from here rather than keeping a second copy, because a shape restated in two
-places drifts on the first layout change and both readers then disagree about
-what is missing.
+(``<bundle>/evidence/v1/artifacts/crossover_v2/<relay_session_id>/candidate.json``).
+A second reader of that shape must read it from here rather than keep a copy,
+because a shape restated in two places drifts on the first layout change and
+both readers then disagree about what is missing.
 
 Scoped honestly: this is not the only place production spells that path.
 ``correction_crossover_v2._reopen_candidate_artifact`` builds it too, and is
@@ -47,12 +44,11 @@ bundle id *and* the minting relay session id together. Both ride on
 :mod:`jasper.active_speaker.bundles` and
 :mod:`jasper.active_speaker.measured_crossover_candidate` — are both at this
 level, and importing the ``crossover_v2`` package runs its ``__init__`` →
-``contracts`` → **numpy**. :mod:`jasper.correction.applied_speaker_evidence`
-imports this module at its own module level, and that module is deliberately
-import-light: it lazy-imports the candidate model *inside* its loader rather
-than at the top. Filing the bank under ``crossover_v2/`` made it pull numpy
-(measured, not assumed), spending a budget its consumers never agreed to. Keep
-it out — and note the same rule pointed the other way for
+``contracts`` → **numpy**. Filing the bank under ``crossover_v2/`` made it pull
+numpy (measured, not assumed), spending a budget its consumers never agreed to;
+this module stays import-light for the same reason, lazy-importing the candidate
+model *inside* its loader rather than at the top. Keep it out — and note the
+same rule pointed the other way for
 ``correction_crossover_v2``, which imports this lazily at the call site because
 it is a wizard-hosted module.
 """
@@ -76,27 +72,21 @@ logger = logging.getLogger(__name__)
 #: them joins the wrong round to the wrong bundle.
 CANDIDATE_ARTIFACT_GLOB = "*/evidence/v1/artifacts/crossover_v2/*/candidate.json"
 
-#: How many candidate artifacts to PARSE before giving up. The bundle root is
-#: retention-capped (``DEFAULT_SESSIONS_MAX_BUNDLES = 12``) with a handful of
-#: crossover_v2 sessions each, so a healthy box is far under this. What the cap
-#: bounds is the expensive half — up to 4 MB of JSON plus a fingerprint
-#: recompute per artifact — so a pathological directory cannot turn one lookup
-#: into unbounded work on a 1 GB Pi. It does NOT bound the directory walk: the
-#: glob is fixed-depth and ``sorted()`` completes before the slice is taken,
-#: which is cheap and deliberately left alone.
+#: How many candidate artifacts to PARSE before giving up, bounding the
+#: expensive half (up to 4 MB of JSON plus a fingerprint recompute each) on a
+#: 1 GB Pi. It does NOT bound the fixed-depth directory walk.
 MAX_CANDIDATE_ARTIFACTS_SCANNED = 64
 
-#: Largest candidate.json this reader will parse. The publisher's own artifact
-#: budget is smaller; this is a defensive ceiling on untrusted-size input, not a
-#: contract.
+#: Largest candidate.json this reader will parse: a ceiling on input size, not
+#: a contract — the publisher's own artifact budget is smaller.
 MAX_CANDIDATE_BYTES = 4 * 1024 * 1024
 
 
 class CandidateBankRefusal(LookupError):
     """No single trustworthy banked candidate answers this fingerprint.
 
-    Carries a machine ``code`` beside the household sentence so a door can map
-    it to its own response contract without parsing prose.
+    Carries a machine ``code`` beside the household sentence so a door maps it
+    to its own response contract without parsing prose.
     """
 
     def __init__(self, code: str, detail: str) -> None:
@@ -128,19 +118,12 @@ class BankedCandidate:
 def candidate_artifact_paths(root: Path) -> list[Path]:
     """Every published candidate.json under the bundle root, in a stable order.
 
-    Sorted for determinism only. **Not chronological**, and deliberately not
-    claimed to be: the glob's first wildcard is a bundle directory named
-    ``uuid4().hex[:12]`` (:func:`~jasper.active_speaker.bundles.open_bundle`),
-    so path order carries no time information. Only ``started_at`` in each
-    bundle's ``info.json`` does — :mod:`~jasper.active_speaker.bundles` already
-    orders by it — and this scan needs none of it: the fingerprint decides the
-    match.
-
-    :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` therefore BOUNDS work rather than
-    selecting recent history, and which end it truncates is arbitrary because
-    the order is. A root that overran the cap could drop an artifact that is on
-    disk and report it missing; the bundle root's own retention cap (12) is
-    what keeps a healthy box far under it.
+    Sorted for determinism only, NOT chronological: the bundle directory is
+    named ``uuid4().hex[:12]``, so path order carries no time information.
+    :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` therefore bounds work rather than
+    selecting recent history, and which end it truncates is arbitrary — a root
+    that overran the cap could drop an artifact that is on disk and report it
+    missing. The bundle root's own retention cap keeps a healthy box far under.
     """
     try:
         found = sorted(Path(root).glob(CANDIDATE_ARTIFACT_GLOB))
@@ -152,10 +135,9 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
 def _identity_from_path(path: Path) -> tuple[str, str]:
     """``(bundle_session_id, relay_session_id)`` for one artifact path.
 
-    Positional rather than parsed: the glob above fixes the depth, so the
-    minting relay session is the artifact's own directory and the bundle is
-    five levels above it (``crossover_v2`` / ``artifacts`` / ``v1`` /
-    ``evidence``).
+    Positional rather than parsed: the glob fixes the depth, so the minting
+    relay session is the artifact's own directory and the bundle is five levels
+    above it.
     """
     parents = path.parents
     relay_session_id = parents[0].name
@@ -166,11 +148,9 @@ def _identity_from_path(path: Path) -> tuple[str, str]:
 def load_candidate_artifact(path: Path) -> Any | None:
     """Parse and integrity-check one candidate artifact, or ``None``.
 
-    ``None`` means "this artifact is not usable", which covers an unreadable
-    file, an oversized one, malformed JSON, and — the case that matters — a
-    payload whose recomputed fingerprint disagrees with the one it declares.
-    Refusing rather than repairing is the whole point: a candidate that cannot
-    survive an exact reopen must never become applyable.
+    ``None`` covers an unreadable file, an oversized one, malformed JSON, and a
+    payload whose recomputed fingerprint disagrees with the one it declares. A
+    candidate that cannot survive an exact reopen must never become applyable.
     """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverCandidate,
@@ -194,20 +174,11 @@ def find_banked_candidate(
 ) -> BankedCandidate:
     """The one banked candidate with this fingerprint, or a typed refusal.
 
-    Fail-closed in all three directions the caller cannot distinguish on its
-    own:
-
-    * ``fingerprint_required`` — nothing was asked for.
-    * ``not_found`` — no artifact both matches and verifies. The detail
-      separates the two populations, because "none matched" and "the one that
-      matched would not verify" are different problems with different fixes,
-      and reporting a corrupted artifact as simply absent would send an
-      operator looking for a measurement that is right there on disk.
-    * ``ambiguous`` — two DIFFERENT minting lineages carry this fingerprint.
-      Identical cores hash identically, so this means the same candidate was
-      minted twice; the artifacts agree but their lineage does not, and lineage
-      is published. Guessing which round to credit is the one thing this must
-      not do.
+    Fail-closed three ways: ``fingerprint_required`` (nothing was asked for),
+    ``not_found`` (no artifact both matches and verifies — the detail separates
+    "none matched" from "the match would not verify", different problems with
+    different fixes), and ``ambiguous`` (two DIFFERENT minting lineages carry
+    this fingerprint; guessing which round to credit is what this must not do).
     """
     from jasper.active_speaker.bundles import sessions_dir
 
@@ -250,9 +221,9 @@ def find_banked_candidate(
         unverified = len(paths) - verified
         detail = f"no banked candidate matches this fingerprint ({verified} examined)"
         if unverified:
-            # Says the useful thing: an artifact IS there and it failed its own
-            # integrity check. Without this the operator reads "not found" and
-            # goes looking for a measurement that is sitting on disk, corrupted.
+            # An artifact IS there and failed its own integrity check; without
+            # this the operator reads "not found" and hunts for a measurement
+            # that is on disk, corrupted.
             detail += f"; {unverified} could not be verified"
         raise CandidateBankRefusal("not_found", detail)
 

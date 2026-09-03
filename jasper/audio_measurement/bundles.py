@@ -4,36 +4,19 @@
 
 """Neutral artifact-manifest primitives for acoustic evidence bundles.
 
-This module owns only the byte-level manifest contract shared by room
-correction and active-speaker commissioning.  Feature packages continue to
-own their bundle schema, directory, retention, validation, and authority
-rules.  A bundle is forensic evidence; reading it never grants playback or
-apply authority.
+Owns only the byte-level manifest contract shared by room correction and
+active-speaker commissioning; feature packages own their bundle schema,
+directory, retention, validation, and authority rules. A bundle is forensic
+evidence: reading it never grants playback or apply authority.
 
-It also owns the one artifact-``kind`` vocabulary, in two halves:
-
-**Writing — new kinds are namespaced.**  ``kind`` was free text, and three
-features wrote into one flat space with nothing but luck keeping them apart:
-room correction's ``session_metadata`` and active-speaker's ``metadata`` are
-the same artifact (the bundle's own ``info.json``) spelled two ways, and
-nothing would have stopped two features from spelling *different* artifacts
-the same way.  A new kind therefore carries its owner —
-``jts_<owner>_<name>``, the shape ``jts_bass_extension_bench_*`` already
-uses — and :func:`validate_artifact_kind` refuses one that does not.
-
-The kinds written before this rule are grandfathered in
-:data:`LEGACY_UNNAMESPACED_KINDS` and are deliberately NOT renamed.  Banked
-bundles are durable evidence that outlives the code that wrote them; a
-rename would strand every manifest already on disk, and the manifest carries
-no migration mechanism.  The set is closed — it is a record of what was
-written before the rule, so nothing may be added to it.
-
-**Reading — an unknown kind is data, not an error.**  A reader may meet a
-kind from a newer JTS, from a feature it does not know, or from a bundle
-older than itself, and must degrade readably rather than raise or discard:
-count it, show it, pass it through.  Only a reader that has *already* found
-the kind it needs may act on it.  This is what makes the write rule safe to
-tighten without migrating anything.
+It also owns the one artifact-``kind`` vocabulary. WRITING: a new kind carries
+its owner -- ``jts_<owner>_<name>`` -- and :func:`validate_artifact_kind`
+refuses one that does not. Kinds written before that rule are grandfathered in
+:data:`LEGACY_UNNAMESPACED_KINDS`, a CLOSED set: banked bundles are durable
+evidence with no migration mechanism, so a rename would strand every manifest
+already on disk. READING: an unknown kind is data, not an error -- count it,
+show it, pass it through; only a reader that has already found the kind it
+needs may act on it.
 """
 
 from __future__ import annotations
@@ -54,9 +37,9 @@ ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
 
 KIND_NAMESPACE_PREFIX = "jts_"
 
-#: Artifact kinds written before kinds carried their owner.  CLOSED: banked
-#: bundles are durable evidence and are never migrated, so these stay exactly
-#: as written — but nothing new joins them.  A new kind is namespaced instead.
+#: Artifact kinds written before kinds carried their owner. CLOSED: banked
+#: bundles are never migrated, so these stay exactly as written and nothing new
+#: joins them. A new kind is namespaced instead.
 LEGACY_UNNAMESPACED_KINDS = frozenset(
     {
         # room correction (jasper/correction)
@@ -95,10 +78,9 @@ class BundleError(RuntimeError):
 def is_namespaced_kind(kind: str) -> bool:
     """Whether ``kind`` carries an owner, as ``jts_<owner>_<name>``.
 
-    Three underscore-separated parts is the floor, so ``jts_room`` — a prefix
-    with no artifact name — does not pass. The parts are not decomposed: this
-    asks whether a kind names its owner, not which owner it names, so a
-    feature never registers itself with this module to add one.
+    Three underscore-separated parts is the floor, so ``jts_room`` -- a prefix
+    with no artifact name -- does not pass. The parts are not decomposed: this
+    asks whether a kind names its owner, not which owner it names.
     """
 
     if not kind.startswith(KIND_NAMESPACE_PREFIX):
@@ -110,10 +92,9 @@ def is_namespaced_kind(kind: str) -> bool:
 def validate_artifact_kind(kind: str) -> str:
     """Return ``kind`` if it may be written, else raise :class:`BundleError`.
 
-    A programming-error guard on an internal API, in the same spirit as
-    :func:`relative_artifact_path`'s traversal check: every kind in the tree
-    is a source literal, so a violation surfaces the first time the writing
-    path is exercised, never from anything a household does.
+    A programming-error guard on an internal API: every kind in the tree is a
+    source literal, so a violation surfaces the first time the writing path is
+    exercised, never from anything a household does.
     """
 
     if not isinstance(kind, str) or not kind:
@@ -199,9 +180,8 @@ def sha256_file(path: Path) -> str:
 def relative_artifact_path(bundle_dir: Path, artifact_path: Path | str) -> str:
     """Return one canonical bundle-relative artifact path.
 
-    Feature readers use the same traversal and manifest-self-reference checks as
-    the neutral writers instead of importing another feature's compatibility
-    wrapper or reimplementing path validation.
+    Feature readers get the same traversal and manifest-self-reference checks as
+    the neutral writers.
     """
 
     bundle_root = bundle_dir.resolve()
@@ -325,12 +305,12 @@ def record_artifact(
 ) -> dict[str, Any]:
     """Record one artifact in the owning feature's manifest.
 
-    Entries are upserted by normalized relative path.  The manifest is an
-    integrity surface, not a source of runtime authority.  Per-file writes are
-    atomic; callers must continue to serialize writes to one bundle.  The
-    feature schema must come from authoritative ``info.json`` or the explicit
-    ``bundle_schema_version`` argument.  ``kind`` must be namespaced or
-    grandfathered; see the module docstring.
+    Entries are upserted by normalized relative path; per-file writes are
+    atomic, and callers must still serialize writes to one bundle. The manifest
+    is an integrity surface, not a source of runtime authority. The feature
+    schema must come from authoritative ``info.json`` or the explicit
+    ``bundle_schema_version`` argument, and ``kind`` must be namespaced or
+    grandfathered.
     """
 
     validate_artifact_kind(kind)

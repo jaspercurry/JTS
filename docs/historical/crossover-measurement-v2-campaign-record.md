@@ -11,7 +11,7 @@
 > `prepare_v2_session(verify_only=True)` in #3166 — are kept where they are
 > what the entry was about at the time. Current operational truth is
 > [`tuning-operator-runbook.md`](../tuning-operator-runbook.md), and the file
-> map in [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md) is
+> map in [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md) is
 > the current shape.
 >
 > **Two sections are the exception, and this tag does not cover them:**
@@ -2957,7 +2957,7 @@ exceedance run from 0.575 to 0.307 octaves, under the width rule.
 Unlike the tracking check, this comparison is **not** level-offset-invariant —
 a level shortfall is one of the things it classifies — so it takes the apply
 boundary's declared move (`expected_offset_db`,
-[invariant 10a](../crossover-v2-engine-design.md)) and removes it
+[invariant 10a](crossover-v2-engine-design.md)) and removes it
 before classifying. What survives is measured where the correction commanded
 nothing and reported as `residual_offset_db`; a material, sufficient residual
 is the `level_mismatch` verdict, which is a finding, not a rollback.
@@ -4542,7 +4542,7 @@ no retries-as-bodge). Treat these as regression fences.
    is why the additive form had to go. The target-band floor is unchanged.
 7. **The −65 dB tweeter cap is a relic** (#1595). The HF measurement
    ceiling is derived from sensitivity (invariants 1–2 in
-   [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md)); the old
+   [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md)); the old
    seed read near-inaudible (27 dB in-band SNR) on the DE250. Since
    2026-08-23 the research ask no longer emits it and the field is
    optional, so a profile saved from here on says the same thing by
@@ -5172,11 +5172,11 @@ Snapshot narrative, for "why did we end up here," not current state.
 
 The v2 rebuild ran 2026-07-17 → 2026-07-19 (PRs #1578–#1604), architected
 by Fable. Its motivation and full decision record are in
-[`crossover-measurement-productization-design.md`](../crossover-measurement-productization-design.md);
+[`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
 the first-principles research is
-[`crossover-measurement-deep-research-2026-07-18.md`](../crossover-measurement-deep-research-2026-07-18.md);
+[`crossover-measurement-deep-research-2026-07-18.md`](../research/crossover-measurement-deep-research-2026-07-18.md);
 the on-hardware log that motivated it is
-[`crossover-room-e2e-validation-log.md`](../crossover-room-e2e-validation-log.md).
+[`crossover-room-e2e-validation-log.md`](crossover-room-e2e-validation-log.md).
 
 **Why v2 exists.** The legacy flow's cost was structural, not
 parametric: a full automatic 2-way run was ~17 page actions + ~12

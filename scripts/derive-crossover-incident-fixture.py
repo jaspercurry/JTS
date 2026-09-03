@@ -33,11 +33,10 @@ What this script does NOT emit, and why (issue #2291 Phase 0):
 
 * **The per-driver measured responses the fit consumed.** Never retained as
   arrays. Re-deriving them offline from ``measure_program.wav`` plus the
-  UMIK-2 calibration is possible — ``scripts/severed-twin-replay.py`` does
-  exactly that — but both inputs are gitignored capture data and the analysis
-  grid is far too large to commit (~5e5 bins per driver; the same session's
-  VERIFY frame graded 37,080 bins across 1.7 kHz). The replay test supplies
-  synthetic branches instead and says so.
+  UMIK-2 calibration is possible, but both inputs are gitignored capture data
+  and the analysis grid is far too large to commit (~5e5 bins per driver; the
+  same session's VERIFY frame graded 37,080 bins across 1.7 kHz). The replay
+  test supplies synthetic branches instead and says so.
 * **The post-apply cloud curves.** They are retained, but decimated for display
   (512 bins at 46.875 Hz, and an 89-bin per-position grid), while the banked
   flatness verdict was computed over 10752 bins of the full FFT grid. They

@@ -5,111 +5,16 @@
 """ONE inter-driver delay — and optionally its polarity basin — prescribed from
 a named measurement (#2662).
 
-A sibling of :mod:`.blend_correction`: pure functions, no I/O, no session, and
-the strict reader for one prescription the host hands the machinery.  That
-module prescribes a *shape* for the blend region; this one prescribes the
-*timing* between the two drivers.
-
-**Why a prescription exists at all.**  The automatic aligner estimates the
-inter-driver delay from the capture, and on the 2026-08-17 series it estimated
-it with the wrong sign and hopped correlation lobes between captures of the
-same speaker (the direct arrival gap was invariant at −405.7 ± 3.3 µs, n = 33,
-while the estimator's own answers across those same captures ran +96, +62,
-−231, −367, −280 µs).  A wrong estimator is not fixed by widening the automatic
-search — PR #1649's snap radius is a deliberate ambiguity budget and its
-negatives stand — it is answered by letting a bench measurement *say the
-number*, and then making the ordinary machinery measure and grade that number
-like any other candidate.
-
-**Why the polarity may be pinned too.**  ``polarity`` is OPTIONAL and defaults
-to absent, which is the automatic path: the flat-sum objective solves the
-polarity as it always has.  It exists because delay and polarity are one
-decision with two degenerate answers — invert plus half a period at Fc sums
-almost identically on axis — so a fit re-run at one physical configuration can
-land in a different basin each time.  On 2026-08-19 three successive stage-1
-fits of one speaker solved three: (tweeter +34 µs, keep), (woofer +314 µs,
-invert), and (woofer +314 µs, keep).  The second measured best off axis (2.37
-vs 3.10 dB pooled, on axis unchanged) and was kept; the third is the anti-phase
-notch the first two are not (3.86 on axis, auto-rolled back by the delta
-probe).  A staged round that wants to measure ONE variable — a blend cut, an
-Fc — cannot do so while the basin re-rolls underneath it, so pinning the basin
-is what makes a round single-variable.  It is a constraint on the SOLVE and not
-a stamp on the answer: the trims and the delay re-solve underneath the pinned
-polarity, so the candidate is coherent rather than edited.
-
-**One field, one owner.**  This module produces no second runtime knob.  A
-prescription is a way of COMPUTING the delay that
-:class:`~jasper.audio_measurement.program_analysis.AlignmentEstimate` already
-owns: it is handed down as
-``MeasurementPriors.explicit_alignment_delay_us``, committed by
-``_select_alignment_pair`` as that estimate's ``delay_us``, and folded onto the
-candidate by the same
-:func:`~jasper.active_speaker.crossover_v2.planning.alignment_to_candidate_fields`
-every automatic round goes through.  A pinned polarity travels the identical
-route — down as ``MeasurementPriors.explicit_alignment_polarity_sign``,
-committed by the same selection as that estimate's ``polarity_sign``, folded on
-by the same function — for the same reason, and so that the two halves of one
-alignment can never enter by two different doors.  Every consumer downstream of
-that estimate
-— the summed model's residual, the predicted sum the accountability gate
-grades, the commanded delta, the headroom recompute, the emitted graph and its
-``prove_static_delay_binding`` proof, VERIFY's tracking reference — reads the
-prescribed number because it reads the one field.  That coherence is the whole
-reason the prescription enters at the estimate rather than being stamped onto
-the candidate afterwards: a candidate whose graph carries one delay and whose
-prediction models another is the exact defect the series-2 diagnosis found in
-the automatic path (`predicted_ripple_db` describing a speaker whose drivers
-are time-coincident when they were 0.4 ms apart).
-
-**Two gates, and they compose.**  Neither is sufficient alone:
-
-* **Provenance** makes the basis auditable.  A prescription must name what it
-  was measured from, so a human reading the round receipt can go and check.
-* **The bound** makes the prescription a bounded excursion from that named
-  basis: it may not leave the summation more than half a period at Fc away from
-  the basis's own answer — the comb lobe, the same geometry the aligner's
-  ``left_anchor_lobe`` tripwire watches, taken from
-  :func:`~jasper.audio_measurement.program_analysis.half_period_us` so the two
-  cannot drift apart.
-
-**Where the bound is measured FROM, and why it is not the incumbent.**  From
-the declared measured basis, not from the delay the speaker currently plays.
-A step-size bound anchored on the incumbent would forbid exactly the correction
-a lobe-hopped incumbent needs: on the series-2 speaker the incumbent sat
-+501.7 µs from the physically-coincident answer — **1.65 half-period lobes**
-(0.83 of a period at Fc = 1648.7 Hz, whose lobe is 303.27 µs) — so every
-candidate that could fix it would be refused, the only admissible prescription would be
-one that changed almost nothing, and the bound would be widened by hand at the
-first bench session, which is how a fail-closed guard becomes decorative.  Anchoring on the basis asks the question that is actually
-worth asking: *does this prescription leave the drivers within one lobe of
-where the measurement says coincident is?*  The incumbent is not ignored; it is
-simply not the reference — the aligner still evaluates ``left_anchor_lobe``
-against the capture's own anchor and still raises its selection log when a
-commitment leaves it.
-
-**Fail-closed, never clamped.**  Every refusal below names its reason and
-raises.  A prescription that is out of bounds is not pulled to the boundary and
-run: the operator asked for a candidate, and a silently different candidate is
-worse than none, because its receipt would carry the candidate's name.
-
-**Absence is the automatic path, and it is never inherited.**  ``None`` from
-:func:`read_alignment_prescription` means no prescription was made, and every
-byte of the automatic selection is unchanged.  Unlike the session tier — which
-a re-measure deliberately inherits from the lapsed session (#2639) — a
-prescription is per-round and explicit.  Inheriting one would let an operator's
-"measure again" silently re-run a candidate they did not ask for, which is the same
-class of dishonesty as clamping.
-
-**One parser, two gate policies.**  :func:`read_alignment_prescription` is the
-REQUEST gate — shape, provenance, and the bound — and it is the only place the
-bound is ever applied.  :func:`alignment_prescription_from_mapping` reads a
-prescription back out of this repository's own durable state, where the
-question is different: that prescription was validated when it was accepted,
-the round it drove has already been measured, and re-judging it at grading time
-could only ever throw away the evidence of a round that really happened.  So
-the read-back re-checks the shape (a hand-edited state file is still refused)
-and returns ``None`` rather than raising.  The two share the field parsing
-outright, so the only thing that differs between them is the thing that should.
+Pure functions, no I/O, no session. A prescription enters at
+``AlignmentEstimate`` (via ``MeasurementPriors.explicit_alignment_delay_us`` /
+``explicit_alignment_polarity_sign``), never stamped on the candidate after,
+so every downstream consumer reads one field. Two gates compose: provenance
+(a named basis) and the lobe bound, measured from that declared basis and NOT
+from the incumbent delay. Refusals raise and are never clamped to the boundary.
+One parser, two policies: :func:`read_alignment_prescription` is the request
+gate and the only place the bound is applied;
+:func:`alignment_prescription_from_mapping` re-checks shape and provenance but
+not the bound, and returns ``None`` rather than raising.
 """
 
 from __future__ import annotations
@@ -145,64 +50,35 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 #: Said when a durable read-back cannot be parsed — the one line this module
-#: emits, and only on the fail-soft path, where a silent ``None`` would leave a
-#: receipt honestly empty with no way to tell that from "no prescription was
-#: made".
+#: emits, so an empty provenance slot stays distinguishable from a mangled one.
 PRESCRIPTION_UNREADABLE_EVENT = "correction.crossover_v2_alignment_prescription_unreadable"
 
-#: The request-body key a prescription arrives under.  Named here rather than
-#: spelled at the web boundary for the reason every other vocabulary constant in
-#: this package is: the reader that owns the shape owns the name of the shape.
+#: The request-body key a prescription arrives under.
 ALIGNMENT_PRESCRIPTION_KEY = "alignment_prescription"
 
-#: The document version a prescriber of THIS class answers, mirroring
-#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_VERSION`'s envelope —
-#: a proposal naming a version this build does not speak is refused rather than
-#: best-effort parsed.
+#: A document naming another version is refused, never best-effort parsed.
 ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION = 1
 
-#: The ``kind`` discriminator, mirroring
-#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_KIND`: distinct from every
-#: sibling class's own string, so a reader handed the wrong document refuses by
-#: name instead of parsing it as something it is not.
+#: The ``kind`` discriminator, distinct from every sibling class's own string.
 ALIGNMENT_PRESCRIPTION_KIND = "jts_crossover_alignment_prescription"
 
-#: The closed vocabulary of refusals, so a caller can branch on a reason without
-#: reading a message.  Same rule as
-#: :data:`~.contracts.PLAN_REFUSAL_REASONS`: by type and code, never by prose.
-#:
-#: ``ALIGNMENT_PRESCRIPTION_`` prefixed on the three names that would otherwise
-#: collide with :mod:`.blend_prescription`'s own bare ``PRESCRIPTION_MALFORMED``
-#: / ``PRESCRIPTION_PROVENANCE_MISSING`` / ``PRESCRIPTION_REFUSAL_REASONS`` —
-#: two different closed vocabularies for two different seams, sharing one name.
-#: Values are unchanged; only the Python identifiers moved, to
-#: :data:`~.alignment_prescription.ALIGNMENT_PRESCRIPTION_KEY`'s own style.
+#: The closed refusal vocabulary: a caller branches on a code, never on prose.
 ALIGNMENT_PRESCRIPTION_MALFORMED = "prescription_malformed"
 PRESCRIPTION_DELAY_INVALID = "prescription_delay_invalid"
 PRESCRIPTION_BASIS_INVALID = "prescription_basis_invalid"
 ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
 PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
-#: The speaker has ONE way, so there is no corner and no second driver to align
-#: against. Its own reason rather than :data:`PRESCRIPTION_FC_UNKNOWN`: an
-#: unknown corner is a number to go and derive, this one never exists (#3480).
+#: A way-1 speaker: no corner and no second driver, so nothing to align. Its
+#: own reason because an unknown corner is a number to go and derive while this
+#: one never exists (#3480).
 ALIGNMENT_NO_CROSSOVER_REGION = "alignment_no_crossover_region"
 PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
-#: The preset's own declared delay window — the ONE bound in this gate that
-#: does not depend on a number the operator supplied. It has always existed
-#: (``crossover_v2_flow.alignment_delay_plausible``, the Fix-3 screen) but it
-#: fired ten minutes into a session, at a MEASURE screen whose household copy
-#: asks the user to move the microphone; on a prescribed candidate that copy is a lie
-#: about a number the request could have been refused for at the tap. Its own
-#: reason, never that screen's.
+#: The preset's own declared delay window — the one bound here that does not
+#: depend on a number the operator supplied.
 PRESCRIPTION_OUTSIDE_DECLARED_WINDOW = "prescription_outside_declared_window"
-#: A ``polarity`` that is neither of the two words the candidate's own alignment
-#: speaks. Its own reason rather than :data:`ALIGNMENT_PRESCRIPTION_MALFORMED`,
-#: because a misspelled basin ("inverted", "flip", "-1") is the one shape an
-#: operator walking a basin sweep will actually type, and the refusal has to
-#: send them to the vocabulary rather than to the shape.
+#: A ``polarity`` outside the candidate's two action words. Its own reason so a
+#: misspelled basin sends the operator to the vocabulary, not to the shape.
 PRESCRIPTION_POLARITY_INVALID = "prescription_polarity_invalid"
-#: A document naming a version this build does not speak. Mirrors
-#: :data:`~.driver_prescription.DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED`.
 ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED = "alignment_prescription_schema_unsupported"
 ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     ALIGNMENT_PRESCRIPTION_MALFORMED,
@@ -217,10 +93,9 @@ ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
 })
 
-#: The field names a prescription may carry.  Anything else is refused rather
-#: than ignored: a misspelled ``basis_artifact`` that silently dropped the
-#: provenance would leave the bound checking a prescription against a basis
-#: nobody declared, which is the one failure this reader exists to prevent.
+#: The field names a prescription may carry. Anything else is refused rather
+#: than ignored: a misspelled ``basis_artifact`` would leave the bound checking
+#: against a basis nobody declared.
 _PRESCRIPTION_FIELDS = frozenset({
     "kind",
     "artifact_schema_version",
@@ -228,17 +103,14 @@ _PRESCRIPTION_FIELDS = frozenset({
     "basis_delay_us",
     "basis_artifacts",
     "basis_note",
-    # Optional, and the one field here that pins something OTHER than the
-    # timing. Absent is the automatic path.
+    # Optional; absent is the automatic path.
     "polarity",
-    # Written BY the gate, not supplied to it — but accepted on the way back in
-    # so a durable block round-trips through the same parser rather than
-    # needing a second, laxer one. A request that supplies them is harmless:
-    # the gate overwrites both with what it actually checked.
+    # Not supplied to the gate, accepted on the way back in so a durable block
+    # round-trips through this parser. A request that supplies them is
+    # harmless: the gate overwrites the first two with what it actually
+    # checked, and ``residual_us`` is a property, so the value is never read.
     "checked_at_fc_hz",
     "lobe_us",
-    # Derived on the way out. Accepted on the way in for the same round-trip
-    # reason and likewise never trusted — ``residual_us`` is a property.
     "residual_us",
 })
 
@@ -246,11 +118,8 @@ _PRESCRIPTION_FIELDS = frozenset({
 class AlignmentPrescriptionRefused(ValueError):
     """One prescription this module would not accept, and why.
 
-    Carries a ``reason`` from :data:`ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS`
-    beside the human ``detail``, following
-    :class:`~.contracts.CrossoverV2ContractError`'s
-    rule: the classification travels with the raise, so a caller never has to
-    re-derive it from wording no test owns.
+    ``reason`` is from :data:`ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS`, so the
+    classification travels with the raise.
     """
 
     def __init__(self, reason: str, detail: str) -> None:
@@ -263,33 +132,14 @@ class AlignmentPrescriptionRefused(ValueError):
 class AlignmentPrescription:
     """A validated inter-driver delay, and the measurement that justifies it.
 
-    ``delay_us`` and ``basis_delay_us`` are both in
-    :class:`~jasper.audio_measurement.program_analysis.AlignmentEstimate`'s
-    signed frame — ``(D_woofer − D_tweeter)``, so a POSITIVE value delays the
-    tweeter and a negative one delays the woofer.  One frame for both is what
-    makes :attr:`residual_us` a physical quantity rather than a subtraction of
-    two conventions.
-
-    ``basis_delay_us`` is the delay the named measurement says would leave the
-    drivers coincident.  ``basis_artifacts`` names where that came from, and is
-    required: a bound checked against an undeclared basis is arithmetic, not
-    provenance.  ``basis_note`` is the human line beside it (a spread, a sample
-    count, a method) and is optional — it is what a reader wants and not
-    something a validator can meaningfully check, so requiring it would buy
-    ceremony rather than trust.
-
-    ``polarity`` is the OPTIONAL basin pin, in the candidate's own vocabulary
-    (:data:`~jasper.active_speaker.crossover_alignment.POLARITY_KEEP` /
-    ``POLARITY_INVERT``) rather than the measurement frame's ``normal`` /
-    ``inverted``, because a prescriber writes what the speaker should DO with
-    the region's persisted polarity — the same thing
-    :class:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverAlignment`
-    means by the word.  Both admit exactly the two ACTIONS and not
-    ``POLARITY_REVIEW`` — "surface it, do not auto-decide" is not a basin a round
-    can be pinned to — and both read the two names from the one module that
-    declares them, with ``tests/test_crossover_v2_alignment_prescription.py``
-    pinning the two sets equal.  ``None`` leaves the polarity to the objective
-    that owns it.
+    ``delay_us`` and ``basis_delay_us`` are both in ``AlignmentEstimate``'s
+    signed frame, ``(D_woofer − D_tweeter)``: positive delays the tweeter,
+    negative delays the woofer. One frame for both is what makes
+    :attr:`residual_us` a physical quantity. ``basis_artifacts`` is required —
+    a bound checked against an undeclared basis is arithmetic, not provenance.
+    ``polarity`` is the optional basin pin in the candidate's own vocabulary
+    (``POLARITY_KEEP``/``POLARITY_INVERT``), never ``POLARITY_REVIEW``;
+    ``None`` leaves the polarity to the objective that owns it.
     """
 
     delay_us: float
@@ -297,28 +147,15 @@ class AlignmentPrescription:
     basis_artifacts: tuple[str, ...]
     basis_note: str = ""
     polarity: str | None = None
-    #: The corner the bound was evaluated at, and the lobe it produced.  Filled
-    #: by :func:`read_alignment_prescription` after the bound passes, so a
-    #: receipt states not only the residual but WHAT IT WAS COMPARED AGAINST —
-    #: a reader who finds a residual of 155.7 µs on a receipt cannot otherwise
-    #: tell whether that cleared a 303 µs lobe or a 270 µs one without knowing
-    #: the corner, and the corner is not elsewhere in the block.  ``None`` on a
-    #: record that has not been through the bound (the durable read-back of a
-    #: pre-#2662 block, or a hand-built one).
+    #: The corner the bound was evaluated at, and the lobe it produced, so a
+    #: receipt says what the residual was compared against. ``None`` on a record
+    #: that has not been through the bound.
     checked_at_fc_hz: float | None = None
     lobe_us: float | None = None
 
     @property
     def polarity_sign(self) -> int | None:
-        """The pin in the MEASUREMENT frame, or ``None`` when unpinned.
-
-        The one place the candidate's action word becomes the sign
-        :func:`~jasper.audio_measurement.program_analysis._select_alignment_pair`
-        searches over, mirroring
-        :func:`~jasper.active_speaker.crossover_v2.planning.alignment_to_candidate_fields`
-        on the way back out. Kept here rather than at the hand-down site because
-        the module that owns the word owns its translation.
-        """
+        """The pin in the MEASUREMENT frame, or ``None`` when unpinned."""
         if self.polarity is None:
             return None
         return -1 if self.polarity == POLARITY_INVERT else 1
@@ -327,9 +164,8 @@ class AlignmentPrescription:
     def residual_us(self) -> float:
         """How far this prescription leaves the drivers from the basis's answer.
 
-        The quantity the bound is expressed in, and the one the series-2
-        diagnosis tabulates its candidates by: ``0.0`` prescribes exactly what the
-        measurement says, and the sign says which driver is left early.
+        The quantity the bound is expressed in: ``0.0`` prescribes exactly what
+        the measurement says, and the sign says which driver is left early.
         """
         return self.delay_us - self.basis_delay_us
 
@@ -352,12 +188,8 @@ class AlignmentPrescription:
 def _finite_number(value: Any, *, reason: str, field: str) -> float:
     """One numeric field, strictly.
 
-    ``bool`` is refused explicitly because it is an ``int`` in Python and
-    ``float(True)`` is ``1.0`` — a delay of "true" microseconds would otherwise
-    validate.  Strings are refused for :func:`.blend_correction.
-    blend_filters_from_mapping`'s reason: ``float("-450")`` succeeds, so
-    accepting one would make the reader's strictness depend on the encoder's
-    habits rather than on the contract.
+    ``bool`` is refused explicitly (it is an ``int``, and ``float(True)`` is
+    ``1.0``); strings are refused because ``float("-450")`` succeeds.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise AlignmentPrescriptionRefused(
@@ -376,29 +208,11 @@ def _parse_prescription(
 ) -> AlignmentPrescription:
     """The shape and the provenance, and NOT the bound.
 
-    Shared whole between the request gate and the durable read-back, so the
-    only thing that differs between those two is their gate policy — which is
-    the only thing that should.
-
-    ``read_back`` is that one difference for the envelope specifically.
-    ``False`` (the request gate, :func:`read_alignment_prescription`) judges a
-    freshly-authored document an operator or LLM is about to hand the
-    machinery: a missing or wrong ``kind``/``artifact_schema_version`` is a
-    malformed document and refuses at the tap, exactly like every other field
-    here. ``True`` (the durable read-back,
-    :func:`alignment_prescription_from_mapping`, and
-    :func:`.durable_state.alignment_prescription_prior_from_state`'s
-    ``verify_priors`` rehydration) judges a document THIS repository already
-    wrote and persisted — and durable state on a live speaker predates this
-    envelope: ``verify_priors.alignment_prescription`` has been carried
-    unconditionally across deploys since #2662/#2773, three days before this
-    envelope existed. A record naming NEITHER field is exactly the shape this
-    build's own prior releases wrote, and refusing it would silently mis-grade
-    a round already in flight on real hardware — so under ``read_back`` that
-    one shape reads as this build's own kind and version 1, never as a raise.
-    A record naming EITHER field, even if the other is missing or wrong, is
-    NOT that legacy shape — it tried to speak the envelope and got it wrong —
-    and is refused normally under both postures.
+    Shared whole between the request gate and the durable read-back, so gate
+    policy is the only difference between them. Under ``read_back`` a record
+    naming NEITHER ``kind`` nor ``artifact_schema_version`` is the envelope-less
+    shape prior releases persisted, and reads as this build's own kind and
+    version 1; a record naming either field is refused normally.
     """
     if not isinstance(raw, Mapping):
         raise AlignmentPrescriptionRefused(
@@ -463,25 +277,20 @@ def _parse_prescription(
     )
 
 
-#: The basins a round may be pinned to: the candidate's two polarity ACTIONS.
-#: Derived from the module that declares the words rather than restating them,
-#: and deliberately without ``POLARITY_REVIEW`` — see
-#: :class:`AlignmentPrescription`'s docstring.
+#: The basins a round may be pinned to: the candidate's two polarity ACTIONS,
+#: deliberately without ``POLARITY_REVIEW``.
 _PINNABLE_POLARITIES = frozenset({POLARITY_KEEP, POLARITY_INVERT})
 
 
 def _read_polarity(value: Any) -> str | None:
     """The optional basin pin, strictly, or ``None`` for the automatic path.
 
-    ``None`` and absent are one answer here, unlike ``delay_us``: a prescription
-    that omits the field is not making a claim about polarity, and an explicit
-    ``null`` is the same non-claim spelled by a JSON encoder.
+    ``None`` and absent are one answer here, unlike ``delay_us``.
     """
     if value is None:
         return None
-    # ``isinstance`` before membership, and not merely for tidiness: a JSON list
-    # is unhashable, so ``value in frozenset`` would raise TypeError past every
-    # refusal handler instead of naming the reason.
+    # ``isinstance`` before membership: a JSON list is unhashable, so
+    # ``value in frozenset`` would raise TypeError past every refusal handler.
     if not isinstance(value, str) or value not in _PINNABLE_POLARITIES:
         raise AlignmentPrescriptionRefused(
             PRESCRIPTION_POLARITY_INVALID,
@@ -494,10 +303,9 @@ def _read_polarity(value: Any) -> str | None:
 def _optional_number(value: Any) -> float | None:
     """A finite number, or ``None`` — never a raise.
 
-    These two fields are the GATE's own record of what it checked, not a
-    requester's claim, so an unreadable one on the way back in is missing
-    context rather than a malformed prescription.  Refusing here would let a
-    truncated durable block cost a round its provenance entirely.
+    These fields are the GATE's own record of what it checked, not a
+    requester's claim, so an unreadable one is missing context rather than a
+    malformed prescription.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -512,50 +320,24 @@ def read_alignment_prescription(
     declared_bounds_us: tuple[float, float] | None,
     way_count: int | None = None,
 ) -> AlignmentPrescription | None:
-    """THE request gate.  One point, and the one derivation of the lobe bound.
+    """THE request gate, and the one derivation of the lobe bound.
 
     ``None`` when the request carries no prescription — the automatic path,
-    untouched.  Otherwise a validated :class:`AlignmentPrescription`, or
+    untouched. Otherwise a validated :class:`AlignmentPrescription`, or
     :class:`AlignmentPrescriptionRefused` naming which gate said no.
 
     ``declared_bounds_us`` is the PRESET's own unsigned delay-magnitude window,
-    already margin-expanded — the caller derives it from the single existing
-    owner, ``crossover_v2_flow.alignment_delay_search_bounds_us``, and hands it
-    in, because this module may not import the flow.  ``None`` is "the preset
-    declares no window", which is that helper's own answer for a preset with no
-    ``delay_range_ms`` and means there is nothing to gate on.
+    already margin-expanded; the caller derives it from
+    ``crossover_v2_flow.alignment_delay_search_bounds_us`` because this module
+    may not import the flow. ``None`` means the preset declares no window.
+    Required and undefaulted: it is the only bound here that does not rest on a
+    number the requester supplied.
 
-    **Required and undefaulted**, unlike anything else here.  This is the only
-    bound in the gate that does NOT rest on a number the requester supplied: the
-    lobe bound checks a prescription against a basis the same request declared,
-    so a prescriber willing to declare a wrong basis passes it.  A caller that
-    forgot this argument would lose the hardware's own opinion and never know,
-    which is the exact failure a defaulted keyword hides.
-
-    ``fc_hz`` is the crossover corner the bound is a half-period of.  The
-    caller passes the corner THIS round runs at — the one the speaker is
-    commissioned at, or the pinned one when an operator pinned the topology,
-    since ``topology_prescription.apply_topology_pin`` settles that before this
-    gate is asked.  One corner per round: nothing re-scores the same
-    prescription at a second corner since the corner hunt closed
-    (``docs/tuning-master-plan.md`` ticket 2.3).
-
-    Gating here and observing in the aligner is deliberate, and unchanged by
-    that closure: an operator's declared basis fails closed at this boundary,
-    while the aligner's own ``left_anchor_lobe`` tripwire keeps watching the
-    same geometry on the delay actually committed and discloses a commitment
-    that left its lobe.  The two answer different questions — may this request
-    run, and did the result stay where the request said it would.
-
-    **The bound is inclusive.**  A prescription exactly half a period from its
-    basis is legal; one past it is refused.  Exactness is legal in this
-    repository's gates, and a strict comparison here would make the legality of
-    a round depend on floating-point noise in the sixth decimal of a corner
-    frequency.
-
-    ``way_count`` ``1`` is a ``full_range_passive`` speaker: nothing to align,
-    so the door refuses by name.  ``None`` is "the caller did not state it" and
-    leaves the gate as it was — defaulted, unlike every other keyword here.
+    ``fc_hz`` is the corner THIS round runs at, the half-period of which is the
+    bound. The bound is INCLUSIVE — exactly half a period from the basis is
+    legal — so a round's legality does not turn on float noise in the corner.
+    ``way_count`` ``1`` is a ``full_range_passive`` speaker with nothing to
+    align; ``None`` means the caller did not state it and leaves the gate as-is.
     """
     if raw is None:
         return None
@@ -583,10 +365,9 @@ def read_alignment_prescription(
             "a prescription's bound is a half-period at the crossover corner, "
             f"which is undefined at fc_hz={corner!r}",
         )
-    # The HARDWARE's bound first, then the measurement's. A prescription the
-    # preset could never emit is refused for that, not for a lobe it also
-    # happens to miss: the two send an operator to different places (re-declare
-    # the region vs re-derive the basis).
+    # The HARDWARE's bound first, then the measurement's: the two send an
+    # operator to different places (re-declare the region vs re-derive
+    # the basis).
     if declared_bounds_us is not None:
         lo_us, hi_us = (abs(float(b)) for b in declared_bounds_us)
         lo_us, hi_us = min(lo_us, hi_us), max(lo_us, hi_us)
@@ -617,30 +398,9 @@ def alignment_prescription_from_mapping(
 ) -> AlignmentPrescription | None:
     """A prescription read back out of this repository's own durable state.
 
-    The read-back half of the pair this module's docstring describes: the same
-    shape and provenance checks, deliberately NOT the bound, and ``None``
-    instead of a raise.
-
-    Why no bound.  The only mappings that reach here were written by
-    :func:`read_alignment_prescription` accepting them, so re-applying the
-    bound could not catch a prescription the boundary let through — it could
-    only refuse one whose corner moved between the stage that measured the
-    round and the stage that grades it, and refusing there would discard the
-    evidence of a round that really ran.  The bound has one owner, and it is
-    the boundary.
-
-    Why still strict about shape.  A hand-edited or truncated state file is a
-    real input here, and a receipt that banked half a prescription would be
-    claiming provenance it does not have.  Anything unreadable is ``None`` plus
-    one WARNING, so an empty provenance slot on a receipt is always
-    distinguishable from a silently mangled one.
-
-    ``read_back=True`` on the shared parser: a record naming neither ``kind``
-    nor ``artifact_schema_version`` is the shape this build's own prior
-    releases wrote, before this envelope existed, and reads as that build's
-    own kind and version 1 rather than refusing — see
-    :func:`_parse_prescription`'s docstring for why. A record naming either
-    field, even if the other is missing or wrong, is still refused.
+    Shape and provenance only — the bound has one owner, and it is the request
+    gate; re-applying it here could only refuse a round that really ran.
+    Anything unreadable is ``None`` plus one WARNING.
     """
     if raw is None:
         return None
@@ -691,18 +451,7 @@ def _read_artifacts(value: Any) -> tuple[str, ...]:
 
 
 def alignment_prescription_response_format() -> dict[str, Any]:
-    """What a prescriber must send to pin the inter-driver delay, and where to
-    send it.
-
-    The fourth of the evidence packet's contract blocks, beside
-    :func:`~.blend_prescription.prescription_response_format`,
-    :func:`~.driver_prescription.driver_prescription_response_format`, and
-    :func:`~.topology_prescription.topology_prescription_response_format` —
-    the same #2773 reason topology's own docstring gives: this and the
-    topology pin enter as REQUEST-BODY KEYS on the session-open call rather
-    than through the prescriber CLI's stage step, and a reader who found only
-    the two staged contracts would never learn the request-time doors exist.
-    """
+    """What a prescriber must send to pin the inter-driver delay, and where."""
     return {
         "key": ALIGNMENT_PRESCRIPTION_KEY,
         "entry": "request_body",

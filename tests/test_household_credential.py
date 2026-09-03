@@ -21,11 +21,11 @@ test_control_server.py against the real ThreadingHTTPServer.
 """
 from __future__ import annotations
 
-import inspect
 import os
 import stat
 
 from jasper.control import household_credential as hc
+from tests._web_test_helpers import assert_verify_uses_constant_time_compare
 
 
 # --- verify: FAIL-SAFE direction (the invariant the self-heal path needs) ---
@@ -71,12 +71,11 @@ def test_verify_requires_exact_match_when_present(monkeypatch, tmp_path):
     assert hc.verify("") is False
 
 
-def test_verify_uses_constant_time_compare():
-    """compare_digest, never ==, so the secret's length/prefix doesn't leak via
-    timing (mirrors control_token.verify)."""
-    src = inspect.getsource(hc.verify)
-    assert "compare_digest" in src
-    assert "==" not in src.replace("!=", "")
+def test_verify_uses_constant_time_compare(monkeypatch, tmp_path):
+    """compare_digest, never ==, so the secret length/prefix cannot leak via timing."""
+    assert_verify_uses_constant_time_compare(
+        monkeypatch, tmp_path, hc, "SECRET_FILE", "the-secret-value"
+    )
 
 
 # --- is_paired / current ---------------------------------------------------

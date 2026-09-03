@@ -106,32 +106,23 @@ def setup_blocked_only_by_in_sequence_anchor(
     """Whether a blocked setup status is the capture sequence's own anchor.
 
     ``status`` is the composed crossover status payload
-    (``correction_crossover_backend.status_payload()``), which carries both
-    the ``setup`` artifact this module produces and the backend-composed
+    (``correction_crossover_backend.status_payload()``), carrying both the
+    ``setup`` artifact this module produces and the backend-composed
     ``capture_entry_pending`` flag.
 
-    PR #1523 keeps the persisted CamillaDSP path anchored on the all-muted
-    staged config *between* capture attempts within a single automatic
-    measurement sequence (crash-safe posture — a crash/reboot mid-sequence
-    comes back muted, never loud; production is restored exactly once at
-    sequence end/idle-exit via the capture-entry stash).
-    :func:`read_active_speaker_setup_status` sees that staged path and
-    correctly reports ``blocked``/``active_speaker_commissioning_config_loaded``
-    in isolation — but any readiness gate that requires exact ``"ready"``
-    wedges the flow permanently mid-sequence (JTS3 punch #24: the envelope;
-    run 10: the level-match and sweep endpoint gates blocked tweeter lock
-    2/2 the same way). That state is "anchored mid-sequence by design", not
-    "setup unproven".
+    Between capture attempts the persisted CamillaDSP path stays anchored on
+    the all-muted staged config, so a crash mid-sequence comes back muted.
+    :func:`read_active_speaker_setup_status` correctly reports ``blocked``/
+    ``active_speaker_commissioning_config_loaded`` for that, but a gate
+    demanding exact ``"ready"`` then wedges the flow permanently: the state is
+    "anchored mid-sequence by design", not "setup unproven".
 
-    The capture-entry stash (``jasper.active_speaker.capture_entry_anchor``)
-    is the discriminator rather than a heuristic: its lifecycle *is* the
-    sequence boundary — written once when a sequence de-anchors production,
-    cleared by every restore path (sequence end, idle-exit, the
-    service-start claim). The service-start claim boundary runs that
-    restore *before* any envelope or endpoint serves, so a stale stash can
-    never make a post-crash, genuinely-unfinished setup read as ready.
-    Every other blocked reason, and this reason without a pending stash,
-    must gate exactly as a plain blocked status.
+    The capture-entry stash (``jasper.active_speaker.capture_entry_anchor``) is
+    the discriminator rather than a heuristic — its lifecycle IS the sequence
+    boundary, and the service-start claim runs its restore before any endpoint
+    serves, so a stale stash cannot make a genuinely unfinished setup read as
+    ready. Every other blocked reason, and this reason without a pending stash,
+    gates exactly as a plain blocked status.
     """
 
     setup = status.get("setup")
@@ -141,16 +132,11 @@ def setup_blocked_only_by_in_sequence_anchor(
         and setup.get("reason") == IN_SEQUENCE_CAPTURE_ANCHOR_REASON
         and status.get("capture_entry_pending") is True
     )
-# ``ActiveSpeakerConfigError`` is named even though it subclasses ``ValueError``
-# and was therefore already caught. Since ``_applied_layer_a_binding`` began
-# passing the COMPARED graph's playback device into the recomposer, that device
-# crosses the emitter's own legality guard — a graph naming a forbidden lane
-# (``jts_ring_playback``, reachable via a stale statefile or the flat-ring
-# cutover class) makes the emitter refuse, and this surface is household-facing:
-# an indeterminate input must return the ``unavailable`` snapshot, never a
-# traceback. Naming the class keeps that guarantee legible at the one site where
-# narrowing this tuple would silently reopen it.
-# ``test_a_forbidden_playback_lane_is_unverifiable_never_a_traceback`` pins it.
+# ``ActiveSpeakerConfigError`` is named even though it subclasses ``ValueError``:
+# a graph naming a forbidden playback lane makes the emitter refuse, and this
+# surface is household-facing, so an indeterminate input must return the
+# ``unavailable`` snapshot rather than a traceback. Naming the class keeps that
+# legible at the one site where narrowing this tuple would reopen it.
 _READINESS_DERIVATION_ERRORS = (
     OSError,
     RuntimeError,
@@ -223,10 +209,10 @@ def _acoustic_commissioning_status(
 
     Room correction operates on the Layer-A graph that is actually applied. An
     immutable, topology-current manual snapshot is sufficient solo-runtime
-    operator authority; grouped active remains explicitly unsupported until
-    Active can bind its distributed Layer A. An automatic snapshot additionally
-    needs Active's strict commissioning receipt. Mutable measurements remain
-    quality evidence and observability only and cannot stand in for that receipt.
+    authority; grouped active is unsupported until Active can bind its
+    distributed Layer A. An automatic snapshot additionally needs Active's
+    strict commissioning receipt, for which mutable measurements — quality
+    evidence and observability only — can never stand in.
     """
     summary = _mapping(measurements.get("summary"))
     latest_summed = _mapping(summary.get("latest_summed_validations"))
@@ -300,12 +286,9 @@ def _acoustic_commissioning_status(
             if layer_a_binding.get("status") == "mismatch"
             else "active_applied_profile_graph_unverifiable"
         )
-        # Cause-neutral on purpose: the loaded graph can also drift from the
-        # applied profile because the EMITTER changed under it (a JTS upgrade
-        # that spells a filter differently -- e.g. the PR-L2 shelf-Q fix),
-        # not only because someone edited the crossover. Naming the crossover
-        # as the thing that changed would send a household looking for an edit
-        # nobody made. The remedy is the same either way: re-apply.
+        # Cause-neutral on purpose: the loaded graph can drift from the applied
+        # profile because the EMITTER changed under it, not only because someone
+        # edited the crossover. The remedy is the same either way: re-apply.
         detail = (
             "The sound pipeline loaded on this speaker does not match the "
             "applied manual profile. Apply that crossover again before Room "
@@ -327,12 +310,10 @@ def _acoustic_commissioning_status(
         authority = ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT
         detail = "The verified automatic crossover is ready for room correction."
     else:
-        # An automatic applied snapshot remains playback authority, but it is
-        # not the receipt-backed commissioning authority Room BANKS.  Do not
-        # infer that receipt from mutable measurements or from the graph
-        # having been applied successfully; the strict receipt integration is
-        # a separate Active-owned authority chain.  Room still runs — this
-        # names what may not be claimed, not what is refused (ruling S10).
+        # An automatic applied snapshot is playback authority but not the
+        # receipt-backed commissioning authority Room BANKS: never infer that
+        # receipt from mutable measurements or from a successful apply. Room
+        # still runs — this names what may not be claimed (ruling S10).
         reason = (
             str(receipt_authority.get("reason") or ROOM_AUTHORITY_RECEIPT_ABSENT)
             if tuning_owner == "automatic"
@@ -357,8 +338,7 @@ def _acoustic_commissioning_status(
         "allowed": allowed,
         "reason": reason,
         # The reader's own structured cause — a store code, or an exception
-        # class with its errno and path. The reason names the CLASS; this
-        # names the fault, which is what an operator acts on. See ADR-0196.
+        # class with its errno and path. See ADR-0196.
         "cause": str(receipt_authority.get("cause") or "") if reason else "",
         "detail": detail,
         "setup_href": setup_href,
@@ -414,12 +394,8 @@ def _last_capture_summary(
 ) -> dict[str, Any] | None:
     """The ``{snr_db, verdict, clipping, at}`` view of the newest capture.
 
-    A fixed four-key shape (unlike the top-level commissioning fields, this
-    inner block always carries all four keys, ``null`` where unknown) so a
+    A fixed four-key shape — always all four keys, ``null`` where unknown — so a
     consumer never has to branch on which keys exist.
-
-    Lane D's stored-ambient SNR producer writes the real
-    ``acoustic.snr.worst_relevant.estimated_snr_db`` shape read here.
     """
     record = _newest_commissioning_record(measurements)
     if record is None:
@@ -443,10 +419,9 @@ def _idle_commissioning_summary() -> dict[str, Any]:
         "last_capture": None,
         "last_failure_code": None,
         "room_correction_allowed": False,
-        # No topology resolved, so no transport to name (#2412 Wave 4). `null`
-        # rather than a guess: this is the fail-soft summary, and asserting a
-        # transport for a box whose route could not be read is the half-fact
-        # the key exists to remove.
+        # No topology resolved, so no transport to name (#2412): `null` rather
+        # than a guess, since asserting a transport for a box whose route could
+        # not be read is the half-fact this key exists to remove.
         "transport": None,
     }
 
@@ -457,57 +432,28 @@ def _commissioning_transport(topology: Any) -> str | None:
     ONE token with the two ``driver_commission_*`` journal lines
     (:data:`jasper.fanin_coupling.TRANSPORT_RING`), keyed on the same
     :data:`~jasper.fanin_coupling.RING_PCM_DEVICES` membership and reading the
-    same chooser commissioning itself reads
-    (``resolve_active_playback_device``), so the two surfaces cannot disagree
-    about a device they both resolve the same way.
-    Stated that way on purpose rather than as "they can never differ": the
-    shared thing is the DERIVATION, not the input. ``prepare`` accepts a
-    caller-supplied ``playback_device=`` override, so a caller that passed one
-    could be described by a journal line this function would not reproduce. No
-    production caller passes one (call-site audit, PR #2643) — the agreement is
-    a convention this API does not enforce.
+    same chooser (``resolve_active_playback_device``). The shared thing is the
+    DERIVATION, not the input: ``prepare`` accepts a caller-supplied
+    ``playback_device=`` override, so the agreement is a convention this API
+    does not enforce.
 
-    ``None`` when the topology **cannot be read** or resolves to **no device**.
-    Rolefulness is deliberately NOT the discriminator, and saying it was would
-    mislead the reader this field exists to help: a PASSIVE box resolves the
-    active outputd lane like any other, and reports ``ring`` exactly as a
-    roleful one does.
+    SINGLE-TRANSPORT: this field is ``ring`` or ``None``, ADR-0100 having left
+    no second transport. ``None`` when the topology cannot be read or resolves
+    to no device — a device string that is not a ring end is reachable only
+    through an explicit lab/CI override. Rolefulness is deliberately NOT the
+    discriminator: a PASSIVE box resolves the active outputd lane and reports
+    ``ring`` exactly as a roleful one does, and the ACTIVE-endpoint marker takes
+    no part in the derivation at all.
 
-    **SINGLE-TRANSPORT.** This field is ``ring`` or ``None``. #2285 P2 deleted
-    ``resolve_output_layout`` case 2's marker read, so the ACTIVE-endpoint marker
-    takes no part in this derivation at all: spied across both the roleful and
-    the passive fixture, ``ring_active_endpoint_armed`` is consulted ZERO times
-    and both polarities report ``ring``. A device string that is NOT a ring end —
-    reachable only through an explicit lab/CI override
-    (``resolve_output_layout``'s case 1: the ``playback_device`` argument or
-    ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE``) — reports ``None``, because
-    ADR-0100 left no second transport for it to be labelled as.
+    The gate is the DAC PROFILE: ``resolve_output_layout`` names the ring when
+    the profile declares an active outputd lane. All five registered
+    ``DacProfile``s declare one, so the fall-through to no device is unreachable
+    from any shipped profile today.
 
-    **The gate is the DAC PROFILE, measured rather than assumed.**
-    ``resolve_output_layout`` names the ring when the profile declares an active
-    outputd lane (``supports_active_outputd_lane`` and
-    ``active_outputd_lane_channels``); a box failing that condition falls through
-    to ``playback_device=None``, which is the ``no device`` half above. All five
-    registered ``DacProfile``s declare such a lane, so that fall-through is not
-    reachable from any shipped profile today — the two tests covering it stub the
-    collaborator rather than build a lane-less topology. (Two earlier versions of
-    this paragraph were false in turn: the first named rolefulness as the consult
-    gate, the second kept saying the marker was consulted at all. Each was
-    replaced only after measurement — which is why this one states a spy count
-    rather than a mechanism.)
-
-    Fail-soft like every other field here: the derivation reaches the topology
-    layer, and a box whose route cannot be read reports no transport rather than
-    failing ``/state``.
-
-    ``AttributeError`` joins ``_READINESS_DERIVATION_ERRORS`` for this call only.
-    The shared tuple is the set the OTHER derivations here can raise; this one
-    reaches ``resolve_output_layout``, which walks ``topology.hardware``
-    unguarded, so a ``None`` or duck-typed topology — the shape the two
-    early-return call sites and every standalone caller pass — raises a class no
-    sibling does. Widening the shared tuple would loosen five other derivations
-    to buy one; catching it here does not. An observability field must never be
-    the reason ``/state`` stops answering.
+    ``AttributeError`` joins ``_READINESS_DERIVATION_ERRORS`` for this call
+    only: ``resolve_output_layout`` walks ``topology.hardware`` unguarded, so a
+    ``None`` or duck-typed topology raises a class no sibling derivation does,
+    and an observability field must never stop ``/state`` answering.
     """
     from .playback_route import resolve_active_playback_device
 
@@ -529,11 +475,8 @@ def _derive_commissioning_summary(
     applied_profile = applied_profile if isinstance(applied_profile, Mapping) else None
     measurements = measurements if isinstance(measurements, Mapping) else {}
 
-    # Phase derivation is pinned in priority order (design doc "Runtime
-    # surface" / "Structured events"): failed, then proposal_ready, then
-    # measuring, else idle. Each branch is mutually exclusive by construction
-    # (elif), so "measuring" is only reached when neither of the first two
-    # holds, matching "neither failed nor proposal_ready holds".
+    # Phase derivation is pinned in priority order: failed, then
+    # proposal_ready, then measuring, else idle.
     last_failure_code: str | None = None
     if profile is not None and profile.get("status") == "apply_failed":
         phase = "failed"
@@ -575,12 +518,9 @@ def _derive_commissioning_summary(
     )
 
     # Standalone approximation of "is there a valid applied Layer-A graph the
-    # room can correct against" -- read_active_speaker_setup_status overwrites
-    # this with the exact acoustic_commissioning.allowed value it already
-    # computes from these same inputs plus config-path/topology gating this
-    # function does not see, so the wired /state payload always mirrors it
-    # exactly; this value is what a caller gets from commissioning_summary
-    # standalone (e.g. in a unit test).
+    # room can correct against". read_active_speaker_setup_status overwrites it
+    # with the exact acoustic_commissioning.allowed value, which also sees
+    # config-path/topology gating this function does not.
     current_source = _mapping(profile.get("source")) if profile is not None else {}
     applied_state = crossover_snapshot_state(
         applied_profile,
@@ -598,8 +538,7 @@ def _derive_commissioning_summary(
         "last_capture": _last_capture_summary(measurements),
         "last_failure_code": last_failure_code,
         "room_correction_allowed": bool(applied_state.get("valid")),
-        # `curl /state | jq .` is this campaign's standing probe, and a device
-        # name without its transport is the exact half-fact that produced #2412.
+        # A device name without its transport is the half-fact behind #2412.
         "transport": _commissioning_transport(topology),
     }
 
@@ -613,13 +552,10 @@ def commissioning_summary(
 ) -> dict[str, Any]:
     """Small household/operator commissioning summary for ``/state``.
 
-    Pure over ``profile`` / ``applied_profile`` / ``measurements`` -- the same
-    objects :func:`read_active_speaker_setup_status` already loads -- and
-    fail-soft: any unreadable/malformed input degrades to the safest phase
-    (``"idle"``) instead of raising, mirroring
-    ``_READINESS_DERIVATION_ERRORS`` above. Detailed curves and bundle paths
-    stay out of this block by design; they belong to the session report, not
-    ``/state`` (design doc "Runtime surface").
+    Pure over ``profile``/``applied_profile``/``measurements`` and fail-soft:
+    any unreadable or malformed input degrades to the safest phase (``"idle"``)
+    rather than raising. Detailed curves and bundle paths belong to the session
+    report, not ``/state``.
     """
     try:
         return _derive_commissioning_summary(
@@ -637,11 +573,9 @@ def active_config_path_from_statefile(
 ) -> str:
     """Best-effort active CamillaDSP config path from the outputd statefile.
 
-    Delegates to :func:`jasper.active_speaker.environment.read_camilla_statefile_config_path`
-    — the canonical ``JASPER_CAMILLA_STATEFILE`` reader — rather than keeping a
-    second copy of its env-var name, default path, and ``config_path:`` regex.
-    ``""`` (not ``None``) on an unreadable/empty statefile, preserving this
-    wrapper's original contract for its caller below.
+    Delegates to the canonical ``JASPER_CAMILLA_STATEFILE`` reader,
+    :func:`jasper.active_speaker.environment.read_camilla_statefile_config_path`.
+    ``""`` (not ``None``) on an unreadable or empty statefile.
     """
 
     return read_camilla_statefile_config_path(path) or ""
@@ -671,10 +605,9 @@ def _layer_a_differences(
     """Name the Layer-A filter parameters two graphs disagree on, with values.
 
     The fingerprint pair says THAT the loaded driver-domain graph is not the one
-    the applied profile names; an operator acts on WHICH value moved — a
-    rejected delay left on the durable anchor is the worked example. Bounded, so
-    an emitter-wide respelling cannot turn one disclosure into a wall, and
-    partial by construction: a graph that differs only in routing, mixers or
+    the applied profile names; an operator acts on WHICH value moved. Bounded,
+    so an emitter-wide respelling cannot turn one disclosure into a wall, and
+    partial by construction: a graph differing only in routing, mixers or
     devices yields no entries and the fingerprints stand alone.
     """
 
@@ -718,11 +651,10 @@ def _applied_layer_a_binding(
             else Path(str(active_config_path)).read_text(encoding="utf-8")
         )
         # A bonded active leader's primary Camilla instance carries only the
-        # program-domain File→Snapcast bake; its driver-domain Layer A lives on
-        # the crossover instance. The solo v1 fingerprint cannot honestly bind
-        # that distributed graph, so Active emits one explicit unsupported
-        # decision instead of a misleading crossover-reapply mismatch. A later
-        # distributed authority must remain Active-owned and bind both daemons.
+        # program-domain bake; its driver-domain Layer A lives on the crossover
+        # instance. The solo v1 fingerprint cannot bind that distributed graph,
+        # so Active emits an explicit unsupported decision instead of a
+        # misleading crossover-reapply mismatch.
         if (
             _grouped_active_runtime()
             or f"Source: {_PROGRAM_BAKE_SOURCE}" in loaded_yaml
@@ -735,23 +667,17 @@ def _applied_layer_a_binding(
                 "differences": [],
             }
         # THE TRANSPORT AXIS IS NEUTRALIZED, not compared. This projection binds
-        # ``output_devices``, which carries the playback device and the sink's
-        # whole CamillaDSP geometry — so an ACTIVE-ring-armed box could never
-        # match an expectation built against the device its immutable snapshot
-        # recorded, and this check reported ``mismatch``, blocking room
-        # correction with "Apply that crossover again" for a transport move
-        # nobody asked about (#2339/#2337 family). Layer A is crossover and
-        # protection evidence; whether the graph names the RIGHT transport is
-        # judged by ``check_fanin_coupling`` and ``ring_edge_width_ready``
-        # against the marker and the ring's declaring ends.
+        # ``output_devices``, so an ACTIVE-ring-armed box could never match an
+        # expectation built against the device its snapshot recorded, and the
+        # check reported ``mismatch`` for a transport move nobody asked about
+        # (#2339/#2337). Layer A is crossover and protection evidence; the RIGHT
+        # transport is judged by ``check_fanin_coupling`` and
+        # ``ring_edge_width_ready``.
         #
-        # The endpoint is taken from the graph being COMPARED rather than from
-        # the box (the re-emit seams' ``resolve_live_active_endpoint``): this is
-        # a two-way comparison of snapshot evidence against a caller-supplied
-        # readback, and a third opinion — the statefile — would make a box whose
-        # device resolution merely drifted from its snapshot report crossover
-        # drift. ``None`` (an unparseable devices block) falls through to the
-        # snapshot default, exactly as before.
+        # The endpoint comes from the graph being COMPARED, not from the box: a
+        # third opinion (the statefile) would make a box whose device resolution
+        # merely drifted report crossover drift. ``None`` falls through to the
+        # snapshot default.
         loaded_playback = parse_camilla_devices_config(loaded_yaml).get(
             "playback_device"
         )
@@ -839,16 +765,15 @@ def read_active_speaker_setup_status(
 ) -> dict[str, Any]:
     """Return the authoritative active-speaker setup readiness snapshot.
 
-    For a passive/ordinary speaker, active setup is not required and both
-    ``volume_allowed`` and ``grouping_allowed`` are true. For an active speaker,
-    the durable baseline profile must be applied and the active CamillaDSP config
-    must not be one of the commissioning/staged safety graphs. Room supplies a
-    fresh CamillaDSP ``active_raw`` readback as ``active_config_text``; other
-    callers retain the durable statefile-path fallback.
+    For a passive speaker, active setup is not required and both
+    ``volume_allowed`` and ``grouping_allowed`` are true. For an active speaker
+    the durable baseline profile must be applied and the active CamillaDSP
+    config must not be a commissioning/staged safety graph. Room supplies a
+    fresh ``active_raw`` readback as ``active_config_text``; other callers get
+    the durable statefile-path fallback.
 
-    Total + fail-closed for active-output safety: an unreadable topology or
-    unreadable baseline profile returns a blocked snapshot instead of silently
-    treating the speaker as ready.
+    Total and fail-closed: an unreadable topology or baseline profile returns a
+    blocked snapshot rather than treating the speaker as ready.
     """
 
     issues: list[dict[str, str]] = []
@@ -1039,34 +964,20 @@ def read_active_speaker_setup_status(
             "provisional": bool(profile.get("provisional")),
             "revalidation": dict(revalidation),
             "issues": profile_issues,
-            # PR-L4 item 8: WHICH question this block answers.
-            #
-            # `/state.active_speaker_setup` carries two baseline answers, and
-            # nothing said they were answering different questions. This one is
-            # a freshly RE-DERIVED /sound-page staging candidate — what the
-            # household could compile next — and it routinely reads
-            # `status: "blocked"` with a different `candidate_fingerprint`
-            # while a perfectly good profile is applied and audible. During the
-            # 2026-07-27 forensics that pair cost real time: an operator
-            # reading `/state` met "blocked" and a fingerprint that matched
-            # nothing, sitting beside `protected_profile`'s "ready" and the
-            # fingerprint actually running.
-            #
-            # Both blocks stay — they have different, legitimate readers — but
-            # neither may present itself as THE baseline answer any more. The
-            # discriminator names the role, points at the block that reports
-            # what is audible, and says outright whether the two agree. The
-            # live answer is `protected_profile`; this is a proposal.
+            # WHICH question this block answers. `/state.active_speaker_setup`
+            # carries two baseline answers: this one is a freshly RE-DERIVED
+            # staging candidate — what the household could compile next — and
+            # routinely reads `blocked` with a different
+            # `candidate_fingerprint` while a good profile is applied and
+            # audible. The live answer is `protected_profile`; this is a
+            # proposal, and the discriminator says which is which.
             "role": "staging_candidate",
             "live_answer_key": "protected_profile",
         }
 
         # The mutable candidate and the graph that currently protects playback
-        # are intentionally different owners. A fresh microphone capture
-        # invalidates the candidate fingerprint, but it does not rewrite or
-        # weaken the explicitly applied Layer-A graph. Keep normal output and
-        # the rest of the crossover journey on that applied anchor while the
-        # new candidate advances through driver -> summed -> apply.
+        # are intentionally different owners: a fresh capture invalidates the
+        # candidate fingerprint without weakening the applied Layer-A graph.
         protected_profile = (
             applied_profile
             if isinstance(applied_profile, Mapping)
@@ -1097,24 +1008,14 @@ def read_active_speaker_setup_status(
             and current_topology_fingerprint
             and protected_topology_fingerprint != current_topology_fingerprint
         )
-        # Topology staleness is deliberately NOT a readiness input (ruling
-        # S10, ADR-0019). `topology_config_fingerprint` hashes the whole
-        # topology dict bar `pairing_intent`, so display-only strings that
-        # reach no clamp and no emitted filter — `SpeakerChannel`'s
-        # `human_output_label`, a `SpeakerGroup`'s `label` — rotate it and
-        # used to take the box to `blocked`.
-        #
-        # This comparison is not where a cap is enforced, because it cannot
-        # see one: it hashes a dict and reports inequality. The declared facts
-        # that DO gate keep their own gates, one step downstream and each
-        # reading the field rather than the hash —
-        # `evaluate_driver_safety_profile` (`correction_crossover_v2.py`'s
-        # session-open gate) and `resolve_driver_excitation_ceilings`, plus
-        # the driver-protection clamps. `driver_style` is the worked example
-        # of a field that only LOOKS like metadata: it selects the tweeter's
-        # `min_highpass_hz` (`driver_protection.py`) and sits in the
-        # driver-safety target match (`driver_safety.py`), so editing it still
-        # refuses a session — correctly, at the safety gate, with a code.
+        # Topology staleness is deliberately NOT a readiness input (ruling S10,
+        # ADR-0019): `topology_config_fingerprint` hashes the whole topology
+        # dict bar `pairing_intent`, so display-only strings that reach no clamp
+        # rotate it. This comparison enforces no cap — it hashes a dict and
+        # reports inequality. The declared facts that DO gate keep their own
+        # gates downstream, each reading the field rather than the hash
+        # (`evaluate_driver_safety_profile`, `resolve_driver_excitation_ceilings`,
+        # the driver-protection clamps).
         protected_ready = bool(
             isinstance(protected_profile, Mapping)
             and protected_profile.get("status") == "applied"
@@ -1143,28 +1044,23 @@ def read_active_speaker_setup_status(
                 else False
             ),
             "recomposition_snapshot_available": protected_snapshot is not None,
-            # Gauge fix (2026-07-24): WHY Layer-1a driver linearization did
-            # or didn't run for the CURRENTLY APPLIED candidate — "" when
-            # absent/never evaluated (a pre-gauge-fix profile, or a plain
-            # trims-only apply). Read straight off the applied artifact
-            # (protected_profile, loaded fresh by
-            # load_applied_baseline_profile_state above) rather than the
-            # freshly-recomputed `profile` above: `profile` is built with no
-            # `measured_candidate` in this function, so it can never carry an
-            # honest outcome — only the durable applied artifact can.
+            # WHY Layer-1a driver linearization did or didn't run for the
+            # CURRENTLY APPLIED candidate; "" when never evaluated. Read off the
+            # applied artifact rather than the freshly-recomputed `profile`,
+            # which is built with no `measured_candidate` here and so can never
+            # carry an honest outcome.
             "linearization_outcome": (
                 str(protected_profile.get("linearization_outcome") or "")
                 if isinstance(protected_profile, Mapping)
                 else ""
             ),
-            # PR-L4 item 8, the other half of the discriminator: this block is
-            # the one that reports what the speaker is ACTUALLY running.
+            # The other half of the discriminator: this block reports what the
+            # speaker is ACTUALLY running.
             "role": "applied_profile",
         }
-        # ...and whether the two agree, computed once here rather than left for
-        # every reader to work out by comparing fingerprints across two blocks
-        # with different shapes. `None` = no applied profile to compare against,
-        # which is not a disagreement.
+        # ...and whether the two agree, computed once rather than left to every
+        # reader to compare fingerprints across two differently-shaped blocks.
+        # `None` = no applied profile to compare against, not a disagreement.
         profile_summary["matches_applied"] = (
             None
             if not isinstance(protected_profile, Mapping)
@@ -1208,13 +1104,11 @@ def read_active_speaker_setup_status(
                         "control or grouping"
                     ),
                 ))
-        # `config` is the CANDIDATE's, not the applied profile's, and a
-        # topology change no longer clears `protected_ready` — so a stale
-        # topology now suppresses this arm too. That is the intended reading
-        # of last-known-good: what is playing is the applied graph, whose own
-        # config file is checked above, and a candidate pointing at a file
-        # that was never written is a pending edit rather than a reason to
-        # mute the speaker.
+        # This arm is gated on `not protected_ready`, which a topology change no
+        # longer clears, so a stale topology suppresses it. Acceptable because
+        # `config` is the CANDIDATE's, not the applied profile's: what is playing
+        # is the applied graph, checked above, and a candidate pointing at a file
+        # that was never written is a pending edit, not a reason to mute.
         if (
             not protected_ready
             and config.get("path")
@@ -1277,10 +1171,9 @@ def read_active_speaker_setup_status(
     if profile_summary is not None:
         profile_summary["automatic_candidate"] = automatic_candidate
 
-    # A blocker outranks a notice for the headline no matter which was
-    # appended first: the list carries both severities now, and a household
-    # told "re-mint when convenient" while the box is actually blocked is
-    # being told the wrong thing to do.
+    # A blocker outranks a notice for the headline whichever was appended
+    # first: the list carries both severities, and a household told "re-mint
+    # when convenient" while the box is blocked is told the wrong thing.
     blockers = [issue for issue in issues if issue["severity"] == "blocker"]
     blocked = bool(blockers)
     headline = blockers or issues

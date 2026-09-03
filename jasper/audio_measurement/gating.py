@@ -5,152 +5,81 @@
 """Impulse-response gating and the low-frequency validity floor.
 
 A domestic room contaminates a far-field (reference-axis) capture with a
-floor/wall/ceiling reflection a few milliseconds after the direct sound. Any
+floor/wall/ceiling reflection a few milliseconds after the direct sound, so any
 quantity derived from the deconvolved impulse response — magnitude, level,
-polarity, delay — is only trustworthy above a low-frequency floor set by how
-long the reflection-free window is: ``f_valid ~= 1 / window_seconds``. See
-docs/active-crossover-information-design.md "Measurement validity: gating
-and the low-frequency floor" (spec) and the P1a consult table (this module's
-constants) for the full rationale.
+polarity, delay — is trustworthy only above ``f_valid ~= 1 / window_seconds``.
+See docs/active-crossover-information-design.md "Measurement validity: gating
+and the low-frequency floor" and the P1a consult table below for the rationale.
 
-This module does no I/O and holds no state:
+Pipeline stage: **derive**. This module does no I/O, holds no state, and owns
+detection, the window, both floors and the classification ledger. It
+deliberately does NOT own the *proof* that the window helped — pricing the gate
+against the band the DUT radiates needs program knowledge that lives one stage
+out, in :mod:`~jasper.audio_measurement.gate_disclosure`.
 
-* :func:`detect_first_reflection` finds the first strong reflection after
-  the direct-arrival peak using an energy-envelope threshold with
-  hysteresis (drop below the threshold, then rise back above it), and
-  accepts a crossing only if it clears a prominence vote (see "The
-  prominence vote" below).
-* :func:`gate_impulse_response` windows an IR to its reflection-free span
-  (rectangular head through the peak, half-Hann taper into the reflection)
-  and returns the :data:`~jasper.active_speaker.driver_acoustics` SC-2
-  gating-block fragment describing what it did.
-* :func:`build_gate_window` is that window's SHAPE in isolation, for a
-  caller that already knows the peak and the span — including a caller
-  forcing a span this module would not have chosen (a gate ladder).
-* :func:`exempt_gating_block` builds the SC-2 block for a capture that is
-  exempt from gating (today's near-field driver capture, taken a few
-  centimetres from the driver — too close for a room reflection to matter).
-* :func:`f_valid_floor_hz` is the floor formula in isolation, for callers
-  that already know the window length.
-* :func:`f_trusted_floor_hz` is the *disclosed-beside-it* stricter floor
-  (see "The gating contract" below). It sizes no window here; what reads it
-  is :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
-* :func:`f_entanglement_floor_hz` is the same multiplier over the room's
-  first-bounce time rather than the window — the floor no window choice can
-  lower (#3495). This module states the formula and the provenance words;
-  :mod:`~jasper.audio_measurement.gate_disclosure` decides which source a
-  given capture has.
-* :class:`EntanglementFloor` is that floor and its provenance as one value,
-  and the single enforcer of the invariant binding them (#3522).
-
-Pipeline stage: **derive**. This module turns a deconvolved impulse
-response into a windowed one plus the record of what it did. It owns
-detection, the window, both floors, and the classification ledger. It
-deliberately does NOT own the *proof* that the window helped — pricing the
-gate against the band the DUT radiates needs program knowledge this module
-does not have, and lives one stage out in
-:mod:`~jasper.audio_measurement.gate_disclosure`.
-
-Imported lazily by :mod:`jasper.active_speaker.driver_acoustics` (mirrors
-that module's existing lazy-import discipline for the rest of the
-measurement kernel) so the socket-activated ``/sound/`` wizard stays light
-until a measurement actually runs. ``scipy`` is imported lazily *inside*
-the two functions that need an analytic envelope, for the same reason.
+Imported lazily by :mod:`jasper.active_speaker.driver_acoustics`, and ``scipy``
+is imported lazily inside :func:`analytic_signal`, so the socket-activated
+``/sound/`` wizard stays light until a measurement actually runs.
 
 The gating contract (R9, issue #1969)
 -------------------------------------
 
-The gate must be incapable of overstating what it measured. Every gating
-block therefore carries, beside the window it chose:
+The gate must be incapable of overstating what it measured, so every gating
+block carries, beside the window it chose:
 
 ``floor_source``
-    WHY the window is what it is — and it is the same field the gating
-    contract calls ``source_of_bound``. The contract brief's vocabulary
-    (``detected|geometric|fallback``) and this module's
-    (:data:`FLOOR_MEASURED` / :data:`FLOOR_SEARCH_BOUND` / ``None``) name
-    the same fact, so only ONE of them is persisted — the one every
-    existing consumer already reads. The banked E5 artifact
-    (``captures/gating-experiments-20260731/analysis/gate_proof.json``)
-    made the same reconciliation: it emits the key ``source_of_bound``
-    carrying *this* module's values verbatim. There is deliberately no
-    ``geometric`` value: JTS derives a bound from detection or from the
-    search ceiling, never from assumed room geometry (owner's 2026-07-31
-    abstraction ruling on #1966), and a vocabulary should not offer a
-    value the code cannot produce.
+    WHY the window is what it is — the same field the gating contract calls
+    ``source_of_bound``, persisted once under this module's vocabulary
+    (:data:`FLOOR_MEASURED` / :data:`FLOOR_SEARCH_BOUND` / ``None``). There is
+    deliberately no ``geometric`` value: JTS derives a bound from detection or
+    from the search ceiling, never from assumed room geometry (owner ruling on
+    #1966), and a vocabulary should not offer a value the code cannot produce.
 ``f_valid_floor_hz`` / ``f_trusted_hz``
-    The nominal ``1/T`` floor and the stricter ``2.5/T`` floor, disclosed
-    side by side. **The trusted floor changes nothing about the window or
-    about what refuses** — migrating the refusal rule onto ``2.5/T`` is
-    still a separate, ratified decision. What it does bound is
-    :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
+    The nominal ``1/T`` floor and the stricter ``2.5/T`` floor, side by side.
+    The trusted floor changes nothing about the window or about what refuses;
+    what it does bound is :data:`TRUSTED_FLOOR_MULTIPLIER`'s note.
 ``internal_reflection_ledger``
-    Candidate early features the gate found and *classified* rather than
-    gated (see :func:`detect_first_reflection`).
+    Candidate early features the gate found and *classified* rather than gated
+    (see :func:`detect_first_reflection`).
 ``pre_post_gate_delta``
-    What the gate did to the spectrum. Built one stage out by
-    :mod:`~jasper.audio_measurement.gate_disclosure`, which is where the
-    radiated-band knowledge lives, and merged into the block by the single
-    caller that has both.
+    What the gate did to the spectrum, built one stage out by
+    :mod:`~jasper.audio_measurement.gate_disclosure` and merged in by the
+    single caller that has both.
 
-The sentence a household or an operator reads is
-:func:`jasper.audio_measurement.gate_disclosure.describe_gate` — the only
-place gating provenance becomes copy. A window length alone cannot
-distinguish "a reflection was found at 4 ms and removed" from "nothing was
-found; the window was capped at the 7 ms search ceiling"; those print
-identically and mean opposite things, which is exactly the defect #1966
-filed (the whole 2026-07-30 corpus sat at the ceiling while the record read
-as "reflections removed").
+A window length alone cannot distinguish "a reflection was found at 4 ms and
+removed" from "nothing was found; the window was capped at the 7 ms search
+ceiling" — they print identically and mean opposite things, which is the defect
+#1966 filed. The sentence a household or operator reads is
+:func:`jasper.audio_measurement.gate_disclosure.describe_gate`, the only place
+gating provenance becomes copy.
 
 The prominence vote (R9 WO-6, issue #1969)
 ------------------------------------------
 
-A bare hysteresis crossing is a *confident* answer with no confidence
-behind it, and measurement says that is where the detector actually fails:
-on our own ESS chain, 18.1% of criteria-region positives fired EARLY —
-typically at the search-window open — against 12.4% that found nothing
-(``captures/detector-certification-20260801`` §WO-6.4's shipped-today row;
-§R9.0 established the mechanism against the onset report, where the same
-split reads 19.4 / 12.4). The product has met this in the field: the S0
-gating incident (#1790) is one capture
-"finding" a reflection 3 samples past the search-start offset and
-collapsing its window to 1778 Hz.
+A bare hysteresis crossing is a *confident* answer with no confidence behind
+it, and that is where the detector actually fails: on our own ESS chain 18.1 %
+of criteria-region positives fired EARLY — typically at the search-window open
+— against 12.4 % that found nothing. So a crossing must also *stand out*: its
+envelope peak must rise :data:`REFLECTION_PROMINENCE_DB` above the envelope's
+own minimum between the direct peak and the crossing. A candidate that fails
+does not end the search — the scan resumes past that excursion and votes on the
+next crossing, which is what makes this a fix rather than a trade (P_D
+0.674 -> 0.712 while early fires fall 31 %, because the crossing a false early
+trigger was masking is often the real reflection).
 
-So a crossing must now also *stand out*: its envelope peak must rise
-:data:`REFLECTION_PROMINENCE_DB` above the envelope's own minimum between
-the direct peak and the crossing. A candidate that fails does not end the
-search — the scan resumes past that excursion and the next crossing is
-voted on in turn. That resumption is what makes this a fix rather than a
-trade: measured, it raises detection (P_D 0.674 -> 0.712) while cutting
-early fires 31%, because the crossing a false early trigger was masking is
-often the real reflection.
+**This CHANGES gate decisions**, deliberately, and **its operating point is
+bounded by hardware, not by the corpus**: on corpus statistics alone the vote
+wants ~13.5 dB, which rejects this speaker's one corroborated room reflection
+on 13 of 13 real captures. Read :data:`REFLECTION_PROMINENCE_DB` before moving
+the number.
 
-**This CHANGES gate decisions**, deliberately: it is the certified
-early-fire mechanism fix R9 gated on measurement, and it is the first thing
-to move a window since the module shipped. Per capture the direction is
-one-way at a fixed threshold — a vote can only reject a candidate the old
-scan accepted — but the scan's resumption means a capture can also end up
-gating LATER rather than not at all.
-
-**The operating point is bounded by hardware, not by the corpus.** Picked on
-corpus statistics alone the vote wants ~13.5 dB, and 13.5 dB rejects this
-speaker's one independently corroborated room reflection on 13 of 13 real
-captures. :data:`REFLECTION_PROMINENCE_DB` carries that measurement and the
-mechanism behind it; read it before moving the number.
-
-Schema version 2 (was 1): ``first_reflection_ms`` now reports the
-reflection's envelope PEAK rather than its onset, and three fields were
-added. See :func:`detect_first_reflection` for the peak-reporting
-rationale and :data:`GATING_SCHEMA_VERSION` for what a reader must do
-with the difference.
-
-The vote did NOT bump the schema, because this version tracks what a
-persisted FIELD means and no field changed meaning. The cost of that
-choice is real and is recorded rather than argued away: a pre-vote and a
-post-vote block are indistinguishable in a bundle. `docs/gating-v2-plan.md`
-D3 already owes the record a ``detector`` provenance field for exactly
-this reason, and whether a behaviour change should also move the schema
-version is that work order's decision to make; this change left the
-version at 2 and said so in both places.
+Schema version 2 (was 1): ``first_reflection_ms`` reports the reflection's
+envelope PEAK rather than its onset, and three fields were added — see
+:data:`GATING_SCHEMA_VERSION` for what a reader must do with the difference.
+The vote did not bump the version, because it tracks what a persisted FIELD
+means and no field changed meaning; the cost, recorded rather than argued away,
+is that a pre-vote and a post-vote block are indistinguishable in a bundle,
+which `docs/gating-v2-plan.md` D3's ``detector`` provenance field owes.
 """
 
 from __future__ import annotations
@@ -164,16 +93,12 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-#: Bumped 1 -> 2 by the R9 gating contract. Two things changed for a reader
-#: of a persisted block: ``first_reflection_ms`` reports the reflection's
-#: envelope PEAK where v1 reported its onset (a systematic +0.125 ms shift
-#: on the measured path — see :func:`detect_first_reflection`), and
-#: ``f_trusted_hz`` / ``reflection_onset_ms`` /
-#: ``internal_reflection_ledger`` are new. A v1 block's
-#: ``first_reflection_ms`` is a v2 ``reflection_onset_ms``; nothing else in
-#: v1 changed meaning, and no code branches on this number — it exists so a
-#: reader comparing records across the boundary can tell which convention a
-#: ToA was written under.
+#: What a reader of a persisted block must do with the difference: a v2
+#: ``first_reflection_ms`` is the reflection's envelope PEAK where v1 was its
+#: onset (a systematic +0.125 ms shift on the measured path), so a v1
+#: ``first_reflection_ms`` is a v2 ``reflection_onset_ms``. ``f_trusted_hz`` /
+#: ``reflection_onset_ms`` / ``internal_reflection_ledger`` are new. No code
+#: branches on this number.
 GATING_SCHEMA_VERSION = 2
 
 #: Schema at which ``first_reflection_ms`` began reporting the reflection's
@@ -298,35 +223,27 @@ TAPER_FRACTION = 0.25
 # decision) is the load-bearing half; this ratio is a judgment call on top.
 NEAR_FLOOR_RATIO = 1.25
 
-# Stricter floor DISCLOSED beside the nominal 1/T one. 1/T is where a
-# window has one full cycle of resolution; ~2.5/T is where a gated
-# magnitude is actually trustworthy, and the E4 gate-stability sweep shows
-# why the distinction is not academic: on jts3 the 1-4 kHz crossover-band
-# magnitude MOVED 2.1 dB across 3/5/7/10 ms gates purely because 1-2 kHz
-# sits below the trusted floor of the shorter ones, while everything above
-# 2 kHz held to <=0.006 dB (captures/gating-experiments-20260731 §4).
+# Stricter floor DISCLOSED beside the nominal 1/T one. 1/T is where a window
+# has one full cycle of resolution; ~2.5/T is where a gated magnitude is
+# actually trustworthy. Measured: on jts3 the 1-4 kHz crossover-band magnitude
+# MOVED 2.1 dB across 3/5/7/10 ms gates purely because 1-2 kHz sits below the
+# trusted floor of the shorter ones, while everything above 2 kHz held to
+# <=0.006 dB (captures/gating-experiments-20260731 §4).
 #
-# THIS NUMBER SIZES NO WINDOW AND NO REFUSAL RULE READS IT. It is reported
-# so a reader can see how much of a band was merely "resolved" rather than
-# trusted, and moving the gate's refusal rule onto it is still a separate,
-# deliberate decision.
-#
-# It DOES bound a verdict, since #2551 (PR #2566): the flat spec's band
-# clamps grade above it, reaching it through
-# :func:`jasper.active_speaker.crossover_v2_flow.cloud_trusted_floor_hz`.
-# That was the deliberate decision this comment used to reserve, taken for
-# the spec and for nothing else — the mechanics live with the consumer, in
-# :func:`jasper.active_speaker.flat_spec.evaluate_flat_spec`, not here.
+# THIS NUMBER SIZES NO WINDOW AND NO REFUSAL RULE READS IT. It DOES bound one
+# verdict (#2551): the flat spec's band clamps grade above it, reaching it
+# through :func:`jasper.active_speaker.crossover_v2_flow.cloud_trusted_floor_hz`
+# — for the spec and nothing else, with the mechanics at the consumer, in
+# :func:`jasper.active_speaker.flat_spec.evaluate_flat_spec`.
 TRUSTED_FLOOR_MULTIPLIER = 2.5
 
 # --- asymmetric-cost classification ledger ---------------------------------
 # How far past the direct peak to enumerate candidate early features, the
-# envelope prominence a candidate must clear, how far back the local
-# minimum for that prominence is taken, and how many entries are kept
-# (strongest first). Values are the banked E5 record's
-# (captures/gating-experiments-20260731/kit/gate_proof.py), so a product
-# ledger and that artifact enumerate the same features. The cap is what
-# keeps a noisy IR from writing an unbounded list into every sidecar.
+# envelope prominence a candidate must clear, how far back the local minimum
+# for that prominence is taken, and how many entries are kept (strongest
+# first). Values match captures/gating-experiments-20260731/kit/gate_proof.py,
+# so a product ledger and that artifact enumerate the same features. The cap
+# bounds what a noisy IR can write into a sidecar.
 LEDGER_SPAN_MS = 1.6
 LEDGER_PROMINENCE_DB = 6.0
 LEDGER_PROMINENCE_LOOKBACK = 12
@@ -336,17 +253,13 @@ CLASS_DUT_INTERNAL = "DUT_internal_ungateable"
 #: Inside the search span — the detector's own decision governs it.
 CLASS_GATEABLE = "gateable"
 
-# How far after the detected ONSET to look for the reflection's envelope
-# peak. 0.5 ms is the certified variant's ``refine_ms``
+# How far after the detected ONSET to look for the reflection's envelope peak.
+# 0.5 ms is the certified variant's ``refine_ms``
 # (captures/detector-certification-20260801/harness/detectors.py
-# ``shipped_peak_refined``); reproducing its number requires reproducing
-# this one.
-#
-# TWO CONSUMERS, one number, deliberately: this also bounds how far past a
-# crossing :func:`_candidate_prominence_db` looks for the candidate's peak.
-# The certified variant likewise uses one ``refine_ms`` for both, so
-# splitting them would de-couple the product from §WO-6's measurement.
-# Changing this for ToA reasons alone therefore moves the vote too.
+# ``shipped_peak_refined``); reproducing its number requires reproducing this
+# one. TWO CONSUMERS, one number, deliberately: it also bounds how far past a
+# crossing :func:`_candidate_prominence_db` looks, exactly as the certified
+# variant does, so changing this for ToA reasons alone moves the vote too.
 TOA_REFINE_MS = 0.5
 
 FLOOR_MEASURED = "measured_reflection"
@@ -444,14 +357,11 @@ def intersect_bands(a: tuple[float, float], b: tuple[float, float]) -> tuple[flo
 class EntanglementFloor:
     """The room's floor and where it came from, as ONE value.
 
-    The invariant is single and it lives HERE: a floor is known exactly when
-    its source is not :data:`ENTANGLEMENT_SOURCE_UNKNOWN`, and a known floor
-    is a finite, positive frequency. Constructing this type is the only place
-    that rule is enforced, so a seam wanting it enforced builds one rather
-    than re-deriving the check.
-
-    Strict by default: a call site handing over a pair that cannot be true
-    has a bug, and :meth:`coerce` is the ONE lenient door, for persisted data.
+    The invariant lives HERE: a floor is known exactly when its source is not
+    :data:`ENTANGLEMENT_SOURCE_UNKNOWN`, and a known floor is a finite,
+    positive frequency. Constructing this type is the only place that rule is
+    enforced. Strict by default; :meth:`coerce` is the ONE lenient door, for
+    persisted data.
     """
 
     hz: float | None
@@ -499,12 +409,11 @@ class EntanglementFloor:
     def coerce(cls, hz: Any, source: Any) -> "EntanglementFloor":
         """A PERSISTED pair, read leniently — anything inconsistent is unknown.
 
-        A document is not a call site: it was written by a build that may not
-        have had the field, and rehydrating a disagreement verbatim would
-        build a record that raises the moment anything re-reads it. So an
-        unreadable word, a floor with no provenance, a provenance with no
-        floor, and a non-physical number all become :meth:`unknown` here
-        rather than raising. This is the only place that leniency lives.
+        A document is not a call site: it may have been written by a build
+        without the field, and rehydrating a disagreement verbatim would raise
+        the moment anything re-reads it. An unreadable word, a floor with no
+        provenance, a provenance with no floor, and a non-physical number all
+        become :meth:`unknown`. The only place that leniency lives.
         """
         try:
             return cls(None if hz is None else float(hz), source)
@@ -515,12 +424,10 @@ class EntanglementFloor:
 def analytic_signal(x: np.ndarray) -> np.ndarray:
     """The complex analytic signal (scipy's Hilbert transform) of ``x``.
 
-    ``scipy`` is imported here rather than at module scope so importing
-    :mod:`gating` stays as cheap as it was when this module was pure numpy
-    (the socket-activated wizard imports it on paths that never measure).
-    :func:`analytic_envelope` is this function's magnitude; a caller that
-    also needs the PHASE (e.g. an instantaneous-frequency read) uses this
-    one directly instead.
+    The module's only ``scipy`` import site, kept out of module scope so
+    importing :mod:`gating` stays cheap for the socket-activated wizard, which
+    imports it on paths that never measure. :func:`analytic_envelope` is this
+    function's magnitude; a caller that also needs the PHASE uses this one.
     """
     from scipy.signal import hilbert
 
@@ -548,45 +455,34 @@ def _classification_ledger(
 ) -> tuple[dict[str, Any], ...]:
     """Enumerate and CLASSIFY the early features after the direct peak.
 
-    The asymmetric-cost guard's record (issue #1969, R9 deliverable 4). Every
-    envelope local maximum in ``(peak, peak + LEDGER_SPAN_MS]`` that clears
+    Every envelope local maximum in ``(peak, peak + LEDGER_SPAN_MS]`` clearing
     :data:`LEDGER_PROMINENCE_DB` above its own local minimum is listed, and
-    each is classified :data:`CLASS_DUT_INTERNAL` when its delay is below
-    ``t_min_ms`` (structurally un-gateable: it arrives before the search
-    window opens, and at that scale it is the loudspeaker, not the room) or
+    classified :data:`CLASS_DUT_INTERNAL` when its delay is below ``t_min_ms``
+    (structurally un-gateable — it arrives before the search window opens, and
+    at that scale it is the loudspeaker, not the room) or
     :data:`CLASS_GATEABLE` otherwise.
 
-    **A ledger entry never gates.** Listing a feature is the opposite of
-    acting on it: the whole point is that jts3's 271-292 us horn feature at
-    -11.2 dB is real, is measured on every capture, and must NOT become a
-    window bound — gating there would set the trusted floor to ~3870 Hz and
-    destroy the 2 kHz crossover evidence band
-    (``captures/detector-certification-20260801/`` §5).
+    **A ledger entry never gates.** jts3's 271-292 us horn feature at -11.2 dB
+    is real and is measured on every capture, and gating there would set the
+    trusted floor to ~3870 Hz, destroying the 2 kHz crossover evidence band.
 
-    ``envelope`` is the UNGATED IR's analytic envelope, supplied by the
-    caller so one transform serves both this and the ToA refinement.
+    ``envelope`` is the UNGATED IR's analytic envelope, supplied by the caller
+    so one transform serves both this and the ToA refinement.
 
     Units: ``tau_us`` microseconds after the direct peak; ``level_db`` and
     ``prominence_db`` decibels re the IR envelope's own maximum. Strongest
-    first, capped at :data:`LEDGER_MAX_ENTRIES`.
+    first, capped at :data:`LEDGER_MAX_ENTRIES`. ``prominence_db`` is a
+    measured quantity, not a fitted 0-1 probability — this detector has no
+    calibrated likelihood model — so read it as "how far this feature stands
+    above its own surroundings".
 
-    ``prominence_db`` IS the confidence evidence, and is deliberately a
-    measured quantity rather than a fitted 0-1 probability: this detector
-    has no calibrated likelihood model, so a probability here would be
-    invented. Read it as "how far this feature stands above its own
-    surroundings".
-
-    **These are CANDIDATES, read against the capture's bandwidth.** An
-    analytic envelope resolves structure only as finely as the signal's
-    bandwidth allows, so a wideband capture lists more early candidates
-    than a 150-2000 Hz one whose direct arrival is itself ~500 us wide.
-    Taken to its limit this is visible in the test fixtures: an ideal
-    delta has infinite bandwidth, and its own analytic-envelope sidelobes
-    are enumerated here as ~-13 dB "features" with implausible prominences
-    (the log floor under a numerically-perfect null is very deep). That is
-    the ledger reporting truthfully about a physically unrealizable input,
-    not a detection error — and it is why nothing downstream may treat a
-    ledger entry as a confirmed reflection.
+    **These are CANDIDATES, read against the capture's bandwidth.** An analytic
+    envelope resolves structure only as finely as the signal's bandwidth
+    allows, so a wideband capture lists more early candidates than a
+    150-2000 Hz one whose direct arrival is itself ~500 us wide — at the limit,
+    an ideal delta's own envelope sidelobes are enumerated as ~-13 dB
+    "features". Nothing downstream may treat a ledger entry as a confirmed
+    reflection.
     """
     ref = float(envelope.max()) if envelope.size else 0.0
     if not math.isfinite(ref) or ref <= 0:
@@ -625,22 +521,16 @@ def _refine_to_envelope_peak(
 ) -> int:
     """Relocalise a detected ONSET to the reflection's envelope peak.
 
-    Replicates the certified ``shipped_peak_refined`` variant
-    (``captures/detector-certification-20260801/harness/detectors.py``): the
-    analytic-envelope argmax within ``refine_ms`` after the onset. Measured
-    there against exact synthetic ground truth, this moves the reported ToA
-    from a systematic -0.125 ms onset bias to a 0.000 ms median error and
-    lifts strict-tolerance detection 0.464 -> 0.609, with the detection
-    decision byte-identical (§4.5).
+    The analytic-envelope argmax within ``refine_ms`` after the onset,
+    replicating the certified ``shipped_peak_refined`` variant
+    (``captures/detector-certification-20260801/harness/detectors.py``): a
+    systematic -0.125 ms onset bias becomes a 0.000 ms median error against
+    synthetic ground truth, with the detection decision byte-identical.
 
-    Owns the reported TIME only. It does not decide whether a reflection
-    exists and it is never used to size the gate — the window still ends at
-    the onset, which is the conservative choice (the onset precedes the
-    peak, so the gate closes before the reflection's energy maximum). Falls
-    back to ``onset_idx`` when there is no room to look.
-
-    ``envelope`` is the UNGATED IR's analytic envelope, supplied by the
-    caller (see :func:`_classification_ledger`).
+    Owns the reported TIME only: it never sizes the gate, whose window still
+    ends at the onset — the conservative choice, since the onset precedes the
+    peak. Falls back to ``onset_idx`` when there is no room to look.
+    ``envelope`` is the UNGATED IR's analytic envelope, from the caller.
     """
     n1 = min(
         envelope.size - 1,
@@ -661,23 +551,16 @@ def _candidate_prominence_db(
 ) -> float:
     """How far a threshold crossing stands above the valley it rose out of.
 
-    The prominence vote's statistic, in decibels: the SMOOTHED envelope's
-    maximum within ``refine_samples`` of the crossing, over that same
-    envelope's minimum anywhere between the direct peak and the crossing.
+    The prominence vote's statistic, in dB: the SMOOTHED envelope's maximum
+    within ``refine_samples`` of the crossing, over that same envelope's
+    minimum anywhere between the direct peak and the crossing. The smoothed RMS
+    envelope, deliberately, not the analytic one — the vote prices the
+    detector's own decision surface, and the certified ``shipped_family``
+    variant does the same, so reproducing its numbers requires this choice.
 
-    Reads the same smoothed RMS envelope the hysteresis search runs on —
-    deliberately, not the analytic one: the vote's job is to price the
-    detector's own decision surface, so a crossing and its prominence are
-    computed from one signal. The certified variant
-    (``captures/detector-certification-20260801/harness/ourchain/variants.py``
-    ``shipped_family``) does exactly this, and reproducing its numbers
-    requires reproducing that choice.
-
-    Units: dB. Non-negative by construction — ``envelope[crossing_idx]``
-    lies in both the top window and the valley window, so the maximum can
-    never fall below the minimum. Owns the statistic only; the accept /
-    reject decision and the scan belong to
-    :func:`detect_first_reflection`.
+    Non-negative by construction: ``envelope[crossing_idx]`` lies in both
+    windows. Owns the statistic only; the accept/reject decision and the scan
+    belong to :func:`detect_first_reflection`.
     """
     hi = min(search_end_idx, crossing_idx + refine_samples)
     top = float(np.max(envelope[crossing_idx : hi + 1]))
@@ -709,9 +592,9 @@ def detect_first_reflection(
     accepted only if :func:`_candidate_prominence_db` clears
     ``prominence_db``; a rejected one does NOT end the search — the scan
     resumes past that above-threshold excursion and votes on the next
-    crossing. ``prominence_db <= 0`` disables the vote, which recovers the
-    pre-WO-6 first-crossing-wins behaviour exactly (that equivalence is
-    what the certification harness asserts against this function).
+    crossing. ``prominence_db <= 0`` disables the vote, recovering
+    first-crossing-wins exactly (the equivalence the certification harness
+    asserts against this function).
 
     Bounded by construction: every iteration advances the cursor past a
     strictly longer prefix of the search span, so the scan runs at most
@@ -726,12 +609,8 @@ def detect_first_reflection(
     the noise floor, or no crossing before the search bound survived the
     vote; :data:`FLOOR_MEASURED` when a reflection onset is accepted.
 
-    Two things ride alongside that decision without changing it:
-    ``reflection_peak_idx`` reports the reflection's envelope peak rather
-    than its onset (:func:`_refine_to_envelope_peak`), and
-    ``internal_reflections`` classifies the early features the search is
-    structurally unable to gate (:func:`_classification_ledger`). Neither
-    affects which captures gate or where a window ends.
+    ``reflection_peak_idx`` and ``internal_reflections`` ride alongside that
+    decision and affect neither which captures gate nor where a window ends.
     """
     ab = np.abs(np.asarray(ir, dtype=np.float64))
     n = ab.size
@@ -837,8 +716,7 @@ def _fragment(
     internal_reflection_ledger: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """The SC-2 gating block's core fields (everything but ``applied`` /
-    ``exempt_reason``, which the caller supplies — see
-    :func:`gate_impulse_response` and :func:`exempt_gating_block`).
+    ``exempt_reason``, which the caller supplies).
 
     THE single writer of a gating block's shape. Field meanings, all in
     milliseconds from the start of the analysed IR unless noted:
@@ -882,21 +760,17 @@ def build_gate_window(
 ) -> np.ndarray:
     """The gate's window shape alone: a float64 array of length ``n``.
 
-    Unity from the head through ``peak_idx``, a flat plateau, then a
-    half-Hann tail ``0.5 * (1 + cos(pi t))`` over the last
-    ``taper_fraction`` of ``span`` samples, and zero past ``peak_idx +
-    span``. This is the single owner of that shape — every window this
-    module applies, and every window a forced-span caller builds, comes
-    from here, so a ladder rung and a shipped gate cannot drift apart.
+    Unity from the head through ``peak_idx``, a flat plateau, then a half-Hann
+    tail ``0.5 * (1 + cos(pi t))`` over the last ``taper_fraction`` of ``span``
+    samples, and zero past ``peak_idx + span``. The single owner of that shape,
+    so a ladder rung and a shipped gate cannot drift apart.
 
-    ``lead`` bounds the head. ``None`` is the shipped path: rectangular all
-    the way to index 0, which is correct when the array was already trimmed
-    to a fixed pre-peak margin. An integer starts the window ``lead``
-    samples before the peak with a raised-cosine fade into it, which is
-    what a FORCED span needs — an unbounded head would add the whole
-    pre-peak array to the window, so a 3 ms rung could not be built from an
-    IR carrying a 5 ms lead, and a hard edge there would itself become a
-    feature of the spectrum under test.
+    ``lead`` bounds the head. ``None`` is the shipped path: rectangular all the
+    way to index 0, correct when the array was already trimmed to a fixed
+    pre-peak margin. An integer starts the window ``lead`` samples before the
+    peak with a raised-cosine fade into it, which a FORCED span needs — an
+    unbounded head would add the whole pre-peak array to the window, and a hard
+    edge there would itself become a feature of the spectrum under test.
 
     Raises ``ValueError`` when the window would not fit inside ``n``:
     truncating it silently would publish a shorter window than the one the
@@ -1054,11 +928,10 @@ def apply_gate_fragment(
 ) -> np.ndarray:
     """Apply a signal-derived gate fragment to another equal-length IR.
 
-    This is the paired-noise seam: reflection detection runs on the signal
-    exactly once through :func:`gate_impulse_response`; the resulting integer
-    peak/span (round-tripped through the fragment's millisecond fields) builds
-    the same half-Hann operator for noise.  The noise IR is never inspected to
-    choose a peak, reflection, or window.
+    The paired-noise seam: detection runs on the signal exactly once, and the
+    resulting integer peak/span (round-tripped through the fragment's
+    millisecond fields) builds the same half-Hann operator for noise. The noise
+    IR is never inspected to choose a peak, reflection, or window.
     """
 
     ir_arr = np.asarray(ir)
@@ -1094,13 +967,12 @@ def exempt_gating_block(
 ) -> dict[str, Any]:
     """Full SC-2 gating block for a capture that is exempt from gating.
 
-    A near-field capture (today's shipped driver measurement, taken a few
-    centimetres from the driver) is too close for a room reflection to
-    contaminate it, so it is never gated — the caller uses the ungated IR
-    for magnitude, byte-identical to before this module existed. This still
-    records ``direct_peak_ms`` (a benign IR-peak position from the deconv
-    window offset, not a room measurement) so the SC-2 invariant — a gating
-    block is persisted whenever an IR exists — holds uniformly.
+    A near-field capture (taken a few centimetres from the driver) is too close
+    for a room reflection to contaminate it, so it is never gated and the
+    caller uses the ungated IR for magnitude. ``direct_peak_ms`` is still
+    recorded — a benign IR-peak position from the deconv window offset, not a
+    room measurement — so the SC-2 invariant that a gating block is persisted
+    whenever an IR exists holds uniformly.
     """
     ir_arr = np.asarray(ir)
     n = ir_arr.shape[0] if ir_arr.ndim == 1 else 0
@@ -1115,11 +987,8 @@ def exempt_gating_block(
         floor_source=None,
     )
     # Spread rather than re-listed field by field so :func:`_fragment` stays
-    # the single writer of the block's shape — a new disclosure field must
-    # not be able to reach the gated path and silently miss this one.
-    # ``schema_version`` is named first only to keep the emitted key ORDER
-    # identical to this function's pre-contract form (same value; the spread
-    # re-assigns it without moving it).
+    # the single writer of the block's shape. ``schema_version`` is named first
+    # only to hold the emitted key ORDER; the spread re-assigns the same value.
     return {
         "schema_version": fragment["schema_version"],
         "applied": False,

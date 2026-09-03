@@ -27,7 +27,7 @@
 >
 > **Composes with — does not re-open —** the two-stage commission flow work
 > order ([issue #1806](https://github.com/jaspercurry/JTS/issues/1806) /
-> [`two-stage-commission-flow-plan.md`](../two-stage-commission-flow-plan.md)),
+> [`two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md)),
 > which is the chassis this stage renders on; the
 > [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md),
 > then the planning authority for agent-assisted tuning surfaces, itself
@@ -235,7 +235,7 @@ boundary is a WO-4 acceptance item.
 
 After measurement close, before prescription. In the two-stage flow
 ([#1806](https://github.com/jaspercurry/JTS/issues/1806) /
-[`two-stage-commission-flow-plan.md`](../two-stage-commission-flow-plan.md)),
+[`two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md)),
 findings render on the **review screen** between "what we measured" and
 "the decision" — the refuse-and-recommend-the-probe outcome ("unsure — run
 the 30-second polarity test to decide") becomes a first-class session
