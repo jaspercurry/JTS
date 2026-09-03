@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -147,14 +148,14 @@ OFF = "intent_off_or_invalid"
 def _condition_script(tmp_path: Path) -> str:
     """The unit's ExecCondition as /bin/sh receives it, retargeted at tmp_path.
 
-    systemd resolves C escapes and ``$$`` before exec, inside its single quotes
-    as well; replaying both rules is what makes this the shipped line rather
-    than a copy of it. The two absolute paths are the ones Python reads, so a
-    unit that drifts off them fails here.
+    systemd resolves C escapes, ``%%`` specifiers and ``$$`` before exec, inside
+    its single quotes as well; replaying all three rules is what makes this the
+    shipped line rather than a copy of it. The two absolute paths are the ones
+    Python reads, so a unit that drifts off them fails here.
     """
     argv = values_for(UNIT.read_text(), "ExecCondition")
     assert argv[:2] == ("/bin/sh", "-c")
-    script = argv[2].replace("\\\\", "\\").replace("$$", "$")
+    script = argv[2].replace("\\\\", "\\").replace("%%", "%").replace("$$", "$")
     for literal, name in ((INTENT_PATH, "usb_mic.env"), (CHMASK_PATH, "p_chmask")):
         assert script.count(literal) == 1, literal
         script = script.replace(literal, str(tmp_path / name))
@@ -221,3 +222,16 @@ def test_usb_mic_start_condition_gates_on_intent_gadget_and_bridge(
     else:
         assert result.returncode == 0
         assert result.stderr == ""
+
+
+def test_usb_mic_start_condition_doubles_every_percent() -> None:
+    """A bare ``%x`` in the ExecCondition is a systemd specifier, not shell.
+
+    ``printf "%s"`` shipped once and expanded to the user shell at unit load,
+    so the gate compared a path instead of the intent line and skipped the
+    unit on every start. ``systemd-analyze verify`` parses that happily, and
+    the runner above replays ``%%`` -> ``%``, so only this pin catches it.
+    """
+    condition = values_for(UNIT.read_text(), "ExecCondition")[2]
+
+    assert not re.search(r"(?<!%)(?:%%)*%(?!%)", condition)
