@@ -698,10 +698,10 @@ class LevelMatchOutcome:
 #
 # The 2026-07-16 jts3 finding: a level-match ramp terminal that didn't lock
 # (``agc_suspected`` and friends) surfaced as a bare ``ValueError`` carrying
-# the ramp's raw code — never translated, never explaining anything. Every
-# refusal now names its reason (the project rule): ``describe_ramp_refusal``
-# is the single place a ramp terminal's ``(error, error_detail)`` pair becomes
-# homeowner copy, and no caller hand-rolls its own.
+# the ramp's raw code — never translated, never explaining anything.
+# ``describe_ramp_refusal`` is where a ramp terminal's ``(error,
+# error_detail)`` pair becomes homeowner copy, so a refusal names its reason
+# (the project rule) rather than leaking a code.
 
 
 @dataclass(frozen=True)

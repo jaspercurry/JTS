@@ -234,15 +234,15 @@ check(
 
 // --- (f) verify_fail during a live relay: Undo + Re-measure show, Try again gated -
 // W6.12 P0-adjacent fix: right after a failed VERIFY capture the relay object
-// can still be transitioning ("finishing" while the phone uploads, or
-// "committing"/"stopping") for a real window before it settles. Before this
+// can still be transitioning ("stopping" while the walk drains) for a real
+// window before it settles. Before this
 // fix the relay gate blanket-cleared EVERY alternate action during that
 // window, so the household saw NO buttons at all on the verify_fail screen
 // and had no obvious reason to guess "hit Stop" to make them reappear.
 // The way back and verify_remeasure carry show_during_relay (the same
 // escape hatch (e) uses for Apply); verify_retry ("Try again") deliberately
-// does not, since it starts a brand-new relay session and racing the one
-// still tearing down is exactly what the gate exists to prevent.
+// does not, since it starts a brand-new session and racing the one still
+// tearing down is exactly what the gate exists to prevent.
 const verifyRetryAction = {
   id: "verify_retry",
   label: "Try again",
@@ -268,7 +268,7 @@ render({
   verdict_text: "That measurement didn't check out.",
   steps: [],
   nudges: [{ code: "verify_out_of_tolerance", severity: "warn", text: "x" }],
-  relay: { status: "finishing" },
+  relay: { status: "stopping" },
   next_action: verifyRetryAction,
   alternate_actions: [wayBackAction, verifyRemeasureAction],
 });

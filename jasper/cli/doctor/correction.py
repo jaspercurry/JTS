@@ -95,7 +95,8 @@ def check_correction_idle_exit_holds() -> CheckResult:
     ``IdleShutdownTracker.hold()`` (jasper/web/_systemd.py, issue #1854/#1856)
     keeps correction-web's socket-activated process alive across background
     session work that generates no inbound HTTP traffic: a crossover-v2
-    measurement session. Past ``HOLD_LEAK_WARN_AFTER_SEC`` of unbroken busy time, ``_systemd.py`` itself
+    measurement session. Past ``HOLD_LEAK_WARN_AFTER_SEC`` of unbroken busy
+    time, ``_systemd.py`` itself
     escalates its rate-limited "idle-exit deferred" line from INFO to
     WARNING, because no legitimate session runs that long. This check reads
     that same escalation from the unit's journal so a stuck hold shows up

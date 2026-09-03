@@ -484,67 +484,6 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
 
 
 
-def test_relay_commit_and_stop_have_one_atomic_winner():
-    stopped = threading.Event()
-    kind = "crossover_sweep:driver"
-
-    correction_setup._set_relay_capture(None)
-    try:
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        assert correction_setup._get_relay_capture()["status"] == "starting"
-        correction_setup._publish_relay_waiting(kind)
-        assert correction_setup._begin_relay_commit(kind) is True
-        assert correction_setup._get_relay_capture()["status"] == "committing"
-        with pytest.raises(ValueError, match="no matching capture"):
-            correction_setup._request_relay_stop("crossover_sweep:")
-        assert not stopped.is_set()
-
-        correction_setup._set_relay_capture(None)
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        assert correction_setup._request_relay_stop("crossover_sweep:")["status"] == "stopping"
-        assert stopped.is_set()
-        assert correction_setup._begin_relay_commit(kind) is False
-    finally:
-        correction_setup._set_relay_capture(None)
-
-
-def test_relay_finishing_and_stop_have_one_atomic_winner():
-    stopped = threading.Event()
-    kind = "crossover_sweep:driver"
-
-    correction_setup._set_relay_capture(None)
-    try:
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        correction_setup._publish_relay_waiting(kind)
-        assert correction_setup._begin_relay_finishing(kind) is True
-        assert correction_setup._get_relay_capture()["status"] == "finishing"
-        with pytest.raises(ValueError, match="no matching capture"):
-            correction_setup._request_relay_stop("crossover_sweep:")
-        assert correction_setup._begin_relay_commit(kind) is True
-        assert correction_setup._get_relay_capture()["status"] == "committing"
-        assert not stopped.is_set()
-
-        correction_setup._set_relay_capture(None)
-        assert correction_setup._begin_relay_capture(
-            kind,
-            request_stop=stopped.set,
-        )
-        assert correction_setup._request_relay_stop("crossover_sweep:")["status"] == "stopping"
-        assert correction_setup._begin_relay_finishing(kind) is False
-        assert stopped.is_set()
-    finally:
-        correction_setup._set_relay_capture(None)
-
-
 def test_relay_stop_callback_is_atomic_with_starting_state():
     stopped = threading.Event()
     kind = "crossover_sweep:driver"

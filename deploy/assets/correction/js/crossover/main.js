@@ -51,16 +51,16 @@ let lastPollDelayMs = null;
 
 const POLL_MS = 1500;
 const RETRY_MS = 5000;
-// While the tab is hidden (phone in hand, screen off), poll far less often
-// instead of stopping outright — a stopped poller can't auto-advance the
-// wizard when the phone finishes its side. Normal cadence resumes on
-// visibilitychange (and on the next render() call after that).
+// While the tab is hidden (screen off), poll far less often instead of
+// stopping outright — a stopped poller can't auto-advance the wizard when the
+// measurement finishes. Normal cadence resumes on visibilitychange (and on
+// the next render() call after that).
 const HIDDEN_POLL_MS = 10000;
 const RELAY_STOPPABLE = new Set(['starting', 'awaiting_phone']);
-// Wind-down: in flight, but the captures are over and the session is finishing
+// Wind-down: in flight, but the captures are over and the session is draining
 // its own work. A walkthrough has nothing to say here — the status line
-// narrates these three instead.
-const RELAY_WINDING_DOWN = new Set(['finishing', 'committing', 'stopping']);
+// narrates it instead.
+const RELAY_WINDING_DOWN = new Set(['stopping']);
 const RELAY_IN_FLIGHT = new Set([...RELAY_STOPPABLE, ...RELAY_WINDING_DOWN]);
 function publicCrossoverUrl(value) {
   const raw = String(value || '');
@@ -743,14 +743,6 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
     els.relayStatus.textContent = 'Stopping playback and restoring the speaker safely…';
     return;
   }
-  if (relay.status === 'committing') {
-    els.relayStatus.textContent = 'Saving the verified measurement…';
-    return;
-  }
-  if (relay.status === 'finishing') {
-    els.relayStatus.textContent = 'Storing the measurement…';
-    return;
-  }
   // Which of the two sentences is keyed off the same `hand_released` the
   // panel is: a hold nobody at this browser releases must not be narrated as
   // if it waited on the reader.
@@ -952,7 +944,7 @@ async function runAction(action, button) {
       renderActionRow({relay: response.relay, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
-    setStatus(response && response.relay ? 'The measurement page is ready.' : 'Updated.', 'ok');
+    setStatus(response && response.relay ? 'Measurement started.' : 'Updated.', 'ok');
     await refresh();
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);

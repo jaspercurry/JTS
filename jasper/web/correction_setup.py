@@ -144,11 +144,7 @@ _relay_complete_request: Callable[[], None] | None = None
 # slot nothing is holding.
 _relay_retake_request: Callable[[], None] | None = None
 _RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
-_RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {
-    "finishing",
-    "committing",
-    "stopping",
-}
+_RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {"stopping"}
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
@@ -539,50 +535,8 @@ def _request_relay_stop(kind_prefix: str) -> dict[str, Any]:
         return dict(_relay_capture)
 
 
-def _begin_relay_commit(kind_label: str) -> bool:
-    """Atomically choose evidence commit over a concurrent Stop request.
-
-    ``False`` means Stop won the same lock first, so the caller must not write
-    evidence. A missing/different owner is a failure, not a safe cancellation.
-    Once this returns ``True``, the capture is no longer stoppable and retains
-    the shared slot until its synchronous persistence call reaches a terminal
-    result.
-    """
-
-    global _relay_capture, _relay_stop_request
-    with _session_lock:
-        relay = _relay_capture
-        if relay is None or relay.get("kind") != kind_label:
-            raise RuntimeError("capture ownership changed before evidence commit")
-        if relay.get("status") == "stopping":
-            return False
-        if relay.get("status") not in _RELAY_STOPPABLE_STATUSES | {"finishing"}:
-            raise RuntimeError("capture is not ready to commit evidence")
-        _relay_capture = {**relay, "status": "committing"}
-        _relay_stop_request = None
-        return True
 
 
-def _begin_relay_finishing(kind_label: str) -> bool:
-    """Atomically end the Stop window after playback and rollback finish.
-
-    ``False`` means Stop won the same lock first. Once this returns ``True``,
-    the capture owns bounded recorder close and storage, and the host cannot
-    tear its session down underneath that.
-    """
-
-    global _relay_capture, _relay_stop_request
-    with _session_lock:
-        relay = _relay_capture
-        if relay is None or relay.get("kind") != kind_label:
-            raise RuntimeError("capture ownership changed before it was stored")
-        if relay.get("status") == "stopping":
-            return False
-        if relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
-            raise RuntimeError("capture is not ready to finish")
-        _relay_capture = {**relay, "status": "finishing"}
-        _relay_stop_request = None
-        return True
 
 
 @dataclass(frozen=True)

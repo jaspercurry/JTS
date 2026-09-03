@@ -212,12 +212,15 @@ assert.deepEqual(actionLabels(), [CLOSING_SAVE.label, CLOSING_RETAKE.label]);
 // -- state: WIND-DOWN — the captures are over ------------------------------- //
 // A retained prompt must not outlive the walk it described.
 render(envelope({
-  status: "committing",
+  status: "stopping",
   source: "wired",
   position_pending: PENDING,
 }));
 assert.equal(walk().hidden, true);
-assert.equal(relayStatus().textContent, "Saving the verified measurement…");
+assert.equal(
+  relayStatus().textContent,
+  "Stopping playback and restoring the speaker safely…",
+);
 
 // -- state: TERMINAL -------------------------------------------------------- //
 render(envelope({ status: "complete", source: "wired" }));

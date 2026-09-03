@@ -1499,10 +1499,22 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     is held the confirm genuinely is not the household's move yet, and the
     pair comes back on its own the moment the gate releases.
     """
+    from .arm_walk import SESSION_ENDED_STATUSES
+
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
-    held = bool(_mapping(status.get("relay")).get("position_pending"))
-    ready = not running and not held
+    relay = _mapping(status.get("relay"))
+    # The screen is derived from durable ``cloud_close``, not from the slot, so
+    # it also renders after the walk ended with its group un-confirmed (Stop, a
+    # failure, a reload past a restart). The two moves below POST into signals
+    # the slot drops the moment it leaves an in-flight status, so minting them
+    # for a dead session would be minting a 409.
+    live = bool(
+        str(relay.get("status") or "")
+        and str(relay.get("status")) not in SESSION_ENDED_STATUSES
+    )
+    held = bool(relay.get("position_pending"))
+    ready = live and not running and not held
     if running:
         verdict = (
             "JTS is working out your correction from the measurements — this "
@@ -1513,11 +1525,16 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "All spots measured. Save this measurement, or record the last "
             "spot again."
         )
-    else:
+    elif live:
         # Held. The only way to reach this screen with a hold open is a retake
         # the household just asked for, so point at the step that is waiting
         # rather than repeat that everything is measured.
         verdict = "Re-recording one spot — follow the step below."
+    else:
+        verdict = (
+            "All spots measured, but this measurement session has ended "
+            "before it was saved. Measure again to keep a round."
+        )
     return _envelope(
         screen="closing",
         active_step="measure",
@@ -1675,11 +1692,10 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "endpoint": "/correction/crossover/v2/session",
             "body": {},
             # W6.12's escape hatch, for the same reason it exists on
-            # verify_fail: a relay that is still winding down from stage 1
-            # (`finishing`/`committing`/`stopping`) would otherwise blanket-
-            # hide every alternate, and a household landing on the decision
-            # screen with no way out is precisely the dead end this flow is
-            # meant to remove.
+            # verify_fail: a session still winding down from stage 1
+            # (`stopping`) would otherwise blanket-hide every alternate, and a
+            # household landing on the decision screen with no way out is
+            # precisely the dead end this flow is meant to remove.
             "show_during_relay": True,
         },
         {
@@ -3388,15 +3404,14 @@ def _verify_fail_envelope(
 
     ``republish_previous`` and ``verify_remeasure`` carry ``show_during_relay``
     (W6.12, the same seam W6.10 added for the review screen's Apply): the
-    JS action-row renderer's relay-in-flight gate otherwise blanket-clears
-    EVERY alternate action while the relay object is still transitioning
-    (``finishing`` / ``committing`` / ``stopping`` — a real window right
-    after a failed capture, before the phone side has fully wound down), so
-    a household landing on this screen saw no buttons at all and had to
-    guess "hit Stop" to make them reappear. ``verify_retry`` (the primary
-    "Try again") deliberately keeps NO such flag: it starts a brand-new
-    relay session, and doing that while the prior one is still tearing down
-    is exactly the race the gate exists to prevent — the way back and
+    JS action-row renderer's in-flight gate otherwise blanket-clears EVERY
+    alternate action while the capture is still transitioning (``stopping``,
+    a real window right after a failed capture, before the walk has fully
+    wound down), so a household landing on this screen saw no buttons at all
+    and had to guess "hit Stop" to make them reappear. ``verify_retry`` (the
+    primary "Try again") deliberately keeps NO such flag: it starts a
+    brand-new session, and doing that while the prior one is still tearing
+    down is exactly the race the gate exists to prevent — the way back and
     Re-measure are the "get me out of this" affordances that must stay
     reachable regardless — "regardless" of the RELAY gate, that is, not a
     claim both are always offered (the way back needs a prior banked

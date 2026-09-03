@@ -70,6 +70,7 @@ from jasper.audio_measurement.frame_ledger import (
     REPORT_KEY_RENDER_GAP_FRAMES,
 )
 
+
 class CaptureBeginRefused(RuntimeError):
     """The conductor refused a provider's ``begin_capture`` request.
 
