@@ -161,11 +161,10 @@ not a hard stop, whatever its name or its household screen says. The five
 expand to roughly **112 enforcement points** across the round path, because
 "the excitation ledger", "the output limiters" and "declared per-driver bands"
 are each families rather than single `raise` sites; that is why the list is
-short and the surface is not (refusal census, 2026-08-25; counts in
-[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1, which declines
-to enumerate the 112 — the five below are the composition, at family
-granularity). Each guards a real component — or the household's hearing —
-against damage, and nothing else on the bench may hard-stop.
+short and the surface is not (refusal census, 2026-08-25; the 112 are never
+enumerated — the five below are the composition, at family granularity). Each
+guards a real component — or the household's hearing — against damage, and
+nothing else on the bench may hard-stop.
 
 1. **The excitation ledger and the excitation safety plan**
    (`jasper/active_speaker/excitation_safety_plan.py`). The ledger admits a
@@ -240,14 +239,14 @@ what the household is told and whether another attempt can help — nothing more
 Its `TEMPLATE_HARD_STOP` screen and a `retry_budget` of `0` mean "no extra
 attempt can help", a statement about the condition, and they end an attempt or a
 session, never a graph that is already playing. What removes an applied graph is
-the restore path — `commissioning_apply.py`'s
-`_restore_failed_mutation_locked` / `restore_pending_candidate_apply` — driven by
-the adoption table on a measured delta (§3). Said here because the registry is
-the surface a reviewer reaches first, and two things wearing one name in one
-file is how it gets read as a list of stops. **A hard stop is a member of the
-list above and nothing else** — in the CLAMP / INTEGRITY / DISCLOSURE taxonomy
-([`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1 and
-[ADR-0002](adr/0002-measure-again-discriminator.md); the INTEGRITY class is §4a
+`commissioning_apply.py`'s restore path — a failed mutation, and a candidate
+apply still pending when the box restarts, both go back to the exact predecessor
+graph — driven by the adoption table on a measured delta (§3). Said here because
+the registry is the surface a reviewer reaches first, and two things wearing one
+name in one file is how it gets read as a list of stops. **A hard stop is a
+member of the list above and nothing else** — in the CLAMP / INTEGRITY /
+DISCLOSURE taxonomy
+([ADR-0002](adr/0002-measure-again-discriminator.md); the INTEGRITY class is §4a
 below) those members are the CLAMPs, and `hard_stop` in the registry is a screen
 name.
 
@@ -287,9 +286,8 @@ resolves without it:
 The clamps are not the only refusals in the round path, and they are not the
 largest group. About **100 refusals protect the honesty of the evidence rather
 than the speaker**, against §4's **5 clamp mechanisms and their ~112 enforcement
-points** (refusal census, 2026-08-25; counts in
-[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). The class is
-named here because a review holding only §4 and §5 re-derives "is this safety?"
+points** (refusal census, 2026-08-25). The class is named here because a review
+holding only §4 and §5 re-derives "is this safety?"
 from scratch every time, which is how a quality ceiling wore a refusal's costume
 as long as it did.
 

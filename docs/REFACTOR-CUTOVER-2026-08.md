@@ -1,9 +1,11 @@
 # The cutover plan: the engine goes live and the god files dissolve
 
-> **Chunk 2 of the tuning refactor.** Chunk 1 — waves 0–8 of
-> [`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §3 — built the engine
-> beside the god files and deleted what nothing called. This document plans the
-> cutover: the engine takes the calls, and the god files dissolve.
+> **Chunk 2 of the tuning refactor.** Chunk 1 — waves 0–8 of the tuning-engine
+> plan, retired with its rulings carried into
+> [ADR-0228](adr/0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md)
+> — built the engine beside the god files and deleted what nothing called.
+> This document plans the cutover: the engine takes the calls, and the god
+> files dissolve.
 >
 > **The engine's contract is not restated here.**
 > [`crossover-v2-engine-design.md`](historical/crossover-v2-engine-design.md) owns the four
@@ -373,8 +375,7 @@ The figure appeared five times in the chunk-1 plan and was **never enumerated**.
 Its cited evidence base — fragments `00`–`11` under
 `captures/tuning-stack-inventory-2026-08/` — is gitignored (`.gitignore:40`) and
 absent from the tree, so it cannot be checked. **W2-d restates all five**
-(`REFACTOR-TUNING-2026-08.md:117`, `:173`, `:177`, `:243`, `:290`) against the
-committed method below.
+against the committed method below.
 
 Counted at HEAD by `ast.parse` over top-level nodes: **79** modules = 35
 (`jasper/audio_measurement/*.py`) + 44 (`jasper/active_speaker/crossover_v2/*.py`),
@@ -946,7 +947,7 @@ the finding was correct when made, and it is closed.*
    plumbing, the latter in the future tense (*"until 6e lands"*). ADR-0004 is
    append-only, so the fix is a superseding note, not an edit.
 2. **The ledger's enumerated-set check cannot see one writer.**
-   `REFACTOR-TUNING-2026-08.md:919-925` greps `set_volume_db(` with a trailing
+   The chunk-1 writer ledger grepped `set_volume_db(` with a trailing
    paren; `jasper/cli/seat_level.py:413` binds `set_main_volume_db=cam.set_volume_db`
    — a bare bound-method reference with no paren. It is a separate CLI process
    with no `install_volume_owner`, so `volume_owner()` answers `None` there and
@@ -1074,9 +1075,10 @@ banner comments mark its own sections.
 
 ### 6.1 RULED — the constants are passengers; the essays are the decision
 
-**Tier: CONDUCTOR.** Ruling S7 (`REFACTOR-TUNING-2026-08.md:1195-1204`) and R7
-(`:1630-1633`) already supply the mechanism, and a caller census removes the
-placement question. Nothing here is taste.
+**Tier: CONDUCTOR.** Ruling S7
+([ADR-0228](adr/0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md))
+and R7 already supply the mechanism, and a caller census removes the placement
+question. Nothing here is taste.
 
 **What the block IS.** `:631-877`, 247 lines, under a banner that read
 *"tuning constants (PROVISIONAL pending W6 bench validation)"* (`:632`) — RULED
@@ -1256,9 +1258,9 @@ door whose body is three lines; it dies with the callers that still take it
 
 **RULED (conductor) — "irreversible" here does not mean the apply transaction,
 and the row's citation borrowed the wrong authority.** *"Not a target. Ever."*
-is about `handle_v2_apply`, in all three places it is written:
-`REFACTOR-TUNING-2026-08.md:729` and `:121-123` (*"the one irreversible act and
-the only path that writes a live DSP graph"*), and `session_seams.py:44-45`.
+is about `handle_v2_apply`, where the one place it is still written at HEAD is
+`session_seams.py:44-45` (the retired chunk-1 plan said it twice: *"the one
+irreversible act and the only path that writes a live DSP graph"*).
 **None of the seven methods touches CamillaDSP, ALSA, or any apply path** —
 `_publish_measure_candidate`'s own docstring says *"nothing it returns triggers
 an apply"* (`:5848`), and ADR-0014 records the two separate human acts that stand
@@ -1482,8 +1484,8 @@ independent items — that is the parallelism budget for the first round, and
 
 ### Floor accounting
 
-The chunk-1 floor is **−90,000** (`REFACTOR-TUNING-2026-08.md:1368`), against a
-deletion subtotal of −93,702 and ~+2,000 of adds, reserving 1,702.
+The chunk-1 floor is **−90,000**, against a deletion subtotal of −93,702 and
+~+2,000 of adds, reserving 1,702.
 
 **What is countable on the two god files, at HEAD:**
 
@@ -1583,8 +1585,8 @@ behind that door as its only caller, never as its exception
 
 ## Appendix A — the "no-silent-failure" citations
 
-`REFACTOR-TUNING-2026-08.md:598-612` enumerated **10 live sites** attributing a
-*"no-silent-failure rule"* to the charter, found that no such rule exists, and
+The chunk-1 plan enumerated **10 live sites** attributing a *"no-silent-failure
+rule"* to the charter, found that no such rule exists, and
 left them alone rather than repoint them — because *"repointing them would widen
 a non-negotiable by prose edit, which is not a rider's authority."* That judgment
 was right and this appendix does not overturn it. It supplies what the flag was
@@ -1684,9 +1686,9 @@ parenthetical and keep the sentence, which already says why; class (iii) — the
 frozen review doc — is untouched. **The closed list is not touched by any of it.**
 
 **Executed as one standalone comments-only sweep**, which departs from this
-appendix's original *"riders in the wave that opens each file, per
-`REFACTOR-TUNING-2026-08.md:579` — never a standalone PR."* That instruction
-assumed the sites would be reached incidentally; the ruling landed first, the
+appendix's original *"riders in the wave that opens each file — never a
+standalone PR."* That instruction assumed the sites would be reached
+incidentally; the ruling landed first, the
 waves have not opened these files, and the sites span four programs' zones (only
 five of the thirteen are in this plan's). A single zero-behaviour comment sweep
 is cheaper to review and to verify than nine riders spread across four programs.
