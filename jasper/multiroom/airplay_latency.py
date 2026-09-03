@@ -25,17 +25,11 @@ Why this can fail to fit (the "Stage D" gap deferred):
     offset cannot fully fit and playout lands with bounded residual
     lip-sync lag.
 
-The negotiated budget is knowable only from shairport's journal: shairport
-logs ``Notified latency is N frames.`` **only when N != 77175**, so the
-ABSENCE of that line means the default 77175 frames (~1.75 s; exactly 2.0 s
-with shairport's fixed +11025) — the comfortable/"free" regime. Empirically
-(jts.local, 2026-06-21) every observed real AP2 session used the default
-budget, so the tight regime is expected to be rare; this surface is
-deliberately quiet (warns only when the budget genuinely does not fit) and
-cheap (the journal is read only when this speaker is actually a bonded
-leader). The authoritative *reactive* signal — shairport's own "stream
-latency too short to accommodate an offset" warning — is surfaced
-separately through the AirPlay health sampler's event ring
+This surface is deliberately quiet (warns only when the budget genuinely
+does not fit) and cheap (the journal is read only when this speaker is
+actually a bonded leader). The authoritative *reactive* signal — shairport's
+own "stream latency too short to accommodate an offset" warning — is
+surfaced separately through the AirPlay health sampler's event ring
 (:func:`jasper.control.airplay_health.classify_journal_line`).
 
 Pure/IO split mirrors the rest of the multiroom package
@@ -57,11 +51,7 @@ from . import config
 from .config import GroupingConfig
 
 # --- shairport / AP2 contract constants ---
-# All cross-checked against the live shairport-sync binary's format strings
-# and scripts/airplay-latency-probe.sh.
 
-# shairport's default notified latency; the ABSENCE of a "Notified latency"
-# line in the journal means the sender used exactly this value.
 AP2_DEFAULT_NOTIFIED_FRAMES = 77175
 # Fixed term shairport adds inside the PTP anchor (the value the backend
 # latency offset lives inside): rtp.c's
@@ -113,7 +103,7 @@ _JOURNAL_LOOKBACK = "-30min"
 # needs longer, so a 2 s cap bounds the worst-case cold-window /state stall.
 _JOURNAL_TIMEOUT_SEC = 2
 
-_NOTIFIED_RE = re.compile(r"Notified latency is (\d+) frames")
+_NOTIFIED_RE = re.compile(r"Stream-specified latency is (\d+) frames")
 
 
 @dataclass(frozen=True)
@@ -145,10 +135,8 @@ class BondedAirplayLatencyFit:
 def assess_fit(buffer_ms: int, notified_frames: int | None) -> BondedAirplayLatencyFit:
     """Does the bonded-leader downstream delay fit the AP2 budget? PURE.
 
-    ``notified_frames`` is the sender-notified latency in frames, or None
-    when no ``Notified latency`` line was seen (which, by shairport's
-    contract, means the default budget). A non-positive value is treated
-    as absent — the same fail-safe direction as
+    ``notified_frames`` is the sender-notified latency in frames, or None.
+    A non-positive value is treated as absent — the same fail-safe direction as
     ``jasper-apply-airplay-mode``'s offset clamp: never assume a smaller
     budget than the default from a garbage reading.
 
@@ -198,7 +186,7 @@ def _default_journal_run(unit: str, lookback: str) -> subprocess.CompletedProces
             "-o",
             "cat",
             "-g",
-            "Notified latency is",
+            "Stream-specified latency is",
         ],
         capture_output=True,
         text=True,

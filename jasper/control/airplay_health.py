@@ -197,10 +197,12 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
         # trigger is a bonded LEADER whose Snapcast round-trip pushes the
         # offset past a tight budget (the proactive, bond-aware diagnosis +
         # remediation lives in jasper/multiroom/airplay_latency.py + the
-        # grouping doctor check). Matches the stable substring of shairport's
-        # warning ("... it too short to accommodate an offset ..." — the "it"
-        # is shairport's own typo).
-        if "too short to accommodate an offset" in line:
+        # grouping doctor check). Matches a stable substring of shairport's
+        # warn() (rtp.c:1717: "The stream latency (%g seconds) is too short
+        # to accommodate an audio backend latency offset of %g seconds and a
+        # backend buffer of %g seconds. ..."); warn() never consults
+        # debuglev, so it prints at any verbosity.
+        if "too short to accommodate an audio backend latency offset" in line:
             return {
                 "type": "shairport_offset_too_short",
                 "subsystem": "shairport",
