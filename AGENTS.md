@@ -74,9 +74,10 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   parking on unproven-ness is reserved for the non-negotiables (ADR-0101).
 - **Docs:** decisions go to `docs/adr/` (append-only, dated, one decision per
   file; supersede, never edit). The HANDOFF doc corpus was deleted for good
-  (ruling 13, ADR-0199) — do not recreate that tier; a subsystem fact gets
-  re-derived at HEAD, not parked in a new handoff. Do not restate here, in
-  README, or in code what another file owns.
+  (ruling 13, ADR-0199; the live bass-extension plan is exempt, ADR-0229) — do
+  not recreate that tier; a subsystem fact gets re-derived at HEAD, not parked
+  in a new handoff. Do not restate here, in README, or in code what another
+  file owns.
 - **Duplication:** before writing a helper, constant vocabulary, or module,
   grep for the existing one and extend or consume it. Two implementations of
   one concern in reach: converge them or open an issue — never add a third.
