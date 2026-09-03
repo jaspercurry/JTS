@@ -1111,6 +1111,7 @@ park_streambox_brain_units() {
     for brain_unit in \
         jasper-voice.service jasper-aec-bridge.service jasper-aec-init.service \
         jasper-aec-reconcile.service \
+        jasper-enhanced-aec-install.service jasper-enhanced-aec-reconcile.path \
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
     done
