@@ -134,14 +134,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # FRAGMENT_REACH_EXCEPTIONS and the test that pins it.
     "phone never armed": "raw ramp error string (refusal-table key)",
     "phone feed lost": "raw ramp error string (refusal-table-prefix key)",
-    # --- Diagnostic detail on CaptureTimeout / CaptureFailed. These ride logs
-    # and support reads, not a household screen; the household-facing sentence
-    # for the same conditions is CAPTURE_INCOMPATIBLE_USER_MESSAGE and the
-    # §5.10 reason registry.
-    "phone aborted the capture (": "CaptureTimeout/CaptureFailed detail prefix",
-    "phone never uploaded within ": "CaptureTimeout detail prefix",
-    "phone never began the next capture within ": "CaptureTimeout detail prefix",
-    "their phone ended the walk": "CaptureTimeout detail (same expression)",
 }
 
 
