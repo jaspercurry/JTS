@@ -92,6 +92,7 @@ pub fn spawn_writer(
     let (tx, rx) = mpsc::channel::<HeldLoudnessReference>();
     let handle = thread::Builder::new()
         .name("outputd-assistant-reference-writer".to_string())
+        .stack_size(crate::HELPER_STACK_BYTES)
         .spawn(move || {
             let mut last_written = initial;
             while let Ok(reference) = rx.recv() {

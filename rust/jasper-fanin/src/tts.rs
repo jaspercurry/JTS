@@ -1286,6 +1286,7 @@ pub fn spawn_tts_server(
     info!("event=fanin.tts_socket.listening path={}", path.display());
     thread::Builder::new()
         .name("fanin-tts-ipc".to_string())
+        .stack_size(crate::HELPER_STACK_BYTES)
         .spawn(move || {
             for stream in listener.incoming() {
                 match stream {
@@ -1327,6 +1328,7 @@ fn spawn_tts_client(
 ) -> io::Result<()> {
     thread::Builder::new()
         .name("fanin-tts-client".to_string())
+        .stack_size(crate::HELPER_STACK_BYTES)
         .spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, metrics))
         .map(|_| ())
 }

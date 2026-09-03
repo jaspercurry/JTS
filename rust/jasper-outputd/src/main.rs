@@ -1235,6 +1235,7 @@ fn spawn_chip_ref_writer(
     let (tx, rx) = mpsc::sync_channel(REF_OUTPUT_QUEUE_CAPACITY);
     thread::Builder::new()
         .name("outputd-chip-ref".to_string())
+        .stack_size(jasper_outputd::HELPER_STACK_BYTES)
         .spawn(move || {
             run_chip_ref_writer(
                 ChipRefWriterConfig {
@@ -1627,6 +1628,7 @@ fn spawn_state_server(
     let server = StateServer::bind(path, state)?;
     thread::Builder::new()
         .name("outputd-state".to_string())
+        .stack_size(jasper_outputd::HELPER_STACK_BYTES)
         .spawn(move || {
             if let Err(e) = server.run(&shutdown) {
                 eprintln!("event=outputd.state_server.failed detail={e:#}");
