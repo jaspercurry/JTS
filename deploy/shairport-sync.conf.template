@@ -145,14 +145,24 @@ alsa = {
     // `jasper-audio-config renderer-lanes`): shairport_substream — the
     // snd-aloop lane, and the fallback when no map exists — or
     // shairport_ring_lane when the airplay lane is armed (U3/P6d). Both
-    // are plug wrappers that handle shairport's native 44100 → 48000
-    // S16_LE conversion through libsamplerate (samplerate_medium by
-    // default, toggleable at /system/); only the slave under the wrapper
-    // differs. shairport-sync still only
-    // accepts output_rate values that are integer multiples of 44100, so
-    // 44100 stays here as shairport's native AirPlay rate.
+    // are plug wrappers over a 48000 slave; only the slave under the
+    // wrapper differs.
+    // MUST EQUAL THE LANE'S SLAVE RATE. 5.x probes the device once at
+    // startup and calls snd_pcm_hw_params_set_rate_resample(..., 0)
+    // before snd_pcm_hw_params_test_rate(..., 0) -- resampling off,
+    // exact rate only (audio_alsa.c:329). So the plug wrapper cannot
+    // convert during the probe and only the slave's own 48000 passes.
+    // A rate that fails is struck from config.rate_set
+    // (audio_alsa.c:339); once that set is empty the
+    // permissible_configurations table is never filled
+    // (audio_alsa.c:379), every later lookup returns EINVAL, and the
+    // session dies at player.c:2432 "An unknown format was encountered
+    // while choosing output bit depth". 4.3.7 had no such probe and let
+    // the plug layer resample, which is why 44100 worked there.
+    // shairport now does the 44.1 -> 48 conversion itself (soxr/FFmpeg)
+    // instead of the plug layer, so this also drops one resample.
     output_device = "__RENDERER_DEVICE__";
-    output_rate = 44100;
+    output_rate = 48000;
     // S32 stays for the same reason it did before -- efficient when
     // the plug layer above the fan-in lane only has to downconvert
     // format (S32 -> the lane's own width). This is the fan-in ingress
