@@ -1092,7 +1092,7 @@ def main() -> int:
     corpus_chip_aec_enabled = env_bool(
         "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
     )
-    production_chip_aec_enabled = env_bool("JASPER_AEC_CHIP_AEC_ENABLED", "0")
+    production_chip_aec_enabled = env_bool(_mic_profile.CHIP_AEC_ENABLED_ENV, "0")
     chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
     chip_beam_plan = _chip_beam_plan() if chip_aec_enabled else None
     if chip_aec_enabled and chip_beam_plan is None:

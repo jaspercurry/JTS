@@ -175,7 +175,7 @@ class BridgeConfig:
 
         return cls(
             mic_device=os.environ.get(
-                "JASPER_AEC_MIC_DEVICE",
+                _mic_profile.AEC_MIC_DEVICE_ENV,
                 _mic_profile.alsa_card_name(),
             ),
             capture_latency=capture_latency.lower(),

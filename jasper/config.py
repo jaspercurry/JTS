@@ -10,6 +10,7 @@ from types import MappingProxyType
 
 from . import home_assistant as _ha_env
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
+from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
@@ -621,7 +622,7 @@ class Config:
             mic_device_chip_aec_150=_env("JASPER_MIC_DEVICE_CHIP_AEC_150", ""),
             mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
             aec_chip_aec_enabled=_env_bool(
-                "JASPER_AEC_CHIP_AEC_ENABLED", False,
+                CHIP_AEC_ENABLED_ENV, False,
             ),
             # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
             # default. Mics that only do 44.1 / 48 kHz (UMIK-2 et al.) need

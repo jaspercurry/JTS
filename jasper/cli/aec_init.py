@@ -34,6 +34,7 @@ from jasper.audio_profile_state import (
     normalize_audio_input_profile,
 )
 from jasper.env_load import parse_env_file
+from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output
 # contract: sink, backend, active width, final-edge format). Imported, never
@@ -1124,7 +1125,7 @@ def main() -> int:
         "corpus"
         if corpus
         else "chip_aec"
-        if _truthy("JASPER_AEC_CHIP_AEC_ENABLED")
+        if _truthy(CHIP_AEC_ENABLED_ENV)
         else "lab_bypass"
     )
     dev = None
