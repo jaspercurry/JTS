@@ -742,6 +742,65 @@ def test_tune_nginx_worker_processes_pins_one_worker(tmp_path, packaged):
     assert directives[0].startswith("worker_processes 1;")
 
 
+def _run_reconcile_headless_boot_config(cfg_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {_RENDERERS_LIB} >/dev/null 2>&1; "
+            "reconcile_headless_boot_config",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "JTS_BOOT_CONFIG_FILE": str(cfg_path)},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "stock",
+    [
+        "[all]\ndtparam=audio=on\ndtoverlay=vc4-kms-v3d\nmax_framebuffers=2\n",
+        "dtoverlay=vc4-kms-v3d,cma-256\ngpu_mem=64\n[pi5]\ngpu_mem=128\n",
+        "dtparam=audio  # bare form means on\ngpu_mem_512=64\n",
+        "dtparam=audio=on # codec\ndtoverlay=vc4-kms-v3d  # display\n",
+        "arm_64bit=1",
+    ],
+)
+def test_reconcile_headless_boot_config_owns_directives_and_is_idempotent(
+    tmp_path, stock
+):
+    """Headless trim: one copy of each directive, stable across re-runs.
+
+    The bare ``dtoverlay=`` must precede ``dtparam=audio=off``; without it
+    the firmware offers the parameter to whatever overlay was declared last
+    instead of to the base DTB.
+    """
+    cfg = tmp_path / "config.txt"
+    cfg.write_text(stock, encoding="utf-8")
+    _run_reconcile_headless_boot_config(cfg)
+    once = cfg.read_text(encoding="utf-8")
+    _run_reconcile_headless_boot_config(cfg)
+    assert cfg.read_text(encoding="utf-8") == once
+
+    lines = [line.strip() for line in once.splitlines()]
+    assert lines.count("gpu_mem=16") == 1
+    assert lines.count("dtparam=audio=off") == 1
+    assert lines.count("dtoverlay=") == 1
+    assert lines.index("dtoverlay=") == lines.index("dtparam=audio=off") - 1
+    assert not [line for line in lines if line.startswith("dtparam=audio=on")]
+    assert not [
+        line
+        for line in lines
+        if line.startswith("gpu_mem") and line != "gpu_mem=16"
+    ]
+    assert not [line for line in lines if line.startswith("dtparam=audio")][1:]
+    vc4 = [line for line in lines if line.startswith("dtoverlay=vc4-kms-v3d")]
+    assert len(vc4) == (1 if "vc4-kms-v3d" in stock else 0)
+    assert all(line.startswith("dtoverlay=vc4-kms-v3d,cma-64") for line in vc4)
+
+
 def _run_reconcile_usb_data_role(
     cfg_path: Path,
     *,
