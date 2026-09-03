@@ -39,6 +39,7 @@ DEFAULT_OUTPUTD_CAPTURE_DEVICE=""
 OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-output-hardware/output_hardware.json}"
 I2S_HAT_INTENT_FILE="${JASPER_I2S_HAT_INTENT_FILE:-/var/lib/jasper/i2s_hat.env}"
 I2S_HAT_REBOOT_REQUIRED_PATH="${JASPER_I2S_HAT_REBOOT_REQUIRED_PATH:-/run/jasper-output-hardware/i2s-hat-reboot-required}"
+MANAGEMENT_TRANSPORT_MARKER="${OUTPUT_HARDWARE_STATE_PATH%/*}/management-transport.ok"
 INSTALL_PROFILE_FILE="${JASPER_INSTALL_PROFILE_FILE:-/var/lib/jasper/install_profile}"
 OUTPUT_TOPOLOGY_PATH="${JASPER_OUTPUT_TOPOLOGY_PATH:-/var/lib/jasper/output_topology.json}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
@@ -46,9 +47,141 @@ CAMILLA_CONF_DIR="${JASPER_CAMILLA_CONF_DIR:-/etc/camilladsp}"
 JASPER_SOUND_CLI="${JASPER_SOUND_CLI:-/opt/jasper/.venv/bin/jasper-sound}"
 JASPER_ACTIVE_SPEAKER_CLI="${JASPER_ACTIVE_SPEAKER_CLI:-/opt/jasper/.venv/bin/jasper-active-speaker}"
 CAMILLA2_STATEFILE="${JASPER_CAMILLA2_STATEFILE:-/var/lib/camilladsp/crossover-statefile.yml}"
+# The board facts the pass's Python helpers read. Same env seams the unit unsets.
+PROC_ASOUND_DIR="${JASPER_PROC_ASOUND:-/proc/asound}"
+PI_MODEL_FILE="${JASPER_PI_MODEL_FILE:-/proc/device-tree/model}"
+BOOT_CONFIG_FILE="${JTS_BOOT_CONFIG_FILE:-/boot/firmware/config.txt}"
+UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
+# In the tmpfs directory OUTPUT_HARDWARE_STATE_PATH lives in, so a reboot always
+# clears it and the first pass after boot is a full one.
+RECONCILE_STAMP_PATH="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.stamp"
+RECONCILE_DEGRADED_MARKER="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.degraded"
+
+# A probe this pass could not run leaves an owned value unwritten, so the state
+# it produced is not one a later call may skip against -- an operator following
+# a doctor remedy ("start jasper-audio-hardware-reconcile so the key is
+# rendered") must get a real pass. A marker file rather than a variable: most of
+# these guards run inside command substitutions, where an assignment would die
+# with the subshell.
+reconcile_probe_missing() {
+    command -v "$1" >/dev/null 2>&1 && return 1
+    : >"$RECONCILE_DEGRADED_MARKER" 2>/dev/null || true
+    return 0
+}
+
+# What the box tells us and this script never writes. Split out of the list
+# below only so write_reconcile_stamp can re-check it: a card that appeared or
+# vanished DURING a pass was not reconciled by that pass.
+#
+# cards+pcm are a PROXY for the `$APLAY -L` view the pass actually enumerates
+# from, not the same thing: they move on a card add/remove and on a PCM-device
+# change, but two cards whose lines and device lists are identical hash equal.
+reconcile_observed_paths() {
+    printf '%s\n' \
+        "$PROC_ASOUND_DIR/cards" \
+        "$PROC_ASOUND_DIR/pcm" \
+        "$PI_MODEL_FILE" \
+        "$UDC_CLASS_DIR"
+}
+
+# SINGLE SOURCE OF TRUTH for the files a pass depends on. The stamp itself is
+# deliberately absent: hashing it would make the fingerprint self-referential.
+# asound.conf and the ring conf.d are absent because each is re-derived from
+# entries that ARE listed, and naming them here would fork a path constant
+# owned by jasper-render-asound-conf and jasper.ring_assets.
+reconcile_input_paths() {
+    reconcile_observed_paths
+    printf '%s\n' \
+        "$ENV_FILE" \
+        "$OUTPUTD_ENV_FILE" \
+        "$FANIN_ENV_FILE" \
+        "$ASOUND_SOURCE_TEMPLATE" \
+        "$ASOUND_TEMPLATE" \
+        "$I2S_HAT_INTENT_FILE" \
+        "$I2S_HAT_REBOOT_REQUIRED_PATH" \
+        "$MANAGEMENT_TRANSPORT_MARKER" \
+        "$INSTALL_PROFILE_FILE" \
+        "$OUTPUT_TOPOLOGY_PATH" \
+        "$OUTPUT_HARDWARE_STATE_PATH" \
+        "$CAMILLA_STATEFILE" \
+        "$CAMILLA2_STATEFILE" \
+        "$CAMILLA_CONF_DIR" \
+        "$BOOT_CONFIG_FILE"
+}
+
+# The hermetic tests run this script on the developer laptop, where macOS
+# ships shasum and no sha256sum.
+reconcile_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum
+    else
+        shasum -a 256
+    fi | cut -d ' ' -f 1
+}
+
+# A deterministic byte stream for the paths read on stdin. Content, not mtime:
+# several inputs are rewritten byte-identically by every pass (and
+# $CAMILLA_CONF_DIR holds a lock file that is touched constantly), so a
+# timestamp term would never settle and nothing would ever skip. A directory
+# contributes the names one level down plus the contents of the regular files
+# there -- enough for $CAMILLA_CONF_DIR's configs and $UDC_CLASS_DIR's links,
+# and it never descends into sysfs.
+reconcile_path_bytes() {
+    local path entry
+    while IFS= read -r path; do
+        printf '\n>>> %s\n' "$path"
+        if [[ -d "$path" ]]; then
+            while IFS= read -r entry; do
+                printf -- '--- %s\n' "${entry##*/}"
+                if [[ -f "$entry" ]]; then
+                    cat -- "$entry" 2>/dev/null || true
+                fi
+            done < <(find "$path" -mindepth 1 -maxdepth 1 2>/dev/null | LC_ALL=C sort)
+        elif [[ -e "$path" ]]; then
+            cat -- "$path" 2>/dev/null || true
+        else
+            printf 'absent\n'
+        fi
+    done
+}
+
+reconcile_observed_digest() {
+    reconcile_observed_paths | reconcile_path_bytes | reconcile_sha256
+}
+
+reconcile_fingerprint() {
+    reconcile_input_paths | reconcile_path_bytes | reconcile_sha256
+}
+
+# Fingerprinted AFTER this pass's own writes, so the next call over an
+# untouched box hashes equal and skips. --no-restart is excluded: it leaves
+# units deliberately un-reconciled, so it is not a state a later call may skip
+# against. Never fails the pass. Deleting this file forces a full pass.
+write_reconcile_stamp() {
+    local fingerprint=""
+    [[ "$NO_RESTART" != "1" ]] || return 0
+    [[ -d "${RECONCILE_STAMP_PATH%/*}" ]] || return 0
+    if [[ -e "$RECONCILE_DEGRADED_MARKER" ]]; then
+        log_event "stamp_skipped" "reason=probe_unavailable"
+        return 0
+    fi
+    # A card that appeared or vanished mid-pass was not reconciled by this pass,
+    # and no second pass is queued for it: udev's start merges into this
+    # already-activating oneshot. Stamping would make that staleness stick.
+    if [[ "$(reconcile_observed_digest)" != "$OBSERVED_AT_PASS_START" ]]; then
+        log_event "stamp_skipped" "reason=hardware_moved_mid_pass"
+        return 0
+    fi
+    fingerprint="$(reconcile_fingerprint 2>/dev/null)" || return 0
+    [[ -n "$fingerprint" ]] || return 0
+    printf '%s\n' "$fingerprint" >"$RECONCILE_STAMP_PATH" 2>/dev/null || return 0
+    return 0
+}
 REASON="manual"
 PRINT_ENV=0
 NO_RESTART=0
+CHECK_CHANGED=0
+OBSERVED_AT_PASS_START=""
 I2S_HAT_DESIRED_PROFILE=""
 I2S_HAT_BOOT_CHANGED=""
 I2S_HAT_APPLY_ERROR=0
@@ -129,6 +262,7 @@ load_alsa_card_lib() {
 usage() {
     cat <<'EOF'
 Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env] [--no-restart]
+                                       [--changed]
 
 Detect the current final-output DAC role and reconcile owned JTS state:
   - registered single DAC present -> outputd_dac targets it; Apple mixer helpers disabled
@@ -137,7 +271,15 @@ Detect the current final-output DAC role and reconcile owned JTS state:
 
 --print-env prints shell-quoted role variables for install.sh and performs no mutations.
 --no-restart updates files/service enablement but does not restart outputd/voice.
+--changed performs no mutations: it exits 0 when a pass is needed and 1 when the
+  inputs match the stamp the last successful pass left (systemd ExecCondition).
 EOF
+}
+
+log_event() {
+    local name="$1"
+    shift
+    echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -155,6 +297,10 @@ while [[ $# -gt 0 ]]; do
             NO_RESTART=1
             shift
             ;;
+        --changed)
+            CHECK_CHANGED=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -167,6 +313,30 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# systemd ExecCondition semantics are inverted from a plain predicate: exit 0
+# runs ExecStart, exit 1..254 skips the unit WITHOUT marking it failed, and 255
+# or a signal fails it. So this exits 0 for "changed, run the pass". Every
+# unexpected outcome exits 0 too: the pass is idempotent, so one needless run
+# costs seconds while one wrongly skipped run leaves the output path stale.
+# Deliberately ahead of the library loads -- a broken install must still fail
+# loudly in ExecStart rather than be skipped here. REASON is not an input.
+if [[ "$CHECK_CHANGED" == "1" ]]; then
+    changed_fingerprint="$(reconcile_fingerprint 2>/dev/null)" || changed_fingerprint=""
+    changed_stamp=""
+    if [[ -f "$RECONCILE_STAMP_PATH" ]]; then
+        changed_stamp="$(cat -- "$RECONCILE_STAMP_PATH" 2>/dev/null)" || changed_stamp=""
+    fi
+    if [[ -n "$changed_fingerprint" && "$changed_fingerprint" == "$changed_stamp" ]]; then
+        log_event "skipped" "reason=unchanged fingerprint=${changed_fingerprint:0:8}"
+        exit 1
+    fi
+    changed_fp_token="${changed_fingerprint:0:8}"
+    changed_stamp_token="${changed_stamp:0:8}"
+    log_event "changed" \
+        "fingerprint=${changed_fp_token:-none} stamp=${changed_stamp_token:-none}"
+    exit 0
+fi
+
 load_env_file_lib
 load_asound_render_lib
 load_alsa_card_lib
@@ -175,12 +345,6 @@ load_alsa_card_lib
 # load_env_file_lib above); this thin alias keeps print_env readable.
 quote_env_value() {
     jasper_env_quote_value "$1"
-}
-
-log_event() {
-    local name="$1"
-    shift
-    echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
 }
 
 find_card() {
@@ -192,7 +356,7 @@ publish_management_transport_marker() {
     # reboot clears it before the boot config it describes can change.
     # Truncate in place rather than `install`: install unlinks first, and a
     # true->true republish would then leave a window where `test -e` is false.
-    local marker="${OUTPUT_HARDWARE_STATE_PATH%/*}/management-transport.ok"
+    local marker="$MANAGEMENT_TRANSPORT_MARKER"
     if [[ "$1" != "true" ]]; then
         rm -f -- "$marker"
         return 0
@@ -211,7 +375,7 @@ observe_output_hardware_state() {
         write_arg="--write"
         action="written"
     fi
-    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         log_event "state_${action}_skip" "reason=python_unavailable path=${OUTPUT_HARDWARE_STATE_PATH}"
         return 0
     fi
@@ -434,7 +598,7 @@ validate_outputd_env_stage() {
     if [[ -z "${OUTPUTD_ENV_STAGE_FILE:-}" ]]; then
         return 0
     fi
-    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         log_event "outputd_env_invalid" \
             "outputd_env=${OUTPUTD_ENV_FILE} preserved=1 reason=python_unavailable"
         return 1
@@ -827,7 +991,7 @@ for child in mapping.child_devices:
 # env against a config that does not fit the cap.
 active_graph_status() {
     local cap_channels="$1"
-    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         printf 'python_unavailable'
         return 1
     fi
@@ -898,7 +1062,7 @@ PY
 # playback width, validated against this cap by the gate.
 active_lane_channels_for_dac() {
     local dac_id="$1"
-    if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if [[ -z "$dac_id" ]] || reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         return 0
     fi
     JASPER_DAC_ID_QUERY="$dac_id" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
@@ -955,7 +1119,7 @@ PY
 # than writing this output straight through.
 final_edge_format_for_dac() {
     local dac_id="$1"
-    if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if [[ -z "$dac_id" ]] || reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         return 0
     fi
     JASPER_DAC_ID_QUERY="$dac_id" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
@@ -1047,7 +1211,7 @@ emit_dac_format_for_recognized() {
 # apply_audio_runtime_env.
 #
 content_format_for_coupling() {
-    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         return 0
     fi
     "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
@@ -1080,7 +1244,7 @@ _fallback_latency_floor_actions() {
 # profile floor > packaged default" in bash and in jasper-doctor.
 latency_floor_actions_for_dac() {
     local dac_id="$1"
-    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         _fallback_latency_floor_actions
         return 0
     fi
@@ -1094,7 +1258,7 @@ latency_floor_actions_for_dac() {
 }
 
 route_env_actions() {
-    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         return 1
     fi
     "$OUTPUT_HARDWARE_PYTHON" -m jasper.cli.audio_config \
@@ -1300,7 +1464,7 @@ RING_CONF_D_OVERRIDE="${JASPER_RING_CONF_D:-}"
 # CamillaDSP through its required ordering on this oneshot.
 render_flat_cutover_if_needed() {
     local output
-    if ! command -v "$JASPER_SOUND_CLI" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$JASPER_SOUND_CLI"; then
         log_event "flat_cutover" "result=skipped reason=cli_unavailable"
         return 0
     fi
@@ -1327,7 +1491,7 @@ render_flat_cutover_if_needed() {
 # derived below from the final statefile after this returns.
 converge_runtime_graph() {
     local output
-    if ! command -v "$JASPER_ACTIVE_SPEAKER_CLI" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$JASPER_ACTIVE_SPEAKER_CLI"; then
         log_event "runtime_graph" "result=failed reason=cli_unavailable"
         return 1
     fi
@@ -1363,7 +1527,7 @@ render_ring_conf_if_needed() {
         log_event "ring_conf" "result=skipped reason=dac_unrecognized"
         return 0
     fi
-    if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
+    if reconcile_probe_missing "$OUTPUT_HARDWARE_PYTHON"; then
         log_event "ring_conf" "result=skipped reason=python_unavailable"
         return 0
     fi
@@ -1633,6 +1797,7 @@ apply_audio_runtime_env() {
         # the box already has rather than writing a guess — a hardcoded fallback
         # here would be a second spelling of DEFAULT_PLAYBACK_FORMAT, and an empty
         # value would silently narrow a wide box (outputd reads empty as S16_LE).
+        : >"$RECONCILE_DEGRADED_MARKER" 2>/dev/null || true
         log_event "content_format_skip" \
             "reason=coupling_probe_unavailable outputd_env=${OUTPUTD_ENV_FILE}"
     fi
@@ -1792,6 +1957,7 @@ apply_audio_runtime_env() {
     return 1
 }
 
+OBSERVED_AT_PASS_START="$(reconcile_observed_digest)"
 detect_roles
 if [[ "$PRINT_ENV" == "1" ]]; then
     observe_output_hardware_state 0
@@ -1800,6 +1966,11 @@ if [[ "$PRINT_ENV" == "1" ]]; then
     print_env
     exit 0
 fi
+# From here the pass mutates, so no stamp may stand until one completes. An
+# abort in the window before the first state write (an OOM kill of one of the
+# Python spawns, TimeoutStartSec) would otherwise leave a predecessor's stamp
+# valid and the retry would be condition-skipped and report success.
+rm -f -- "$RECONCILE_STAMP_PATH" "$RECONCILE_DEGRADED_MARKER"
 reconcile_i2s_hat_boot
 observe_output_hardware_state 1
 sync_i2s_hat_reboot_marker
@@ -1961,4 +2132,5 @@ fi
 
 log_event "complete" \
     "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS") recognized=${OUTPUT_DAC_RECOGNIZED} env_changed=${env_changed} render_changed=${render_changed} dac_env_changed=${dac_env_changed} outputd_committed=${outputd_committed} runtime_converge_failed=${runtime_converge_failed}"
-[[ "$runtime_converge_failed" == "0" ]]
+[[ "$runtime_converge_failed" == "0" ]] || exit 1
+write_reconcile_stamp

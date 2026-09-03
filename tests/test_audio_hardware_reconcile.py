@@ -149,6 +149,8 @@ def _run_reconcile(
             # the gate reads the real /var/lib/jasper paths on a dev box.
             "JASPER_CAMILLA_STATEFILE": str(tmp_path / "outputd-statefile.yml"),
             "JASPER_OUTPUT_TOPOLOGY_PATH": str(tmp_path / "output_topology.json"),
+            "JASPER_CAMILLA2_STATEFILE": str(tmp_path / "crossover-statefile.yml"),
+            "JASPER_CAMILLA_CONF_DIR": str(tmp_path / "camilladsp"),
             # Hermetic: source the repo's shared libs, never a stale installed
             # copy under /usr/local/lib.
             "JASPER_ENV_FILE_LIB": str(ROOT / "deploy" / "lib" / "jasper-env-file.sh"),
@@ -3270,3 +3272,126 @@ def test_successful_runtime_convergence_is_the_coupling_kick_guard():
     ]
     assert start_lines, body
     assert all("--no-block" in line for line in start_lines), start_lines
+
+
+# --- skipping a pass whose inputs have not moved ---
+
+
+def _fake_proc_asound(tmp_path: Path) -> dict[str, str]:
+    root = tmp_path / "proc-asound"
+    root.mkdir(exist_ok=True)
+    (root / "cards").write_text(" 0 [Loopback]: Loopback\n", encoding="utf-8")
+    (root / "pcm").write_text("00-00: Loopback : playback 1\n", encoding="utf-8")
+    return {"JASPER_PROC_ASOUND": str(root)}
+
+
+def _hotplug_mid_pass(tmp_path: Path) -> dict[str, str]:
+    """Move the card list while the pass is running, from inside its own CLI."""
+    hook = tmp_path / "hotplug-hook"
+    hook.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf ' 9 [Late]: USB-Audio - Late arrival\\n'"
+        ' >> "$JASPER_PROC_ASOUND/cards"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    return {"JASPER_FAKE_ACTIVE_SPEAKER_HOOK": str(hook)}
+
+
+def _exit64_renderer(tmp_path: Path) -> dict[str, str]:
+    failing = tmp_path / "exit64-render-asound-conf"
+    failing.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'render\\n\' >> "$JASPER_RENDER_LOG"\n'
+        "exit 64\n",
+        encoding="utf-8",
+    )
+    failing.chmod(0o755)
+    return {"JASPER_RENDER_ASOUND_CONF": str(failing)}
+
+
+_SEED_MODES: dict[str | None, tuple[int, bool, str | None]] = {
+    # seed mode -> (expected returncode, stamp written, stamp_skipped reason)
+    None: (0, True, None),
+    "renderer-fails": (78, False, None),
+    "card-moves-mid-pass": (0, False, "hardware_moved_mid_pass"),
+    "sound-cli-missing": (0, False, "probe_unavailable"),
+}
+
+
+@pytest.mark.parametrize(
+    ("seed_mode", "mutate", "expected_rc"),
+    [
+        pytest.param(None, None, 1, id="unchanged-skips"),
+        pytest.param(None, "cards", 0, id="card-set-moved-runs"),
+        pytest.param(None, "topology", 0, id="input-file-moved-runs"),
+        pytest.param("renderer-fails", None, 0, id="failed-pass-left-no-stamp"),
+        pytest.param("card-moves-mid-pass", None, 0, id="mid-pass-hotplug-no-stamp"),
+        pytest.param("sound-cli-missing", None, 0, id="probe-unavailable-no-stamp"),
+    ],
+)
+def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
+    tmp_path: Path, seed_mode: str | None, mutate: str | None, expected_rc: int
+) -> None:
+    """The unit's ExecCondition: exit 0 means run, 1 means skip.
+
+    A skipped call must reconcile nothing, and only an unchanged box that a
+    successful pass already stamped may be skipped.
+    """
+    common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
+    seed_env = dict(common)
+    if seed_mode == "renderer-fails":
+        # A stamp an earlier good pass left must not survive a failed one.
+        pre = _run_reconcile(
+            tmp_path, APPLE_LISTING, "--reason", "pre-seed", extra_env=common
+        )
+        assert pre.returncode == 0, pre.stderr
+        assert (tmp_path / "reconcile.stamp").exists(), pre.stderr
+        # Drop the rendered template so the failing renderer is actually reached.
+        (tmp_path / "asoundrc.jasper.template").unlink()
+        seed_env.update(_exit64_renderer(tmp_path))
+    elif seed_mode == "card-moves-mid-pass":
+        seed_env.update(_hotplug_mid_pass(tmp_path))
+    elif seed_mode == "sound-cli-missing":
+        seed_env["JASPER_SOUND_CLI"] = str(tmp_path / "absent-jasper-sound")
+    seed_rc, stamped, skip_reason = _SEED_MODES[seed_mode]
+    seed = _run_reconcile(
+        tmp_path, APPLE_LISTING, "--reason", "seed", extra_env=seed_env
+    )
+    assert seed.returncode == seed_rc, seed.stderr
+    assert (tmp_path / "reconcile.stamp").exists() is stamped, seed.stderr
+    if skip_reason is not None:
+        _assert_states(
+            seed.stderr,
+            "event=audio_hardware_reconcile.stamp_skipped ",
+            f"reason={skip_reason}",
+        )
+
+    if mutate == "cards":
+        (tmp_path / "proc-asound" / "cards").write_text(
+            " 1 [Dongle]: USB-Audio - Apple USB-C\n", encoding="utf-8"
+        )
+    elif mutate == "topology":
+        (tmp_path / "output_topology.json").write_text("{}\n", encoding="utf-8")
+
+    rendered_before = _render_log(tmp_path)
+    issued_before = len(_systemctl_log(tmp_path).splitlines())
+    check = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "unit-start",
+        "--changed",
+        # A pass may rewrite the boot config; _run_reconcile would otherwise
+        # reset it under the check and manufacture a change.
+        initial_boot_config=(tmp_path / "config.txt").read_text(encoding="utf-8"),
+        extra_env=common,
+    )
+    assert check.returncode == expected_rc, check.stderr
+    verdict = "skipped" if expected_rc == 1 else "changed"
+    _assert_states(check.stderr, f"event=audio_hardware_reconcile.{verdict} ")
+    # The check decides; it never reconciles.
+    assert _render_log(tmp_path) == rendered_before
+    assert _systemctl_log(tmp_path).splitlines()[issued_before:] == []
+    _assert_omits(check.stderr, "event=audio_hardware_reconcile.complete")

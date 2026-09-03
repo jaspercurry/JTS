@@ -126,7 +126,6 @@ _UNCODIFIED = {
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",
-    "JASPER_PROC_ASOUND",
     "JASPER_SYS_CLASS_SOUND",
     # -- Internal AEC bridge / wake-corpus experiment knobs. Developer
     #    surface only; the corpus booleans are stamped into the bridge

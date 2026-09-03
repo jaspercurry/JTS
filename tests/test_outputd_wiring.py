@@ -338,6 +338,14 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "/usr/local/lib/jasper/jasper-asound-render.sh" in install_sh
     assert "99-jasper-audio-hardware-reconcile.rules" in install_sh
     assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason unit-start" in unit
+    assert (
+        "ExecCondition=/usr/local/sbin/jasper-audio-hardware-reconcile --reason unit-start --changed" in unit
+    )
+    # RemainAfterExit would make every later `start` a no-op, so a hot-plug
+    # would never reconcile.
+    assert not any(
+        line.startswith("RemainAfterExit") for line in unit.splitlines()
+    )
     assert "Before=jasper-outputd.service" in unit
     before_line = next(
         line for line in unit.splitlines() if line.startswith("Before=")

@@ -9,8 +9,17 @@ Type=oneshot
 TimeoutStartSec=50s
 EnvironmentFile=-/etc/jasper/jasper.env
 # Hardware path overrides are hermetic-test seams, not production config. The
-# root reconciler must always observe the real board, boot config, and UDC.
-UnsetEnvironment=JASPER_PI_MODEL_FILE JTS_BOOT_CONFIG_FILE JASPER_UDC_CLASS_DIR JASPER_I2S_HAT_INTENT_FILE JASPER_I2S_HAT_REBOOT_REQUIRED_PATH JASPER_INSTALL_PROFILE_FILE
+# root reconciler must always observe the real board, boot config, UDC and
+# ALSA card list.
+UnsetEnvironment=JASPER_PI_MODEL_FILE JTS_BOOT_CONFIG_FILE JASPER_UDC_CLASS_DIR JASPER_PROC_ASOUND JASPER_I2S_HAT_INTENT_FILE JASPER_I2S_HAT_REBOOT_REQUIRED_PATH JASPER_INSTALL_PROFILE_FILE
+# Skip the pass when nothing it reads or writes has moved since the last
+# successful one. ExecCondition is inverted from a plain predicate: exit 0 runs
+# ExecStart, exit 1..254 skips it and leaves the unit inactive-but-successful —
+# so `start` still satisfies every caller, including jasper-camilla's Requires=.
+# NOT RemainAfterExit=yes, which would make every later start a no-op and leave
+# a real hot-plug unreconciled. Bypassed entirely by install.sh, which invokes
+# the script directly, so a deploy always gets one full pass.
+ExecCondition=/usr/local/sbin/jasper-audio-hardware-reconcile --reason unit-start --changed
 # One ExecStart serves every activation of this unit: udev sound-card events
 # (SYSTEMD_WANTS), jasper-dongle-recover, the hotplug helper, broker starts from
 # jasper-web/active-speaker/fan-in, boot, and a bare operator `systemctl start`.
