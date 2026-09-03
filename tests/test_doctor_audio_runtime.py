@@ -612,7 +612,7 @@ def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypa
     fake = _FakeSocket(chunks=[b'{"ok":', b"true}", b""])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
-    payload = doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=1.25)
+    payload = doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=1.25)
 
     assert payload == b'{"ok":true}'
     assert 0 < fake.timeout <= 1.25
@@ -623,11 +623,11 @@ def test_status_socket_byte_reader_owns_fragmented_protocol_and_cleanup(monkeypa
 
 
 def test_status_socket_byte_reader_accepts_exact_response_cap(monkeypatch):
-    cap = doctor.audio_runtime._STATUS_RESPONSE_MAX_BYTES
+    cap = doctor._shared._STATUS_RESPONSE_MAX_BYTES
     fake = _FakeSocket(chunks=[b"x" * 65536] * 16 + [b""])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
-    payload = doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+    payload = doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
     assert len(payload) == cap
     assert fake.recv_sizes == [65536] * 17
@@ -639,7 +639,7 @@ def test_status_socket_byte_reader_rejects_response_over_cap(monkeypatch):
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
     with pytest.raises(OSError, match="exceeds byte limit"):
-        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+        doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
     assert fake.recv_sizes == [65536] * 17
     assert fake.closed is True
@@ -655,7 +655,7 @@ def test_status_socket_byte_reader_enforces_total_deadline(monkeypatch):
     )
 
     with pytest.raises(TimeoutError, match="deadline exceeded"):
-        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=1.0)
+        doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=1.0)
 
     assert fake.recv_sizes == [65536]
     assert fake.closed is True
@@ -671,7 +671,7 @@ def test_status_socket_byte_reader_closes_on_failure(monkeypatch, failure_stage)
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
 
     with pytest.raises(OSError, match=f"{failure_stage} failed"):
-        doctor.audio_runtime._read_status_socket_bytes("/run/test.sock", timeout=2.0)
+        doctor._shared._read_status_socket_bytes("/run/test.sock", timeout=2.0)
 
     assert fake.closed is True
 
@@ -683,7 +683,7 @@ def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: strict)
 
     with pytest.raises(UnicodeDecodeError):
-        doctor.audio_runtime._read_status_socket("/run/test.sock")
+        doctor._shared._read_status_socket("/run/test.sock")
 
     assert 0 < strict.timeout <= 1.0
     assert strict.closed is True
