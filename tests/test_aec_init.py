@@ -25,6 +25,7 @@ from jasper import output_hardware
 from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
 from jasper.cli import aec_init
 from jasper.mics import xvf3800
+from tests._log_events import event_fields, event_records
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 
 _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
@@ -658,8 +659,10 @@ def test_an_inert_ordering_guard_says_so_in_the_journal(
 
     assert aec_init.outputd_main_start_realtime() is None
 
-    assert "event=chip_aec_init.ordering_probe" in caplog.text
-    assert f"outcome={outcome}" in caplog.text
+    fields = event_fields(caplog, "chip_aec_init.ordering_probe")
+    assert fields["outcome"] == outcome
+    assert fields["unit"] == aec_init.OUTPUTD_UNIT
+    assert int(fields["returncode"]) == returncode
 
 
 @pytest.mark.parametrize("stdout", ["", "@0\n"])
@@ -672,7 +675,7 @@ def test_a_unit_that_never_ran_is_quiet(monkeypatch, caplog, stdout: str) -> Non
 
     assert aec_init.outputd_main_start_realtime() is None
 
-    assert "ordering_probe" not in caplog.text
+    assert event_records(caplog, "chip_aec_init.ordering_probe") == []
 
 
 def test_outputd_start_instant_survives_a_host_without_systemctl(
@@ -687,7 +690,7 @@ def test_outputd_start_instant_survives_a_host_without_systemctl(
     assert aec_init.outputd_main_start_realtime() is None
     # Not a systemd host at all — the daemon could never run here, so this is not
     # the inert-guard anomaly the WARN exists for.
-    assert "ordering_probe" not in caplog.text
+    assert event_records(caplog, "chip_aec_init.ordering_probe") == []
 
 
 def test_outputd_start_instant_warns_on_a_non_missing_binary_oserror(
@@ -708,8 +711,9 @@ def test_outputd_start_instant_warns_on_a_non_missing_binary_oserror(
 
     assert aec_init.outputd_main_start_realtime() is None
 
-    assert "event=chip_aec_init.ordering_probe" in caplog.text
-    assert "outcome=systemctl_oserror" in caplog.text
+    fields = event_fields(caplog, "chip_aec_init.ordering_probe")
+    assert fields["outcome"] == "systemctl_oserror"
+    assert fields["unit"] == aec_init.OUTPUTD_UNIT
 
 
 def test_staleness_fails_closed_when_the_systemctl_probe_times_out(
@@ -986,9 +990,11 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     # Chip left bypassed, no profile armed, and STATUS never consulted.
     assert _write_map(dev) == {"SHF_BYPASS": [1]}
     assert reads == []
-    assert "outcome=deferred" in caplog.text
-    assert "action=" in caplog.text
-    assert "jasper-aec-commission" not in caplog.text
+    fields = event_fields(caplog, "chip_aec_init")
+    # `deferred`, not `parked`: the remedy names the outputd unit to wait on
+    # rather than sending a household at the commissioner.
+    assert fields["outcome"] == "deferred"
+    assert aec_init.OUTPUTD_UNIT in fields["action"]
 
 
 @pytest.mark.parametrize(
@@ -1132,7 +1138,7 @@ def test_init_reports_missing_xvf_control_dependency(monkeypatch, caplog) -> Non
 
     assert aec_init.main() == 1
 
-    assert "event=chip_aec_init" in caplog.text
+    assert event_fields(caplog, "chip_aec_init")["outcome"] == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -1390,13 +1396,20 @@ def test_an_outputd_without_the_sample_ring_is_named_not_guessed(
     with pytest.raises(aec_init.ChipInitError) as excinfo:
         aec_init.collect_reference_queue(REFERENCE_PCM)
 
+    # `ChipInitError` carries no code or structured attribute, so the refusal
+    # itself can only be told apart by its message.
     reason = str(excinfo.value)
     assert "no chip-ref sample ring" in reason
     assert "deploy an outputd that reports it" in reason
     # Every numeric field of this refusal is zero, so without the reason the
     # event cannot be told from any other empty-window failure.
-    assert "outcome=unstable samples=0 spread=0" in caplog.text
-    assert 'reason="outputd STATUS has no chip-ref sample ring' in caplog.text
+    fields = event_fields(caplog, "chip_aec_init.reference_queue")
+    assert fields["outcome"] == "unstable"
+    assert int(fields["samples"]) == 0
+    assert int(fields["spread"]) == 0
+    # The refusal's own last error travels into the event verbatim, rather
+    # than the event restating it.
+    assert fields["reason"] and reason.endswith(fields["reason"])
 
 
 def test_an_empty_sample_ring_is_a_writer_that_has_not_written_yet(
@@ -1469,23 +1482,14 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
         "a closable-looking shortfall and an unclosable ceiling must stay "
         "distinguishable in the message"
     )
-    assert "event=chip_aec_init.reference_queue" in caplog.text
-    assert "outcome=unstable" in caplog.text
-    # The VALUES, not the labels: a covariate reported as a constant separates
-    # nothing, and a label-only assertion would not notice.
-    assert stream.reads > 1
-    assert f"status_reads={stream.reads}" in caplog.text
-    assert (
-        f"poll_interval_ms={round(aec_init.QUEUE_POLL_INTERVAL_SEC * 1_000, 1)}"
-        in caplog.text
-    )
     # Every field by value against the window that was actually refused —
     # a label-only assertion cannot tell a live covariate from a constant.
-    line = next(
-        text for text in caplog.text.splitlines() if "outcome=unstable" in text
-    )
-    fields = dict(
-        part.split("=", 1) for part in line.split() if "=" in part and "event=" not in part
+    fields = event_fields(caplog, "chip_aec_init.reference_queue")
+    assert fields["outcome"] == "unstable"
+    assert stream.reads > 1
+    assert int(fields["status_reads"]) == stream.reads
+    assert float(fields["poll_interval_ms"]) == round(
+        aec_init.QUEUE_POLL_INTERVAL_SEC * 1_000, 1
     )
     assert int(fields["samples"]) > alignment.QUEUE_SAMPLE_COUNT
     assert int(fields["spread"]) > alignment.QUEUE_MAX_SPREAD
@@ -1498,9 +1502,9 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
         "say so"
     )
     assert float(fields["held_sec"]) >= aec_init.QUEUE_MIN_WINDOW_SEC
-    # The reason is a quoted sentence, so it is read off the line, not the
-    # whitespace split above.
-    assert 'reason="chip-reference queue spread' in line
+    # The reason travels into the event verbatim rather than being restated
+    # there — it is what tells two all-zero refusals apart.
+    assert fields["reason"] and reason.endswith(fields["reason"])
 
 
 def test_a_window_whose_median_walked_is_rejected_on_both_sides_of_the_edge() -> None:
@@ -1630,6 +1634,7 @@ def test_a_rewound_write_counter_splits_the_window(monkeypatch) -> None:
     assert len(aec_init._merge_writes(window, forward, now=10.5, floor=0.0)) == 2
 
     restarted = [aec_init.ReferenceWrite(delay=448, frames=341, sequence=1, age_ms=0)]
+    # `match=` stands: ChipInitError carries no code or structured attribute.
     with pytest.raises(aec_init.ChipInitError, match="did not progress cleanly"):
         aec_init._merge_writes(window, restarted, now=10.5, floor=0.0)
 
@@ -1646,6 +1651,7 @@ def test_a_ring_out_of_write_order_is_refused(monkeypatch) -> None:
     assert len(writes) >= 3
     writes[1]["frames_written"] = writes[0]["frames_written"]
 
+    # `match=` stands: ChipInitError carries no code or structured attribute.
     with pytest.raises(aec_init.ChipInitError, match="not in write order"):
         aec_init.validate_reference_status(status, expected_pcm=REFERENCE_PCM)
 
@@ -1728,6 +1734,7 @@ def test_a_writer_further_behind_than_the_pipelining_ceiling_is_rejected() -> No
         lag=aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT + 1,
     )(REFERENCE_PCM)
 
+    # `match=` stands: ChipInitError carries no code or structured attribute.
     with pytest.raises(aec_init.ChipInitError, match="mix periods behind"):
         aec_init.validate_reference_status(behind, expected_pcm=REFERENCE_PCM)
 
