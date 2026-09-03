@@ -1018,11 +1018,12 @@ jasper-round-views agreement <round-dir>
   `dissent <= 1`), not scaled to seat count — below 3 seats the verdict is
   `common_mode: null`, a named not-evaluable state, never a fabricated pass.
   `--lo` defaults to the round's own `trusted_floor_hz`.
-- Each subcommand writes its JSON into the round directory by default
-  (`per_seat.json`, `frozen_reference.json`, `agreement.json`;
-  `repeatability.json` under the first dir for `repeat`); `--out PATH` writes
-  elsewhere, `--out -` to stdout. On failure it publishes the shared record and
-  the shared stage-named exit code (the
+- Each subcommand writes its JSON beside a round by default —
+  `jasper-round-views inventory <round-dir>` names those artifacts, and the
+  subcommand that produces each one, from the CLI's own `ARTIFACT_BY_VIEW`, so
+  they are not enumerated here. `repeat-floor` is the exception: its `--out` is
+  required. `--out PATH` writes elsewhere, `--out -` to stdout. On failure it
+  publishes the shared record and the shared stage-named exit code (the
   [operator runbook](tuning-operator-runbook.md)'s "Exit codes" owns both).
 
 ---

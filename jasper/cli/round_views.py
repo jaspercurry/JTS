@@ -81,10 +81,12 @@ Subcommands:
   Writes ``cloud_binding.json``.
 * ``inventory <round-dir>`` — which of the named artifacts above this round
   already has, and the subcommand that produces each one it is missing, so
-  "was this round ever analysed for X" is read rather than re-run. Presence
-  is read at the path each view writes with no ``--out``, so a LIVE session
-  bundle's artifacts are looked for beside the caller, not in the bundle
-  (:func:`_default_out`). Writes ``inventory.json``.
+  "was this round ever analysed for X" is read rather than re-run. The round
+  is resolved, never graded, and each ``produced_by`` places it in the slot
+  that writes the artifact beside it. Presence is read at the path each view
+  writes with no ``--out``, so a LIVE session bundle's artifacts are looked
+  for beside the caller, not in the bundle (:func:`_default_out`). Writes
+  ``inventory.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout, except ``repeat-floor``, whose record is published by
@@ -101,7 +103,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, NamedTuple, Sequence, TypeVar
 
 from jasper.active_speaker.crossover_v2.round_views import (
     AGREEMENT_TESTIFY_MIN,
@@ -135,6 +137,7 @@ from jasper.active_speaker.repeat_floor import (
     write_repeat_floor,
 )
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.cli._refusal import (
     EXIT_OK,
     EXIT_REFUSED,
@@ -158,22 +161,40 @@ _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
 
 PROG = "jasper-round-views"
 
+#: The positionals a view's subcommand takes, with the inventoried round in
+#: the SLOT that writes the artifact beside it: ``frozen`` grades — and writes
+#: beside — the TARGET, ``repeat`` writes beside the FIRST directory, so their
+#: second round sits on opposite sides. A hint carrying ``<other-round>`` is
+#: one this inventory cannot fill, and running it without that round is an
+#: invocation argparse rejects.
+TAKES_THIS_ROUND = "<this-round>"
+TAKES_AFTER_ANOTHER = "<other-round> <this-round>"
+TAKES_BEFORE_ANOTHER = "<this-round> <other-round>"
+
+
+class ViewArtifact(NamedTuple):
+    """One view's artifact, and what its subcommand takes to produce it."""
+
+    artifact: str
+    takes: str = TAKES_THIS_ROUND
+
+
 #: The artifact each view writes beside the round, declared once: the
 #: subcommands take their default output path from this table and
 #: ``inventory`` names each missing artifact's producer from the same one, so
 #: there is no second list to drift. ``repeat-floor`` is absent because it
 #: publishes to a required ``--out`` instead of beside the round.
-ARTIFACT_BY_VIEW: dict[str, str] = {
-    "entry": "entry_state_grade.json",
-    "frozen": "frozen_reference.json",
-    "per-seat": "per_seat.json",
-    "repeat": "repeatability.json",
-    "agreement": "agreement.json",
-    "co-metrics": "audibility_co_metrics.json",
-    "directivity": "directivity.json",
-    "cloud-binding": "cloud_binding.json",
-    "spec-sweep": "spec_gate_sensitivity.json",
-    "frequency": "frequency_view.json",
+ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
+    "entry": ViewArtifact("entry_state_grade.json"),
+    "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
+    "per-seat": ViewArtifact("per_seat.json"),
+    "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER),
+    "agreement": ViewArtifact("agreement.json"),
+    "co-metrics": ViewArtifact("audibility_co_metrics.json"),
+    "directivity": ViewArtifact("directivity.json"),
+    "cloud-binding": ViewArtifact("cloud_binding.json"),
+    "spec-sweep": ViewArtifact("spec_gate_sensitivity.json"),
+    "frequency": ViewArtifact("frequency_view.json"),
 }
 
 #: ``inventory``'s own report, named apart from the views it reports on.
@@ -258,7 +279,7 @@ def _write(payload: Any, out: str | None, default_path: Path) -> Path | None:
     return _stage(EXIT_WRITE_FAILED, (OSError,), write_report, payload, out, default_path)
 
 
-def _default_out(round_: BankedRound, name: str) -> Path:
+def _default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
     A BANKED round tree is the operator's own directory, so its views stay
@@ -270,14 +291,16 @@ def _default_out(round_: BankedRound, name: str) -> Path:
     beside the caller instead, named by the session it came from so two
     sessions graded in one directory do not overwrite each other.
     """
-    if round_.inputs.banked:
-        return round_.round_dir / name
-    return Path.cwd() / f"{round_.session_dir.name}-{name}"
+    if inputs.banked:
+        return round_dir / name
+    return Path.cwd() / f"{inputs.session_dir.name}-{name}"
 
 
 def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:
     """This subcommand's own artifact path, from :data:`ARTIFACT_BY_VIEW`."""
-    return _default_out(round_, ARTIFACT_BY_VIEW[args.command])
+    return _default_out(
+        round_.inputs, round_.round_dir, ARTIFACT_BY_VIEW[args.command].artifact
+    )
 
 
 def _frequency_default_out(source: Path) -> Path:
@@ -286,7 +309,7 @@ def _frequency_default_out(source: Path) -> Path:
     reads the live shape directly — under the same rule as
     :func:`_default_out`, never inside a daemon-owned session bundle.
     """
-    name = ARTIFACT_BY_VIEW["frequency"]
+    name = ARTIFACT_BY_VIEW["frequency"].artifact
     if not source.is_dir():
         return source.parent / name
     if (source / "info.json").is_file():
@@ -628,22 +651,29 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
 
 
 def _cmd_inventory(args: argparse.Namespace) -> int:
-    banked = _load_round(args.round_dir)
+    # The round is RESOLVED, never graded: which artifacts sit beside a round
+    # is a directory question, and building the evidence packet to answer it
+    # would make the cheapest verb here cost the most (415 MB target, ADR-0226).
+    round_dir = Path(args.round_dir)
+    inputs = _stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
     artifacts: list[dict[str, Any]] = []
-    for view, artifact in ARTIFACT_BY_VIEW.items():
-        path = _default_out(banked, artifact)
+    for view, spec in ARTIFACT_BY_VIEW.items():
+        path = _default_out(inputs, round_dir, spec.artifact)
         artifacts.append({
-            "artifact": artifact,
+            "artifact": spec.artifact,
             "path": str(path),
             "present": path.is_file(),
-            "produced_by": f"{PROG} {view}",
+            "produced_by": f"{PROG} {view} {spec.takes}",
+            "producer_needs_another_round": spec.takes != TAKES_THIS_ROUND,
         })
     payload = {
-        "round_dir": str(banked.round_dir),
-        "banked": banked.inputs.banked,
+        "round_dir": str(round_dir),
+        "banked": inputs.banked,
         "artifacts": artifacts,
     }
-    written = _write(payload, args.out, _default_out(banked, INVENTORY_ARTIFACT))
+    written = _write(
+        payload, args.out, _default_out(inputs, round_dir, INVENTORY_ARTIFACT)
+    )
     missing = [row["produced_by"] for row in artifacts if not row["present"]]
     print(
         f"inventory: {len(artifacts) - len(missing)}/{len(artifacts)} "
