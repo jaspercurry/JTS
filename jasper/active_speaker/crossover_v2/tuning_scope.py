@@ -2,19 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The graph identity a round compares against: the layers it measures THROUGH.
-
-Hashes the candidate layer and everything below it (structure, linearization,
-blend, trim, headroom, limiters) and drops the preference-EQ slots, which sit
-above everything tunable. Content-derived, not name-derived, because the
-candidate name is stable across an out-of-band rewrite (#3489). Only two values
-from this function may be compared to each other — the round candidate's
-fingerprint and the compiled baseline profile's are different namespaces.
-
-Two known limits: ``active_baseline_headroom`` carries ``output_trim_db``, so on
-a box with ``match_loudness`` on an EQ save does move this fingerprint; and every
-``programs.SUMMED_SWEEP_PHASES`` member measures the standing production graph,
-preference EQ included, while this fingerprint stays put.
+"""The graph identity a round compares against: layers measured THROUGH.
+Hashes the candidate layer and below (structure, linearization, blend, trim,
+headroom, limiters); drops preference-EQ slots — content-derived, not
+name-derived, since the name survives an out-of-band rewrite (#3489). Two
+namespaces only: round candidate vs compiled baseline, never compared across.
+Blind spots: ``active_baseline_headroom.output_trim_db`` moves this on a
+``match_loudness`` EQ save; ``SUMMED_SWEEP_PHASES`` measures the standing
+production graph (EQ included) while this fingerprint stays put.
 """
 
 from __future__ import annotations
