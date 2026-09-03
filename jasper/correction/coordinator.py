@@ -77,10 +77,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from ..control.uds import _mux_socket_command
 from ..log_event import log_event
@@ -165,10 +166,12 @@ MEASUREMENT_HOLD_MODE = "gate"
 # Mutual-exclusion flag for measurement_window(). Only one window may be open
 # at a time: a second concurrent window would let whichever exits FIRST send
 # MEASURE_RESUME and release the mux gate while the other is still measuring,
-# corrupting its capture. All callers run on jasper-web's single background
-# event loop, so a plain check-and-set before the first await is atomic — no
-# asyncio.Lock, which would bind to one loop and break the per-test
-# asyncio.run() loops.
+# corrupting its capture. This flag is per-PROCESS and guards only the loop it
+# is checked on: each caller runs its windows on ONE event loop (jasper-web's
+# background loop; a CLI's own asyncio.run), so a plain check-and-set before
+# the first await is atomic there — no asyncio.Lock, which would bind to one
+# loop and break the per-test asyncio.run() loops. Cross-process exclusion is
+# jasper-control's measurement hold, not this.
 _window_active = False
 
 
@@ -985,3 +988,69 @@ async def measurement_window(
                 raise gate_release_error
         finally:
             _window_active = False
+
+
+class HeldWindow:
+    """A ``measurement_window`` held open for a caller that is not on its loop.
+
+    The handshake — capture the loop, publish a thread-safe releaser, signal a
+    ``threading.Event`` once the window is up, then park on an ``asyncio.Event``
+    until someone releases it — is the one ``jasper/web``'s sync and balance
+    flows each keep privately in their own ``_session_window``. Owning it here
+    means one copy of the ordering rules that are easy to get wrong: a release
+    that arrives before the loop exists is honoured rather than lost, and
+    ``entered`` is set in a ``finally`` so a caller blocked on it is never
+    stranded by a window that failed to open.
+
+    Which phase ``error`` belongs to is read off the flags: ``held`` False means
+    the window never opened; ``lost`` set means it ended while held, before
+    anyone released it; otherwise the release itself failed.
+    """
+
+    def __init__(self, **window_kwargs: Any) -> None:
+        self._window_kwargs = window_kwargs
+        #: Unblocks a waiting caller: the window is up, or holding it failed.
+        self.entered = threading.Event()
+        #: True once the window actually opened.
+        self.held = False
+        #: The window ended before anyone released it — its isolation is gone
+        #: and whatever the caller is doing has to stop.
+        self.lost = threading.Event()
+        #: The one failure this hold produced, if any.
+        self.error: BaseException | None = None
+        self._releasing = threading.Event()
+        self._release: asyncio.Event | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def release(self) -> None:
+        """Ask the hold to exit. Thread-safe, and safe before ``hold`` runs."""
+
+        # Ordered before the wake-up on purpose: `hold` re-checks this flag
+        # once it owns the asyncio.Event, so a release arriving before that
+        # assignment is honoured there instead of being dropped.
+        self._releasing.set()
+        if self._loop is None or self._release is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._release.set)
+        except RuntimeError:
+            pass  # the loop is already gone: the hold ended on its own
+
+    async def hold(self) -> None:
+        """Enter the window and park until released. Run this ON its loop."""
+
+        try:
+            self._loop = asyncio.get_running_loop()
+            self._release = asyncio.Event()
+            if self._releasing.is_set():
+                self._release.set()
+            async with measurement_window(**self._window_kwargs):
+                self.held = True
+                self.entered.set()
+                await self._release.wait()
+        except BaseException as exc:  # noqa: BLE001
+            self.error = exc
+            if self.held and not self._releasing.is_set():
+                self.lost.set()
+        finally:
+            self.entered.set()

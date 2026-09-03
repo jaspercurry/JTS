@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import shutil
@@ -14,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 from collections.abc import Callable, Mapping, Sequence
@@ -60,10 +62,14 @@ from jasper.chip_aec_alignment import (
 from jasper.chip_aec_policy import STATUS_APPROVED, static_dac_qualification
 from jasper.chip_aec_shipped_alignment import render_entry
 from jasper.cli import aec_init
+from jasper.correction.coordinator import (
+    HeldWindow,
+    MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
+    MEASUREMENT_HOLD_COMMAND_TIMEOUT_SEC,
+)
 from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
-from jasper.route_latency.status_socket import read_status_socket
 
 logger = logging.getLogger("jasper.aec_commission")
 _T = TypeVar("_T")
@@ -90,6 +96,17 @@ REJECTED_CAPTURE_GLOBS = ("*-m*-*.wav", "aec-o*.wav", WARMUP_CAPTURE_NAME)
 # under a live marker is a mutate-nothing no-op there.
 ARM_RECONCILE_REASON = "chip-aec-commission-arm"
 _CLEANUP_RECONCILE_REASON = "chip-aec-commission"
+# This run's identity on mux's diagnostic gate; mux.FANIN_TEST_OWNERS is a
+# closed allowlist, so the two literals must stay in step.
+COMMISSION_GATE_OWNER = "chip-aec-commission"
+# Ceiling on the window's teardown, derived from the ladder it actually runs:
+# three mux TEST_RELEASE attempts, then one jasper-control release. Doubled for
+# the inter-attempt back-offs and the loop's own shutdown. Reaching it means a
+# wedged socket, not a slow one, so the join is abandoned with an event rather
+# than parking the CLI; mux's FANIN_TEST_LEASE_SEC then reopens music itself.
+ISOLATION_RELEASE_TIMEOUT_SEC = 2 * (
+    3 * MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC + MEASUREMENT_HOLD_COMMAND_TIMEOUT_SEC
+)
 MEASUREMENT_VOLUME_DB = -28.282827
 INITIAL_SYS_DELAY = xvf3800.CHIP_AEC_SYS_DELAY_DEFAULT
 # The audible budget.  A capture is audible for its whole `arecord -d` window
@@ -131,6 +148,80 @@ class Hardware:
 class QueueWindow:
     status: Mapping[str, Any]
     samples: tuple[int, ...]
+
+
+class IsolationLease:
+    """Run a :class:`HeldWindow` on a dedicated thread and its own loop.
+
+    Inverted relative to ``doctor.aec_probe``, which keeps the window on the
+    main loop and pushes its body to ``asyncio.to_thread``: a signal unwinds
+    only the MAIN thread, and commissioning's body is the half that must
+    unwind — its ``finally`` restores the household fader and closes the chip.
+    So the body stays put and the window moves.
+    """
+
+    def __init__(self, gate_owner: str) -> None:
+        self.gate_owner = gate_owner
+        #: The one failure this lease produced, set on the way out.
+        self.error: BaseException | None = None
+        # skip_voice_pause: STOP_UNITS stops jasper-voice outright moments
+        # after this window opens, so there is no daemon left to MEASURE_PAUSE
+        # or to RESUME. That also skips PAUSE's proof that prior assistant
+        # audio drained; the XVF reset and the arm reconcile between the stop
+        # and the first capture cover that gap.
+        self._window = HeldWindow(gate_owner=gate_owner, skip_voice_pause=True)
+        self._thread = threading.Thread(
+            target=lambda: asyncio.run(self._window.hold()),
+            name="chip-aec-isolation",
+            daemon=True,
+        )
+
+    @property
+    def lost(self) -> threading.Event:
+        return self._window.lost
+
+    def check(self) -> None:
+        """Refuse work whose audio would carry the household's."""
+
+        if self._window.lost.is_set():
+            raise CommissioningError("household audio isolation was lost mid-run")
+
+    def start(self) -> None:
+        """Block until the gate is held, or raise the entry failure here."""
+
+        self._thread.start()
+        self._window.entered.wait()
+        if not self._window.held and self._window.error is not None:
+            raise self._window.error
+
+    def stop(self) -> None:
+        """Leave the window and join. Never replaces the run's own verdict."""
+
+        try:
+            self._window.release()
+            self._thread.join(ISOLATION_RELEASE_TIMEOUT_SEC)
+            if self._thread.is_alive():
+                self.error = TimeoutError(
+                    "isolation release did not finish in "
+                    f"{ISOLATION_RELEASE_TIMEOUT_SEC}s"
+                )
+        except CommissioningError as exc:
+            # A second SIGTERM lands here as `_signal`'s exception. The run
+            # already has its verdict; keep this as a release failure instead
+            # of letting it replace that verdict on the way out.
+            self.error = exc
+        self.error = self.error or self._window.error
+        if self.error is not None and not self._window.lost.is_set():
+            # Its own event, never the run's verdict: a release that did not
+            # land leaves music gated until mux's lease lapses, which the
+            # operator has to see even when the sweep itself passed.
+            log_event(
+                logger,
+                "chip_aec_commission.isolation_release_failed",
+                owner=self.gate_owner,
+                error=str(self.error),
+                level=logging.ERROR,
+            )
 
 
 def _run(command: Sequence[str], *, timeout: float = 30) -> None:
@@ -240,12 +331,13 @@ def _retain_rejected_captures(directory: Path, root: Path) -> Path | None:
 
 def _guarded(
     call: Callable[[], _T], directory: Path, rejection_dir: Path,
-    *, gate: str, phase: str = "",
+    *, lease: IsolationLease, gate: str, phase: str = "",
 ) -> _T:
     """Every analyzer ValueError lands here, not only the gate verdicts: a
     refusal carrying no fields is the one whose captures matter most."""
 
     phase = phase or gate
+    lease.check()
     try:
         return call()
     except ValueError as rejection:
@@ -264,7 +356,8 @@ def _guarded(
 
 
 def _auto_level(
-    io, hardware: Hardware, stimulus: Path, active: np.ndarray, directory: Path
+    io, hardware: Hardware, stimulus: Path, active: np.ndarray, directory: Path,
+    lease: IsolationLease,
 ) -> dict[str, Any]:
     """Set the run's measurement level once, from the warm-up capture.
 
@@ -273,7 +366,7 @@ def _auto_level(
     step or more from the target is refused rather than under-shot.
     """
 
-    probe = io.warmup(hardware, stimulus, active, directory)
+    probe = io.warmup(hardware, stimulus, active, directory, lease)
     offset = probe.offset_db(AUDIBLE_RAMP_STEP_DB)
     volume = MEASUREMENT_VOLUME_DB + offset
     record = {
@@ -289,13 +382,15 @@ def _auto_level(
 
 def _timing_trials(
     io, dev, hardware: Hardware, delay: int, stimulus: Path,
-    reference: np.ndarray, directory: Path, label: str,
+    reference: np.ndarray, directory: Path, label: str, lease: IsolationLease,
 ) -> tuple[MicTiming, ...]:
     return tuple(
         MicTiming(
             mic,
             delay,
-            io.timing(dev, hardware, mic, stimulus, reference, directory, label),
+            io.timing(
+                dev, hardware, mic, stimulus, reference, directory, label, lease
+            ),
         )
         for mic in range(MIC_COUNT)
     )
@@ -315,6 +410,7 @@ def _commission(
     hardware: Hardware,
     original_volume: float,
     rejection_dir: Path,
+    lease: IsolationLease,
 ) -> tuple[AlignmentArtifact, dict[str, Any]]:
     stereo, reference, active = commissioning_stimulus()
     dev = None
@@ -335,16 +431,18 @@ def _commission(
             if io.convergence(dev) != 0:
                 raise CommissioningError("volatile reset did not clear convergence")
             level = _guarded(
-                lambda: _auto_level(io, hardware, stimulus, active, directory),
-                directory, rejection_dir, gate="level",
+                lambda: _auto_level(
+                    io, hardware, stimulus, active, directory, lease
+                ),
+                directory, rejection_dir, lease=lease, gate="level",
             )
             log_event(logger, "chip_aec_commission.level_selected", **level)
             initial = _guarded(
                 lambda: _timing_trials(
                     io, dev, hardware, INITIAL_SYS_DELAY, stimulus,
-                    reference, directory, "initial",
+                    reference, directory, "initial", lease,
                 ),
-                directory, rejection_dir, gate="timing", phase="initial",
+                directory, rejection_dir, lease=lease, gate="timing", phase="initial",
             )
             choice = choose_delay(initial)
             log_event(
@@ -360,9 +458,9 @@ def _commission(
             final = _guarded(
                 lambda: _timing_trials(
                     io, dev, hardware, choice.sys_delay, stimulus,
-                    reference, directory, "final",
+                    reference, directory, "final", lease,
                 ),
-                directory, rejection_dir, gate="timing", phase="final",
+                directory, rejection_dir, lease=lease, gate="timing", phase="final",
             )
             after = io.queue(hardware)
             if len({_writer_counters(window) for window in (initial_queue, before, after)}) != 1:
@@ -375,8 +473,8 @@ def _commission(
 
             io.apply(dev, hardware, choice.sys_delay, arm=True)
             chunks, seconds = _guarded(
-                lambda: io.adapt_until_converged(dev, stimulus),
-                directory, rejection_dir, gate="adaptation",
+                lambda: io.adapt_until_converged(dev, stimulus, lease),
+                directory, rejection_dir, lease=lease, gate="adaptation",
             )
             # What the chip actually needed is what a later run's cap is set
             # from; it is knowable only here.
@@ -385,9 +483,10 @@ def _commission(
             )
             product = _guarded(
                 lambda: io.product(
-                    dev, hardware, choice.sys_delay, stimulus, active, directory
+                    dev, hardware, choice.sys_delay, stimulus, active, directory,
+                    lease,
                 ),
-                directory, rejection_dir, gate="product",
+                directory, rejection_dir, lease=lease, gate="product",
             )
             artifact = AlignmentArtifact(
                 identity, choice.sys_delay + queue_median, choice.sys_delay
@@ -426,6 +525,7 @@ def _commission(
             io.restore_volume(original_volume)
 
     # Publication is the commit point, after device and household-volume cleanup.
+    lease.check()
     atomic_write_json(
         artifact_path,
         artifact.to_dict(),
@@ -478,14 +578,19 @@ def run_commissioning(
     runtime = SystemIO() if io is None else io
     _create_marker(marker_path)
     primary: BaseException | None = None
+    lease: IsolationLease | None = None
     try:
         runtime.wait_reconciler_idle()
         # Zero-hardware-cost refusals (unsupported XVF, uncodified output DAC)
         # land here — before the volume move, the service stop, and the XVF
         # reset buy the same dead end.
         hardware = runtime.detect()
-        # Refuses while ordinary audio is playing, then sets the measurement
-        # volume — BEFORE the stop below can interrupt whatever is playing.
+        # Everything audible is inside the window: the fader move, the service
+        # stop, the outputd bounce, and the sweeps. The household gets one
+        # clean stop here and one clean resume after the cleanup reconcile
+        # below, rather than a stop, a cut, and a resume.
+        lease = runtime.audio_isolation()
+        lease.start()
         original_volume = runtime.prepare_volume()
         try:
             # Stop first so the arm pass hands outputd a plain start onto the
@@ -499,7 +604,8 @@ def run_commissioning(
             # re-runs it marker-free to restore the resting vector.
             runtime.reconcile(reason=ARM_RECONCILE_REASON)
             artifact, evidence = _commission(
-                runtime, artifact_path, hardware, original_volume, rejection_dir
+                runtime, artifact_path, hardware, original_volume, rejection_dir,
+                lease,
             )
         finally:
             # _commission restores on every path it enters; this covers the
@@ -535,6 +641,9 @@ def run_commissioning(
                 primary.add_note(f"reconcile cleanup also failed: {exc}")
             else:
                 raise
+        finally:
+            if lease is not None:
+                lease.stop()
 
 
 class SystemIO:
@@ -556,40 +665,6 @@ class SystemIO:
                 return
             time.sleep(0.2)
         raise CommissioningError("AEC reconciler did not become idle")
-
-    def assert_audio_idle(self) -> None:
-        try:
-            mux = read_status_socket("/run/jasper-mux/control.sock")
-            fanin = read_status_socket("/run/jasper-fanin/control.sock")
-            sources = mux.get("sources")
-            inputs = fanin.get("inputs")
-            tts = fanin.get("tts")
-            if (
-                mux.get("active_source") != "idle"
-                or mux.get("selected_source") is not None
-                or mux.get("winner") is not None
-                or not isinstance(sources, Mapping)
-                or any(
-                    isinstance(source, Mapping) and source.get("playing") is True
-                    for source in sources.values()
-                )
-                or not isinstance(inputs, list)
-                or not isinstance(tts, Mapping)
-                or fanin.get("selected_input") is not None
-                or fanin.get("selection_mode") != "none"
-                or tts.get("pending_frames") != 0
-                or tts.get("program_duck_active") is True
-                or any(
-                    isinstance(item, Mapping)
-                    and float(item.get("rms_dbfs", 0.0)) > -80.0
-                    for item in inputs
-                )
-            ):
-                raise CommissioningError(
-                    "ordinary audio is playing; stop it before commissioning"
-                )
-        except (OSError, TypeError, ValueError) as exc:
-            raise CommissioningError(f"cannot verify idle audio path: {exc}") from exc
 
     def detect(self) -> Hardware:
         profile = xvf3800.detect_runtime_profile()
@@ -621,7 +696,6 @@ class SystemIO:
         time.sleep(MAIN_VOLUME_RAMP_SETTLE_S)
 
     def prepare_volume(self) -> float:
-        self.assert_audio_idle()
         original = read_main_volume_db()
         try:
             self.set_volume(MEASUREMENT_VOLUME_DB)
@@ -636,6 +710,9 @@ class SystemIO:
 
     def stop_services(self) -> None:
         _run(("systemctl", "stop", *STOP_UNITS))
+
+    def audio_isolation(self) -> IsolationLease:
+        return IsolationLease(COMMISSION_GATE_OWNER)
 
     def reset_once(self, hardware: Hardware):
         from jasper.xvf import xvf_host
@@ -706,7 +783,15 @@ class SystemIO:
             raise CommissioningError("AEC convergence readback is invalid")
         return int(value[0])
 
-    def _capture(self, hardware: Hardware, stimulus: Path, output: Path) -> np.ndarray:
+    def _capture(
+        self, hardware: Hardware, stimulus: Path, output: Path,
+        lease: IsolationLease,
+    ) -> np.ndarray:
+        # EVERY capture this CLI plays comes through here — the warm-up probe,
+        # each timing trial, both product captures — so this is the one place
+        # that makes "no capture plays over the household" true per capture
+        # rather than per phase.
+        lease.check()
         recorder = subprocess.Popen(
             [
                 "arecord", "-q", "-D", f"hw:CARD={hardware.card},DEV=0",
@@ -728,13 +813,15 @@ class SystemIO:
     def timing(
         self, dev, hardware: Hardware, mic: int, stimulus: Path,
         reference: np.ndarray, directory: Path, label: str,
+        lease: IsolationLease,
     ) -> tuple[int, ...]:
         aec_init.write_required(dev, "AUDIO_MGR_OP_L", [3, mic])
         aec_init.write_required(dev, "AUDIO_MGR_OP_R", [12, 0])
         trials = []
         for trial in range(TIMING_TRIALS):
             capture = self._capture(
-                hardware, stimulus, directory / f"{label}-m{mic}-{trial}.wav"
+                hardware, stimulus, directory / f"{label}-m{mic}-{trial}.wav",
+                lease,
             )
             result = analyze_timing(capture, reference)
             trials.append(result.lag)
@@ -745,13 +832,19 @@ class SystemIO:
         return tuple(trials)
 
     def warmup(
-        self, hardware: Hardware, stimulus: Path, active: np.ndarray, directory: Path
+        self, hardware: Hardware, stimulus: Path, active: np.ndarray,
+        directory: Path, lease: IsolationLease,
     ) -> LevelProbe:
         return analyze_level(
-            self._capture(hardware, stimulus, directory / WARMUP_CAPTURE_NAME), active
+            self._capture(
+                hardware, stimulus, directory / WARMUP_CAPTURE_NAME, lease
+            ),
+            active,
         )
 
-    def adapt_until_converged(self, dev, stimulus: Path) -> tuple[int, float]:
+    def adapt_until_converged(
+        self, dev, stimulus: Path, lease: IsolationLease
+    ) -> tuple[int, float]:
         """Play adaptation chunks until the chip converges.
 
         Returns the chunks played and the seconds they took — measured, because
@@ -760,6 +853,7 @@ class SystemIO:
 
         started = time.monotonic()
         for chunks in range(1, ADAPTATION_CHUNKS + 1):
+            lease.check()
             self.adapt(stimulus)
             if self.convergence(dev) == 1:
                 return chunks, round(time.monotonic() - started, 1)
@@ -777,12 +871,14 @@ class SystemIO:
 
     def product(
         self, dev, hardware: Hardware, delay: int, stimulus: Path,
-        active: np.ndarray, directory: Path,
+        active: np.ndarray, directory: Path, lease: IsolationLease,
     ) -> ProductResult:
-        on = self._capture(hardware, stimulus, directory / "aec-on.wav")
+        on = self._capture(hardware, stimulus, directory / "aec-on.wav", lease)
         aec_init.write_required(dev, "SHF_BYPASS", [1])
         try:
-            off = self._capture(hardware, stimulus, directory / "aec-off.wav")
+            off = self._capture(
+                hardware, stimulus, directory / "aec-off.wav", lease
+            )
         finally:
             self.apply(dev, hardware, delay, arm=True)
         log_event(

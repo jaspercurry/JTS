@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import sys
+import threading
 import types
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from jasper.chip_aec_alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
     LevelProbe,
+    MIC_COUNT,
     MicTiming,
     ProductResult,
     Rejected,
@@ -30,10 +33,30 @@ from jasper.chip_aec_alignment import (
     commissioning_stimulus,
 )
 from jasper.cli import aec_commission
+from jasper.correction import coordinator
+from jasper.correction.coordinator import MeasurementWindowError
 from jasper.mics import xvf3800
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT_PATH = ROOT / "deploy/systemd/jasper-aec-commission.service"
+
+
+@pytest.fixture(autouse=True)
+def gate(monkeypatch) -> list[dict]:
+    """Record what every run asks of `measurement_window`, and hold nothing."""
+
+    calls: list[dict] = []
+
+    @asynccontextmanager
+    async def window(**kwargs):
+        calls.append({"action": "acquire", **kwargs})
+        try:
+            yield
+        finally:
+            calls.append({"action": "release", "gate_owner": kwargs["gate_owner"]})
+
+    monkeypatch.setattr(coordinator, "measurement_window", window)
+    return calls
 
 
 def _status(counter: int = 0) -> dict:
@@ -84,6 +107,12 @@ class _FakeIO:
         # jts.local's own run 4: the room measured 5.45 dB of raw excess SNR
         # at MEASUREMENT_VOLUME_DB, well under the product gate's floor.
         self.level_probe = LevelProbe(5.45, 0, -60.0, -55.0)
+        self.lease = aec_commission.IsolationLease(
+            aec_commission.COMMISSION_GATE_OWNER
+        )
+
+    def audio_isolation(self) -> aec_commission.IsolationLease:
+        return self.lease
 
     def wait_reconciler_idle(self) -> None:
         self.events.append("idle")
@@ -139,13 +168,16 @@ class _FakeIO:
     def convergence(self, _dev) -> int:
         return next(self.convergence_values)
 
-    def warmup(self, _hardware, _stimulus, _active, directory) -> LevelProbe:
+    def warmup(
+        self, _hardware, _stimulus, _active, directory, _lease
+    ) -> LevelProbe:
         (directory / aec_commission.WARMUP_CAPTURE_NAME).write_bytes(b"RIFF")
         self.events.append("level_warmup")
         return self.level_probe
 
     def timing(
-        self, _dev, _hardware, mic: int, _stimulus, _reference, _directory, label
+        self, _dev, _hardware, mic: int, _stimulus, _reference, _directory, label,
+        _lease,
     ) -> tuple[int, ...]:
         self.events.append(f"timing:{label}:m{mic}")
         lag = (20, 17, 19, 21)[mic] if label == "initial" else (21, 18, 20, 22)[mic]
@@ -158,9 +190,11 @@ class _FakeIO:
     def adapt(self, _stimulus) -> None:
         self.events.append("adapted")
 
-    def product(self, _dev, _hardware, _delay, _stimulus, _active, directory):
+    def product(self, _dev, _hardware, _delay, _stimulus, _active, directory, _lease):
+        # Two captures, as the shipped method plays: AEC on, then bypassed.
         for name in ("aec-on.wav", "aec-off.wav"):
             (directory / name).write_bytes(b"RIFF")
+            self.events.append(f"product_capture:{name}")
         if self.fail_product:
             raise ValueError("suppression failed")
         return ProductResult(0.0, 15.84, (26.67, 24.24), (12.33, 9.76), 0)
@@ -360,7 +394,9 @@ def test_the_warmup_probe_sets_one_capped_measurement_level(
 class _RejectingIO(_FakeIO):
     """`_FakeIO` whose first timing trial writes a capture and is then refused."""
 
-    def timing(self, _dev, _hardware, mic, _stimulus, _reference, directory, label):
+    def timing(
+        self, _dev, _hardware, mic, _stimulus, _reference, directory, label, _lease,
+    ):
         (directory / f"{label}-m{mic}-0.wav").write_bytes(b"RIFF")
         raise TimingRejected(
             TimingResult(20, 0.31, 0.42, 121, 0.41, 8, 0.41, -30.0, -20.0, 0),
@@ -409,8 +445,12 @@ def test_a_timing_rejection_retains_its_captures_and_reports_both_arrivals(
 class _ProductRejectingIO(_FakeIO):
     """`_FakeIO` whose product pair is captured and then refused by the gate."""
 
-    def product(self, _dev, _hardware, _delay, _stimulus, _active, directory):
-        super().product(_dev, _hardware, _delay, _stimulus, _active, directory)
+    def product(
+        self, _dev, _hardware, _delay, _stimulus, _active, directory, _lease,
+    ):
+        super().product(
+            _dev, _hardware, _delay, _stimulus, _active, directory, _lease
+        )
         raise Rejected(
             "product",
             ProductResult(0.2, 15.84, (6.2, 24.24), (12.33, 9.76), 0).evidence(),
@@ -462,10 +502,12 @@ def test_a_product_rejection_retains_its_pair_and_reports_the_threshold(
 class _NeverConvergingIO(_FakeIO):
     """`_FakeIO` that captures timing, plays the train, and never converges."""
 
-    def timing(self, dev, hardware, mic, stimulus, reference, directory, label):
+    def timing(
+        self, dev, hardware, mic, stimulus, reference, directory, label, lease,
+    ):
         (directory / f"{label}-m{mic}-0.wav").write_bytes(b"RIFF")
         return super().timing(
-            dev, hardware, mic, stimulus, reference, directory, label
+            dev, hardware, mic, stimulus, reference, directory, label, lease
         )
 
     def convergence(self, _dev) -> int:
@@ -658,6 +700,233 @@ def test_commissioning_arms_reference_vector_between_stop_and_measurement(
     assert io.events[-1] == "reconciled:marker=0:reason=chip-aec-commission"
 
 
+def test_the_window_is_taken_with_commissionings_own_registered_owner(
+    gate: list[dict],
+) -> None:
+    # mux.FANIN_TEST_OWNERS is a CLOSED allowlist, and voice is already stopped
+    # by STOP_UNITS, so there is no daemon left to pause.
+    from jasper.mux import FANIN_TEST_OWNERS
+
+    assert aec_commission.COMMISSION_GATE_OWNER in FANIN_TEST_OWNERS
+    lease = aec_commission.SystemIO().audio_isolation()
+
+    lease.start()
+    lease.stop()
+
+    assert gate == [
+        {
+            "action": "acquire",
+            "gate_owner": "chip-aec-commission",
+            "skip_voice_pause": True,
+        },
+        {"action": "release", "gate_owner": "chip-aec-commission"},
+    ]
+
+
+def test_a_release_racing_the_hold_is_honoured_rather_than_dropped(
+    gate: list[dict],
+) -> None:
+    # A signal can unwind `start()` before `hold` owns the asyncio.Event that
+    # `release` wakes it through. Driven straight against HeldWindow, and NOT
+    # through IsolationLease.start()/stop(), because that is the only way to
+    # force the interleave deterministically: release first, loop second.
+    # Without the flag `release` sets, nothing ever wakes the hold and the
+    # lease's join parks until its timeout.
+    window = coordinator.HeldWindow(
+        gate_owner=aec_commission.COMMISSION_GATE_OWNER, skip_voice_pause=True
+    )
+    window.release()
+
+    # daemon: a regression leaves this hold parked forever, and the assertion
+    # below should be what reports that rather than a hang at interpreter exit.
+    holder = threading.Thread(target=lambda: asyncio.run(window.hold()), daemon=True)
+    holder.start()
+    holder.join(timeout=5)
+
+    assert not holder.is_alive()
+    assert window.error is None
+    assert [call["action"] for call in gate] == ["acquire", "release"]
+
+
+async def _cancel_when_set(trip: threading.Event, owner) -> None:
+    while not trip.is_set():
+        await asyncio.sleep(0.005)
+    owner.cancel()
+
+
+class _LosingIsolationIO(_FakeIO):
+    """`_FakeIO` that plays on while mux drops the diagnostic gate under it."""
+
+    def __init__(self, lose_at: str) -> None:
+        super().__init__()
+        self.lose_at = lose_at
+        self.abort = threading.Event()
+
+    def _lose(self, step: str) -> None:
+        if step != self.lose_at:
+            return
+        self.abort.set()
+        self.lease.lost.wait(timeout=5)
+
+    def warmup(self, hardware, stimulus, active, directory, lease) -> LevelProbe:
+        probe = super().warmup(hardware, stimulus, active, directory, lease)
+        self._lose("warmup")
+        return probe
+
+    def timing(
+        self, dev, hardware, mic, stimulus, reference, directory, label, lease,
+    ):
+        lags = super().timing(
+            dev, hardware, mic, stimulus, reference, directory, label, lease
+        )
+        if mic == 0:
+            self._lose("timing")
+        return lags
+
+    def convergence(self, dev) -> int:
+        # Never converge, so the adaptation train is stopped by the per-chunk
+        # isolation check rather than by the chip agreeing to finish.
+        return 0 if self.lose_at == "adapt" else super().convergence(dev)
+
+    def adapt(self, stimulus) -> None:
+        super().adapt(stimulus)
+        self._lose("adapt")
+
+    def product(self, dev, hardware, delay, stimulus, active, directory, lease):
+        result = super().product(
+            dev, hardware, delay, stimulus, active, directory, lease
+        )
+        self._lose("product")
+        return result
+
+
+# `warmup` loses it before a gated phase; `timing` and `adapt` lose it INSIDE
+# one, where only the per-capture and per-chunk checks can stop it; `product`
+# loses it after the last phase, where only the check in front of publication
+# can.
+@pytest.mark.parametrize("lose_at", ["warmup", "timing", "adapt", "product"])
+def test_isolation_lost_mid_run_publishes_nothing_and_hands_the_music_back(
+    tmp_path: Path, monkeypatch, gate: list[dict], lose_at: str
+) -> None:
+    # The window aborts by cancelling whoever entered it, so a lost mux lease
+    # has to reach the body: a sweep that shared the speaker with the household
+    # must never become this box's published alignment.
+    io = _LosingIsolationIO(lose_at)
+
+    @asynccontextmanager
+    async def aborting_window(**kwargs):
+        gate.append({"action": "acquire", **kwargs})
+        watch = asyncio.create_task(
+            _cancel_when_set(io.abort, asyncio.current_task())
+        )
+        try:
+            yield
+        except asyncio.CancelledError as exc:
+            raise MeasurementWindowError("isolation could not be renewed") from exc
+        finally:
+            watch.cancel()
+            gate.append({"action": "release", "gate_owner": kwargs["gate_owner"]})
+
+    monkeypatch.setattr(coordinator, "measurement_window", aborting_window)
+    artifact_path = tmp_path / "alignment.json"
+    state_path = tmp_path / "commission-state.json"
+
+    with pytest.raises(aec_commission.CommissioningError):
+        aec_commission.run_commissioning(
+            io,
+            marker_path=tmp_path / "active",
+            artifact_path=artifact_path,
+            state_path=state_path,
+            rejection_dir=tmp_path / "rejections",
+            effective_uid=0,
+        )
+
+    assert io.lease.lost.is_set()
+    assert not artifact_path.exists()
+    assert json.loads(state_path.read_text())["state"] == "failed"
+    assert [call["action"] for call in gate] == ["acquire", "release"]
+    # And it stops chirping at the next capture or chunk rather than sweeping
+    # on over whatever the household is playing.
+    captures = len([event for event in io.events if event.startswith("timing:")])
+    every_capture = 2 * MIC_COUNT
+    assert (captures, io.events.count("adapted")) == {
+        "warmup": (0, 0),
+        # These fakes stand in for a whole `SystemIO.timing`/`product` call, so
+        # what stops them is the next phase boundary. The real per-capture
+        # guard lives on `_capture` and is pinned separately below.
+        "timing": (MIC_COUNT, 0),
+        "adapt": (every_capture, 1),
+        "product": (every_capture, 1),
+    }[lose_at]
+
+
+def test_no_capture_plays_once_isolation_is_lost() -> None:
+    # `SystemIO.timing` plays TIMING_TRIALS captures per call and `product`
+    # plays two, so a guard at the phase boundary alone would let the rest of
+    # them out over the household. Every capture in this CLI is taken through
+    # `_capture`, which is why the guard sits there.
+    lease = aec_commission.IsolationLease(aec_commission.COMMISSION_GATE_OWNER)
+    lease.lost.set()
+
+    with pytest.raises(aec_commission.CommissioningError):
+        # Nothing after the guard runs, so the arguments never get read.
+        aec_commission.SystemIO()._capture(None, Path("in.wav"), Path("out.wav"), lease)
+
+
+def test_a_release_failure_after_a_pass_is_its_own_event_not_a_failed_run(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    # Music stays gated until mux's 60 s lease lapses, so the operator has to
+    # see it — but the sweep passed, and the artifact it published is good.
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+
+    @asynccontextmanager
+    async def stuck_release(**_kwargs):
+        yield
+        raise MeasurementWindowError("mux did not confirm the release")
+
+    monkeypatch.setattr(coordinator, "measurement_window", stuck_release)
+    io = _FakeIO()
+    artifact_path = tmp_path / "alignment.json"
+    state_path = tmp_path / "commission-state.json"
+
+    artifact = aec_commission.run_commissioning(
+        io,
+        marker_path=tmp_path / "active",
+        artifact_path=artifact_path,
+        state_path=state_path,
+        effective_uid=0,
+    )
+
+    assert artifact_from_dict(json.loads(artifact_path.read_text())) == artifact
+    assert json.loads(state_path.read_text())["state"] == "passed"
+    assert isinstance(io.lease.error, MeasurementWindowError)
+    assert "chip_aec_commission.isolation_release_failed" in caplog.text
+
+
+def test_a_refused_body_hands_the_music_back_once_after_its_own_cleanup(
+    tmp_path: Path, gate: list[dict]
+) -> None:
+    # A signal unwinds `_commission` on the main thread like any other refusal:
+    # its finally closes the device and restores the fader, and only then —
+    # after the cleanup reconcile has restarted outputd — does the gate lift.
+    io = _FakeIO(fail_product=True)
+
+    with pytest.raises(aec_commission.CommissioningError):
+        aec_commission.run_commissioning(
+            io,
+            marker_path=tmp_path / "active",
+            artifact_path=tmp_path / "alignment.json",
+            state_path=tmp_path / "commission-state.json",
+            rejection_dir=tmp_path / "rejections",
+            effective_uid=0,
+        )
+
+    assert [call["action"] for call in gate] == ["acquire", "release"]
+    assert io.events.index("device_closed") < io.events.index("volume_restored")
+    assert io.events[-1] == "reconciled"
+
+
 def test_commission_outcome_path_matches_control_reader() -> None:
     # jasper-control duplicates the literal (importing this module would pull
     # numpy into the long-lived daemon); the two must name one file.
@@ -839,10 +1108,9 @@ def _stateful_camilladsp(
 
 
 def _commissioning_io(monkeypatch) -> aec_commission.SystemIO:
-    """The real `SystemIO` with only the audio-idle probe and the volume-ramp
-    sleep stubbed; the fader path itself stays production. The owner install
-    is the shape `main()` registers through
-    `install_env_canonical_target_provider`."""
+    """The real `SystemIO` with only the volume-ramp sleep stubbed; the fader
+    path itself stays production. The owner install is the shape `main()`
+    registers through `install_env_canonical_target_provider`."""
     from jasper.camilla import primary_controller
     from jasper.volume_owner import VolumeOwner, install_volume_owner
 
@@ -854,7 +1122,6 @@ def _commissioning_io(monkeypatch) -> aec_commission.SystemIO:
         )
     )
     io = aec_commission.SystemIO()
-    monkeypatch.setattr(io, "assert_audio_idle", lambda: None)
     monkeypatch.setattr(aec_commission.time, "sleep", lambda _seconds: None)
     return io
 
