@@ -169,10 +169,7 @@ from ._common import (
     send_route_failure,
     terminate_process,
 )
-from .volume_floor_tone import (
-    _VOLUME_FLOOR_TONE_SESSION,
-    _VolumeFloorToneSession,
-)
+from .volume_floor_tone import VOLUME_FLOOR_TONE_SESSION
 
 logger = logging.getLogger(__name__)
 
@@ -1198,36 +1195,6 @@ async def _reconcile_volume_curve_after_settings(
         return True
     finally:
         await coord.aclose()
-
-
-async def _audition_volume_floor(
-    raw: dict[str, Any],
-    *,
-    camilla_factory: Callable[[], Any] = _camilla,
-    session: _VolumeFloorToneSession | None = None,
-    runner_factory: Callable[..., Any] | None = None,
-) -> dict[str, Any]:
-    """Start or update a held tone at the proposed 1% volume floor.
-
-    Non-persistent: only the /settings save path commits the chosen floor.
-    """
-    return await (session or _VOLUME_FLOOR_TONE_SESSION).start_or_update(
-        raw,
-        camilla_factory=camilla_factory,
-        runner_factory=runner_factory,
-    )
-
-
-async def _stop_volume_floor_tone(
-    *,
-    camilla_factory: Callable[[], Any] = _camilla,
-    reason: str = "stop",
-    session: _VolumeFloorToneSession | None = None,
-) -> dict[str, Any]:
-    return await (session or _VOLUME_FLOOR_TONE_SESSION).stop(
-        camilla_factory=camilla_factory,
-        reason=reason,
-    )
 
 
 async def _audition_profile(
@@ -5279,7 +5246,7 @@ def _make_handler(
                     try:
                         self._send_json(
                             asyncio.run(
-                                _audition_volume_floor(
+                                VOLUME_FLOOR_TONE_SESSION.start_or_update(
                                     raw,
                                     camilla_factory=camilla_factory,
                                 )
@@ -5293,7 +5260,7 @@ def _make_handler(
                     try:
                         self._send_json(
                             asyncio.run(
-                                _stop_volume_floor_tone(
+                                VOLUME_FLOOR_TONE_SESSION.stop(
                                     camilla_factory=camilla_factory,
                                     reason=str(raw.get("reason") or "stop"),
                                 )
