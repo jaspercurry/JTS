@@ -54,11 +54,8 @@ from jasper.active_speaker.attempts_loop import (
     AttemptRecord,
     FloorStats,
     decide_next,
-    first_stop_index,
     percentile,
     material_improvement_db,
-    replay,
-    summarize,
 )
 
 METRIC = "max_db_notch_excluded"
@@ -790,27 +787,6 @@ def test_an_explicit_comparator_deviation_beats_a_subtracted_one():
     # Direction is still known, and still disclosed, even though the
     # magnitude came from elsewhere.
     assert decision.improvement_db == pytest.approx(4.0)
-
-
-def test_replay_walks_every_prefix_and_first_stop_finds_the_live_stop():
-    floor = _floor()
-    history = [
-        _attempt("a1", grade_db=5.0),
-        _attempt("a2", grade_db=1.0),
-        _attempt("a3", grade_db=0.99),
-        _attempt("a4", grade_db=0.98),
-    ]
-    decisions = replay(history, floor)
-    assert len(decisions) == len(history)
-    assert [d.decision for d in decisions] == [
-        CONTINUE, CONTINUE, STOP_FLOOR, STOP_FLOOR,
-    ]
-    assert first_stop_index(decisions) == 2
-    assert first_stop_index(decisions[:2]) is None
-    assert summarize(decisions) == {
-        CONTINUE: 2, STOP_BUDGET: 0, STOP_CONVERGED: 0,
-        STOP_EVIDENCE: 0, STOP_FLOOR: 2,
-    }
 
 
 def test_every_decision_serialises_with_the_numbers_it_used():

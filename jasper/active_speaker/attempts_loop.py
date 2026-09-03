@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 #: Keep going: this attempt is gradeable and the loop has somewhere to go.
 CONTINUE = "continue"
@@ -631,9 +631,8 @@ def _apply_stop_conditions(
 
 
 def material_improvement_db() -> float:
-    """The shipped bar for "an improvement worth applying", imported not copied. Public: the
-    replay driver needs the same number for a policy floor on model-graded metrics. 0.5
-    dB is the gap between what the correction model predicts and what JTS3's hardware
+    """The shipped bar for "an improvement worth applying", imported not copied. 0.5 dB is
+    the gap between what the correction model predicts and what JTS3's hardware
     realizes. Imported inside the function to keep numpy/scipy off this dependency-free
     kernel's import path.
     """
@@ -643,38 +642,3 @@ def material_improvement_db() -> float:
     )
 
     return float(PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB)
-
-
-def replay(
-    history: Sequence[AttemptRecord],
-    floor: FloorStats,
-    *,
-    budget: AttemptBudget | None = None,
-) -> list[LoopDecision]:
-    """Every decision the loop would reach, one per attempt. A live loop stops at the first
-    non-:data:`CONTINUE`; replaying wants the whole walk instead.
-    :func:`first_stop_index` finds where a live loop would actually have stopped.
-    """
-
-    return [
-        decide_next(history[: n + 1], floor, budget=budget)
-        for n in range(len(history))
-    ]
-
-
-def first_stop_index(decisions: Sequence[LoopDecision]) -> int | None:
-    """Index of the first decision a live loop would have stopped on."""
-
-    for index, decision in enumerate(decisions):
-        if decision.decision != CONTINUE:
-            return index
-    return None
-
-
-def summarize(decisions: Sequence[LoopDecision]) -> Mapping[str, int]:
-    """How many of each decision, for a report header."""
-
-    counts = {name: 0 for name in sorted(DECISIONS)}
-    for decision in decisions:
-        counts[decision.decision] += 1
-    return counts
