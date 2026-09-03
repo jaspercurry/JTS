@@ -20,9 +20,6 @@ session_artifacts = [
   # is tuning-operator-runbook.md.)
   # Verbatim point-in-time implementation plan retained as an execution record.
   "docs/PLAN-usb-mic-export-latency-fix.md",
-  # Execution artifact: per-window build prompts for the barge-in plan. Not a
-  # canonical scan target; retire when barge-in ships.
-  "docs/barge-in-build-prompts.md",
   # Rescued verbatim from draft PR #1851's closed branch (2026-08-08); not an
   # active target for multiroom-grouping code-change routing until the plan
   # is re-verified and executed. Current operational truth remains
