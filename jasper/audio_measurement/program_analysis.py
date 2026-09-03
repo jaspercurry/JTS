@@ -4,17 +4,14 @@
 
 """Pure analysis of a crossover excitation-program capture (design §5.6).
 
-``analyze_program_capture(program, samples, sample_rate) → ProgramAnalysis``
+``analyze_program_capture(program, samples, sample_rate) -> ProgramAnalysis``
 derives segment locations, per-segment integrity, in-capture clock drift,
-per-driver gated responses, tweeter-vs-woofer alignment, and the crossover
-candidate + predicted sum from the ``(program, capture)`` pair alone, with no
-side-channel state.
-
-No I/O, no product policy, and no ``jasper.correction`` /
-``jasper.active_speaker`` import — the boundary
-``tests/test_correction_boundary_ssot.py`` pins. Product crossover transfers
-therefore arrive as host-evaluated per-role ``freqs -> complex response``
-callables on :class:`MeasurementPriors`.
+per-driver gated responses, tweeter-vs-woofer alignment and the crossover
+candidate from the ``(program, capture)`` pair alone. No I/O, no product
+policy, and no ``jasper.correction`` / ``jasper.active_speaker`` import
+(``tests/test_correction_boundary_ssot.py`` pins that boundary), so product
+crossover transfers arrive as host-evaluated per-role callables on
+:class:`MeasurementPriors`.
 """
 from __future__ import annotations
 
@@ -76,29 +73,26 @@ logger = logging.getLogger(__name__)
 
 # --- locator / drift / alignment tuning ---
 # Per-segment search half-window, seconds, around the drift-free scheduled
-# offset. Wide enough for a few-hundred-ppm drift over a ~25 s program (≈6 ms)
-# plus acoustic delay, far tighter than the global first-stimulus search.
+# offset: a few-hundred-ppm drift over a ~25 s program is ≈6 ms, plus acoustic
+# delay.
 SEGMENT_SEARCH_S = 0.030
 # Capture bound, seconds: a stuck recording is truncated to program duration
 # plus this margin before any full-rate FFT runs (1 GB Pi; mirrors
-# deconv.cap_capture_length). It also bounds the global offset the locator can
-# see — a legitimate session capture is the program plus a small start lead.
+# deconv.cap_capture_length). It also bounds the global offset the locator sees.
 CAPTURE_BOUND_MARGIN_S = 10.0
-# Global-offset locate runs at this downsampled rate so the whole-capture
-# correlation never allocates hundreds of MB; the arrival is then refined at
-# the full rate inside a tiny window.
+# Downsampled rate, Hz, for the global-offset locate, so the whole-capture
+# correlation never allocates hundreds of MB; the arrival is refined at the full
+# rate inside a tiny window afterwards.
 LOCATOR_RATE_HZ = 16_000
-# Clip run: a run of at least this many consecutive samples at/above full
-# scale. The at-full-scale threshold is owned by quality_model, not re-declared
-# here.
+# Clip run: consecutive samples at/above full scale. The at-full-scale threshold
+# is owned by quality_model, not re-declared here.
 CLIP_RUN_SAMPLES = 3
 CLIP_ABS_THRESHOLD = DRIVER.clip_abs_threshold
 DBFS_FLOOR = -120.0
 ILL_CONDITIONED_PROTECTION_DEEMBEDDING = "ill_conditioned_protection_deembedding"
 # Conditioning floor on the emitted protection `P`, dB: below it, dividing `P`
-# out amplifies the capture's noise faster than it recovers signal, so the
-# ratio is refused rather than saturated. `_compose_configured_path_ir` below
-# is the one reader that divides by `P`. One number, one owner.
+# out amplifies the capture's noise faster than it recovers signal, so
+# `_compose_configured_path_ir` refuses the ratio rather than saturating it.
 CONFIGURED_PATH_PROTECTION_FLOOR_DB: float = -12.0
 
 
@@ -112,163 +106,90 @@ class ConfiguredPathConditioningError(ValueError):
         super().__init__(f"{self.slug}: {detail}")
 
 
-# A capture is rejected when the drift baselines disagree by more than this
-# many samples-equivalent, or the primary drift exceeds the ppm bound (design
-# §5.6.3).
-#
-# A threshold in samples is only meaningful against the RESOLUTION of the
-# estimator that feeds it, so the two facts are owned here together.
-# `_estimate_drift` measures the residual with `_subsample_separation`
-# (occurrence-vs-occurrence — same stimulus, same room IR, so the peak is
-# sharp), whose measured floor over a 28-capture hardware corpus is 0.04-0.30
-# samples: 1.5 clears it by ~5x.
-#
-# The guard keeps its teeth, measured rather than argued: a real timeline step
-# is a real separation, so a +64-sample insertion lands the within-role spread
-# at 32.0 samples and a +128-sample shape at 42.7; +4 samples still rejects
-# (spread 2.0) and +2 still passes (spread 1.0). Raise this number and the
-# splice guard loosens; lower it and the estimator's own floor starts rejecting
-# clean captures.
+# Max disagreement between the drift baselines, samples-equivalent (design
+# §5.6.3), against a `_subsample_separation` estimator whose measured floor over
+# a 28-capture hardware corpus is 0.04-0.30 samples. A +4-sample insertion
+# rejects (spread 2.0); +2 passes (spread 1.0).
 GLITCH_RESIDUAL_SAMPLES = 1.5
 MAX_DRIFT_PPM = 500.0
 
-# The two woofer sweeps of a MEASURE program are bit-identical stimuli, so a
-# clean capture reproduces the same captured level for both. A larger gap is a
-# gain-rider (browser AGC nudging the level between the two sweeps) — a
-# complement to the timing baselines. A failure REUSES the
-# ``drift_baselines_disagree`` glitch verdict rather than adding a user-facing
-# reason code (design §5.2).
-#
-# Level is measured band-relative (in-band RMS over the woofer's own declared
-# band, via `_band_power` — see `_estimate_drift`), not full-band single-sample
-# PEAK: a low-frequency, room-mode-excited sweep's full-band peak is an
-# unstable estimator, and two hardware mics (Dayton iMM-6C and UMIK-2) measured
-# two genuinely-identical woofer sweeps 0.64 dB apart by full-band peak but
-# only 0.06-0.24 dB apart by in-band RMS. In-band RMS is stable, so this
-# tolerance stays tight.
+# Max captured-level gap, dB, between a MEASURE program's two bit-identical
+# woofer sweeps; a larger gap is a gain-rider and REUSES the
+# ``drift_baselines_disagree`` verdict rather than adding a reason code (design
+# §5.2). Read as band-relative in-band RMS, not full-band peak: two hardware
+# mics read two identical woofer sweeps 0.64 dB apart by peak but 0.06-0.24 dB
+# apart by in-band RMS.
 REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
-# Timeline-discontinuity change-point. The reported `epsilon_ppm` on a capture
-# carrying a real step is an ARTEFACT of that step, not a drift measurement, so
-# a single-step timeline model names it instead. That model lives in
-# `jasper.audio_measurement.timeline_slip`; `_locate_discontinuity` below is
-# the adapter that measures this capture's positions and feeds it. Fed
-# sub-sample positions rather than integer `located_start`, the fit is sharp
-# enough to gate on, so a timeline slip REJECTS a capture rather than only
-# annotating one. `GLITCH_RESIDUAL_SAMPLES` above is the separate spread guard.
-
 # Floor on `SegmentLocation.confidence` below which a located sweep is not
-# evidence: at a locate confidence of ~0.03 the step fit above will otherwise
-# report a confident-looking multi-thousand-sample step fitted from noise. This
-# module needs the "was this sweep even heard" precondition of its own, before
-# it fits a step, rather than a return value a caller might forget to
-# cross-check.
-#
-# `jasper.active_speaker.crossover_v2.capture_dispatch`'s
-# `_sweep_locate_confidence_ok` makes the identical judgment against the
-# identical signal from its own `SWEEP_LOCATE_CONFIDENCE_FLOOR`, and the two
-# copies are pinned equal by
-# tests/test_measurement_integrity_floor_contracts.py. Duplicated rather than
-# imported because the NUMBERS may diverge: they judge different segment kinds
-# through different gates, so bench work may settle them at different values.
+# evidence: at ~0.03 the timeline step fit reports a confident-looking
+# multi-thousand-sample step fitted from noise. Deliberately duplicated rather
+# than imported from `crossover_v2.capture_dispatch.SWEEP_LOCATE_CONFIDENCE_FLOOR`
+# — the two judge different segment kinds through different gates, so bench work
+# may settle them apart — and pinned equal meanwhile by
+# tests/test_measurement_integrity_floor_contracts.py.
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
 # How many TIMES more present the winning anchor hypothesis's witness must be
 # than its runner-up's before `_resolve_anchor` may call the anchor RESOLVED. A
-# separate judgment from the floor above — that one asks "is this a locate at
-# all", this one asks "did it tell the two readings apart" — and a capture can
-# pass the first and fail this one.
-#
-# A RATIO, not a difference, because the ABSOLUTE scale is unusable:
-# `_locate_in_window`'s `presence` is normalized by its OWN window's energy, so
-# a correctly-attributed capture reads 0.3572 in a quiet room and 0.0018 in a
-# loud one across this module's 0.003–0.65 fixture ramp, and no absolute number
-# sits above the quiet end and below the loud one. Comparing the two readings
-# cancels MOST of that level term, not all: they are different slices seconds
-# apart, whose norms measure 13.3% apart on both real captures.
-#
-# What justifies 50 is the measured population gap. Winner-over-runner-up:
-#
-#   cannot discriminate  garbage 1.07 · twin 3.50-3.51 · silent-driver 12.4
-#   genuinely resolved   197-11500 (fixture ramp) · 214.17 and 404.40 (the two
-#                        real jts3 captures) · 61857 (VERIFY)
-#
-# 50 is the round number nearest that gap's geometric centre
-# (sqrt(12.4 x 197) = 49.4): 4.0x clear of the worst measured
-# non-discrimination, 3.9x clear of the weakest. Only the TWIN side is flat
-# (3.51/3.51/3.50 across a 200x room-level ramp — both windows hold a
-# same-shape stimulus and correlation is scale-invariant); the resolved side
-# spans 58x over that ramp, so a low-SNR capture can walk it below 50.
-#
-# PROVISIONAL: `ambiguous=`, `presence=`, `runner_up_presence=` and
-# `runner_up_anchor=` on the `program_analysis.anchor` event are what a field
+# ratio, not a difference: `_locate_in_window`'s `presence` is normalized by its
+# own window's energy, so no absolute number separates a quiet room from a loud
+# one. 50 is the round number nearest the geometric centre of the measured
+# population gap (sqrt(12.4 x 197) = 49.4) between cannot-discriminate (garbage
+# 1.07, twin 3.50-3.51, silent-driver 12.4) and resolved (197-11500 fixture
+# ramp, 214.17/404.40 on the two real jts3 captures, 61857 on VERIFY).
+# PROVISIONAL: the `program_analysis.anchor` event's `ambiguous=`, `presence=`,
+# `runner_up_presence=` and `runner_up_anchor=` fields are what a field
 # population would be counted from.
 ANCHOR_DISCRIMINATION_RATIO = 50.0
 
-# Twin of `crossover_v2.capture_dispatch.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`,
-# duplicated for the same provisional-numbers reason as the floor above and
-# pinned against it by the same contract test. A located stimulus further than
-# this off its SCHEDULED slot did not drift there; the timeline was spliced.
-# That module applies it to MEASURE's `KIND_SWEEP` segments; this one applies
-# it to VERIFY's single `KIND_SUMMED_SWEEP`.
-#
-# INHERITED, NOT RE-DERIVED: the 5 ms comes from MEASURE evidence (a glitched
-# capture at −25…−28 ms against a clean corpus running ≤1.5 ms). No equivalent
-# VERIFY-corpus distribution has been measured, so the margin on this path is
-# an assumption carried over from the same programs and the same locator.
+# Max residual, ms, between a located VERIFY summed sweep and its SCHEDULED
+# slot; beyond it the timeline was spliced, not drifted. Twin of
+# `crossover_v2.capture_dispatch.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS` (that
+# module applies it to MEASURE's `KIND_SWEEP`, this one to VERIFY's single
+# `KIND_SUMMED_SWEEP`), duplicated and pinned by the same contract test as the
+# floor above. INHERITED, NOT RE-DERIVED: 5 ms comes from MEASURE evidence (a
+# glitched capture at −25…−28 ms against a clean corpus at ≤1.5 ms); no
+# VERIFY-corpus distribution has been measured.
 SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 
 # Sentinel for "the located sweeps were not trustworthy enough to fit a step
-# from at all" — distinct from `0.0`, which means "confidently no step" on a
-# clean, well-located capture. A `str`, not a `float`, so a consumer cannot
-# mistake it for a vanishingly small step; `DriftEstimate.discontinuity_samples`
-# and `analysis_diagnostic_summary` are the two readers that must handle the
-# non-numeric case.
+# from at all", distinct from `0.0` ("confidently no step"). A `str`, not a
+# `float`, so a consumer cannot mistake it for a vanishingly small step;
+# `DriftEstimate.discontinuity_samples` and `analysis_diagnostic_summary` must
+# handle the non-numeric case.
 DISCONTINUITY_UNRESOLVED = "unresolved"
 
 # --- VERIFY capture integrity ---------------------------------------------- #
 #
-# Three states, and the third is the point. ``_estimate_drift``'s glitch
-# verdict is a bare ``bool``, honest on MEASURE (all three of its inputs are
-# computable there) and a lie on VERIFY, which plays ONE mono summed sweep and
-# so has no repeat pair to take an epsilon, a level agreement, or a within-role
-# residual from. A VERIFY capture therefore records a per-check STATUS:
-# ``not_evaluated`` is what a structurally-inapplicable check reports, and it
-# is never collapsed into a pass.
+# Three states, because VERIFY plays ONE mono summed sweep and so has no repeat
+# pair to take an epsilon, a level agreement or a within-role residual from.
+# ``not_evaluated`` is what a structurally-inapplicable check reports, and is
+# never collapsed into a pass.
 INTEGRITY_PASS = "pass"
 INTEGRITY_FAIL = "fail"
 INTEGRITY_NOT_EVALUATED = "not_evaluated"
 
-# The two frame-accounting checks, asked BEFORE anything about the signal
-# because they are more fundamental than it: a capture missing frames is not a
-# worse measurement of the speaker, it is a measurement of something that was
-# never recorded. They read
-# :class:`~jasper.audio_measurement.frame_ledger.FrameLedger`, whose module
-# docstring owns the per-hop exactness argument.
-#
-# Two checks rather than one because the losses are independently evaluable and
-# independently caused: a capture page can report render continuity while
-# declaring no counts, and a skipped render quantum leaves every count agreeing
-# with every other while the recording is short.
+# Frame accounting, asked BEFORE anything about the signal. Two checks rather
+# than one because the losses are independently caused: a capture page can
+# report render continuity while declaring no counts, and a skipped render
+# quantum leaves every count agreeing while the recording is short. Both read
+# :class:`~jasper.audio_measurement.frame_ledger.FrameLedger`.
 INTEGRITY_CHECK_RENDER_GAP = "capture_render_gap"
 INTEGRITY_CHECK_FRAME_LEDGER = "frame_ledger"
 # The checks a single summed sweep CAN answer.
 INTEGRITY_CHECK_SWEEP_HEARD = "summed_sweep_heard"
 INTEGRITY_CHECK_SWEEP_SCHEDULE = "summed_sweep_schedule"
 INTEGRITY_CHECK_CLIPPED_RUN = "clipped_run"
-# The MEASURE-side checks a single summed sweep CANNOT answer. Recorded by name
-# rather than omitted, so a reader asking "did anything check for a dropped
-# buffer here?" gets the answer. Their MEASURE counterparts are
-# ``DriftEstimate.glitch_inputs``'s ``epsilon_out_of_bound`` /
-# ``repeat_level_disagree`` / ``residual_desync`` / ``timeline_slip``, the last
-# of which is ``_locate_discontinuity``'s step fit.
+# The MEASURE-side checks it CANNOT, recorded by name rather than omitted.
+# Their MEASURE counterparts are ``DriftEstimate.glitch_inputs``.
 INTEGRITY_CHECK_REPEAT_EPSILON = "repeat_epsilon"
 INTEGRITY_CHECK_REPEAT_LEVEL = "repeat_level_agreement"
 INTEGRITY_CHECK_WITHIN_ROLE_DESYNC = "within_role_desync"
 INTEGRITY_CHECK_DISCONTINUITY_STEP = "discontinuity_step"
 
-# Why each unevaluated check could not run — one short clause, stored on the
-# check itself so the record explains itself without a lookup table.
+# Why each unevaluated check could not run, stored on the check itself so the
+# record explains itself without a lookup table.
 _INTEGRITY_NO_REPEAT_PAIR = "verify plays one summed sweep: no repeat pair"
 _INTEGRITY_STEP_NEEDS_MORE_SWEEPS = (
     "a step fit needs more located sweeps than a verify program has"
@@ -287,18 +208,13 @@ _INTEGRITY_SWEEP_NOT_HEARD = (
 DEFAULT_ALIGN_SEARCH_MS = 2.0  # geometry prior bound on |relative delay|
 
 # Gated local-peak snap radius, as a fraction of the crossover period at Fc
-# (docs/crossover-measurement-reproducibility-plan.md §10). The drift-corrected
-# physical peak-gap anchor owns comb-lobe selection; the fine stage snaps it to
-# the nearest local maximum of the SAME upsampled GCC-PHAT correlation, but
-# only within ±(period/6) of the anchor. period/6 = λ/6 is the GPS
-# integer-ambiguity lobe-selection budget (Teunissen): a coarse anchor with
-# error σ ≤ λ/6 selects the correct comb lobe with ≥99.7% probability. On the
-# E0 hardware corpus this radius is ~2× the largest legitimate observed snap
-# (≈39 µs) and structurally below the +166 µs stable-but-wrong correlation
-# feature. A snapped selection is bounded to the radius plus at most one
-# upsampled bin of parabolic sub-sample refine (~1/GCC_UPSAMPLE sample), so it
-# can never rail onto a neighbouring comb lobe. Declaration-driven — the µs
-# radius derives from the priors' Fc (≈83.3 µs at Fc=2 kHz). PROVISIONAL.
+# (docs/historical/crossover-measurement-reproducibility-plan.md §10).
+# period/6 = λ/6 is
+# the GPS integer-ambiguity lobe-selection budget (Teunissen): a coarse anchor
+# with error σ ≤ λ/6 picks the correct comb lobe with ≥99.7% probability. On the
+# E0 corpus that is ~2× the largest legitimate observed snap (≈39 µs) and below
+# the +166 µs stable-but-wrong feature. Declaration-driven: the µs radius
+# derives from the priors' Fc (≈83.3 µs at Fc=2 kHz). PROVISIONAL.
 GCC_SNAP_RADIUS_PERIODS = 1.0 / 6.0
 
 # Alignment estimator status vocabulary.
@@ -309,75 +225,43 @@ ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 # Joint (polarity, delay) alignment selection
 # --------------------------------------------------------------------------- #
 #
-# The pair is scored on ONE objective: the ripple of the predicted summed
-# blend. Correlation (GCC-PHAT sign + the gated local-peak snap) is the SEED
-# and the tie-break, never the decider. Polarity and delay trade against each
-# other — an inverted Linkwitz-Riley pair sums to a commanded NULL at Fc, since
-# LR sums flat only in matched polarity — so the pair is one decision, not two.
-#
-# Search geometry: +/- one period at Fc around the anchor, which is the
-# ambiguity interval a comb lobe lives in, at a step fine enough that grid
-# quantization is never the reason a pair loses. Declaration-driven — the span
-# derives from the priors' Fc, never a hardcoded microsecond literal.
+# One objective: the ripple of the predicted summed blend, with correlation as
+# the seed and the tie-break. Polarity and delay are ONE decision — an inverted
+# Linkwitz-Riley pair sums to a commanded NULL at Fc. Search span: ± one period
+# at Fc, the ambiguity interval a comb lobe lives in, derived from the priors'
+# Fc rather than a µs literal.
 ALIGNMENT_FLATNESS_SPAN_PERIODS = 1.0
 ALIGNMENT_FLATNESS_STEP_US = 10.0
-# Bounded CPU (the analysis runs on the speaker): a low crossover corner makes
-# the period-derived span long, so cap the per-polarity grid and widen the step
-# to fit rather than letting the point count scale as 1/Fc. At Fc >= ~500 Hz the
-# cap is inactive and the step is exactly ALIGNMENT_FLATNESS_STEP_US.
+# Point-count cap for bounded CPU on the speaker: a low Fc makes the
+# period-derived span long, so the step widens to fit rather than the count
+# scaling as 1/Fc. Inactive at Fc >= ~500 Hz.
 ALIGNMENT_FLATNESS_MAX_STEPS = 200
-# Flat-minimum regularization, dB — the same shape and value the ripple-optimal
-# trim search uses on its own axis (RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB). A
-# wide, nearly-flat basin's exact argmin wanders with measurement noise, and an
-# applied alignment that shifts between re-measurements is a worse product
-# property than a fraction of a dB of ripple. Among every pair within this much
-# of the global minimum the search keeps the SEED pair, which keeps correlation
-# as the tie-break. A separate constant from the trim one on purpose: same
-# principle, a different axis, and neither should silently retune the other.
+# Flat-minimum regularization, dB: among every pair within this much of the
+# global minimum, keep the SEED pair, so an applied alignment does not wander
+# between re-measurements. Same shape and value as
+# RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB on its own axis, deliberately a separate
+# constant so neither silently retunes the other.
 ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 
 #: What the candidate's (polarity, delay) pair IS — never merely why some other
-#: answer was rejected. Each value names the committed thing; a qualifier
-#: ("after low SNR") rides a commitment rather than replacing it.
+#: answer was rejected.
 ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
 ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
-#: The same refusal on a speaker that already runs a commissioned inter-driver
-#: delay: the pair committed is the DECLARED polarity at the delay the applied
-#: graph already carries. Its own value rather than a qualifier on the one
-#: above, because a forensic reader of a persisted candidate must be able to
-#: tell "we held the alignment this speaker plays" from "the design asks for
-#: none". Both are declared-POLARITY commitments, so both belong to
-#: :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES` below.
+#: The declared polarity at the delay the applied graph already carries.
 ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_low_snr"
-#: The third arm of the same refusal: a graph IS applied, but what it says
-#: about its own inter-driver delay could not be read (a partial or hand-edited
-#: profile). No delay is committed — the same number the arm above commits —
-#: under its own value, because "the design asks for none" would be a claim
-#: about this speaker that nothing checked.
+#: A graph IS applied but its inter-driver delay could not be read, so no delay
+#: is committed — its own value, because "the design asks for none" would be an
+#: unchecked claim about this speaker.
 ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY = (
     "no_delay_committed_after_unreadable_apply"
 )
-#: The delay came from a bounded, provenance-carrying EXPLICIT PRESCRIPTION the
-#: host validated and handed down
-#: (:data:`MeasurementPriors.explicit_alignment_delay_us`), not from this
-#: capture's own search. Its POLARITY is still the flat-sum objective's answer,
-#: scored at that one delay — which is why this is NOT a member of
-#: :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`: the capture passed its SNR
-#: verdict, so its anchor is trustworthy and its residual (``prescribed −
-#: anchor``) is a real fact the summed model must carry.
+#: The delay came from a host-validated explicit prescription
+#: (:data:`MeasurementPriors.explicit_alignment_delay_us`), not this capture's
+#: search; its POLARITY is still the flat-sum objective's answer.
 ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION = "explicit_prescription_committed"
 #: The same prescription on a capture the SNR verdict refused for alignment.
-#: The prescription never came from this capture, so the refusal leaves it
-#: intact and it is still the delay committed, ahead of the applied-held /
-#: declared / unreadable ladder below it. The POLARITY is this capture's own
-#: question and the capture was refused, so it commits the declaration — which
-#: is why this value, and not the one above, joins
-#: :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES`.
-#:
-#: Deliberately not spelled as :data:`ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION`
-#: plus a suffix: that would make the plain value a strict PREFIX of this one,
-#: and a consumer matching an objective by substring would read the two as the
-#: same commitment.
+#: Deliberately not spelled as the value above plus a suffix: that would make
+#: the plain value a strict PREFIX of this one.
 ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = (
     "explicit_prescription_held_after_low_snr"
 )
@@ -393,188 +277,102 @@ ALIGNMENT_COMMITMENTS = frozenset({
     ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
 })
-#: The commitments where the POLARITY is the preset's declaration rather than a
-#: measured result — the low-SNR refusal, whichever delay it committed. Public
-#: because the household wording ("As designed — this measurement could not
-#: check it") is chosen in a browser module that cannot import a Python
-#: constant; ``tests/test_crossover_envelope_v2.py`` fails when the two
-#: disagree. The payload layer (``crossover_envelope_v2``) carries the enum and
-#: does not branch on it.
-#:
-#: It has a SECOND, numeric job: ``_build_candidate`` gates the anchor
-#: withdrawal on membership here, so a commitment in this set also ships a
-#: summed model carrying NO residual — a decision that reaches the
-#: accountability gate and VERIFY. The membership rule that makes both jobs one
-#: question: a commitment belongs here when THE CAPTURE'S ALIGNMENT EVIDENCE
-#: WAS WHOLLY UNTRUSTED, so neither its polarity (the wording job) nor its
-#: anchor (the withdrawal job) may be spoken for. A commitment whose polarity
-#: is declared but whose anchor IS trustworthy needs its own set, or it
-#: silently loses its residual too.
+#: Membership rule: THE CAPTURE'S ALIGNMENT EVIDENCE WAS WHOLLY UNTRUSTED, so
+#: neither its polarity nor its anchor may be spoken for. Two readers ride that
+#: one question — the household wording, chosen in a browser module that cannot
+#: import a Python constant (``tests/test_crossover_envelope_v2.py`` fails when
+#: the two disagree), and ``_build_candidate``, which gates the anchor
+#: withdrawal on membership here so these commitments ship a summed model
+#: carrying NO residual.
 ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
 })
-#: The commitments an explicit PRESCRIPTION produced — both arms of it. Public
-#: because it answers a question the host must be able to ask of a finished
-#: candidate without re-deriving it: "the prescription I handed down — was it
-#: actually committed?" Its consumer is
-#: ``crossover_v2.coordinator._round_measurements``, which banks the committed
-#: ``alignment_objective`` on the round receipt beside the prescription and
-#: spells membership here out as that block's ``committed`` bit. Load-bearing:
-#: a prescription alone records only what a round ASKED for, and there is a
-#: reachable rail — an ``ALIGNMENT_OK`` estimate whose band holds no scorable
-#: bin, so :func:`_select_alignment_pair` returns ``None`` and the seed is
-#: committed — on which a round carries a candidate's name while having
-#: measured the estimator's own answer instead.
+#: The commitments an explicit prescription produced. Read by
+#: ``crossover_v2.coordinator._round_measurements``, which banks membership here
+#: on the round receipt as the prescription's ``committed`` bit.
 ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
 })
 #: The commitments where the flat-sum objective chose the POLARITY — the only
-#: ones that may answer ``polarity_agrees_with_sum``. A set rather than a bare
-#: ``== ALIGNMENT_COMMITTED_FLAT_SUM`` because the explicit-prescription path
-#: fixes the DELAY axis and ordinarily still scores both polarities at it, so
-#: the correlation-vs-objective comparison genuinely happened and reporting
-#: ``None`` would hide a real disagreement. A narrower claim than
-#: :data:`_SELECTOR_COMMITTED_OBJECTIVES`, which is about the selector having
-#: run at all.
-#:
-#: Membership is necessary and not sufficient: a prescription may also PIN the
-#: polarity, and then the same objective commits without the axis ever being
-#: scored. That is why
+#: ones that may answer ``polarity_agrees_with_sum``. Necessary, not sufficient:
+#: a prescription may also PIN the polarity, so
 #: :attr:`AlignmentPairSelection.polarity_agrees_with_sum` asks
-#: :attr:`~AlignmentPairSelection.polarity_pinned` FIRST — the objective names
-#: which commitment was made, and only the selection knows whether the question
-#: this set is about was actually put.
+#: :attr:`~AlignmentPairSelection.polarity_pinned` FIRST.
 _FLAT_SUM_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
 })
-#: The commitments the selector itself made — as opposed to the two where it
-#: could not run and the seed simply stood. Only these answer
-#: ``polarity_agrees_with_sum``: on the others no flat sum was ever computed,
-#: and recording "correlation agreed" because nothing disagreed with it is the
-#: exact shape of dishonesty this issue is about.
+#: The commitments the selector itself made, as opposed to the two where the
+#: seed simply stood and no flat sum was ever computed.
 _SELECTOR_COMMITTED_OBJECTIVES = frozenset({
     *_FLAT_SUM_POLARITY_OBJECTIVES,
     *ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
 })
 
 #: The verdict at which a branch stops being evidence a polarity flip may rest
-#: on — read off the ALIGNMENT decision class
+#: on, read off the ALIGNMENT decision class
 #: (:data:`~jasper.audio_measurement.snr_policy.DECISION_CLASS_ALIGNMENT`, the
-#: 35 dB ``DRIVER.alignment_snr_ok_db`` law with no ``reduced`` rung), never the
-#: magnitude class the same block also carries. ``unknown``/absent means the
-#: verdict was never computed — a session whose CHECK carried no ambient window
-#: still gets the flat-sum selector, never a silent downgrade to correlation.
+#: 35 dB ``DRIVER.alignment_snr_ok_db`` law with no ``reduced`` rung) and never
+#: the magnitude class. ``unknown``/absent means never computed.
 ALIGNMENT_SNR_REFUSAL_VERDICT = "insufficient"
 
 #: Where :func:`_driver_snr_block` files its ALIGNMENT-class verdict inside the
-#: per-driver SNR block. One name, one writer, one reader
-#: (:func:`driver_alignment_snr_verdict`); the magnitude verdict keeps the
-#: block's top level.
+#: per-driver SNR block; :func:`driver_alignment_snr_verdict` is the one reader.
 DRIVER_SNR_ALIGNMENT_KEY = "alignment"
 
 # Ripple-optimal trim POLISH: re-solve the tweeter trim for minimum
-# summed-response ripple, seeded by solve_branch_trims' band-average level
-# match. `_build_candidate` runs it only where its own evaluation band
-# straddles Fc, since a band that cannot see the woofer cannot express the
-# handoff level.
-#
-# Search window: the seed +/- this many dB, at this step. A hardware corpus
-# (jts3, 5 replayed runs) observed a 1.7-6.3 dB gap between the seed and the
-# ripple optimum; +/-10 dB leaves headroom beyond that range on both sides so
-# the scan is never truncated at its own edge for a real capture, while
-# REALIZED_LEVEL_MATCH_TOLERANCE_DB below still catches a result that wanders
-# further from the level match than the committed pair may realize.
+# summed-response ripple over the seed ± this window at this step. A jts3
+# corpus (5 replayed runs) observed a 1.7-6.3 dB gap between the seed and the
+# ripple optimum, so ±10 dB is never truncated at its own edge.
 RIPPLE_TRIM_SEARCH_WINDOW_DB = 10.0
 RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
 
-# Flat-minimum regularization, dB: the exact minimizer of a SHALLOW ripple bowl
-# (0.31 dB of ripple spread across 2+ dB of trim, an observed hardware shape)
-# is sensitive to measurement noise and wanders session to session, and an
-# applied trim that shifts audibly between re-measurements is a worse product
-# property than a fraction of a dB of extra ripple. Among every candidate
-# within this many dB of the scan's GLOBAL minimum ripple — a set that
-# collapses to a single point for a sharp minimum and spans a plateau for a
-# shallow one — the search prefers whichever is CLOSEST TO THE SEED, which
-# subsumes plain exact-tie breaking. 0.25 dB is below an audible ripple
-# difference and comfortably above the scan grid's own 0.1 dB step, so a sharp
-# minimum is never widened into a plateau by grid quantization alone.
+# Flat-minimum regularization, dB: among candidates within this much of the
+# scan's GLOBAL minimum ripple, prefer whichever is CLOSEST TO THE SEED. Below
+# an audible ripple difference and above the 0.1 dB grid step, so a sharp
+# minimum is never widened into a plateau by quantization.
 RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB = 0.25
 
-# How far the ripple-optimal trim may move from the band-average seed is not a
-# bound this seam owns: the excursion passes through the give-back to become
-# the committed pair's realized inter-driver level error, so the bound is
-# REALIZED_LEVEL_MATCH_TOLERANCE_DB below, and a polish admitted past it
-# produces a pair the level check can only report against (doctrine deviation
-# (i), `docs/measurement-loop-doctrine.md`; precedent for binding an admission
-# bound to this tolerance: `intervention.MIN_TRIM_SANITY_MARGIN_RATIO`).
-# `intervention.LINEARIZATION_TRIM_SANITY_MARGIN_DB` is NOT its mirror: that
-# bounds the LINEARIZED re-solve's summed-flatness optimum against the measured
-# level anchor and wants slack OVER this tolerance rather than equality.
-
-# A trim is a passive level-match: never net gain (> 0 dB), and never beyond
-# the shared -60 dB attenuation floor owned by
-# jasper.active_speaker.level_trim.MAX_ATTENUATION_DB. Mirrored locally rather
-# than imported because this module does not import jasper.active_speaker (see
-# the module docstring). solve_branch_trims's own min()-based formula keeps its
-# output in this range implicitly; the ripple-optimal scan must enforce it
-# explicitly, since an unconstrained ripple minimum has no such guarantee.
+# A trim is a passive level-match: never net gain, never beyond the shared
+# -60 dB attenuation floor owned by
+# jasper.active_speaker.level_trim.MAX_ATTENUATION_DB, mirrored locally because
+# this module does not import jasper.active_speaker. solve_branch_trims holds
+# the range implicitly; the ripple-optimal scan must enforce it explicitly.
 RIPPLE_TRIM_MAX_DB = 0.0
 RIPPLE_TRIM_MIN_DB = -60.0
 
-# How far the two branches' realized levels — read on their own mirrored
-# ±1-octave half-bands about Fc, NOT across each driver's whole passband — may
-# sit apart after the committed trim before the pair is REPORTED as
-# mislevelled. A DISCLOSURE, not a gate: the raw per-branch trim solve places
-# the pair, and a pair past this bar reaches the household with a finding. The
-# design intent is that the two levels are EQUAL — a 2-way's summed response is
-# flat only when each branch hands off at the same level — and this is the
-# acceptance check on that intent, read by
-# :func:`realized_branch_level_match`.
-#
-# Why 3.0 dB, from both directions:
-#
-# * FLOOR — the honest disagreement this estimator shows on real captures.
-#   Across five archived JTS3 cdhorn MEASURE captures the level-match frame and
-#   the fit frame agree to 0.51-1.30 dB, and the estimator carries a KNOWN
-#   +0.54 dB linear-bin systematic (:func:`solve_branch_trims`' own N1 note). A
-#   tolerance near that floor would put a finding on every normal session, and
-#   a bar the honest spread crosses says nothing.
-# * CEILING — the level error at which the flat spec must fail anyway. An
-#   inter-branch level error of D dB appears in the summed response as a step
-#   across Fc. Under ADR-0194's low-mid reference the side BELOW Fc sits at ~0
-#   by construction and the side above carries the whole D, reaching
-#   ``flat_spec.SPEC_BANDS[1]``'s 2.0 dB tolerance at D ~ 2.0. So 3.0 sits
-#   ABOVE that ceiling, and the named consequence is that inter-branch errors
-#   of roughly 2-3 dB are spec failures on tonal balance this disclosure does
-#   not flag.
-#
-# Its importing reader is
-# ``jasper.active_speaker.crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB``,
-# where a disagreement past it flags a capture as retriable. For scale: a
-# profile the owner heard as dark reads ~9 dB here.
+# How far the two branches' realized levels — read on mirrored ±1-octave
+# half-bands about Fc, NOT each driver's whole passband — may sit apart after
+# the committed trim before the pair is REPORTED as mislevelled. A DISCLOSURE,
+# not a gate; read by :func:`realized_branch_level_match` and imported by
+# ``crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB``, where a
+# disagreement past it flags a capture as retriable. Floor: five archived JTS3
+# cdhorn captures agree to 0.51-1.30 dB with a known +0.54 dB linear-bin
+# systematic (:func:`solve_branch_trims`' N1 note). Ceiling: an inter-branch
+# error D appears as a step across Fc and reaches ``flat_spec.SPEC_BANDS[1]``'s
+# 2.0 dB tolerance at D ≈ 2.0, so 2-3 dB errors are spec failures this
+# disclosure does not flag. For scale, a profile the owner heard as dark reads
+# ~9 dB here.
 REALIZED_LEVEL_MATCH_TOLERANCE_DB = 3.0
 
-# Direct-arrival window used to isolate each driver's IR before deconvolution
+# Direct-arrival window, ms, isolating each driver's IR before deconvolution
 # magnitude / alignment (mirrors deconv defaults; the pre guard catches the
 # non-causal deconvolution shoulder).
 IR_PRE_MS = 5.0
 IR_POST_MS = 60.0
 
-# Deconvolution window pre-guard: how far BEFORE the scheduled sweep position the
-# window starts, so the window fully contains the sweep even though the global
-# offset folds in the first driver's (small) acoustic delay. Both drivers use
-# the SAME pre-guard and global-offset anchor, so their deconvolved IR direct
-# peaks land at the pre-guard sample ± the relative delay — the aligner relies
-# on that shared time base.
+# Deconvolution window pre-guard, seconds, before the scheduled sweep position.
+# Both drivers share this pre-guard and the global-offset anchor, so their IR
+# direct peaks land at the pre-guard sample ± the relative delay — the aligner
+# relies on that shared time base.
 DECONV_PRE_GUARD_S = 0.25
 
 # Gain solve: land the MEASURE capture peak in [-12, -9] dBFS with ≥6 dB guard.
-# This is the solve's CEILING rather than its target — see `_solve_role_gain`.
+# A CEILING rather than a target — see `_solve_role_gain`.
 DEFAULT_TARGET_CAPTURE_DBFS = -10.5
 GAIN_GUARD_DB = 6.0
 GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
@@ -591,18 +389,13 @@ GAIN_MAX_DIGITAL_PEAK_DBFS = -GAIN_GUARD_DB  # digital peak must sit ≤ this
 # The ambient evidence is CHECK's 12 s window, measured up to a minute before
 # MEASURE plays and (per `program`'s module docstring) deliberately taken
 # BEFORE the courtesy beeps ask the household to quiet down; `k` comes from
-# 0.8 s pilots rather than from the sweep itself. 6 dB is the same figure
-# `jasper.audio_measurement.level_solver.SOLVER_MARGIN_DB` carries for the same
-# job in the ramp-driven solver, deliberately NOT imported: the two solvers are
-# independent, and sharing the symbol would let a tuning change to one silently
-# retune the other.
+# 0.8 s pilots rather than from the sweep itself.
 MEASURE_SNR_SOLVE_MARGIN_DB = 6.0
 
-# Peak-to-RMS of the excitation itself, dB. Every stimulus segment this
-# analysis reasons about — pilots included — is rendered by
-# `program.segment_stimulus` as a constant-amplitude synchronized swept sine,
-# so its peak sits exactly 10*log10(2) dB above its own full-band RMS. Measured
-# at 3.02-3.03 dB on both real MEASURE sweeps.
+# Peak-to-RMS of the excitation itself, dB. Every stimulus segment here is
+# rendered by `program.segment_stimulus` as a constant-amplitude synchronized
+# swept sine, so its peak sits exactly 10*log10(2) dB above its own full-band
+# RMS. Measured at 3.02-3.03 dB on both real MEASURE sweeps.
 SWEEP_PEAK_TO_RMS_DB = 3.0103
 
 # --------------------------------------------------------------------------- #
@@ -3823,9 +3616,6 @@ def solve_branch_trims(
     )
     target = min(level_w, level_t)  # attenuate the louder branch
     return target - level_w, target - level_t, level_w, level_t
-
-
-
 
 
 @dataclass(frozen=True)

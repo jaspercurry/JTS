@@ -684,6 +684,22 @@ async def test_get_weather_no_default_no_arg_returns_error():
         await weather.aclose()
 
 
+async def test_get_weather_no_default_error_includes_setup_url():
+    weather = WeatherClient(
+        default_location="",
+        http=httpx.AsyncClient(),
+        setup_url="jts4.local/weather",
+    )
+    try:
+        result = await weather.get_weather()
+        assert result["error"] == (
+            "no location specified and no weather default configured "
+            "(visit jts4.local/weather to set one)"
+        )
+    finally:
+        await weather.aclose()
+
+
 async def test_get_weather_unknown_location_returns_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"results": []})

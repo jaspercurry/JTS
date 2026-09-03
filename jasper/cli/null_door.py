@@ -5,29 +5,13 @@
 """Operator door onto the summed reverse null: the CONFIRM half.
 
 ``jasper-delay-sweep propose`` computes a coordinate from banked per-driver
-curves. This plays it. One command, one mic position, one row per coordinate:
-
-* **§1b, the polarity proof** — ``--polarity both`` (the default) plays the
-  in-phase and inverted takes at delay 0. A correct, time-aligned crossover
-  cancels when one branch is flipped, so the PAIR is the proof; neither half
-  means anything alone.
-* **§4, the acoustic confirm** — ``--delays`` plays the proposal's optimum and
-  a neighbour either side. Three takes, not a blind grid: the landscape already
-  said where to look, and this says whether the air agrees.
-
-**It banks; it does not grade.** Every coordinate writes ONE self-contained JSON
-row to ``<bundle>/null_runs/`` carrying the depth AND everything needed to judge
-it — which shoulders it was read at, whether they were clamped, the trims in the
-graph, the depth ceiling those trims impose, the graph fingerprint and the WAV
-hash. Grading is comparing rows, and the row IS the join: no record lookup, no
-index, nothing to go stale between the measurement and the reader.
-
-**A refusal is an output, not an error.** A corner whose two-branch overlap
-cannot bracket Fc has no null to confirm, and the sentence saying so is printed
-verbatim from the module that decided it, in a row shaped like the others.
-
-Applying a confirmed delay is NOT this tool's job. The prescription door owns
-that, with its own lobe gate and its own receipts.
+curves; this plays it. ``--polarity both`` plays the in-phase and inverted
+takes at delay 0 — the PAIR is the polarity proof, neither half means anything
+alone — and ``--delays`` plays the proposal's optimum and a neighbour either
+side. It banks and does not grade: every coordinate writes ONE self-contained
+JSON row to ``<bundle>/null_runs/`` carrying everything needed to judge it, so
+the row IS the join. A refusal is an output, printed verbatim from the module
+that decided it. Applying a confirmed delay is the prescription door's job.
 """
 
 from __future__ import annotations
@@ -52,22 +36,17 @@ EXIT_INPUT = 2
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
 AUTHORITY_TIER = "measured"
 
-#: Compose-time refusals carry the COMPOSER's reason
-#: (``program.NULL_REFUSE_*``) rather than a slug spelled again here — one
-#: vocabulary, owned where the decision is made.
+#: Compose-time refusals carry the COMPOSER's reason (``program.NULL_REFUSE_*``)
+#: rather than a slug spelled again here.
 REFUSE_NO_SHOULDERS = "null_confirm_shoulders_unreadable"
 REFUSE_UNUSABLE_CAPTURE = "null_confirm_capture_unusable"
-#: The microphone half failed: none answered before the run, or the recorder
-#: faulted mid-walk. One slug, two statuses -- "refused" with no rows when it
-#: lands before the door, "partial" with the banked ids when it lands between
-#: two coordinates.
+#: The microphone half failed. One slug, two statuses: "refused" with no rows
+#: when it lands before the door, "partial" with the banked ids when it lands
+#: between two coordinates.
 REFUSE_CAPTURE_FAILED = "null_confirm_capture_failed"
 
-#: The three named mid-run failures (B4). Spelled the way ``jasper-measure``
-#: spells them, because an operator reading two doors' partial payloads is
-#: reading one vocabulary: the running graph could not be put back or
-#: re-proven, the isolation window was lost, the measurement volume stopped
-#: being open. None is a programming error and all three can arrive after k
+#: The three named mid-run failures (B4), spelled the way ``jasper-measure``
+#: spells them. None is a programming error and all three can arrive after k
 #: rows are already on disk.
 REFUSE_GRAPH_LOST = "null_confirm_graph_lost"
 REFUSE_ISOLATION_LOST = "null_confirm_isolation_lost"
@@ -77,13 +56,10 @@ POLARITY_BOTH = "both"
 POLARITY_KEEP = "keep"
 POLARITY_INVERT = "invert"
 
-#: This door's identity on the mux diagnostic gate, in
-#: ``mux.FANIN_TEST_OWNERS`` beside ``seat-level`` and ``doctor-aec-probe``.
-#: That allowlist is CLOSED: an owner missing from it is refused the gate, the
-#: correction lane never carries the stimulus, and this door measures silence
-#: with every daemon healthy. Inheriting the wizard's ``correction-measurement``
-#: would pass the allowlist while filing this door's hold under the wizard in
-#: every lease and crash-recovery read.
+#: This door's identity on the mux diagnostic gate. ``mux.FANIN_TEST_OWNERS`` is
+#: CLOSED: an owner missing from it is refused the gate and this door measures
+#: silence with every daemon healthy. Inheriting the wizard's
+#: ``correction-measurement`` would file this door's hold under the wizard.
 DOOR_GATE_OWNER = "jasper-null"
 
 #: The mic sits on the design axis at the reference distance, so the impulse
@@ -92,9 +68,8 @@ DOOR_GATE_OWNER = "jasper-null"
 CAPTURE_GEOMETRY = "reference_axis"
 
 #: Seconds of room tail captured after the program ends, and the slack allowed
-#: between arming the recorder and the first sample of audio. Both are the wired
-#: capture path's own numbers; a second opinion here would size the buffer
-#: differently from the capture it is buffering.
+#: between arming the recorder and the first sample. Both are the wired capture
+#: path's own numbers.
 POST_ROLL_S = 1.0
 PRE_PLAY_ALLOWANCE_S = 20.0
 
@@ -102,9 +77,8 @@ PRE_PLAY_ALLOWANCE_S = 20.0
 def _mid_run_failures() -> dict[type[BaseException], str]:
     """The named mid-run failures, and the reason each renders as.
 
-    Imported lazily like everything else in this door — and resolved ONCE per
-    run rather than per coordinate, so the tuple `except` is built from the
-    same classes the reason lookup scans.
+    Resolved ONCE per run rather than per coordinate, so the tuple `except` is
+    built from the same classes the reason lookup scans.
     """
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
@@ -116,8 +90,7 @@ def _mid_run_failures() -> dict[type[BaseException], str]:
         MeasurementWindowError: REFUSE_ISOLATION_LOST,
         SessionVolumePlanError: REFUSE_VOLUME_LOST,
         # The mic is the fourth thing that can stop a walk between two
-        # coordinates -- the recorder faults, the device goes away -- and it
-        # left `main` as a bare traceback over k banked rows.
+        # coordinates, and it left `main` as a bare traceback over k banked rows.
         WiredCaptureError: REFUSE_CAPTURE_FAILED,
     }
 
@@ -128,8 +101,7 @@ def _mid_run_reason(
     """Which reason this failure renders as. Scanned, not keyed.
 
     ``type(exc)`` misses a SUBCLASS of any of the three, which would fall
-    through to a bare traceback — the exact outcome the partial payload exists
-    to prevent.
+    through to the bare traceback the partial payload exists to prevent.
     """
     for cls, reason in failures.items():
         if isinstance(exc, cls):
@@ -140,10 +112,8 @@ def _mid_run_reason(
 class NullRunInterrupted(RuntimeError):
     """A mid-run failure, carrying the rows that ARE on disk.
 
-    Letting one of the three named failures traceback out would exit with no
-    JSON while k rows sit in ``null_runs/`` unnamed — evidence the operator has
-    no id for and the next run cannot find. So the ids this run DID bank travel
-    with the reason and ``main`` renders both.
+    A traceback would exit with no JSON while k rows sit in ``null_runs/``
+    unnamed — evidence the operator has no id for.
     """
 
     def __init__(self, reason: str, detail: str, banked: Sequence[str]) -> None:
@@ -162,20 +132,15 @@ class NullDoorRefused(RuntimeError):
         self.detail = detail
 
 
-# --------------------------------------------------------------------------- #
-# resolution
-# --------------------------------------------------------------------------- #
 
 
 def _context() -> Any:
     """The applied profile's own answer to every measurement input.
 
-    ONE owner: ``resolve_conductor_context`` reads the live status the wizard
-    reads and derives the corner, the per-role bands, caps and duration limits,
-    the session volume and the playback device from the applied profile. This
-    door asks it rather than re-deriving any of them from flags — a corner typed
-    on a command line is a claim about the graph, and the graph can answer for
-    itself.
+    ONE owner: ``resolve_conductor_context`` derives the corner, the per-role
+    bands, caps and duration limits, the session volume and the playback device
+    from the applied profile. A corner typed on a command line is a claim about
+    the graph, and the graph can answer for itself.
     """
     from jasper.web.correction_crossover_backend import status_payload
     from jasper.web.correction_crossover_v2 import resolve_conductor_context
@@ -186,10 +151,9 @@ def _context() -> Any:
 def _level_trims(context: Any) -> tuple[dict[str, float], str]:
     """The branch level match, through its single owner.
 
-    Attenuation-only by construction at the writer, which is what keeps the
-    branch-gap ceiling below and the per-role caps argument two independent
-    legs. Empty is an honest answer — a box with no level evidence measures
-    unmatched branches, and the row's ``gap_ceiling_db`` says what that costs.
+    Attenuation-only by construction at the writer, which keeps the branch-gap
+    ceiling below and the per-role caps two independent legs. Empty is an
+    honest answer, and the row's ``gap_ceiling_db`` says what it costs.
     """
     from jasper.active_speaker.baseline_profile import measured_level_trims
     from jasper.active_speaker.crossover_preview import load_crossover_preview
@@ -212,25 +176,12 @@ def _gap_ceiling_db(
     """The deepest null this speaker's BRANCH LEVELS allow. Disclosure, never a
     refusal.
 
-    Two branches whose acoustic outputs differ by ``gap`` cannot cancel below
-    ``-20*log10(1 - 10**(-gap/20))`` however right the delay is, so a confirm
-    run on unmatched branches measures its own mismatch and calls it alignment.
-
-    **The gap is what the level match REMOVED, not what it installed.** Reading
-    it off the installed trims inverts the fact twice over: a well-matched
-    speaker carries the biggest trims and would stamp every row with a false
-    ceiling, while a box with no level evidence at all -- the genuinely
-    unmatched case, the one a reader most needs warned about -- would report
-    unbounded. So:
-
-    * **Trims installed** — the branches were brought to equal output, and the
-      declared spread no longer bounds anything. Unbounded, with the row's own
-      ``trims_db`` and ``trims_source`` disclosing what was applied.
-    * **No trims** — the branches run at their declared sensitivities, and THAT
-      spread is the bound. On the reference 2-way it is the difference the level
-      match exists to remove.
-    * **Fewer than two declared sensitivities** — no evidence either way, so no
-      claim: unbounded, and ``trims_source`` says the evidence was absent.
+    Two branches whose outputs differ by ``gap`` cannot cancel below
+    ``-20*log10(1 - 10**(-gap/20))`` however right the delay is. The gap is what
+    the level match REMOVED, not what it installed, so: trims installed ->
+    unbounded (the branches were brought to equal output); no trims -> the
+    declared sensitivity spread IS the bound; fewer than two declared
+    sensitivities -> unbounded, with ``trims_source`` naming the absence.
     """
     from jasper.audio_measurement.interference_nulls import (
         branch_gap_null_depth_ceiling_db,
@@ -261,9 +212,7 @@ def _default_delays(spec: Any, args: argparse.Namespace) -> tuple[float, ...]:
 
     §4's three takes, from the propose door's own
     ``confirmation_coordinates_us`` rather than a grid this door invents. With
-    no bundle to read, or no banked take carrying both roles, the answer is
-    ``(0.0,)``: the polarity proof needs no proposal, and inventing coordinates
-    for a confirm nobody computed would measure noise on purpose.
+    no bundle, or no banked take carrying both roles, the answer is ``(0.0,)``.
     """
     if args.bundle_dir is None:
         return (0.0,)
@@ -288,9 +237,9 @@ def _default_delays(spec: Any, args: argparse.Namespace) -> tuple[float, ...]:
             found[0], found[1], spec=spec, inverted_role=args.inverted_role,
         )
     except DelayLandscapeError:
-        # The bank cannot support a proposal. The polarity proof at zero still
-        # can, and it is the take that decides whether a proposal is even worth
-        # computing -- so this degrades rather than refusing the run.
+        # The bank cannot support a proposal, but the polarity proof at zero
+        # still can — and it is the take that decides whether a proposal is
+        # worth computing, so this degrades rather than refusing the run.
         return (0.0,)
     return tuple(dict.fromkeys((0.0, *landscape.confirmation_coordinates_us)))
 
@@ -300,11 +249,9 @@ def _coordinates(
 ) -> list[tuple[Any, bool]]:
     """Every (delay candidate, inverted?) pair this run measures.
 
-    ``--polarity both`` pairs the two polarities at delay 0 ONLY. A flipped
-    branch is how a correct crossover is made to cancel, so the in-phase take is
-    the reference the inverted one is read against — and that reference is a
-    property of the speaker, not of a candidate delay. Repeating it at every
-    coordinate would double a walk's audio for a number that cannot move.
+    ``--polarity both`` pairs the two polarities at delay 0 ONLY: the in-phase
+    take is a property of the speaker, not of a candidate delay, so repeating
+    it at every coordinate would double a walk's audio for a fixed number.
     """
     inversions = {
         POLARITY_BOTH: (False, True),
@@ -320,18 +267,14 @@ def _coordinates(
     return out
 
 
-# --------------------------------------------------------------------------- #
-# one coordinate
-# --------------------------------------------------------------------------- #
 
 
 def _sweep_meta(segment: Any) -> dict[str, Any]:
     """The deconvolution reference: the PARENT sweep, ungated.
 
-    Every branch regenerates this same waveform and differs only in which of its
-    samples are silenced, so the parent is what both channels have in common and
-    the only honest reference for the sum they made in the air. Deconvolving
-    against one branch's gated copy would model the gate as part of the speaker.
+    Every branch regenerates this same waveform and differs only in which
+    samples are silenced, so deconvolving against one branch's gated copy would
+    model the gate as part of the speaker.
     """
     from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
     from jasper.audio_measurement.sweep import synchronized_swept_sine
@@ -349,14 +292,11 @@ def _sweep_meta(segment: Any) -> dict[str, Any]:
 def _compose(context: Any, fc_hz: float) -> tuple[Any, Any, float]:
     """The stimulus, its channel plan, and the ONE gain both branches carry.
 
-    **This door computes the clamp; the composer applies it.** The composer takes
-    a single ``gain_db`` and documents that its caller clamps — because two
-    branches at different levels are not the same waveform and cannot cancel, so
-    a per-role clamp inside it would destroy the identity the null is measured
-    by. The clamp is therefore the MOST RESTRICTIVE role cap, backed off by the
-    shared measurement headroom, computed here and satisfied for every role by
-    construction. Admission still checks it per role on the rendered bytes; this
-    is what keeps that check from being the first thing to notice.
+    This door computes the clamp; the composer applies it. Two branches at
+    different levels are not the same waveform and cannot cancel, so a per-role
+    clamp inside the composer would destroy the identity the null is measured
+    by. The clamp is the MOST RESTRICTIVE role cap backed off by the shared
+    measurement headroom; admission still checks it per role on rendered bytes.
     """
     from jasper.active_speaker.crossover_v2.programs import back_off_gain
     from jasper.audio_measurement.program import (
@@ -382,10 +322,8 @@ def _compose(context: Any, fc_hz: float) -> tuple[Any, Any, float]:
 def _publish_program(program: Any, work_dir: Path, relpath: str) -> Any:
     """Write the program WAV ONCE and name it by its bytes.
 
-    Every coordinate plays the SAME stimulus — what changes between them is the
-    graph, never the sound — so one WAV serves the whole run and its sha256 is
-    the one hash every row carries. Re-rendering per coordinate would produce N
-    byte-identical files and N chances for them to stop being identical.
+    Every coordinate plays the SAME stimulus — what changes is the graph — so
+    one WAV serves the whole run and its sha256 is the hash every row carries.
     """
     from jasper.audio_measurement.evidence_identity import ArtifactIdentity
     from jasper.audio_measurement.program import write_program_wav
@@ -407,9 +345,8 @@ def _resolve_mic() -> Any:
     """The measurement mic, resolved BEFORE the speaker is claimed.
 
     ``resolve_wired_mic`` fails soft to ``None``; the refusal is the caller's.
-    Asking here rather than at the first capture is what keeps a missing mic
-    from costing the household its volume and a graph swap before anyone finds
-    out there was nothing to record with.
+    Asking here keeps a missing mic from costing the household its volume and a
+    graph swap first.
     """
     from jasper.audio_measurement.wired_capture import (
         WiredCaptureError,
@@ -432,8 +369,7 @@ async def _play_and_capture(
     """Admit, play through the installed graph, and capture. Returns the mic WAV.
 
     ``volume_plan`` must be the instance the door opened: ``play_program``
-    asserts it is active AND opened in this process, so a second plan built over
-    the same statefile is refused on every play.
+    asserts it is active AND opened in this process.
     """
     from jasper.active_speaker.crossover_v2.composition import (
         bind_program_playback_seams,
@@ -492,13 +428,11 @@ def _depth(
 ) -> tuple[float, Any]:
     """The null depth, read at the shoulders the propose door would have used.
 
-    Three owners, one step each. ``summed_capture_curve`` turns the capture into
-    a calibrated magnitude (or refuses it); ``shoulder_span`` decides where the
-    shoulders may sit, given the band over which BOTH branches were open at full
-    amplitude — the acoustic analogue of two banked curves' shared band; and
-    ``crossover_null_depth_db`` does the subtraction. A shoulder outside that
-    overlap would be read where only one driver played, which is a passband
-    level, not an un-cancelled reference.
+    Three owners, one step each: ``summed_capture_curve`` calibrates the
+    capture, ``shoulder_span`` decides where the shoulders may sit given the
+    band over which BOTH branches were open at full amplitude, and
+    ``crossover_null_depth_db`` subtracts. A shoulder outside that overlap
+    would be read where only one driver played.
     """
     from jasper.active_speaker.driver_acoustics import summed_capture_curve
     from jasper.audio_measurement.analysis import crossover_null_depth_db, shoulder_span
@@ -509,13 +443,9 @@ def _depth(
         crossover_fc_hz=fc_hz,
         capture_geometry=CAPTURE_GEOMETRY,
         # NO ambient window, and that is a deletion rather than a smaller
-        # number. Any `ambient_duration_s` selects the signal-located branch,
-        # whose guard needs the controlled quiet to reach back PAST the whole
-        # sweep (`ambient_start < controlled_start` otherwise) -- so it would
-        # have to exceed the sweep plus its lead, and this door records no such
-        # quiet. The paired ambient it would produce is discarded here anyway:
-        # `summed_capture_curve` wants the magnitude, and the SNR verdict layer
-        # that consumed the ambient is the part #3390 deleted.
+        # number: any `ambient_duration_s` selects the signal-located branch,
+        # whose guard needs controlled quiet reaching back PAST the whole sweep,
+        # and this door records no such quiet.
     )
     if curve is None:
         raise NullDoorRefused(
@@ -525,8 +455,7 @@ def _depth(
             f"above the lower shoulder {fc_hz / 2.0:g} Hz",
         )
     # The REAL analysis grid, not a stand-in: `shoulder_span` counts the bins
-    # either side of Fc to decide whether a shoulder can be placed at all, and
-    # the only honest answer to that is the grid the depth is interpolated on.
+    # either side of Fc to decide whether a shoulder can be placed at all.
     grid = curve.freqs
     span = shoulder_span(
         grid[(grid >= plan.overlap_hz[0]) & (grid <= plan.overlap_hz[1])],
@@ -546,9 +475,6 @@ def _depth(
     return float(depth_db), span
 
 
-# --------------------------------------------------------------------------- #
-# the row
-# --------------------------------------------------------------------------- #
 
 
 def _row(
@@ -567,12 +493,11 @@ def _row(
     wav_sha256: str | None = None,
     refusal: NullDoorRefused | None = None,
 ) -> dict[str, Any]:
-    """One self-contained coordinate. Everything a grader needs, nothing it must join.
+    """One self-contained coordinate. Everything a grader needs, nothing to join.
 
-    ``inverted_role`` rides beside ``polarity`` because "inverted" without the
-    flipped branch does not name the measurement: two speakers can both report
-    an inverted take and have flipped different drivers, and the depths are not
-    comparable. It is ``None`` on a take that flipped nothing.
+    ``inverted_role`` rides beside ``polarity`` because two speakers can both
+    report an inverted take having flipped different drivers, and those depths
+    are not comparable. ``None`` on a take that flipped nothing.
     """
     row: dict[str, Any] = {
         "schema_version": 1,
@@ -587,20 +512,17 @@ def _row(
         "trims_db": dict(trims_db),
         "trims_source": trims_source,
         # `inf` is not JSON, and a null here reads as "unbounded" the way the
-        # float does -- a matched pair has no ceiling to disclose.
+        # float does.
         "gap_ceiling_db": (
             None if math.isinf(gap_ceiling_db) else round(gap_ceiling_db, 2)
         ),
         "graph_fingerprint": graph_fingerprint,
         "wav_sha256": wav_sha256,
-        # DISCLOSED, not decided (review note 7). The depth is read off an
-        # UNCALIBRATED capture, and unlike a level read the mic's own response
-        # does not cancel here: the shoulders sit an octave either side of Fc,
-        # so any tilt across that span biases the subtraction directly. Whether
-        # both doors should thread the measurement mic's calibration is one
-        # decision for both of them, not something this door settles alone --
-        # so every row says which it was, and a later calibrated run is
-        # distinguishable from these rather than silently comparable.
+        # DISCLOSED, not decided. The depth is read off an UNCALIBRATED capture
+        # and the mic's own response does not cancel here: the shoulders sit an
+        # octave either side of Fc, so any tilt across that span biases the
+        # subtraction. Every row says which it was, so a later calibrated run is
+        # distinguishable rather than silently comparable.
         "calibrated": False,
     }
     if refusal is not None:
@@ -613,13 +535,9 @@ def _row(
         row["clamped_hi"] = None
         return row
     row["status"] = "measured"
-    # Never `depth_db or 0.0`. A measured row with no depth is a defect, and
-    # 0.0 dB is the WORST way to say so: it is a legal, plausible reading ("no
-    # null formed") that a grader cannot tell from a real one. Unreachable
-    # today -- the refusal arm returned above and `_depth` returns a float
-    # unconditionally -- so this is the loud failure the neighbouring
-    # `span.used_hz` reads already give, spelled out because the signature
-    # still admits ``None`` for the refusal arm's sake.
+    # Never `depth_db or 0.0`: 0.0 dB is a legal, plausible reading ("no null
+    # formed") a grader could not tell from a real one. Unreachable today; kept
+    # because the signature still admits ``None`` for the refusal arm.
     if depth_db is None or span is None:
         raise ValueError(
             "a measured null row needs both a depth and the shoulders it was "
@@ -644,9 +562,6 @@ def _write_row(rows_dir: Path, row: Mapping[str, Any]) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------- #
-# the run
-# --------------------------------------------------------------------------- #
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -676,9 +591,7 @@ async def _run(args: argparse.Namespace) -> int:
         """Every row this run writes, built ONE way.
 
         A refused coordinate carries the same identity fields as a measured
-        one — it has to, or a reader cannot tell WHICH coordinate could not be
-        measured — so both go through here rather than through two spellings
-        that drift.
+        one, or a reader cannot tell WHICH coordinate could not be measured.
         """
         row = _row(
             fc_hz=fc_hz,
@@ -699,12 +612,9 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         program, plan, gain_db = _compose(context, fc_hz)
     except NullConfirmUnavailable as exc:
-        # The composer's OWN reason, not one slug for all of them. Four distinct
-        # facts refuse a compose -- an invalid corner, no run-up past the
-        # shoulders, a role whose declared band misses the sweep, an overlap that
-        # does not bracket Fc -- and a grader keys on the reason, so collapsing
-        # them would make every unbuildable corner look identical in the bank.
-        # The sentence is verbatim too: the module that decided owns the words.
+        # The composer's OWN reason, not one slug for all of them: four distinct
+        # facts refuse a compose and a grader keys on the reason. The sentence is
+        # verbatim too — the module that decided owns the words.
         _bank(
             spec.dsp_candidate(0.0), False, "",
             refusal=NullDoorRefused(exc.reason, str(exc)),
@@ -721,10 +631,9 @@ async def _run(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
-    # OUTSIDE, deliberately: `resolve_wired_mic` is a pure READ. It writes
-    # nothing a refused run could damage, and asking here is what keeps a
-    # missing mic from costing the household a fader claim and a graph swap
-    # before anyone finds out there was nothing to record with.
+    # OUTSIDE, deliberately: `resolve_wired_mic` is a pure READ, so asking here
+    # keeps a missing mic from costing the household a fader claim and a graph
+    # swap first.
     mic = _resolve_mic()
 
     try:
@@ -741,12 +650,10 @@ async def _run(args: argparse.Namespace) -> int:
             action="confirming a reverse null",
             gate_owner=DOOR_GATE_OWNER,
         ) as door:
-            # INSIDE, and that is #3393's B2 lesson taken rather than restated:
-            # a write that runs before the interlock runs even when the door
-            # refuses. This one publishes `null_programs/stimulus.wav` under a
+            # INSIDE: a write that runs before the interlock runs even when the
+            # door refuses. This publishes `null_programs/stimulus.wav` under a
             # fixed name, so a refused second run would overwrite the bytes a
-            # live run's artifact sha256 is bound to and fail its verified-WAV
-            # check mid-session.
+            # live run's artifact sha256 is bound to (#3393 B2).
             artifact = _publish_program(
                 program, work_dir, "null_programs/stimulus.wav",
             )
@@ -759,8 +666,7 @@ async def _run(args: argparse.Namespace) -> int:
                     )
                     # Per COORDINATE, not per session: each is a different
                     # graph. `install` is contracted idempotent, so the door's
-                    # own open-time install costs one liveness read here
-                    # rather than a second load.
+                    # own open-time install costs one liveness read here.
                     fingerprint = await door.graph.install(
                         (args.inverted_role,) if inverted else (),
                         delays,
@@ -785,18 +691,15 @@ async def _run(args: argparse.Namespace) -> int:
                         wav_sha256=artifact.sha256, **outcome,
                     )
             except tuple(mid_run) as exc:
-                # #3393's B4 lesson. Any of the three can land BETWEEN two
-                # coordinates with rows already on disk; a traceback would
-                # exit with no JSON while those rows sit in null_runs/
-                # unnamed. The door's own give-back still runs — this only
-                # decides what the operator reads.
+                # Any of the three can land BETWEEN two coordinates with rows
+                # already on disk; a traceback would exit with no JSON while
+                # those rows sit in null_runs/ unnamed (#3393 B4).
                 raise NullRunInterrupted(
                     _mid_run_reason(mid_run, exc), str(exc), banked,
                 ) from exc
     except SessionGraphError as exc:
-        # `_give_back` can raise this OUTSIDE the loop's own catch above: a
-        # clean walk, then the door's own exit (door.py's `finally`,
-        # body_error=None) failed to put the entry graph back. `banked`
+        # `_give_back` can raise this OUTSIDE the loop's own catch: a clean
+        # walk whose door exit failed to put the entry graph back. `banked`
         # already holds every row this walk earned.
         raise NullRunInterrupted(REFUSE_GRAPH_LOST, str(exc), banked) from exc
 
@@ -808,9 +711,7 @@ def _protection_sections(context: Any) -> Mapping[str, Any] | None:
     """The confirmed per-role protection filters, from the applied profile.
 
     Derived on-box from the safety profile and the role targets, never from a
-    flag: these are what keep a tweeter's protective high-pass in the
-    measurement graph, and a door that let an operator name them could name them
-    away.
+    flag: a door that let an operator name them could name them away.
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
 
@@ -964,18 +865,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = build_parser().parse_args(argv)
     configure_verbose_logging(verbose=args.verbose)
-    # Installs this process's VolumeOwner (and the canonical target the duck
-    # release reads). Without it there is no SESSION_MEASUREMENT rank to claim
-    # the fader through, and the door REFUSES rather than minting a second
-    # authority over it — see `crossover_v2.door._measurement_claim`.
+    # Installs this process's VolumeOwner and the canonical target the duck
+    # release reads. Without it there is no SESSION_MEASUREMENT rank to claim
+    # the fader through and the door REFUSES.
     load_env_files()
     install_env_canonical_target_provider()
     try:
         return asyncio.run(_run(args))
     except NullRunInterrupted as exc:
-        # k rows are on disk and named. The operator gets both halves — why the
-        # run stopped, and which coordinates it did bank — instead of a
-        # traceback over evidence nothing can find.
+        # k rows are on disk and named, so the operator gets both halves: why
+        # the run stopped, and which coordinates it did bank.
         print(json.dumps({
             "status": "partial",
             "reason": exc.reason,
@@ -998,9 +897,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_REFUSED
     except WiredCaptureError as exc:
         # The mic half, landing BEFORE the door — no rows exist, so this is a
-        # refusal rather than a partial. Every exit from this door speaks JSON:
-        # an operator (or the LLM reading a run) must never have to tell a
-        # refusal from a crash by whether stdout was empty.
+        # refusal rather than a partial. Every exit from this door speaks JSON.
         print(json.dumps({
             "status": "refused",
             "reason": REFUSE_CAPTURE_FAILED,
@@ -1009,9 +906,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"refused ({REFUSE_CAPTURE_FAILED}): {exc}", file=sys.stderr)
         return EXIT_REFUSED
     except NullWalkError as exc:
-        # A coordinate off the shared walk's grid. The grid is the one the
-        # proposal was computed on, so a hand-typed --delays value that misses
-        # it names a graph nobody proposed -- an input fault, not a refusal.
+        # A coordinate off the shared walk's grid, which is the grid the
+        # proposal was computed on: an input fault, not a refusal.
         print(f"unusable delay coordinate: {exc}", file=sys.stderr)
         return EXIT_INPUT
     except OSError as exc:

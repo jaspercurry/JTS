@@ -677,8 +677,10 @@ class WeatherClient:
         default_lon: float | None = None,
         default_name: str = "",
         http: httpx.AsyncClient | None = None,
+        setup_url: str = "",
     ) -> None:
         self._default = default_location
+        self._setup_url = setup_url
         self._units = units if units in {"celsius", "fahrenheit"} else "celsius"
         self._http = http or httpx.AsyncClient(timeout=5.0)
         self._owns_http = http is None
@@ -851,9 +853,10 @@ class WeatherClient:
             if explicit_place:
                 place = explicit_place
             if not place:
+                setup_hint = self._setup_url or "/weather/"
                 return {
                     "error": "no location specified and no weather default "
-                    "configured (visit /weather/ to set one)",
+                    f"configured (visit {setup_hint} to set one)",
                 }
             try:
                 loc = await self._geocode(place)

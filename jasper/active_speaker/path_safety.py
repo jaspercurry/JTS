@@ -530,11 +530,10 @@ def _startup_muted_by_candidate(staged_config: dict[str, Any]) -> bool:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return False
-    # Last-resort text scan for metadata that carries neither the gate nor a
-    # software-guard block (hand-authored / legacy staged files). Recognizes both
-    # mute spellings: the per-role `as_*_startup_mute` of the legacy startup
-    # emitter and the per-output `as_out{idx}_commission_mute` of the commissioning
-    # emitter. Deliberately coarse — the precise gate/guard above is authoritative.
+    # Last-resort text scan for metadata carrying neither the gate nor a
+    # software-guard block. Recognizes both mute spellings: the per-role
+    # `as_*_startup_mute` and the per-output `as_out{idx}_commission_mute`.
+    # Deliberately coarse — the gate/guard above is authoritative.
     return (
         ("startup_mute" in text or "commission_mute" in text)
         and "mute: true" in text
@@ -568,29 +567,20 @@ def _tweeter_protection_floor_verdict(
 ) -> tuple[bool, dict[str, str] | None]:
     """Whether the staged crossover honours the tweeter's declared floor.
 
-    Returns ``(honoured, blocker_issue_or_None)``. The two compared facts are
+    Returns ``(honoured, blocker_issue_or_None)``. Both compared facts are
     published by the producer of the staged graph (``staging``) rather than
     re-derived here, so this gate refuses the config that was actually staged.
 
-    **One rule: refuse unless both facts are present.** ``staging`` writes both
-    keys on every staged config, including as ``None`` when the driver declares
-    no floor — so *key absence* is not "declared nothing", it is a staged
-    metadata file this check cannot read, and the only such file is one written
-    before this check existed. Those persist: ``staging.SCHEMA_VERSION`` is
-    unbumped (deliberately — bumping it would invalidate every honest staged
-    artifact fleet-wide for no additional safety), ``load_staged_startup_config``
-    applies no version or freshness test, the startup-load evidence binding
-    hashes the staged YAML rather than this metadata, no deploy step clears it,
-    ``load-startup-config`` never re-stages, and ``commission-load``
-    short-circuits staging when the staged config is already running. **Nothing
-    forces a re-stage**, so reading an unreadable file as "no floor" would hand
-    exactly the #2491 config a green load gate. It fails closed instead, loudly
-    and by name, and one re-stage clears it.
+    One rule: refuse unless BOTH facts are present. ``staging`` writes both keys
+    on every staged config, ``None`` included, so key absence is not "declared
+    nothing" — it is a staged metadata file this check cannot read. Nothing in
+    the fleet forces a re-stage of such a file, so reading it as "no floor"
+    would hand exactly the #2491 config a green load gate; it fails closed by
+    name instead, and one re-stage clears it.
 
-    Present-and-``None`` is the honest undeclared case and stays honoured: the
-    operator declared no floor, so there is nothing to refuse and nothing to
-    invent. A ``config`` block that is missing or not a mapping is unreadable
-    for the same reason and refuses on the same rule.
+    Present-and-``None`` is the honest undeclared case and stays honoured. A
+    ``config`` block that is missing or not a mapping is unreadable and refuses
+    on the same rule.
     """
 
     config = staged_config.get("config")
@@ -704,22 +694,15 @@ def _current_config_summary(current_config_path: str | Path | None) -> dict[str,
         "jts_generated_stereo",
         "jts_outputd_stereo",
         "jts_legacy_stereo",
-        # The PARKED graph (#2135) is a legitimate rollback target: rolling back
-        # to a File-sink graph with every output hard-muted is the SAFEST
-        # possible restore — strictly safer than any of the four above, all of
-        # which reach a DAC. Excluding it was the bug that made a parked box
-        # unable to START commissioning at all: no rollback target means
-        # `rollback_configs` fails, `evaluate_path_safety_evidence` blocks, and
-        # `/sound/setup/`'s commission-startup anchor returns
-        # `commission_startup_anchor_path_safety_blocked` — so "finish crossover
-        # preview", the first of the two exits parking tells the household to
-        # take, was itself refused.
+        # The PARKED graph (#2135) is a legitimate rollback target: a File-sink
+        # graph with every output hard-muted is the safest possible restore,
+        # safer than any of the four above, which all reach a DAC. Without it a
+        # parked box has no rollback target and cannot start commissioning.
         #
-        # Admitting it here cannot let a parked graph SHADOW a real staged
-        # graph: that ordering is owned by `safe_graph_for_current_topology`,
-        # where the parked branch runs last, after every real graph has been
-        # considered. This set answers "may we roll BACK to it", a different
-        # question from "may we select it".
+        # This cannot let a parked graph SHADOW a real staged one: that ordering
+        # belongs to `safe_graph_for_current_topology`, where the parked branch
+        # runs last. This set answers "may we roll BACK to it", not "may we
+        # select it".
         CAMILLA_CLASS_ACTIVE_PARKED,
     }
     summary["restore_available"] = (
@@ -866,9 +849,9 @@ def build_startup_load_path_safety_evidence(
                 "staged candidate starts muted and protected before any "
                 "startup-load attempt"
             ),
-            # Per-check explanation for the evaluator's blocker row, so the
-            # refusal names the driver, the corner, the floor, and the remedy
-            # instead of a bare "<check> is not verified".
+            # Per-check explanation, so the blocker row names the driver, the
+            # corner, the floor and the remedy rather than "<check> is not
+            # verified".
             **(
                 {
                     "check_messages": {
@@ -1036,9 +1019,7 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
                     "path_id": requirement.id,
                     "code": f"{check}_not_verified",
                     # A builder may attach a per-check explanation; without one
-                    # the generic sentence is unchanged. This is what lets a
-                    # refusal name the actual numbers and the remedy rather
-                    # than leaving the operator to guess what failed.
+                    # the generic sentence stands.
                     "message": _check_message(evidence, check) or (
                         f"{requirement.label}: {check} is not verified"
                     ),

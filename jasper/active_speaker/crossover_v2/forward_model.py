@@ -4,44 +4,15 @@
 
 """What the speaker would measure, for a candidate nothing has played.
 
-Offline simulated evaluation over a round's BANKED per-driver solos: the two
-branches' complex transfers, summed through one candidate's filter chains,
-trims, delay and polarity, with no build, no tone and no device. Corners are
-DECLARED by the operator (invariant 2); this predicts what a variation of one
-would measure and nothing here ranks candidates or scores them (invariant 3).
-
-**It reads the bank; it never re-derives from WAV.** Ruling R9: a MEASURE or
-lateral pose banks magnitude AND phase for every curve
-(:func:`~.spatial.pose_curve_record`), so a transfer function reconstructs
-exactly from JSON that is already on disk. The one parse is
-:func:`~.position_cycle.parse_curve_complex`, shared with the delay landscape.
-
-**Same arithmetic as the shipped path, not a second one.** The composition is
-:func:`~.plan_assembly.compose_linearized_prediction` — the ONE composition, a
-caller of :func:`~jasper.active_speaker.branch_chain.chain_response` (the
-single RBJ biquad evaluator) and of
-:func:`~jasper.audio_measurement.program_analysis.predicted_branch_sum`. There
-is no biquad math and no summation arithmetic in this file, and a
-re-derivation here would be a defect rather than a convenience.
-
-**THE LANDMINE: the delay is a RESIDUAL.** Every banked solo is referenced to
-its OWN direct peak — :func:`~jasper.audio_measurement.program_analysis.
-_driver_response` windows each capture at its own argmax — so the physical
-inter-driver arrival gap is ALREADY out of the banked pair. Phasing that pair
-by a full applied delay counts the gap twice and injects a comb the graph need
-not have. :attr:`SummationCandidate.residual_delay_us` is therefore a residual
-in the analysis frame, and its one derivation is
-:func:`~jasper.audio_measurement.program_analysis.summed_model_residual_delay_us`
-— call it rather than subtracting by hand.
-
-**The candidate carries no crossover sections, and that is the honest shape.**
-A banked solo already contains whatever the emitted graph ran during its
-capture. Multiplying a crossover back in would double-count it, and dividing
-the emitted one out is a de-embedding this model does not do. So a candidate
-varies exactly what the same-corner contract (ruling R7) lets a round vary —
-linearization filters, trims, delay, polarity — over a fixed declared corner.
-
-Units are in every name: ``_hz``, ``_us``, ``_db``, ``_deg``.
+Offline simulated evaluation over a round's BANKED per-driver solos — no build,
+no tone, no device — and nothing here ranks or scores (invariants 2 and 3).
+THE LANDMINE: every banked solo is windowed at its OWN direct peak, so the
+physical inter-driver arrival gap is already out of the banked pair and
+:attr:`SummationCandidate.residual_delay_us` is a residual in the ANALYSIS
+frame; its one derivation is
+``program_analysis.summed_model_residual_delay_us``, never a hand subtraction.
+A candidate carries no crossover sections: a banked solo already contains
+whatever the emitted graph ran during its capture. Units are in every name.
 """
 
 from __future__ import annotations
@@ -74,19 +45,10 @@ ACCEPTANCE_JUDGED = "judged_against_measured"
 def acceptance_block(judged_against: str | None) -> dict[str, Any]:
     """Whether a measurement judged this prediction, and which one.
 
-    The disclosure #3481 found missing: ``predict`` and ``verify-delta``
-    emitted equally authoritative JSON whether or not anything had ever
-    checked the model against a capture, so an untriaged misattribution
-    entered round provenance indistinguishably from a validated one.
-
     ``judged_against`` is the measured comparand's own identity — the banked
     round whose VERIFY sum the prediction was deltaed against — or ``None``,
-    which is what a prediction nothing measured is.
-
-    Disclosure, never a gate, and never a grade: this module ships no
-    acceptance tolerance and invents none, so a JUDGED record says which
-    measurement judged it and leaves what the delta MEANS to the reader
-    (invariant 3).
+    which is what a prediction nothing measured is. Disclosure, never a gate
+    and never a grade: this module ships no acceptance tolerance (#3481).
     """
     return {
         "status": ACCEPTANCE_JUDGED if judged_against else ACCEPTANCE_NOT_RUN,
@@ -97,10 +59,8 @@ def acceptance_block(judged_against: str | None) -> dict[str, Any]:
 class ForwardModelError(ValueError):
     """The banked curves cannot support a predicted sum.
 
-    Carries ``refusal_reason`` and the numbers behind it in ``detail``, so a
-    caller reads attributes set at the raise site instead of parsing the
-    message. The reason and the numbers are the contract; the message is
-    operator copy and may be reworded freely.
+    ``refusal_reason`` and ``detail`` are the contract; the message is operator
+    copy and may be reworded freely.
     """
 
     def __init__(
@@ -121,24 +81,20 @@ class SummationCandidate:
 
     ``filters_by_role``
         Each branch's linearization biquads as the PERSISTED
-        ``{biquad_type, freq, q, gain}`` records the emitter re-validates and
-        :func:`~jasper.active_speaker.branch_chain.chain_response` speaks. A
-        role with no entry is corrected by unity — an unfitted branch survives
-        raw.
+        ``{biquad_type, freq, q, gain}`` records the emitter re-validates. A
+        role with no entry is corrected by unity.
     ``trim_db_by_role``
         The emitted per-driver trim in dB. A role with no entry trims by 0.
     ``polarity_sign``
         ``+1`` or ``-1``, applied to the TWEETER branch, matching
-        :func:`~jasper.audio_measurement.program_analysis.predicted_branch_sum`'s
-        own frame.
+        ``program_analysis.predicted_branch_sum``'s own frame.
     ``residual_delay_us``
         Signed RESIDUAL delay in the analysis frame, never an applied delay.
         See the module docstring's landmine.
 
-    Frozen and EQUAL by content, so a caller holding several variations can say
-    two of them are the same proposal. NOT hashable: the mapping fields are
-    ordinarily ``dict``, so the generated ``__hash__`` raises on call —
-    deduplicate with ``==`` or a list, never a ``set``.
+    Frozen and EQUAL by content. NOT hashable: the mapping fields are ordinarily
+    ``dict``, so the generated ``__hash__`` raises on call — deduplicate with
+    ``==`` or a list, never a ``set``.
     """
 
     filters_by_role: Mapping[str, Sequence[Mapping[str, Any]]] = field(
@@ -153,11 +109,9 @@ class SummationCandidate:
 class BranchPair:
     """One round's two banked solos, on one grid, ready to sum.
 
-    ``band_hz_by_role`` is each driver's own SWEPT band, which is NOT the grid:
-    :func:`~.spatial.lateral_pose_curve` resamples every curve onto one shared
-    evidence grid and keeps the band it actually swept. Outside its swept band
-    a driver's sample is noise rather than a small response, so
-    :func:`predict_sum` contributes exactly zero from it.
+    ``band_hz_by_role`` is each driver's own SWEPT band, which is NOT the grid.
+    Outside its swept band a driver's sample is noise rather than a small
+    response, so :func:`predict_sum` contributes exactly zero from it.
 
     ``take_path`` names the take both curves were read from — both roles must
     ride ONE take, since two captures would be summed across whatever moved
@@ -190,14 +144,9 @@ class PredictedSum:
 
     ``predicted_db`` is on ``freqs_hz``, the banked pair's own shared grid.
     Outside :attr:`sum_band_hz` neither driver was swept and the prediction is
-    the floor rather than a response — a reader compares inside that band.
-
-    The serialized record's ``acceptance`` is
-    :data:`ACCEPTANCE_NOT_RUN` by construction: :func:`predict_sum` sums
-    banked solos and compares them to nothing, so no instance of this class
-    was ever judged by a measurement. The judged form of the same disclosure
-    rides the delta result that did the judging
-    (:class:`~.round_views.ForwardModelDeltaResult`).
+    the floor rather than a response — a reader compares inside that band. The
+    serialized ``acceptance`` is :data:`ACCEPTANCE_NOT_RUN` by construction:
+    :func:`predict_sum` compares against nothing.
     """
 
     freqs_hz: np.ndarray
@@ -227,23 +176,14 @@ def load_branch_pair(
 ) -> BranchPair | None:
     """The latest banked take carrying BOTH roles, as complex transfers.
 
-    Take selection is :func:`~.position_cycle.read_pose_curve_pair` — the one
-    reader of "which take speaks for this pose", shared with the delay
-    landscape's door — and the parse is
-    :func:`~.position_cycle.parse_curve_complex`. No second reader of either.
-
     ``None`` when no take at this pose carries both roles, or when one of them
     does not parse — ordinary shapes for a round that measured one driver,
     never an error. A take that carries both roles on DISAGREEING grids raises
-    instead: that is one capture whose two curves cannot be summed elementwise,
-    which is a defect rather than an absence, and folding it into the same
-    ``None`` would hide it.
+    instead: that is a defect rather than an absence, and folding it into the
+    same ``None`` would hide it.
 
-    **No cache, measured rather than assumed** (ticket 3.8's cache clause).
-    The banked pose grid is 121 bins, so a take is ~12 KiB of JSON: this walks
-    a 40-take bank — larger than a round banks — in ~7 ms, and the
-    :class:`BranchPair` it returns is then reused across candidates at ~0.12 ms
-    per :func:`predict_sum`. A cache would be machinery guarding milliseconds.
+    No cache (ticket 3.8): a 40-take bank walks in ~7 ms, and the returned pair
+    is reused across candidates at ~0.12 ms per :func:`predict_sum`.
     """
     found = read_pose_curve_pair(
         Path(bundle_dir),
@@ -260,9 +200,8 @@ def load_branch_pair(
         return None
     if not np.array_equal(woofer[0], tweeter[0]):
         # VALUES, not shape. Two grids of equal length over different abscissae
-        # are the dangerous case precisely because a shape check waves them
-        # through: the sum would add bins that are not the same frequency, and
-        # the result would still look like a spectrum.
+        # would sum bins that are not the same frequency, and the result would
+        # still look like a spectrum.
         raise ForwardModelError(
             f"{take_path}: the {woofer_role!r} and {tweeter_role!r} curves "
             "disagree about their frequency grid",
@@ -285,14 +224,10 @@ def predict_sum(
 ) -> PredictedSum:
     """This candidate's predicted summed magnitude, from the banked solos.
 
-    The composition is :func:`~.plan_assembly.compose_linearized_prediction` —
-    the one this codebase has — so a prediction from the bank and a prediction
-    of the emitted graph are the same arithmetic rather than two that agree
-    until they do not.
-
+    The composition is :func:`~.plan_assembly.compose_linearized_prediction`,
+    the one this codebase has; there is no biquad or summation arithmetic here.
     Each branch is zeroed outside its own swept band BEFORE the sum: there was
-    no stimulus there, so the banked sample is noise and summing it would let
-    noise reach a delta a reader might grade.
+    no stimulus there, so the banked sample is noise.
     """
     frame = SummationFrame(
         freqs_hz=pair.freqs_hz,
@@ -335,16 +270,14 @@ def predicted_minus_measured_db(
 
     Both curves are level-normalised against their OWN median over the compared
     band before subtracting: a forward model over banked solos carries no
-    absolute SPL reference, so the raw offset between it and a measured sum is
-    a level difference rather than a shape error, and reporting it as one would
-    put a whole-band constant on top of every band's number. The normalisation
-    offset is published as ``level_offset_db`` — the fact it removes, kept
-    rather than discarded.
+    absolute SPL reference, so the raw offset between it and a measured sum is a
+    level difference rather than a shape error. The offset removed is published
+    as ``level_offset_db``.
 
-    ``band_hz`` defaults to the prediction's own :attr:`PredictedSum.sum_band_hz`
-    intersected with the measured curve's extent, and is reported as
-    ``compared_band_hz``. Fields, not a grade: what any of these numbers MEANS
-    is the reader's judgement, and this returns no verdict, tolerance or score.
+    ``band_hz`` defaults to the prediction's own
+    :attr:`PredictedSum.sum_band_hz` intersected with the measured curve's
+    extent, and is reported as ``compared_band_hz``. No verdict, tolerance or
+    score is returned (invariant 3).
     """
     measured_grid = np.asarray(measured_freqs_hz, dtype=float)
     measured_curve = np.asarray(measured_db, dtype=float)

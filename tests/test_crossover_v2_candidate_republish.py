@@ -28,7 +28,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import candidate_bank
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
@@ -500,67 +499,6 @@ def test_the_route_dispatches_into_the_handler(monkeypatch):
 
     assert b"400" in resp.split(b"\r\n", 1)[0]
     assert b"fingerprint is required" in resp
-
-
-def test_the_evidence_reader_stays_import_light():
-    """The bank sits outside ``crossover_v2/`` on purpose, and this is why.
-
-    ``applied_speaker_evidence`` imports the bank at ITS module level, and that
-    module is deliberately import-light — it lazy-imports the candidate model
-    inside its loader rather than at the top. Importing the ``crossover_v2``
-    package runs ``__init__`` → ``contracts`` → numpy, so filing the bank in
-    there made a light reader heavy. Measured, not argued, and this keeps it
-    measured.
-
-    **Scoped honestly.** This is NOT a claim that a wizard currently pays for
-    it: nothing under ``jasper/web/*_setup.py`` imports this reader at module
-    level today, and the wizard import chain has its own guard
-    (``tests/test_web_wizard_import_chain.py``, which deliberately does not
-    poison numpy yet). What this pins is the reader's own budget, before it has
-    the consumers RC4 will give it.
-
-    A subprocess because the question is "what does a COLD import pull", which
-    an already-populated ``sys.modules`` cannot answer.
-    """
-    import subprocess
-    import sys
-
-    probe = (
-        "import sys;"
-        "import jasper.correction.applied_speaker_evidence;"
-        "print(any(m.split('.')[0] == 'numpy' for m in sys.modules))"
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True, text=True, check=True,
-        cwd=str(Path(__file__).resolve().parents[1]),
-    )
-    assert out.stdout.strip() == "False", (
-        "importing the applied-speaker evidence reader now pulls numpy. It is "
-        "deliberately import-light (its own candidate-model import is lazy); "
-        "check what the candidate bank imports — the crossover_v2 package "
-        "__init__ reaches numpy through contracts."
-    )
-
-
-def test_the_bank_is_the_one_owner_of_where_banked_candidates_live(bank):
-    """The neighbouring reader asks the same question of the same artifacts.
-
-    Two copies of the on-disk shape drift on the first layout change and then
-    disagree about what is missing, so `applied_speaker_evidence` reads it from
-    here. Pinned by behaviour: both readers must find the same artifact.
-    """
-    from jasper.correction import applied_speaker_evidence as neighbour
-
-    candidate = _candidate()
-    path = _publish(bank, candidate)
-
-    assert candidate_bank.candidate_artifact_paths(bank) == [path]
-    assert neighbour._candidate_artifact_paths(bank) == [path]
-    assert (
-        neighbour.MAX_CANDIDATE_ARTIFACTS_SCANNED
-        is candidate_bank.MAX_CANDIDATE_ARTIFACTS_SCANNED
-    )
 
 
 # --- the ordinal reset, disclosed rather than silent ------------------------

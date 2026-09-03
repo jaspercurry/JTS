@@ -10,11 +10,11 @@
 > dead air).
 >
 > **Supersedes §2.2 and §2.6 of**
-> [`docs/historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
+> [`docs/historical/linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
 > — see D10 and D1 respectively. Composes with — does not re-open — the
 > rest of that document (screen grammar §2.1/§2.3, tier chooser §3) and
-> [`docs/gating-v2-plan.md`](gating-v2-plan.md) /
-> [`docs/room-correction-regime-plan.md`](room-correction-regime-plan.md)
+> [`docs/gating-v2-plan.md`](../gating-v2-plan.md) /
+> [`docs/room-correction-regime-plan.md`](../room-correction-regime-plan.md)
 > (the layers this flow commissions).
 >
 > **Symbol note (2026-08-26).** The second preparer this document calls
@@ -50,7 +50,7 @@ read in the tree, not inferred from a name.
 > place rather than rewritten** — this block records what was read at
 > `07896df48` and is dated for that reason. `_assert_accountable` is no
 > longer a veto: item 2 stopped refusing with the nanny burn-down
-> ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation
+> ([`measurement-loop-doctrine.md`](../measurement-loop-doctrine.md) deviation
 > (c)) and item 1 with the realized-level demotion (deviation (i)). Both now
 > grade, bank what they measured, and let the round proceed. The premise's
 > conclusion is unaffected: what it argued is that removing auto-apply must
@@ -60,7 +60,7 @@ read in the tree, not inferred from a name.
 - **There is no "auto-apply-on-improved" gate.** Apply is
   **unconditional**: `"auto_apply": True` is a hardcoded literal in
   `_close_measure_cloud_candidate`
-  ([`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)),
+  ([`jasper/active_speaker/crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py)),
   carrying the comment *"this is unconditionally True here, not a second
   decision."* What exists is `_assert_accountable`, a **veto** that can
   refuse an apply; `reason="improved"` is a *ledger log reason meaning
@@ -79,10 +79,10 @@ read in the tree, not inferred from a name.
   That asymmetry is precisely the hole the review screen closes. (Falling
   short used to refuse the round; since the nanny burn-down it banks
   `LEDGER_NOT_AN_IMPROVEMENT` and the round proceeds — see
-  [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md),
+  [`measurement-loop-doctrine.md`](../measurement-loop-doctrine.md),
   deviation (c).)
 - **`provisional` on a baseline profile means something else.** In
-  [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py)
+  [`jasper/active_speaker/baseline_profile.py`](../../jasper/active_speaker/baseline_profile.py)
   it means *"per-driver level match is an unmeasured estimate — run the
   guided level-match"*. It is **not** a verify-outcome flag. "Demote to
   provisional" must **not** reuse it; overloading it would corrupt a
@@ -104,7 +104,7 @@ read in the tree, not inferred from a name.
   (D3 closes it). Two refusals are local: `session_volume_plan()
   .needs_recovery` false, `state["applied"]` truthy. The very next line
   is `context = resolve_conductor_context(status)`
-  ([`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py)),
+  ([`jasper/web/correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py)),
   which is fail-closed by design — *"every missing input is a
   `CrossoverV2Refused` naming what to finish first — never a guessed
   default"* — and carries **seven `raise CrossoverV2Refused` sites of
@@ -128,14 +128,14 @@ read in the tree, not inferred from a name.
   This is a direct collision, not a theoretical one.
 - **The CROSSOVER wizard's own module never branches on `env.screen`.**
   `render(env)` in
-  [`deploy/assets/correction/js/crossover/main.js`](../deploy/assets/correction/js/crossover/main.js)
+  [`deploy/assets/correction/js/crossover/main.js`](../../deploy/assets/correction/js/crossover/main.js)
   is fully data-driven off `verdict_text / applied / steps / nudges /
   expert_details / candidate_review / cloud / cloud_chart / relay /
   next_action / alternate_actions`; `env.screen` appears nowhere in
   `crossover/{main,chart,cloud}.js`. A review screen is a **new envelope
   branch with new actions — zero new JS screen logic.** **Narrow claim,
   and the trap is a grep away:** the ROOM-CORRECTION wizard
-  [`deploy/assets/correction/js/main.js`](../deploy/assets/correction/js/main.js)
+  [`deploy/assets/correction/js/main.js`](../../deploy/assets/correction/js/main.js)
   — a different page in the same directory — branches on `env.screen`
   seven times (`=== 'idle'` ×2, `!== 'idle'`, `=== 'review'`,
   `!== 'review'`, `=== 'result'` ×2) behind a `KNOWN_ENVELOPE_SCREENS`
@@ -169,7 +169,7 @@ Two more facts that shape the ladder:
 > which removes the pre-apply cloud — so the group-close confirm D1 adopts has
 > no cloud captures to close on that path, and the machinery below is retained
 > for future Room work rather than run. The rest of this section is unaffected.
-> See [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md).
+> See [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md).
 
 **D1 — Stage 1 ends at the group-close confirm; nothing is applied.
 ADOPT.** The shipped group-close confirm gate is the seam: the
@@ -183,7 +183,7 @@ PR-6b moved the FIT from MEASURE's acceptance (index 2) to the
 pre-apply cloud's close (index 10); the pre-apply cloud was already
 captured clean, and apply now moves further away from it, not closer.
 
-**Supersedes** [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
+**Supersedes** [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
 **§2.6's group-close consequence** — its adopted contract is *"apply
 still runs under the same gates; one extra user tap now sits in front of
 it"*, i.e. confirm → fit → auto-apply, in-session. This decision keeps
@@ -196,7 +196,7 @@ the candidate, and the candidate is the *proposal* the review screen
 shows. It is gated on a begin at an index strictly past the cloud group
 (`crossover_v2_flow.py`, `if int(index) <= last_index: return None`),
 and today that begin is VERIFY's, posted by `authorize()` in
-[`jasper/web/correction_crossover_v2.py`](../jasper/web/correction_crossover_v2.py).
+[`jasper/web/correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py).
 Stage 1 has no entry past the group, so simply dropping VERIFY would
 mean the fit never runs and the review screen has nothing to review.
 Three changes, and PR-T3's **first and load-bearing** item:
@@ -304,7 +304,7 @@ must not be written up as having fixed it.
 Express remains a single post-apply position; Full remains the
 six-position spatial cloud-verify walk. The rejected one-position Full
 alternative would land Full in the degenerate case
-[`docs/gating-v2-plan.md`](gating-v2-plan.md) already named — *"express
+[`docs/gating-v2-plan.md`](../gating-v2-plan.md) already named — *"express
 cloud-verify is 1 position → **0 curves → no combine at all**"* — so
 Full's post-apply group would produce no combined curve, not a smaller
 one. It would also make the user-facing claim inconsistent with the
@@ -405,7 +405,7 @@ so the candidate's reachability is a contract, not an accident:
 
 **`headroom_cost_db` carries a cross-era stamp, and D3 puts it in front
 of the household.** Per
-[`docs/historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
+[`docs/historical/linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
 ("Cross-era disclosure"): the stamp *"is not re-derived on load,
 deliberately"*, so a candidate persisted before that amendment discloses
 **~22.5 dB** where re-emitting the same candidate now charges **~5**.
@@ -507,7 +507,7 @@ the mark at different heights.
 **Units: a recorded owner ruling is being superseded by a newer one, and
 the supersession is explicit.** The body-part register is not incidental
 copy — it is a ruling recorded in the code
-([`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py),
+([`jasper/active_speaker/crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py),
 above `CLOUD_POSITION_PROMPTS`): *"hand-width/forearm language was an
 owner request from the **2026-07-25** studio session after numeric
 prompts ('move the mic 10 cm left') proved unusable standing next to a
@@ -545,7 +545,7 @@ documented.** #1805 asks to *"let the user PREVIEW and adjust the
 movement pattern before step 1 begins (show the whole walk up front,
 adjustable spacing)"*. At least two walked positions must still clear
 the ≥30 cm spread that the LF-decorrelation side-finding in
-[`docs/historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md) makes
+[`docs/historical/linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md) makes
 load-bearing. Resolution: **adjustment has a floor, and the floor is the
 same derived one the plan builder already enforces.** The preview may
 widen spacing freely and may narrow the non-wide moves, but a wide
@@ -605,7 +605,7 @@ the conductor's concurrency and lifecycle are already in hand.
 
 **Sibling copy the reshaped walk orphans — PR-T4 owns all of it:**
 - The screen-grammar exemplar in
-  [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
+  [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
   §2.1, whose worked example is literally `Measurement 4 of 7` /
   `A forearm's length LEFT of the mark` — wrong on both counts after
   this ladder.
@@ -652,12 +652,12 @@ the conductor's concurrency and lifecycle are already in hand.
 by PR #1959 (#1941 R4).** The same owner ruling makes "the microphone" the
 actor. PR-T4 applied it to every prompt, consent step, placement instruction,
 and acknowledgement it owns; the per-reason rejection copy in `REASON_REGISTRY`
-([`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py))
+([`jasper/active_speaker/crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py))
 still said "move the phone closer" and similar, and belonged to the reason
 registry rather than to this ladder's copy. #1941's stage-2 sweep closed that
 registry half — `snr_floor`, `pilot_level_collapse`, and
 `verify_level_shift` now name the microphone — and a curated guard
-([`tests/test_measurement_vocabulary.py`](../tests/test_measurement_vocabulary.py))
+([`tests/test_measurement_vocabulary.py`](../../tests/test_measurement_vocabulary.py))
 keeps it closed.
 
 **The AGC exception survives, but attributed to the BROWSER rather than the
@@ -729,7 +729,7 @@ and `REVIEW_HOLD_BUDGET_S` stop governing a live session. They are
 `apply_failed` refusal still reach them — but no new design may depend
 on them.
 
-**Supersedes** [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
+**Supersedes** [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
 **§2.2's VERIFY contract.** That section's adopted contract is
 begin-first with the household confirming **after apply completes** —
 *"the VERIFY tone must not fire until the user confirms after apply

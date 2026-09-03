@@ -4,41 +4,11 @@
 
 """Mechanism attribution — naming which physics owns a response feature.
 
-The attribution stage, per ``docs/historical/attribution-stage-plan.md`` (issue #1866).
-JTS already has strong **instrument diagnosis** (is this measurement
-trustworthy) and strong **prescription** (fit → predict → apply → verify); it
-had almost no **mechanism attribution** — naming which physics owns a feature,
-with evidence and confidence, *before* prescribing.
-
-**What this package is, as of WO-1 (schema + persistence).**
-
-* :mod:`~jasper.attribution.closed_sets` — the closed sets: fix classes
-  (§3.3), confidence tiers (§3.2), probe ids (§5), corpus evidence tiers (§4).
-* :mod:`~jasper.attribution.mechanisms` — the pure-data registry of
-  declarations, the shipped ``REASON_REGISTRY`` shape (§2). Seeded with the
-  mechanisms a shipped instrument can actually reach today; WO-4 seeds the
-  rest alongside its detectors.
-* :mod:`~jasper.attribution.findings` — §3.1's artifact, its validation, and
-  its self-describing serialization.
-* :mod:`~jasper.attribution.promotion` — the promotion paths: records the
-  pipeline already persists (excluded-band carve-outs) and comparisons it
-  already computes (the level-frame gate's) become findings with a mechanism
-  and a fix class attached.
-* :mod:`~jasper.attribution.position_evidence` — the per-position cloud
-  members the pipeline computed and discarded (§6).
-* :mod:`~jasper.attribution.session_identity` — the one identifier that
-  survives every store hop (§6).
-* :mod:`~jasper.attribution.storage` — bundle-lifetime persistence (Q-C).
-
-**What it is not.** There is **no resident daemon** (§10) and there never will
-be: attribution runs at analysis time, inside the process that already owns
-the analysis. Nothing here holds state between calls, opens a socket, or
-starts a thread. There is also **no detector** yet — WO-4 owns per-mechanism
-signature functions — and **no UI**, which is WO-6's.
-
-**Findings are optional evidence artifacts** (§3.4). Neither the deterministic
-flow nor any future workbench is *gated* on a structured attribution verdict
-existing. A session with no findings behaves exactly as it does today.
+Per ``docs/historical/attribution-stage-plan.md`` (#1866). There is no resident
+daemon and no detector yet: attribution runs at analysis time, inside the
+process that already owns the analysis, and holds no state between calls.
+Findings are optional evidence artifacts — nothing in the deterministic flow is
+gated on one existing.
 """
 
 from __future__ import annotations

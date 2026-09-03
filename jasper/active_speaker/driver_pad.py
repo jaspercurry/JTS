@@ -4,30 +4,18 @@
 
 """In-line driver pad (L-pad / series-resistor attenuator) modeling.
 
-Pure computation only, mirroring level_trim.py's shape: no I/O, no product
-policy, no cross-module imports. A "pad" is an operator-declared resistor
-network (or a purchased fixed attenuator) sitting between the amplifier and
-one driver -- a physical fact the operator knows because they wired it, never
-something AI-researched (the research prompt deliberately omits pad: see the
-comment above driver_safety._V2_RESEARCH_DRIVER_FIELDS, pinned by
-tests/test_active_speaker_driver_safety.py
-::test_prompt_asks_for_driver_class_and_geometry_but_never_pad).
+Pure computation only: no I/O, no product policy, no cross-module imports. A
+pad is always operator-declared — never AI-researched.
 
-Formula (verified against JTS3's tweeter pad, 2026-07-23): for a two-resistor
-L-pad, the shunt resistor sits in parallel with the driver's own nominal
-impedance; the series resistor and that parallel combination form a voltage
-divider the amplifier sees as one effective load. A series-only pad is the
-same formula with no shunt (the parallel combination degenerates to the bare
-driver impedance).
+Formula (verified against JTS3's tweeter pad, 2026-07-23), where a series-only
+pad degenerates to the bare driver impedance::
 
     R_par = Z * shunt / (Z + shunt)          (or Z when there is no shunt)
     attenuation_db = 20 * log10(R_par / (series + R_par))
     effective_impedance_ohm = series + R_par
 
-A ``direct_db`` pad skips this topology entirely: the operator already knows
-the attenuation (a datasheet figure for a purchased attenuator, or a bench
-measurement) and enters it directly. Its effective impedance is not derivable
-from a bare dB figure, so it is left unset rather than guessed.
+A ``direct_db`` pad skips the topology: the operator enters the attenuation
+directly, and its effective impedance is left unset rather than guessed.
 """
 
 from __future__ import annotations
@@ -94,30 +82,19 @@ def normalise_pad(
     ``attenuation_db`` (``direct_db``) that kind needs. Returns ``None`` for
     an absent pad or an explicit ``kind: "none"``.
 
-    Idempotence contract: ``normalise_pad(normalise_pad(x, ...), ...) ==
-    normalise_pad(x, ...)`` for any ``x`` that normalises successfully. This
-    function's own output is a legal input to itself -- callers that persist
-    the return value and later re-normalise it (e.g. rebuilding a design
-    draft from a saved record) must not have to strip derived keys first.
-    Concretely: for ``l_pad`` / ``series_resistor``, ``attenuation_db`` and
-    ``effective_impedance_ohm`` are OUTPUTS -- if either is present on input
-    it is ignored and silently dropped (recomputed from the resistor values
-    with no consistency check against the incoming value), never rejected.
-    An operator still cannot invent an attenuation for a resistor pad -- it
-    is always recomputed, never taken on faith -- so the anti-confusion
-    intent survives; only the "reject the field outright" enforcement of it
-    is gone. For ``direct_db``, ``attenuation_db`` is the one derived-looking
-    key that is genuinely an INPUT for that kind and stays required;
-    ``effective_impedance_ohm`` is still ignored-and-dropped (a bare dB
-    figure has no impedance model to store one), not rejected. A resistor
-    field (``series_ohm`` / ``shunt_ohm``) declared on a ``direct_db`` pad
-    remains rejected -- that is a genuine kind mismatch, not a derived-field
-    echo.
+    Idempotence contract: this function's own output is a legal input to
+    itself, so a persisted record re-normalises without stripping derived keys.
+    For ``l_pad`` / ``series_resistor``, ``attenuation_db`` and
+    ``effective_impedance_ohm`` are OUTPUTS: present on input, they are ignored
+    and recomputed, never rejected and never taken on faith. For ``direct_db``,
+    ``attenuation_db`` is genuinely an INPUT and stays required, while
+    ``effective_impedance_ohm`` is ignored and dropped. A resistor field on a
+    ``direct_db`` pad IS rejected — a kind mismatch, not a derived-field echo.
 
     Raises :class:`DriverPadError` when a required field is missing, an
     irrelevant field is set for the chosen kind, or (``l_pad`` /
-    ``series_resistor``) the record has no declared ``nominal_impedance_ohm``
-    -- the formula never assumes a default impedance.
+    ``series_resistor``) the record declares no ``nominal_impedance_ohm``: the
+    formula never assumes a default impedance.
     """
 
     if raw is None or raw == "":
@@ -150,19 +127,13 @@ def normalise_pad(
             )
         if direct_db > 0:
             raise DriverPadError(f"{field_name}.attenuation_db must be <= 0")
-        # effective_impedance_ohm has no meaning for a bare dB figure. It is
-        # accepted (see _PAD_FIELDS) so a saved record's own derived-output
-        # echo round-trips, but never stored -- direct_db has no impedance
-        # model to store one in.
+        # No meaning for a bare dB figure: accepted so a saved record's own
+        # derived-output echo round-trips, but never stored.
         return {"kind": kind, "attenuation_db": direct_db}
 
-    # l_pad / series_resistor: attenuation_db and effective_impedance_ohm are
-    # OUTPUTS, computed below from the resistor values. Either key may be
-    # present on input -- typically a verbatim echo of this function's own
-    # last output -- and is ignored and recomputed rather than validated, so
-    # a saved pad record re-normalises cleanly (see the idempotence contract
-    # in the docstring above). Deliberately not even type-checked here: the
-    # value is never read, so there's nothing to validate.
+    # attenuation_db and effective_impedance_ohm are OUTPUTS here, computed
+    # below from the resistor values: either key present on input is ignored
+    # and recomputed, never validated, so the value is never read.
     if series is None:
         raise DriverPadError(f"{field_name}.series_ohm is required for kind={kind}")
     if kind == "series_resistor" and shunt is not None:

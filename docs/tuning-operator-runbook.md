@@ -13,7 +13,7 @@
 > | What is the current session boundary? `open` / `measure` / `close`, with four seam fields | [`session.py`](../jasper/active_speaker/crossover_v2/session.py), [`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py), and [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md) |
 > | Where is the program going? What is funded, deleted, pinned? | [`tuning-master-plan.md`](tuning-master-plan.md) |
 > | Why is it like this? Bench results, decision archaeology, the failure taxonomy, the W6 gotcha catalog | [`historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md) |
-> | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md) |
+> | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](historical/crossover-measurement-productization-design.md) |
 > | **How do I actually drive it tonight?** | this file |
 >
 > Read the doctrine once per session. Read this whenever you forget a workflow step.
@@ -63,8 +63,7 @@ while the result is still getting flatter.
   `POST /correction/crossover/v2/session {"tier": "remote"}`.
 - **It is the only flow.** The legacy per-driver near-field procedure, its
   `JASPER_CROSSOVER_FLOW` selector, and the `build_crossover_envelope` shim are
-  gone: callers reach `build_crossover_envelope_v2` directly, or
-  `crossover_envelope.build_crossover_envelope_logged`.
+  gone: callers reach `build_crossover_envelope_v2` directly.
 - **Nothing applies inside a capture session.** A session produces a proposal;
   the household applies it from the `review` screen.
 - **The candidate cycle is a round.** `jasper-angle-capture stage --program
@@ -432,6 +431,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-round open\|wait\|apply` | Open, wait on and apply a crossover round from the speaker itself. The same three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate. | mutating-with-gates (`open`/`apply` write; `wait` does not) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|spec-sweep\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, the gate sweep read onto the spec verdict, and the shared frequency view — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
 | `jasper-round-bank` | Bank one live commissioning session into the on-box campaign home, where it outlives session retention. | mutating (copies evidence; changes nothing played) | `jasper/cli/round_bank.py` |
+| `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-read-distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
@@ -509,31 +509,22 @@ pending work, are methodology §4's calls.
 
 ## The doors, and what they refuse
 
-Five prescription doors, one refusal vocabulary each, counted at HEAD:
+Five prescription doors, one refusal vocabulary each:
 
 | Door | Refusal reasons | Vocabulary constant |
 |---|---|---|
-| alignment | 9 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
-| topology | 9 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
-| blend | 17 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
-| driver | 17 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
+| alignment | 10 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
+| topology | 10 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
+| blend | 15 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
+| driver | 15 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
 | spool | 4 | `prescription_spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS` |
 
-The topology door lost `outside_declared_search_band` when
-[#2870](https://github.com/jaspercurry/JTS/issues/2870) deleted the crossover
-search band; its two surviving frequency refusals are both drivers' declared hard
-excitation edges. The driver door dropped six on 2026-08-23, all of them the
-classification bar's — `driver_feature_not_classified`,
-`driver_feature_not_cuttable`, `driver_feature_not_boostable`,
-`driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth` and
-`driver_boost_unvouched`: the owner ruled that a candidate inside the caps may be
-tested, so the vouch DISCLOSES and the round decides. It dropped two more on
-2026-08-29 — `driver_filter_cut_too_shallow` and `driver_filter_boost_too_shallow`
-— on the same ruling: a filter under the fit engine's 0.5 dB cosmetic floor is
-now admitted and counted onto `prescription.subaudible_filters`. It GAINED one
-with the trim pin: `driver_trim_pin_malformed` is the whole judgment on
-`pinned_trim_db` — an object keyed by role, each value between −60 and 0 dB, and
-only for a role the same document prescribes filters for.
+Read the constant, never this count: each frozenset is the door's own list, and
+a count here is a second copy of it. The topology door's two frequency refusals
+are both drivers' declared hard excitation edges, not a search band.
+`driver_trim_pin_malformed` is the whole judgment on `pinned_trim_db` — an
+object keyed by role, each value between −60 and 0 dB, and only for a role the
+same document prescribes filters for.
 
 One refusal still shapes what you can ask for, and it is about **boosts**:
 
@@ -1097,16 +1088,17 @@ whenever it cannot be formed:
 | `graded_band_narrower_than_grid` | bands only: the graded span holds no grid bin, so nothing can be worst |
 
 Refusals print as JSON on stdout and one sentence on stderr, each naming the
-input that was missing: `gate_sweep_no_captures` and `gate_sweep_no_programs`
+input that was missing. Five come from the shared round loader and carry its
+`round_` prefix, not this tool's: `round_no_captures` and `round_no_programs`
 (discovery found no `**/summed/summed_*.json` or no `**/*program*.wav` under the
-round), `gate_sweep_program_hash_unmatched` (a capture's declared stimulus hash
-matches no banked program), `gate_sweep_radiated_band_missing`,
-`gate_sweep_capture_unreadable`, `gate_sweep_reference_band_empty` (the
-2500–8000 Hz reference and this capture's radiated band do not overlap — there
-is no honest normalisation, so nothing is published rather than a curve
-referenced to something else), and `gate_sweep_single_pose` (across-pose σ needs
-at least two poses, so a one-pose round is refused rather than reported as
-window-invariant).
+round), `round_program_hash_unmatched` (a capture's declared stimulus hash
+matches no banked program), `round_radiated_band_missing`, and
+`round_capture_unreadable`. Two are this tool's own:
+`gate_sweep_reference_band_empty` (the 2500–8000 Hz reference and this
+capture's radiated band do not overlap — there is no honest normalisation, so
+nothing is published rather than a curve referenced to something else), and
+`gate_sweep_single_pose` (across-pose σ needs at least two poses, so a one-pose
+round is refused rather than reported as window-invariant).
 
 **The across-pose σ here is a fourth spread and pools with none of the three
 below.** It is computed by this tool, on its own normalisation, its own grid and

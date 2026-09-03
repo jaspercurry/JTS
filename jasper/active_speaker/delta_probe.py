@@ -4,262 +4,19 @@
 
 """Delta-probe verification: did the speaker do what the correction asked?
 
-The linearization-integrity ladder's PR-L5 primitive
-(``docs/historical/linearization-campaign-2026-07.md``). Every applied correction change is
-verified as a **realized-vs-commanded per-frequency map** and classified into
-one of four verdicts; the three non-matched ones roll the correction back
-automatically. Pure computation — numpy in, a frozen verdict record out. No
-I/O, no session state, no rollback: the session owns those.
-
-**Why this exists.** On 2026-07-27 a linearization shipped whose emitted
-shelves were realized at Q 0.476 while every gate in the fit engine evaluated
-them at Q 0.707 (``slope: 6`` is not CamillaDSP's Butterworth — PR-L2). The
-fit's realization gate, its residual, and its VERIFY prediction all used the
-same wrong evaluator, so a shelf that missed its design by up to 1.70 dB
-scored as exact. **A model cannot audit itself.** The only instrument that can
-is a measurement of what the hardware actually did, compared against what the
-filters were told to do. That is this module. PR-L2 fixed the specific Q bug;
-this catches the whole class, permanently, including the next one.
-
-**This is the IN-ROOM instrument. It has an offline twin.**
-:mod:`jasper.active_speaker.bench` asks the same question of the same defect
-class before anything is applied and without a microphone: it renders the
-emitted config through the real pinned CamillaDSP binary and grades the result
-against the fit's claim. It reuses this module's verdict vocabulary and
-:func:`classify_delta_probe` itself rather than defining a parallel one. The two
-are complementary, not redundant — the offline one sees only what the DSP does
-to a signal, and this one is the only thing that can see what a driver in a room
-did with it. If you are about to build a third, one of these two is the one to
-extend.
-
-**What "realized" and "commanded" are, exactly** (read this before trusting a
-verdict — the algebra matters):
-
-* ``commanded_delta_db`` is what the apply asks the summed response to CHANGE:
-  the applied graph's predicted sum minus the predicted sum of **the graph it
-  replaces**, both built from the SAME measured branches with the SAME
-  summation model (:mod:`jasper.active_speaker.crossover_v2.commanded`). The
-  branch measurements and the summation model therefore cancel out of it; what
-  survives is every element the apply commands — the emitted filters, the role
-  gains, the polarity and the delay. **Every element is load-bearing:** until
-  #2611 both sides were evaluated at the applied candidate's own polarity,
-  delay and gains, so those three cancelled by construction and a commanded
-  +3.3209 dB role-gain step plus a commanded polarity flip arrived here as
-  uncommanded surprises, and rolled a measured-better tune back.
-* ``realized_delta_db`` is the measured post-apply response minus the SAME
-  previous-graph prediction, at the same microphone position.
-
-Their difference — the ``error_db`` map this module classifies — is
-algebraically ``measured_post − predicted_post``: the previous-graph prediction
-cancels. That is deliberate and is stated here so nobody later reads the delta
-framing as implying an independent pre-apply *measurement* at the mark (there
-is none at MEASURE; ``entry_delta_db`` below is a real one, and it is optional).
-The delta framing earns its keep in two places the plain residual cannot reach:
-the commanded curve is the axis the shortfall-vs-model-error discriminator
-regresses against, and the spatial arm below IS two real measurements.
-
-**This comparison is NOT level-offset-invariant, and that is why
-``expected_offset_db`` exists** (issue #1811). Its sibling, the VERIFY tracking
-check, mean-centers its error (``audio_measurement.analysis.
-_offset_invariant_rms_and_max``: ``error -= float(np.mean(error))``), so a
-uniform level difference between measured and predicted cannot read as a
-tracking failure there. This probe deliberately does not, because a level
-shortfall IS one of the things it classifies. The consequence is that a level
-change the correction did not command lands directly in ``error_db``.
-
-There is exactly such a change, every session: the applied graph absorbs its
-correction's boost as a pre-split common attenuation
-(``camilla_yaml.linearization_headroom_db`` folded into
-``active_baseline_headroom``), and the emitted prediction this probe compares
-against carries no such term. On the session that surfaced this the apply moved
-that attenuation ``0 → −22.458 dB`` and the post-apply capture sat −7.9 dB
-broadband below the pre-apply cloud — a whole-band common mode that this module
-would have graded as ``model_error`` and rolled a healthy correction back for.
-
-So the caller passes the offset the EMITTER knows it applied
-(``baseline_profile.applied_program_level_delta_db``) and this module removes it
-before classifying. Whatever is left is measured **in the quiet bins** — in
-band, but below the commanded floor, where the correction asked for nothing and
-therefore any level is uncommanded by construction — and disclosed as
-``residual_offset_db``. A residual that is both material and sufficient to
-explain the failure is its own verdict, :data:`VERDICT_LEVEL_MISMATCH`, rather
-than being silently absorbed or misfiled as a shape defect.
-
-**That residual is a CHANGE, and its claim is bounded by where it was
-measured** (issue #2533). Both halves were wrong on the 2026-08-15 JTS3 session
-and both are fixed here; they are independent defects that happened to compound.
-
-*A change.* ``measured_post − predicted_post`` is an in-room gated measurement
-against an on-axis two-branch model, and those two curves do not share a level
-anchor. The mismatch between their anchors is a standing property of the
-comparison — there before the apply, unchanged by it — so a residual that
-reports it is not reporting a level move at all. The caller therefore also
-passes the PRE-apply capture in the same frame (``entry_delta_db``, from the
-``verify_priors.entry_baseline`` #2530 already retains), and the standing term
-cancels: what is left is measurement-minus-measurement with the correction's own
-command and the graph's own declared level move taken out. Measured on that
-session, a reported −3.342 dB decomposed as **−1.660** standing anchoring,
-**−1.457** real measured change confined to 12-20 kHz, and **−0.221** declared
-graph move — only the middle term is a level move, and only the middle term
-survives. The term removed is disclosed as ``entry_anchor_offset_db``; when no
-pre-apply curve is available it is ``None`` and nothing is removed, which is the
-same "nothing known, so leave it visible" rule ``expected_offset_db`` follows.
-
-*Bounded by where it was measured.* A residual is measured in the quiet bins and
-claimed over the GRADED ones, and nothing checked that those two sets meet. On
-that session the correction commanded 463 Hz-12 kHz, so the quiet set was
-12-20 kHz — a level measured entirely ABOVE the band it was claimed over, and
-reported as a whole-band ``uncommanded_level_shift``. The set's own span did not
-show it either: two stray bins at 493 Hz and 1.9 kHz made 158-of-160 bins above
-12 kHz look band-wide, which is why ``quiet_core_band_hz`` is the INTERQUARTILE
-span rather than the min/max ``frame.band_hz`` already reports. When that span
-covers less than :data:`DELTA_PROBE_MIN_QUIET_COVERAGE` of the interquartile span
-the graded band's OWN bins cover on the same grid, the finding stands and the
-verdict is unchanged — narrowing it would make this instrument stricter on
-evidence it had just declared unrepresentative — but the reason narrows to
-:data:`REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND` and names the band it covers.
-
-The absorption itself is NOT compensated at the speaker. It is the
-excitation-safety property that keeps a boosted band at or under unity
-(``camilla_yaml``'s ``MAX_LINEARIZATION_BOOST_DB`` note): removing it at the
-main volume would put the boosted band over the driver's excitation cap by the
-branch's own boost, on a sustained swept sine, below the per-driver limiters'
-reach. It is corrected here, in the analysis, and nowhere else.
-
-**This is not the VERIFY tracking check, and does not replace it.**
-``crossover_v2_flow._verify_verdict`` compares the same two curves over the
-crossover handoff band alone (``[Fc/2, 2·Fc]``, ~2–4 kHz on JTS3) at 1.5 dB.
-The 2026-07-27 shelf error lived at 5–12 kHz — an octave and a half above
-that band's top — and tracking could not have seen it at any tolerance. This
-probe runs over **the band the correction actually commands something in**,
-which is the only band where "did it do what we asked" is a question.
-
-**Verdict priority.** ``matched`` at the mark and ``spatially_costly`` are
-independent questions, so the order between them is a policy choice and it is
-this: a map that does NOT match at the mark is diagnosed as a chain defect
-(``model_error`` / ``level_dependent_shortfall``) even when the spatial arm
-also flags, because the chain defect is the more proximate cause and the more
-actionable remedy. ``spatially_costly`` is reserved for the case that is
-otherwise invisible — the correction did exactly what it was asked at the
-mark, and the room got less even for it. The two remedies are genuinely
-different (fix the model / move the speaker), which is why one verdict must
-win rather than both being reported as equals. The losing arm's evidence
-still travels in the record.
-
-**The frame between the two curves is measured and removed before a rollback
-is decided** (issue #2521). The offset half of that frame was already handled
-above; the TILT half was not, and a tilt is the ordinary state of a comparison
-between an in-room gated measurement and an on-axis two-branch model — the
-2026-07-29 corpus put **84 %** of a "predictions are 2.02× optimistic" headline
-into a single −0.79 dB/octave frame difference (:mod:`jasper.audio_measurement.
-frame_fit`). Left in, it made every speaker/room/microphone with a broadband
-slope fail this probe no matter how well its filters realized: on the first
-remote JTS3 session (2026-08-14) this probe read **7.24 dB rms** with the frame
-in and rolled the correction back, while the tracking instrument's own
-frame-removed grade of the SAME capture was **0.065 dB** (0.28 dB raw).
-
-So the frame is fitted — one offset, one tilt — **over the QUIET bins, the ones
-where the correction commanded nothing**, which is the same bin set and the same
-argument :attr:`DeltaProbeMap.residual_offset_db` already uses for the offset
-term: any level, and now any slope, measured where nothing was asked for is
-uncommanded by construction and therefore cannot be the correction's doing.
-Fitting it over the GRADED bins instead would let the defect set its own frame
-and quietly absorb itself — measured on this module's own keystone fixture, a
-graded-bin fit dropped the 2026-07-27 shelf-Q error's exceedance from 0.575
-octaves to nothing, i.e. it deleted the one defect this module exists to catch.
-
-What the frame may and may not do is asymmetric on purpose:
-
-* it can only **narrow** a finding. The raw grade still decides whether there is
-  a finding at all (``matched`` is unchanged); what is re-asked with the frame
-  removed is the ROLLBACK question, and the gate sits ahead of **both** rollback
-  doors — ``model_error`` and ``level_dependent_shortfall`` alike. A wild frame
-  fitted from a noisy quiet region therefore cannot fabricate a rollback; the
-  worst it can do is fail to demote, or move a demoted finding between those two
-  names. Guarding only the shape door leaves the whole #2521 class walking
-  through the scale one — see the gate comment in :func:`classify_delta_probe`
-  for the reproduction.
-* :data:`VERDICT_SPATIALLY_COSTLY` is outside the gate, deliberately. It is
-  reached only when the mark map MATCHED, so no exceedance was ever in play, and
-  it rests on two real measurements of the room's own spread rather than on a
-  measurement against a model — there is no frame between them for this to
-  remove.
-* a frame that could not be fitted (too few quiet bins) removes nothing, so the
-  verdict stands exactly as it did before this existed. Strict is the honest
-  direction for an absent measurement.
-* an exceedance that does NOT survive the removal is :data:`VERDICT_FRAME_MISMATCH`
-  — disclosed, never silent, and never a rollback (owner ruling 2026-08-15:
-  least-bad is adoptable with disclosure; hard stops are reserved for the safety
-  class). It is the tilt-carrying sibling of :data:`VERDICT_LEVEL_MISMATCH`.
-
-**THE TWO DIRECTIONAL SAFETY FINDINGS ARE MEASURED AS A CHANGE, AND THAT IS
-WHAT MAKES THEM SAFETY FINDINGS AT ALL** (series-2 D1). They are the only rules
-here that answer a hearing question — *did the speaker put out more than the
-applied graph declared* — and until this they could not, by algebra:
-
-    realized − commanded  ≡  (measured_post − predicted_post) − expected_offset
-
-The ``commanded`` term is added by the caller and subtracted by the rule; it
-cancels identically, so the quantity carried **no information about what the
-graph commands**. What it carried is the acoustic model's own error, and
-``commanded`` / ``declared`` survived only as a bin-selection mask. On the
-2026-08-17 jts3 series that inverted a round: a standing model-vs-mic error of
-+3.9 dB at 1384 Hz — **round-invariant** (corr 0.954 with the previous round,
-0.350 dB rms apart) and sitting in a band the applied graph *declares a
-3.67 dB CUT* in — hard-stopped the flattest result the program had measured,
-because the round-over-round command at that bin happened to flip from −0.49 to
-+0.86 dB and admitted the bin to the boosted mask. The round that came off had
-``probe_verdict = matched``, ``gain_factor = 0.8469`` (under-realized) and a
-speaker measured 2.42 dB QUIETER. The model was wrong; the speaker was not.
-
-So the same anchor :attr:`DeltaProbeMap.residual_offset_db` already uses is
-applied **per bin**, and the identity is the reason it works:
-
-    (realized − commanded) − entry_delta  ==  (measured_post − measured_pre)
-                                              − expected_offset − commanded
-
-Measurement minus measurement, with the two things the apply DECLARED — its own
-commanded change and its own level move — taken out. A standing model error
-appears in both captures and cancels; energy the speaker actually delivered
-appears in only one and survives. The two cases are separated **by
-construction** rather than by a threshold: replayed on the banked series-2
-curves the false stop falls from +3.891 dB to +1.000 dB (under tolerance, no
-finding), while a boost realized 4 dB above its declared transfer still reads
-exactly +4.000 dB and still stops.
-
-Two consequences follow, and both are deliberate:
-
-* **No anchor, no finding.** The pre-apply capture is what makes the quantity a
-  measurement of the speaker; without it there is only the model's error, which
-  is the thing that just cost a round. :attr:`DeltaProbeMap.safety_anchored`
-  says which, so "safe" can be read as "measured and nothing found" or "not
-  measured" and never as the wrong one of the two. The offline twin above is
-  the one caller for which that costs nothing and always did: it passes no
-  entry curve, reads no directional finding, and needs neither — its
-  ``realized`` is a render measured directly against a control, so its
-  ``realized − claimed`` never had the commanded term in it to cancel.
-* **The model's own departure is still reported** — as
-  :attr:`DeltaProbeMap.max_signed_error_db` and
-  :attr:`DeltaProbeMap.model_departure_over_tolerance`, which is the quantity
-  the pre-fix ``realized_louder_than_commanded`` was measuring all along. It is
-  a real defect and a real next-round target (the blend region is where this
-  model is known blind, #2600); it is not a hazard, and it no longer pulls a
-  measured, safe, improving graph off a household's speaker.
-
-**What the anchor is trusted for, stated plainly.** An anchor is a subtraction,
-so a wrong one can cancel a real finding as easily as a phantom — measured on
-this module's own inputs, an entry curve 1e6 dB high turns a genuine 5 dB
-over-realization into ``boost_overshoot_db = −999995`` and a SAFE verdict, while
-one 1e6 dB low refuses loudly. That trust is not new and is not this rule's to
-establish: :attr:`DeltaProbeMap.residual_offset_db` has rested on the same
-curve since #2533, and its own hard stop
-(``verification.SAFETY_UNCOMMANDED_LEVEL_LOUDER``) can be masked the same way.
-Nothing in this module can check it — comparability is the round evidence's
-question (``round_evidence`` answers it by ``program_id`` and
-``reference_mark``, and ``verification.evaluate_benefit`` refuses an
-incomparable pair) — so what is owed here is the same sentence
-:attr:`DeltaProbeMap.entry_anchor_offset_db` already carries: it discloses what
-was removed, and it is **not** a warrant that what is left is clean.
+Pure computation — a realized-vs-commanded per-frequency map classified into
+one of the verdicts below; the session owns I/O, state and rollback.
+``commanded_delta_db`` is what the apply asks the summed response to CHANGE
+(the applied graph's predicted sum minus the graph it replaces, same branches
+and summation model); ``realized_delta_db`` is the measured post-apply
+response minus that same previous-graph prediction. Their difference is
+algebraically ``measured_post − predicted_post``, which is NOT
+level-offset-invariant — hence ``expected_offset_db`` and the quiet-bin frame
+— and which cancels the command, so it grades the acoustic MODEL. A
+directional SAFETY finding is a statement about the speaker and therefore
+needs ``entry_delta_db`` on top; without it the finding is not made.
+:mod:`jasper.active_speaker.bench` is the offline twin and reuses this
+vocabulary. See docs/measurement-loop-doctrine.md §3 and ADR-0209.
 """
 from __future__ import annotations
 
@@ -277,80 +34,50 @@ from jasper.audio_measurement.frame_fit import FRAME_UNFITTED, FrameFit, fit_fra
 
 #: The correction realized what it commanded. Keep it.
 VERDICT_MATCHED = "matched"
-#: Realized and commanded disagree in SHAPE — the emitted filters are not
-#: doing what the fit's model of them says they do. Roll back and flag. This
-#: is the verdict that catches the PR-L2 shelf-Q class forever.
+#: Realized and commanded disagree in SHAPE — the emitted filters are not doing
+#: what the fit's model of them says they do. Roll back and flag.
 VERDICT_MODEL_ERROR = "model_error"
-#: Realized tracks commanded in shape but falls materially short in scale,
-#: where what was commanded is a lift — the driver did not deliver the level
-#: it was asked for. A compression diagnostic. Roll back and flag.
+#: Realized tracks commanded in shape but falls materially short in scale where
+#: what was commanded is a lift. A compression diagnostic. Roll back and flag.
 VERDICT_LEVEL_DEPENDENT_SHORTFALL = "level_dependent_shortfall"
 #: The map matched at the mark, but the cross-position spread WIDENED — the
-#: correction bought flatness at one spot by trading it elsewhere, which is
-#: the signature of correcting a position-specific interference feature. Roll
-#: back and route the household to a placement-vs-speaker service verdict.
+#: signature of correcting a position-specific interference feature. Roll back
+#: and route the household to a placement-vs-speaker service verdict.
 VERDICT_SPATIALLY_COSTLY = "spatially_costly"
-#: The map fails ONLY because of a level shift that survives removing the
-#: offset the emitter knows it applied — measured where the correction
-#: commanded nothing, and sufficient on its own to explain the failure.
-#: Something moved the level that nobody commanded: an incompletely
-#: accounted emit (room-PEQ / output-trim attenuation the applied config drops
-#: is the known systematic case), a mic or input-chain change between captures,
-#: or a household volume touch. **Not a claim about the correction**, which is
-#: why it is not a rollback verdict — see
-#: :data:`DELTA_PROBE_ROLLBACK_VERDICTS`. It is named rather than absorbed so
-#: the journal says which of those it is worth looking for.
+#: The map fails ONLY because of a level shift that survives removing the offset
+#: the emitter knows it applied — measured where the correction commanded
+#: nothing, and sufficient on its own to explain the failure. **Not a claim
+#: about the correction**, which is why it is not in
+#: :data:`DELTA_PROBE_ROLLBACK_VERDICTS`; it is named rather than absorbed so
+#: the journal says what is worth looking for.
 VERDICT_LEVEL_MISMATCH = "level_mismatch"
 #: The map fails ONLY because of the FRAME between the two curves — one level
 #: offset and one broadband tilt, fitted where the correction commanded nothing
-#: and therefore uncommanded by construction. Removing that frame makes the map
-#: pass (#2521).
-#:
-#: It replaces whichever rollback the map would otherwise have reached — a SHAPE
-#: claim (``model_error``) or a SCALE one (``level_dependent_shortfall``) — because
-#: neither survives evidence that turns out to be the frame. A real but
-#: in-tolerance depth shortfall riding a room tilt reaches this verdict, and
-#: should: on its own it was ``matched``.
+#: and therefore uncommanded by construction (#2521). It replaces whichever
+#: rollback the map would otherwise have reached, because neither a SHAPE nor a
+#: SCALE claim survives evidence that turns out to be the frame.
 #:
 #: The tilt-carrying sibling of :data:`VERDICT_LEVEL_MISMATCH`, and not a
 #: rollback verdict for the same reason: a frame difference is a property of the
-#: COMPARISON — an in-room gated measurement against an on-axis two-branch
-#: model — not a claim about the correction's shape. Its ordinary causes are the
-#: instrument (directivity between the two sittings, the microphone, the level
-#: chain), and it is ALSO consistent with a mis-modelled broad filter; this
-#: module measures the frame and does not attribute it (``frame_fit``'s own
-#: rule). What it will not do is revert a household's correction on evidence
-#: that cannot tell those apart (owner ruling 2026-08-15: least-bad is adoptable
-#: with disclosure, hard stops are reserved for the safety class). It grants no
-#: permission either: like ``level_mismatch``, it leaves the shape question
-#: unanswered, and it says so.
+#: COMPARISON, not a claim about the correction's shape, and this module
+#: measures the frame without attributing it. It grants no permission either —
+#: the shape question is left unanswered and it says so.
 VERDICT_FRAME_MISMATCH = "frame_mismatch"
-#: No verdict is available — the correction commands nothing inside the
-#: probe band, or the curves could not be compared. **Not a pass.** The
-#: session must treat this the way every other honesty instrument in this
-#: flow treats an unknown: no evidence to refuse on, and no permission
-#: granted either.
+#: No verdict is available — the correction commands nothing inside the probe
+#: band, or the curves could not be compared. **Not a pass**: no evidence to
+#: refuse on, and no permission granted either.
 VERDICT_UNAVAILABLE = "unavailable"
-#: This map carries the MODEL's departure and no grade of anything else
-#: (#2614; series-2 D1). The caller had the applied graph's own declared
-#: transfer but no CHANGE axis — the reachable case is a previous graph that
-#: cannot be named, whether because none was ever applied, because its record
-#: cannot be read, or because the crossover corner moved out from under it and
-#: the branches are composed through a crossover that graph never ran; the
-#: journal names which — so neither "did the correction realize the shape it
-#: commanded" nor "did the speaker put more energy into a driver than the
-#: graph declared" is answerable here.
+#: This map carries the MODEL's departure and no grade of anything else (#2614).
+#: The caller had the applied graph's own declared transfer but no CHANGE axis
+#: — the reachable case is a previous graph that cannot be named — so neither
+#: "did the correction realize the shape it commanded" nor "did the speaker put
+#: more energy into a driver than the graph declared" is answerable.
 #:
-#: **Not a pass, and deliberately not a rollback.** The two directional
-#: findings are absences (:func:`_safety_only` has the reasoning):
-#: :attr:`DeltaProbeMap.safety_anchored` is False, so neither reaches
-#: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_applied_safety`
-#: as a hazard. What that axis then ANSWERS is its own — the clipped-capture
-#: check needs no probe and still holds here. A missing grade is not
-#: evidence of a defect — the same rule :data:`VERDICT_UNAVAILABLE` carries,
-#: and this is its own word rather than ``matched`` because a household and a
-#: receipt must be able to tell "the shape check passed" from "the shape check
-#: did not run", and rather than ``unavailable`` because something WAS measured.
+#: **Not a pass, and deliberately not a rollback.** Both directional findings
+#: are absences, so :attr:`DeltaProbeMap.safety_anchored` is False and neither
+#: reaches ``evaluate_applied_safety`` as a hazard. Its own word rather than
+#: ``matched`` (the shape check did not RUN) and rather than ``unavailable``
+#: (something WAS measured).
 VERDICT_SAFETY_ONLY = "safety_only"
 
 #: Why the shape half did not run on a :data:`VERDICT_SAFETY_ONLY` map. One
@@ -371,26 +98,16 @@ DELTA_PROBE_VERDICTS: frozenset[str] = frozenset({
     VERDICT_SAFETY_ONLY,
 })
 
-#: The verdicts on which rollback is AUTOMATIC (plan PR-L5: "Rollback is
-#: automatic on the non-matched classes"). ``unavailable`` is deliberately
-#: NOT here — an absent measurement is not evidence of a bad correction, and
-#: rolling back on it would revert every session whose household closed the
-#: phone before the post-apply sweep.
+#: The verdicts on which rollback is AUTOMATIC. ``unavailable`` is deliberately
+#: NOT here — an absent measurement is not evidence of a bad correction.
 #:
-#: :data:`VERDICT_LEVEL_MISMATCH` is not here either, for the same reason
-#: stated a different way: it is a finding about the LEVEL AXIS of this
-#: comparison, not about the correction's shape. Its most likely production
-#: cause is a known incompleteness in our own accounting — the applied
-#: crossover config is emitted without room-PEQ / preference EQ, so a
-#: household that has either can see a real level move the offset reader does
-#: not know about — and reverting a household's correction because our
-#: bookkeeping was short would be a false accusation against a correction that
-#: may be perfect. It grants no permission either: like ``unavailable``, it
-#: leaves the shape question unanswered, and it says so.
-#:
-#: :data:`VERDICT_FRAME_MISMATCH` is not here either, and it is the same
-#: sentence with one more term in it: an offset AND a tilt, measured in the same
-#: uncommanded bins (#2521). See that verdict's own note.
+#: :data:`VERDICT_LEVEL_MISMATCH` and :data:`VERDICT_FRAME_MISMATCH` are absent
+#: for the same reason stated with one more term: they are findings about the
+#: LEVEL (and tilt) AXIS of this comparison, not about the correction's shape.
+#: The known production cause of the first is an incompleteness in our own
+#: accounting — the applied crossover config is emitted without room-PEQ /
+#: preference EQ — and reverting a household's correction because our
+#: bookkeeping was short would be a false accusation.
 DELTA_PROBE_ROLLBACK_VERDICTS: frozenset[str] = frozenset({
     VERDICT_MODEL_ERROR,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -407,11 +124,9 @@ SEAM_DEFERRED_QUIETER_THAN_COMMANDED = "realized_quieter_than_commanded"
 
 #: The rollback classes whose whole claim is realized-vs-commanded, and which
 #: therefore defer when the deviation points entirely quieter (ADR-0209).
-#:
 #: :data:`VERDICT_SPATIALLY_COSTLY` is deliberately absent: it differences two
-#: MEASUREMENTS — the pre- and post-apply cross-position spreads — with no model
-#: between them, so it is a measured regression rather than a realized-vs-
-#: commanded miss, and measurement-loop-doctrine §3 restores ON those.
+#: MEASUREMENTS with no model between them, and
+#: docs/measurement-loop-doctrine.md §3 restores ON those.
 DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS: frozenset[str] = frozenset({
     VERDICT_MODEL_ERROR,
     VERDICT_LEVEL_DEPENDENT_SHORTFALL,
@@ -427,66 +142,30 @@ REALIZED_VS_COMMANDED_COMPARAND = "commanded_delta"
 def seam_rollback_deferral(probe: Any | None) -> str:
     """Why this map's seam-bound rollback DEFERS to the adoption table, or ``""``.
 
-    Owner ruling, 2026-08-15: a realized-vs-commanded miss whose deviation
+    ADR-0209 holds the ruling: a realized-vs-commanded miss whose deviation
     points entirely QUIETER than commanded is a quality miss that keeps for
-    iteration, not a hazard that comes off the speaker. It is the same directional
-    discipline #2537 put on the level axis — *"quieter-than-declared costs a
-    household some output and tells the next round something, while
-    louder-than-declared is energy nobody asked for"* — applied to what the fit
-    COMMANDED, and it is the rule that would have changed the 2026-08-15 14:47 jts3
-    round: a −3.32 dB dip at 1330 Hz, nothing realized louder than commanded
-    anywhere, tracking passed, 2.399 dB of measured improvement, reverted by a
-    seam that never asked which way the miss pointed.
+    iteration, not a hazard that comes off the speaker. The narrowing has to
+    happen HERE because a seam rollback ends the session before
+    ``decide_adoption`` runs at all; deferring is what makes the table
+    reachable and decides nothing about the outcome.
 
-    **The seam preempts the table, so the narrowing has to happen here.** A
-    seam rollback ends the session before ``decide_adoption`` runs at all
-    (2026-08-15: ``attempt_decision decision=ungraded``), so a quality row can
-    only fire for a round the seam let through. Deferring is what makes the
-    table reachable; it decides nothing about the outcome, and ``row5``'s
-    restore on a measured regression is as available afterwards as before.
+    It narrows only :data:`DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS`. Every
+    positive-direction finding is unchanged: a map with any safety bin measured
+    louder than this apply declared never defers, and ``boost_over_declared_bound``
+    never defers — implied by the bin rule, and stated and pinned anyway,
+    because a fence that holds only through an implication between two
+    independently-tunable bounds is not a fence.
 
-    **It NARROWS the realized-vs-commanded classes and touches nothing else.**
-    Which classes those are, and why the spread claim is not one of them, is
-    :data:`DELTA_PROBE_REALIZED_VS_COMMANDED_VERDICTS` (ADR-0209). Every
-    positive-direction finding is unchanged:
-
-    * A map with ANY safety bin measured louder than this apply declared, past
-      tolerance, never defers, whatever else it measured.
-    * ``boost_over_declared_bound`` never defers. That is implied by the bin
-      rule above — an overshooting boost IS a bin realized louder — and it is
-      stated anyway, because a fence that holds only through a numeric
-      implication between two independently-tunable bounds is not a fence. Both
-      halves are pinned.
-
-    **The fences read the ANCHORED excess since series-2 D1, and fall back to
-    the unanchored one rather than to nothing.** The two attributes above are
-    now measurements of the speaker, which is the repair: the direction that
-    matters here is the generous one — a positive bin WITHHOLDS the lenience —
-    so a fence fed by model error withheld it wrongly, which is the round D1 was
-    opened for.
-
-    But **absence must not GRANT the lenience**, and that is what the third
-    guard is for. "No anchor, no finding" is right for a FINDING: a claim needs
-    evidence. It inverts for a FENCE, whose default is generous — an unanchored
-    map that reported nothing louder has not established that the miss points
-    quieter, it has established nothing, and handing it a lenience named
-    ``realized_quieter_than_commanded`` would put a false sentence on a
-    hearing-safety record. Measured on a graph commanding +5 dB that the speaker
-    delivered +20 dB of: with the first two guards alone, an unanchored map
-    takes ``row2_trusted_safe_missed`` and KEEPS. So an unanchored map falls
-    back to :attr:`DeltaProbeMap.model_departure_over_tolerance`, which is
-    exactly what this function read before D1 — that path keeps the behaviour it
-    always had, and a genuinely quieter-only round still gets #2559's lenience
-    with no anchor at all.
+    Both fences read the ANCHORED excess and fall back to
+    :attr:`DeltaProbeMap.model_departure_over_tolerance` rather than to nothing:
+    "no anchor, no finding" is right for a FINDING, and inverts for a FENCE
+    whose default is generous. An unanchored map that reported nothing louder
+    has established nothing, and naming that ``realized_quieter_than_commanded``
+    would put a false sentence on a hearing-safety record.
 
     ``""`` for an absent probe and for a non-rollback verdict: those never
-    reached a seam rollback, so there is nothing for them to defer and saying
-    otherwise would put a deferral on the record of a round that had none.
-
-    Duck-typed on the probe for :func:`~...verification.evaluate_applied_safety`'s
-    reason — it holds whatever the host handed it, including ``None`` — and so
-    that one function answers for both readers: the seam that acts on it and the
-    receipt that discloses it.
+    reached a seam rollback. Duck-typed on the probe so one function answers for
+    both the seam that acts on it and the receipt that discloses it.
     """
     if probe is None:
         return ""
@@ -511,28 +190,22 @@ def seam_rollback_deferral(probe: Any | None) -> str:
 
 # Max |realized − commanded| tolerated below :data:`DELTA_PROBE_HF_SPLIT_HZ`.
 #
-# 1.5 dB, for two reasons that agree. (a) It is the flow's own established bar
-# for "a measurement matched its prediction" — ``crossover_v2_flow.
-# VERIFY_TOLERANCE_DB`` — so this probe and the tracking check do not hold the
-# same chain to two different standards in two different bands. (b) It must sit
-# BELOW the defect it exists to catch: the 2026-07-27 shelf-Q realization error
-# peaked at 1.70 dB (FORENSICS-SYNTHESIS.md, chunk 2), deepest around 6.9 kHz —
-# inside this tier. The margin is only 0.2 dB at the peak, which is why the
-# exceedance-WIDTH rule below matters: that error is a wide systematic tilt
-# across the whole shelf transition, so it clears a width test comfortably
-# even where it barely clears the amplitude one.
+# 1.5 dB, for two reasons that agree. (a) It is ``crossover_v2_flow.
+# VERIFY_TOLERANCE_DB``, so this probe and the tracking check hold the same
+# chain to one standard. (b) It sits below the defect it exists to catch: the
+# 2026-07-27 shelf-Q realization error peaked at 1.70 dB. That 0.2 dB margin is
+# why the exceedance-WIDTH rule matters — the error is a wide systematic tilt,
+# so it clears a width test comfortably where it barely clears an amplitude one.
 DELTA_PROBE_TOLERANCE_LOW_DB: float = 1.5
 
 # Max |realized − commanded| tolerated at/above :data:`DELTA_PROBE_HF_SPLIT_HZ`.
 #
-# Measurement uncertainty grows with frequency and a rollback fabricated by
-# HF noise is worse than no probe at all. The fit engine's own repeat-agreement
-# gate (``linearization_fit.HF_AGREEMENT_LIMIT_HIGH_DB``) ACCEPTS up to 2.0 dB
-# of spread between repeat sweeps of the same driver at these frequencies, and
-# the owner's per-serial UMIK-2 uncertainty research puts the stock-cal
-# protocol at ~±2.3 dB @16 kHz. A tolerance at or under 2.0 would therefore be
-# rejecting corrections for noise the fit engine already declared acceptable.
-# 2.5 clears both, and the width rule still has to be satisfied on top.
+# Measurement uncertainty grows with frequency and a rollback fabricated by HF
+# noise is worse than no probe at all. ``linearization_fit.
+# HF_AGREEMENT_LIMIT_HIGH_DB`` accepts up to 2.0 dB of spread between repeat
+# sweeps of the same driver up here, and the owner's per-serial UMIK-2 research
+# puts the stock-cal protocol at ~±2.3 dB @16 kHz; 2.5 clears both, and the
+# width rule still has to be satisfied on top.
 DELTA_PROBE_TOLERANCE_HIGH_DB: float = 2.5
 
 # Where the low tier ends and the high tier begins. Mirrors
@@ -544,27 +217,20 @@ DELTA_PROBE_HF_SPLIT_HZ: float = 10_000.0
 # count as a finding.
 #
 # The measured curves are ladder-smoothed at 1/6 octave below 4 kHz and 1/3
-# octave from there up, so an excursion narrower than one smoothing window is
-# measurement texture, not a claim about the model — the same argument
-# ``linearization_fit.HF_REALIZATION_TOLERANCE_DB`` records ("an isolated
-# 1.5-2.0 dB excursion at the smoothing scale is measurement texture, not a
-# shape failure"). One third of an octave is the coarsest of those windows, so
-# a run this wide has survived a full smoothing window everywhere in the band.
-# Every realization defect this probe is built for — a mis-Q'd shelf, a
-# mis-modelled slope, a compressed driver — is broad by construction; none of
-# them produces a single-bin spike.
+# above, so an excursion narrower than one smoothing window is measurement
+# texture, not a claim about the model. One third of an octave is the coarsest
+# of those windows. Every realization defect this probe is built for — a mis-Q'd
+# shelf, a mis-modelled slope, a compressed driver — is broad by construction.
 DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES: float = 1.0 / 3.0
 
 # Below this, the correction commands nothing worth verifying at that bin.
-# Mirrors ``linearization_fit._MIN_FILTER_GAIN_DB`` — the fit engine's own
-# "this filter is cosmetic" floor. You can only ask "did it do what we asked"
-# where something was asked.
+# Mirrors ``linearization_fit._MIN_FILTER_GAIN_DB``.
 #
 # This is also THE QUIET FLOOR: a bin under it is where the correction asked for
 # nothing, which is what makes ``residual_offset_db`` and the fitted frame
 # measurable there at all. Below the HF split it is the graded floor too; above
-# it, the stricter :data:`DELTA_PROBE_MIN_COMMANDED_HIGH_DB` applies. The two
-# roles are deliberately not merged (see that constant).
+# it the stricter :data:`DELTA_PROBE_MIN_COMMANDED_HIGH_DB` applies, and the two
+# roles are deliberately not merged.
 DELTA_PROBE_MIN_COMMANDED_DB: float = 0.5
 
 # The commanded floor a bin must clear to be GRADED at or above
@@ -573,25 +239,16 @@ DELTA_PROBE_MIN_COMMANDED_DB: float = 0.5
 # Numerically equal to :data:`DELTA_PROBE_TOLERANCE_HIGH_DB` and defined
 # separately on purpose — the same measurement-uncertainty bar asked of a
 # different quantity (what the correction ASKED for at a bin, versus how far its
-# realization may miss). The agreement is the point: above the split this module
-# already concedes 2.5 dB of per-bin uncertainty, because the fit engine's own
-# repeat-agreement gate accepts 2.0 dB between two sweeps of the same driver up
-# there and the owner's per-serial UMIK-2 research puts the stock-cal protocol
-# at ~±2.3 dB @16 kHz. A bin whose commanded value is SMALLER than that
-# concession cannot answer "did the speaker do what we asked": whatever is
-# measured there is dominated by the uncertainty the tolerance already granted.
-# The first remote JTS3 session's headline was exactly such a bin — |commanded|
-# grazing 0.5 dB at 21.3 kHz, graded against 2.5 dB, reporting 23.4 dB of
-# "error" (#2521).
+# realization may miss). A bin whose commanded value is smaller than the
+# concession the tolerance already grants cannot answer "did the speaker do what
+# we asked": the first remote JTS3 session's headline was such a bin, |commanded|
+# grazing 0.5 dB at 21.3 kHz and reporting 23.4 dB of "error".
 #
-# Why the floor is NOT lifted below the split, which is the tempting symmetric
-# move: measured on this module's own keystone fixture, a flat 1.0 dB floor
-# drops the 2026-07-27 shelf-Q defect's exceedance run from 0.575 to 0.307
-# octaves — under :data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES` — because that
-# defect's commanded shelf passes through 0.5-1.5 dB across the very octaves its
-# error lives in. Lifting the floor there would delete the one defect this
-# module exists to catch. The tiered floor leaves that fixture bit-for-bit
-# untouched (137 graded bins, 0.575 octaves) while removing the HF class above.
+# NOT lifted below the split, which is the tempting symmetric move: on this
+# module's keystone fixture a flat 1.0 dB floor drops the 2026-07-27 shelf-Q
+# defect's exceedance run from 0.575 to 0.307 octaves — under
+# :data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES` — deleting the one defect this
+# module exists to catch.
 DELTA_PROBE_MIN_COMMANDED_HIGH_DB: float = 2.5
 
 # The probe band must retain at least this many bins after masking, or there
@@ -601,29 +258,23 @@ DELTA_PROBE_MIN_BINS: int = 8
 # Best-fit realized/commanded scale factor below which a shape-tracking map is
 # called a level-dependent SHORTFALL rather than a model error.
 #
-# 0.85 is chosen to agree with :data:`DELTA_PROBE_TOLERANCE_LOW_DB` about what
-# "material" means at the depths this fit produces: a 15% shortfall on the
-# ~10 dB lift a CD-horn continuation commands is 1.5 dB, exactly the low-band
-# tolerance. So a shortfall large enough to be named here is always large
-# enough to have failed the amplitude test that got us into this branch, and
-# the two constants cannot disagree about a correction of that size.
+# 0.85 agrees with :data:`DELTA_PROBE_TOLERANCE_LOW_DB` about what "material"
+# means at the depths this fit produces: a 15 % shortfall on the ~10 dB lift a
+# CD-horn continuation commands is 1.5 dB, exactly the low-band tolerance.
 DELTA_PROBE_SHORTFALL_GAIN_CEILING: float = 0.85
 
 #: The band ids a realization ratio is reported per (#2649).
 #:
-#: Reported instead of relying on ONE least-squares slope over the whole graded
-#: band, because that scalar can be manufactured by a defect confined to a band
-#: the system is not even allowed to command in. On the 2026-08-16 shortfall
-#: round the pooled slope read 0.664 while the trusted HF realized 96-101% of
-#: commanded: ~90% of the squared error came from a -3.04 dB hole ABOVE the
-#: 16.4 kHz mic-trust ceiling (at the pre-ruling ceiling then in effect).
+#: Per band rather than ONE least-squares slope over the whole graded band,
+#: because that scalar can be manufactured by a defect confined to a band the
+#: system is not even allowed to command in: on the 2026-08-16 shortfall round
+#: the pooled slope read 0.664 while the trusted HF realized 96-101 %.
 #:
-#: ``crossover`` is the graded tier BELOW :data:`DELTA_PROBE_HF_SPLIT_HZ` —
-#: named for what it contains (the crossover region and the bulk of commanded
-#: correction) rather than derived from any Fc, which this function is not told
-#: and must not guess. ``trusted_hf`` is the graded tier at or above that split.
-#: ``above_ceiling`` is reported and NEVER graded: it is the span inside the
-#: caller's requested band that the mic-trust ceiling excluded.
+#: ``crossover`` is the graded tier BELOW :data:`DELTA_PROBE_HF_SPLIT_HZ`, named
+#: for what it contains rather than derived from any Fc, which this function is
+#: not told and must not guess. ``trusted_hf`` is the graded tier at or above the
+#: split. ``above_ceiling`` is reported and NEVER graded: the span inside the
+#: requested band that the mic-trust ceiling excluded.
 DELTA_PROBE_BAND_CROSSOVER = "crossover"
 DELTA_PROBE_BAND_TRUSTED_HF = "trusted_hf"
 DELTA_PROBE_BAND_ABOVE_CEILING = "above_ceiling"
@@ -638,12 +289,9 @@ DELTA_PROBE_REALIZATION_BANDS: tuple[str, ...] = (
 # Widening of the across-position level spread (``BandSpread.sigma_db``, dB)
 # beyond which the post-apply cloud is called spatially costly.
 #
-# The envelope's own ``linearization_envelope.position_stability_limit`` spends
-# this spread as ``sigma_db / sqrt(n_positions)`` when deciding how much
-# correction depth a band may have at all — so 1.0 dB of RAW sigma growth is
-# already several times the depth the cloud terms would have licensed in that
-# band. A correction that widens the room's spread by that much is not
-# flattening the speaker; it is fitting one microphone position.
+# ``linearization_envelope.position_stability_limit`` spends this spread as
+# ``sigma_db / sqrt(n_positions)``, so 1.0 dB of RAW sigma growth is already
+# several times the depth the cloud terms would have licensed in that band.
 DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB: float = 1.0
 
 # |residual common mode| beyond which an otherwise-unexplained whole-band level
@@ -651,77 +299,47 @@ DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB: float = 1.0
 # shape verdict (#1811).
 #
 # Numerically equal to :data:`DELTA_PROBE_TOLERANCE_LOW_DB` and defined
-# separately on purpose — the same "material disagreement" bar, asked of a
-# different quantity (one constant over the band, versus a per-bin excursion),
-# so a future retune of either must be a deliberate decision about that
-# quantity rather than a silent inheritance. The agreement is the point: a
-# common mode smaller than the per-bin tolerance cannot by itself have pushed a
-# bin past that tolerance, so a smaller bar here would name a shift that
-# explains nothing.
-#
-# This is a magnitude bar, NOT the discriminator — see
-# :func:`classify_delta_probe` for the two conditions that actually separate
-# "the level moved" from "a shape defect that happens to have a mean".
+# separately on purpose — the same "material disagreement" bar asked of a
+# different quantity (one constant over the band, versus a per-bin excursion).
+# A common mode smaller than the per-bin tolerance cannot by itself have pushed
+# a bin past it, so a smaller bar here would name a shift that explains nothing.
+# A magnitude bar, NOT the discriminator — see :func:`classify_delta_probe`.
 DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB: float = 1.5
 
 # How spread the quiet evidence must be, relative to a FULL sampling of the band
 # its level is claimed over, before that claim may be made band-wide (#2533).
 #
 # The quantity is :attr:`DeltaProbeMap.quiet_probe_coverage`: the interquartile
-# octave span of the quiet bins divided by **the same statistic taken over every
-# graded-band bin on the same grid**. Not divided by the band's whole span —
-# that ratio is not a property of the evidence, it is a property of the GRID.
-# Production grids are structurally LINEAR (``rfftfreq``; ``spatial_combine``
-# refuses anything else, because ``smooth_fractional_octave`` assumes linear
-# bins), so bin density rises with frequency and any interquartile span is pulled
-# toward the top octaves. Measured on the retained 2026-08-15 grid (511 bins,
-# 46.9208 Hz apart), a quiet set sampling a 357 Hz-10 kHz graded band perfectly
-# and uniformly scored **0.303** against that band's whole span — i.e. the
-# whole-span form of this ratio could not be cleared by ANY quiet set on real
-# data, at any band width.
+# octave span of the quiet bins divided by the SAME statistic over every
+# graded-band bin on the same grid. Not divided by the band's whole span — that
+# ratio is a property of the GRID, not of the evidence: production grids are
+# linear (``rfftfreq``), so any interquartile span is pulled toward the top
+# octaves, and a perfectly uniform quiet set scored 0.303 against the whole span
+# on the retained 2026-08-15 grid. Same statistic over the same grid top and
+# bottom means **1.0 is "spread exactly like a full sampling of the graded
+# band", grid invariant** (pinned on both a linear and a log grid).
 #
-# Dividing by the band's own interquartile span fixes that by construction:
-# numerator and denominator are the same statistic, over the same grid, so
-# whatever the grid does to one it does to the other. **1.0 therefore means
-# "spread exactly like a full sampling of the graded band", and it is grid
-# invariant** — an interleaved co-spanning quiet set measures 1.000 on the
-# production linear grid and 1.000 on a log one (pinned).
-#
-# **0.5 is a judgment, not a derivation, and it is stated as one.** What is
-# derived is the 1.0 reference above. The bar says a quiet set must be at least
-# half as spread as the band's own bins are, and it is placed in a wide measured
-# gap rather than fitted to anything: on the production grid the tightest PASSING
-# shape (co-spanning in alternating half-octave blocks) scores 0.870 and the
-# shape this exists to catch scores 0.248, so any bar between roughly 0.3 and 0.8
-# makes the same calls. That is why the two numbers are disclosed on every map —
-# :attr:`DeltaProbeMap.quiet_probe_coverage` and
-# :attr:`DeltaProbeMap.quiet_core_band_hz` — rather than reduced away to a
-# pass/fail.
-#
-# What it rules out is the case that produced it (2026-08-15 JTS3 cycle 4): the
-# correction commanded 463 Hz-12 kHz, so the quiet set was a 12-20 kHz sliver —
-# 158 of its 160 bins above 12 kHz, coverage 0.239 — and the level measured in it
-# was reported as a whole-band ``uncommanded_level_shift``.
+# **0.5 is a judgment, not a derivation.** What is derived is the 1.0 reference.
+# It sits in a wide measured gap — the tightest passing shape scores 0.870 and
+# the shape this exists to catch scores 0.248 — so any bar between roughly 0.3
+# and 0.8 makes the same calls, which is why both numbers are disclosed on every
+# map rather than reduced away to a pass/fail.
 DELTA_PROBE_MIN_QUIET_COVERAGE: float = 0.5
 
 #: ``reason`` for a level shift the quiet bins measured across the WHOLE graded
-#: band — the ordinary case, and the only one that supports a whole-band claim.
+#: band — the ordinary case, and the only one supporting a whole-band claim.
 REASON_UNCOMMANDED_LEVEL_SHIFT = "uncommanded_level_shift"
-#: ``reason`` for the same finding when the quiet bins that measured it are less
-#: spread than :data:`DELTA_PROBE_MIN_QUIET_COVERAGE` of the graded band
-#: (#2533). The finding stands and the verdict is unchanged — what narrows is
-#: the BAND the claim names, which travels as
-#: :attr:`DeltaProbeMap.quiet_core_band_hz`.
+#: ``reason`` for the same finding when the quiet bins are less spread than
+#: :data:`DELTA_PROBE_MIN_QUIET_COVERAGE` of the graded band (#2533). The finding
+#: stands and the verdict is unchanged; what narrows is the BAND the claim names.
 REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND = (
     "uncommanded_level_shift_outside_probe_band"
 )
 
-#: Appended to a non-matched verdict's ``reason`` when there were too few
-#: quiet bins to measure ``residual_offset_db`` at all (#1811). The verdict is
-#: still the honest one for the evidence available — but it was reached
-#: WITHOUT the level discriminator, so an undeclared level shift could be
-#: wearing a shape defect's clothes, and a rollback decided that way should
-#: say so in the same string a reader is already looking at.
+#: Appended to a non-matched verdict's ``reason`` when there were too few quiet
+#: bins to measure ``residual_offset_db`` at all (#1811). The verdict is the
+#: honest one for the evidence available, but it was reached WITHOUT the level
+#: discriminator, and a rollback decided that way should say so.
 _LEVEL_CHECK_UNAVAILABLE_SUFFIX = "|level_check_unavailable"
 
 
@@ -734,12 +352,10 @@ _LEVEL_CHECK_UNAVAILABLE_SUFFIX = "|level_check_unavailable"
 class SpatialCost:
     """Did the correction make the room LESS even? (the spatial arm)
 
-    Built from the two position groups the flow already walks — CLOUD_MEASURE
-    (pre-apply) and CLOUD_VERIFY (post-apply) — so unlike the at-the-mark arm
-    this one really is measurement-minus-measurement. ``available`` is False
-    when either group carries no usable spread (fewer than two positions: the
-    express tier's post-apply group is the mark alone by design, and
-    ``spatial_combine`` returns no ``band_spread`` below N=2).
+    Built from the two position groups the flow already walks — pre-apply and
+    post-apply — so unlike the at-the-mark arm this one is
+    measurement-minus-measurement. ``available`` is False when either group
+    carries fewer than two positions.
     """
 
     available: bool
@@ -775,17 +391,13 @@ def evaluate_spatial_cost(
 ) -> SpatialCost:
     """Compare two clouds' per-octave level spread, before vs after the apply.
 
-    ``before``/``after`` are ``spatial_combine.BandSpread`` sequences (duck-
-    typed on ``center_hz``/``sigma_db``, so a test fixture need not import the
-    real class). Bands are paired by ``center_hz``; a band present in only one
-    group is skipped rather than compared against nothing.
+    ``before``/``after`` are ``spatial_combine.BandSpread`` sequences,
+    duck-typed on ``center_hz``/``sigma_db``. Bands are paired by ``center_hz``;
+    a band present in only one group is skipped.
 
-    ``sigma_db`` — the spread of each position's BAND LEVEL — is the right
-    reading here, not ``max_sigma_db``. ``max_sigma_db`` rides comb nulls on
-    purpose, and comb structure moves with the microphone whether or not a
-    correction was applied; a level-spread comparison asks the question this
-    verdict is actually about, which is whether the corrected speaker is more
-    or less even across the room than the uncorrected one was.
+    ``sigma_db`` — the spread of each position's BAND LEVEL — not
+    ``max_sigma_db``, which rides comb nulls that move with the microphone
+    whether or not a correction was applied.
     """
     before_by_center = {
         round(float(b.center_hz), 3): float(b.sigma_db)
@@ -832,22 +444,13 @@ class DeltaProbeMap:
     exactly when it is in :data:`DELTA_PROBE_ROLLBACK_VERDICTS`, computed here
     so no caller can decide it differently.
 
-    ``gain_factor`` is the least-squares realized/commanded scale over the
-    probe band — 1.0 means the correction landed at full depth, 0.6 means it
-    delivered 60% of what it asked for. It is reported on every classified map,
-    not just the shortfall one, because it is the single most legible number in
-    this record for a human reading the journal, and it is ``None`` on an
-    unavailable map: 0.0 there would read as the measured claim "delivered
-    nothing", which is the opposite of "not measured".
-
-    **``gain_factor`` carries an INTERCEPT** (:attr:`gain_intercept_db`) and is
-    measured on the frame-removed curve (#2521). Through the origin, on a
-    commanded curve that is mostly one sign, a pure level offset arrives as
-    apparent scale: the first remote JTS3 session's constant −7.8 dB against a
-    76.5 %-negative commanded curve read as scale **2.02** and drove the
-    shortfall-vs-model-error branch on a number that was measuring the level
-    axis. A regression that may state where it crosses zero cannot make that
-    mistake, and the offset it would have absorbed is reported beside it.
+    ``gain_factor`` is the least-squares realized/commanded scale over the probe
+    band — 1.0 means full depth. Reported on every classified map, ``None`` on an
+    unavailable one: 0.0 there would read as "delivered nothing", which is the
+    opposite of "not measured". It carries an INTERCEPT
+    (:attr:`gain_intercept_db`) and is measured on the frame-removed curve
+    (#2521): through the origin, on a mostly-one-sign commanded curve, a pure
+    level offset arrives as apparent scale — a constant −7.8 dB read as 2.02.
     """
 
     verdict: str
@@ -862,212 +465,148 @@ class DeltaProbeMap:
     tolerance_low_db: float
     tolerance_high_db: float
     spatial: SpatialCost
-    #: The level move the EMITTER told us it made, dB, removed from the
-    #: realized curve before anything below was computed (#1811). Disclosed so
-    #: a reader can tell a probe that was level-corrected from one that was
-    #: not, and by how much — every scalar above is measured AFTER its removal.
+    #: The level move the EMITTER told us it made, dB, removed from the realized
+    #: curve before anything below was computed (#1811). Every scalar above is
+    #: measured AFTER its removal.
     expected_offset_db: float = 0.0
     #: The level CHANGE across the apply that nobody commanded, measured where
     #: the correction commanded NOTHING — the mean of
     #: ``(realized − expected_offset) − commanded − entry_delta`` across the
-    #: in-band bins BELOW the commanded floor. The ``− commanded`` term is
-    #: small but real there rather than exactly zero (the floor admits up to
-    #: :data:`DELTA_PROBE_MIN_COMMANDED_DB`, so it can bias this by up to
-    #: 0.5 dB against a 1.5 dB bar) and is subtracted rather than assumed away.
-    #: Any level in those bins is uncommanded by construction, which is what
-    #: makes it separable from a shape defect inside the probe band.
+    #: in-band bins BELOW the commanded floor. The ``− commanded`` term is small
+    #: but real there (the floor admits up to
+    #: :data:`DELTA_PROBE_MIN_COMMANDED_DB`) and is subtracted rather than
+    #: assumed away.
     #:
-    #: **A CHANGE, not an absolute** (#2533). The ``− entry_delta`` term is the
-    #: pre-apply capture in the same frame, so the standing disagreement between
-    #: an in-room measurement and an on-axis model — which is not a level move at
-    #: all, and was the largest term in the 2026-08-15 JTS3 verdict — cancels
-    #: instead of being reported as one. See :attr:`entry_anchor_offset_db` for
-    #: the term that was removed and what it means when it is ``None``.
+    #: **A CHANGE, not an absolute** (#2533): the ``− entry_delta`` term cancels
+    #: the standing disagreement between an in-room measurement and an on-axis
+    #: model, which is not a level move at all. On a CHAINED round it is only
+    #: trustworthy if the previous side describes the graph the entry capture
+    #: went through — see :func:`classify_delta_probe`.
     #:
-    #: **On a CHAINED round this number is not trustworthy without checking the
-    #: previous round's commanded band.** It carries ``−mean(previous round's
-    #: commanded curve over these bins)``, which is zero when that round
-    #: commanded nothing here and unbounded when it did — see
-    #: :func:`classify_delta_probe`'s docstring for the fabricate and mask cases.
-    #:
-    #: ``None`` when the correction commands something almost everywhere in band
-    #: and there are too few quiet bins to measure it — "not measured", which 0.0
-    #: would misreport as "measured, and nothing moved" (the same distinction
-    #: ``gain_factor`` draws).
+    #: ``None`` when there are too few quiet bins to measure it — "not
+    #: measured", which 0.0 would misreport as "measured, nothing moved".
     residual_offset_db: float | None = None
     residual_offset_tolerance_db: float = DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
-    #: The band the caller HANDED IN — this capture's trusted band. Distinct
-    #: from ``probe_band_hz``, which is the span of the bins that then cleared
-    #: the commanded floor inside it. Both travel because a reader diagnosing a
-    #: verdict needs to know whether a bin was excluded for lack of trust or for
-    #: lack of a command (#2521).
+    #: The band the caller HANDED IN — this capture's trusted band. Distinct from
+    #: ``probe_band_hz``, the span of the bins that then cleared the commanded
+    #: floor inside it: a reader diagnosing a verdict needs to know whether a bin
+    #: was excluded for lack of trust or for lack of a command (#2521).
     requested_band_hz: tuple[float, float] = (0.0, 0.0)
     #: The frame fitted between the two curves over the QUIET bins — one offset,
     #: one tilt, both uncommanded by construction (#2521). ``FRAME_UNFITTED``
-    #: when there were too few quiet bins, which means "no frame measured" and
-    #: leaves every ``frame_removed_*`` number below ``None``.
+    #: when there were too few quiet bins.
     frame: FrameFit = FRAME_UNFITTED
-    #: The three graded scalars again, taken after :attr:`frame` was removed
-    #: from the realized curve. ``None`` together and only together, and only
-    #: when no frame was fitted — never defaulted to their raw twins, which
-    #: would read as "removing the frame changed nothing" (a measurement)
-    #: instead of "nothing was measured" (an absence). The RAW twins above are
-    #: still what decides whether there is a finding at all; these decide
-    #: whether the finding is a rollback.
+    #: The three graded scalars again, taken after :attr:`frame` was removed.
+    #: ``None`` together and only together, and only when no frame was fitted —
+    #: never defaulted to their raw twins, which would read as "removing the
+    #: frame changed nothing" instead of "nothing was measured". The RAW twins
+    #: decide whether there is a finding; these decide whether it is a rollback.
     frame_removed_max_db: float | None = None
     frame_removed_rms_db: float | None = None
     frame_removed_exceedance_octaves: float | None = None
     #: Where the ``gain_factor`` regression crosses zero commanded, dB — the
-    #: level term it no longer has to absorb as scale. ``None`` on an
-    #: unavailable map, exactly like ``gain_factor``.
+    #: level term it no longer has to absorb as scale. ``None`` like
+    #: ``gain_factor``.
     gain_intercept_db: float | None = None
     #: The STANDING disagreement between the pre-apply measurement and the
-    #: two-branch model, dB, measured over the same quiet bins (#2533) — the
-    #: mean of the caller's ``entry_delta_db``. Removed from
-    #: :attr:`residual_offset_db` so that field measures a change rather than an
-    #: absolute.
+    #: two-branch model, dB, over the same quiet bins (#2533). Removed from
+    #: :attr:`residual_offset_db` so that field measures a change.
     #:
-    #: ``None`` means **not measured**, and is treated exactly the way an
-    #: unsupplied :attr:`expected_offset_db` is: nothing is removed, so the
-    #: standing offset stays visible inside ``residual_offset_db`` rather than
-    #: being pretended away. Reached when the caller supplies no pre-apply curve
-    #: (a session with no entry baseline, a state file written before that key
-    #: shipped, a length disagreement) or when too few quiet bins carry a finite
-    #: one.
-    #:
-    #: It discloses what was REMOVED, and cannot disclose what the removal left
-    #: behind: on a chained round the entry capture rides a graph whose own
-    #: correction this module never sees, so a non-``None`` anchor is not a
-    #: warrant that the residual beside it is clean — see
-    #: :func:`classify_delta_probe`'s docstring.
+    #: ``None`` means **not measured** and nothing is removed, so the standing
+    #: offset stays visible rather than being pretended away. It discloses what
+    #: was REMOVED and cannot disclose what the removal left behind: on a chained
+    #: round the entry capture rides a graph whose own correction this module
+    #: never sees.
     entry_anchor_offset_db: float | None = None
     #: How many quiet bins :attr:`residual_offset_db` was measured over. Distinct
-    #: from ``frame.n_bins``: the frame is always fitted over the whole quiet
-    #: set, while an anchored residual is measured only where the pre-apply curve
-    #: is finite too.
+    #: from ``frame.n_bins``: the frame is fitted over the whole quiet set, while
+    #: an anchored residual needs the pre-apply curve to be finite too.
     quiet_n_bins: int = 0
     #: The INTERQUARTILE span of those bins' frequencies, Hz — the middle half,
-    #: which is where they actually sit (#2533). ``frame.band_hz`` reports their
-    #: min/max, and min/max is what two stray bins defeat: on 2026-08-15 a set
-    #: with 158 of 160 bins above 12 kHz reported a 463 Hz-20 kHz span because
-    #: one bin sat at 493 Hz and one at 1.9 kHz. ``None`` when no residual was
-    #: measured.
+    #: which is where they actually sit (#2533). ``frame.band_hz`` reports
+    #: min/max, and min/max is what two stray bins defeat. ``None`` when no
+    #: residual was measured.
     quiet_core_band_hz: tuple[float, float] | None = None
-    #: :attr:`quiet_core_band_hz`'s span in octaves divided by the SAME
-    #: statistic over every graded-band bin on this grid — how spread the
-    #: evidence for a level claim is, relative to a full sampling of the band
-    #: that claim is made over. A quiet set spread like the graded band's own
-    #: bins scores exactly 1.0 (see
-    #: :data:`DELTA_PROBE_MIN_QUIET_COVERAGE`); below that bar the level verdict
-    #: keeps its finding but narrows its reason to
-    #: :data:`REASON_UNCOMMANDED_LEVEL_SHIFT_OUTSIDE_BAND`. ``None`` when no
-    #: residual was measured, or when the graded band spans no octaves at all
-    #: for a coverage to be a fraction OF.
+    #: :attr:`quiet_core_band_hz`'s span in octaves divided by the SAME statistic
+    #: over every graded-band bin on this grid — how spread the evidence for a
+    #: level claim is, relative to a full sampling of the band that claim is made
+    #: over. A co-spanning quiet set scores exactly 1.0; below
+    #: :data:`DELTA_PROBE_MIN_QUIET_COVERAGE` the verdict keeps its finding and
+    #: narrows its reason. ``None`` when nothing was measured.
     quiet_probe_coverage: float | None = None
     #: Were the two directional findings below measured against the PRE-APPLY
-    #: capture — that is, are they statements about what the speaker did, or was
-    #: there nothing to make them that? (series-2 D1) ``False`` means neither
-    #: fired because neither ran: no entry curve, too few bins carrying one, or
-    #: the ``safety_only`` path, which has no change reference by construction.
-    #:
-    #: It is on the record because "safe" has two very different readings and a
-    #: household surface must not be free to pick either — see
-    #: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_applied_safety`,
-    #: which already distinguishes "nothing was found" from "nothing looked" and
-    #: now carries this for the hearing half specifically.
+    #: capture — are they statements about what the speaker did, or was there
+    #: nothing to make them that? (series-2 D1) ``False`` means neither fired
+    #: because neither ran. It is on the record because "safe" has two very
+    #: different readings and a household surface must not be free to pick either.
     safety_anchored: bool = False
     #: Did a BOOST realize more lift than the applied graph declared,
     #: structurally? (#2537) The adoption table's one delta-probe-sourced hard
-    #: stop — see :func:`boost_overshoot` for the rule, why it is the one
-    #: directional exceedance in this module, and why since #2614 it is asked
-    #: over the SAFETY bins (this apply's changes UNION the applied graph's own
-    #: declared transfer) rather than the graded ones alone. ``False`` when
-    #: nothing overshot, when no safety bin carried a boost, and when
-    #: :attr:`safety_anchored` is False; the first is told from the rest by
-    #: :attr:`boost_overshoot_db`, ``None`` in the other two.
+    #: stop — see :func:`boost_overshoot`. Asked over the SAFETY bins (this
+    #: apply's changes UNION the graph's own declared transfer) since #2614.
+    #: ``False`` when nothing overshot, when no safety bin carried a boost, and
+    #: when :attr:`safety_anchored` is False; :attr:`boost_overshoot_db` tells
+    #: the first from the rest.
     boost_over_declared_bound: bool = False
     #: The worst signed ANCHORED excess, dB, over the safety bins where a boost
     #: was on the table — ``(measured_post − measured_pre) − expected_offset −
     #: commanded``, so positive is energy this apply delivered and did not
-    #: declare (series-2 D1; before it, this was the model's own error, which is
-    #: what :attr:`max_signed_error_db` reports now). ``None`` when no boosted
-    #: bin was measured, including every unanchored map — "not measured", never
-    #: 0.0.
+    #: declare. ``None`` when no boosted bin was measured, including every
+    #: unanchored map — "not measured", never 0.0.
     boost_overshoot_db: float | None = None
     #: The widest contiguous run, in octaves, over which that excess cleared
     #: this probe's per-bin tolerance. ``0.0`` means nothing cleared it.
     boost_overshoot_octaves: float = 0.0
     #: Did ANY safety bin come out LOUDER than this apply declared, past that
-    #: bin's own tolerance? (#2559) The direction of the miss, measured over
-    #: every anchored safety bin rather than only the boosted ones, and on the
-    #: same anchored excess :attr:`boost_overshoot_db` reports — see
-    #: :func:`louder_than_commanded` for why it is unstructured, why it is taken
-    #: on the raw curves, and which mask reaches it. ``False`` on an unavailable
-    #: or unanchored map, where nothing about the speaker was measured.
+    #: bin's own tolerance? (#2559) Measured over every anchored safety bin
+    #: rather than only the boosted ones — see :func:`louder_than_commanded`.
+    #: ``False`` on an unavailable or unanchored map.
     realized_louder_than_commanded: bool = False
     #: The most POSITIVE ANCHORED excess over the safety bins, dB — the amount
     #: behind the finding above, and a THIRD number rather than a restatement of
-    #: :attr:`boost_overshoot_db`: that one is taken over the boosted bins only,
-    #: so a cut-only graph reports ``None`` there while this reports the 4 dB the
-    #: speaker actually delivered. It exists because a finding whose amount is
-    #: missing from the record is unreadable, and until series-2 D1's fix round
-    #: the number sitting beside this boolean was
-    #: :attr:`max_signed_error_db` — a different reference entirely. ``None``
-    #: whenever the finding was not measured.
+    #: :attr:`boost_overshoot_db`, which is taken over the boosted bins only (a
+    #: cut-only graph reports ``None`` there while this reports the level the
+    #: speaker actually delivered). ``None`` when the finding was not measured.
     realized_excess_db: float | None = None
     #: Did the room depart from the two-branch MODEL, upward, past tolerance,
     #: anywhere in the safety bins? The unanchored reading of the same rule —
-    #: ``(measured_post − predicted_post) − expected_offset`` — and exactly the
-    #: quantity :attr:`realized_louder_than_commanded` reported before series-2
-    #: D1 separated the two. A next-round target (the blend region is where this
-    #: model is known blind, #2600), never a hazard: it is a claim about our
-    #: prediction, and it fires on rounds where the speaker measured quieter.
+    #: ``(measured_post − predicted_post) − expected_offset``. A next-round
+    #: target (the blend region is where this model is known blind, #2600), never
+    #: a hazard: it fires on rounds where the speaker measured quieter.
     model_departure_over_tolerance: bool = False
     #: The most POSITIVE unanchored ``realized − commanded`` over the safety
-    #: bins, dB — the amount behind :attr:`model_departure_over_tolerance`.
-    #: Negative on a map whose every bin sat under the model, which is a
-    #: measurement. ``None`` when no bin was in the safety mask, never 0.0
-    #: (``gain_factor``'s distinction).
+    #: bins, dB. Negative on a map whose every bin sat under the model, which is
+    #: a measurement. ``None`` when no bin was in the safety mask, never 0.0.
     max_signed_error_db: float | None = None
-    #: The frequency :attr:`max_signed_error_db` was measured at, Hz. **Not
-    #: :attr:`worst_hz`** — that is the worst ABSOLUTE error over the GRADED
-    #: bins, and this is the worst POSITIVE departure over the SAFETY bins. The
-    #: two are 563 Hz apart on the banked series-2 r1b. It rides beside the
-    #: amount because a next-round target quoting one bin's dB at another bin's
-    #: frequency points at the wrong feature. ``None`` whenever the amount is.
+    #: The frequency :attr:`max_signed_error_db` was measured at, Hz. **Not**
+    #: :attr:`worst_hz` — that is the worst ABSOLUTE error over the GRADED bins
+    #: and this the worst POSITIVE departure over the SAFETY bins; they are
+    #: 563 Hz apart on the banked series-2 r1b. ``None`` whenever the amount is.
     max_signed_error_hz: float | None = None
     #: How much of what was commanded arrived, PER BAND (#2649), keyed by
     #: :data:`DELTA_PROBE_REALIZATION_BANDS`. Each entry is
-    #: ``{band_hz, n_bins, ratio, graded}``; ``ratio`` is ``None`` for a band
-    #: too thin to fit a slope through, and ``graded`` is False for the
-    #: above-ceiling band, which is reported so a reader can see what the
-    #: mic-trust ceiling excluded and never enters a verdict.
-    #:
-    #: Empty on every map that never reached the fit (``unavailable``,
-    #: ``safety_only``) — the same "not measured" those maps already report by
-    #: leaving ``gain_factor`` ``None``.
+    #: ``{band_hz, n_bins, ratio, graded}``; ``ratio`` is ``None`` for a band too
+    #: thin to fit a slope through, and ``graded`` is False for the above-ceiling
+    #: band, which never enters a verdict. Empty on every map that never reached
+    #: the fit.
     band_realization: Mapping[str, Mapping[str, Any]] = field(
         default_factory=dict
     )
-    #: The mic-trust ceiling the caller applied, in Hz — ``None`` when the
-    #: caller supplied none and the graded band is the requested one.
+    #: The mic-trust ceiling the caller applied, Hz — ``None`` when the caller
+    #: supplied none and the graded band is the requested one.
     trust_ceiling_hz: float | None = None
-    #: The band actually GRADED: the requested band intersected with the
-    #: ceiling above. Reported beside ``requested_band_hz`` rather than
-    #: replacing it, so "what the caller asked for" and "what was judged" stay
-    #: two readable facts instead of one ambiguous one.
+    #: The band actually GRADED: the requested band intersected with the ceiling
+    #: above. Reported beside ``requested_band_hz`` so "what the caller asked
+    #: for" and "what was judged" stay two readable facts.
     graded_band_hz: tuple[float, float] | None = None
 
     @property
     def trusted_floor_hz(self) -> float | None:
         """The graded band's lower edge — the gate's trusted floor.
 
-        A named accessor because the round receipt banks this number beside its
-        objectives (#2609 SF5): a later round can then refuse a cross-floor
-        comparison instead of consuming a gate-length change as movement. It is
-        the requested band's floor by construction — the ceiling only ever
-        narrows the top — and reading it off the graded band keeps floor and
-        ceiling coming from one place.
+        Named because the round receipt banks this number beside its objectives
+        (#2609 SF5), so a later round can refuse a cross-floor comparison
+        instead of consuming a gate-length change as movement.
         """
         band = self.graded_band_hz or self.requested_band_hz
         return None if band is None else float(band[0])
@@ -1099,11 +638,8 @@ class DeltaProbeMap:
             "residual_offset_tolerance_db": self.residual_offset_tolerance_db,
             "requested_band_hz": list(self.requested_band_hz),
             "gain_intercept_db": self.gain_intercept_db,
-            # The quiet-bin evidence ``residual_offset_db`` rests on, nested for
-            # the reason the frame block below is: a reader judging a level
-            # claim needs how many bins measured it, where they sit, how much of
-            # the graded band they cover, and what standing offset was removed —
-            # as one set, not four keys to pair up by name.
+            # The quiet-bin evidence ``residual_offset_db`` rests on, nested so a
+            # reader judging a level claim gets one set, not four keys to pair up.
             "quiet": {
                 "n_bins": self.quiet_n_bins,
                 "core_band_hz": (
@@ -1113,37 +649,22 @@ class DeltaProbeMap:
                 "probe_coverage": self.quiet_probe_coverage,
                 "entry_anchor_offset_db": self.entry_anchor_offset_db,
             },
-            # Whether the hearing half was measured at all (series-2 D1). Top
-            # level rather than inside either block below because it governs
-            # BOTH of them, and a key repeated in two blocks is two owners of
-            # one fact. ``False`` there means every directional finding under it
-            # is an absence, not a pass.
+            # Whether the hearing half was measured at all. Top level because it
+            # governs BOTH blocks below; ``False`` means every directional
+            # finding under it is an absence, not a pass.
             "safety_anchored": self.safety_anchored,
-            # The directional boost finding, nested for the same reason: a
-            # reader judging a hard stop needs the answer, the amount, and how
-            # wide it ran as one set (#2537).
+            # The directional boost finding: the answer, the amount, and how wide
+            # it ran, as one set (#2537).
             "boost": {
                 "over_declared_bound": self.boost_over_declared_bound,
                 "overshoot_db": self.boost_overshoot_db,
                 "overshoot_octaves": self.boost_overshoot_octaves,
             },
-            # Which WAY the bins missed, nested for the boost block's reason
-            # (#2559): a finding and the amount behind it are one set, and a
-            # reader asking whether a rollback was deferred needs both.
-            #
-            # TWO findings here, on two references, each with its OWN amount —
-            # and they are not interchangeable (series-2 D1). The first pair is
-            # what the SPEAKER did across the apply and is the one a hazard is
-            # read off. The second is how far the room departed from our MODEL,
-            # with the frequency it peaked at, and is a next-round target. A
-            # corpus reader comparing receipts across D1 wants the second: it is
-            # the quantity the first boolean's key alone used to carry.
-            #
-            # Pairing them the other way is the defect this block was caught in
-            # once already: for one round the anchored boolean sat beside the
-            # unanchored amount, so a cut-only graph that delivered 4 dB it never
-            # declared read ``realized_louder_than_commanded: true`` beside a 7.0
-            # that was mostly model error, and the 4.0 reached no field at all.
+            # Which WAY the bins missed (#2559). TWO findings, on two references,
+            # each with its OWN amount, and they are not interchangeable: the
+            # first pair is what the SPEAKER did across the apply and is what a
+            # hazard is read off; the second is how far the room departed from our
+            # MODEL and is a next-round target.
             "direction": {
                 "realized_louder_than_commanded": (
                     self.realized_louder_than_commanded
@@ -1156,20 +677,11 @@ class DeltaProbeMap:
                 "max_signed_error_hz": self.max_signed_error_hz,
                 "seam_rollback_deferral": seam_rollback_deferral(self),
             },
-            # The frame's own terms and the grades taken with it removed, nested
-            # together so a reader picks a frame of reference once and reads a
-            # matching set rather than pairing keys by name.
             # How much of the commanded correction arrived, PER BAND, with the
-            # trusted-band provenance that says which bins were allowed to
-            # answer (#2649). Nested for the reason every other block here is:
-            # a reader judging a realization claim needs the per-band ratios,
-            # the band that was graded, and the ceiling that narrowed it as one
-            # set, not five keys to pair up by name.
-            #
+            # provenance saying which bins were allowed to answer (#2649).
             # ``pooled`` is ``gain_factor`` under its band-resolved name, kept
-            # here as well as at the top level so a consumer reading this block
-            # never has to reach outside it to compare the whole-band answer
-            # against the per-band ones.
+            # here too so a consumer never reaches outside the block to compare
+            # the whole-band answer against the per-band ones.
             "realization": {
                 "comparand": REALIZED_VS_COMMANDED_COMPARAND,
                 "pooled": self.gain_factor,
@@ -1234,26 +746,16 @@ def _safety_only(
 ) -> DeltaProbeMap:
     """A map carrying the model's departure and NO grade of anything else (#2614).
 
-    Deliberately shaped like :func:`_unavailable` plus the safety block. Every
-    shape and level scalar keeps its dataclass default — 0.0 error, ``None``
-    gain, ``None`` residual, an unfitted frame — because on this path the
-    classifier was handed the STATE axis in the commanded slot, and every one of
-    those numbers computed against a state axis would be a claim in the wrong
-    frame: the residual is the chained-round contaminant #2611 removed, and the
-    frame fit sits on quiet bins that mean something else. Returning them "for
-    information" is how a wrong number gets read as a right one, so they are not
-    returned at all.
+    Every shape and level scalar keeps its dataclass default, because on this
+    path the classifier was handed the STATE axis in the commanded slot and each
+    of those numbers computed against a state axis would be a claim in the wrong
+    frame. Returning them "for information" is how a wrong number gets read as a
+    right one.
 
-    **What survives the frame change is the MODEL's departure, and only that**
-    (series-2 D1). ``realized − commanded`` is ``measured_post −
-    predicted_post`` whichever graph the two sides are stated against, so it is
-    well-defined here — but it is a statement about our prediction, and this
-    path has no pre-apply capture to turn it into a statement about the speaker
-    (a change measurement shares no reference with a state axis). So
-    ``safety_anchored`` is False, the two directional findings are absences, and
-    the map says the hearing half did not run rather than reporting a pass it
-    did not measure. Until D1 those findings fired here on the unanchored curve,
-    which on THIS path carries no change term at all.
+    What survives the frame change is the MODEL's departure and only that
+    (series-2 D1): ``realized − commanded`` is well-defined here, but this path
+    has no pre-apply capture to turn it into a statement about the speaker. So
+    ``safety_anchored`` is False and the map says the hearing half did not run.
     """
     return DeltaProbeMap(
         verdict=VERDICT_SAFETY_ONLY,
@@ -1292,19 +794,14 @@ def graded_command_floor_db(freqs_hz: np.ndarray) -> np.ndarray:
     """The per-bin commanded floor a bin must clear to be GRADED (#2521).
 
     The two-tier sibling of :func:`_tolerance_curve`, split at the same
-    frequency and for the same reason — see
-    :data:`DELTA_PROBE_MIN_COMMANDED_HIGH_DB`. Public because the band a probe
-    graded is only reconstructible offline with the rule that produced it.
+    frequency — see :data:`DELTA_PROBE_MIN_COMMANDED_HIGH_DB`. Public because
+    the band a probe graded is only reconstructible offline with the rule that
+    produced it.
 
-    NOT the quiet floor. A bin under :data:`DELTA_PROBE_MIN_COMMANDED_DB` is
-    where the correction asked for NOTHING, which is a statement about the
-    command and not about measurement uncertainty, so that floor stays flat
-    across the band and keeps ``residual_offset_db`` and the fitted frame
-    measuring exactly what they measured before this tier existed. Between the
-    two, at HF, sits a band of bins that are neither: something was asked for,
-    but less than the uncertainty this probe already concedes there. Those bins
-    are graded by nothing and corroborate nothing, which is the honest answer
-    for them.
+    NOT the quiet floor, which stays flat across the band because "the
+    correction asked for nothing here" is a statement about the command rather
+    than about measurement uncertainty. Between the two, at HF, sits a band of
+    bins that are neither: graded by nothing and corroborating nothing.
     """
     return np.where(
         freqs_hz < DELTA_PROBE_HF_SPLIT_HZ,
@@ -1318,11 +815,10 @@ def widest_exceedance_octaves(
 ) -> tuple[float, float]:
     """``(widest contiguous run in octaves, that run's low edge in Hz)``.
 
-    A "run" is contiguous in GRID INDEX, not merely in the exceeding set — two
+    A run is contiguous in GRID INDEX, not merely in the exceeding set — two
     exceeding bins either side of a compliant one are two runs, which is the
-    whole point of a width rule. Width is measured in log2 frequency between
-    the run's first and last bin, so it is the same quantity at 500 Hz and at
-    15 kHz. Returns ``(0.0, 0.0)`` when nothing exceeds.
+    point of a width rule. Width is log2 frequency, so it is the same quantity
+    at 500 Hz and at 15 kHz. ``(0.0, 0.0)`` when nothing exceeds.
     """
     widest = 0.0
     widest_lo_hz = 0.0
@@ -1352,19 +848,14 @@ def _structured_exceedance(
 ) -> tuple[bool, float]:
     """``(is a real finding, widest run in octaves)`` for one error curve.
 
-    **Every array is on the FULL grid**, and ``probe_mask`` marks the bins
-    inside the probe band. That is load-bearing, not a convenience: the width
-    rule counts a run as contiguous in GRID INDEX, so it can only tell
-    structure from texture if the grid it walks is the real one. Evaluating it
-    on the compacted ``freqs[mask]`` subarray instead silently welds bins that
-    are octaves apart in Hz into one "wide" run whenever the mask has a hole —
-    and the commanded floor puts a hole in it on every ordinary correction that
-    cuts low and boosts high. Two isolated single-bin errors either side of
-    such a gap then scored 2.9 octaves of structure and rolled the correction
-    back (adversarial review B1, reproduced). Masking the EXCEEDANCE instead
-    keeps every removed bin as a run-breaker, which is what it physically is:
-    a frequency where the correction asked for nothing, so nothing there can
-    corroborate a defect on the far side of it.
+    **Every array is on the FULL grid**, with ``probe_mask`` marking the bins
+    inside the probe band. Load-bearing, not a convenience: the width rule
+    counts a run as contiguous in GRID INDEX, so evaluating it on the compacted
+    ``freqs[mask]`` subarray welds bins octaves apart into one "wide" run
+    wherever the mask has a hole — and the commanded floor puts a hole in it on
+    every correction that cuts low and boosts high. Masking the EXCEEDANCE
+    instead keeps every removed bin as a run-breaker, which is what it
+    physically is.
     """
     exceeds = probe_mask & (np.abs(error_db) > tolerance_db)
     widest, _ = widest_exceedance_octaves(freqs_hz, exceeds)
@@ -1382,75 +873,38 @@ def boost_overshoot(
     """Did a BOOST realize MORE lift than the graph declared? (#2537)
 
     ``(over the bound, worst signed excess in dB, widest run in octaves)``,
-    measured only in bins where a **boost** is on the table. Every array is on
-    the full grid, exactly as :func:`_structured_exceedance` requires and for
-    the same run-contiguity reason.
+    measured only in bins where a boost is on the table. Every array is on the
+    full grid, for :func:`_structured_exceedance`'s run-contiguity reason.
 
     **``excess_db`` is a measured CHANGE, and the caller owes that** (series-2
-    D1). It is ``(measured_post − measured_pre) − expected_offset − commanded``
-    — what the speaker did across the apply, minus what the apply declared it
-    would do. This function takes it as ONE array rather than deriving it from
-    a realized and a commanded curve, because that derivation is exactly where
-    the defect lived: ``realized − commanded`` cancels the commanded term and
-    leaves the acoustic model's own error, which is not evidence about a
-    driver. The signature carries the fix — a caller that has no pre-apply
-    capture cannot express this quantity and must not call this rule at all.
-    See the module docstring for the algebra and the round it cost.
+    D1): ``(measured_post − measured_pre) − expected_offset − commanded``. Taken
+    as ONE array rather than derived from a realized and a commanded curve,
+    because that derivation cancels the commanded term and leaves the acoustic
+    model's own error — a caller with no pre-apply capture cannot express this
+    quantity and must not call this rule at all.
 
-    **Two axes select the bins, and the second one is what keeps an untouched
-    band watched** (#2614). ``commanded_db`` is a CHANGE — what this apply asks
-    the summed response to do relative to the graph it replaces — so on a repeat
-    round it is ~0 across every band the apply leaves alone, including a band the
-    applied graph still boosts by 5 dB. ``declared_db`` is that graph's own
-    predicted transfer against the uncorrected crossover, so it is where the
-    standing boosts are, and a bin qualifies when EITHER curve boosts. A band
-    this apply did not touch still has a driver in it, so it is still looked at.
-    ``None`` falls back to ``commanded_db`` alone, which is both the pre-#2614
-    behaviour and exactly right for a first-ever apply — there the graph being
-    replaced is the raw crossover, so the two curves are one.
+    **Two axes select the bins** (#2614). ``commanded_db`` is a CHANGE, so on a
+    repeat round it is ~0 across every band the apply leaves alone, including a
+    band the applied graph still boosts by 5 dB; ``declared_db`` is that graph's
+    own predicted transfer, so a bin qualifies when EITHER curve boosts. Neither
+    contributes a VALUE — they choose bins — which is why a union mask is sound
+    here and not in :func:`_structured_exceedance`. ``None`` falls back to
+    ``commanded_db`` alone, exactly right for a first-ever apply.
 
-    Neither curve contributes a VALUE — they choose bins and nothing else. That
-    is why a union mask bridging a run the graded mask would break is sound
-    here and is not in :func:`_structured_exceedance`: a bin the correction
-    commanded nothing at corroborates nothing about the model's SHAPE, but the
-    speaker measuring 4 dB hotter there than before the apply is direct
-    evidence about a driver wherever it sits.
+    The union sees a hazard the moment it APPEARS, and does **not** see one
+    already present in BOTH captures, which subtracts to zero identically. That
+    is the price of an instrument that cannot be fooled by the model.
 
-    **What that watching can and cannot see, since D1 made the value a change.**
-    It sees a hazard the moment it APPEARS: a band this apply left alone whose
-    output rises across the apply is `measured_post − measured_pre` and reads
-    its full size, which is #2614's case and is pinned. It does **not** see a
-    hazard already present in BOTH captures — a band that has been running hot
-    since some earlier round subtracts to zero here, identically, because
-    "nothing changed" is exactly what the two captures say. That is the price of
-    an instrument that cannot be fooled by the model, and it is a real one:
-    stated so nobody reads the union as coverage it no longer provides. The
-    onset is where a standing hazard is catchable, and it is caught there.
-
-    **Directional, where every other exceedance rule here is not.** The rest of
-    this module asks "did realized and commanded disagree", takes ``abs``, and
-    is right to: a shape defect is a defect in either direction. This one asks
-    the hearing-safety question instead — *is the speaker putting more energy
-    into a driver than the graph declared it would* — and under-realizing a
-    boost is not that. A boost that delivered 3 dB of a commanded 6 is a
-    quality miss to learn from; one that delivered 9 is energy nobody asked
-    for.
-
-    The bound is this probe's own per-bin tolerance, which is why it is an
-    argument rather than a second constant: a bin is over the bound when
-    ``excess > tolerance(f)``, the same slack the graded verdict already
-    concedes. It is measurement uncertainty, NOT a declared boost limit — the
-    pre-D1 reason string named it one and sent the first reading of the
-    2026-08-17 incident looking at headroom accounting that was correct to
-    0.04 dB. And the finding is STRUCTURED on the same rule as every other one
-    here (:data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`), so a single noisy bin
-    cannot pull a household's correction off the speaker.
+    **Directional, where every other exceedance rule here is not**: this asks
+    the hearing-safety question — is the speaker putting more energy into a
+    driver than the graph declared — and under-realizing a boost is not that.
+    The bound is this probe's own per-bin tolerance, i.e. measurement
+    uncertainty and NOT a declared boost limit, and the finding is STRUCTURED
+    (:data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES`) so one noisy bin cannot pull a
+    household's correction off the speaker.
 
     The middle value is ``None`` when no bin carried a boost on either axis —
-    "not measured", never 0.0, which would read as "measured, and it did not
-    overshoot" (the distinction ``gain_factor`` and ``residual_offset_db`` both
-    draw). A cut-only graph reaches that, and so does a boost whose bins all
-    fell under the graded floor.
+    "not measured", never 0.0.
     """
     declared = commanded_db if declared_db is None else declared_db
     boosted = probe_mask & ((commanded_db > 0.0) | (declared > 0.0))
@@ -1470,57 +924,28 @@ def louder_than_commanded(
 ) -> tuple[bool, float | None]:
     """Did ANY bin come out LOUDER than the excess curve's reference? (#2559)
 
-    ``(over the bound anywhere, the most POSITIVE excess in dB)``. The direction
-    of a miss, which this module measured nowhere before: every other exceedance
-    rule here takes ``abs`` — right for "is the shape wrong", useless for "which
-    way".
+    ``(over the bound anywhere, the most POSITIVE excess in dB)`` — the
+    direction of a miss, where every other exceedance rule here takes ``abs``.
 
-    **Called twice, on two different curves, and the reference decides what the
-    answer means** (series-2 D1). Both readings are on the record and neither is
-    re-derived anywhere else:
+    **Called twice, on two curves, and the reference decides what the answer
+    means** (series-2 D1). On the ANCHORED excess it is a hearing fact about the
+    speaker and is what withholds ADR-0209's lenience; on the unanchored
+    ``realized − commanded`` it is a fact about the acoustic MODEL — a real
+    next-round target and not a hazard.
 
-    * on the **anchored** excess — ``(measured_post − measured_pre) −
-      expected_offset − commanded`` — it is a hearing fact about the speaker,
-      and it is what withholds #2559's lenience
-      (:attr:`DeltaProbeMap.realized_louder_than_commanded`);
-    * on the **unanchored** ``realized − commanded``, which is identically
-      ``(measured_post − predicted_post) − expected_offset``, it is a fact about
-      the acoustic MODEL and nothing else
-      (:attr:`DeltaProbeMap.model_departure_over_tolerance`). It is a real
-      next-round target and it is not a hazard.
+    **Deliberately unstructured**, where :func:`boost_overshoot` and
+    :func:`_structured_exceedance` require a run: those decide whether a defect
+    EXISTS, and this decides whether an existing finding may be handled the
+    LENIENT way, so one bin measured louder is enough to withhold it. A width
+    rule here would admit more positive-direction evidence into the quiet class,
+    which is the wrong direction to be generous in; no octaves term is returned,
+    so nothing downstream can gate on structure by accident.
 
-    Reading the second as the first is the D1 defect, and the module docstring
-    carries the round it cost.
-
-    **Deliberately unstructured, where every sibling rule is structured.**
-    :func:`boost_overshoot` and :func:`_structured_exceedance` require a
-    :data:`DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES` run before they will call
-    something a finding, because they are deciding whether a defect EXISTS and
-    a single noisy bin must not pull a household's correction off the speaker.
-    This one is not deciding that — the verdict is already a finding by the time
-    anyone asks. It decides whether a finding that exists may be handled the
-    LENIENT way, so one bin measured louder is enough to withhold the lenience.
-    A width rule here would be a rule for admitting more positive-direction
-    evidence into the quiet class, which is the wrong direction to be generous
-    in. There is deliberately no octaves term returned, so nothing downstream
-    can gate on structure by accident.
-
-    **Bins only, no frame removal.** :func:`boost_overshoot`'s reason, verbatim
-    and for the same question: a frame is removed to ask whether the SHAPE is
-    right, and this asks how much energy actually reached the driver. Subtracting
-    a fitted offset first would hide exactly the whole-band overshoot the
-    lenience must not be granted for.
+    **Bins only, no frame removal**: a frame is removed to ask whether the SHAPE
+    is right, and this asks how much energy reached the driver.
 
     ``probe_mask`` is :func:`classify_delta_probe`'s SAFETY mask, not its graded
-    one (#2614): every bin this apply changed, PLUS every bin the applied graph
-    itself declares a transfer in. Same reason :func:`boost_overshoot` takes a
-    second axis — the lenience is withheld on evidence about how much energy
-    reached the driver, and a band a repeat round left alone still has a driver
-    in it. The anchored call narrows it further, to the bins a pre-apply
-    capture actually reached.
-
-    ``None`` for the scalar only when the mask selects nothing — "not measured",
-    never 0.0.
+    one (#2614). ``None`` for the scalar only when the mask selects nothing.
     """
     if not bool(probe_mask.any()):
         return False, None
@@ -1531,11 +956,7 @@ def louder_than_commanded(
 
 
 def _octave_span(span_hz: tuple[float, float]) -> float:
-    """A ``(low, high)`` frequency span's width in octaves; ``0.0`` if degenerate.
-
-    Measured in log2 so it is the same quantity at 500 Hz and at 15 kHz, exactly
-    like :func:`widest_exceedance_octaves`' run width.
-    """
+    """A ``(low, high)`` frequency span's width in octaves; ``0.0`` if degenerate."""
     lo, hi = float(span_hz[0]), float(span_hz[1])
     if not (lo > 0.0 and hi > lo):
         return 0.0
@@ -1546,12 +967,10 @@ def interquartile_band_hz(freqs_hz: np.ndarray) -> tuple[float, float] | None:
     """The middle half of a bin set, as ``(low, high)`` in hertz (#2533).
 
     The robust reading of "where does this evidence sit": min/max is what two
-    stray bins defeat, and the delta probe already reports that as
-    ``frame.band_hz``. Public because the coverage ratio a verdict turns on is
-    only reconstructible offline with the statistic that produced it.
-
-    ``None`` for an empty set, or one whose quartiles do not straddle a positive
-    span — no middle half, so no span to state.
+    stray bins defeat, and the probe already reports that as ``frame.band_hz``.
+    Public because the coverage ratio a verdict turns on is only reconstructible
+    offline with the statistic that produced it. ``None`` for an empty set, or
+    one whose quartiles do not straddle a positive span.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     if freqs.size == 0:
@@ -1572,19 +991,13 @@ def _band_realization(
     """Per-band realization ratio: how much of what was commanded arrived.
 
     One least-squares slope per band instead of one over all of them, so a
-    defect confined to a band cannot be smeared across the whole graded span —
-    and so a band the fitter was never allowed to command in cannot contribute
-    to the verdict at all. See :data:`DELTA_PROBE_REALIZATION_BANDS` for the
-    three ids and why they are cut where they are.
-
-    Each entry carries ``band_hz`` (the bins actually present, not the nominal
-    edges), ``n_bins``, ``ratio``, and ``graded``. ``ratio`` is ``None`` for a
-    band with fewer than :data:`DELTA_PROBE_MIN_BINS` bins — too few to fit a
-    slope through, and a slope that says nothing must not be reported as a
-    number that does. ``graded`` is False for ``above_ceiling`` always: those
-    bins are reported so a reader can SEE what the ceiling excluded, and they
-    are excluded from the verdict for the same reason the fitter may not
-    command there.
+    defect confined to a band cannot be smeared across the whole graded span,
+    and a band the fitter was never allowed to command in cannot contribute to
+    the verdict at all. Each entry carries ``band_hz`` (the bins actually
+    present, not the nominal edges), ``n_bins``, ``ratio`` — ``None`` under
+    :data:`DELTA_PROBE_MIN_BINS`, because a slope that says nothing must not be
+    reported as a number that does — and ``graded``, always False for
+    ``above_ceiling``.
     """
 
     hf = freqs >= DELTA_PROBE_HF_SPLIT_HZ
@@ -1640,105 +1053,57 @@ def classify_delta_probe(
     """Classify one applied correction's realized-vs-commanded map.
 
     All three arrays share one frequency grid (the caller interpolates). The
-    probe band is ``band_hz`` intersected with the bins where the correction
-    commands at least :func:`graded_command_floor_db` — outside that, either
-    nothing was asked for or less was asked for than this probe's own tolerance
-    concedes at that frequency, and there is nothing to verify either way.
+    probe band is ``band_hz`` intersected with the bins commanding at least
+    :func:`graded_command_floor_db`.
 
     ``band_hz`` is the band the CALLER trusts, and this function does not
-    second-guess it: it owns no gate, no validity floor, and no ceiling. The
-    production caller hands in the capture's own gate-derived trusted band
-    (:func:`jasper.audio_measurement.gate_disclosure.evaluation_band_hz`), which
-    is the single owner of that decision. Handing in the raw grid edges instead
-    is what let a bin 1.3 kHz above the trusted ceiling produce a 23.4 dB
-    headline and a rollback (#2521).
+    second-guess it: it owns no gate, no validity floor and no ceiling. Handing
+    in the raw grid edges instead is what let a bin 1.3 kHz above the trusted
+    ceiling produce a 23.4 dB headline and a rollback (#2521).
 
     ``expected_offset_db`` is the whole-band level move the EMITTER knows it
-    made across the apply and did NOT command as part of the correction's shape
-    — in production, the pre-split headroom the applied graph charges for its
-    own boost (``baseline_profile.applied_program_level_delta_db``; negative
-    when the apply made the speaker quieter). It is subtracted from the
-    realized curve before anything is measured, because this comparison is not
-    mean-centered and would otherwise read that shift as a defect (see the
-    module docstring). Default ``0.0`` — an unsupplied or non-finite offset
-    means "nothing known", which is honest and leaves the whole shift visible
-    in ``residual_offset_db`` rather than pretending it was accounted for.
+    made and did NOT command as part of the correction's shape (in production,
+    the pre-split headroom the applied graph charges for its own boost). It is
+    subtracted from the realized curve before anything is measured. Default
+    ``0.0`` — "nothing known" — leaves the whole shift visible in
+    ``residual_offset_db`` rather than pretending it was accounted for.
 
     ``entry_delta_db`` is the PRE-apply capture in the same frame as
-    ``realized_delta_db`` — ``measured_pre − predicted_previous``, on the same
-    grid — so ``residual_offset_db`` can be a CHANGE (#2533). Optional,
-    and governed by exactly ``expected_offset_db``'s rule: an unsupplied curve,
-    one whose length disagrees, or one that is non-finite across the quiet bins
-    all mean "nothing known", so nothing is removed and the standing offset
-    stays visible rather than being pretended away. A length disagreement is an
-    absence here rather than the ``grid_mismatch`` the three graded arrays get,
-    for ``verify_measured_curve_from_state``'s reason: a truncated optional
-    record should read as "no anchor", not reach the classifier as a bad grid.
+    ``realized_delta_db``, so ``residual_offset_db`` can be a CHANGE (#2533).
+    Optional, on ``expected_offset_db``'s rule: unsupplied, length-disagreeing
+    or non-finite all mean "nothing known". **It is also what makes the two
+    directional SAFETY findings possible at all** (series-2 D1), and there the
+    absence rule is stricter than "leave it visible": without this curve the
+    findings are not made rather than made on the model's error, and
+    ``safety_anchored`` reports which happened. Applied per bin, because a
+    whole-band scalar cannot cancel a standing error that lives at one frequency.
 
-    **It is also what makes the two directional SAFETY findings possible at
-    all** (series-2 D1), and there the absence rule is stricter than "leave it
-    visible": without this curve there is no measurement of the speaker to grade,
-    only the model's error, so the findings are not made rather than made on the
-    wrong quantity. ``safety_anchored`` reports which happened. Per bin here,
-    not as the whole-band scalar ``residual_offset_db`` removes — a scalar
-    cannot cancel a standing error that lives at one frequency, which is exactly
-    the shape that took a round off a speaker on 2026-08-17.
-
-    ``declared_transfer_db`` is the STATE axis the two directional safety rules
-    select bins with, and it exists because ``commanded_delta_db`` stopped being
-    one (#2614). It is the applied graph's OWN predicted transfer against the
-    uncorrected crossover — what the graph declares it does, not what this apply
-    changes — on the same grid. :func:`boost_overshoot` and
-    :func:`louder_than_commanded` are then measured over the UNION of the two
-    axes' graded bins, so a repeat round that leaves an existing boost band
-    untouched still has that band watched. Optional, on the same rule as
-    ``entry_delta_db``: unsupplied or length-disagreeing means "nothing known"
-    and the graded mask alone is used, which is the pre-#2614 behaviour and an
-    identity on a first-ever apply. Everything else this function measures —
-    the error curve, the statistics, the exceedance width, the gain fit, the
-    frame, the quiet residual — is untouched by it, because ``realized −
-    commanded`` is ``measured_post − predicted_post`` whichever graph the two
-    sides are stated against.
+    ``declared_transfer_db`` is the STATE axis the two directional rules select
+    bins with (#2614): the applied graph's own predicted transfer against the
+    uncorrected crossover, on the same grid. The rules are then measured over
+    the UNION of the two axes' graded bins, so a repeat round that leaves an
+    existing boost band untouched still has it watched. Optional on
+    ``entry_delta_db``'s rule, and an identity on a first-ever apply. Nothing
+    else this function measures is touched by it.
 
     ``state_axis_only`` says the curve in the ``commanded_delta_db`` slot is
-    that STATE axis rather than a change axis, because the caller has no change
-    axis to give (#2614). The reachable case is a previous graph the caller
-    could not name — a corner that moved out from under the applied profile is
-    the one worth saying, because the branches are then composed through a
-    crossover that graph never ran, so the previous side is refused and the
-    change axis goes with it — while the applied graph's own declared transfer
-    stays well-defined at whatever corner the round runs at. What still holds
-    there is the MODEL's departure, measured on ``realized − commanded``;
-    nothing else does, so nothing else is returned.
-    The verdict is :data:`VERDICT_SAFETY_ONLY` and the map carries no shape or
-    level grade at all — and since series-2 D1, no directional safety finding
-    either, because those need the pre-apply capture this path has none of. Do
-    NOT pass ``entry_delta_db`` on that path — it is a change measurement and
-    shares no reference with a state axis.
+    that STATE axis, because the caller has no change axis to give (#2614) — the
+    reachable case is a previous graph the caller could not name. The verdict is
+    :data:`VERDICT_SAFETY_ONLY` and the map carries no shape, level or
+    directional grade. Do NOT pass ``entry_delta_db`` on that path: it is a
+    change measurement and shares no reference with a state axis.
 
-    **CHAINED ROUNDS: the reference graph is shared, and that is what makes the
-    residual meaningful** (#2611 closed the #2545 hazard). ``commanded_delta_db``
-    and ``entry_delta_db`` are both stated against the graph that was live at
-    entry — the former by construction (the caller's previous side IS the
-    applied profile), the latter because it is a measurement of that graph — so
-    they subtract cleanly and the residual is ``mean(measured_post −
-    measured_pre − commanded)`` over the quiet bins. Until #2611 the commanded
-    curve was measured against the RAW crossover instead, and a REPEAT round
-    therefore carried ``−mean(previous round's commanded curve over this round's
-    quiet bins)``: a term this function is never given, cannot bound, and which
-    could both fabricate a shift (a previous round correcting out to 20 kHz
-    against a new one stopping at 8 kHz measured a +6.000 dB phantom) and mask
-    one (a genuine −2.2 dB shift re-grading to 0.000). What the caller still
-    owes is that its previous side describe the graph the entry capture actually
-    went through. The crossover corner is the part of that which can move, and
-    since #2614 both of the ways it can are checked and refused rather than
-    owed — see ``crossover_v2.commanded``'s "The corner has to match, and it is
-    CHECKED rather than assumed".
+    **CHAINED ROUNDS:** ``commanded_delta_db`` and ``entry_delta_db`` are both
+    stated against the graph that was live at entry, so they subtract cleanly
+    and the residual is ``mean(measured_post − measured_pre − commanded)`` over
+    the quiet bins (#2611). What the caller owes is that its previous side
+    describe the graph the entry capture actually went through; the crossover
+    corner is the part that can move, and both ways it can are checked and
+    refused by ``crossover_v2.commanded``.
 
-    Topology-agnostic by construction: this function knows about a measured
-    curve, a commanded curve, and a band. It has no notion of drivers, ways,
-    or crossovers, so a 1-way passive speaker's summed chain classifies
-    through exactly this code path with no special case.
+    Topology-agnostic by construction: a measured curve, a commanded curve and a
+    band. A 1-way passive speaker's summed chain classifies through this same
+    path with no special case.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     realized = np.asarray(realized_delta_db, dtype=np.float64)
@@ -1753,36 +1118,26 @@ def classify_delta_probe(
             requested_band_hz=requested_band_hz,
         )
 
-    # Remove the KNOWN move before any measurement below. Everything the record
-    # reports — max/rms error, worst bin, gain factor, exceedance width — is
-    # therefore a statement about what is left after the emitter's own
-    # accounting, which is the only part that could be a defect.
+    # Remove the KNOWN move before any measurement below, so everything reported
+    # is a statement about what is left after the emitter's own accounting.
     realized = realized - offset
 
-    # The mic-trust ceiling, intersected in (#2649). **The fitter may not
-    # command there; the probe may not grade there.** The caller derives the
-    # ceiling (this function owns no gate, no validity floor and no ceiling of
-    # its own — it is TOLD both bounds), but the intersection happens here so
-    # one place decides which bins are graded and the map can report the
-    # requested band, the applied ceiling and the result together instead of a
-    # reader pairing three numbers from two layers.
+    # The mic-trust ceiling, intersected in (#2649). The fitter may not command
+    # there; the probe may not grade there. The caller derives the ceiling — this
+    # function owns no gate, floor or ceiling of its own — but the intersection
+    # happens here so one place decides which bins are graded.
     #
-    # Why it matters: the grading band comes from the capture's own gate
-    # disclosure, which is blind to the mic tier. On a `reference` mic the fit
-    # envelope is exactly zero from 20 kHz (2026-08-29 horn-droop correction
-    # ruling; was ~16.4 kHz), so every bin above that was commanded at zero
-    # and measured through a microphone nobody trusts — grading them
-    # manufactured 90% of the 2026-08-16 round's squared error (at the
-    # pre-ruling ceiling then in effect).
+    # The grading band comes from the capture's own gate disclosure, which is
+    # blind to the mic tier: grading bins commanded at zero and measured through
+    # a microphone nobody trusts manufactured 90 % of the 2026-08-16 round's
+    # squared error.
     lo_hz, hi_hz = requested_band_hz
     graded_hi_hz = hi_hz
     if trust_ceiling_hz is not None and float(trust_ceiling_hz) < graded_hi_hz:
         graded_hi_hz = float(trust_ceiling_hz)
     measurable = np.isfinite(realized) & np.isfinite(commanded)
-    # What the CALLER asked to grade, before the ceiling narrowed it. Kept so
-    # the map can report the excluded span rather than silently dropping it —
-    # a ceiling that removes bins without saying so is the same blindness in
-    # the other direction.
+    # What the CALLER asked to grade, before the ceiling narrowed it. Kept so the
+    # map can report the excluded span rather than silently dropping it.
     requested_in_band = (freqs >= lo_hz) & (freqs <= hi_hz) & measurable
     in_band = requested_in_band & (freqs <= graded_hi_hz)
     floor = graded_command_floor_db(freqs)
@@ -1793,23 +1148,16 @@ def classify_delta_probe(
             requested_band_hz=requested_band_hz,
         )
 
-    # The STATE axis, and the two directional safety rules are the only things
-    # that read it (#2614). ``commanded`` is a CHANGE — since #2611 it is the
-    # applied graph minus the graph it replaces — so on a repeat round it is ~0
-    # everywhere the apply left alone, and the graded ``mask`` above therefore
-    # stops covering a band the applied graph still boosts by 5 dB. The
-    # hearing-safety question is not "did the change realize", it is *is the
-    # speaker putting more energy into a driver than the applied graph
-    # declares, anywhere*, so those two rules watch the UNION: every bin this
-    # apply changed, plus every bin the applied graph declares a transfer in.
+    # The STATE axis, read by the two directional safety rules only (#2614).
+    # ``commanded`` is a CHANGE, so on a repeat round the graded ``mask`` stops
+    # covering a band the applied graph still boosts by 5 dB. The hearing-safety
+    # question is not "did the change realize" but *is the speaker putting more
+    # energy into a driver than the applied graph declares, anywhere*, so those
+    # rules watch the UNION.
     #
-    # A union rather than a swap, deliberately. The graded mask is what the
-    # model_error axis is measured over and it stays exactly as it is; and no
-    # bin watched before this change stops being watched, so the fix can only
-    # add coverage. ``None`` — a caller that cannot state the applied graph's
-    # own transfer — degrades to the graded mask alone, which is both the
-    # pre-#2614 behaviour and an identity on a first-ever apply (the graph
-    # being replaced IS the raw crossover there, so the two axes coincide).
+    # A union rather than a swap: the graded mask stays exactly as it is, so no
+    # bin watched before this change stops being watched. ``None`` degrades to
+    # the graded mask alone, which is an identity on a first-ever apply.
     declared: np.ndarray | None = None
     if declared_transfer_db is not None:
         candidate_declared = np.asarray(declared_transfer_db, dtype=np.float64)
@@ -1826,77 +1174,44 @@ def classify_delta_probe(
     c = commanded[mask]
     probe_band_hz = (float(f[0]), float(f[-1]))
 
-    # Scalar statistics read the probe bins only — a bin outside the band
-    # contributes to no claim. The exceedance WIDTH, by contrast, is measured
-    # on the full grid with the mask applied to the exceedance itself, so grid
-    # adjacency survives (see _structured_exceedance).
+    # Scalar statistics read the probe bins only. The exceedance WIDTH is
+    # measured on the full grid with the mask applied to the exceedance itself,
+    # so grid adjacency survives (see _structured_exceedance).
     error = r - c
     max_error_db = float(np.max(np.abs(error)))
     rms_error_db = float(np.sqrt(np.mean(error ** 2)))
     worst_hz = float(f[int(np.argmax(np.abs(error)))])
 
-    # The uncommanded remainder, measured in the QUIET bins (#1811) — inside
-    # the analysis band, but BELOW the commanded floor, so outside the probe
-    # band the statistics above were taken over.
-    #
-    # It has to be measured there. Inside the probe band, "flat across every
-    # bin we look at" is exactly what a correction that overshot its whole
-    # commanded region also looks like — the probe band IS the commanded
-    # region, so the two are indistinguishable from those bins alone. Where the
+    # The uncommanded remainder, measured in the QUIET bins (#1811) — inside the
+    # analysis band but BELOW the commanded floor. It has to be measured there:
+    # inside the probe band, "flat across every bin we look at" is also what a
+    # correction that overshot its whole commanded region looks like. Where the
     # correction asked for nothing, any level is uncommanded by construction.
-    # That is a different question with a clean answer, and it is the one this
-    # verdict needs.
     quiet = in_band & (np.abs(commanded) < DELTA_PROBE_MIN_COMMANDED_DB)
     quiet_measurable = int(quiet.sum()) >= DELTA_PROBE_MIN_BINS
 
     # ...and measured as a CHANGE across the apply, not as an absolute
-    # disagreement with the model (#2533).
+    # disagreement with the model (#2533). ``realized − commanded`` is
+    # ``measured_post − predicted_post``: two curves that do not share a level
+    # anchor, whose mismatch is a standing property of the comparison rather than
+    # a level MOVE. Subtracting the same quantity measured on the PRE-apply
+    # capture cancels it exactly, because ``entry_delta_db`` is built against the
+    # same model curve:
     #
-    # ``realized − commanded`` is ``measured_post − predicted_post``: an in-room
-    # gated measurement against an on-axis two-branch model. Those two curves do
-    # not share a level anchor, and the mismatch between their anchors is a
-    # standing property of the comparison — present before the apply, unchanged
-    # by it, and not a level MOVE by any reading. Subtracting the same quantity
-    # measured on the PRE-apply capture cancels it exactly, because the caller's
-    # ``entry_delta_db`` is built against the same model curve:
-    #
-    #     (measured_post − predicted_raw − offset) − (measured_pre − predicted_raw)
+    #     (measured_post − predicted − offset) − (measured_pre − predicted)
     #         − commanded  ==  (measured_post − measured_pre) − commanded − offset
     #
-    # so what is left is measurement-minus-measurement with the two terms the
-    # apply DID declare — the correction's own command and the graph's own level
-    # move — taken out. ``expected_offset_db`` needs no reinterpretation to sit
-    # in that frame; it is already exactly a change across the apply
-    # (``profile_program_headroom_db`` of the previous graph minus the applied
-    # one), which is what it was always measuring and could not previously say.
+    # On the 2026-08-15 JTS3 session that standing term was the largest of the
+    # three: −3.342 dB decomposed as −1.660 standing, −1.457 real measured
+    # change, −0.221 declared graph move.
     #
-    # On the 2026-08-15 JTS3 session the standing term was the LARGEST of the
-    # three: a reported −3.342 dB decomposed as −1.660 standing anchoring
-    # (already there before the apply), −1.457 real measured change confined to
-    # 12-20 kHz, and −0.221 declared graph move. Only the middle term is a level
-    # move at all.
-    #
-    # **The two curves share one reference graph, which is what makes the
-    # subtraction an identity** (#2611). ``commanded`` is the applied graph's
-    # predicted sum minus the ENTRY graph's, and ``entry_delta`` is a
-    # measurement of that same entry graph, so the model term cancels and what
-    # is left is ``measured_post − measured_pre − commanded``.
-    #
-    # It did not always. While ``commanded`` was stated against the RAW
-    # crossover instead, a REPEAT round's residual carried a contaminant of
-    # exactly
-    #
-    #     −mean(previous round's commanded curve over this round's quiet bins)
-    #
-    # — zero when the previous round commanded nothing there, unbounded when it
-    # did, and invisible to this function. Two shapes were constructed
-    # (adversarial gate, PR #2545): a previous round correcting out to 20 kHz
-    # against a new one stopping at 8 kHz put a **+6.000 dB phantom** in the
-    # residual, and the same overlap could MASK — a genuine −2.2 dB uncommanded
-    # shift re-grading to residual 0.000 and ``frame_mismatch``. Both shapes are
-    # unreachable now: the previous round's curve is no longer a hidden term,
-    # because the previous GRAPH is an explicit input to the commanded axis.
-    # ``entry_anchor_offset_db`` still discloses what was removed.
+    # The subtraction is an identity only because the two curves share one
+    # reference graph (#2611): ``commanded`` is the applied graph's predicted sum
+    # minus the ENTRY graph's, and ``entry_delta`` measures that same entry
+    # graph. While ``commanded`` was stated against the RAW crossover instead, a
+    # repeat round's residual carried ``−mean(previous round's commanded curve
+    # over these bins)`` — a term this function is never given and cannot bound,
+    # able to fabricate a +6.000 dB phantom or to mask a genuine −2.2 dB shift.
     entry: np.ndarray | None = None
     if entry_delta_db is not None:
         candidate = np.asarray(entry_delta_db, dtype=np.float64)
@@ -1908,8 +1223,7 @@ def classify_delta_probe(
         and int((quiet & np.isfinite(entry)).sum()) >= DELTA_PROBE_MIN_BINS
     )
     # One bin set for the residual and for the anchor removed from it, so the
-    # two cannot be means over different bins and the decomposition below is an
-    # identity rather than an approximation.
+    # decomposition below is an identity rather than an approximation.
     residual_bins = (quiet & np.isfinite(entry)) if anchored and entry is not None else quiet
     entry_anchor_offset_db: float | None = (
         float(np.mean(entry[residual_bins])) if anchored and entry is not None else None
@@ -1924,19 +1238,11 @@ def classify_delta_probe(
     )
 
     # WHERE those bins sit, and how spread they are relative to a FULL sampling
-    # of the band their level is claimed over (#2533). A residual is measured in
-    # the quiet bins and asserted across the GRADED ones, so how far the evidence
-    # itself reaches is part of the claim. The INTERQUARTILE span is the robust
-    # reading, and the robustness is load-bearing rather than stylistic: min/max
-    # — which is what ``frame.band_hz`` already reports — is exactly what two
-    # stray bins defeat, and on 2026-08-15 two of them (493 Hz and 1.9 kHz) made
-    # a set with 158 of its 160 bins above 12 kHz span 463 Hz-20 kHz on paper.
-    #
-    # The denominator is that SAME statistic over every graded-band bin on this
-    # grid, never the band's whole span — see
-    # :data:`DELTA_PROBE_MIN_QUIET_COVERAGE`. Production grids are linear, so a
-    # whole-span denominator measures the grid rather than the evidence, and no
-    # real quiet set can clear any bar against it.
+    # of the band their level is claimed over (#2533). The INTERQUARTILE span is
+    # the robust reading, and the robustness is load-bearing: min/max is what two
+    # stray bins defeat. The denominator is that SAME statistic over every
+    # graded-band bin on this grid, never the band's whole span — see
+    # :data:`DELTA_PROBE_MIN_QUIET_COVERAGE`.
     quiet_n_bins = int(residual_bins.sum()) if quiet_measurable else 0
     quiet_core_band_hz: tuple[float, float] | None = None
     quiet_probe_coverage: float | None = None
@@ -1953,23 +1259,17 @@ def classify_delta_probe(
 
     # The FRAME between the two curves, fitted over the QUIET bins (#2521) — the
     # same argument one term further: a slope measured where the correction asked
-    # for nothing is uncommanded by construction, just as the level above is.
+    # for nothing is uncommanded by construction.
     #
-    # **Its offset term is the ABSOLUTE quiet-bin disagreement, which is the
-    # residual only on the unanchored path** (#2533). ``fit_frame`` pivots at the
-    # fitted bins' geometric mean, so the offset is the plain mean of
-    # ``realized − commanded`` over ``quiet``; ``residual_offset_db`` is that
-    # same mean over ``residual_bins`` with ``entry_anchor_offset_db`` removed.
-    # The two bin sets coincide unless a supplied entry curve is non-finite
-    # somewhere in ``quiet``, in which case ``residual_bins`` is a strict subset.
-    # So the identity is ``residual == frame.offset_db − entry_anchor_offset_db``
-    # when every quiet bin carried a usable anchor, and it degrades to the
-    # pre-#2533 ``residual == frame.offset_db`` when none did.
+    # Its offset term is the ABSOLUTE quiet-bin disagreement, so the identity is
+    # ``residual == frame.offset_db − entry_anchor_offset_db`` when every quiet
+    # bin carried a usable anchor, degrading to ``residual == frame.offset_db``
+    # when none did.
     #
-    # NOT fitted over the graded bins. A two-parameter fit over the region the
-    # correction commands lets the defect set its own frame and then subtract
-    # itself: on this module's keystone fixture, a graded-bin fit took the
-    # 2026-07-27 shelf-Q error's exceedance from 0.575 octaves to zero.
+    # NOT fitted over the graded bins: a two-parameter fit over the region the
+    # correction commands lets the defect set its own frame and subtract itself —
+    # on the keystone fixture that took the 2026-07-27 shelf-Q error's exceedance
+    # from 0.575 octaves to zero.
     frame = (
         fit_frame(freqs[quiet], realized[quiet], commanded[quiet])
         if quiet_measurable
@@ -1978,41 +1278,27 @@ def classify_delta_probe(
     deframed = realized - frame.frame_db(freqs)
 
     # Least-squares realized/commanded scale WITH an intercept, on the
-    # frame-removed curve. Both halves matter and they are different fixes:
-    # the intercept stops a level offset from arriving as apparent scale
-    # (#2521's ≈2.02 on a −7.8 dB constant), and the frame-removed input is what
-    # keeps a room's broadband tilt from arriving as one either — through the
-    # origin OR with an intercept, a tilt against a ramp-shaped command is a
-    # scale factor, and reading it as one is how a tilted room got a
-    # ``level_dependent_shortfall`` rollback it had not earned.
+    # frame-removed curve. Two different fixes: the intercept stops a level
+    # offset from arriving as apparent scale (#2521's ~2.02 on a −7.8 dB
+    # constant), and the frame-removed input stops a room's broadband tilt from
+    # doing the same against a ramp-shaped command.
     #
-    # ``c`` carries only bins at or above the graded floor, so it cannot be
-    # all-zero; the design matrix is rank-deficient only if every graded bin
-    # commands the SAME value, which ``lstsq`` resolves to the minimum-norm
-    # solution rather than raising. On that degenerate shape the intercept and
-    # the scale are not separately identifiable — only their sum at the one
-    # commanded value is — so the reported pair is a minimum-norm split of it,
-    # and the split is NOT a near-miss of the plain ratio: for a flat ``k`` dB
-    # command realized EXACTLY, it returns ``k²/(1+k²)``, which is under
-    # :data:`DELTA_PROBE_SHORTFALL_GAIN_CEILING` for every ``k`` below 2.38 dB
-    # (0.80 at 2 dB, 0.50 at 1 dB). A perfectly realized shallow flat lift would
-    # read as a deep shortfall.
-    #
-    # What keeps that off every production path is not the size of the error but
-    # how knife-edge the degeneracy is: the second column only has to vary at
-    # all. A commanded range of 1e-9 dB across the graded bins already returns
-    # gain exactly 1.0 (measured). A correction's commanded curve is the response
-    # of a filter cascade sampled on a log grid, so its graded bins are never one
-    # repeated constant — and the branch is unreachable anyway unless something
-    # ELSE already put the map over tolerance, since an exactly realized
-    # correction never gets past ``matched``.
+    # ``c`` carries only bins at or above the graded floor, so the design matrix
+    # is rank-deficient only if every graded bin commands the SAME value, which
+    # ``lstsq`` resolves to the minimum-norm solution rather than raising. On
+    # that degenerate shape a flat ``k`` dB command realized exactly returns
+    # ``k²/(1+k²)`` — a perfectly realized shallow flat lift reading as a deep
+    # shortfall. It stays off production paths because the degeneracy is
+    # knife-edge: a commanded range of 1e-9 dB already returns gain exactly 1.0,
+    # a filter cascade's graded bins are never one repeated constant, and the
+    # branch is unreachable unless something else already put the map over
+    # tolerance.
     design = np.column_stack((np.ones_like(c), c))
     intercept, gain_factor = (
         float(v) for v in np.linalg.lstsq(design, deframed[mask], rcond=None)[0]
     )
-    # The same question asked per band (#2649). ``gain_factor`` above stays
-    # exactly what it was and keeps its place on the wire; this is the
-    # band-resolved answer beside it, and it is what the shortfall verdict now
+    # The same question asked per band (#2649). ``gain_factor`` above keeps its
+    # place on the wire; this is the band-resolved answer the shortfall verdict
     # reads.
     realization = _band_realization(
         freqs, deframed, commanded,
@@ -2026,10 +1312,9 @@ def classify_delta_probe(
     exceeded, exceedance_octaves = _structured_exceedance(
         freqs, error_full, tolerance_full, mask,
     )
-    # The same three graded scalars, taken with the frame removed. Reported
-    # beside the raw ones rather than instead of them: the raw grade is still
-    # what decides whether there is a finding at all, and only the ROLLBACK
-    # question is re-asked down here (#2521).
+    # The same three graded scalars with the frame removed, reported beside the
+    # raw ones rather than instead of them: the raw grade decides whether there
+    # is a finding, and only the ROLLBACK question is re-asked here (#2521).
     frame_error_full = np.where(mask, deframed - commanded, 0.0)
     frame_exceeded, frame_exceedance_octaves = _structured_exceedance(
         freqs, frame_error_full, tolerance_full, mask,
@@ -2037,57 +1322,36 @@ def classify_delta_probe(
     frame_error = frame_error_full[mask]
 
     # THE TWO DIRECTIONAL SAFETY FINDINGS, and the anchor that makes them
-    # findings about the SPEAKER rather than about our model of it (series-2
-    # D1). Two curves are built here and both stay on the record:
+    # findings about the SPEAKER rather than about our model of it (series-2 D1):
     #
-    #   model_excess    = realized − commanded  ==  (measured_post − predicted)
-    #                                               − expected_offset
-    #   safety_excess   = model_excess − entry  ==  (measured_post − measured_pre)
-    #                                               − expected_offset − commanded
+    #   model_excess  = realized − commanded  ==  (measured_post − predicted)
+    #                                             − expected_offset
+    #   safety_excess = model_excess − entry  ==  (measured_post − measured_pre)
+    #                                             − expected_offset − commanded
     #
     # The first cancels ``commanded`` identically, so it grades how far the room
-    # departed from the two-branch model and nothing else — see the module
-    # docstring for the algebra and for the 2026-08-17 round it took off a
-    # speaker. The second subtracts the pre-apply capture in the same frame, so
-    # a standing model error present in BOTH captures cancels and only what the
-    # speaker actually delivered across the apply survives. It is the same
-    # anchor, the same bins-argument and the same owner ``residual_offset_db``
-    # already uses — one reference for every rule on this axis, which the
-    # pre-D1 code did not have (its residual was anchored and its two
-    # directional rules were not, so the same standing feature scored ~1.66 dB
-    # harder in one round than in the round before it).
+    # departed from the two-branch model and nothing else. The second subtracts
+    # the pre-apply capture in the same frame, so a standing model error present
+    # in BOTH captures cancels — the same anchor and the same bins-argument
+    # ``residual_offset_db`` already uses.
     #
-    # Measured on the RAW curves, not the frame-removed one, and that is
-    # unchanged: a frame is removed to answer whether the correction's SHAPE is
-    # right, and this asks how much energy actually reached the driver.
-    # Subtracting a fitted offset first would hide exactly the whole-band
-    # overshoot the adoption table's hard stop exists for.
-    #
-    # On the SAFETY mask, not the graded one (#2614) — see its construction
-    # above: a repeat round's graded mask does not contain the bands the apply
-    # left alone, and an untouched boost is still a boost.
+    # Measured on the RAW curves, not the frame-removed one: a frame is removed
+    # to answer whether the SHAPE is right, and this asks how much energy reached
+    # the driver. On the SAFETY mask, not the graded one (#2614).
     model_excess = realized - commanded
     # ENFORCED, not merely documented: a state axis shares no reference with a
     # change measurement, so an anchor supplied alongside one would produce a
-    # finding in a mixed frame. The caller is told not to pass both; a caller
-    # that does gets the contract rather than the mixture. A separate name
-    # rather than clearing ``entry``, which the residual above already used and
-    # whose meaning there is unaffected.
-    #
-    # A CONTRACT guard with zero live blast radius, stated so nobody reads it as
-    # a hole that was closed: the one production caller
-    # (``crossover_v2.delta_probe_run.run_delta_probe``) passes no anchor there
-    # and never has. This makes the invariant unbreakable by the next caller
-    # rather than fixing a reachable defect.
+    # finding in a mixed frame. A separate name rather than clearing ``entry``,
+    # whose meaning for the residual above is unaffected. The one production
+    # caller passes no anchor here, so this makes the invariant unbreakable by
+    # the next caller rather than closing a reachable defect.
     safety_anchor = None if state_axis_only else entry
     safety_excess = (
         model_excess if safety_anchor is None else model_excess - safety_anchor
     )
-    # No anchor, no finding. A bin with no usable pre-apply level cannot say
-    # what the speaker DID there, and the unanchored quantity is the one that
-    # just cost a round — so it is reported (below) and never refused on. The
-    # bar is the module's own minimum, so a handful of surviving bins cannot
-    # carry a hard stop either.
+    # No anchor, no finding: a bin with no usable pre-apply level cannot say what
+    # the speaker DID there. The bar is the module's own minimum, so a handful of
+    # surviving bins cannot carry a hard stop either.
     safety_bins = safety_mask & np.isfinite(safety_excess)
     safety_anchored = (
         safety_anchor is not None
@@ -2108,43 +1372,28 @@ def classify_delta_probe(
             False, None, 0.0,
         )
         realized_louder, realized_excess_db = False, None
-    # ...and the MODEL's own departure, always, on the unanchored curve. This
-    # is the quantity the pre-D1 ``realized_louder_than_commanded`` measured,
-    # kept under a name that says so: a real defect for the next round to chase
-    # — the blend region is where this model is known blind (#2600) — and never
-    # a hazard.
+    # ...and the MODEL's own departure, always, on the unanchored curve — a real
+    # defect for the next round to chase (the blend region is where this model is
+    # known blind, #2600) and never a hazard.
     model_departure_over_tolerance, max_signed_error_db = louder_than_commanded(
         model_excess, tolerance_full, safety_mask,
     )
-    # WHERE it peaks, and it is a different bin from ``worst_hz`` above often
-    # enough to matter: that one is the worst ABSOLUTE error over the GRADED
-    # bins, this one the worst POSITIVE departure over the SAFETY bins — two
-    # reductions over two sets. On the banked series-2 r1b they are 1947.2 Hz
-    # and 1384.1 Hz. A number and the frequency it was measured at travel
-    # together here (``max_error_db``/``worst_hz``, ``residual_offset_db``/
-    # ``quiet_core_band_hz``), and a target pairing this amount with the other
-    # bin's frequency would point the next round at the wrong feature.
+    # WHERE it peaks, and a different bin from ``worst_hz`` often enough to
+    # matter: that one is the worst ABSOLUTE error over the GRADED bins, this the
+    # worst POSITIVE departure over the SAFETY bins (1947.2 Hz and 1384.1 Hz on
+    # the banked series-2 r1b). An amount and its frequency travel together.
     max_signed_error_hz: float | None = (
         float(freqs[safety_mask][int(np.argmax(model_excess[safety_mask]))])
         if max_signed_error_db is not None
         else None
     )
 
-    # The caller had no CHANGE axis and said so (#2614): what it handed in as
-    # ``commanded`` is the applied graph's own declared transfer, so every shape
-    # and level scalar computed above is a claim in the wrong frame. Return the
-    # model's departure and none of it. The shape work above is not skipped,
-    # only discarded — the alternative is a second exit path through half this
-    # function, and one lstsq and one frame fit per session is a smaller price
-    # than two orders of statements about what was measured.
-    #
-    # The two directional findings do not survive here either, and since D1 that
-    # is explicit rather than incidental: this path has no pre-apply capture to
-    # anchor against by construction (a change measurement shares no reference
-    # with a state axis, which is why the caller is told not to pass one), so
-    # ``safety_anchored`` is False and the map says the hearing half did not
-    # run. Before D1 it ran on the unanchored curve, which on THIS path is the
-    # model's error with no change term in it at all — the defect at its purest.
+    # The caller had no CHANGE axis and said so (#2614): every shape and level
+    # scalar computed above is a claim in the wrong frame, so return the model's
+    # departure and none of it. The shape work is not skipped, only discarded —
+    # one lstsq and one frame fit per session is a smaller price than a second
+    # exit path through half this function. The two directional findings do not
+    # survive either: this path has no pre-apply capture to anchor against.
     if state_axis_only:
         return _safety_only(
             spatial,
@@ -2208,44 +1457,32 @@ def classify_delta_probe(
         )
 
     if not exceeded:
-        # The chain did what it was told at the mark. Now — and only now — is
-        # the spatial question the interesting one (see the module docstring's
-        # verdict-priority note).
+        # The chain did what it was told at the mark. Now — and only now — is the
+        # spatial question the interesting one.
         if spatial.available and spatial.widened:
             return _map(VERDICT_SPATIALLY_COSTLY, "cross_position_spread_widened")
         return _map(VERDICT_MATCHED, "")
 
-    # The map does not match. Before asking shape-or-scale, ask whether it
-    # fails only because the level moved by something nobody commanded (#1811).
+    # The map does not match. Before asking shape-or-scale, ask whether it fails
+    # only because the level moved by something nobody commanded (#1811). Two
+    # conditions, BOTH required:
     #
-    # Two conditions, and BOTH are required.
+    # (a) the quiet-bin residual is material on its own terms — the EVIDENCE that
+    #     a level shift exists, from bins no shape defect can reach;
+    # (b) removing the quiet bins' offset from the probe band makes the map pass
+    #     — what makes the shift SUFFICIENT.
     #
-    # (a) The quiet-bin residual — level where nothing was asked for — is
-    #     material on its own terms. This is the EVIDENCE that a level shift
-    #     exists at all, and it comes from bins no shape defect can reach.
-    # (b) Removing the quiet bins' offset from the probe band makes the map
-    #     pass. This is what makes the shift SUFFICIENT: if the map still fails
-    #     after accounting for a shift we independently measured, then whatever
-    #     else is wrong is a shape claim and belongs in the verdicts below.
+    # Together they keep every diagnostic underneath intact: a proportional
+    # shortfall moves the quiet bins by nothing and fails (a); a mis-realized
+    # shelf leaves structure that survives subtracting a constant and fails (b).
     #
-    # Together they keep every diagnostic underneath intact. A proportional
-    # shortfall moves the quiet bins by nothing (it scales a command that is
-    # zero there), so it fails (a). A mis-realized shelf leaves structure that
-    # survives subtracting a constant, so it fails (b).
-    #
-    # **They subtract DIFFERENT numbers, and they have to** (#2533). (a) asks
-    # whether the level MOVED, which is a change question, so it reads the
-    # anchored ``residual_offset_db``. (b) asks whether the quiet bins explain
-    # the graded failure — and that failure is measured against the model, so
-    # what has to come out of it is the quiet bins' whole disagreement with the
-    # model, standing anchor included. ``quiet_offset_db`` below is that
-    # absolute term (it is ``frame.offset_db`` whenever every quiet bin carried a
-    # usable anchor, and this branch is byte-identical to its pre-#2533 self
-    # whenever no anchor was measured at all). Handing (b) the anchored number
-    # instead would leave the standing offset inside the levelled error, so a
-    # genuine uncommanded shift on any speaker whose model is not perfectly
-    # anchored would stop reaching this verdict and arrive one gate later as
-    # ``frame_mismatch`` — a true statement, but the less specific one.
+    # **They subtract DIFFERENT numbers, and they have to** (#2533). (a) is a
+    # change question and reads the anchored ``residual_offset_db``; (b) asks
+    # whether the quiet bins explain a failure measured against the MODEL, so
+    # what comes out is their whole disagreement with it, standing anchor
+    # included. Handing (b) the anchored number would leave the standing offset
+    # inside the levelled error and send a genuine uncommanded shift one gate
+    # later, as the less specific ``frame_mismatch``.
     if residual_offset_db is not None:
         quiet_offset_db = residual_offset_db + (entry_anchor_offset_db or 0.0)
         levelled_error_full = np.where(
@@ -2258,26 +1495,18 @@ def classify_delta_probe(
             abs(residual_offset_db) > DELTA_PROBE_RESIDUAL_OFFSET_TOLERANCE_DB
             and not levelled_exceeded
         ):
-            # (c) WHERE the evidence sits (#2533). Conditions (a) and (b) both
-            # hold, so there IS a finding — that is not re-litigated here, and
-            # deliberately so: falling through would hand the same evidence to
-            # the frame gate and the shape branch below, either of which can
-            # return a ROLLBACK. An instrument that has just declared its
-            # evidence unrepresentative must not become STRICTER on it; that is
-            # the exact inversion of the "a gate may only narrow a finding"
-            # asymmetry this module already holds for the frame.
+            # (c) WHERE the evidence sits (#2533). (a) and (b) both hold, so
+            # there IS a finding, and that is not re-litigated: falling through
+            # would hand the same evidence to the frame gate and the shape branch,
+            # either of which can ROLL BACK. An instrument that has just declared
+            # its evidence unrepresentative must not become stricter on it.
             #
-            # So the verdict, the rollback answer, and the household surface are
-            # all unchanged. What narrows is the CLAIM: a level measured only
-            # above the graded band is disclosed as the band-scoped thing it is,
-            # with ``quiet_core_band_hz`` naming the band it covers, instead of
-            # asserting a whole-band shift the quiet bins never saw.
-            #
-            # A shift whose evidence is spread like the graded band's own bins
-            # keeps the whole-band reason: the ratio is 1.0 for a co-spanning
-            # quiet set on either grid shape, well clear of the bar. What the bar
-            # narrows is evidence concentrated somewhere the band is not — the
-            # 12-20 kHz sliver at 0.248, a single mid-band notch at 0.036.
+            # So the verdict, the rollback answer and the household surface are
+            # unchanged; what narrows is the CLAIM, with ``quiet_core_band_hz``
+            # naming the band it covers. A co-spanning quiet set scores 1.0 and
+            # keeps the whole-band reason; what the bar narrows is evidence
+            # concentrated somewhere the band is not (0.248 for a 12-20 kHz
+            # sliver, 0.036 for a single mid-band notch).
             band_scoped = (
                 quiet_probe_coverage is not None
                 and quiet_probe_coverage < DELTA_PROBE_MIN_QUIET_COVERAGE
@@ -2289,102 +1518,64 @@ def classify_delta_probe(
             )
         unavailable_suffix = ""
     else:
-        # No quiet bins ⇒ the level discriminator could not run at all, so the
-        # verdicts below are being reached WITHOUT the check that would have
-        # separated "the level moved" from "the shape is wrong". An undeclared
-        # offset lands as ``model_error`` here — a rollback — and nothing else
-        # in the record would say why that call was made blind. Say it.
+        # No quiet bins: the level discriminator could not run, so the verdicts
+        # below are reached WITHOUT the check that separates "the level moved"
+        # from "the shape is wrong". An undeclared offset lands as ``model_error``
+        # here — a rollback — so say that the call was made blind.
         unavailable_suffix = _LEVEL_CHECK_UNAVAILABLE_SUFFIX
 
     # THE FRAME GATE, and it sits AHEAD OF BOTH ROLLBACK DOORS on purpose
-    # (#2521, owner ruling 2026-08-15). Does the exceedance survive removing the
-    # frame? An exceedance that does not survive is a statement about the two
-    # curves' frames, which this comparison cannot attribute to the correction —
-    # so it is disclosed, loudly, and the household keeps the tuning. One that
-    # does survive is graded below with the instrument's own offset and slope
-    # already out of the way, and reaches the same rollback it always did.
+    # (#2521; docs/measurement-loop-doctrine.md §3). An exceedance that does not
+    # survive removing the frame is a statement about the two curves' frames,
+    # which this comparison cannot attribute to the correction — disclosed
+    # loudly, and the household keeps the tuning.
     #
-    # **It guards the SHORTFALL door too, and it has to.** The first cut of this
-    # gate sat below the shape-or-scale discriminator, guarding ``model_error``
-    # alone — which is what the issue's wording asked for and is a hole:
-    # ``level_dependent_shortfall`` is equally a rollback, and a real but
-    # in-tolerance depth shortfall combined with a room tilt walks straight
-    # through it. Reproduced (adversarial gate, 2026-08-15): a 4 dB Gaussian
-    # lift at 5 kHz realized at 80 % depth is ``matched`` on its own — the 0.8 dB
-    # miss never clears tolerance — and becomes a ``level_dependent_shortfall``
-    # ROLLBACK once a −0.9 dB/octave frame is added, with its frame-removed
-    # exceedance still exactly 0.0. Over a randomized sweep, 203 of 4,000 draws
-    # rolled back on evidence that was entirely frame. The finding there is the
-    # tilt, and the tilt is precisely what this probe may not refuse on.
+    # It guards the SHORTFALL door too, and it has to: a real but in-tolerance
+    # depth shortfall combined with a room tilt walks through a gate that guards
+    # ``model_error`` alone. Reproduced: a 4 dB lift realized at 80 % depth is
+    # ``matched`` on its own and becomes a ``level_dependent_shortfall`` ROLLBACK
+    # once a −0.9 dB/octave frame is added, with its frame-removed exceedance
+    # still exactly 0.0; 203 of 4,000 randomized draws rolled back on evidence
+    # that was entirely frame.
     #
-    # An unfitted frame removes nothing, so ``frame_exceeded`` equals
-    # ``exceeded`` there and this branch cannot fire: no frame measured, no
-    # demotion.
-    #
-    # :data:`VERDICT_SPATIALLY_COSTLY` is deliberately NOT behind this gate, and
-    # cannot be: it is returned above, from the branch where the mark map
-    # MATCHED. It is also a different evidence class — two real measurements of
-    # the room's own spread, with no model and therefore no frame between them —
-    # so there is nothing here that could explain it away.
+    # An unfitted frame removes nothing, so this branch cannot fire: no frame
+    # measured, no demotion. :data:`VERDICT_SPATIALLY_COSTLY` is not behind this
+    # gate and cannot be — it is returned above, from the branch where the mark
+    # map MATCHED, and there is no model between its two measurements.
     if not frame_exceeded:
         return _map(VERDICT_FRAME_MISMATCH, "uncommanded_frame_shift")
 
-    # Shape or scale?
+    # Shape or scale? Re-measure the error against the best-fit SCALED command:
+    # if the residual then passes, the shape is right and only the depth is
+    # short; if it still fails, the shape itself is wrong, which is a claim about
+    # our model of the filters rather than about the driver's headroom.
     #
-    # Re-measure the error against the best-fit SCALED command. If the residual
-    # then passes, the correction's shape is right and only its depth is short
-    # — the driver delivered a fraction of what it was asked for, uniformly.
-    # If the residual still fails, the shape itself is wrong, which is a claim
-    # about our model of the filters, not about the driver's headroom.
-    #
-    # Both sides of this comparison are the frame-removed curve and the fitted
-    # line through it, so the intercept is USED and not merely estimated: a
-    # residual measured against ``gain·commanded`` alone would re-admit the very
-    # level term the intercept exists to hold out.
+    # Both sides are the frame-removed curve and the fitted line through it, so
+    # the intercept is USED and not merely estimated: a residual measured against
+    # ``gain·commanded`` alone would re-admit the level term it exists to hold out.
     scaled_error_full = np.where(
         mask, deframed - (intercept + gain_factor * commanded), 0.0
     )
     scaled_exceeded, _ = _structured_exceedance(
         freqs, scaled_error_full, tolerance_full, mask,
     )
-    # A *level-dependent* shortfall is a claim about a driver failing to
-    # deliver LEVEL, so it requires that level was what the correction asked
-    # for. A proportional undershoot of a set of CUTS is not compression —
-    # attenuation does not compress — and belongs in the model-error bucket
-    # where someone will look at the filter math.
+    # A *level-dependent* shortfall is a claim about a driver failing to deliver
+    # LEVEL, so it requires that level was what the correction asked for. A
+    # proportional undershoot of a set of CUTS is not compression.
     commanded_is_lift = float(np.max(c)) >= DELTA_PROBE_MIN_COMMANDED_DB
-    # **The GRADED BANDS decide, not the pooled slope** (#2649).
+    # **The GRADED BANDS decide, not the pooled slope** (#2649). Bins above the
+    # mic-trust ceiling are already out of ``mask``, and the ratio tested is the
+    # per-band one because the pooled fit is not a realization measurement when
+    # the graded band carries two disjoint COMMANDED ranges: ``lstsq`` puts one
+    # line through the (commanded, realized) cloud, which is then the CHORD
+    # BETWEEN THE TWO BAND CENTROIDS and reports the level difference between the
+    # bands rather than the fraction either realized. A round where both bands
+    # realized 1.00x fit a chord of 0.459 and was ROLLED BACK.
     #
-    # Two narrowings of when a rollback verdict fires, and both are needed.
-    # Bins above the mic-trust ceiling are excluded from ``mask`` before this
-    # point, so they cannot manufacture a slope at all. And the ratio this
-    # tests is the per-band one, because the pooled fit is not a realization
-    # measurement when the graded band carries two disjoint COMMANDED ranges.
-    #
-    # Why the pooled fit lies there, concretely: ``lstsq`` puts one line
-    # through the (commanded, realized) cloud, and with the crossover band
-    # commanded near one value and the trusted HF near another, that line is
-    # the CHORD BETWEEN THE TWO BAND CENTROIDS. Its slope reports the level
-    # difference between the bands, not the fraction of command either band
-    # realized. A round where both bands realized **1.00x** of what they were
-    # told — nothing missing anywhere — fits a chord of 0.459 and, with the
-    # residual against that chord inside tolerance, was classified
-    # ``level_dependent_shortfall`` and ROLLED BACK. That is a false restore of
-    # a correction that worked, which is the fifth-principle violation this
-    # issue exists to kill. (An earlier cut of this migration called the
-    # per-band gate inert; that claim was made against a fixture whose two
-    # bands shared one commanded range, where the chord degenerates to the true
-    # slope, so it structurally could not exhibit the case. It is pinned now.)
-    #
-    # EVERY graded band must fall short, not just the worst: a driver failing
-    # to deliver LEVEL fails everywhere it was asked, and a band-localised miss
-    # is a shape error — ``model_error``, which is where it goes. Taking the
-    # worst band instead would fire more often on less evidence, the wrong
-    # direction for a verdict that restores the household's previous sound.
-    #
-    # Falls back to the pooled slope only when no graded band cleared
-    # ``DELTA_PROBE_MIN_BINS`` — a band too thin to fit is not evidence either
-    # way, and that is the pre-#2649 reading exactly.
+    # EVERY graded band must fall short, not just the worst: a driver failing to
+    # deliver LEVEL fails everywhere it was asked, and a band-localised miss is a
+    # shape error. Falls back to the pooled slope only when no graded band
+    # cleared :data:`DELTA_PROBE_MIN_BINS`.
     graded_ratios = [
         entry["ratio"] for entry in realization.values()
         if entry["graded"] and entry["ratio"] is not None
@@ -2410,11 +1601,11 @@ def spatial_cost_from_group_spreads(
 ) -> SpatialCost:
     """Adapter: two cloud-group result mappings → a :class:`SpatialCost`.
 
-    Reads the ``"band_spread"`` list each group publishes (a list of plain
-    dicts after the JSON round-trip, or ``BandSpread`` objects in-process).
-    Absent/short spreads degrade to :data:`SPATIAL_COST_UNAVAILABLE` rather
-    than raising — an express session has no post-apply group at all, and
-    "no spatial evidence" is an honest answer, not an error.
+    Reads the ``"band_spread"`` list each group publishes (plain dicts after a
+    JSON round-trip, or ``BandSpread`` objects in-process). Absent or short
+    spreads degrade to :data:`SPATIAL_COST_UNAVAILABLE` rather than raising: an
+    express session has no post-apply group, and "no spatial evidence" is an
+    honest answer, not an error.
     """
 
     def _bands(group: Mapping[str, Any] | None) -> list[Any]:

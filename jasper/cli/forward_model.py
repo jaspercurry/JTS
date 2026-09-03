@@ -60,11 +60,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
 )
 
 from ._logging import configure_verbose_logging
-from ._refusal import refused
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -109,10 +105,6 @@ compares its curve to nothing and says `{ACCEPTANCE_NOT_RUN}`, while
 """
 
 
-def _refused(reason: str, detail: str) -> int:
-    return refused(reason, detail, exit_code=EXIT_REFUSED)
-
-
 def _candidate(args: argparse.Namespace) -> SummationCandidate:
     """One candidate from its JSON source plus the two single-value flags.
 
@@ -150,7 +142,9 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     try:
         candidate = _candidate(args)
     except (OSError, ValueError) as exc:
-        return _refused(REFUSE_CANDIDATE, f"{args.candidate_json}: {exc}")
+        return failed(
+            EXIT_REFUSED, REFUSE_CANDIDATE, f"{args.candidate_json}: {exc}"
+        )
 
     pair = load_branch_pair(
         Path(args.bundle_dir),
@@ -160,7 +154,8 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         tweeter_role=args.tweeter_role,
     )
     if pair is None:
-        return _refused(
+        return failed(
+            EXIT_REFUSED,
             REFUSAL_NO_CURVE_PAIR,
             f"{args.bundle_dir}: no {args.phase} take at {args.position_deg} deg "
             f"carries curves for both {args.woofer_role!r} and "
@@ -193,7 +188,9 @@ def _cmd_verify_delta(args: argparse.Namespace) -> int:
     try:
         candidate = _candidate(args)
     except (OSError, ValueError) as exc:
-        return _refused(REFUSE_CANDIDATE, f"{args.candidate_json}: {exc}")
+        return failed(
+            EXIT_REFUSED, REFUSE_CANDIDATE, f"{args.candidate_json}: {exc}"
+        )
     measured_dir = args.measured_round or args.round_dir
     try:
         banked = load_banked_round(Path(args.round_dir))
@@ -202,14 +199,14 @@ def _cmd_verify_delta(args: argparse.Namespace) -> int:
             else load_banked_round(Path(measured_dir))
         )
     except RoundViewsError as exc:
-        return _refused(REFUSE_NO_DELTA, str(exc))
+        return failed(EXIT_REFUSED, REFUSE_NO_DELTA, str(exc))
 
     result = forward_model_verify_delta(
         banked, candidate, measured=measured,
         phase=args.phase, position_deg=args.position_deg,
     )
     if result.delta is None:
-        return _refused(REFUSE_NO_DELTA, result.reason)
+        return failed(EXIT_REFUSED, REFUSE_NO_DELTA, result.reason)
     print(json.dumps(
         {"status": "compared",
          "acceptance": result.acceptance,
@@ -317,10 +314,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ForwardModelError as exc:
         # Verbatim: a bank that cannot support a prediction is a finding about
         # the bank, and the module that decided it owns the sentence.
-        return _refused(exc.refusal_reason, str(exc))
+        return failed(EXIT_REFUSED, exc.refusal_reason, str(exc))
     except OSError as exc:
         print(f"unreadable bundle: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return EXIT_UNREADABLE
 
 
 if __name__ == "__main__":  # pragma: no cover

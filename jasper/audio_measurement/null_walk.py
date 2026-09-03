@@ -14,7 +14,7 @@ This module is **pure decision content**: specs, schedules, candidate scoring
 and selection, plus the frozen :class:`DspPredecessor` rollback identity that
 hosts and :mod:`jasper.audio_measurement.delay_graph` build on. It runs no
 transaction. An earlier ``run_null_walk`` apply/capture/restore runner lived
-here for two declared hosts (``alignment_walk``, ``bass_alignment``); neither
+here for two declared hosts (``delay_sweep``, ``bass_alignment``); neither
 ever called it, so it was deleted rather than left as an unexercised
 resilience claim. A host that later needs to execute a walk owns its own
 bounded, cancellation-drained restore.

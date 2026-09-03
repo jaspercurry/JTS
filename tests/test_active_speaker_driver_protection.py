@@ -133,7 +133,7 @@ def test_shipped_jts3_preset_numbers_derive_the_operative_ceiling() -> None:
     admitted cap is 0.0 dBFS (its declared peak, clamped by the low-frequency
     class default ``MAX_TEST_LEVEL_DBFS``). The sensitivities are 108.5 dB
     (B&C DE250) against 83.3 dB (Dayton Epique E150HE-44) — note where each
-    comes from, because it is NOT one artifact: 83.3 is in the shipped preset
+    comes from, because it is NOT one artifact: 83.3 is in the preset
     JSON, while the preset declares no tweeter ``sensitivity_db`` at all and
     108.5 rides JTS3's persisted design draft ``manual_settings``, which is the
     one owner of declared sensitivity (``declared_driver_sensitivities``).

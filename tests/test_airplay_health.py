@@ -181,8 +181,10 @@ def test_offset_too_short_warning_rolls_into_shairport_events() -> None:
     shairport_broken_pipe). Without the EVENT_BUCKET_FIELD mapping the event
     would be invisible to `_status_locked`'s 30 m verdict."""
     too_short = (
-        "The stream latency (0.300000 seconds) it too short to accommodate an "
-        "offset of 0.550000 seconds and a backend buffer of 0.100000 seconds."
+        "The stream latency (0.300000 seconds) is too short to accommodate an "
+        "audio backend latency offset of 0.550000 seconds and a backend buffer "
+        "of 0.100000 seconds. The audio_backend_latency_offset has been set to "
+        "zero."
     )
     ev = classify_journal_line("shairport-sync", too_short)
     assert ev is not None and ev["type"] == "shairport_offset_too_short"
@@ -214,9 +216,10 @@ def test_offset_too_short_warning_moves_status_verdict_end_to_end() -> None:
     def journal(unit: str, _since: float, _now: float) -> list[str]:
         if unit == "shairport-sync":
             return [
-                "The stream latency (0.300000 seconds) it too short to accommodate "
-                "an offset of 1.050000 seconds and a backend buffer of 0.500000 "
-                "seconds."
+                "The stream latency (0.300000 seconds) is too short to accommodate "
+                "an audio backend latency offset of 1.050000 seconds and a backend "
+                "buffer of 0.500000 seconds. The audio_backend_latency_offset has "
+                "been set to zero."
             ]
         return []
 

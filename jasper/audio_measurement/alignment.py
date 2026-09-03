@@ -4,48 +4,13 @@
 
 """Cross-correlation alignment: the confidence gate and the sub-sample refine.
 
-Measurement validity must extend past transport to whether the number is
-trustworthy. An integrity hash proves a capture is intact; it cannot catch an
-**intact-but-misaligned** capture — the recorder captured a window, but the
-stimulus is buried in noise, clipped, or absent, so the cross-correlation peak
-that locates it is weak or ambiguous. That is a silently-wrong measurement unless
-it fails loud, which is what this module does.
-
-It is a reusable primitive: an owning analysis passes the capture and the
-**known** stimulus that was played (a sweep, a marker, …), and gets back an
-alignment with a 0..1 confidence. ``assert_alignment_confident`` can turn that
-score into a hard gate, but callers must validate their per-flow threshold before
-advertising a hard gate of their own. The phone-relay room-correction flow is
-observation-only today and deliberately does not use this uncalibrated 0.40
-default as a fleet-wide rejection threshold.
-
-Confidence is the normalized margin between the dominant correlation peak and the
-next-strongest peak OUTSIDE the main lobe: `(primary - competitor) / primary`. A
-clean capture has one dominant lag (confidence → 1); noise/absent stimulus has
-comparable peaks everywhere (confidence → 0).
-
-Two honesty notes on the v1 instrument (SNR-aware thresholds are a future
-refinement, mirroring the correction confidence model's staging):
-
-  - The correlation is computed by **FFT** (`scipy.signal.correlate(method="fft")`,
-    O(N log N)) — the repo's standard for capture-length signals (cf. the
-    FFT-based :mod:`.deconv` and its 1 GB-Pi size cap). A naive
-    time-domain `np.correlate` here was O(N·M) ≈ tens of seconds per position on
-    the Pi for a 10 s sweep.
-  - The metric is a peak-to-second-peak **margin**, not an SNR or peak-to-RMS
-    ratio. The competitor is sampled outside a physically-motivated ~5 ms
-    exclusion (the main correlation lobe), so a near-direct reflection counts as
-    a competing peak. KNOWN false-pass class: a loud-but-wrong capture that is
-    still sharply self-peaked (e.g. clipped) can clear the threshold; the gate
-    catches *ambiguous* alignment, not every invalid capture. The 0.40 default
-    is a conservative starting gate, not a measured-derived constant — tune it
-    against real on-device sweeps before relying on small-margin decisions.
-
-The gate above resolves to the integer sample; the sub-sample family below
-(``gcc_phat``'s band-limited phase-transform correlation, its ``parabolic_peak``
-refine, and the anchor-gated ``_gcc_local_peak_snap``) resolves past it, so one
-module owns every way this repo locates one signal inside another —
-and, in ``fractional_shift``, the way it applies what it found.
+An integrity hash proves a capture is intact; it cannot catch an
+intact-but-misaligned one. Confidence is the normalized margin between the
+dominant correlation peak and the next-strongest peak OUTSIDE the main lobe.
+KNOWN false-pass class: a loud-but-wrong capture that is still sharply
+self-peaked (e.g. clipped) clears the gate -- this catches *ambiguous*
+alignment, not every invalid capture. The 0.40 default is a conservative
+starting gate, not a measurement-derived constant.
 """
 from __future__ import annotations
 
@@ -60,10 +25,9 @@ from scipy import signal as scipy_signal
 def _env_threshold(default: float = 0.40) -> float:
     """The default confidence gate, overridable at deploy time.
 
-    The 0.40 default is NOT empirically derived — a conservative v1 starting
-    point. Tuning it needs on-device sweeps, so it is a deploy-time knob
-    (`JASPER_CAPTURE_ALIGNMENT_THRESHOLD`, 0..1) rather than a code change: set it
-    in jasper.env once measured, no rebuild required.
+    The 0.40 default is NOT empirically derived; tuning it needs on-device
+    sweeps, so it is a deploy-time knob
+    (``JASPER_CAPTURE_ALIGNMENT_THRESHOLD``, 0..1) rather than a code change.
     """
     raw = os.environ.get("JASPER_CAPTURE_ALIGNMENT_THRESHOLD", "").strip()
     if raw:
@@ -76,13 +40,11 @@ def _env_threshold(default: float = 0.40) -> float:
     return default
 
 
-# A clean swept-sine alignment is strongly peaked; default gate is conservative.
 DEFAULT_CONFIDENCE_THRESHOLD = _env_threshold()
 # Exclude the main correlation lobe (~a few ms) when picking the competing peak.
 DEFAULT_EXCLUDE_RADIUS_S = 0.005
-# Cost/memory backstop: truncate a pathologically long capture. The stimulus
-# always lands within the spec's pre+stimulus+post window (well under this), so
-# truncation never drops it. Mirrors deconv.py's DEFAULT_MAX_CAPTURE_SECONDS.
+# Cost/memory backstop mirroring deconv.DEFAULT_MAX_CAPTURE_SECONDS; the
+# stimulus always lands well within it, so truncation never drops it.
 DEFAULT_MAX_CAPTURE_S = 20.0
 DEFAULT_SAMPLE_RATE = 48000
 
@@ -104,8 +66,7 @@ class AlignmentResult:
     lag_samples: int
     confidence: float  # 0..1 margin of the reported lag over the next-strongest
     peak: float  # normalized correlation at the reported lag (0..1 similarity)
-    # The competition on each side of the reported lag, outside the exclusion.
-    # A lag is only meaningful when its height is above zero.
+    # Competition on each side of the reported lag, outside the exclusion.
     earlier: float = 0.0
     earlier_lag_samples: int = 0
     later: float = 0.0
@@ -136,18 +97,16 @@ def correlation(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
 ) -> np.ndarray:
-    """Normalized |cross-correlation|: index `i` is the 0..1 similarity of
-    `stimulus` placed at lag `i` in `captured`. Empty when the capture cannot
-    contain the stimulus. A caller wanting a lag other than the strongest peak
-    picks it off this array and scores it with `alignment_at`."""
+    """Normalized |cross-correlation|: index ``i`` is the 0..1 similarity of
+    ``stimulus`` placed at lag ``i`` in ``captured``. Empty when the capture
+    cannot contain the stimulus."""
     cap_input = np.asarray(captured)
     stim_input = np.asarray(stimulus)
     if cap_input.size == 0 or stim_input.size == 0:
         return np.empty(0)
 
-    # Apply the cost/memory backstop before normalization.  Normalization
-    # promotes to float64, so truncating afterwards would still allocate a
-    # full-sized copy of a pathological capture on the 1 GB Pi.
+    # Backstop applied before normalization: normalization promotes to float64,
+    # so truncating afterwards would still allocate a full-sized copy.
     max_cap = max(stim_input.size, int(max_capture_s * sample_rate))
     if cap_input.size > max_cap:
         cap_input = (
@@ -195,18 +154,15 @@ def cross_correlation_alignment(
     exclude_radius: int | None = None,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
 ) -> AlignmentResult:
-    """Locate `stimulus` inside `captured` and score the confidence of that lag.
+    """Locate ``stimulus`` inside ``captured`` and score that lag's confidence.
 
-    The lag is the strongest correlation peak, and `confidence` its normalized
-    margin over the strongest peak outside a ~5 ms exclusion around it (the
-    main lobe). `exclude_radius` defaults to `DEFAULT_EXCLUDE_RADIUS_S *
-    sample_rate`; pass an override only for tests.
+    ``exclude_radius`` defaults to ``DEFAULT_EXCLUDE_RADIUS_S * sample_rate``
+    (the main lobe); pass an override only for tests.
     """
     corr = correlation(
         captured, stimulus, sample_rate=sample_rate, max_capture_s=max_capture_s
     )
     if corr.size == 0:
-        # A capture shorter than the stimulus cannot contain it — no alignment.
         return AlignmentResult(lag_samples=0, confidence=0.0, peak=0.0)
     if exclude_radius is None:
         exclude_radius = max(1, int(DEFAULT_EXCLUDE_RADIUS_S * sample_rate))
@@ -223,11 +179,7 @@ def assert_alignment_confident(
     exclude_radius: int | None = None,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
 ) -> AlignmentResult:
-    """Score alignment and, when `require`, fail loud below `threshold`.
-
-    ``require`` selects enforcement for the owning, threshold-calibrated flow.
-    When False the result is returned for reporting without gating.
-    """
+    """Score alignment and, when ``require``, fail loud below ``threshold``."""
     result = cross_correlation_alignment(
         captured,
         stimulus,
@@ -245,19 +197,12 @@ def assert_alignment_confident(
     return result
 
 
-# --------------------------------------------------------------------------- #
-# sub-sample refinement: past the integer lag the gate above stops at
-# --------------------------------------------------------------------------- #
-
-
 def parabolic_peak(values: np.ndarray, idx: int) -> float:
     """Sub-sample offset of a peak at integer ``idx`` via 3-point parabola.
 
-    The refinement is clamped to ±1 bin: a true local maximum refines within
-    ±0.5 bin, so a larger offset means the three points are near-degenerate
-    (tiny ``denom``) and the parabola vertex is an extrapolation artifact —
-    unclamped, a flat-topped correlation once "refined" a 96-bounded peak out
-    to 128 samples. In that case the integer peak is the honest answer.
+    Bounded to ±1 bin: a true local maximum refines within ±0.5 bin, so a larger
+    offset means near-degenerate points and an extrapolation artifact, and the
+    integer peak is returned unrefined rather than the parabola's vertex.
     """
     if idx <= 0 or idx >= values.size - 1:
         return float(idx)
@@ -289,17 +234,13 @@ def _gcc_correlation(
     band_hz: tuple[float, float],
     upsample: int,
 ) -> tuple[np.ndarray, int]:
-    """Band-limited GCC-PHAT cross-correlation of ``a`` vs ``b``, ×``upsample``
-    FFT-interpolated.
+    """Band-limited GCC-PHAT of ``a`` vs ``b``, ×``upsample`` FFT-interpolated.
 
-    Returns ``(cc, m)``: ``cc`` is the length-``m`` upsampled real
-    cross-correlation on the circular-lag axis (index ``i`` → lag ``i`` for
+    Returns ``(cc, m)`` on the circular-lag axis (index ``i`` -> lag ``i`` for
     ``i <= m/2`` else ``i - m``; native lag = index / ``upsample``). The
-    cross-power is phase-transform weighted **only inside ``band_hz``**
-    (whitening the near-zero out-of-band bins otherwise piles a spurious peak
-    near zero lag). Shared core of :func:`gcc_phat` (global-peak seed) and
-    :func:`_gcc_local_peak_snap` (anchor-gated fine snap), so both read one
-    correlation formula rather than two that could silently drift apart.
+    cross-power is phase-transform weighted **only inside ``band_hz``** --
+    whitening the near-zero out-of-band bins piles a spurious peak near zero
+    lag.
     """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -332,20 +273,14 @@ def gcc_phat(
 ):
     """Band-limited GCC-PHAT of ``a`` vs ``b``; ``a ≈ b`` shifted right by the lag.
 
-    Returns ``(lag_samples, polarity_sign, confidence, at_edge)``. The
-    correlation (see :func:`_gcc_correlation`) is ×``upsample`` FFT-interpolated
-    and parabolically refined. ``polarity_sign`` is the sign of the (signed)
-    correlation at the peak, and ``confidence`` mirrors
-    :func:`cross_correlation_alignment`'s primary-over-secondary margin.
-
-    ``at_edge`` is True when the peak lands within one native sample of the
-    ±``max_lag_samples`` search bound — the true peak is likely OUTSIDE the
+    Returns ``(lag_samples, polarity_sign, confidence, at_edge)``. ``at_edge``
+    is True when the peak lands within one native sample of the
+    ±``max_lag_samples`` search bound -- the true peak is likely OUTSIDE the
     window and the returned lag is a clamped artifact the caller must refuse.
     """
     cc, m = _gcc_correlation(
         a, b, sample_rate=sample_rate, band_hz=band_hz, upsample=upsample,
     )
-    # Circular-lag axis: index i → lag i for i<=m/2 else i-m; native = /upsample.
     max_lag_up = int(round(max_lag_samples * upsample))
     max_lag_up = max(1, min(max_lag_up, m // 2 - 1))
     idxs = np.concatenate(
@@ -354,17 +289,15 @@ def gcc_phat(
     window = cc[idxs]
     peak_local = int(np.argmax(np.abs(window)))
     peak_idx = int(idxs[peak_local])
-    # Parabolic refine on |cc| around the (unwrapped) peak.
     abs_cc = np.abs(cc)
     refined = parabolic_peak(abs_cc, peak_idx)
     circ = refined if refined <= m / 2 else refined - m
     lag_samples = circ / upsample
     polarity_sign = 1 if cc[peak_idx] >= 0 else -1
     primary = float(abs_cc[peak_idx])
-    # Secondary: strongest competitor outside the correlation main lobe. A
-    # band-limited correlation's main lobe is ~1/bandwidth wide, so a fixed
-    # 1-sample exclusion would sit on the main lobe and read a near-primary
-    # "secondary" (spuriously low confidence). Exclude one main-lobe half-width.
+    # Secondary: strongest competitor outside the main lobe, which is
+    # ~1/bandwidth wide -- a fixed 1-sample exclusion would sit on the lobe and
+    # read a near-primary "secondary" (spuriously low confidence).
     bandwidth = max(1.0, band_hz[1] - band_hz[0])
     exclude = max(upsample, int(round(sample_rate / bandwidth * upsample)))
     masked = abs_cc[idxs].copy()
@@ -391,29 +324,21 @@ def _gcc_local_peak_snap(
     """Snap ``anchor_lag_samples`` to the nearest local maximum of the
     band-limited GCC-PHAT correlation of ``a`` vs ``b`` within ±``radius_samples``.
 
-    Reuses the exact upsampled phase-transform machinery of :func:`gcc_phat`
-    (via the shared :func:`_gcc_correlation` core) and the same ±1-bin
-    :func:`parabolic_peak` sub-sample refine. Returns the refined native lag of
-    the nearest genuine interior local maximum of the correlation MAGNITUDE — an
-    upsampled bin strictly greater than both its neighbours — whose bin lies
-    within the radius of the anchor (the parabolic refine may nudge the returned
-    lag by up to one upsampled bin past it); ``None`` when the radius contains no
-    such peak (the caller then keeps the bare anchor). "Nearest" = smallest
-    ``|lag − anchor|``.
-
+    Returns the refined native lag of the nearest interior local maximum of the
+    correlation MAGNITUDE whose BIN lies within the radius (the parabolic refine
+    may nudge the returned lag up to one upsampled bin past it), or ``None``
+    when the radius holds none (the caller then keeps the bare anchor).
     Ianniello's gated correlator
-    (docs/crossover-measurement-reproducibility-plan.md §10): the
-    drift-corrected physical peak-gap anchor already owns comb-lobe selection,
-    so this refines it inside one λ/6 lobe instead of trusting the global
-    correlation peak, which can land on a neighbouring stable-but-wrong lobe.
+    (docs/crossover-measurement-reproducibility-plan.md §10): the anchor owns
+    comb-lobe selection, so this refines inside one λ/6 lobe instead of
+    trusting the global correlation peak.
     """
     cc, m = _gcc_correlation(
         a, b, sample_rate=sample_rate, band_hz=band_hz, upsample=upsample,
     )
     abs_cc = np.abs(cc)
-    # Search the ±radius neighbourhood in UPSAMPLED-lag units around the anchor,
-    # reading the circular array modularly (upsampled lag ℓ → index ℓ % m). A
-    # local maximum is an upsampled bin strictly greater than both neighbours.
+    # Circular array read modularly (upsampled lag ℓ -> index ℓ % m); a local
+    # maximum is a bin strictly greater than both neighbours.
     anchor_up = anchor_lag_samples * upsample
     radius_up = abs(radius_samples) * upsample
     lo = int(math.floor(anchor_up - radius_up))
@@ -422,9 +347,7 @@ def _gcc_local_peak_snap(
     best_dist = float("inf")
     for ell in range(lo, hi + 1):
         # The integer sweep brackets the fractional radius; keep only bins
-        # genuinely inside it. (The parabolic refine below can nudge the RETURNED
-        # lag by at most one upsampled bin past the radius — negligible against
-        # the comb-lobe spacing, so no lobe jump.)
+        # genuinely inside it.
         if abs(ell - anchor_up) > radius_up:
             continue
         idx = ell % m
@@ -442,11 +365,7 @@ def _gcc_local_peak_snap(
 
 
 def fractional_shift(x: np.ndarray, samples: float) -> np.ndarray:
-    """Shift ``x`` right by ``samples`` (may be fractional) via linear phase.
-
-    The companion to :func:`gcc_phat`: that one measures a sub-sample lag,
-    this one applies it without quantising it back to a whole sample.
-    """
+    """Shift ``x`` right by ``samples`` (may be fractional) via linear phase."""
     n = x.size
     spectrum = np.fft.rfft(x)
     freqs = np.fft.rfftfreq(n)

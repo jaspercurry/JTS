@@ -37,7 +37,6 @@ The safety proof the panel probes:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import math
 import random
@@ -668,23 +667,11 @@ def test_agc_marginal_estimate_that_clears_on_extension_verifies():
     assert data.agc_slope is not None and data.agc_slope > cfg.agc_slope_threshold
 
 
-def test_ramp_agc_suspected_event_has_exactly_one_emitter():
-    """2026-07-16 jts3 finding: ramp_agc_suspected was logged TWICE per
-    terminal from two call sites with two different field orders
-    (session/slope/steps/at_db vs session/at_db/slope/steps/span_db). Only
-    the terminal's own emission in run() may name this event now —
-    _update_agc_evidence's marginal-hold branch logs the distinct
-    ramp_agc_marginal event instead."""
-    source = inspect.getsource(
-        __import__("jasper.audio_measurement.ramp", fromlist=["ramp"])
-    )
-    assert source.count('"ramp_agc_suspected"') == 1
-
-
 async def test_agc_suspected_terminal_logs_exactly_one_event(caplog):
-    """Behavioral companion to the source-scan pin above: drive a real
-    AGC-suspected terminal end to end and confirm exactly one
-    ramp_agc_suspected line reaches the log, not two."""
+    """2026-07-16 jts3 finding: ramp_agc_suspected was logged TWICE per
+    terminal from two call sites. Only the terminal's own emission in run()
+    names it now — _update_agc_evidence's marginal-hold branch logs the
+    distinct ramp_agc_marginal event instead."""
     cfg = MeasurementRamp(settle_hold_s=0.5, max_loop_latency_s=0.5, safety_timeout_s=60.0)
     chain = ChainModel(
         gain_db=20.0,

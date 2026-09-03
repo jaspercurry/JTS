@@ -2014,7 +2014,7 @@ def test_f_malformed_config_raises_through_the_shared_validator():
         classify_dip_position_variance(combined, band_hz=(4000.0, 4000.5))
 
 
-def test_f_presence_proximity_is_derived_from_the_smoothing_window():
+def test_f_presence_proximity_is_derived_from_the_smoothing_window(monkeypatch):
     """The one quantity this function introduces is not a chosen threshold:
     it is the width of the 1/``diag_fraction``-octave window the minima were
     located through, so two minima closer than one window are one feature.
@@ -2022,12 +2022,25 @@ def test_f_presence_proximity_is_derived_from_the_smoothing_window():
     Pinned because a future edit that swaps it for a literal would look
     harmless and would silently re-calibrate the verdict.
     """
-    import inspect
-
     from jasper.audio_measurement import interference_nulls as module
 
-    source = inspect.getsource(module.classify_dip_position_variance)
-    assert "_smoothing_bandwidth_hz(cand.f_hz, combined.diag_fraction)" in source
+    combined = combine_positions(_notched_cloud([1800.0] * 5 + [2400.0] * 3))
+    calls: list[tuple[float, int]] = []
+    real = module._smoothing_bandwidth_hz
+
+    def _spy(f_hz, fraction):
+        calls.append((f_hz, fraction))
+        return real(f_hz, fraction)
+
+    monkeypatch.setattr(module, "_smoothing_bandwidth_hz", _spy)
+    report = module.classify_dip_position_variance(combined, band_hz=NOTCH_BAND_HZ)
+    monkeypatch.undo()
+
+    assert report.dips
+    # Every window this stage asks for is the diagnostic curve's own fraction
+    # at a dip's own frequency — never a literal.
+    assert {fraction for _f, fraction in calls} == {combined.diag_fraction}
+    assert {dip.f_center_hz for dip in report.dips} <= {f for f, _frac in calls}
 
     # And it tracks the fraction rather than a constant: a coarser diagnostic
     # curve gives a wider window at the same frequency.

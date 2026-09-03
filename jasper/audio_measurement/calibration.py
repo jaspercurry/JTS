@@ -4,24 +4,16 @@
 
 """Measurement-microphone calibration registry and parser.
 
-The correction wizard supports two happy paths:
+Two input paths -- known-vendor serial lookup and a bring-your-own uploaded
+REW/HouseCurve-style text curve -- normalize into ``correction_db``: an
+additive dB offset applied to the measured response before target
+normalization.
 
-* known vendor lookup, where the user enters a model + serial and JTS
-  fetches the calibration file server-side; and
-* bring-your-own calibrated mic, where the user uploads a REW/
-  HouseCurve-style text curve.
-
-Every input path normalizes into ``correction_db``: an additive dB
-offset applied to the measured response before target normalization.
-Provider-specific quirks stay here so the DSP pipeline only sees one
-shape.
-
-The quirk that matters most is the SIGN. A measurement mic's calibration
-file states the microphone's own *response*, so the correction is its
-negation — see ``SUPPORTED_MODELS`` for the per-vendor declaration and the
-evidence behind it. Records written before 2026-07-27 stored vendor files
-under the opposite claim; ``migrate_stored_sign_conventions`` repairs them
-in place on deploy.
+The quirk that matters is the SIGN. A measurement mic's calibration file states
+the microphone's own *response*, so the correction is its negation; the
+per-vendor declaration is in ``SUPPORTED_MODELS``. Records written before
+2026-07-27 stored vendor files under the opposite claim, and
+``migrate_stored_sign_conventions`` repairs them in place on deploy.
 """
 from __future__ import annotations
 
@@ -43,13 +35,12 @@ import numpy as np
 
 from jasper.atomic_io import atomic_write_text
 
-# The model registry — SUPPORTED_MODELS, DEFAULT_SIGN_CONVENTION,
-# measurement_mic_usb_ids, mic_tier_for_model — lives in the numpy-free leaf
+# The model registry -- SUPPORTED_MODELS, DEFAULT_SIGN_CONVENTION,
+# measurement_mic_usb_ids, mic_tier_for_model -- lives in the numpy-free leaf
 # module jasper.audio_measurement.mic_identity, so the reconciler's hotplug
-# bridge (`python -m jasper.cli.measurement_mic`) can read it without paying
-# this module's numpy import. Re-exported here (the `X as X` form) because
-# this module is the established import surface for the wizard/web consumers;
-# the leaf stays the one owner.
+# bridge can read it without paying this module's numpy import. Re-exported
+# here (the `X as X` form) because this module is the established import
+# surface for the wizard/web consumers; the leaf stays the one owner.
 from jasper.audio_measurement.mic_identity import (
     DEFAULT_SIGN_CONVENTION as DEFAULT_SIGN_CONVENTION,
     SUPPORTED_MODELS as SUPPORTED_MODELS,
@@ -62,18 +53,14 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_CALIBRATION_DIR = Path("/var/lib/jasper/correction/calibration_mics")
-# NOTE: the model registry (SUPPORTED_MODELS et al.) moved to
-# jasper.audio_measurement.mic_identity — see the re-export block in the
-# imports above for why. Everything below consumes it via that import.
 
 
 def model_label_aliases(model_key: str) -> list[str]:
-    """OS device-label tokens that identify this mic for the wizard's
-    label-based auto-inference (e.g. ``iMM-6`` matches a browser-reported
-    label of ``iMM-6C``). Defaults to the vendor model; a registry entry may
-    set ``label_aliases`` for mics whose OS label differs from the model name.
-    The wizard matches case- and punctuation-insensitively, so aliases need
-    only be a distinctive substring of the device label.
+    """OS device-label tokens that identify this mic for label-based inference.
+
+    Matched case- and punctuation-insensitively, so an alias need only be a
+    distinctive substring of the device label (``iMM-6`` matches ``iMM-6C``).
+    A registry entry may set ``label_aliases``; the default is the vendor model.
     """
     spec = SUPPORTED_MODELS.get(model_key, {})
     aliases = spec.get("label_aliases") or [spec.get("vendor_model", "")]
@@ -83,9 +70,8 @@ def model_label_aliases(model_key: str) -> list[str]:
 def supported_model_options() -> tuple[dict[str, Any], ...]:
     """Public, UI-safe model picker options derived from SUPPORTED_MODELS.
 
-    Keep browser surfaces data-driven from this registry. The phone relay page
-    uses these options via CaptureSpec so adding a supported measurement mic is a
-    registry edit, not a separate Cloudflare page edit.
+    The phone relay page consumes these via CaptureSpec, so adding a supported
+    measurement mic is a registry edit, not a separate page edit.
     """
     return tuple(
         {
@@ -161,10 +147,8 @@ class CalibrationRecord:
     def public_metadata(self) -> dict[str, Any]:
         """Metadata safe to show in UI and write into bundles.
 
-        Vendor lookup URLs often include the mic serial in the file
-        name, so do not expose the raw source. The full calibration
-        curve/file is stored separately in the session bundle when a
-        measurement uses it.
+        Vendor lookup URLs often carry the mic serial in the file name, so the
+        raw source is never exposed here.
         """
         return {
             "calibration_id": self.calibration_id,
@@ -239,11 +223,7 @@ def _sha256_text(text: str) -> str:
 
 
 def _public_source(source: str) -> str:
-    """Redact source details that may carry serial numbers.
-
-    We keep enough provenance for UX/debugging while avoiding raw
-    vendor URLs in public metadata and bundles.
-    """
+    """Redact source details that may carry serial numbers."""
     if source.startswith(("http://", "https://")):
         return "vendor_lookup"
     if source.startswith("uploaded:"):
@@ -268,16 +248,11 @@ def parse_calibration_text(
 ) -> CalibrationCurve:
     """Parse a broad REW/HouseCurve-style calibration text file.
 
-    Accepted rows start with a numeric frequency and contain at least
-    frequency + dB. Any further columns are ignored: a vendor phase column
-    is read past rather than kept, because the correction this curve feeds
-    is magnitude-only (see :func:`apply_calibration_curve`).
-
-    ``sign_convention``:
-      - ``correction`` means the second column is already the dB value
-        to add to the measured response.
-      - ``response`` means the second column is the mic response, so
-        the correction is the negated value.
+    Accepted rows start with a numeric frequency and carry at least frequency +
+    dB; further columns (a vendor phase column) are read past, because the
+    correction this feeds is magnitude-only. ``sign_convention`` of
+    ``correction`` means the second column is already the dB value to add;
+    ``response`` means it is the mic response, so the correction is negated.
     """
     if sign_convention not in {"correction", "response"}:
         raise ValueError(
@@ -324,8 +299,7 @@ def parse_calibration_text(
 
 
 # The acoustic calibrator level the vendor's ``Sens Factor`` is quoted against:
-# 1 Pa == 94 dB SPL, the standard pistonphone/calibrator reference. Fixed
-# physics, not a tunable.
+# 1 Pa == 94 dB SPL, the standard pistonphone reference. Fixed physics.
 CALIBRATOR_REFERENCE_DB_SPL = 94.0
 
 _SENS_FACTOR_RE = re.compile(
@@ -341,25 +315,20 @@ _SERNO_RE = re.compile(r"SERNO\s*:\s*([A-Za-z0-9._-]+)", re.IGNORECASE)
 class MicSensitivity:
     """A measurement mic's ABSOLUTE level reference, read from its cal file.
 
-    The curve this module's other half parses is *relative* — it says nothing
-    about how loud a dBFS reading is. This is the missing scalar: the one fact
-    that turns a capture dBFS into a room dB SPL.
-
     ``sens_factor_db`` is the vendor's ``Sens Factor``: the dBFS the mic reports
     when driven by a 94 dB SPL calibrator, so
 
         dB SPL = dBFS - sens_factor_db + 94
 
-    **Precondition (the reason this is not a free conversion).** REW's own cal
-    file documentation: "this calibration will only be valid when using the same
-    mic interface gain and input volume that were used when it was measured" —
-    the sens factor is quoted with the capture input volume at MAXIMUM. Capture
-    gain below that reads LOW, which would push a closed-loop level ramp LOUDER
-    than the operator asked for, so any consumer that drives a speaker from this
-    number must carry its own level-domain ceiling rather than trusting the SPL
-    alone. ``analog_gain_db`` (the UMIK-2's ``AGain``, absent on a UMIK-1) is
-    carried verbatim for that disclosure, never folded into the arithmetic — it
-    is already inside the vendor's measured ``sens_factor_db``.
+    Precondition, per REW's own cal-file documentation: the factor is valid
+    only at the same mic interface gain and input volume it was measured at,
+    which is capture input volume at MAXIMUM. Capture gain below that reads
+    LOW, which would push a closed-loop level ramp LOUDER than the operator
+    asked for, so any consumer that drives a speaker from this number must
+    carry its own level-domain ceiling. ``analog_gain_db`` (the UMIK-2's
+    ``AGain``, absent on a UMIK-1) is carried verbatim for that disclosure,
+    never folded into the arithmetic -- it is already inside the vendor's
+    measured ``sens_factor_db``.
     """
 
     sens_factor_db: float
@@ -386,17 +355,15 @@ class MicSensitivity:
 def parse_calibration_sensitivity(text: str) -> MicSensitivity | None:
     """Read the absolute-level header of a REW/miniDSP calibration file.
 
-    The header is the file's first line and is the ONE line
+    The header is the file's first line and the ONE line
     :func:`parse_calibration_text` deliberately skips (it does not start with a
-    number), so the two parsers read the same file for two different facts
-    without either owning the other's. Verbatim shapes::
+    number). Verbatim shapes::
 
         "Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"   # UMIK-2
         "Sens Factor =-.9099dB, SERNO: 7031234"                # UMIK-1, no AGain
 
-    Returns ``None`` when no parseable ``Sens Factor`` is present — a mic whose
-    file carries only a response curve has no absolute reference, and guessing
-    one would be a silent hazard. Callers must refuse, never default.
+    Returns ``None`` when no parseable ``Sens Factor`` is present -- a mic with
+    no absolute reference. Callers must refuse, never default.
     """
     match = _SENS_FACTOR_RE.search(text)
     if match is None:
@@ -421,9 +388,7 @@ def parse_calibration_sensitivity(text: str) -> MicSensitivity | None:
 
 
 #: What a verb refuses with when no absolute reference can be read, and the
-#: sentence it prints. One owner for both, because two operator verbs now ask
-#: this same question and an operator who saw two wordings would have to work
-#: out whether they meant the same thing.
+#: sentence it prints. One owner for both: two operator verbs ask this question.
 REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
 MIC_CALIBRATION_UNAVAILABLE_DETAIL = (
     "no parseable 'Sens Factor' calibration for this microphone — pass "
@@ -442,10 +407,9 @@ def _resolve_calibration_source(
     """``(path, text, sign convention)`` for this run's mic, or ``None``.
 
     An explicit file wins; otherwise the stored record for this serial is used,
-    and that record's OWN recorded convention is authoritative — it is what
-    ``migrate_stored_sign_conventions`` maintains. An explicit file has no
-    record behind it, so the model registry's declaration is the best available
-    statement of which way its second column points.
+    and that record's OWN recorded convention is authoritative. An explicit
+    file has no record behind it, so the model registry's declaration is the
+    best available statement of which way its second column points.
     """
     path: Path | None = None
     convention = str(
@@ -478,7 +442,7 @@ def resolve_mic_sensitivity(
 ) -> MicSensitivity | None:
     """The mic's absolute reference, from an explicit file or the stored record.
 
-    Returns ``None`` when no calibration can be read — the caller REFUSES with
+    ``None`` when no calibration can be read -- the caller REFUSES with
     :data:`REFUSE_MIC_CALIBRATION_UNAVAILABLE`; a guessed sensitivity would
     silently mis-scale every SPL decision.
     """
@@ -638,21 +602,16 @@ def _extract_links(base_url: str, text: str) -> list[str]:
     for raw in re.findall(r"""href=["']([^"']+)["']""", text, flags=re.I):
         href = html.unescape(raw)
         resolved = urllib.parse.urljoin(base_url, href)
-        # Only ever follow http(s). urljoin lets an absolute href override
-        # the scheme, so without this guard a `file://…txt` or
-        # `http://127.0.0.1…txt` link in the (external, semi-trusted) vendor
-        # response would be fetched by the Pi's web process — an SSRF/LFI
-        # sink. A cross-host CDN file is still https, so this does not
-        # constrain legitimate vendor hosting.
+        # Only ever follow http(s): urljoin lets an absolute href override the
+        # scheme, so a `file://…txt` or `http://127.0.0.1…txt` link in the
+        # external vendor response would otherwise be an SSRF/LFI sink. A
+        # cross-host CDN file is still https, so legitimate hosting still works.
         if urllib.parse.urlsplit(resolved).scheme not in ("http", "https"):
             continue
         split = urllib.parse.urlsplit(href.lower())
-        # The calibration filename can live in the URL path (…/abc.txt) or,
-        # as Dayton's tool does, only in a query parameter
-        # (…/Download?CalibrationFileName=abc.txt&CalibrationFilePath=…txt).
-        # Checking the path alone silently drops Dayton's real download link
-        # and the whole serial lookup fails with "did not return a parseable
-        # calibration file".
+        # The calibration filename can live in the URL path (…/abc.txt) or, as
+        # Dayton's tool does, only in a query parameter
+        # (…/Download?CalibrationFileName=abc.txt&…), so both are checked.
         candidates = [split.path]
         candidates.extend(value for _key, value in urllib.parse.parse_qsl(split.query))
         if any(c.endswith(_CALIBRATION_SUFFIXES) for c in candidates):
@@ -669,10 +628,8 @@ def fetch_dayton_calibration_text(
 ) -> tuple[str, str]:
     """Fetch a Dayton Audio mic calibration file.
 
-    Dayton's public tool is a regular form POST. If the response is a
-    page, we scrape calibration-file links and fetch the first parseable
-    one. If Dayton ever returns the text file directly, that path works
-    too.
+    Dayton's public tool is a regular form POST; a page response is scraped for
+    calibration-file links, and a direct text-file response works too.
     """
     opener = opener or _default_urlopen
     url = "https://support.daytonaudio.com/MicrophoneCalibrationTool"
@@ -721,9 +678,8 @@ def _minidsp_candidate_urls(
     digits = re.sub(r"[^0-9]", "", serial)
     if not digits:
         return []
-    # UMIK ships 0-degree + 90-degree files. Default to 0-degree for
-    # two-channel room correction, but include the other orientation
-    # as a fallback candidate.
+    # UMIK ships 0-degree + 90-degree files. Default to 0-degree for two-channel
+    # room correction, with the other orientation as a fallback candidate.
     if vendor_model == "umik-1":
         suffixes = (
             [f"{digits}_90deg.txt", f"{digits}.txt"]
@@ -739,19 +695,13 @@ def _minidsp_candidate_urls(
         ]
         return [base + suffix for base in dirs for suffix in suffixes]
 
-    # UMIK-2 serves calibration files through per-orientation PHP scripts,
-    # each of which only accepts its own suffix — umik.php ONLY resolves
-    # "<serial>.txt" (0-degree) and umik90.php ONLY resolves
-    # "<serial>_90deg.txt" (90-degree). Crossing the pairing (e.g.
-    # umik.php/<serial>_90deg.txt) returns HTTP 200 with an "Unable to
-    # locate calibration data" page rather than a 404, so getting the
-    # pairing right avoids a wasted round-trip; _looks_like_calibration
-    # still guards against ever accepting that error page.
-    # Verified live 2026-07-15 against a real UMIK-2: both script URLs
-    # return 200 with real cal data, while the whole legacy
-    # /images/umik... family is dead (404 for every serial). One legacy
-    # dir is retained below as minimal drift insurance in case the site
-    # ever reverts to static files.
+    # UMIK-2 serves calibration files through per-orientation PHP scripts, each
+    # of which accepts only its own suffix: umik.php ONLY "<serial>.txt"
+    # (0-degree), umik90.php ONLY "<serial>_90deg.txt" (90-degree). Crossing the
+    # pairing returns HTTP 200 with an error page rather than a 404, so the
+    # pairing avoids a wasted round-trip. Verified live 2026-07-15 against a real
+    # UMIK-2; the legacy /images/umik... family is dead (404 for every serial),
+    # one dir kept below as drift insurance.
     scripts = [
         ("https://www.minidsp.com/scripts/umik2cal/umik.php/", f"{digits}.txt"),
         (
@@ -782,10 +732,8 @@ def fetch_minidsp_calibration_text(
 ) -> tuple[str, str]:
     """Fetch a miniDSP UMIK calibration file by serial.
 
-    miniDSP officially documents the product-page serial form. The
-    underlying static URLs have been stable for years, so we try the
-    known URL families first and fall back to an actionable error if
-    none returns a parseable file.
+    The known static URL families are tried first, falling back to an actionable
+    error if none returns a parseable file.
     """
     opener = opener or _default_urlopen
     errors: list[str] = []
@@ -798,7 +746,7 @@ def fetch_minidsp_calibration_text(
     for url in candidates:
         # miniDSP blanket-blocks urllib's default "Python-urllib/x.y" User-Agent
         # site-wide (verified live 2026-07-15: 403, not the real 404), so every
-        # request needs an explicit non-default header, same as the Dayton path.
+        # request needs an explicit non-default header.
         req = urllib.request.Request(
             url, headers={"User-Agent": "JTS correction calibration lookup"},
         )
@@ -833,26 +781,16 @@ def find_stored_calibration(
     orientation: str = "unknown",
     root: Path = DEFAULT_CALIBRATION_DIR,
 ) -> CalibrationRecord | None:
-    """Return a previously-stored vendor calibration matching this
-    serial + model + orientation, or None. A measurement mic's calibration is
-    fixed per unit, so the stored copy is authoritative — this lets a repeat
-    lookup skip the vendor round-trip (resilient to the vendor being down, and
-    faster). Returns the most recently fetched match. Corrupt records are
-    skipped, not fatal.
+    """A stored vendor calibration matching serial + model + orientation.
 
-    ``orientation="unknown"`` (the default — "caller has no preference/does
-    not know") matches ANY stored orientation rather than requiring a
-    literal ``"unknown"``-tagged record. Gauge fix (2026-07-24): before the
-    write side started stamping the REAL inferred orientation
-    (``fetch_vendor_calibration``), an "unknown" hint always matched an
-    "unknown"-tagged stored record, so the phone-relay flow — which never
-    declares an orientation — hit the cache every time. Once the write side
-    started stamping "0deg"/"90deg", a literal-match lookup would have
-    permanently missed that same cache on every subsequent phone-flow
-    lookup (a real regression: silently re-fetching from the vendor on
-    every visit instead of serving the local copy). A caller that DOES know
-    which orientation it wants (a literal "0deg"/"90deg") still gets exact
-    matching, unchanged — this only widens the "don't care" case.
+    A measurement mic's calibration is fixed per unit, so the stored copy is
+    authoritative and a repeat lookup skips the vendor round-trip. Returns the
+    most recently fetched match, or ``None``; corrupt records are skipped, not
+    fatal. ``orientation="unknown"`` (the default) matches ANY stored
+    orientation: the write side stamps the REAL inferred orientation, so a
+    literal match would permanently miss the cache for the phone-relay flow,
+    which never declares one. A caller naming "0deg"/"90deg" still matches
+    exactly.
     """
     sh = serial_hash(serial)
     if not sh:
@@ -883,18 +821,14 @@ def find_stored_calibration_by_content_hash(
     file_sha256: str,
     root: Path = DEFAULT_CALIBRATION_DIR,
 ) -> CalibrationRecord | None:
-    """Return a previously-stored calibration matching this content hash,
-    regardless of provider, model, or serial.
+    """A stored calibration matching this content hash, regardless of provider,
+    model, or serial.
 
-    ``find_stored_calibration`` (above) makes a vendor-serial calibration
-    reachable again across sessions, keyed by serial_hash + model +
-    orientation. A manual upload carries no serial, so that lookup can never
-    reach it — this is the additive counterpart: any stored calibration
-    (vendor OR upload) can be found again from nothing but the content hash
-    of the file that produced it. Used by
-    ``jasper.correction.household_mic`` to resolve a remembered upload back
-    to its stored file on a later run. Corrupt records are skipped, not
-    fatal. Returns the most recently fetched match.
+    The additive counterpart to :func:`find_stored_calibration`: a manual upload
+    carries no serial, so only the content hash of the file that produced it can
+    reach it again. Used by ``jasper.correction.household_mic`` to resolve a
+    remembered upload back to its stored file. Corrupt records are skipped, not
+    fatal; returns the most recently fetched match.
     """
     if not file_sha256:
         return None
@@ -934,8 +868,7 @@ def fetch_vendor_calibration(
     # hardware and is treated as private metadata everywhere else.
     log_serial_hash = serial_hash(serial)
     # Re-use a previously-stored calibration for this serial so a repeat lookup
-    # (e.g. the wizard auto-fetching a remembered serial) never depends on the
-    # vendor being reachable.
+    # never depends on the vendor being reachable.
     cached = find_stored_calibration(
         provider=provider, model_key=model_key, serial=serial,
         orientation=orientation, root=root,
@@ -965,17 +898,10 @@ def fetch_vendor_calibration(
                 orientation=orientation,
                 opener=opener,
             )
-            # Gauge fix (2026-07-24): stamp the orientation the vendor
-            # ACTUALLY served, not the pre-fetch hint. Every miniDSP
-            # candidate URL (_minidsp_candidate_urls, both UMIK-1 and
-            # UMIK-2) ends in exactly one of two suffixes —
-            # "<serial>.txt" (0-degree) or "<serial>_90deg.txt"
-            # (90-degree) — so the winning `source` URL is ground truth.
-            # Before this fix, every miniDSP vendor-fetch record was
-            # stamped with the caller's hint verbatim; the phone-relay
-            # serial-fetch flow (the primary onboarding path) never sends
-            # an orientation at all, so its records were always "unknown"
-            # regardless of which file was actually served.
+            # Stamp the orientation the vendor ACTUALLY served, not the
+            # pre-fetch hint: every miniDSP candidate URL ends in exactly one of
+            # "<serial>.txt" (0-degree) or "<serial>_90deg.txt" (90-degree), so
+            # the winning `source` URL is ground truth.
             orientation = "90deg" if source.endswith("_90deg.txt") else "0deg"
         else:
             raise ValueError(f"no fetcher for provider: {provider}")
@@ -987,9 +913,8 @@ def fetch_vendor_calibration(
             source=source,
             serial=serial,
             orientation=orientation,
-            # The vendor owns this quirk, so the registry entry states it —
-            # see SUPPORTED_MODELS. Vendor files are RESPONSE curves; the
-            # correction is the negation.
+            # Vendor files are RESPONSE curves; the correction is the negation.
+            # The vendor owns this quirk, so the registry states it.
             sign_convention=str(
                 spec.get("sign_convention") or DEFAULT_SIGN_CONVENTION
             ),
@@ -1030,13 +955,10 @@ def fetch_vendor_calibration(
 
 
 def _models_expecting_response() -> set[tuple[str, str]]:
-    """``(provider, model)`` pairs the registry declares to be response
-    curves — the set whose already-stored records the migration below owns.
+    """``(provider, model)`` pairs the registry declares to be response curves.
 
-    Keyed on the pair, not the provider alone, because a record stores both
-    and a provider can hold models that disagree: if one Dayton model were
-    ever found to ship true correction files, a provider-level key would
-    silently drag it along with its siblings.
+    Keyed on the pair, not the provider alone: a provider can hold models that
+    disagree, and a provider-level key would silently drag a sibling along.
     """
     return {
         (str(spec["provider"]), model_key)
@@ -1048,12 +970,10 @@ def _models_expecting_response() -> set[tuple[str, str]]:
 def configured_calibration_root() -> Path:
     """The calibration store this speaker actually uses.
 
-    ``DEFAULT_CALIBRATION_DIR`` is only the default: the ``/correction/``
-    wizard resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``
-    (``_calibration_root`` in ``jasper/web/correction_setup.py``), so a
-    speaker with that override set keeps its records somewhere else. A
-    migration that ignored it would read an empty directory and report
-    ``scanned=0`` — success-shaped, and wrong.
+    ``DEFAULT_CALIBRATION_DIR`` is only the default: the ``/correction/`` wizard
+    resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``. A migration
+    that ignored the override would read an empty directory and report
+    ``scanned=0`` -- success-shaped, and wrong.
     """
     return Path(
         os.environ.get(
@@ -1069,53 +989,24 @@ def migrate_stored_sign_conventions(
 
     Until 2026-07-27 ``fetch_vendor_calibration`` stored every vendor file as
     ``sign_convention="correction"``, so ``correction_db`` held the mic's
-    response un-negated and the measurement pipeline added what it should
-    have subtracted. New fetches are fixed at the source (see
-    ``SUPPORTED_MODELS``); this repairs what is already on disk. Run from
-    ``install.sh`` on every deploy — idempotent, so re-running is free.
+    response un-negated and the pipeline added what it should have subtracted.
+    Run from ``install.sh`` on every deploy; idempotent.
 
-    Semantics, in the order they matter:
+    * Keyed on the stored convention FIELD, never on the numbers: only a record
+      still claiming ``"correction"`` is touched, so a curve can never be
+      double-negated back to the bug.
+    * Vendor records only, keyed on ``(provider, model)``. A ``manual_upload``
+      record carries the household's OWN declaration and is not ours to
+      overrule.
+    * Re-derived from the retained raw file when its SHA-256 still matches the
+      record's ``file_sha256``; otherwise negated in place, which is the same
+      number. Re-fetching is impossible: only ``serial_hash`` is persisted.
+    * Phase is untouched -- it passes through unchanged under both conventions.
 
-    * **Keyed on the stored convention field, never on the numbers.** Only a
-      record that still claims ``"correction"`` is touched. A record already
-      stating ``"response"`` — one written by a fixed build, or by an earlier
-      run of this migration — is left exactly as it is, so a curve can never
-      be double-negated back to the bug.
-    * **Vendor records only, keyed on ``(provider, model)``.** A
-      ``manual_upload`` record carries the household's OWN declaration from
-      the ``/correction/`` upload control; that is a statement about a file
-      JTS never saw and is not ours to overrule. Only registry entries that
-      declare the response convention are in scope, matched on the pair the
-      record stores so a future per-model split inside one provider cannot
-      be mis-scoped.
-    * **Re-derive from the retained raw file when it is provably the
-      original.** ``store_calibration`` keeps the vendor text beside the
-      metadata, so the honest repair is to re-parse it under the right
-      convention. The raw file is trusted only when its SHA-256 still matches
-      the record's ``file_sha256``.
-    * **Otherwise negate in place.** The stored curve is the file's values
-      verbatim (that is exactly what the bug did), so negation is the same
-      number the re-derivation would produce. Re-fetching is NOT an option:
-      the raw serial is deliberately never persisted (only ``serial_hash``),
-      so the vendor lookup cannot be replayed from a stored record.
-
-    Phase is not touched: ``parse_calibration_text`` passes phase through
-    unchanged under both conventions, so a negated curve keeps its phase.
-
-    This runs in ONE direction only (``correction`` -> ``response``). Should a
-    vendor's registry declaration ever be corrected the other way, the edit
-    alone changes nothing on disk and the vendor cache
-    (``find_stored_calibration``, consulted before every fetch) keeps serving
-    the stored record: that reversal needs its own opposite-direction
-    migration, not a re-run of this one.
-
-    ``root`` defaults to ``configured_calibration_root()`` — the override the
-    wizard honours, not the compiled-in default — so the migration reads the
-    same store the household's records actually live in.
-
-    Returns per-outcome counts for the caller to log. Never raises for one
-    bad record — a corrupt or unreadable file is counted and skipped, because
-    a household's other mic records must still be repaired.
+    ONE direction only (``correction`` -> ``response``); a reversal needs its
+    own opposite-direction migration, not a re-run of this one. ``root``
+    defaults to :func:`configured_calibration_root`. Returns per-outcome counts
+    and never raises for one bad record.
     """
     root = configured_calibration_root() if root is None else root
     vendor_models = _models_expecting_response()
@@ -1181,13 +1072,10 @@ def migrate_stored_sign_conventions(
         data["sign_convention"] = "response"
         data["point_count"] = len(curve.freqs_hz)
         try:
-            # Atomic, and stat-preserving: a crash mid-migration must leave
-            # the OLD record rather than a truncated one (a torn record reads
-            # as corrupt on every later load, silently costing the household
-            # its remembered microphone — nothing reconstructs a record from
-            # the raw .txt beside it). `preserve_target_stat` keeps the
-            # existing owner/mode, so this root-run repair cannot re-own a
-            # file a de-rooted jasper-correction-web would need to write.
+            # Atomic and stat-preserving: a crash mid-migration must leave the
+            # OLD record rather than a truncated one, and `preserve_target_stat`
+            # keeps the existing owner/mode so this root-run repair cannot
+            # re-own a file a de-rooted jasper-correction-web must write.
             atomic_write_text(
                 path,
                 json.dumps(data, indent=2),
@@ -1197,10 +1085,9 @@ def migrate_stored_sign_conventions(
             counts["write_failed"] += 1
             continue
         counts[f"migrated_{method}"] += 1
-        # WARNING, not INFO: this is a one-time migration MUTATING household
-        # measurement state, and the deploy transcript is where an operator
-        # would look for what a deploy changed. Bounded by the number of mic
-        # records a household owns (one or two), so this cannot spam.
+        # WARNING, not INFO: a one-time migration MUTATING household measurement
+        # state, and the deploy transcript is where an operator looks. Bounded by
+        # the one or two mic records a household owns, so it cannot spam.
         log_event(
             logger,
             "correction_calibration_sign_migrated",

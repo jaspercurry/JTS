@@ -21,10 +21,8 @@ from typing import Any, Coroutine, TypeVar
 __all__ = ["await_restore_task_resilient", "resilient_restore"]
 
 #: What the shielded operation answers with. Generic because the idiom is about
-#: CANCELLATION, not about a payload — the graph restores that named this module
-#: answer a report dict, and a give-back that answers nothing needs the same
-#: shield for the same reason. Pinning it to one payload type would have made
-#: the second caller write a fourth copy of the loop below.
+#: CANCELLATION, not a payload: pinning it to one type forces the next caller to
+#: copy the loop below.
 _Restored = TypeVar("_Restored")
 
 
@@ -51,8 +49,8 @@ async def resilient_restore(
 ) -> _Restored:
     """Run one restore coroutine to completion before propagating cancellation.
 
-    :func:`await_restore_task_resilient` takes a Task, so every caller was
-    spelling its own ``create_task`` line first — a restore could be written
-    without the shield and still read as if it had one. One runner instead.
+    :func:`await_restore_task_resilient` takes a Task, so without this every
+    caller spells its own ``create_task`` and an unshielded restore reads as if
+    it had a shield.
     """
     return await await_restore_task_resilient(asyncio.create_task(operation))
