@@ -1535,6 +1535,11 @@ reconcile_aec_state() {
     systemctl enable jasper-aec-reconcile.service
     /usr/local/sbin/jasper-aec-reconcile --reason install || \
         echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
+    if [[ -e /run/jasper-aec-reconcile/aec-bridge-ready ]]; then
+        echo "  AEC bridge marker: present (/run/jasper-aec-reconcile/aec-bridge-ready)"
+    else
+        echo "  WARN: AEC bridge marker absent (/run/jasper-aec-reconcile/aec-bridge-ready); echo cancellation is off until the next reconcile"
+    fi
 }
 
 reconcile_grouping_state() {
