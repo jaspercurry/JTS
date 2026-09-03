@@ -64,8 +64,6 @@
   gap: 1rem;
 }
 
-.page > .section + .section { margin-top: 1.5rem; }
-
 /* Live device list. Each row is a flex line inside a bordered card. */
 .device-list {
   background: var(--card);
