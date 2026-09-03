@@ -423,8 +423,7 @@ class SafeGraphDecision:
     parked graph is *generated*, so the path names where
     ``apply_safe_graph_decision_to_statefile`` will materialise it. A read-only
     caller (one that does not write the statefile) must not assume the file is
-    there yet — ``jasper.correction.runtime_safety.reset_config_path`` refuses
-    the parked status outright for exactly this reason.
+    there yet.
     """
 
     status: str

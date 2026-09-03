@@ -2395,8 +2395,7 @@ class CrossoverV2Session:
         from the reader; this also catches one that is valid JSON but
         structurally wrong (hand-edited), which must read as "nothing applied"
         rather than crash a MEASURE analysis over a fact one refusal path
-        consults — the same posture ``resolve_applied_speaker_evidence`` takes
-        on the same read.
+        consults.
 
         Read per MEASURE analysis rather than cached at session open, since
         that is the moment the answer has to be true: one small JSON read a

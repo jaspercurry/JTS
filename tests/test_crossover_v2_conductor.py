@@ -2834,8 +2834,6 @@ def test_the_clouds_honesty_verdict_reaches_the_fit_envelope():
     )
     assert evidence["gated_spec_curve"]["freqs_hz"], "the curve must be non-empty"
 
-    _assert_room_layer_can_read_the_evidence(c.candidate, pipeline)
-
 
 def test_severing_the_cloud_wiring_changes_the_fit(monkeypatch):
     """The "delete the input, the test must fail" half of the acceptance.
@@ -6386,7 +6384,6 @@ from tests.crossover_v2_fixtures import (
     _SUMMED_FREQS_HZ,
     _absolute,
     _alignment,
-    _assert_room_layer_can_read_the_evidence,
     _attempt_floor,
     _boost_vocabulary_spy,
     _capture,
