@@ -744,13 +744,13 @@ def test_the_active_shape_is_selected_by_the_marker_not_by_the_observed_device()
     """E4's discriminator, pinned where it would be tempting to use the device.
 
     Selecting the shape from ``camilla_playback_device`` would make
-    ``transport_coherence_errors``' playback comparison VACUOUS: it would derive
+    ``transport_coherence_report``' playback comparison VACUOUS: it would derive
     the expectation from the value it is checking, so a graph pointed at the
     wrong ring would define itself correct. The marker is an independent fact
     written by a different owner, which is what gives the comparison something to
     disagree with.
     """
-    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
+    from jasper.fanin_coupling import TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
     from jasper.transport_coherence import transport_topology_for_coupling
 
     stereo = transport_topology_for_coupling("shm_ring", outputd_env={})
@@ -781,7 +781,7 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
     and a reachable-but-undeclared one is the unhandled case the design claims
     cannot exist.
     """
-    from jasper.audio_runtime_plan import TRANSPORT_SHAPES
+    from jasper.fanin_coupling import TRANSPORT_SHAPES
     from jasper.transport_coherence import transport_topology_for_coupling
 
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
@@ -815,14 +815,9 @@ def test_a_crossed_ring_path_is_the_first_arm_waypoint_not_a_refusal():
     whose absence was the only reason the path had not moved — the deadlock that
     took jts.local's DSP graph down on 2026-08-21.
 
-    The thin ``errors`` accessor is asserted too, because it is what callers that
-    only refuse-or-proceed see: it must be CLEAN here, or the reconciler still
-    exits 78.
+    ``errors`` must be CLEAN here, or the reconciler still exits 78.
     """
-    from jasper.transport_coherence import (
-        transport_coherence_errors,
-        transport_coherence_report,
-    )
+    from jasper.transport_coherence import transport_coherence_report
 
     crossed = {
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1",
@@ -833,7 +828,6 @@ def test_a_crossed_ring_path_is_the_first_arm_waypoint_not_a_refusal():
     assert any("FIRST-ARM waypoint" in n for n in report.notes), report
     assert any(DEFAULT_OUTPUTD_ACTIVE_RING_PATH in n for n in report.notes), report
     assert report.errors == (), report
-    assert transport_coherence_errors(coupling="shm_ring", outputd_env=crossed) == ()
 
 
 def test_a_ring_device_under_a_loopback_plan_is_reported_not_ignored():
@@ -853,10 +847,7 @@ def test_a_ring_device_under_a_loopback_plan_is_reported_not_ignored():
       documented ladder's step 1 creates on purpose; reporting it as an error
       deadlocked the ladder on jts3 (2026-08-11, exit 78).
     """
-    from jasper.transport_coherence import (
-        transport_coherence_errors,
-        transport_coherence_report,
-    )
+    from jasper.transport_coherence import transport_coherence_report
 
     stereo = transport_coherence_report(
         coupling="loopback",
@@ -865,16 +856,6 @@ def test_a_ring_device_under_a_loopback_plan_is_reported_not_ignored():
     )
     assert any("no registered outputd capture" in e for e in stereo.errors), stereo
     assert stereo.notes == (), stereo
-    # The thin accessor carries the SAME verdict — a caller that only
-    # refuses-or-proceeds must not see the stereo ring soften.
-    assert any(
-        "no registered outputd capture" in e
-        for e in transport_coherence_errors(
-            coupling="loopback",
-            outputd_env={},
-            camilla_devices={"playback_device": RING_PLAYBACK_DEVICE},
-        )
-    )
 
     active = transport_coherence_report(
         coupling="loopback",
@@ -2649,14 +2630,14 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
 
 
 def _coherence_errors(*, coupling, capture, playback, outputd_env=None):
-    from jasper.transport_coherence import transport_coherence_errors
+    from jasper.transport_coherence import transport_coherence_report
 
     env = {
         "JASPER_OUTPUTD_ACTIVE_LANE": "1",
         "JASPER_OUTPUTD_CONTENT_PCM": "outputd_active_content_capture",
         **(outputd_env or {}),
     }
-    return transport_coherence_errors(
+    return transport_coherence_report(
         coupling=coupling,
         outputd_env=env,
         camilla_devices={
@@ -2665,7 +2646,7 @@ def _coherence_errors(*, coupling, capture, playback, outputd_env=None):
             "playback_device": playback,
             "playback_channels": 2,
         },
-    )
+    ).errors
 
 
 def test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph():
@@ -3396,9 +3377,8 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
     reconciler cannot emit that pair for any input text, checked here against
     the PR's own Python-side coherence twin rather than by re-stating the rule.
     """
-    from jasper.audio_runtime_plan import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
     from jasper.transport_coherence import (
-        transport_coherence_errors,
         transport_coherence_report,
         transport_topology_for_coupling,
     )
@@ -3430,11 +3410,11 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
         COUPLING_SHM_RING, outputd_env=converged
     )
     assert plan.name == TRANSPORT_SHM_RING_ACTIVE
-    errors = transport_coherence_errors(
+    errors = transport_coherence_report(
         coupling=COUPLING_SHM_RING,
         outputd_env=converged,
         camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
-    )
+    ).errors
     assert not [e for e in errors if "may read only" in e], errors
 
     # ...and the CROSSED pair the reconciler can no longer produce IS still

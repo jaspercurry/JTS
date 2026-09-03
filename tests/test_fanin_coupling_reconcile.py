@@ -1297,7 +1297,7 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     ``jasper-audio-hardware-reconcile`` (the key's single writer) would have
     already re-derived on a genuinely armed box. Without it, ``ring_edge_width_ready``
     reads outputd's declaration as its own stale default (``S16_LE`` — see
-    ``_OUTPUTD_DEFAULT_CONTENT_FORMAT`` in coupling_reconcile.py, which does NOT
+    ``OUTPUTD_DEFAULT_CONTENT_FORMAT`` in fanin_coupling.py, which does NOT
     follow the ring wire resolver by design), which now disagrees with the
     resolved wire's wide default and refuses every CONFIRM-path test here for a
     reason unrelated to whatever axis (slots/period) it is isolating.

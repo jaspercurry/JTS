@@ -26,13 +26,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.audio_runtime_plan import (
-    OUTPUTD_DEFAULT_CONTENT_FORMAT as _OUTPUTD_DEFAULT_CONTENT_FORMAT,
-)
 from jasper.env_file import read_value
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
+    OUTPUTD_CONTENT_FORMAT_ENV_VAR,
+    OUTPUTD_DEFAULT_CONTENT_FORMAT,
     coupling_value_removed,
     resolve_coupling,
 )
@@ -82,9 +81,9 @@ def _read_snapshot(path: str | Path) -> _EnvSnapshot:
 # refuse the arm for a wire the daemon has in fact declared, which is the wrong
 # refusal — the right one is a COMPARISON against the resolved wire.
 #
-# The format default is owned by jasper.audio_runtime_plan; see its comment
-# beside OUTPUTD_DEFAULT_CONTENT_FORMAT for why it does not follow the resolver.
-_OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
+# The format key and its default are owned by jasper.fanin_coupling; see the
+# comment beside OUTPUTD_DEFAULT_CONTENT_FORMAT for why it does not follow the
+# resolver.
 _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR = "JASPER_OUTPUTD_ACTIVE_CHANNELS"
 _OUTPUTD_DEFAULT_CONTENT_CHANNELS = 2
 
@@ -415,11 +414,11 @@ def ring_wire_declarations(
         )
     except ValueError:
         outputd_channels = None
-    outputd_format_raw = read_value(outputd_text, _OUTPUTD_CONTENT_FORMAT_ENV_VAR)
+    outputd_format_raw = read_value(outputd_text, OUTPUTD_CONTENT_FORMAT_ENV_VAR)
     outputd_format = (
         outputd_format_raw.strip()
         if outputd_format_raw and outputd_format_raw.strip()
-        else _OUTPUTD_DEFAULT_CONTENT_FORMAT
+        else OUTPUTD_DEFAULT_CONTENT_FORMAT
     )
     return (
         RingWireDeclaration(
@@ -474,7 +473,7 @@ def ring_wire_declarations(
                 ""
                 if armed
                 else (
-                    f"{_OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares "
+                    f"{OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares "
                     "whatever the hardware reconciler last rendered until it "
                     "re-emits on arm, so the format axis is not compared "
                     "before arming"
