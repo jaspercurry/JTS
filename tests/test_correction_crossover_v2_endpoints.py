@@ -4806,12 +4806,12 @@ def test_setup_calibration_observation_is_redacted_safe():
     ) == ("serial", "")
 
 
-def test_production_analyze_default_resolver_is_the_shared_relay_machinery():
-    """The default resolver IS correction_setup._relay_calibration_from_setup
-    (the one point the room + legacy crossover flows resolve phone calibration
-    choices) — a no-choice setup resolves to None."""
-    assert v2host.resolve_relay_calibration(None, None) is None
-    assert v2host.resolve_relay_calibration({"calibration": {"mode": "none"}}, None) is None
+def test_production_analyze_default_resolver_is_the_household_mic_owner():
+    """The default resolver IS household_mic.resolve_setup_calibration (the one
+    point a capture's setup reference becomes a record) — a no-choice setup
+    resolves to None."""
+    assert v2host.resolve_setup_calibration(None, None) is None
+    assert v2host.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) is None
 
 
 # --- W6.12: v2 calibration handoff — the household-mic hint reaches a v2 session --
@@ -4918,7 +4918,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
     """THE handoff pin: once the capture page applies the household-mic hint
     (a v2 capture posting setup.calibration = {mode: "stored", calibration_id,
     model} — the exact shape applyDefaultCalibrationHintSilently now submits),
-    bind_production_analyze's PRODUCTION resolver (resolve_relay_calibration,
+    bind_production_analyze's PRODUCTION resolver (resolve_setup_calibration,
     not a mock) must actually apply the calibration curve and record it in the
     persisted evidence — never silently falling back to uncalibrated."""
     import logging as _logging
@@ -4942,7 +4942,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
     meta: dict[str, Any] = {}
-    # resolve_calibration defaults to resolve_relay_calibration — the REAL
+    # resolve_calibration defaults to resolve_setup_calibration — the REAL
     # production seam — proving the fix through the exact path a live
     # v2 session rides, not a test double.
     analyze = v2host.bind_production_analyze(meta=meta)
@@ -4978,7 +4978,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     """The 2026-07-20 incident, through the full production seam: the
     household's UMIK-2 calibration is the resolvable stored default, but THIS
     capture's phone-reported device is a Dayton iMM-6C. The real
-    ``resolve_relay_calibration`` seam must refuse to apply it — the
+    ``resolve_setup_calibration`` seam must refuse to apply it — the
     analysis still runs (never blocked), annotated uncalibrated, with BOTH
     the existing ``crossover_v2_uncalibrated_capture`` WARN and the NEW
     distinct mismatch event."""

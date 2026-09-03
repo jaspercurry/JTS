@@ -97,7 +97,6 @@ class _FakeSession:
         self.target_choice = "flat"
         self.strategy_choice = "balanced"
         self.repeat_main_position = True
-        self.capture_transport = "local"
         self.autolevel = _FakeAutolevel("idle")
         self.measured_curve: CurveJSON | None = None
         self.target_curve: CurveJSON | None = None
@@ -318,7 +317,6 @@ def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
             "JTS automatically repeats the main-seat measurement once to check "
             "that the result is trustworthy."
         ),
-        "capture_transport": "local",
         "change_allowed": True,
     }
 
@@ -348,7 +346,6 @@ def test_section_vocabulary_is_exact_and_room_owned():
         "current-correction",
         "run-defaults",
         "readiness-blocker",
-        "capture-handoff",
         "placement",
         "capture-setup",
         "local-certificate-warning",
@@ -371,21 +368,20 @@ def test_section_vocabulary_is_exact_and_room_owned():
             SessionState.NEEDS_NOISE_CAPTURE,
             [
                 "run-defaults",
-                "capture-handoff",
-                "placement",
+                        "placement",
                 "local-certificate-warning",
                 "capture-setup",
             ],
         ),
         (
             SessionState.AWAITING_CAPTURE,
-            ["capture-handoff", "placement", "position-capture"],
+            ["placement", "position-capture"],
         ),
         (SessionState.READY, ["measurement-review", "tuning"]),
         (SessionState.APPLIED, ["apply-status", "tuning"]),
         (
             SessionState.AWAITING_VERIFY_CAPTURE,
-            ["capture-handoff", "placement", "verification", "tuning"],
+            ["placement", "verification", "tuning"],
         ),
         (
             SessionState.VERIFIED,
@@ -412,7 +408,6 @@ def test_local_mic_setup_is_the_envelope_owned_primary_action():
     bound = envelope.build_envelope(sess)
     assert bound["screen"] == "level"
     assert bound["sections"] == [
-        "capture-handoff",
         "placement",
         "level-check",
     ]
