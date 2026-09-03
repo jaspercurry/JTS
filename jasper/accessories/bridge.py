@@ -37,7 +37,7 @@ import signal
 from typing import Awaitable, Callable, Optional
 
 from jasper.control.client import (
-    DEFAULT_CONTROL_PORT, AsyncControlClient, ControlError, ControlResponse,
+    AsyncControlClient, ControlError, ControlResponse, DEFAULT_PORT,
 )
 from jasper.log_event import log_event
 
@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 
 # jasper-control on the same Pi. Stays localhost because the bridge is a
 # host-side caller.
-DEFAULT_CONTROL_URL = f"http://127.0.0.1:{DEFAULT_CONTROL_PORT}"
+DEFAULT_CONTROL_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 
 # Coalesce window for rotation events. At 20 Hz detents (the VK-01's
 # fast-spin rate), this collapses ~4 events into one HTTP call.

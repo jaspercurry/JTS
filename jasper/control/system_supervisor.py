@@ -85,7 +85,7 @@ from typing import Any
 from jasper.log_event import log_event
 
 from ..atomic_io import atomic_write_text
-from .client import DEFAULT_CONTROL_PORT
+from .client import DEFAULT_PORT
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -146,7 +146,7 @@ class SystemSupervisor:
         sshd_host: str = "127.0.0.1",
         sshd_port: int = 22,
         control_host: str = "127.0.0.1",
-        control_port: int = DEFAULT_CONTROL_PORT,
+        control_port: int = DEFAULT_PORT,
         interval_sec: float = DEFAULT_INTERVAL_SEC,
         jitter_sec: float = DEFAULT_JITTER_SEC,
         probe_timeout_sec: float = DEFAULT_PROBE_TIMEOUT_SEC,

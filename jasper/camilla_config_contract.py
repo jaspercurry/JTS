@@ -134,7 +134,8 @@ def outputd_capture_device_for_playback(playback_device: object) -> str | None:
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
-#: The one spelling of camilla#1's websocket port; JASPER_CAMILLA_PORT wins.
+#: camilla#1's websocket port with nothing overriding it; JASPER_CAMILLA_PORT
+#: wins wherever a reader honours it.
 DEFAULT_CAMILLA_PORT = 1234
 
 

@@ -61,7 +61,9 @@ def _connect_host(bind_host: str) -> str:
     return host
 
 
-#: The one spelling of jasper-control's HTTP port; JASPER_CONTROL_PORT wins.
+#: jasper-control's HTTP port with nothing overriding it. REMOTE peer URLs
+#: read this; LOCAL loopback callers read DEFAULT_PORT, since this box's own
+#: JASPER_CONTROL_PORT says nothing about which port a peer listens on.
 DEFAULT_CONTROL_PORT = 8780
 DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
 DEFAULT_PORT = int(os.environ.get("JASPER_CONTROL_PORT") or DEFAULT_CONTROL_PORT)

@@ -20,6 +20,8 @@ A separate group exercises the snapshot() + start_supervisor() shape.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -595,3 +597,47 @@ async def test_probe_loadavg_succeeds_in_normal_conditions():
                return_value="0.50 0.40 0.30 1/100 1\n"):
         result = await sup.probe_loadavg()
     assert result is True
+
+
+# ---------- jasper-control probe target ----------
+
+# Runs in its own interpreter: JASPER_CONTROL_PORT is read at import time, and
+# reloading jasper.control.client in-process would hand later tests a second
+# AsyncControlClient class.
+_PROBE_TARGET_SOURCE = """
+import asyncio
+import sys
+
+from jasper.control.system_supervisor import SystemSupervisor
+
+seen = []
+
+
+async def _capture(host, port):
+    seen.append((host, port))
+    raise OSError
+
+
+asyncio.open_connection = _capture
+sup = SystemSupervisor(reboot_state_path=sys.argv[1])
+asyncio.run(sup.probe_jasper_control())
+print(seen[0][0], seen[0][1])
+"""
+
+
+def test_control_probe_target_follows_control_port_env(tmp_path):
+    """The self-probe is a LOCAL loopback call, so an operator's
+    JASPER_CONTROL_PORT must move it with the daemon it probes."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _PROBE_TARGET_SOURCE,
+            str(tmp_path / "reboot-state.json"),
+        ],
+        env={**os.environ, "JASPER_CONTROL_PORT": "9411"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.split() == ["127.0.0.1", "9411"]
