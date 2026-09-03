@@ -165,18 +165,12 @@ pub fn build_config(enabled: bool, probe_ppm: u32, target_fill_frames: u64) -> H
         enabled,
         target_fill_frames: target_fill_frames as f64,
         probe_ppm: probe_ppm as f64,
-        // The sole runtime mode is Correction, whose probe duration is the
-        // fixed CORRECTION_PROBE_STEP_SECS. This legacy Fill-mode field remains
-        // internal to the shared config shape and is not a fan-in env knob.
-        probe_step_secs: 6,
         // Combo mode runs the CORRECTION-ppm observable: a lane resampler sits
         // between the gadget ring and the mix and absorbs the host clock, so the
         // fill slope is structurally dead (the resampler flattens it — the
         // hardware defect on jts.local 2026-07-03). The probe reads the
-        // resampler's own correction ppm, and the L0 servo drives it to 0. The
-        // deleted usbsink solo daemon (removed 2026-07-10, #1209), which had no
-        // such stage, used to pass `ObsMode::Fill`; combo/Correction is the
-        // sole live mode today.
+        // resampler's own correction ppm, and the L0 servo drives it to 0.
+        // Correction is the crate's sole mode.
         obs_mode: ObsMode::Correction,
         log_prefix: LOG_PREFIX,
     }
@@ -558,11 +552,9 @@ pub fn run_host_clock_thread(
                 // via its `held_target_frames` gauge; the ladder only reads it.
                 // NOTE the frames mismatch: `build_obs` feeds a
                 // CEILING-compensated fill (#3466) while this setpoint is
-                // held-relative — inert because Correction mode (the only live
-                // mode here) never computes the Fill-mode `fill − target`
-                // error; reviving `ObsMode::Fill` on this adapter would
-                // miscompute it during descents. A no-op when decay is off
-                // (gauge at the ceiling, compensation zero).
+                // held-relative — inert because Correction mode never computes a
+                // `fill − target` error. A no-op when decay is off (gauge at the
+                // ceiling, compensation zero).
                 hc.set_target_fill_frames(signals.held_target_frames.load(Ordering::Relaxed) as f64);
 
                 let mut write_failed = false;
@@ -676,7 +668,6 @@ mod tests {
         let cfg = build_config(true, 300, 2048);
         assert_eq!(cfg.target_fill_frames, 2048.0);
         assert_eq!(cfg.probe_ppm, 300.0);
-        assert_eq!(cfg.probe_step_secs, 6);
         assert_eq!(cfg.log_prefix, "fanin");
         assert!(cfg.enabled);
     }

@@ -41,14 +41,13 @@ _SHARED_HOST_CLOCK_RS = _REPO / "rust" / "jasper-host-clock" / "src" / "lib.rs"
 _FANIN_UNIT = _REPO / "deploy" / "systemd" / "jasper-fanin.service"
 _ENV_EXAMPLE = _REPO / ".env.example"
 
-# The pinned disabled-block fragment for the combo (fan-in) daemon. It shares the
-# shared-crate wire SHAPE with the usbsink twin, but the ONE field that differs by
-# daemon is `obs_mode`: fan-in ALWAYS builds its config with `ObsMode::Correction`
-# (a lane resampler sits between the gadget ring and the mix, so the fill slope is
-# dead weight and the probe/servo run on the resampler's own correction ppm),
-# whereas usbsink solo is `ObsMode::Fill`. `correction_ppm` is the additive
-# CORRECTION-mode observable (0 while disabled). Combo boxes get exactly this shape
-# under /state.audio_graph.fanin.host_clock.
+# The pinned disabled-block fragment for the combo (fan-in) daemon. Fan-in
+# ALWAYS builds its config with `ObsMode::Correction` (a lane resampler sits
+# between the gadget ring and the mix, so the fill slope is dead weight and
+# the probe/servo run on the resampler's own correction ppm) — the shared
+# crate's sole mode. `correction_ppm` is the additive observable (0 while
+# disabled). Combo boxes get exactly this shape under
+# /state.audio_graph.fanin.host_clock.
 _PINNED_HOST_CLOCK_FRAGMENT = (
     '{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction",'
     '"pitch_ppm_commanded":0.0,'
@@ -166,7 +165,7 @@ def test_fanin_host_clock_runs_the_correction_observable_mode():
     # Combo mode must select `ObsMode::Correction` in build_config — the whole
     # point of this redesign. With a lane resampler between the gadget ring and
     # the mix, the fill slope is dead (the resampler flattens it), so the probe /
-    # L0 servo run on the resampler's own correction ppm. usbsink solo stays FILL.
+    # L0 servo run on the resampler's own correction ppm.
     text = _fanin_host_clock_text()
     assert "ObsMode::Correction" in text, (
         "fan-in build_config must pass ObsMode::Correction — the combo-mode "
@@ -182,7 +181,7 @@ def test_fanin_host_clock_runs_the_correction_observable_mode():
     shared = _SHARED_HOST_CLOCK_RS.read_text(encoding="utf-8")
     assert "pub enum ObsMode" in shared, (
         "the shared jasper-host-clock crate must define the typed ObsMode enum "
-        "(Fill / Correction) — the observable mode is explicit, not inferred."
+        "— the observable mode is explicit, not inferred."
     )
 
 
