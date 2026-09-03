@@ -2788,16 +2788,17 @@ def solve_branch_trims(
     Two constraints on the statistic: with LR4 the level-error sensitivity
     concentrates AT Fc, so +/-1-octave is right; and where woofer/horn
     directivity mismatch, no single correct level exists, so the axis
-    levels were read on is stated (``intervention.LEVEL_MATCH_AXIS``).
+    levels were read on is stated (``active_speaker.profile.LEVEL_MATCH_AXIS``).
 
-    Two constraints on the statistic. *Slope:* with LR4 the sensitivity to
-    level error concentrates AT Fc, so the ±1-octave matching band is right and
-    the null test carries the weight; a shallower crossover would widen it
-    toward ±1.5 octaves. *Directivity (Toole):* where woofer beaming and horn
-    directivity mismatch, the on-axis, listening-window and power-response
-    ratios differ and there is no single correct level — which is why the axis
-    these levels were read on is stated rather than assumed
-    (``active_speaker.profile.LEVEL_MATCH_AXIS``).
+    Each ``*_span_hz`` is that branch's own validity span (default Fc +/- 1
+    octave), turned into mirrored halves by :func:`branch_level_bands_hz` —
+    never the shared both-branches-excited overlap, which on a 2-way whose
+    tweeter starts AT Fc measures skirt depth (an ideal LR4 pair reads
+    +10.59 dB instead of 0) or dilutes the mean with never-excited noise if
+    widened back to nominal. Reading each branch on its own side removes
+    both problems, leaving a KNOWN +0.54 dB linear-vs-log-frequency-bin
+    systematic at rho=2 (shrinking with rho), left uncorrected so it does
+    not stack with the 10-13 dB this frame already moves.
 
     Public as the level match's SSOT — the v2 session and contract tests
     import it.

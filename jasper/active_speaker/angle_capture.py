@@ -249,35 +249,11 @@ class AngleCaptureRequest:
     this walk. ``program`` is PROVENANCE, not geometry -- the name of the
     :class:`~.measurement_programs.MeasurementProgram`, or ``""`` for a free-form walk;
     nothing parses it. ``polarity``/``inverted_role`` are walk-level because the
-    reverse-null is ONE act at one place (``docs/REFACTOR-TUNING-2026-08.md`` §1).
+    reverse-null is ONE act at one place: design-axis-only.
 
-    ``delayed_role`` and ``delay_us`` are R-1's other half — the confirmation
-    coordinate the DISPOSE step plays. Walk-level for the same reason the
-    polarity pair is, and carried the same way: never judged here.
-
-    ``level_matched`` asks the measurement graph to carry the box's own
-    per-driver level match, and it is a BOOLEAN on purpose: the trims belong
-    to the speaker, not to the request, so they resolve on-box when the host
-    adopts this walk. An operator who could state numbers here could measure
-    one speaker through another's level match.
-
-    ``program`` is PROVENANCE, not geometry: the name of the
-    :class:`~.measurement_programs.MeasurementProgram` these stops came from
-    (``"baseline/express"``, ``"spot"``), or ``""`` for a free-form walk
-    nobody named. Nothing parses it -- the stops are the walk.
-
-    ``polarity`` and ``inverted_role`` are walk-level rather than per-stop
-    because the reverse-null is **one act at one place** -- design-axis-only,
-    where the per-driver sweeps are per-position. They name what the session's
-    design-axis MEASURE capture rides, not what happens at a stop -- which is
-    also why they sit beside ``mover`` and not on :class:`AngleStop`.
-
-    **Carried, never judged here.**
-    :class:`~.crossover_v2.measure_spec.MeasureSpec` already refuses every bad
-    combination of the two, including both one-sided forms, and a second copy
-    of that rule is a copy that drifts. The host builds the spec when it adopts
-    the walk, so a request stating one half refuses THE OPEN in the spec's own
-    words -- see ADR-0006.
+    Carried, never judged here: :class:`~.crossover_v2.measure_spec.MeasureSpec` already
+    refuses every bad combination, including both one-sided forms (ADR-0006); a second
+    copy of that rule is a copy that drifts.
     """
 
     stops: tuple[AngleStop, ...]
