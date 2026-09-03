@@ -79,7 +79,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 # AF_UNIX: the restart broker, the mux/outputd/voice control sockets,
 # sd_notify, journald. AF_INET/AF_INET6: the loopback listener, CamillaDSP's
-# websocket, jasper-control, the capture relay, and vendor calibration fetches.
+# websocket, jasper-control, and vendor calibration fetches.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 
