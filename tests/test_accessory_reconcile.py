@@ -10,6 +10,7 @@ import pytest
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories import reconcile
 from tests.systemd_unit_helpers import value_for as _value_for
+from tests._log_events import event_field_maps, event_fields
 from jasper.music_sources import Source
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -261,8 +262,11 @@ def test_bluez_discovery_timeout_is_bounded_and_observable(
             )
 
     assert cancelled == [True]
-    assert "event=accessory_mic.bluez_discovery_failed" in caplog.text
-    assert "timeout_sec=0.01" in caplog.text
+    assert event_fields(caplog, "accessory_mic.bluez_discovery_failed") == {
+        "reason": "test",
+        "error": "timeout",
+        "timeout_sec": "0.01",
+    }
 
 
 def test_active_adapter_failure_raises_with_terminal_state_evidence(
@@ -319,7 +323,12 @@ def test_active_adapter_failure_raises_with_terminal_state_evidence(
 
     assert ("enable", "jasper-wiim-remote-mic.service") in calls
     assert ("restart", "jasper-wiim-remote-mic.service") in calls
-    assert "event=accessory_mic.activation_failed" in caplog.text
+    fields = event_fields(caplog, "accessory_mic.activation_failed")
+    assert (fields["reason"], fields["env_changed"], fields["voice"]) == (
+        "test",
+        "1",
+        "voice_try_restart",
+    )
 
 
 def test_bluetooth_intent_off_parks_adapter_without_querying_bluez(
@@ -377,9 +386,10 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
         encoding="utf-8",
     )
     calls = []
+    intent_detail = "invalid intent value for bluetooth: maybe"
 
     def invalid_intent(_source):
-        raise RuntimeError("invalid intent value for bluetooth: maybe")
+        raise RuntimeError(intent_detail)
 
     async def fail_bluez():
         pytest.fail("malformed intent must fail closed before querying BlueZ")
@@ -390,10 +400,7 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fail_bluez)
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(
-            reconcile.BluetoothSourceIntentError,
-            match="invalid intent value for bluetooth",
-        ):
+        with pytest.raises(reconcile.BluetoothSourceIntentError):
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(env_file),
@@ -413,8 +420,13 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
         "--property=ActiveState",
     ) in calls
     assert not any(command[0] == "enable" for command in calls)
-    assert "event=accessory_mic.intent_invalid" in caplog.text
-    assert "action=parked" in caplog.text
+    fields = event_fields(caplog, "accessory_mic.intent_invalid")
+    assert (fields["reason"], fields["action"], fields["env_changed"]) == (
+        "source-intent",
+        "parked",
+        "1",
+    )
+    assert fields["err"].endswith(intent_detail)
 
 
 def test_role_park_preserves_enabled_intent_but_disables_adapter(
@@ -485,15 +497,19 @@ def test_local_source_role_gate_combines_install_and_grouping_permission(
 
 
 def test_local_source_role_probe_failure_parks_and_logs(monkeypatch, caplog):
+    probe_detail = "bad profile"
+
     def invalid_profile():
-        raise ValueError("bad profile")
+        raise ValueError(probe_detail)
 
     monkeypatch.setattr(reconcile, "read_install_profile", invalid_profile)
 
     with caplog.at_level(logging.WARNING):
         assert reconcile._local_sources_allowed() is False
 
-    assert "event=accessory_mic.role_probe_failed" in caplog.text
+    assert event_fields(caplog, "accessory_mic.role_probe_failed") == {
+        "error": probe_detail,
+    }
 
 
 @pytest.mark.parametrize(
@@ -517,7 +533,10 @@ def test_main_returns_failure_for_authoritative_reconcile_errors(
     with caplog.at_level(logging.ERROR):
         assert reconcile.main(["--reason", "test"]) == 1
 
-    assert "event=accessory_mic.reconcile_failed" in caplog.text
+    assert event_fields(caplog, "accessory_mic.reconcile_failed") == {
+        "reason": "test",
+        "err": str(error),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -600,8 +619,8 @@ def test_main_prefers_a_claimed_reason_over_the_fallback_argument(
             ["--reason", "boot", "--reason-file", str(request)],
         ) == code
 
-    assert "reason=bluetooth-forget" in caplog.text
-    assert "reason=boot" not in caplog.text
+    fields = event_fields(caplog, "accessory_mic.reconcile_failed")
+    assert fields["reason"] == "bluetooth-forget"
     # Drained even on the boot path: PathExists is level-triggered, so a
     # request left on disk re-starts the oneshot forever.
     assert not request.exists()
@@ -623,7 +642,7 @@ def test_main_falls_back_to_its_argument_when_no_request_is_waiting(
             ["--reason", "boot", "--reason-file", str(tmp_path / "absent")],
         ) == 1
 
-    assert "reason=boot" in caplog.text
+    assert event_fields(caplog, "accessory_mic.reconcile_failed")["reason"] == "boot"
 
 
 def test_apply_adapter_services_disables_inactive_profile_service():
@@ -673,7 +692,7 @@ def test_adapter_teardown_ignores_reset_of_already_clean_unit(caplog):
 
     assert ("reset-failed", "jasper-wiim-remote-mic.service") in calls
     assert failures == ()
-    assert "event=accessory_mic.systemctl_failed" not in caplog.text
+    assert event_field_maps(caplog, "accessory_mic.systemctl_failed") == []
 
 
 def test_adapter_teardown_still_rejects_failed_terminal_state():
@@ -841,6 +860,9 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
         encoding="utf-8",
     )
     calls = []
+    unit = "jasper-wiim-remote-mic.service"
+    intent_detail = "malformed Bluetooth intent"
+    stop_detail = "stop failed"
 
     async def fail_bluez():
         pytest.fail("Bluetooth Off must not query BlueZ")
@@ -850,7 +872,7 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
         calls.append(command)
         if command[:2] == ("disable", "--now"):
             return SimpleNamespace(
-                returncode=1, stdout="", stderr="stop failed",
+                returncode=1, stdout="", stderr=stop_detail,
             )
         if command[0] == "reset-failed":
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -868,17 +890,14 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
 
     def source_intent(_source):
         if malformed_intent:
-            raise RuntimeError("malformed Bluetooth intent")
+            raise RuntimeError(intent_detail)
         return False
 
     monkeypatch.setattr(reconcile, "source_intent_enabled", source_intent)
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fail_bluez)
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(
-            error_type,
-            match="stop failed.*observed enabled.*observed active",
-        ):
+        with pytest.raises(error_type):
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(env_file),
@@ -891,9 +910,23 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
     # try-restart, not restart: these fakes present no loadable gate owner,
     # and refresh_voice_input must never START a stopped voice daemon.
     assert ("--no-block", "try-restart", "jasper-voice.service") in calls
-    assert "event=accessory_mic.teardown_failed" in caplog.text
+    fields = event_fields(caplog, "accessory_mic.teardown_failed")
+    assert (fields["reason"], fields["env_changed"], fields["voice"]) == (
+        "source-intent",
+        "1",
+        "voice_try_restart",
+    )
+    # Every terminal-state observation is carried, not just the first failure.
+    assert fields["failures"].split(" | ") == [
+        f"{unit}: systemctl disable --now {unit} failed: {stop_detail}",
+        f"{unit}: expected is-enabled=disabled, observed enabled",
+        f"{unit}: expected is-active=inactive, observed active",
+    ]
+    invalid = event_field_maps(caplog, "accessory_mic.intent_invalid")
     if malformed_intent:
-        assert "event=accessory_mic.intent_invalid" in caplog.text
+        assert len(invalid) == 1 and invalid[0]["err"].endswith(intent_detail)
+    else:
+        assert invalid == []
 
 
 def _gate_owner_systemctl(calls, *, load_state: str, unit_file_state: str):
@@ -950,8 +983,10 @@ def test_refresh_voice_input_never_starts_a_parked_gate_owner(caplog):
         )
     assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
     assert calls[-1] == ("--no-block", "try-restart", "jasper-voice.service")
-    assert "event=accessory_mic.gate_owner_unavailable" in caplog.text
-    assert "state=parked" in caplog.text
+    assert event_fields(caplog, "accessory_mic.gate_owner_unavailable") == {
+        "unit": reconcile.VOICE_INPUT_GATE_UNIT,
+        "state": "parked",
+    }
 
 
 def test_refresh_voice_input_reports_a_masked_gate_owner_as_masked(caplog):
@@ -969,8 +1004,10 @@ def test_refresh_voice_input_reports_a_masked_gate_owner_as_masked(caplog):
             == "voice_try_restart"
         )
     assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
-    assert "state=masked" in caplog.text
-    assert "state=absent" not in caplog.text
+    assert event_fields(caplog, "accessory_mic.gate_owner_unavailable") == {
+        "unit": reconcile.VOICE_INPUT_GATE_UNIT,
+        "state": "masked",
+    }
 
 
 def test_refresh_voice_input_falls_back_when_gate_owner_is_absent(caplog):
@@ -988,7 +1025,10 @@ def test_refresh_voice_input_falls_back_when_gate_owner_is_absent(caplog):
             == "voice_try_restart"
         )
     assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
-    assert "state=absent" in caplog.text
+    assert event_fields(caplog, "accessory_mic.gate_owner_unavailable") == {
+        "unit": reconcile.VOICE_INPUT_GATE_UNIT,
+        "state": "absent",
+    }
 
 
 def test_refresh_voice_input_uses_try_restart_so_it_never_starts_stopped_voice():
@@ -1196,8 +1236,11 @@ def test_adapter_service_systemctl_failures_are_observable(caplog):
             systemctl=failing_systemctl,
         )
 
-    assert "event=accessory_mic.systemctl_failed" in caplog.text
-    assert 'command="systemctl enable jasper-wiim-remote-mic.service"' in caplog.text
+    unit = "jasper-wiim-remote-mic.service"
+    assert event_field_maps(caplog, "accessory_mic.systemctl_failed") == [
+        {"command": f"systemctl enable {unit}", "returncode": "1"},
+        {"command": f"systemctl restart {unit}", "returncode": "1"},
+    ]
 
 
 def test_the_path_unit_watches_the_request_file_this_module_publishes():

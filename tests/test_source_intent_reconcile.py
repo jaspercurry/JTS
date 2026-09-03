@@ -20,6 +20,7 @@ import pytest
 from jasper import source_intent
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.music_sources import Source
+from tests._log_events import event_field_maps, event_fields
 
 
 def _write(tmp_path, text: str) -> str:
@@ -212,6 +213,15 @@ def _key(source: Source) -> str:
     return source_intent.intent_env_key(source)
 
 
+def _problem_events(env_path: str) -> list[tuple[str, Source | None]]:
+    """The classified parse problems behind a strict reader's refusal."""
+
+    _, problems = source_intent._parse_source_intents(
+        Path(env_path).read_text(encoding="utf-8"),
+    )
+    return [(problem.event, problem.source) for problem in problems]
+
+
 def _bluetooth_runtime_units() -> set[str]:
     return {
         "bluealsa.service",
@@ -379,7 +389,9 @@ def test_status_invalidation_failure_prevents_apply(tmp_path, monkeypatch, caplo
             invalidate_status_before=True,
         ) == 1
 
-    assert "event=source_intent.status_invalidation_failed" in caplog.text
+    fields = event_fields(caplog, "source_intent.status_invalidation_failed")
+    assert set(fields) == {"path", "error"}
+    assert fields["path"] == str(status)
 
 
 def test_lock_timeout_invalidates_old_status(tmp_path, monkeypatch):
@@ -522,7 +534,7 @@ def test_web_broker_wait_outlasts_complete_source_reconcile(monkeypatch):
     ]
 
 
-def test_request_source_intent_keeps_written_intent_when_kick_fails(tmp_path):
+def test_request_source_intent_keeps_written_intent_when_kick_fails(tmp_path, caplog):
     written = []
     env_path = str(tmp_path / "intent.env")
 
@@ -530,7 +542,7 @@ def test_request_source_intent_keeps_written_intent_when_kick_fails(tmp_path):
         written.append(dict(updates))
         source_intent._default_write_intent(path, updates)
 
-    with pytest.raises(RuntimeError, match="could not apply bluetooth disabled"):
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
         source_intent.request_source_intent(
             Source.BLUETOOTH,
             False,
@@ -540,6 +552,8 @@ def test_request_source_intent_keeps_written_intent_when_kick_fails(tmp_path):
             kicker=lambda: {"ok": False, "error": "coordinator failed"},
         )
     assert written == [{"JASPER_BLUETOOTH_SOURCE_INTENT": "disabled"}]
+    fields = event_fields(caplog, "source.intent_apply_failed")
+    assert (fields["source"], fields["desired"]) == ("bluetooth", "disabled")
 
 
 def test_request_succeeds_when_target_did_but_sibling_failed(tmp_path, caplog):
@@ -568,7 +582,13 @@ def test_request_succeeds_when_target_did_but_sibling_failed(tmp_path, caplog):
         )
 
     assert kicks == 1
-    assert "event=source.intent_sibling_failure" in caplog.text
+    fields = event_fields(caplog, "source.intent_sibling_failure")
+    assert (
+        fields["source"],
+        fields["desired"],
+        fields["failed_siblings"],
+        fields["aggregate_error"],
+    ) == ("bluetooth", "disabled", "null", "spotify failed")
 
 
 def test_sibling_failure_names_the_sibling_that_actually_failed(tmp_path, caplog):
@@ -582,6 +602,7 @@ def test_sibling_failure_names_the_sibling_that_actually_failed(tmp_path, caplog
 
     env_path = str(tmp_path / "intent.env")
     status_path = str(tmp_path / "status.json")
+    usb_reason = "USB On transition failed: gadget restart timed out"
 
     def kicker():
         _write_target_status(
@@ -601,7 +622,7 @@ def test_sibling_failure_names_the_sibling_that_actually_failed(tmp_path, caplog
                     "desired": "enabled",
                     "effective": "degraded",
                     "result": "failed",
-                    "reason": "USB On transition failed: gadget restart timed out",
+                    "reason": usb_reason,
                 },
             },
         )
@@ -616,12 +637,10 @@ def test_sibling_failure_names_the_sibling_that_actually_failed(tmp_path, caplog
             kicker=kicker,
         )
 
-    assert "event=source.intent_sibling_failure" in caplog.text
     # The source that converged is never listed as a failure, and the requested
     # source is never listed as its own sibling.
-    assert "airplay" not in caplog.text
-    assert "failed_siblings" in caplog.text
-    assert 'failed_siblings="bluetooth' not in caplog.text
+    fields = event_fields(caplog, "source.intent_sibling_failure")
+    assert fields["failed_siblings"] == f"usbsink: {usb_reason}"
 
 
 def test_failed_siblings_never_names_the_requested_source():
@@ -681,6 +700,7 @@ def test_sibling_failure_reports_null_when_no_source_can_be_named(tmp_path, capl
 
     env_path = str(tmp_path / "intent.env")
     status_path = str(tmp_path / "status.json")
+    undeclared_source = "; rm -rf /"
 
     def kicker():
         _write_target_status(
@@ -690,7 +710,7 @@ def test_sibling_failure_reports_null_when_no_source_can_be_named(tmp_path, capl
             "enabled",
             effective="on",
             siblings={
-                "; rm -rf /": {
+                undeclared_source: {
                     "desired": "enabled",
                     "effective": "degraded",
                     "result": "failed",
@@ -709,9 +729,9 @@ def test_sibling_failure_reports_null_when_no_source_can_be_named(tmp_path, capl
             kicker=kicker,
         )
 
-    assert "event=source.intent_sibling_failure" in caplog.text
-    assert "failed_siblings=null" in caplog.text
-    assert "rm -rf" not in caplog.text
+    fields = event_fields(caplog, "source.intent_sibling_failure")
+    assert fields["failed_siblings"] == "null"
+    assert not any(undeclared_source in value for value in fields.values())
 
 
 def test_request_fails_when_fresh_target_outcome_failed(tmp_path):
@@ -733,6 +753,9 @@ def test_request_fails_when_fresh_target_outcome_failed(tmp_path):
         )
         return {"ok": False, "error": "aggregate failed"}
 
+    # Prose pin: the raise is a bare RuntimeError, and the property under test
+    # is that both halves of the detail (aggregate + target outcome) reach the
+    # caller, which nothing structured carries.
     with pytest.raises(
         RuntimeError,
         match="aggregate=aggregate failed.*target effective=degraded failed: rfkill failed",
@@ -805,6 +828,8 @@ def test_request_refuses_untrusted_completion_status(tmp_path, status_shape, det
             )
         return {"ok": True}
 
+    # Prose pin: all three refusals raise the same bare RuntimeError, so the
+    # detail sentence is the only thing that tells them apart.
     with pytest.raises(RuntimeError, match=detail):
         source_intent.request_source_intent(
             Source.BLUETOOTH,
@@ -1048,7 +1073,9 @@ def test_reconcile_rejects_unknown_prefixed_key_but_applies_valid_sources(
     assert all("sshd" not in str(call).lower() for call in host.calls)
     assert host.enabled.get("shairport-sync.service", False) is False
     assert host.enabled["librespot.service"] is True
-    assert "event=source_intent.rejected_unit" in caplog.text
+    assert event_fields(caplog, "source_intent.rejected_unit") == {
+        "key": "JASPER_SOURCE_INTENT_SSHD_SERVICE",
+    }
 
 
 def test_bad_value_tears_down_that_source_without_blocking_others(
@@ -1076,18 +1103,32 @@ def test_bad_value_tears_down_that_source_without_blocking_others(
     assert host.active["shairport-sync.service"] is False
     assert host.active["nqptp.service"] is False
     assert host.active["librespot.service"] is True
-    assert "event=source_intent.bad_value" in caplog.text
-    assert "event=source.reconcile source=airplay desired=invalid" in caplog.text
-    assert "reason=invalid_intent_fail_closed" in caplog.text
+    assert event_fields(caplog, "source_intent.bad_value") == {
+        "source": "airplay",
+        "key": _key(Source.AIRPLAY),
+        "value": "maybe",
+    }
+    (airplay,) = event_field_maps(caplog, "source.reconcile", source="airplay")
+    assert airplay == {
+        "source": "airplay",
+        "desired": "invalid",
+        "effective": "off",
+        "result": "failed",
+        "reason": "invalid_intent_fail_closed",
+    }
 
 
 def test_public_reader_fails_strictly_on_bad_or_unknown_keys(tmp_path):
     bad_value = _write(tmp_path, f"{_key(Source.AIRPLAY)}=maybe\n")
-    with pytest.raises(RuntimeError, match="invalid intent value"):
+    with pytest.raises(RuntimeError):
         source_intent.read_source_intents(bad_value)
+    assert _problem_events(bad_value) == [
+        ("source_intent.bad_value", Source.AIRPLAY),
+    ]
     unknown = _write(tmp_path, "JASPER_SOURCE_INTENT_SSHD_SERVICE=enabled\n")
-    with pytest.raises(RuntimeError, match="unrecognized source intent key"):
+    with pytest.raises(RuntimeError):
         source_intent.read_source_intents(unknown)
+    assert _problem_events(unknown) == [("source_intent.rejected_unit", None)]
 
 
 def test_per_source_reader_fails_only_the_affected_source(tmp_path):
@@ -1098,8 +1139,12 @@ def test_per_source_reader_fails_only_the_affected_source(tmp_path):
         f"{_key(Source.SPOTIFY)}=enabled\n",
     )
 
-    with pytest.raises(RuntimeError, match="invalid intent value for airplay"):
+    with pytest.raises(RuntimeError):
         source_intent.source_intent_enabled(Source.AIRPLAY, env)
+    assert _problem_events(env) == [
+        ("source_intent.bad_value", Source.AIRPLAY),
+        ("source_intent.rejected_unit", None),
+    ]
     assert source_intent.source_intent_enabled(Source.SPOTIFY, env) is True
 
 
@@ -1112,8 +1157,12 @@ def test_systemd_source_failure_is_isolated_and_observable(tmp_path, caplog):
         )
     assert rc == 1
     assert host.active["librespot.service"] is True
-    assert "event=source.reconcile source=airplay" in caplog.text
-    assert "result=failed" in caplog.text
+    (airplay,) = event_field_maps(caplog, "source.reconcile", source="airplay")
+    assert (airplay["desired"], airplay["effective"], airplay["result"]) == (
+        "enabled",
+        "degraded",
+        "failed",
+    )
 
 
 def test_declared_intent_unit_selects_ordinary_systemd_applier(monkeypatch):
@@ -1239,8 +1288,12 @@ def test_desired_on_does_not_start_when_reset_does_not_clear_failed_state(
     assert rc == 1
     assert ("reset-failed", unit) in host.calls
     assert ("start", unit) not in host.calls
-    assert "event=source.reconcile source=spotify" in caplog.text
-    assert "result=failed" in caplog.text
+    (spotify,) = event_field_maps(caplog, "source.reconcile", source="spotify")
+    assert (spotify["desired"], spotify["effective"], spotify["result"]) == (
+        "enabled",
+        "degraded",
+        "failed",
+    )
 
 
 @pytest.mark.parametrize("failed_action", ["reset-failed", "start"])
@@ -1271,8 +1324,12 @@ def test_desired_on_recovery_failure_is_loud_and_does_not_run_later_actions(
             ("enable", unit),
             ("start", unit),
         ]
-    assert "event=source.reconcile source=spotify" in caplog.text
-    assert "result=failed" in caplog.text
+    (spotify,) = event_field_maps(caplog, "source.reconcile", source="spotify")
+    assert (spotify["desired"], spotify["effective"], spotify["result"]) == (
+        "enabled",
+        "degraded",
+        "failed",
+    )
 
 
 def test_disabling_stale_enabled_unit_cancels_queued_boot_start(tmp_path):
@@ -1826,7 +1883,12 @@ def test_hard_block_fails_bluetooth_without_blocking_other_sources(
     assert rc == 1
     assert host.active["shairport-sync.service"] is True
     assert host.active["librespot.service"] is True
-    assert "event=source.reconcile source=bluetooth" in caplog.text
+    (bluetooth,) = event_field_maps(caplog, "source.reconcile", source="bluetooth")
+    assert (bluetooth["desired"], bluetooth["effective"], bluetooth["result"]) == (
+        "enabled",
+        "degraded",
+        "failed",
+    )
 
 
 def test_stable_source_reconcile_log_emitted_for_every_source(tmp_path, caplog):
@@ -1838,9 +1900,11 @@ def test_stable_source_reconcile_log_emitted_for_every_source(tmp_path, caplog):
             )
             == 0
         )
-    for source in source_intent.source_intent_sources():
-        assert f"event=source.reconcile source={source.value}" in caplog.text
-    assert caplog.text.count("event=source.reconcile source=") == 4
+    reconciled = event_field_maps(caplog, "source.reconcile")
+    assert [fields["source"] for fields in reconciled] == [
+        source.value for source in source_intent.source_intent_sources()
+    ]
+    assert all(fields["result"] == "ok" for fields in reconciled)
 
 
 def test_oversized_utf8_intent_is_rejected_by_bytes(tmp_path, caplog):
@@ -1853,7 +1917,9 @@ def test_oversized_utf8_intent_is_rejected_by_bytes(tmp_path, caplog):
         rc = source_intent.reconcile(env_path=str(path), ops=host.ops())
     assert rc == 1
     assert host.calls == []
-    assert "event=source_intent.read_failed" in caplog.text
+    fields = event_fields(caplog, "source_intent.read_failed")
+    assert set(fields) == {"error"}
+    assert str(path) in fields["error"]
 
 
 def test_invalid_utf8_intent_is_rejected_before_hardware_actions(tmp_path):
