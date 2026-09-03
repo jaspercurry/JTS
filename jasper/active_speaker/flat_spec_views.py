@@ -5,18 +5,14 @@
 """Honest re-readings of one already-graded flat-spec evaluation.
 
 Three views, all derived from a report
-:func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` already produced.
-**Nothing here grades anything**: no view returns a pass/fail, holds a
-tolerance, or re-decides band membership, the reference frame or the trusted
-floor. The session's one verdict stays ``FlatSpecReport.overall_passed``
-(#1868); these report residuals, which are measurements. They remove two
-properties of the shipped pooling — a linear grid read by a logarithmic ear
-(:func:`log_pooled_residual` re-pools per octave) and every position pooled
-equally whatever question it answers (:func:`role_split_flatness`,
-:func:`directivity_table`). Which WEIGHTING the spec itself should use is
-still open (#1857), and moving it here would move graded verdicts.
-
-numpy plus :mod:`jasper.active_speaker.flat_spec`; no I/O, no policy.
+:func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` already
+produced. Nothing here grades anything — no pass/fail, no tolerance, no
+re-deciding band membership, the reference frame or the trusted floor
+(that stays ``FlatSpecReport.overall_passed``, #1868). They remove two
+properties of the shipped pooling: a linear grid read by a logarithmic ear
+(:func:`log_pooled_residual`) and every position pooled equally regardless
+of role (:func:`role_split_flatness`, :func:`directivity_table`). Which
+WEIGHTING the spec itself should use is still open (#1857).
 """
 from __future__ import annotations
 
@@ -36,12 +32,9 @@ from jasper.active_speaker.flat_spec import (
 
 
 def _pool(pairs: list[tuple[float, float]]) -> float | None:
-    """``sqrt(sum w*r**2 / sum w)`` over ``(weight, rms)`` pairs, or ``None``.
-
-    The one weighted-RMS identity every pooling here uses — bands by octave
-    span, positions by bin count, positions by octave span — and the same one
-    ``spec_convergence_residual`` pools bands with. A non-positive total weight
-    yields ``None``: no pooled figure exists, which is not one of zero.
+    """``sqrt(sum w*r**2 / sum w)`` over ``(weight, rms)`` pairs, or
+    ``None``. The one weighted-RMS identity every pooling here uses. A
+    non-positive total weight yields ``None`` — no pooled figure, not zero.
     """
     total = sum(weight for weight, _rms in pairs)
     if total <= 0.0:
@@ -50,29 +43,18 @@ def _pool(pairs: list[tuple[float, float]]) -> float | None:
 
 
 def _power_mean_scalar(values_db: np.ndarray) -> float:
-    """``10*log10(mean(10**(dB/10)))`` over one array — the power (energy)
-    mean, NOT a linear mean of dB values.
-    """
+    """``10*log10(mean(10**(dB/10)))`` — power (energy) mean, NOT a linear
+    mean of dB values."""
     return float(10.0 * np.log10(np.mean(np.power(10.0, values_db / 10.0))))
 
 
 def _band_octaves(band: BandResult) -> float:
-    """How many octaves of spectrum this band actually GRADED.
-
-    ``log2(graded_hi_hz / graded_lo_hz)`` — the graded edges, not the nominal
-    ones, because the clamps (#2551) can take most of a band away and a weight
-    from nominal edges would hand a band influence over a span nothing was
-    measured in. ``None`` graded edges fall back to the nominal ones, which on
-    a report predating each clamp are the same thing.
-
-    ``0.0`` for an empty, inverted or non-finite span — a weight of zero drops
-    the band out of a weighted mean rather than letting a NaN swallow it.
-
-    The upper edge is still taken as graded in full: a report carries the edges
-    the clamps set but not the axis it was evaluated on, so a band whose axis
-    stopped short is indistinguishable here. :attr:`BandWeight.bins_per_octave`
-    is published beside the weight rather than folded into it because an
-    anomalously low density is that truncation showing.
+    """How many octaves of spectrum this band actually GRADED:
+    ``log2(graded_hi_hz / graded_lo_hz)`` (graded edges, not nominal ones,
+    since clamps (#2551) can take most of a band away). ``None`` graded
+    edges fall back to nominal. ``0.0`` for an empty, inverted or
+    non-finite span — a zero weight drops the band rather than letting a
+    NaN swallow it.
     """
     lo = band.graded_lo_hz if band.graded_lo_hz is not None else band.f_lo_hz
     hi = band.graded_hi_hz if band.graded_hi_hz is not None else band.f_hi_hz
@@ -83,26 +65,14 @@ def _band_octaves(band: BandResult) -> float:
 
 @dataclass(frozen=True)
 class BandWeight:
-    """One band's contribution to each pooling, side by side.
-
-    The audit trail for :class:`LogPooledResidual`: which band the weighting
-    moved, and by how much. Both shares sum to 1.0 across the evaluable bands.
-
-    Args:
-      f_lo_hz: the band's nominal lower edge — its ``SPEC_BANDS`` row.
-      f_hi_hz: the band's upper edge (exclusive).
-      graded_lo_hz: the edge the metrics were actually taken from, after the
-        trusted-floor clamp.
-      octaves: ``log2(f_hi_hz / graded_lo_hz)`` — this band's weight in the log
-        pooling.
-      n_bins: the band's non-excluded graded bin count — its weight in the
-        shipped linear pooling.
-      rms_deviation_db: the band's own RMS deviation, lifted verbatim.
-      linear_share: ``n_bins / sum(n_bins)``.
-      log_share: ``octaves / sum(octaves)``.
-      bins_per_octave: ``n_bins / octaves``. The number the whole view is
-        about: compare two bands to read the per-octave overweight the linear
-        grid hands the higher one.
+    """One band's contribution to each pooling, side by side — the audit
+    trail for :class:`LogPooledResidual`. Both shares sum to 1.0 across
+    evaluable bands. ``graded_lo_hz`` is the edge after the trusted-floor
+    clamp; ``octaves`` and ``n_bins`` are this band's weight in the log vs.
+    shipped linear pooling; ``linear_share``/``log_share`` are each
+    normalized to 1.0. ``bins_per_octave`` is the number the whole view is
+    about — compare two bands to read the linear grid's per-octave
+    overweight.
     """
 
     f_lo_hz: float
@@ -132,20 +102,11 @@ class BandWeight:
 @dataclass(frozen=True)
 class LogPooledResidual:
     """The pooled residual re-weighted to equal influence per octave.
-
-    Args:
-      rms_db: the log-pooled RMS deviation, dB. ``None`` when no band was
-        evaluable — no residual, not a residual of zero.
-      linear_rms_db: the SHIPPED pooled residual for the same report, lifted
-        verbatim and never recomputed, so the two numbers can never be quoted
-        from two places and disagree.
-      octaves: total graded octaves the log pooling averaged over.
-      n_bins: total non-excluded graded bins behind ``linear_rms_db``.
-      bands: per-band weights, evaluable bands only.
-      n_bands_not_evaluated: how many bands had no residual to pool. Non-zero
-        means both pooled numbers speak for less of the spectrum than the band
-        table suggests.
-      evaluable: whether any band was poolable.
+    ``rms_db`` is ``None`` when no band was evaluable (no residual, not
+    zero). ``linear_rms_db`` is the SHIPPED pooled residual, lifted
+    verbatim and never recomputed. ``bands`` holds evaluable bands only;
+    ``n_bands_not_evaluated`` non-zero means both pooled numbers speak for
+    less of the spectrum than the band table suggests.
     """
 
     rms_db: float | None
@@ -169,32 +130,18 @@ class LogPooledResidual:
 
 
 def log_pooled_residual(report: FlatSpecReport) -> LogPooledResidual:
-    """Re-pool one report's per-band residuals with **equal weight per octave**
-    instead of equal weight per graded bin.
-
-    With band ``b``'s non-excluded bin count ``n_b``, graded span ``w_b``
-    octaves and own RMS ``r_b``::
-
-        shipped (per bin)    rms = sqrt( sum_b n_b * r_b**2 / sum_b n_b )
-        this view (per oct)  rms = sqrt( sum_b w_b * r_b**2 / sum_b w_b )
-
-    Both are honest weighted RMS values over the same per-band residuals. The
-    shipped form is ``spec_convergence_residual``'s and is called rather than
-    recomputed, its answer carried on :attr:`LogPooledResidual.linear_rms_db`.
-
-    **What this does NOT fix:** it re-weights *between* bands, not *within*
-    one. Each ``r_b`` is still per-bin-weighted across its band, so inside a
-    wide band the linear grid's tilt survives (on the 2026-08-18 corpus the
-    250 Hz-2 kHz band's top octave supplies about 61 % of its bins). Removing
-    that would mean re-deriving deviations from the curve, which would make
-    this a second evaluator.
-
-    When no band carries a residual, ``rms_db`` is ``None`` and ``evaluable``
-    is ``False`` rather than a fabricated 0.0.
+    """Re-pool one report's per-band residuals with EQUAL WEIGHT PER OCTAVE
+    instead of per graded bin: ``rms = sqrt(sum_b w_b * r_b**2 / sum_b
+    w_b)`` with octave span ``w_b``, vs. the shipped
+    ``spec_convergence_residual`` weighted by bin count ``n_b`` (called,
+    not recomputed, carried on :attr:`LogPooledResidual.linear_rms_db`).
+    Re-weights BETWEEN bands only, not within one — a wide band's own
+    linear-grid tilt survives (250 Hz-2 kHz's top octave supplied ~61% of
+    its bins on the 2026-08-18 corpus). ``rms_db=None``, ``evaluable=False``
+    when no band carries a residual.
     """
     linear = spec_convergence_residual(report)
-    # (band, non-excluded bins, graded octaves, its own RMS) per poolable band.
-    # Walked once; the shares below need the totals this walk produces.
+    # (band, non-excluded bins, graded octaves, own RMS) per poolable band.
     poolable: list[tuple[BandResult, int, float, float]] = []
     n_not_evaluated = 0
     for band in report.bands:
@@ -245,32 +192,17 @@ def log_pooled_residual(report: FlatSpecReport) -> LogPooledResidual:
 @dataclass(frozen=True)
 class PositionCurve:
     """One cloud position's own analysed magnitude curve, ready to re-read.
-
     Deliberately NOT
-    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture`: that
-    type is the combiner's input and requires a uniform linear grid, a sample
-    rate and an optional IR, none of which an already-smoothed log-spaced curve
-    has or needs.
+    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture` —
+    that requires a uniform linear grid, sample rate and optional IR, none
+    of which an already-smoothed log-spaced curve needs.
 
-    Args:
-      position_id: the position's own label.
-      role: what KIND of listening position this is, in the cloud's own
-        vocabulary (``onax`` / ``offax`` / ``xovr``, owned by
-        ``crossover_v2.spatial.POSITION_ROLES``). Read off the position's
-        record, never re-derived; this module defines no role constant.
-      freqs_hz: the position's frequency axis, strictly ascending. Need not be
-        log-spaced — the evaluator masks by value.
-      magnitude_db: matching magnitude, dB, as analysed: gated, calibrated and
-        already smoothed.
-      smoothing_fraction: the 1/N-octave fraction the caller attests to.
-        **Load-bearing for interpretation**: the cloud smooths per-position
-        curves finer than the pooled spec curve (1/6 vs 1/3 octave on the
-        2026-08-18 corpus), and finer smoothing preserves ripple, so a
-        per-position residual reads HIGHER than a same-speaker pooled one for
-        that reason alone.
-      degrees: the microphone angle, when known. ``None`` means **not
-        recorded**, never zero; every view degrades to role-only without it.
-      take_id: which take survived. Provenance only; nothing here reads it.
+    ``role`` is the cloud's own vocabulary (``onax``/``offax``/``xovr``),
+    read off the record, never re-derived. ``smoothing_fraction`` is
+    LOAD-BEARING for interpretation: the cloud smooths per-position curves
+    finer than the pooled spec curve (1/6 vs 1/3 octave on the 2026-08-18
+    corpus), so a per-position residual reads HIGHER for that reason
+    alone. ``degrees=None`` means NOT RECORDED, never zero.
     """
 
     position_id: str
@@ -285,16 +217,10 @@ class PositionCurve:
 def _exclusion_mask(
     freqs_hz: np.ndarray, intervals: tuple[tuple[float, float], ...],
 ) -> np.ndarray | None:
-    """The report's own published exclusion intervals, applied to another axis.
-
-    A **containment test against the published result**, not a second run of
-    the screen: the screen is a mean-vs-median disagreement across the whole
-    cloud and cannot even be evaluated for one position. Applying it keeps the
-    per-role numbers graded on the same region of spectrum as the pooled one.
-
-    Endpoints are inclusive on both sides: the interval spans the first and
-    last excluded bin of a run. ``None`` when nothing is excluded, which is
-    what the evaluator wants for "exclude nothing".
+    """The report's own published exclusion intervals, applied to another
+    axis — a containment test against the published result, not a second
+    run of the screen (which cannot even be evaluated for one position).
+    Endpoints inclusive on both sides. ``None`` when nothing is excluded.
     """
     if not intervals:
         return None
@@ -309,24 +235,11 @@ def _exclusion_mask(
 @dataclass(frozen=True)
 class PositionFlatness:
     """One position's residual pair, or the reason it has none.
-
-    Args:
-      position_id: the position's label.
-      role: its role, verbatim.
-      degrees: its angle when recorded, else ``None`` (**not recorded**, not
-        zero).
-      take_id: provenance, verbatim.
-      smoothing_fraction: what the curve was attested to be smoothed at —
-        carried because a residual is not comparable across two fractions.
-      rms_db: this position's own pooled residual on the linear per-bin
-        weighting, the same *kind* of number as the shipped headline.
-      log_rms_db: the same position re-pooled per octave.
-      n_bins: graded bins behind ``rms_db``.
-      n_excluded: graded-band bins the report's exclusion intervals removed.
-      evaluable: whether a residual exists at all.
-      not_evaluated_reason: why not. Always non-empty when ``evaluable`` is
-        ``False`` and always empty otherwise, mirroring the claim producer's
-        first-class ``CLAIM_NOT_EVALUATED`` outcome (#1868).
+    ``degrees=None`` means not recorded, not zero. ``smoothing_fraction``
+    is carried because a residual isn't comparable across two fractions.
+    ``rms_db``/``log_rms_db`` are this position's own linear- and
+    log-pooled residuals. ``not_evaluated_reason`` is non-empty exactly
+    when ``evaluable`` is False (mirrors ``CLAIM_NOT_EVALUATED``, #1868).
     """
 
     position_id: str
@@ -360,26 +273,11 @@ class PositionFlatness:
 @dataclass(frozen=True)
 class RoleFlatness:
     """Every position sharing one role, pooled — and never beyond it.
-
-    Pools each position's own flatness, so it answers "how flat does a
-    measurement taken here read". It is NOT the flatness of the power-mean
-    combination of these positions: combining fills moving nulls before the
-    curve is graded, so a combined on-axis curve reads flatter than this pool.
-    Producing that would mean re-running ``combine_positions`` on a subset.
-
-    Args:
-      role: the role these positions share, verbatim.
-      rms_db: the role's pooled residual over its evaluated positions — the
-        same bin-weighted identity ``spec_convergence_residual`` pools bands
-        with, applied across positions.
-      log_rms_db: the same pool over the positions' per-octave residuals,
-        weighted by each position's graded octave span.
-      n_bins: total graded bins behind ``rms_db``.
-      n_positions: how many positions carry this role.
-      n_evaluated: how many produced a residual.
-      positions: every position of this role, in the caller's order, evaluated
-        or not. Nothing is dropped.
-      evaluable: whether ``rms_db`` exists.
+    Answers "how flat does a measurement taken here read"; NOT the
+    flatness of the power-mean combination of these positions (combining
+    fills moving nulls first, so a combined curve reads flatter). ``rms_db``
+    pools by bin count, ``log_rms_db`` by graded octave span. ``positions``
+    lists every position of this role, evaluated or not — nothing dropped.
     """
 
     role: str
@@ -407,25 +305,14 @@ class RoleFlatness:
 @dataclass(frozen=True)
 class RoleSplitFlatness:
     """The on-axis-primary reading: one headline, and the rest kept apart.
-
-    Args:
-      primary: the :class:`RoleFlatness` for ``primary_role``. ``None`` when
-        the cloud carried no position of that role, which is UNSAMPLED rather
-        than a zero.
-      primary_role: the role that was asked for, echoed so a ``None``
-        ``primary`` still says which role went missing.
-      others: every other role present, each pooled within itself, in
-        first-seen order. **Never merged with** ``primary`` **and never merged
-        with each other** — that merge is what this view exists to undo.
-      pooled_rms_db: the SHIPPED pooled residual over the whole cloud, lifted
-        from the report and never recomputed.
-      pooled_log_rms_db: the same report's per-octave re-pooling.
-      n_not_evaluated: positions across every role that produced no residual.
-
-    The pooled figures come from the COMBINED curve and the per-role ones from
-    individual member curves at a possibly different smoothing fraction: read
-    the split for the on-axis-vs-off-axis *gap*, not as a decomposition that
-    adds back up to the pooled figure.
+    ``primary`` is ``None`` when the cloud carried no position of
+    ``primary_role`` — UNSAMPLED, not zero. ``others`` are never merged
+    with ``primary`` or each other — that merge is what this view undoes.
+    ``pooled_rms_db``/``pooled_log_rms_db`` are the SHIPPED report figures,
+    lifted verbatim. Read the split for the on-axis-vs-off-axis GAP, not as
+    a decomposition that adds back up to the pooled figure (the pooled
+    figures come from the COMBINED curve, the per-role ones from individual
+    member curves at a possibly different smoothing fraction).
     """
 
     primary: RoleFlatness | None
@@ -450,18 +337,12 @@ def _evaluate_position(
     position: PositionCurve, report: FlatSpecReport, *, reference_db_override: float | None = None,
 ) -> tuple[PositionFlatness, float]:
     """Grade-frame one position's curve against the report's own frame.
-
-    Returns the position's residual pair plus the graded octave span its log
-    residual speaks for (``0.0`` when not evaluated), because the role pooling
-    needs that span as a weight.
-
-    The evaluator is called with the report's OWN ``frame_kwargs`` and
-    published exclusion intervals — read back, never re-derived — so a
-    per-position number and the pooled number are stated in the same frame over
-    the same region of spectrum. ``reference_db_override`` passes straight
-    through. A :class:`ValueError` from the evaluator becomes a not-evaluated
-    outcome carrying its message, never an exception that loses the other
-    positions and never a silent zero.
+    Returns the residual pair plus the graded octave span its log residual
+    speaks for (``0.0`` when not evaluated), for the role pooling's weight.
+    Called with the report's OWN ``frame_kwargs`` and exclusion intervals
+    (read back, never re-derived). A :class:`ValueError` becomes a
+    not-evaluated outcome carrying its message, never a lost exception or
+    a silent zero.
     """
     try:
         position_report = evaluate_flat_spec(
@@ -520,25 +401,14 @@ def role_split_flatness(
     *,
     primary_role: str,
 ) -> RoleSplitFlatness:
-    """Report each position role's flatness **separately**, with
-    ``primary_role`` as the headline.
-
-    ``combine_positions`` is an unweighted power mean, which is the right call
-    for a combiner and the wrong number to hand a household whose seat is the
-    on-axis one. This view keeps the roles apart and never averages them.
-
-    Args:
-      report: the session's evaluation. Supplies the frame every position is
-        graded in and the pooled figures the split is read against.
-      positions: the cloud's member curves. Order is preserved within each
-        role; an empty tuple yields an empty split, not an error.
-      primary_role: which role is the headline, in the cloud's own vocabulary.
-        Required rather than defaulted, so this module holds no copy of a
-        constant another module owns.
-
-    A role with no evaluated position is present with ``rms_db=None``, and
-    every position that produced no residual is still listed inside its role
-    carrying the reason.
+    """Report each position role's flatness SEPARATELY, with
+    ``primary_role`` as the headline. ``combine_positions`` is an
+    unweighted power mean — right for a combiner, wrong for a household
+    whose seat is on-axis — so this view keeps roles apart and never
+    averages them. An empty ``positions`` yields an empty split, not an
+    error. A role with no evaluated position is present with
+    ``rms_db=None``; every position that produced no residual is still
+    listed inside its role, carrying the reason.
     """
     graded: dict[str, list[tuple[PositionFlatness, float]]] = {}
     for position in positions:
@@ -589,43 +459,23 @@ def role_split_flatness(
 
 
 def _power_mean_across(stack_db: np.ndarray) -> np.ndarray:
-    """Per-column power (energy) mean across rows of a dB matrix.
-
-    ``10*log10(mean(10**(dB/10), axis=0))`` — the same reduction
-    ``combine_positions`` applies across positions. Distinct from
-    ``flat_spec._power_mean_db``, which pools one curve across FREQUENCY to a
-    scalar; this pools a stack of curves across POSITIONS to a curve.
+    """Per-column power (energy) mean across rows of a dB matrix — the
+    same reduction ``combine_positions`` applies across positions. Distinct
+    from ``flat_spec._power_mean_db``, which pools one curve across
+    FREQUENCY to a scalar; this pools curves across POSITIONS to a curve.
     """
     return 10.0 * np.log10(np.mean(np.power(10.0, stack_db / 10.0), axis=0))
 
 
 @dataclass(frozen=True)
 class DirectivityBand:
-    """One position's departure from on-axis across one graded band.
-
-    Split the way ``BandResult`` splits a deviation (#1857): "this band is 2 dB
-    down off-axis" and "this band is shaped differently off-axis" are different
-    facts calling for different responses. For every bin ``i`` in the band,
-    with ``d_i`` the position's level minus the on-axis reference's::
-
-        d_i = level_offset_db + shape_i
-
-    so ``level_offset_db`` alone is the band's directivity index and the
-    ``shape_*`` figures are the part no level trim can remove.
-
-    Args:
-      f_lo_hz: the band's nominal lower edge.
-      f_hi_hz: its upper edge (exclusive).
-      graded_lo_hz: the edge actually used, read off the report's own band.
-      n_bins: bins of this position's grid inside ``[graded_lo_hz, f_hi_hz)``,
-        after the report's exclusion intervals.
-      level_offset_db: signed, negative meaning quieter than on-axis across the
-        band. ``None`` when the band held no bin.
-      shape_max_db: the signed ``shape_i`` at the largest-absolute bin.
-      shape_max_hz: that bin's frequency.
-      shape_rms_db: RMS of ``shape_i`` across the band.
-      evaluable: whether the band held any bin at all.
-      not_evaluated_reason: why not, when it did not. Empty otherwise.
+    """One position's departure from on-axis across one graded band. Split
+    the way ``BandResult`` splits a deviation (#1857): "2 dB down
+    off-axis" and "shaped differently off-axis" are different facts. Per
+    bin ``d_i = level_offset_db + shape_i``, so ``level_offset_db`` alone
+    is the band's directivity index and ``shape_*`` is the part no level
+    trim removes. ``level_offset_db`` is signed, negative = quieter than
+    on-axis; ``None`` when the band held no bin.
     """
 
     f_lo_hz: float
@@ -656,26 +506,13 @@ class DirectivityBand:
 
 @dataclass(frozen=True)
 class DirectivityRow:
-    """One position, normalised to the on-axis reference.
-
-    Args:
-      position_id: the position's label.
-      role: its role, verbatim.
-      degrees: its angle when recorded, else ``None`` — **not recorded**, never
-        zero. A row with ``None`` here is still a complete measurement.
-      take_id: provenance, verbatim.
-      in_reference: whether this position is one the reference curve was built
-        from. Those rows are kept — their departure from their own mean is real
-        information about cloud spread — but must not be read as an off-axis
-        measurement.
-      level_offset_db: the position's broadband offset from the reference,
-        power-pooled over the report's reference band.
-      normalized_db: per-bin ``position - reference`` on the table's shared
-        grid. The curve a prescriber consumes; every reduction beside it is
-        derived from this.
-      bands: the per-band split, see :class:`DirectivityBand`.
-      evaluable: whether the row carries a normalised curve at all.
-      not_evaluated_reason: why not, when it does not. Empty otherwise.
+    """One position, normalised to the on-axis reference. ``degrees=None``
+    means not recorded, never zero — the row is still a complete
+    measurement. ``in_reference`` rows are kept (their departure from
+    their own mean is real cloud-spread information) but must not be read
+    as an off-axis measurement. ``normalized_db`` is per-bin
+    ``position - reference`` on the shared grid — the curve a prescriber
+    consumes; every other reduction derives from it.
     """
 
     position_id: str
@@ -707,28 +544,12 @@ class DirectivityRow:
 @dataclass(frozen=True)
 class DirectivityTable:
     """Every position's departure from on-axis, as one consumable table.
-
-    Args:
-      freqs_hz: the shared grid every ``normalized_db`` is sampled on. This
-        module does not resample; positions that do not share the grid are
-        reported as not-evaluated rows rather than silently interpolated.
-      reference_role: the role the reference curve was pooled from.
-      reference_position_ids: exactly which positions went into it, so the
-        reference is reproducible rather than merely named.
-      reference_db: the reference curve itself, the per-bin power mean of those
-        positions. Every number in the table is stated against it.
-      reference_band_hz: the span each row's ``level_offset_db`` is pooled
-        over — the report's own reference band.
-      rows: one per input position, in the caller's order, including the
-        reference's own members (flagged ``in_reference``) and rows that could
-        not be normalised.
-      angles_recorded: whether EVERY evaluated row carries a ``degrees``.
-        ``False`` means the table is role-labelled only, and a consumer must
-        not assume the ``None`` angles are zero.
-      evaluable: whether a reference curve exists at all.
-      not_evaluated_reason: why not, when it does not. Empty otherwise.
-
-    JSON-serialisable through :meth:`to_dict`: plain lists and floats.
+    ``freqs_hz`` is the shared grid; this module does not resample —
+    positions off it are not-evaluated rows. ``reference_position_ids``
+    make the reference reproducible, not merely named.
+    ``angles_recorded=False`` means the table is role-labelled only; a
+    consumer must not assume ``None`` angles are zero. JSON-serialisable
+    through :meth:`to_dict`.
     """
 
     freqs_hz: tuple[float, ...]
@@ -756,11 +577,8 @@ class DirectivityTable:
 
 
 def _unevaluated_row(position: PositionCurve, reason: str) -> DirectivityRow:
-    """A row that carries its reason instead of a number.
-
-    Kept in the table rather than dropped: a consumer counting rows must see
-    the same number of positions it handed in.
-    """
+    """A row that carries its reason instead of a number, kept rather than
+    dropped so row count always matches input count."""
     return DirectivityRow(
         position_id=position.position_id,
         role=position.role,
@@ -826,26 +644,16 @@ def directivity_table(
     *,
     reference_role: str,
 ) -> DirectivityTable:
-    """Every position's curve normalised to the on-axis reference, as a table.
+    """Every position's curve normalised to the on-axis reference, as a
+    table: departure from the per-bin power mean of the ``reference_role``
+    positions, split per graded band into a level offset (directivity
+    index) and the residual shape no level trim removes. All positions
+    must share one frequency axis; a mismatched one is a not-evaluated
+    row, never resampled. No ``reference_role`` position leaves the table
+    ``evaluable=False`` with every position still listed (UNSAMPLED, never
+    an implied flat reference).
 
-    Each position is expressed as its departure from the on-axis reference —
-    the per-bin power mean of the ``reference_role`` positions — split per
-    graded band into a level offset (the band's directivity index) and the
-    residual shape no level trim can remove.
-
-    Args:
-      report: the session's evaluation. Supplies the graded band edges and the
-        reference band, so this table's bands are the bands actually graded.
-      positions: the cloud's member curves. All must share one frequency axis;
-        a position whose axis differs is reported as a not-evaluated row rather
-        than resampled onto someone else's grid.
-      reference_role: which role is the on-axis reference, in the cloud's own
-        vocabulary. Required rather than defaulted.
-
-    When no position carries ``reference_role`` the table is
-    ``evaluable=False`` with a reason and every position still appears as a
-    not-evaluated row — an absent reference is UNSAMPLED, never an implied
-    flat one.
+    No production caller yet; #3865 wires it into analyze.
     """
     reference = [p for p in positions if p.role == reference_role]
     if not reference:
@@ -874,10 +682,8 @@ def directivity_table(
 
     usable_reference = [p for p in reference if _on_grid(p)]
     if not usable_reference:
-        # Every reference position failed against the FIRST one's own axis,
-        # which that one can only do by disagreeing with itself. So the cause is
-        # always a position whose magnitude and frequency arrays are different
-        # lengths, never a grid disagreement between positions.
+        # Failing against the FIRST reference's own axis is only possible
+        # by disagreeing with itself: mismatched magnitude/frequency lengths.
         reason = "a reference position's magnitude and frequency arrays differ in length"
         return DirectivityTable(
             freqs_hz=tuple(float(f) for f in grid),
@@ -896,9 +702,8 @@ def directivity_table(
     excluded = _exclusion_mask(grid, report.excluded_intervals)
     included = np.ones(len(grid), dtype=bool) if excluded is None else ~excluded
     reference_ids = tuple(p.position_id for p in usable_reference)
-    # Membership by IDENTITY, never by `in`: `==` on two dataclasses holding
-    # numpy arrays returns an array, and two distinct positions can hold equal
-    # arrays and still be two positions.
+    # Membership by IDENTITY, never `in`: `==` on dataclasses holding numpy
+    # arrays returns an array, not a bool.
     reference_identities = {id(p) for p in usable_reference}
     ref_lo, ref_hi = report.reference_band_hz
 
