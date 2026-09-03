@@ -877,10 +877,6 @@ def check_fanin_ring_stall() -> CheckResult:
     stuck = int(ring.get("stuck_reader_drops") or 0)
     no_reader = int(ring.get("drop_no_reader") or 0)
     last_ms = int(ring.get("last_stall_ms") or 0)
-    # Periods paced only by fan-in's own deadline sleep — a downstream reader
-    # draining faster than real time (CamillaDSP with jasper-outputd stopped).
-    # Not a stall and not a fault, so it never changes the verdict; it is
-    # reported because it is the only surface on which that regime is visible.
     clockless = int(ring.get("clockless_paces") or 0)
     counts = (
         f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}, "

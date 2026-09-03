@@ -1202,10 +1202,8 @@ impl StateServer {
         // is a heartbeat-live-but-frozen reader (bounded-wait give-ups + sticky
         // demotions), `drop_no_reader` a dead/absent reader (normal reload
         // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
-        // episode. `clockless_paces` counts periods whose only pacer was the
-        // mixer's own deadline sleep — neither back-pressure nor a drop — which
-        // is the free-running-reader shape that used to SIGKILL this daemon
-        // under `LimitRTTIME`.
+        // episode. `clockless_paces` is the mixer's own — see
+        // `mixer::RingCounters`.
         //
         // There are no `mirror_frames` / `mirror_drops` here: U4/P7-4 removed the
         // lossy aloop side-tap they counted, and a pair of counters pinned at 0
