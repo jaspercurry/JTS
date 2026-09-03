@@ -552,41 +552,32 @@ _AEC_RMS_RE = re.compile(
 )
 _CHIP_AEC_RMS_RE = re.compile(
     r"chip_aec rms over [\d.]+s: ref=(?P<ref>\d+) near=[^\s:]+:(?P<mic>\d+) "
-    r"primary=[^\s:]+:\d+ level_delta=(?P<level>-?\d+\.\d+) dB"
+    r"primary=[^\s:]+:\d+ level_delta=-?\d+\.\d+ dB"
 )
 
 
 class _RmsWindow(NamedTuple):
-    """One parsed bridge RMS window.
-
-    `level_db` carries a different meaning per shape and the two are not
-    comparable: on AEC3 it is `attenuation` (AEC output vs the uncancelled
-    near-end mic, so more negative = more cancellation), on chip AEC it is
-    `level_delta` between two beams the chip has ALREADY cancelled
-    (`primary` vs `near`), which says nothing about how much was cancelled.
-    """
+    """`level_db` is AEC3 `attenuation` and is None on chip AEC, whose
+    `level_delta` compares two beams the chip already cancelled."""
 
     ref: int
     mic: int
-    level_db: float
+    level_db: float | None
     chip: bool
 
 
 def _parse_rms_window(line: str) -> _RmsWindow | None:
     """Parse either bridge RMS log shape into one record, else None."""
-    chip = True
-    m = _CHIP_AEC_RMS_RE.search(line)
-    if m is None:
-        chip = False
-        m = _AEC_RMS_RE.search(line)
-    if m is None:
-        return None
-    return _RmsWindow(
-        ref=int(m["ref"]),
-        mic=int(m["mic"]),
-        level_db=float(m["level"]),
-        chip=chip,
-    )
+    if m := _CHIP_AEC_RMS_RE.search(line):
+        return _RmsWindow(
+            ref=int(m["ref"]), mic=int(m["mic"]), level_db=None, chip=True,
+        )
+    if m := _AEC_RMS_RE.search(line):
+        return _RmsWindow(
+            ref=int(m["ref"]), mic=int(m["mic"]),
+            level_db=float(m["level"]), chip=False,
+        )
+    return None
 
 
 # Thresholds for `check_aec_bridge_output_health`.
@@ -895,7 +886,6 @@ def _assess_aec_bridge_output(
     healthy_windows = 0
     total_windows = 0
     chip_windows = 0
-    chip_level_db: list[float] = []
 
     for line in journal_text.split("\n"):
         w = _parse_rms_window(line)
@@ -904,7 +894,6 @@ def _assess_aec_bridge_output(
         total_windows += 1
         if w.chip:
             chip_windows += 1
-            chip_level_db.append(w.level_db)
         # ref ≥ silent-threshold = the reference chain delivered
         # real samples in this window. Any single occurrence proves the
         # chain works end-to-end. Both shapes carry the same `ref`: the
@@ -914,15 +903,21 @@ def _assess_aec_bridge_output(
         # mic > music-threshold = something acoustic was loud enough to
         # plausibly be music (ambient is ~600 RMS, well below). ref <
         # silent-threshold = ref path silent in this window.
+        # `ref` is the only field identical across both shapes. On chip AEC
+        # `mic` is the already-cancelled 210° beam, not the raw-ish beam this
+        # threshold was calibrated on, so this gate — and the FAIL it feeds —
+        # is less sensitive there. The chip line logs no raw near-end level
+        # to compare instead (raw mic 0 is capture channel 2, exported on its
+        # own UDP leg and never logged).
         if w.mic > _AEC_MIC_MUSIC_THRESHOLD and w.ref < _AEC_REF_SILENT_THRESHOLD:
             silent_ref_count += 1
         # "Healthy AEC work" = music-loud mic + meaningful attenuation.
         # Below the music threshold AEC output is just noise floor so we
         # can't tell whether the attenuation number means anything.
-        # Chip windows are excluded: their `level_db` is a beam-to-beam
-        # delta, not attenuation, so no threshold on it means cancellation.
+        # `level_db is None` excludes chip windows, which carry no
+        # attenuation-equivalent to threshold.
         if (
-            not w.chip
+            w.level_db is not None
             and w.mic > _AEC_MIC_MUSIC_THRESHOLD
             and w.level_db <= -8.0
         ):
@@ -1002,32 +997,35 @@ def _assess_aec_bridge_output(
         )
 
     # Chip AEC: the bridge runs no canceller, so the line carries no
-    # attenuation-equivalent — `level_delta` compares two beams the chip
-    # already cancelled. Report the evidence that does exist (windows are
-    # flowing, and how often ref carried signal); the ref-path branches
-    # above remain the verdict-bearing part on this profile.
-    if chip_windows:
-        span = f"{min(chip_level_db):.1f}..{max(chip_level_db):.1f} dB"
+    # attenuation-equivalent to evaluate. Report the evidence that does
+    # exist; the ref-path branches above remain the verdict-bearing part on
+    # this profile. Only when EVERY window is chip-shaped — a mixed journal
+    # (a restart across a profile change) still owes the AEC3 assessment.
+    if chip_windows == total_windows:
         return CheckResult(
             "AEC bridge output", "ok",
-            f"chip AEC: {chip_windows}/{total_windows} recent windows are "
-            f"chip-shaped; ref carried signal in "
-            f"{healthy_ref_windows}/{total_windows}; primary-vs-near "
-            f"level_delta {span} (beam-to-beam delta — the chip cancels "
-            f"upstream, so this is not an attenuation measure)",
+            f"chip AEC: {total_windows} recent windows; ref carried signal "
+            f"in {healthy_ref_windows}/{total_windows} (the chip cancels "
+            f"upstream, so this profile logs no attenuation to evaluate)",
         )
+
+    mixed = (
+        f"; {chip_windows}/{total_windows} windows are chip-shaped and carry "
+        f"no attenuation" if chip_windows else ""
+    )
 
     # All windows quiet — speaker has been idle, nothing to assess.
     if healthy_windows == 0 and silent_ref_count == 0:
         return CheckResult(
             "AEC bridge output", "ok",
             f"no music activity in last 90 s "
-            f"({total_windows} log windows; no AEC work to evaluate)",
+            f"({total_windows} log windows; no AEC work to evaluate){mixed}",
         )
 
     summary = (
         f"{healthy_windows}/{total_windows} recent windows show real AEC "
         f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB)"
+        f"{mixed}"
     )
     if silent_ref_count:
         # Non-zero silent_ref without hitting the FAIL threshold —

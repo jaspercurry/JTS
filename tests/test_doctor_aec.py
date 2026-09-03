@@ -104,6 +104,8 @@ def _healthy_journal(windows: int = 8) -> str:
 @pytest.mark.parametrize(
     "journal, status, must_name",
     [
+        # An active bridge logs a window every 5 s: none is missing evidence.
+        ("", "warn", "no recent rms windows"),
         # Mic and ref both quiet — the speaker has been idle.
         (
             "\n".join(
@@ -137,7 +139,7 @@ def _healthy_journal(windows: int = 8) -> str:
             "silent-ref=3",
         ),
     ],
-    ids=["idle", "healthy", "silent-ref", "one-healthy-window",
+    ids=["empty", "idle", "healthy", "silent-ref", "one-healthy-window",
          "below-alarm"],
 )
 def test_assess_aec_bridge_output_verdicts(journal, status, must_name):
@@ -177,10 +179,41 @@ def test_assess_aec_bridge_output_counts_windows_in_both_log_shapes(journal):
     assert doctor._assess_aec_bridge_output(journal).status == "ok"
 
 
-def test_assess_aec_bridge_output_warns_when_no_window_was_logged():
-    """A running bridge writes a window every 5 s, so an empty journal window
-    is missing evidence — never proof of health."""
-    assert doctor._assess_aec_bridge_output("").status == "warn"
+def test_chip_windows_never_count_as_attenuation_evidence():
+    """A chip `level_delta` of -24 dB reads like deep AEC3 attenuation but is
+    the delta between two beams the chip already cancelled, so it must never
+    be counted as proof the canceller did work."""
+    journal = "\n".join(
+        _chip_rms_log_line(
+            ref=1_200, near=2_400, primary=150, level_delta_db=-24.1,
+        )
+        for _ in range(8)
+    )
+
+    windows = [doctor._parse_rms_window(line) for line in journal.split("\n")]
+
+    assert all(w is not None and w.chip and w.level_db is None for w in windows)
+    assert doctor._assess_aec_bridge_output(journal).status == "ok"
+
+
+def test_one_chip_window_does_not_displace_the_aec3_assessment():
+    """A restart across a profile change leaves both shapes in one journal.
+    The chip summary is for an all-chip journal; a mixed one still owes the
+    AEC3 verdict over its AEC3 windows."""
+    journal = "\n".join(
+        [_rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)] * 17
+        + [
+            _chip_rms_log_line(
+                ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
+            )
+        ]
+    )
+
+    result = doctor._assess_aec_bridge_output(journal)
+
+    assert result.status == "ok"
+    # Both counts reported: 17 AEC3 windows assessed, 1 chip window disclosed.
+    assert "17/18" in result.detail and "1/18" in result.detail
 
 
 def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
