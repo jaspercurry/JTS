@@ -1235,6 +1235,7 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
         adoc.check_aec_bridge_running,
         adoc.check_aec_bridge_output_health,
         adoc.check_aec_bridge_dtln_engine,
+        adoc.check_chip_aec_alignment,
         adoc.check_audio_profile_runtime,
         lambda: audoc.check_mic_card_matches_config(None),
         lambda: audoc.check_mic_capture(None),
