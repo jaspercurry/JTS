@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TypeVar
 
 from .. import identity_state
 from ..accessories import status as accessory_status
@@ -70,26 +70,25 @@ from .aec_endpoints import _aec_full_status
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
 _source_availability_lock = threading.Lock()
 OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
 
-# Per-probe ceiling for the CamillaDSP /state probe. Every other probe in
-# _get_state already self-bounds (voice/mpris 2 s, mux 1 s,
-# fan-in/outputd 2 s); the CamillaDSP probe did not, so a wedged-but-
-# listening DSP — TCP accepted, websocket read stalled — could hang the
-# whole aggregate indefinitely. On timeout the probe fails soft to its
-# all-None section, exactly like its siblings.
+# Per-probe ceiling for the CamillaDSP /state probe: a wedged-but-listening
+# DSP (TCP accepted, websocket read stalled) would otherwise hang the whole
+# aggregate indefinitely. On timeout the probe fails soft to its all-None
+# section, like its self-bounding siblings (voice/mpris 2 s, mux 1 s,
+# fan-in/outputd 2 s).
 _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 
-# Liveness backstop for the entire cross-daemon fan-out. This is NOT a
-# latency control — the normal path completes in ~200 ms, with HA's cached
-# network probe (~8 s worst case) the slow outlier. It only fires if a
-# probe blows past its own ceiling (e.g. a future probe added without
-# one), converting an unbounded hang into a logged, bounded failure so the
-# bounded-worker control plane can never be parked indefinitely on /state.
+# Liveness backstop for the entire cross-daemon fan-out. NOT a latency
+# control — the normal path completes in ~200 ms, with HA's cached network
+# probe (~8 s worst case) the slow outlier. It fires only if a probe blows
+# past its own ceiling, converting an unbounded hang into a logged, bounded
+# failure so the bounded-worker control plane is never parked on /state.
 _STATE_AGGREGATE_BUDGET_SEC = 20.0
 _default_ha_status_cache: Any | None = None
 
@@ -209,13 +208,11 @@ def _camilla_unit_state(
 ) -> dict[str, Any] | None:
     """systemd's verdict on the DSP graph owner, for ``/state.audio_graph``.
 
-    fan-in and outputd publish their own STATUS into this block; CamillaDSP
-    has no such endpoint, and a STOPPED CamillaDSP is invisible to every other
-    field here — fan-in free-run-drops on an absent ring reader and outputd
-    zero-fills an absent writer, so both keep reporting healthy while the
-    speaker emits nothing. Same cached snapshot jasper-control already samples
-    for /system and for audio-health's ``path.camilla_stopped``, so this adds
-    no probe; ``None`` means "not observed", never "running".
+    A STOPPED CamillaDSP is invisible to every other field here — fan-in
+    free-run-drops on an absent ring reader and outputd zero-fills an absent
+    writer, so both keep reporting healthy while the speaker emits nothing.
+    Reads the cached service snapshot jasper-control already samples, so it
+    adds no probe; ``None`` means "not observed", never "running".
     """
     from .airplay_health import CAMILLA_UNIT_FULL
 
@@ -243,9 +240,8 @@ def _audio_graph_state(
         plan = build_audio_runtime_plan_from_system()
     except Exception as e:  # noqa: BLE001
         logger.exception("audio graph route plan read failed")
-        # The camilla row survives an unreadable plan: an absent DAC or an
-        # unreadable env file is a plausible cause of BOTH the throw here and a
-        # stopped CamillaDSP, so this is the degraded case the row exists for.
+        # The camilla row survives an unreadable plan: one cause (absent DAC,
+        # unreadable env file) explains both this throw and a stopped DSP.
         return {
             "route": {"status": "unavailable", "error": str(e)},
             "camilla": _camilla_unit_state(service_states),
@@ -290,13 +286,10 @@ def _audio_graph_state(
                 if isinstance(fanin_usbsink, dict)
                 else None
             ),
-            # Combo-mode host-slaved USB clock (fan-in owns the gadget capture
-            # under JASPER_FANIN_USB_DIRECT + JASPER_FANIN_HOST_CLOCK). fan-in
-            # STATUS carries a top-level `host_clock` block byte-identical to
-            # usbsink's solo-mode block, so combo boxes get the same /state
-            # ladder/DLL/probe telemetry solo boxes get from usbsink. `None` when
-            # the fan-in STATUS is unavailable or has no host_clock key (pre-combo
-            # build) — a definite "no evidence" rather than a guessed default.
+            # Combo-mode host-slaved USB clock: fan-in owns the gadget capture
+            # under JASPER_FANIN_USB_DIRECT + JASPER_FANIN_HOST_CLOCK and
+            # publishes a `host_clock` block byte-identical to usbsink's
+            # solo-mode one. `None` is "no evidence", never a guessed default.
             "host_clock": (
                 fanin_status.get("host_clock")
                 if isinstance(fanin_status, dict)
@@ -328,35 +321,31 @@ def _coupling_state(
     outputd_status: dict[str, Any] | None = None,
     outputd_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The resolved fan-in -> CamillaDSP coupling (audio-graph consolidation P2/P4).
+    """The resolved fan-in -> CamillaDSP coupling for ``/state.audio_graph``.
 
-    Surfaces the persisted token (``JASPER_FANIN_CAMILLA_COUPLING``), the outputd
-    content bridge, whether those two are a coherent pair, and the live fan-in
-    STATUS transport. Since ADR-0100 the live transport has one possible answer
-    — a running fan-in is on the ring, and refuses anything else at parse — so
-    what these fields are FOR is the migration: naming a box whose persisted
-    files still carry the retired token, and the partial-flip window where one
-    of the two has been rewritten and the other has not. Read fresh from the env
-    files (never os.environ — jasper-control isn't restarted on a coupling
-    change). Fail-soft: any read error degrades to ``None`` (see the except
-    below) rather than erroring the whole /state call.
+    Surfaces the persisted token (``JASPER_FANIN_CAMILLA_COUPLING``), the
+    outputd content bridge, whether those two are a coherent pair, and the live
+    fan-in STATUS transport. Since ADR-0100 the live transport has one possible
+    answer — a running fan-in is on the ring, and refuses anything else at parse
+    — so what these fields are FOR is the migration: naming a box whose
+    persisted files still carry the retired token, and the partial-flip window
+    where one of the two has been rewritten and the other has not. Read fresh
+    from the env files (never ``os.environ`` — jasper-control is not restarted
+    on a coupling change); any read error degrades to ``None``.
 
-    ``intent_coherent`` is named for what it compares: the persisted coupling
-    against the content source outputd resolved from its env. It was published
-    as ``coherent`` until R5b, which reads as a verdict on the ring itself — and
-    the two can agree perfectly while the rings shear on format, channels,
-    period or slots. ``content_bridge`` names the resolved source: ``shm_ring``
-    (the central post-DSP ring, including the undeclared default),
+    ``intent_coherent`` compares the persisted coupling against the content
+    source outputd resolved from its env; agreement there does not prove the
+    rings match on format, channels, period or slots, which is what
+    ``observed`` is for. ``content_bridge`` names that source:
+    ``shm_ring`` (the central post-DSP ring, including the undeclared default),
     ``dac_content_ring`` (a dumb bonded member, off the round-trip return ring),
     ``direct`` (nothing serves it), or ``contradicted`` — the marker declared
-    beside a bridge, which outputd refuses at startup.
-    ``observed`` is where the ring's actual
-    wire lives: both daemons read their attached header back and publish it
-    (fan-in as ``output.ring.wire_format``/``channels``, outputd as
-    ``shm_ring.format``/``channels``), which is a fact about the running
-    transport rather than about what somebody wrote in a file. Both are ``None``
-    when the daemon is unreachable or the ring is not armed — absence here means
-    "not observed", never "observed to agree"."""
+    beside a bridge, which outputd refuses at startup. ``observed`` is where the
+    ring's actual wire lives: both daemons read their attached header back and
+    publish it (fan-in as ``output.ring.wire_format``/``channels``, outputd as
+    ``shm_ring.format``/``channels``). Both are ``None`` when the daemon is
+    unreachable or the ring is not armed — absence means "not observed", never
+    "observed to agree"."""
     try:
         from pathlib import Path
 
@@ -379,23 +368,18 @@ def _coupling_state(
             fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
         except FileNotFoundError:
             fanin_text = ""
-        # The token AS WRITTEN, not a resolved transport: this block exists to
-        # name a migrating box's retired value, which a resolver answering
-        # "the ring or nothing" cannot spell.
+        # The token AS WRITTEN, not a resolved transport: a resolver answering
+        # "the ring or nothing" cannot spell a migrating box's retired value.
         coupling = (read_value(fanin_text, COUPLING_ENV_VAR) or "").strip().lower()
-        # The runtime plan already merged outputd's two env layers this /state
-        # build; take that rather than reading both files again. ``None`` is the
-        # standalone path (a focused caller, or a plan that failed to build).
+        # The runtime plan already merged outputd's two env layers; ``None`` is
+        # the standalone path (a focused caller, or a plan that failed to build).
         outputd_values = (
             dict(outputd_env) if outputd_env is not None else outputd_reconciled_env()
         )
         # What outputd IS RUNNING, through the predicates that own that
-        # question. An UNDECLARED bridge is the ring (config.rs), so this
-        # reports `shm_ring` for a box that named nothing — which is what it
-        # runs. Reporting the raw absence instead made a healthy box's pair read
-        # as incoherent on this surface. An armed dac-content marker OVERRIDES
-        # that default: outputd resolves the bonded return ring as its sole
-        # content source, which is the third value this field can take.
+        # question. An UNDECLARED bridge is the ring (config.rs); an armed
+        # dac-content marker overrides that default, resolving the bonded
+        # return ring as outputd's sole content source.
         if dac_content_marker_contradicted(outputd_values):
             # The pair outputd refuses at startup: neither source is running,
             # and calling it either one would report a silent box as served.
@@ -415,14 +399,10 @@ def _coupling_state(
             "persisted": coupling or None,
             "content_bridge": content_bridge,
             # COHERENT means "outputd is running a content source this coupling
-            # implies", not "both strings say shm_ring". Each end asked its own
-            # daemon's accept set, so UNDECLARED is the ring on both — the pair
-            # this used to call incoherent on every box the reconciler had not
-            # written. A dumb bonded member is the second served source: its
-            # fan-in hop is Ring A like every other box's and its post-DSP hop is
-            # the bonded return ring BY DESIGN, so calling that pair incoherent
-            # would report a correctly-configured speaker as mid-flip. `direct`
-            # remains the one incoherent value — nothing serves it.
+            # implies", not "both strings say shm_ring": UNDECLARED is the ring
+            # on both ends, and a dumb bonded member's post-DSP hop is the
+            # bonded return ring BY DESIGN. `direct` is the one incoherent
+            # value — nothing serves it.
             "intent_coherent": (
                 persisted_coupling_feeds_ring(text=fanin_text)
                 and content_bridge not in ("direct", "contradicted")
@@ -439,12 +419,9 @@ def _coupling_state(
             "combo": _combo_state(fanin_text=fanin_text),
         }
     except (ImportError, OSError, ValueError, TypeError, AttributeError) as e:
-        # Fail-soft so a transient issue never breaks the whole /state call, but
-        # NOT to a value: this used to degrade to "persisted": "loopback" with
-        # "intent_coherent": True, which named the RETIRED transport and called
-        # it healthy — a read failure reported as a diagnosis. ``None`` says what
-        # actually happened. Concrete exception set (no blind except): an import
-        # miss, an unreadable env file, or a malformed value.
+        # Fail-soft so a transient issue never breaks the whole /state call,
+        # but NOT to a value: a read failure must not read as a diagnosis.
+        # Concrete exception set: import miss, unreadable env file, bad value.
         logger.debug("coupling state read failed: %s", e)
         return {
             "persisted": None,
@@ -572,24 +549,17 @@ def _active_speaker_parked_snapshot() -> dict[str, Any]:
     An unconfigured topology, or a roleful/protected topology without its
     startup graph, is seeded a proven-silent parked graph so the deploy can
     complete. Nothing is audible until the household saves the next valid
-    layout. Two keys only — the config path is already in ``/state.audio``, so
-    it is not restated here.
+    layout. Two keys only — the config path is already in ``/state.audio``.
 
-    Keyed on the persisted STATEFILE, not on the live CamillaDSP config path,
-    deliberately: the two other surfaces that report this state
+    Keyed on the persisted STATEFILE, not on the live CamillaDSP path, so this
+    agrees with the two other surfaces that report the state
     (``jasper-doctor``'s ``active speaker runtime graph`` and
-    ``audio_health._parked_graph_transport``) both read the statefile, and with
-    CamillaDSP down the live path is empty — so keying on it would have made
-    ``/state`` report ``parked: false`` on a parked box while the doctor said
-    otherwise. The statefile is the box's durable intent; the live path is a
-    liveness fact and belongs to ``/state.audio``.
+    ``audio_health._parked_graph_transport``): with CamillaDSP down the live
+    path is empty, and a parked box would read unparked. ``detail`` names only
+    the exits reachable on this DAC.
 
-    ``detail`` names only the exits that are reachable on this DAC.
-
-    Fail-soft like every other resilience section, and the fail-soft lives in the
-    readers: ``read_camilla_statefile_config_path`` returns None on any read
-    problem and ``active_graph_is_parked`` is total, so this needs no guard of
-    its own.
+    Needs no guard of its own: ``read_camilla_statefile_config_path`` returns
+    None on any read problem and ``active_graph_is_parked`` is total.
     """
     from ..active_speaker.environment import read_camilla_statefile_config_path
     from ..active_speaker.runtime_contract import (
@@ -616,15 +586,11 @@ def _active_speaker_parked_snapshot() -> dict[str, Any]:
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     """Root-filesystem fullness for /state.resilience — fail-soft.
 
-    Returns ``{path, percent_used, free_gib, total_gib}`` or ``None`` on
-    any error (non-POSIX dev host, statvfs failure), mirroring the
-    fail-soft contract every other resilience-block section follows: a
-    broken read leaves this section null and the rest of /state intact.
-    jasper-doctor's ``check_disk_space`` owns the actionable warn/fail
-    thresholds; this is the always-visible dashboard number that makes a
-    filling SD card observable before the doctor is run. Uses f_bavail
-    (non-root-available blocks) for free space so the figure matches what
-    the daemons can actually write, but derives percent-used from
+    Returns ``{path, percent_used, free_gib, total_gib}``, or ``None`` on any
+    error (non-POSIX dev host, statvfs failure). jasper-doctor's
+    ``check_disk_space`` owns the actionable warn/fail thresholds. Uses
+    f_bavail (non-root-available blocks) for free space so the figure matches
+    what the daemons can actually write, but derives percent-used from
     total-vs-free so reserved blocks don't read as headroom."""
     statvfs = getattr(os, "statvfs", None)
     if statvfs is None:
@@ -653,15 +619,13 @@ USB_NETWORK_IFACE = "usb0"
 def _usb_network_wanted() -> bool:
     """Mirror ``jasper-usbgadget-up``'s network kill-switch read.
 
-    Read fresh from ``os.environ`` on every call (never cached) — this
-    daemon is not restarted when the kill switch flips, so a cached read
-    would go stale exactly like the voice-provider bug this convention
-    exists to avoid. Unless ``JASPER_USB_NETWORK`` is the exact literal
-    ``disabled`` (case-insensitive), network is wanted — same convention
-    as ``JASPER_SHAIRPORT_SUPERVISOR`` / ``JASPER_SYSTEM_SUPERVISOR``. NOT
-    stripped, to match ``jasper-usbgadget-up``'s raw comparison so a
-    whitespace-decorated ``" disabled"`` stays enabled in both (review
-    core-7)."""
+    Read fresh from ``os.environ`` on every call (never cached) — this daemon
+    is not restarted when the kill switch flips. Unless ``JASPER_USB_NETWORK``
+    is the exact literal ``disabled`` (case-insensitive), network is wanted —
+    same convention as ``JASPER_SHAIRPORT_SUPERVISOR`` /
+    ``JASPER_SYSTEM_SUPERVISOR``. NOT stripped, matching
+    ``jasper-usbgadget-up``'s raw comparison so a whitespace-decorated
+    ``" disabled"`` stays enabled in both."""
     raw = os.environ.get("JASPER_USB_NETWORK", "enabled")
     return raw.lower() != "disabled"
 
@@ -669,18 +633,15 @@ def _usb_network_wanted() -> bool:
 def _usb_network_snapshot() -> dict[str, Any]:
     """USB management-network summary for /state — fail-soft, uncached.
 
-    ``enabled`` reflects
-    the kill-switch intent (not composition — jasper-doctor's
-    check_usbgadget_composition/check_usbnet_* own the actionable
-    composed-vs-intent mismatch story); ``iface_present``/``carrier`` are
-    read fresh from ``/sys/class/net/usb0`` every call, never cached, so
-    plug/unplug shows up on the next poll. ``carrier=False`` (or
-    ``iface_present=False``) is the normal "nothing plugged in" state, not
-    an error — the dashboard should not alarm on it. The observed address is
-    read from the interface while desired address/subnet/version/fingerprint
-    come only from the validated installer-owned plan. A missing or corrupt
-    plan reports those desired fields as null rather than fabricating an
-    address; jasper-doctor owns the actionable failure."""
+    ``enabled`` reflects the kill-switch intent, not composition —
+    jasper-doctor's check_usbgadget_composition/check_usbnet_* own the
+    composed-vs-intent mismatch story. ``iface_present``/``carrier`` are read
+    fresh from ``/sys/class/net/usb0`` every call, never cached;
+    ``carrier=False`` (or ``iface_present=False``) is the normal "nothing
+    plugged in" state, not an error. The observed address is read from the
+    interface while desired address/subnet/version/fingerprint come only from
+    the validated installer-owned plan; a missing or corrupt plan reports those
+    as null rather than fabricating an address."""
     enabled = _usb_network_wanted()
     iface_root = Path("/sys/class/net") / USB_NETWORK_IFACE
     iface_present = False
@@ -862,6 +823,154 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _soft_read(
+    label: str,
+    reader: Callable[[], _T],
+    *,
+    exc: tuple[type[BaseException], ...] = (Exception,),
+) -> _T | None:
+    try:
+        return reader()
+    except exc:
+        logger.exception(label)
+        return None
+
+
+def _read_persisted_volume() -> tuple[int | None, float | None]:
+    """The persisted listening level and main volume, in that order."""
+    from ..volume_coordinator import VolumeState
+    from ..volume_persistence import VolumePersistence
+
+    path = os.environ.get(
+        "JASPER_VOLUME_STATE_PATH",
+        "/var/lib/jasper/speaker_volume.json",
+    )
+    record = VolumePersistence(path).load()
+    if record is None:
+        return None, None
+    return (
+        VolumeState.from_record(record).effective_percent,
+        round(record.main_volume_db, 2)
+        if math.isfinite(record.main_volume_db)
+        else None,
+    )
+
+
+def _read_sound_profile() -> dict[str, Any]:
+    from ..dsp_apply import last_dsp_apply_state
+    from ..sound.profile import (
+        build_sound_filters,
+        estimate_headroom_db,
+        load_profile,
+    )
+    from ..sound.settings import load_sound_settings, output_trim_db
+
+    profile = load_profile()
+    sound_settings = load_sound_settings()
+    return {
+        "enabled": profile.enabled,
+        "curve_id": profile.curve_id,
+        "simple_eq": profile.simple_eq.to_dict(),
+        "parametric_band_count": len(profile.parametric_bands),
+        "filter_count": len(build_sound_filters(profile)),
+        "headroom_db": estimate_headroom_db(profile),
+        "match_loudness": sound_settings.match_loudness,
+        "headroom_trim_db": sound_settings.headroom_trim_db,
+        "output_trim_db": output_trim_db(profile, sound_settings),
+        "updated_at": profile.updated_at or None,
+        "last_dsp_apply": last_dsp_apply_state(),
+    }
+
+
+def _spotify_state() -> dict[str, Any]:
+    from .. import librespot_state
+
+    blob = librespot_state.read(librespot_state.configured_path())
+    return {
+        "playing": bool(blob.get("playing", False)),
+        "track_id": blob.get("track_id"),
+        "uri": blob.get("uri"),
+        "session_active": bool(blob.get("session_active", False)),
+    }
+
+
+def _active_source(
+    *,
+    voice_session: bool,
+    mux_status: dict | None,
+    spotify_playing: bool,
+    airplay_playing: bool | None,
+    usbsink_playing: bool,
+) -> str:
+    """Pick ``/state.active_source``.
+
+    Mux owns the effective audible source in both manual and auto mode; the
+    raw renderer probes are a fallback for when mux is unavailable or has no
+    selected winner yet.
+    """
+    mux_effective_source = None
+    if isinstance(mux_status, dict):
+        raw_selected = mux_status.get("selected_source")
+        if isinstance(raw_selected, str):
+            mux_effective_source = raw_selected
+        else:
+            raw_winner = mux_status.get("winner")
+            if isinstance(raw_winner, str):
+                mux_effective_source = raw_winner
+
+    if voice_session:
+        return "voice"
+    if mux_effective_source:
+        return mux_effective_source
+    if spotify_playing:
+        return "spotify"
+    if airplay_playing:
+        return "airplay"
+    if usbsink_playing:
+        # `playing` is authoritative on both box shapes: solo reads the
+        # bridge's RMS-gated flag, combo derives it from the fan-in DIRECT
+        # lane's level (audible above the shared -60 dBFS gate), so a combo
+        # box streaming silence reads false exactly like solo.
+        return "usbsink"
+    return "idle"
+
+
+def _read_audition_state() -> dict[str, Any] | None:
+    """Reduced-graph audition record for ``/state.audition``.
+
+    Non-null means somebody is auditioning a reduced graph, so every other
+    reading of this speaker's sound is about THAT graph. ``stale`` marks a
+    record whose owner died without restoring the applied graph.
+    """
+    from ..active_speaker.audition import read_audition_state
+
+    state = read_audition_state()
+    if state is None:
+        return None
+    state = dict(state)
+    state["stale"] = float(state.get("deadline_at") or 0.0) <= time.time()
+    return state
+
+
+def _read_bass_extension() -> dict[str, Any] | None:
+    from ..bass_extension.profile import bass_extension_state_summary
+
+    return bass_extension_state_summary()
+
+
+def _read_output_hardware() -> dict[str, Any] | None:
+    from ..output_hardware import load_state
+
+    hardware = load_state()
+    return hardware.to_dict() if hardware is not None else None
+
+
+def _read_tool_catalog() -> dict[str, Any]:
+    from ..tool_catalog_view import summary
+
+    return summary()
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -885,9 +994,7 @@ async def _get_state(
     completes in ~200 ms typical."""
     from datetime import datetime, timezone
 
-    from .. import librespot_state
     from ..camilla import CamillaController
-    from ..output_hardware import load_state as _load_output_hardware_state
     from ..speaker_name import read_state as _read_speaker_name_state
     from ..voice.provider_state import (
         read_active_model_from_env_files,
@@ -895,63 +1002,18 @@ async def _get_state(
         read_barge_in_enabled,
     )
 
-    # Provider: re-read the wizard-owned SSOT file fresh on every call.
-    # jasper-control is NOT restarted on a provider switch (only
-    # jasper-voice is), so reading os.environ here pins the value to
-    # whatever it was at this daemon's start and shows a stale provider
-    # after every switch — the /system/ bug this fixes. Same fresh-read
-    # rationale as the home_assistant block in /system/snapshot below.
-    # ("", None) when unconfigured; never a guessed default.
+    # Re-read the wizard-owned SSOT file fresh on every call: jasper-control
+    # is NOT restarted on a provider switch (only jasper-voice is), so
+    # os.environ here would pin the value to this daemon's start and show a
+    # stale provider. ("", None) when unconfigured; never a guessed default.
     active_provider = read_active_provider_state()
 
-    listening_level: int | None = None
-    persisted_main_volume_db: float | None = None
-    try:
-        from ..volume_coordinator import VolumeState
-        from ..volume_persistence import VolumePersistence
-
-        path = os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        )
-        record = VolumePersistence(path).load()
-        if record is not None:
-            listening_level = VolumeState.from_record(record).effective_percent
-            if math.isfinite(record.main_volume_db):
-                persisted_main_volume_db = round(record.main_volume_db, 2)
-    except (OSError, ValueError):
-        pass
-
-    sound_profile: dict[str, Any] | None
-    try:
-        from ..dsp_apply import last_dsp_apply_state
-        from ..sound.profile import (
-            build_sound_filters,
-            estimate_headroom_db,
-            load_profile,
-        )
-        from ..sound.settings import load_sound_settings, output_trim_db
-
-        profile = load_profile()
-        sound_settings = load_sound_settings()
-        sound_profile = {
-            "enabled": profile.enabled,
-            "curve_id": profile.curve_id,
-            "simple_eq": profile.simple_eq.to_dict(),
-            "parametric_band_count": len(profile.parametric_bands),
-            "filter_count": len(build_sound_filters(profile)),
-            "headroom_db": estimate_headroom_db(profile),
-            # Global output settings + the effective trim they apply, so the
-            # dashboard can explain why a profile sounds quieter/level-matched.
-            "match_loudness": sound_settings.match_loudness,
-            "headroom_trim_db": sound_settings.headroom_trim_db,
-            "output_trim_db": output_trim_db(profile, sound_settings),
-            "updated_at": profile.updated_at or None,
-            "last_dsp_apply": last_dsp_apply_state(),
-        }
-    except Exception:  # noqa: BLE001
-        logger.exception("sound profile state probe failed")
-        sound_profile = None
+    listening_level, persisted_main_volume_db = _soft_read(
+        "persisted volume state read failed",
+        _read_persisted_volume,
+        exc=(OSError, ValueError),
+    ) or (None, None)
+    sound_profile = _soft_read("sound profile state probe failed", _read_sound_profile)
 
     # Slow probes — fan out in parallel.
     def _round_db(value: float | None) -> float | None:
@@ -967,9 +1029,9 @@ async def _get_state(
     ) -> list[float | None] | None:
         """Every channel the running graph carries, not just the front pair.
 
-        An active-crossover box plays four (or more) physical outputs; a
-        stereo readout hides entire drivers, which is exactly what a
-        commissioning ramp needs to see. The width comes from CamillaDSP.
+        An active-crossover box plays four or more physical outputs, and a
+        stereo readout would hide entire drivers. The width comes from
+        CamillaDSP.
         """
         if levels is None:
             return None
@@ -1050,14 +1112,9 @@ async def _get_state(
     async def _fanin_status() -> dict | None:
         """Probe the jasper-fanin daemon's UDS STATUS endpoint.
 
-        Returns None when:
-          - the daemon isn't running yet or is unhealthy
-          - the socket doesn't exist (daemon not yet bound)
-          - the probe times out (work loop wedged, ALSA blocked)
-          - the response isn't valid JSON
-
-        Fan-in is mandatory for renderer audio, but /state is fail-soft
-        like _voice_status. jasper-doctor owns the actionable failure.
+        ``None`` when the daemon is down or unhealthy, the socket is absent,
+        the probe times out, or the response isn't valid JSON. Fail-soft like
+        ``_voice_status``; jasper-doctor owns the actionable failure.
         """
         return await local_status_json("/run/jasper-fanin/control.sock")
 
@@ -1109,10 +1166,9 @@ async def _get_state(
             timeout=_STATE_AGGREGATE_BUDGET_SEC,
         )
     except asyncio.TimeoutError:
-        # A probe blew past its own ceiling. Fail loud (the handler turns
-        # this into a 502) rather than hang a bounded worker forever; the
-        # cheap /healthz probe stays answerable so this can't manufacture a
-        # T5.2 reboot. Greppable so the offending probe is diagnosable.
+        # A probe blew past its own ceiling. Fail loud (the handler turns this
+        # into a 502) rather than hang a bounded worker forever; the cheap
+        # /healthz probe stays answerable so this can't manufacture a reboot.
         log_event(
             logger,
             "state.aggregate_timeout",
@@ -1121,30 +1177,22 @@ async def _get_state(
         )
         raise
 
-    spotify_blob = librespot_state.read(librespot_state.configured_path())
+    spotify = _spotify_state()
     if sound_profile is not None:
         runtime = _sound_runtime_status(
             sound_profile,
             camilla_st.get("active_config_path"),
         )
         sound_profile["runtime"] = runtime
-        # Keep these top-level aliases for lightweight consumers that
-        # only need the running truth and do not want to parse the nested
-        # runtime object.
+        # Top-level aliases for consumers that need only the running truth
+        # and do not want to parse the nested runtime object.
         sound_profile["runtime_state"] = runtime["state"]
         sound_profile["runtime_active"] = runtime["active"]
         sound_profile["active_config_path"] = runtime["active_config_path"]
     speaker_name_state = _read_speaker_name_state()
-    spotify = {
-        "playing": bool(spotify_blob.get("playing", False)),
-        "track_id": spotify_blob.get("track_id"),
-        "uri": spotify_blob.get("uri"),
-        "session_active": bool(spotify_blob.get("session_active", False)),
-    }
 
     # USB Audio Input — fourth renderer. Fan-in owns the live DIRECT lane;
-    # kernel UDC state owns host connection. No copied state file or resident
-    # bridge helper sits between those owners and this projection.
+    # kernel UDC state owns host connection.
     usbsink_state = _build_usbsink_renderer_state(
         fanin_st,
         host_connected=udc_host_connected(
@@ -1154,37 +1202,13 @@ async def _get_state(
 
     voice_status = voice_st or {}
     voice_session = bool(voice_st) and voice_status.get("state") == "SESSION"
-    # Active-source picks. Mux owns the effective audible source in
-    # both manual and auto mode. Fall back to raw renderer probes only
-    # when mux is unavailable or has no selected winner yet.
-    mux_effective_source = None
-    if isinstance(mux_st, dict):
-        raw_selected = mux_st.get("selected_source")
-        if isinstance(raw_selected, str):
-            mux_effective_source = raw_selected
-        else:
-            raw_winner = mux_st.get("winner")
-            if isinstance(raw_winner, str):
-                mux_effective_source = raw_winner
-
-    if voice_session:
-        active_source: str = "voice"
-    elif mux_effective_source:
-        active_source = mux_effective_source
-    elif spotify["playing"]:
-        active_source = "spotify"
-    elif airplay:
-        active_source = "airplay"
-    elif usbsink_state is not None and usbsink_state.get("playing"):
-        # Fallback (only when mux is unavailable / has no winner yet). The
-        # `playing` flag is authoritative on both box shapes now: solo reads the
-        # bridge's RMS-gated flag; combo derives it from the fan-in DIRECT lane's
-        # level (audible above the shared -60 dBFS gate — never a stale idle
-        # default). A combo box streaming silence reads playing=false and does
-        # not fire this branch, matching solo.
-        active_source = "usbsink"
-    else:
-        active_source = "idle"
+    active_source = _active_source(
+        voice_session=voice_session,
+        mux_status=mux_st,
+        spotify_playing=spotify["playing"],
+        airplay_playing=airplay,
+        usbsink_playing=bool(usbsink_state and usbsink_state.get("playing")),
+    )
 
     volume_policy = build_volume_policy_snapshot(
         active_source=active_source,
@@ -1195,135 +1219,68 @@ async def _get_state(
         diagnostics=_read_volume_diagnostics(),
     )
 
-    # Multiroom grouping. Re-reads /var/lib/jasper/grouping.env fresh
-    # (never os.environ — jasper-control isn't restarted on a wizard
-    # save). read_grouping_state is itself total, but guard the section
-    # so any future read change can't take the whole /state down: a
-    # broken read leaves grouping null and the rest of /state intact.
-    # enabled=False means grouping is off (solo); enabled=True with a
-    # non-null error is the fail-LOUD "configured but broken" state.
-    try:
-        grouping_state: dict | None = read_grouping_state(
-            local_outputd_reader=lambda: outputd_st,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("grouping state read failed")
-        grouping_state = None
-
-    # Bonded-leader AirPlay latency fit (Stage D observability — see
-    # jasper/multiroom/airplay_latency.py). The shared composer (also used by
-    # /rooms.json) attaches it non-mutatingly; read_grouping_state stays a pure
-    # config projection and the gated, cached journal read lives behind the
-    # helper. Total (returns {"applicable": False} on solo without touching the
-    # journal), so the grouping section survives a broken read.
-    grouping_state = with_airplay_latency_fit(grouping_state)
-
-    try:
-        active_speaker_setup = read_active_speaker_setup_status(
+    grouping_state = with_airplay_latency_fit(_soft_read(
+        "grouping state read failed",
+        lambda: read_grouping_state(local_outputd_reader=lambda: outputd_st),
+    ))
+    active_speaker_setup = _soft_read(
+        "active speaker setup status read failed",
+        lambda: read_active_speaker_setup_status(
             active_config_path=camilla_st.get("active_config_path"),
-        )
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        logger.exception("active speaker setup status read failed")
-        active_speaker_setup = None
-
-    # Null means the speaker is on its applied graph. Non-null means somebody is
-    # auditioning a reduced one, and every other reading of this speaker's sound
-    # is about THAT graph. `stale` marks a record whose owner died without
-    # restoring: the graph is still reduced, but nothing is going to put it back.
-    try:
-        from ..active_speaker.audition import read_audition_state
-
-        audition_state: dict | None = read_audition_state()
-        if audition_state is not None:
-            audition_state = dict(audition_state)
-            audition_state["stale"] = (
-                float(audition_state.get("deadline_at") or 0.0) <= time.time()
-            )
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        logger.exception("audition state read failed")
-        audition_state = None
-
-    try:
-        from ..bass_extension.profile import bass_extension_state_summary
-
-        bass_extension_state = bass_extension_state_summary()
-    except (
-        ImportError,
-        OSError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-        KeyError,
-        AttributeError,
-    ):
-        logger.exception("bass extension profile state read failed")
-        bass_extension_state = None
-
-    # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
-    # os.environ — jasper-control isn't restarted on a /transit/ save, only
-    # jasper-voice is). read_transit_state is itself total, but guard the
-    # section so a future read change can't take the whole /state down: a
-    # broken read leaves transit null and the rest of /state intact.
-    try:
-        transit_state: dict | None = read_transit_state_func()
-    except Exception:  # noqa: BLE001
-        logger.exception("transit state read failed")
-        transit_state = None
-    try:
-        output_hardware = _load_output_hardware_state()
-        output_hardware_state = (
-            output_hardware.to_dict()
-            if output_hardware is not None
-            else None
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("output hardware state read failed")
-        output_hardware_state = None
-
-    try:
-        service_states = (
-            service_states_snapshot() if service_states_snapshot else None
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("service state snapshot read failed")
-        service_states = None
+        ),
+        exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
+    )
+    audition_state = _soft_read(
+        "audition state read failed",
+        _read_audition_state,
+        exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
+    )
+    bass_extension_state = _soft_read(
+        "bass extension profile state read failed",
+        _read_bass_extension,
+        exc=(
+            ImportError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            KeyError,
+            AttributeError,
+        ),
+    )
+    transit_state = _soft_read("transit state read failed", read_transit_state_func)
+    output_hardware_state = _soft_read(
+        "output hardware state read failed", _read_output_hardware,
+    )
+    service_states = (
+        _soft_read("service state snapshot read failed", service_states_snapshot)
+        if service_states_snapshot
+        else None
+    )
 
     audio_graph_state = _audio_graph_state(
         fanin_status=fanin_st,
         outputd_status=outputd_st,
         service_states=service_states,
     )
-
-    # Tool catalog summary. Fresh read of /run/jasper/tools.json (written by
-    # jasper-voice) + the wizard-owned disabled-set — never os.environ, since
-    # jasper-control isn't restarted on a /tools/ toggle. Light view module
-    # (json + tool_state only). Guarded so a read change can't take /state down.
-    try:
-        from ..tool_catalog_view import summary as _tool_summary
-        tools_state: dict | None = _tool_summary()
-    except Exception:  # noqa: BLE001
-        logger.exception("tool catalog state read failed")
-        tools_state = None
+    tools_state = _soft_read("tool catalog state read failed", _read_tool_catalog)
 
     # Conversation history is a read-only Feature surface. Settings are
     # wizard-owned and read fresh; the SQLite store is opened read-only so
     # jasper-control cannot create or mutate jasper-voice's DB.
-    try:
-        chat_state = _conversation_history_state()
-    except (ImportError, OSError, RuntimeError, ValueError):
-        logger.exception("conversation history state read failed")
-        chat_state = None
-
-    try:
-        research_state = _research_state(voice_status.get("research"))
-    except (ImportError, OSError, RuntimeError, ValueError):
-        logger.exception("research state read failed")
-        research_state = None
+    chat_state = _soft_read(
+        "conversation history state read failed",
+        _conversation_history_state,
+        exc=(ImportError, OSError, RuntimeError, ValueError),
+    )
+    research_state = _soft_read(
+        "research state read failed",
+        lambda: _research_state(voice_status.get("research")),
+        exc=(ImportError, OSError, RuntimeError, ValueError),
+    )
 
     # Lazy import (mirrors read_active_provider_state above) so jasper-control
-    # doesn't pull jasper.voice.* at module load. mic_presence reads the
-    # reconciler's SSOT (one JSON read + a marker stat per /state) — cheap, and
-    # it composes voice.input_presence's tiny marker reader.
+    # doesn't pull jasper.voice.* at module load.
     from ..mic_presence import read_mic_presence
     mic_presence = read_mic_presence()
 
@@ -1331,11 +1288,9 @@ async def _get_state(
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
             "provider": active_provider.provider,
-            # active_provider.model only sees the wizard file; a model
-            # pinned solely in jasper.env would show the catalog default.
-            # read_active_model_from_env_files merges jasper.env + the
-            # wizard file (same set jasper-voice sources) — same drift
-            # class as the doctor's pricing row, issue #3133.
+            # active_provider.model sees only the wizard file; the merged
+            # reader adds jasper.env, the same set jasper-voice sources.
+            # See issue #3133.
             "model": (
                 read_active_model_from_env_files(active_provider.provider)
                 if active_provider.configured
@@ -1356,19 +1311,14 @@ async def _get_state(
                 },
             },
             "reachable": voice_st is not None,
-            # Disambiguates reachable:false. True when the AEC reconciler
-            # parked voice for a missing microphone (its ConditionPathExists
-            # marker is present) — i.e. "intentionally idle, no mic", NOT
-            # "crashed". Read fresh from the marker each call (jasper-control
-            # isn't restarted on a mic plug/unplug).
-            # Derived from the same read as the top-level `microphone` block
-            # below, so the boolean and the rich record can never disagree.
+            # Disambiguates reachable:false: true means the AEC reconciler
+            # parked voice for a missing microphone ("intentionally idle, no
+            # mic", NOT "crashed"). Same read as the `microphone` block below,
+            # so the boolean and the rich record cannot disagree.
             "parked_no_mic": mic_presence.parked,
         },
-        # Single source of truth for mic presence (jasper.mic_presence): the
-        # reconciler's one canonical record, surfaced so the dashboard / any
-        # client renders "no microphone" as one fact (present + reason + card +
-        # variant + channels + a ready-made `summary`) instead of inferring it
+        # The reconciler's one canonical mic record (jasper.mic_presence), so a
+        # client renders "no microphone" as a fact rather than inferring it
         # from voice.reachable:false.
         "microphone": mic_presence.as_dict(),
         "audio": {
@@ -1391,9 +1341,8 @@ async def _get_state(
             "airplay": (
                 None if airplay is None else {"playing": airplay}
             ),
-            # null when the feature is disabled (no state file). The
-            # /system dashboard and any other consumer can show
-            # "off" vs "idle" based on this.
+            # null when the feature is disabled (no state file), so a
+            # consumer can show "off" as distinct from "idle".
             "usbsink": usbsink_state,
         },
         "speaker_name": {
@@ -1401,140 +1350,96 @@ async def _get_state(
             "source": speaker_name_state.source,
         },
         "active_source": active_source,
-        # Fan-in daemon. null only when the daemon/socket is unavailable.
-        # When running, the UDS STATUS endpoint emits a JSON snapshot
-        # with per-input frame counts, output xrun counts, and watchdog
-        # metrics — surfaced verbatim here.
+        # Fan-in's UDS STATUS snapshot, verbatim. null only when the
+        # daemon/socket is unavailable.
         "fanin": fanin_st,
-        # Final-output owner on current main. null when the daemon/socket
-        # is unavailable; jasper-doctor owns the actionable failure.
+        # Final-output owner; jasper-doctor owns the actionable failure.
         "outputd": outputd_st,
-        # Additive mirror of GET /aec so one-shot /state consumers can see
-        # requested intent vs observed mic/profile runtime truth without a
-        # second control-plane request. null only when the probe itself fails.
+        # Additive mirror of GET /aec, so a one-shot /state consumer sees
+        # requested intent vs observed runtime without a second request.
         "aec": aec_status,
         "source_selection": mux_st,
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
-            # Bonded-member runtime liveness: dac_content starvation
-            # watch (kicks the grouping reconciler, rate-limited) +
-            # continuous snapcast binding read-repair on the leader.
-            # Off via JASPER_GROUPING_SUPERVISOR=disabled.
+            # Bonded-member runtime liveness: dac_content starvation watch
+            # + snapcast binding read-repair. Off via
+            # JASPER_GROUPING_SUPERVISOR=disabled.
             "grouping_supervisor": grouping_supervisor.snapshot(),
-            # T5.2 — userspace-liveness supervisor. Probes sshd / our
-            # own HTTP / /proc/loadavg every 30 s; clean-reboots after
-            # 3 consecutive failures (rate-limited 1/24h). Off via
+            # Userspace-liveness supervisor: probes sshd / our own HTTP /
+            # /proc/loadavg every 30 s and clean-reboots after 3 consecutive
+            # failures (rate-limited 1/24h). Off via
             # JASPER_SYSTEM_SUPERVISOR=disabled.
             "system_supervisor": system_supervisor.snapshot(),
-            # WiFi profile guardian: self-heal of the NM keyfile after
-            # dirty shutdown. Synthesised from the on-disk stash + the
-            # most recent `event=wifi_guardian.*` journal line — there's
-            # no resident daemon to ask (the guardian is Type=oneshot).
-            # Fail-soft inside the snapshot itself; never raises.
+            # Self-heal of the NM keyfile after dirty shutdown. Type=oneshot,
+            # so there is no daemon to ask: synthesised from the on-disk stash
+            # plus the most recent `event=wifi_guardian.*` journal line.
             "wifi_guardian": wifi_guardian,
-            # Boot-loop guard (cross-boot circuit breaker for the T5.1
-            # StartLimitAction=reboot ladder). Fresh marker read per
-            # call; {"ran": false} when the oneshot hasn't run this
-            # boot. tripped=true means reboot escalation is disarmed
-            # for this boot via runtime drop-ins — fix the failing
-            # daemon, then reboot to re-arm.
+            # Cross-boot circuit breaker for the StartLimitAction=reboot
+            # ladder. {"ran": false} when the oneshot hasn't run this boot;
+            # tripped=true means reboot escalation is disarmed for this boot —
+            # fix the failing daemon, then reboot to re-arm.
             "bootloop_guard": bootloop_guard_state.snapshot(),
             # jasper-camilla-recover's core-graph park record (ADR-0175).
-            # parked=true means one bounded recovery pass could not bring the
-            # DSP graph back, so CamillaDSP was stopped out-of-band: the
-            # speaker emits NOTHING and nothing re-arms it automatically — the
-            # record's own `action`/`re_arm` are the remedy. Fresh /run read
-            # per call; {"status": "absent"} on a healthy boot. Same reader
-            # jasper-doctor's check_camilla_recover_park uses, so the two
-            # surfaces cannot disagree.
+            # parked=true means CamillaDSP was stopped out-of-band after a
+            # failed recovery pass: the speaker emits NOTHING and nothing
+            # re-arms it — the record's own `action`/`re_arm` are the remedy.
+            # {"status": "absent"} on a healthy boot. Same reader
+            # jasper-doctor's check_camilla_recover_park uses.
             "camilla_recover": camilla_recover_state.snapshot(),
-            # The four named parks of the one-audio-transport rule
-            # (ADR-0178). Read from the audio-health sampler's cached verdict
-            # when there is one, so this field and the household rows built
-            # from it in the same payload cannot disagree in time. Same reader
-            # jasper-doctor's check_ring_transport_park uses, so the three
-            # surfaces cannot disagree either.
+            # The four named parks of the one-audio-transport rule (ADR-0178).
+            # Read from the audio-health sampler's cached verdict, and by the
+            # same reader jasper-doctor's check_ring_transport_park uses, so
+            # the three surfaces cannot disagree.
             "transport_park": transport_park_snapshot(),
-            # Bounded after-the-fact timeline for multiroom restart cascades:
-            # existing event=multiroom.reconcile.*, restart_broker.*, and
-            # grouping_supervisor.* journal lines, scanned into a tiny ring so
-            # /state can answer "what kicked what recently?" without a raw log
-            # bundle.
+            # Bounded after-the-fact timeline for multiroom restart cascades,
+            # scanned from event=multiroom.reconcile.*, restart_broker.* and
+            # grouping_supervisor.* journal lines.
             "multiroom_cascade": _multiroom_cascade_snapshot(),
-            # Effective mDNS identity (jasper-identity-reconcile, boot
-            # + 5-min timer). status=collision means Avahi renamed us —
-            # another device owns our hostname; the management
-            # allowlist self-heals from the same file, but the
-            # household should pick a unique name. Fresh file read per
-            # call (reconciler-owned, this daemon is never restarted on
-            # identity changes); {"status": "absent"} pre-first-run.
+            # Effective mDNS identity (jasper-identity-reconcile, boot + 5-min
+            # timer). status=collision means Avahi renamed us because another
+            # device owns our hostname; the household should pick a unique
+            # name. {"status": "absent"} pre-first-run.
             "identity": identity_state.snapshot(),
-            # Root-filesystem fullness ({path, percent_used, free_gib,
-            # total_gib}). A full SD card is the corruption hazard the
-            # whole resilience ladder exists to survive, yet nothing made
-            # it observable until writes failed. Fail-soft: null on a
-            # non-POSIX host or statvfs error. jasper-doctor's
-            # check_disk_space owns the warn(≥85%)/fail(≥95%) thresholds.
+            # Root-filesystem fullness; jasper-doctor's check_disk_space owns
+            # the warn(>=85%)/fail(>=95%) thresholds.
             "disk": _disk_snapshot(),
-            # Speaker-setup PARKED state (#2135): an unconfigured topology or
-            # declared-but-uncommissioned roleful topology holds silence instead
-            # of allowing an inferred flat graph. {"parked": bool, "detail":
-            # <the reachable next action, or null>}. Read from the STATEFILE,
-            # like the doctor and audio_health surfaces, so a down CamillaDSP
-            # cannot make a parked box read as not-parked.
+            # Speaker-setup PARKED state (#2135): an unconfigured or
+            # declared-but-uncommissioned topology holds silence rather than
+            # allow an inferred flat graph.
             "active_speaker_parked": _active_speaker_parked_snapshot(),
             # jasper-input stays `active` while one bridge loops in restart
             # backoff (ADR-0225); this is the only non-journal sign of it.
             "accessory_bridges": accessory_status.snapshot(),
         },
         "home_assistant": ha_status,
-        # Multiroom grouping (off by default). null only if the fresh
-        # read itself errored; otherwise a JSON-able snapshot of the
-        # wizard-owned grouping.env (enabled / role / channel / bond_id /
-        # leader_addr / buffer_ms / codec / error), PLUS airplay_latency_fit:
-        # the bonded-leader AirPlay tight-regime observability ({applicable:
-        # false} unless this speaker is an active bonded leader). See
-        # jasper/multiroom/state.py + jasper/multiroom/airplay_latency.py.
+        # Snapshot of the wizard-owned grouping.env plus airplay_latency_fit
+        # ({applicable: false} unless this speaker is an active bonded leader).
+        # enabled=True with a non-null error is the fail-LOUD "configured but
+        # broken" state. See jasper/multiroom/state.py + airplay_latency.py.
         "grouping": grouping_state,
-        # Transit city packs (which cities' transit is enabled). null only
-        # if the fresh read itself errored; otherwise {packs: [{id, label,
-        # enabled}]} read fresh from the wizard-owned transit.env. Mirrors
-        # the daemon's enabled_pack_ids on both absent (all) and
-        # present-empty (none). See jasper/transit/state.py.
+        # {packs: [{id, label, enabled}]} read fresh from the wizard-owned
+        # transit.env. Mirrors the daemon's enabled_pack_ids on both absent
+        # (all) and present-empty (none). See jasper/transit/state.py.
         "transit": transit_state,
-        # Runtime debug-logging toggle (the /system Debug card): which
-        # subsystems are at DEBUG + the shared auto-expiry countdown.
+        # Which subsystems are at DEBUG + the shared auto-expiry countdown.
         "debug": debug_control.snapshot(),
-        # Tool catalog summary ({catalog_present, count, disabled,
-        # disabled_count, pending}). null only if the fresh read itself
-        # errored. Read fresh from /run/jasper/tools.json + the wizard-owned
+        # Read fresh from /run/jasper/tools.json + the wizard-owned
         # tool_state.env by jasper.tool_catalog_view (never os.environ).
         # jasper-doctor's check_tool_catalog owns the actionable warn.
         "tools": tools_state,
-        # Conversation-history summary. null only if the read-side store
-        # is unavailable while capture is enabled, or if the state read
-        # itself fails. See jasper.conversation_history.
+        # null when the read-side store is unavailable while capture is
+        # enabled, or the read itself failed. See jasper.conversation_history.
         "chat": chat_state,
         # Async research summary. Counts and timestamps only; no prompt or
         # answer text leaves the local store through /state.
         "research": research_state,
-        # The open measurement window, as jasper-control sees it
-        # ({active, owner, mode, expires_in_s, held_for_s}). This process holds
-        # one of the three self-expiring copies of that fact — the copy that
-        # makes it decline source-observed volume writes — so the projection is
-        # a plain in-memory read of jasper.control.measurement_hold, not a
-        # probe. `active` is what a household surface renders as "measurement
-        # in progress"; `held_for_s` is what jasper-doctor's
-        # check_measurement_hold reads, since `expires_in_s` resets on every
-        # renewal and so can never reveal a stuck hold.
+        # The open measurement window as this process sees it — an in-memory
+        # read of its own self-expiring copy, not a probe. `held_for_s` is
+        # what jasper-doctor's check_measurement_hold reads: `expires_in_s`
+        # resets on every renewal and so can never reveal a stuck hold.
         "measurement": measurement_hold.snapshot(),
-        # USB management network: the default-on, hardware-gated NCM link
-        # on usb0 that lets http://<JASPER_HOSTNAME>/
-        # work with WiFi off when the resolved USB role permits gadget mode.
-        # Observed link/address plus the validated desired plan — read fresh from
-        # /sys/class/net/usb0 and the kill-switch env every call, never
-        # cached; carrier=False/absent is normal (nothing plugged in), never
-        # an error. jasper-doctor's check_usbnet_* own the actionable
-        # composed-vs-intent mismatch story.
+        # The default-on, hardware-gated NCM link on usb0 that keeps
+        # http://<JASPER_HOSTNAME>/ reachable with WiFi off when the resolved
+        # USB role permits gadget mode.
         "usb_network": _usb_network_snapshot(),
     }
