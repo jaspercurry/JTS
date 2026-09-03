@@ -1337,3 +1337,75 @@ def test_a_median_over_nothing_is_nan_not_zero():
     assert math.isnan(he._median([]))
     assert math.isnan(he._median([float("nan")]))
     assert he._median([-50.0, -52.0, -54.0]) == -52.0
+
+
+@pytest.mark.parametrize(
+    ("width", "values", "expected"),
+    [
+        (2, (0, 16384, -16384, 32767), (0.0, 0.5, -0.5, 32767 / 2**15)),
+        (4, (0, 2**30, -(2**30), 2**31 - 1), (0.0, 0.5, -0.5, (2**31 - 1) / 2**31)),
+    ],
+)
+def test_a_capture_is_decoded_at_the_width_its_container_declares(
+    tmp_path, width, values, expected,
+):
+    """The dump ring holds 16-bit phone captures AND 32-bit wired captures.
+
+    A width-blind int16 decode re-strides a 32-bit take into garbage the H2/H3
+    read then misattributes, so the width comes from the container's own fmt
+    chunk. An unsupported width raises rather than being mis-analyzed.
+    """
+    import struct
+    import wave
+
+    path = tmp_path / f"capture-{width}.wav"
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(width)
+        writer.setframerate(48_000)
+        writer.writeframes(struct.pack({2: "<4h", 4: "<4i"}[width], *values))
+
+    assert np.allclose(he._read_mono(path), expected)
+
+    eight = tmp_path / "unsupported.wav"
+    with wave.open(str(eight), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(1)
+        writer.setframerate(48_000)
+        writer.writeframes(bytes([128, 129, 127]))
+    with pytest.raises(ValueError):
+        he._read_mono(eight)
+
+
+@pytest.mark.parametrize(
+    "calibration_id",
+    [
+        "minidsp-minidsp_umik2-b7343c0c625b",
+        "minidsp-minidsp_umik1-abcdef123456",
+        "dayton_audio-dayton_umm6-abcdef123456",
+        "",
+        "vendor-not_a_registered_model-abc",
+    ],
+)
+def test_the_sign_convention_comes_from_the_mic_registry(calibration_id):
+    """A vendor file states either the mic's RESPONSE or a CORRECTION.
+
+    The two differ by a sign, and reading one as the other moves every
+    magnitude without moving a single timing diagnostic the fidelity gate
+    checks — so it must be the REGISTRY's answer for the id the session
+    banked, never a literal pinned here. An unregistered or empty id falls
+    back to DEFAULT_SIGN_CONVENTION rather than to whatever the last default
+    was.
+    """
+    from jasper.audio_measurement.calibration import (
+        DEFAULT_SIGN_CONVENTION,
+        SUPPORTED_MODELS,
+    )
+
+    assert he._sign_convention(calibration_id) in {"response", "correction"}
+    for key, spec in SUPPORTED_MODELS.items():
+        assert he._sign_convention(f"vendor-{key}-hash") == spec["sign_convention"]
+    assert he._sign_convention("") == DEFAULT_SIGN_CONVENTION
+    assert he._sign_convention("vendor-not_a_registered_model-abc") == (
+        DEFAULT_SIGN_CONVENTION
+    )

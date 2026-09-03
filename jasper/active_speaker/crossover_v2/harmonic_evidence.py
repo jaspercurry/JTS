@@ -72,12 +72,9 @@ drive through every gate cleanly — and that residual is named in full in its
 docstring, along with the one change that retires it.  Read it before treating
 this module as all-clear.
 
-**Provenance of the method.**  This is the promotion of
-``scripts/harmonic-distortion-replay.py``, which established both gates, the
-band arithmetic, and the pooling rule against the 2026-08-17 and 2026-08-19
-corpora.  That script stays as the exploratory lab bench (it takes loose
-directories and prints a table); this module takes a banked round and files a
-document.  The math is not re-derived here — it is
+**Provenance of the method.**  Both gates, the band arithmetic and the pooling
+rule were established against the 2026-08-17 and 2026-08-19 corpora by a lab
+bench this module replaced.  The math is not re-derived here — it is
 :mod:`jasper.audio_measurement.distortion`'s, called.
 
 **One seam worth naming.**  Locating the schedule inside a capture uses

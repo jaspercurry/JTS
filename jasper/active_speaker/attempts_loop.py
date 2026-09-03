@@ -173,9 +173,9 @@ def percentile(values: Sequence[float], q: float) -> float:
 
     Spelled out rather than imported so the floor's provenance is auditable
     without pinning a NumPy version: the claim floor is the product's most
-    consequential decimal, and it should be reproducible by reading. The
-    equivalence to the banked study's own summary is pinned by
-    ``tests/test_active_speaker_attempts_replay.py``.
+    consequential decimal, and it should be reproducible by reading. Its
+    agreement with the banked repeat-floor study's own published summary is
+    pinned by ``tests/test_active_speaker_attempts_loop.py``.
     """
 
     ordered = sorted(float(value) for value in values)

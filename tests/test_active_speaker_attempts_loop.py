@@ -56,6 +56,7 @@ from jasper.active_speaker.attempts_loop import (
     FloorStats,
     decide_next,
     first_stop_index,
+    percentile,
     material_improvement_db,
     replay,
     summarize,
@@ -83,6 +84,34 @@ BANKED_MEDIAN_DB = 0.05183
 #: scope rather than a permissive one no speaker has adopted, and the sitting
 #: rule's own tests below are the only place the value varies.
 SITTING = "sitting-1"
+
+
+def test_percentile_reproduces_the_banked_studys_own_summary():
+    """The claim floor's inputs must be derivable, not transcribed.
+
+    The banked analysis published median 0.05183 and p95 0.08508 for these
+    thirteen pairs; the floor it derives is twice that p95. A percentile that
+    disagreed would silently move every floor this module computes.
+    """
+    assert percentile(BANKED_CONSECUTIVE_PAIRS_DB, 50.0) == pytest.approx(
+        BANKED_MEDIAN_DB, abs=5e-6,
+    )
+    assert percentile(BANKED_CONSECUTIVE_PAIRS_DB, 95.0) == pytest.approx(
+        BANKED_P95_DB, abs=5e-6,
+    )
+    assert CLAIM_FLOOR_P95_MULTIPLE * percentile(
+        BANKED_CONSECUTIVE_PAIRS_DB, 95.0
+    ) == pytest.approx(0.17016, abs=1e-5)
+
+
+def test_percentile_edges():
+    assert percentile([4.0], 95.0) == 4.0
+    assert percentile([1.0, 2.0, 3.0], 0.0) == 1.0
+    assert percentile([1.0, 2.0, 3.0], 100.0) == 3.0
+    assert percentile([1.0, 2.0, 3.0], 50.0) == 2.0
+    with pytest.raises(ValueError):
+        percentile([], 50.0)
+
 
 
 def _floor(
