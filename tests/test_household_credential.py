@@ -21,7 +21,7 @@ test_control_server.py against the real ThreadingHTTPServer.
 """
 from __future__ import annotations
 
-import inspect
+import hmac
 import os
 import stat
 
@@ -71,12 +71,20 @@ def test_verify_requires_exact_match_when_present(monkeypatch, tmp_path):
     assert hc.verify("") is False
 
 
-def test_verify_uses_constant_time_compare():
+def test_verify_uses_constant_time_compare(monkeypatch, tmp_path):
     """compare_digest, never ==, so the secret's length/prefix doesn't leak via
     timing (mirrors control_token.verify)."""
-    src = inspect.getsource(hc.verify)
-    assert "compare_digest" in src
-    assert "==" not in src.replace("!=", "")
+    path = tmp_path / "household_secret"
+    path.write_text("the-secret-value")
+    monkeypatch.setattr(hc, "SECRET_FILE", str(path))
+    calls: list[tuple[str, str]] = []
+    real = hmac.compare_digest
+    monkeypatch.setattr(
+        hmac, "compare_digest", lambda a, b: calls.append((a, b)) or real(a, b)
+    )
+
+    assert hc.verify("wrong") is False
+    assert calls == [("wrong", "the-secret-value")]
 
 
 # --- is_paired / current ---------------------------------------------------
