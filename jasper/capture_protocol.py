@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The capture-plan contract, owned by neither side of the capture transport.
+"""The capture-plan contract, owned by neither side of the capture driver.
 
 A commissioning session decides its walk (``jasper.active_speaker.crossover_v2``)
-and a transport carries it (``jasper.capture_relay`` plus ``relay/src/worker.js``
-and the capture page). The plan shape and the two ceilings below are what those
-two halves must agree on, so they live here rather than inside either — the
-relay package is a parked island and no live measurement path may import from
-it, while a plan builder still has to know what a plan may legally say.
+and the wired driver carries it
+(``jasper.web.correction_crossover_v2_wired``). The plan shape and the two
+ceilings below are what those two halves must agree on, so they live here
+rather than inside either.
 
 Stdlib-only on purpose: the socket-activated wizard builds specs on a light
 process, and both sides import this unconditionally.
@@ -25,61 +24,20 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-# Hard ceiling on a capture plan's attempt budget. Each admission attempt's
-# blob rides its own relay key (capture_index = attempt - 1), so the storable
-# blob indexes are EXACTLY 0..MAX_CAPTURE_PLAN_ATTEMPTS-1: the Worker applies
-# this same value to indexes with a strict inequality (index >= cap rejected).
-# Keep in lockstep with `MAX_CAPTURE_PLAN_ATTEMPTS` in relay/src/worker.js
-# (pinned by tests/test_capture_relay_spec.py).
-#
-# 32 is sized from PR-3b's DECLARED choreography defaults — design inputs from
-# docs/historical/linearization-campaign-2026-07.md § PR-3b, not measurements.
-# Worst-case ENTRY count at that section's documented maxima:
-#     CHECK 1 + MEASURE 1 + (N-1) cloud-measure at max N=12 => 11
-#             + M=6 cloud-verify + 2 geometry-retry positions          = 21
-# `max_attempts` doubles as the RETRY budget (a retaken capture spends an
-# attempt but not a `capture_target` slot), so the cap must cover entries PLUS
-# retakes: 21 + 11 = 32, i.e. ~52 % retake headroom over the worst-case entry
-# count.
-#
-# As SHIPPED (PR-3b, N=9 after adjudication 3a): the live FULL-tier cloud plan
-# is capture_target=16 against `crossover_v2_flow.cloud_plan_max_attempts()` =
-# 23, i.e. ~45 % headroom — tighter than the 167 % the pre-cloud 3-entry plan
-# carried, and deliberately so. The express tier (flow-simplification §1.1) is
-# a strictly smaller draw on the same ceiling: capture_target=7 against 14.
-# Longer sets get proportionally fewer retakes
-# each, which is the intended direction: a 21-position session that needs 11
-# retakes has a problem retries will not fix. (The 3-entry plan itself still
-# exists only as the 1-entry re-verify re-arm, which keeps
-# `CAPTURE_PLAN_MAX_ATTEMPTS` = 8.) `repeat_admission` allows 100 %
-# (MAX_ATTEMPTS=4 audible vs MAX_RESERVATIONS=8 total reservations).
-#
-# Two consequences of the raise, named here rather than discovered later:
-#   - A session may now authorize 32 blob keys instead of 8, so the storage a
-#     leaked upload_token can push inside one TTL rises from 8x to 32x that
-#     session's `max_upload_bytes`. The per-blob size cap, the per-session rate
-#     limit, and the <=1 h TTL are unchanged and remain the real bounds.
-#   - The Worker caps the OPAQUE spec at `MAX_SPEC_BYTES` (64 KiB), so a
-#     32-entry plan has ~2 KiB of spec budget per entry. That is far above the
-#     product prompt copy PR-3b emits (a title + body) but BELOW the per-entry
-#     `MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES` ceiling of 4 KiB, so a plan that
-#     spent the full per-entry screen ceiling on every entry would be refused
-#     by the relay at registration (413 `capture_spec_too_large`). The
-#     product-sized regime is pinned by tests/test_capture_relay_spec.py.
+# Hard sanity ceiling on a capture plan's attempt budget (entries plus
+# retakes). ``CapturePlan.max_attempts`` validation
+# (``jasper.active_speaker.crossover_v2.sweep_spec``,
+# ``jasper.active_speaker.angle_capture``) enforces it at build time, so a
+# plan asking for more is refused before any tone plays. 32 covers the
+# worst-case cloud-plan shape with headroom to spare — see
+# ``jasper.active_speaker.crossover_v2.capture_plan``'s
+# ``MAX_CLOUD_MEASURE_POSITIONS`` for the derivation.
 MAX_CAPTURE_PLAN_ATTEMPTS = 32
 
-# The longest link the relay Worker grants (``MAX_TTL_S`` in
-# relay/src/worker.js, pinned in lockstep by tests/test_capture_relay_session.py).
-#
-# The Worker CLAMPS an over-large request rather than refusing it, so a caller
-# that asks for more is not an error there — it is a silent disagreement here.
-# ``open_capture`` publishes the requested ``ttl_s`` to the phone as
-# ``time_budget.session_s``, which is the number the household is told the link
-# lives for; a request the Worker quietly cut back would make that disclosure a
-# lie. So a caller sizing a TTL from its own budget clamps against this, and the
-# published number stays the granted one. It is a mirror of a separately
-# released artifact, exactly like ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``, not a
-# knob to tune from this side.
+# Sanity ceiling for a capture-session timeout budget — the longest a
+# session should reasonably run. Used as the upper clamp for
+# ``v2_first_begin_timeout_s`` and by any caller sizing a timeout against a
+# session's own budget.
 MAX_TTL_S = 3600
 
 CAPTURE_PLAN_KEYS = ("schema_version", "capture_target", "max_attempts", "entries")
@@ -190,15 +148,15 @@ class CapturePlan:
     capture per session: the capture source requests each capture with an
     authenticated ``begin_capture {index, attempt}`` event, the Pi admits it
     (budget stays Pi-owned — ``repeat_admission`` — never source-decided), and
-    each admitted attempt's blob rides its own relay key
+    each admitted attempt indexes its own recording
     (``capture_index = attempt - 1``).
 
     - ``capture_target`` — accepted captures required to finish the set
       (e.g. 3 driver repeats).
     - ``max_attempts`` — total admission attempts the set may consume,
       including rejected/retried ones (e.g. 4). Bounded by
-      ``MAX_CAPTURE_PLAN_ATTEMPTS`` so a plan can never authorize a blob index
-      past the Worker's key ceiling.
+      ``MAX_CAPTURE_PLAN_ATTEMPTS`` so a plan can never authorize an attempt
+      index past the sanity ceiling.
     - ``entries`` (schema_version 2, additive) — one ``CapturePlanEntry`` per
       capture index for a HETEROGENEOUS plan (§5.7). ``None``
       (schema_version 1) is the pre-entries shape: "N repeats of ONE spec",
