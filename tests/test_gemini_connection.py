@@ -642,6 +642,34 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         await conn.stop()
 
 
+async def test_setup_rejection_on_initial_connect_stays_up():
+    """A close-1007 setup rejection carries no HTTP status, only a
+    provider code — it must still rule terminal so the daemon stays up
+    with the outage on `/state` instead of exiting into a crash loop."""
+
+    class _SetupRejected(Exception):
+        code = 1007
+
+    factory = _FakeConnect()
+    factory.next_exceptions = [_SetupRejected("setup rejected")]
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        voice="Aoede",
+        context_reset_sec=9999.0,
+        keepalive_period_sec=9999.0,
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    await conn.start(ToolRegistry(), "system")
+    try:
+        assert conn._supervisor_task is not None
+        assert conn.is_paused()
+        assert isinstance(conn.last_failure_detail(), str)
+    finally:
+        await conn.stop()
+
+
 async def test_stop_is_idempotent():
     """Calling stop() twice should not raise."""
     conn, factory = _make_conn()
