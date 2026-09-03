@@ -71,6 +71,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import urllib.parse
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
@@ -670,6 +671,31 @@ def restart_voice_daemon() -> None:
     # consults it, which would re-open restart-of-any-unit; see
     # deploy/polkit/49-jasper-control.rules.)
     restart_systemd_units("jasper-voice")
+
+
+def terminate_process(
+    proc: subprocess.Popen[Any] | None,
+    *,
+    timeout: float = 0.75,
+) -> None:
+    """Best-effort bounded shutdown of a subprocess a wizard spawned.
+
+    SIGTERM, then SIGKILL after ``timeout`` seconds, then give up: a page
+    that cannot reap its own audible helper must still answer the request.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=timeout)
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+    except (OSError, ProcessLookupError):
+        pass
 
 
 # Upper bound on a wizard form body. Every wizard POST here is a small

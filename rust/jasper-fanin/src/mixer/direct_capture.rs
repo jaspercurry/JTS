@@ -9,8 +9,8 @@
 
 use super::*;
 
-/// Shared USB DIRECT counters for the STATUS `direct{}` block (C7). The mixer
-/// work thread writes them from the direct-capture state machine; the
+/// Shared USB DIRECT counters for the STATUS `direct{}` block. The mixer work
+/// thread writes them from the direct-capture state machine; the
 /// state-server thread reads them lock-free. Cloned into
 /// [`crate::state::InputSnapshotSource`] at construction.
 #[derive(Clone)]
@@ -19,7 +19,7 @@ pub struct DirectObservability {
     pub device: String,
     /// The gadget open period this lane negotiated (frames). Default 256 unless
     /// `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` overrides it — surfaced in STATUS
-    /// so an operator can confirm which geometry the H1 experiment is running.
+    /// so an operator can confirm the running geometry.
     pub period_frames: u32,
     /// The gadget capture buffer this lane ACTUALLY negotiated (frames) — the
     /// live `hwp.get_buffer_size()` from the open, not the requested
@@ -49,75 +49,63 @@ pub struct DirectObservability {
     pub opens: Arc<AtomicU64>,
     /// Cumulative reopen attempts QUEUED while Absent (a growing value with
     /// `present=false` means the gadget is not attachable — bridge holding it,
-    /// or no host). Since #2533 an attempt is counted when it is handed to the
-    /// `fanin-direct-opener` thread rather than when it runs, and the handover
-    /// that retires a dead handle counts as one — so a recovery contributes its
-    /// immediate attempt here, and the ~2 s latch governs the next one.
+    /// or no host). An attempt is counted when handed to the
+    /// `fanin-direct-opener` thread (#2533), including the handover that
+    /// retires a dead handle; the ~2 s latch governs the next attempt.
     pub retries: Arc<AtomicU64>,
     /// Whether a device open is currently QUEUED on the `fanin-direct-opener`
-    /// thread (#2533). Since the open no longer runs in the render loop, this is
-    /// how an operator sees one in progress — and a value stuck `true` alongside
-    /// a climbing `retries` says the open itself is hanging, which now costs
-    /// silence on this lane rather than glitches on the speaker.
+    /// thread (#2533). A value stuck `true` alongside a climbing `retries`
+    /// means the open itself is hanging, which costs silence on this lane
+    /// rather than an audio glitch.
     pub reopen_pending: Arc<AtomicBool>,
-    /// Cumulative ZOMBIE-handle forced reopens (C, defect 2026-07-05): a run of
+    /// Cumulative zombie-handle forced reopens: a run of
     /// `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS` consecutive zero-avail drains while
     /// Present tripped a close + bounded re-open of the gadget capture. A growing
     /// value means the gadget function is being rebuilt underneath fan-in (UDC
     /// rebind / usbsink stop-start) and this lane is self-healing the deaf handle
     /// instead of needing a manual fan-in restart. Surfaced via STATUS.
     pub reopens: Arc<AtomicU64>,
-    /// Consecutive zero-avail drain count (C). Incremented each drain entry where
+    /// Consecutive zero-avail drain count. Incremented each drain entry where
     /// `avail_update()` reported exactly 0 while Present; reset to 0 the moment any
     /// avail > 0 is seen or the handle transitions to Absent/reopened. When it
     /// reaches `DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS` the zombie-reopen fires — but ONLY
     /// once `frames_flowed_since_open` latched (see below), so an attached-idle host
     /// that never streamed on this handle can accumulate the streak but never trip.
     pub zero_avail_streak: Arc<AtomicU64>,
-    /// Flowing→dead edge latch (C, gate added 2026-07-05 to kill the attached-idle
-    /// false-positive). Set `true` the first time a drain sees `avail > 0` on the
-    /// CURRENT handle; reset to `false` every open/reopen and on going Absent. The
-    /// zombie-reopen only fires when this is already `true` — i.e. the handle was
-    /// demonstrably feeding this lane and THEN went deaf (the real gadget-rebuild
-    /// signature: usbsink was streaming, then a UDC rebind / stop-start left the
-    /// handle attached to a destroyed instance). Without this gate the detector
-    /// mis-fires on an ordinary attached-but-silent host: a Mac wired 24/7 with
-    /// music paused streams `avail≈0` drains indefinitely, so
-    /// every ~2 s the raw streak would hit threshold and churn a reopen + WARN with
-    /// no gadget rebuild in sight. Latching on frames-having-flowed bounds reopens
-    /// to one per real rebuild and keeps the `reopens` counter / incident
-    /// fingerprint honest. Lock-free atomic, same mixer-writes / state-reads idiom.
+    /// Flowing→dead edge latch guarding the zombie detector against an ordinary
+    /// attached-but-silent host, which can hold `avail≈0` indefinitely with no
+    /// gadget rebuild. Set `true` the first time a drain sees `avail > 0` on the
+    /// current handle; reset to `false` on every open/reopen and on going Absent.
+    /// The zombie-reopen only fires once this is `true` — the handle demonstrably
+    /// fed this lane and then went deaf — bounding reopens to one per real
+    /// rebuild. Lock-free atomic, same mixer-writes / state-reads idiom.
     pub frames_flowed_since_open: Arc<AtomicBool>,
     /// Render-period index of the LAST handle-liveness probe, so the probe fires
     /// on the `DIRECT_LIVENESS_PROBE_EVERY_PERIODS` (~1 s) cadence off the drain
     /// count rather than every period (a `snd_pcm_status` ioctl is a real
     /// syscall). Mixer-thread only.
     pub liveness_last_checked_drain: Arc<AtomicU64>,
-    /// Cumulative LIVENESS-PROBE forced reopens (C, defect 2026-07-06): the count
-    /// of times the ~1 s `snd_pcm_status` probe found the open handle dead
-    /// (ioctl `-ENODEV` or `State::Disconnected`) and this lane self-healed with a
-    /// bounded reopen. This is the signal the frozen-mmap `avail_update` fast path
-    /// structurally cannot raise — a rebuilt gadget leaves `avail_update` returning
-    /// `Ok(0)` forever with no errno, so a real STATUS ioctl is the only thing that
-    /// sees the dead handle. Kept a DISTINCT counter from `reopens` (the
-    /// flowing→dead zero-avail zombie latch) so an operator can tell which signal
-    /// caught the rebuild — the zero-avail latch (a rebuild while a stream was
-    /// flowing, caught within ~2 s once the streak crosses threshold) vs the
-    /// liveness probe (any rebuild, incl. a fresh handle that never carried a
-    /// frame, caught on the ~1 s ioctl cadence). Which signal fires first is
-    /// timing-dependent, so read these two as "which probe caught it," not as a
-    /// clean live-vs-idle partition. Surfaced via STATUS alongside `reopens`.
+    /// Cumulative liveness-probe forced reopens: the count of times the ~1 s
+    /// `snd_pcm_status` probe found the open handle dead (ioctl `-ENODEV` or
+    /// `State::Disconnected`) and this lane self-healed with a bounded reopen.
+    /// This is the signal the frozen-mmap `avail_update` fast path structurally
+    /// cannot raise — a rebuilt gadget leaves `avail_update` returning `Ok(0)`
+    /// forever with no errno. Kept a DISTINCT counter from `reopens` (the
+    /// flowing→dead zero-avail zombie latch) so an operator can tell which
+    /// signal caught the rebuild. Which signal fires first is timing-dependent,
+    /// so read these two as "which probe caught it," not as a clean
+    /// live-vs-idle partition. Surfaced via STATUS alongside `reopens`.
     pub card_gen_reopens: Arc<AtomicU64>,
-    /// Drain-entry avail dwell stats (lever 2). SINCE-BOOT cumulative (matches
-    /// the `opens`/`retries` idiom in this block — no reset-on-read state to
-    /// carry, and a monotonic denominator makes the STATUS `mean` a lifetime
-    /// average rather than a since-last-poll one). Written lock-free by the
-    /// mixer work thread on each drain entry; read lock-free by the state-server
-    /// thread for the STATUS `drain_avail{}` sub-block.
+    /// Drain-entry avail dwell stats. SINCE-BOOT cumulative (matches the
+    /// `opens`/`retries` idiom in this block — no reset-on-read state to carry,
+    /// and a monotonic denominator makes the STATUS `mean` a lifetime average
+    /// rather than a since-last-poll one). Written lock-free by the mixer work
+    /// thread on each drain entry; read lock-free by the state-server thread
+    /// for the STATUS `drain_avail{}` sub-block.
     pub drain_stats: DrainStats,
 }
 
-/// Since-boot drain-entry avail dwell accumulators (lever 2). One sample per
+/// Since-boot drain-entry avail dwell accumulators. One sample per
 /// `drain_direct_capture` call: the `avail_update()` reading at drain entry,
 /// which is the standing gadget-capture dwell the ~186-frame symptom measures.
 /// All fields are lock-free atomics so the mixer work thread can record without
@@ -175,13 +163,13 @@ impl DrainStats {
 /// S32_LE capture PCM directly — the usbsink bridge hop + aloop cable are gone
 /// on this lane. On a narrow wire the lane's audio is narrowed to S16 and fed
 /// the SAME `LaneResampler` the aloop path would use; on a wide wire it is fed
-/// that resampler unnarrowed (U2 / #2223).
+/// that resampler unnarrowed (#2223).
 ///
 /// Presence is dynamic (a UAC2 gadget comes and goes with the host cable), so
 /// this is a small state machine: `Present` while the capture is open and
 /// reading, `Absent` while the device is unplugged/held-by-the-bridge with a
-/// bounded reopen retry counted in periods (C3). No wall clock in the hot loop
-/// — the retry cadence is measured in render periods like the auto-trim latch.
+/// bounded reopen retry counted in periods. No wall clock in the hot loop —
+/// the retry cadence is measured in render periods like the auto-trim latch.
 pub(super) enum DirectCapture {
     /// The gadget capture is open; the lane reads it every period.
     Present(PCM),
@@ -210,24 +198,22 @@ enum DirectOpenOutcome {
     Failed { errno: i32, detail: String },
 }
 
-/// The DIRECT lane's deferred device-open channel (#2533).
+/// The DIRECT lane's deferred device-open channel (#2533): `snd_pcm_open` +
+/// `hw_params` + `prepare` + `start` on the UAC2 gadget, and the
+/// `snd_pcm_close` that retires a dead handle, run here instead of INLINE in
+/// the mixer's render loop. One `Sender::send` and one `try_recv` per
+/// affected period; nothing blocks, and the lane renders silence until a
+/// handle comes back.
 ///
-/// **Why this exists.** `snd_pcm_open` + `hw_params` + `prepare` + `start` on the
-/// UAC2 gadget — and the `snd_pcm_close` that retires a dead handle — used to run
-/// INLINE in the mixer's render loop, on three paths that are anything but rare:
-/// the `Absent` retry fires every `DIRECT_REOPEN_RETRY_PERIODS` (~2 s) for as long
-/// as the gadget is unattachable, and the zombie / card-generation recoveries
-/// close-and-reopen on the spot. The render loop's budget is one period
-/// (5.33 ms at the shipped 256 frames) and the downstream pipeline holds two
-/// 128-frame slots of cushion, so a device open that takes longer than ~2.7 ms
-/// costs a whole slot: CamillaDSP reads an empty Ring A (a 128-frame silence
-/// INSERTION) or fan-in free-run-drops a slot it could not publish in time (a
-/// 128-frame DELETION). Both signs were measured in the field — the common
-/// factor is a USB host attached and blocking device calls on the audio thread.
-///
-/// The lane now hands opens and closes to a dedicated thread and keeps rendering
-/// silence until a handle comes back. One `Sender::send` and one `try_recv` per
-/// affected period; nothing blocks.
+/// The render loop's budget is one period (5.33 ms at the shipped 256 frames)
+/// and the downstream pipeline holds two 128-frame slots of cushion, so a
+/// device open that takes longer than ~2.7 ms costs a whole slot: CamillaDSP
+/// reads an empty Ring A (a 128-frame silence INSERTION) or fan-in
+/// free-run-drops a slot it could not publish in time (a 128-frame
+/// DELETION) — measured in the field with a USB host attached. The `Absent`
+/// retry fires every `DIRECT_REOPEN_RETRY_PERIODS` (~2 s) for as long as the
+/// gadget is unattachable, and the zombie / card-generation recoveries
+/// close-and-reopen on the spot, so this is not a rare path.
 pub(super) struct DirectOpener {
     req_tx: Sender<DirectOpenRequest>,
     res_rx: std::sync::mpsc::Receiver<DirectOpenOutcome>,
@@ -266,10 +252,9 @@ impl DirectOpener {
             .stack_size(crate::HELPER_STACK_BYTES)
             .spawn(move || {
                 while let Ok(req) = req_rx.recv() {
-                    // Close the retired handle FIRST: reopening the same gadget
-                    // while the old fd is still open is what the inline path did
-                    // too (the assignment dropped it before `maybe_reopen_direct`
-                    // ran), and some gadget rebuilds refuse a second open.
+                    // Close the retired handle before opening a replacement:
+                    // some gadget rebuilds refuse a second open while the old
+                    // fd is still open.
                     drop(req.retire);
                     let outcome = match open_direct_capture(&req.device, req.open_period) {
                         Ok((pcm, negotiated_buffer)) => DirectOpenOutcome::Opened {
@@ -362,7 +347,7 @@ impl DirectOpener {
     }
 }
 
-/// Read the USB DIRECT lane (C1/C3/C4): drain everything the gadget capture
+/// Read the USB DIRECT lane: drain everything the gadget capture
 /// reports ready into the lane resampler (narrowing S32→S16 on a narrow wire and
 /// tapping the converted slice on the way; carrying the gadget's i32 untouched
 /// on a wide one), then render exactly one DAC-paced period into `read_buf` —
@@ -372,7 +357,7 @@ impl DirectOpener {
 ///
 /// Never returns `Err`: a device loss (ENODEV on unplug, or a rejected reopen)
 /// transitions the lane to `Absent` and renders silence with a bounded reopen
-/// retry (C3), so the daemon keeps running. Xruns recover exactly like the
+/// retry, so the daemon keeps running. Xruns recover exactly like the
 /// aloop resampler lane (`recover_resampler_input_xrun`, but device-open aware).
 pub(super) fn read_direct_and_render(
     input: &mut Input,
@@ -448,13 +433,9 @@ pub(super) fn read_direct_and_render(
                     hand_retired_handle_to_opener(input, retire);
                 }
                 DirectDrainOutcome::ZombieReopen => {
-                    // Zombie handle (C): Present but deaf for ~2 s (gadget rebuilt
-                    // underneath us — no errno). Force the SAME close→Absent→reopen
-                    // recovery as a device loss, but log + count it distinctly so a
-                    // silent gadget rebuild is visible. periods_until_retry=0 so the
-                    // very next render period attempts the reopen (a zombie is a
-                    // live rebuild, not a truly-absent host — no need to wait 2 s
-                    // more on top of the 2 s we already spent detecting it).
+                    // periods_until_retry=0: a zombie is a live rebuild, not a
+                    // truly-absent host — no need to wait on top of the ~2 s
+                    // already spent detecting it.
                     if let Some(r) = input.resampler.as_mut() {
                         r.reset();
                     }
@@ -474,19 +455,9 @@ pub(super) fn read_direct_and_render(
                     hand_retired_handle_to_opener(input, retire);
                 }
                 DirectDrainOutcome::CardGenerationReopen => {
-                    // Card-generation rebuild (C, defect 2026-07-06): the ~1 s
-                    // `snd_pcm_status` liveness probe found the open handle dead
-                    // (ioctl `-ENODEV` / `State::Disconnected`) while `avail_update`
-                    // still reported `Ok(0)` — the gadget FUNCTION was rebuilt even
-                    // though no frame ever flowed on this handle. Same
-                    // close→Absent→reopen recovery as the zombie/device-loss paths
-                    // (periods_until_retry=0 → reopen next period: this is a live
-                    // rebuild, not an absent host), but logged + counted DISTINCTLY
-                    // (reason=card_generation, card_gen_reopens) so the routine
-                    // post-deploy self-heal is visible and separable from the
-                    // flowing→dead zero-avail zombie. The probe re-runs against the
-                    // live reopened handle each tick, so there is no baseline to
-                    // invalidate here.
+                    // periods_until_retry=0: same immediate-reopen reasoning as
+                    // the zombie arm above; counted separately (card_gen_reopens)
+                    // so the two signals stay distinguishable in STATUS.
                     if let Some(r) = input.resampler.as_mut() {
                         r.reset();
                     }
@@ -554,11 +525,11 @@ pub(super) fn read_direct_and_render(
 ///     flowed (the flowing→dead latch: a gadget rebuilt underneath a LIVE stream).
 ///   - `CardGenerationReopen` — the ~1 s `snd_pcm_status` liveness probe found the
 ///     open handle dead (ioctl `-ENODEV` / `State::Disconnected`) under a handle
-///     that `avail_update` still reported `Ok(0)` for (C, defect 2026-07-06): the
-///     gadget FUNCTION was rebuilt even though no frame ever flowed on this handle
-///     (the routine post-deploy window the flowing→dead latch structurally cannot
-///     catch). Named for the card-generation change it detects (STATUS counter
-///     `card_gen_reopens`), not the ioctl that detects it.
+///     that `avail_update` still reported `Ok(0)` for: the gadget function was
+///     rebuilt even though no frame ever flowed on this handle (the window the
+///     flowing→dead latch structurally cannot catch). Named for the
+///     card-generation change it detects (STATUS counter `card_gen_reopens`),
+///     not the ioctl that detects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirectDrainOutcome {
     Ok,
@@ -569,7 +540,7 @@ enum DirectDrainOutcome {
 
 /// Drain all currently-available frames from the gadget capture into the lane
 /// resampler — narrowing S32→S16 on a narrow wire, carrying the samples
-/// untouched on a wide one — and tapping each read (C1/C4). Bounded by
+/// untouched on a wide one — and tapping each read. Bounded by
 /// `RESAMPLER_MAX_READ_PERIODS`. EAGAIN stops the drain; EPIPE/ESTRPIPE recovers
 /// the PCM + resets the resampler; any other errno is a device loss.
 fn drain_direct_capture(
@@ -602,12 +573,12 @@ fn drain_direct_capture(
     // flag, so "which buffer holds the period" and "was the capture narrowed"
     // cannot disagree.
     let wide = !input.read_buf_wide.is_empty();
-    // Sample the drain-ENTRY avail exactly once per drain call (lever 2). The
-    // first `avail_update()` reading is the standing gadget-capture dwell — the
-    // frames sitting readable when the mixer render cycle reaches this lane,
-    // which is the ~186-frame (3.9 ms) latency the symptom measures. Later
-    // in-loop `avail_update`s reflect drain progress, not the standing dwell, so
-    // they are NOT recorded (recording every iteration would multi-count).
+    // Sample the drain-ENTRY avail exactly once per drain call. The first
+    // `avail_update()` reading is the standing gadget-capture dwell — the
+    // frames sitting readable when the mixer render cycle reaches this lane
+    // (a ~186-frame / 3.9 ms latency). Later in-loop `avail_update`s reflect
+    // drain progress, not the standing dwell, so they are NOT recorded
+    // (recording every iteration would multi-count).
     let mut drain_entry_recorded = false;
 
     while read_budget_remaining > 0 {
@@ -625,25 +596,9 @@ fn drain_direct_capture(
         if !drain_entry_recorded {
             drain_entry_recorded = true;
             record_drain_entry(input, avail);
-            // Zombie-handle detection (C): a Present handle whose avail_update has
-            // returned exactly 0 for DIRECT_ZOMBIE_ZERO_AVAIL_PERIODS consecutive
-            // drains — AFTER frames had flowed on it — is attached to a destroyed
-            // gadget instance (UDC rebind / usbsink stop-start): deaf forever with
-            // no errno. Track the streak on the drain-ENTRY sample only (once per
-            // drain call, like the dwell stats).
-            //
-            // The `frames_flowed_since_open` gate is load-bearing: an ordinary
-            // attached-but-silent host (Mac wired, music paused/asleep) streams
-            // avail≈0 drains indefinitely with NO gadget rebuild (measured on
-            // jts.local). Firing on raw zero-avail alone would churn a reopen
-            // every ~2 s of idle on the flagship box (journal spam + a lying
-            // `reopens` counter). A zombie is a FLOWING→DEAD edge: only once this
-            // handle has actually fed the lane (avail > 0 seen at least once) does a
-            // sustained zero-avail run mean the gadget stopped feeding an
-            // established stream. avail > 0 both resets the streak AND latches
-            // frames-flowed; avail == 0 accumulates the streak but only crosses to
-            // ZombieReopen when the latch is set, bounding reopens to one per real
-            // rebuild.
+            // Track the zero-avail streak on the drain-ENTRY sample only (once
+            // per drain call, like the dwell stats); see
+            // `frames_flowed_since_open` and `zero_avail_streak` for the gate.
             if let Some(obs) = &input.direct_obs {
                 if avail == 0 {
                     let streak = obs.zero_avail_streak.fetch_add(1, Ordering::Relaxed) + 1;
@@ -655,26 +610,16 @@ fn drain_direct_capture(
                     obs.zero_avail_streak.store(0, Ordering::Relaxed);
                     obs.frames_flowed_since_open.store(true, Ordering::Relaxed);
                 }
-                // HANDLE-LIVENESS probe (C, defect 2026-07-06): the THIRD signal,
-                // orthogonal to the flowing→dead latch above. On the ~1 s housekeeping
-                // cadence (NOT every period — a `snd_pcm_status` ioctl is a real
-                // syscall) issue ONE STATUS ioctl on the open handle. On a rebuilt or
-                // disconnected card the kernel swapped the file's fops to the shutdown
-                // set, so the ioctl returns `-ENODEV` / `State::Disconnected` — even
-                // though the frozen-mmap `avail_update` above kept returning `Ok(0)`
-                // with no errno. That is the routine post-deploy window where fan-in's
-                // fresh handle has NEVER carried a frame, so `frames_flowed_since_open`
-                // is false and the zero-avail zombie latch above can structurally NEVER
-                // fire; the liveness probe closes exactly that gap. It CANNOT false-fire
-                // on an attached-idle host: that host keeps the capture stream live
-                // (`Prepared`/`Running`), so the probe reports a live state no matter
-                // how long the host sits silent — the reason it is safe where a raw
-                // zero-avail trip is not, and why it needs no frames-flowed gate.
-                // Precedence: an `avail_update` errno (ENODEV on a hard unplug) is
-                // matched ABOVE and returns DeviceLost before this block is reached, so
-                // a clean unplug takes the errno park path; this only fires for a
-                // rebuild/disconnect the mmap fast path is blind to, which wants the
-                // bounded reopen.
+                // Liveness probe: on the ~1 s housekeeping cadence (not every
+                // period — a `snd_pcm_status` ioctl is a real syscall) issue ONE
+                // STATUS ioctl on the open handle. Orthogonal to the zero-avail
+                // latch above: it catches a rebuild on a handle that never
+                // carried a frame (where `frames_flowed_since_open` is false and
+                // that latch can never fire) and cannot false-fire on an
+                // attached-idle host, which keeps reporting a live PCM state
+                // regardless of silence. An `avail_update` errno (ENODEV on a
+                // hard unplug) is matched above and returns DeviceLost before
+                // this runs, so a clean unplug never reaches the probe.
                 let drains = obs.drain_stats.count.load(Ordering::Relaxed);
                 let last = obs.liveness_last_checked_drain.load(Ordering::Relaxed);
                 if drains.saturating_sub(last) >= DIRECT_LIVENESS_PROBE_EVERY_PERIODS {
@@ -768,10 +713,9 @@ fn drain_direct_capture(
 ///
 /// * NARROW wire (the shipped default): push the S16 view that
 ///   `convert_s32_to_s16` already produced. The narrowing happens BEFORE the
-///   resampler, which is what the narrow route has always done and what its
-///   byte-identity golden pins.
+///   resampler; the byte-identity golden tests pin exactly this order.
 /// * WIDE wire: push the gadget's `i32` untouched. There is no `>> 16` anywhere
-///   on this route (U2 / #2223), so a hi-res host's low bits reach the sum.
+///   on this route (#2223), so a hi-res host's low bits reach the sum.
 ///
 /// **The ORDER is the contract, not an implementation detail.** Pushing the raw
 /// `i32` on the narrow route would not merely widen it — the lane would then
@@ -813,7 +757,7 @@ pub(super) fn push_capture_chunk(
 }
 
 /// Record one drain-ENTRY avail sample into the lane's since-boot drain stats
-/// (lever 2) and, every [`DRAIN_STATS_LOG_EVERY`] drains, emit a rate-limited
+/// and, every [`DRAIN_STATS_LOG_EVERY`] drains, emit a rate-limited
 /// summary INFO line. Lock-free, allocation-free, syscall-free apart from the
 /// throttled log — safe on the hot path. A `None` `direct_obs` (never true on a
 /// direct lane) is a silent no-op.
@@ -885,10 +829,10 @@ fn recover_direct_xrun(
 /// `snd_pcm_close`, so the handle has to travel rather than fall out of scope.
 ///
 /// With no opener at all (spawn failed at construction — logged once there) the
-/// handle is dropped here: a close on the render thread, which is the pre-#2533
-/// behaviour and the only alternative to leaking the descriptor on a lane that
-/// has no worker to hand it to. With an opener present the handle is always
-/// taken — queued, or parked for the next request — and never closed here.
+/// handle is dropped here: a close on the render thread, the only alternative
+/// to leaking the descriptor on a lane that has no worker to hand it to. With
+/// an opener present the handle is always taken — queued, or parked for the
+/// next request — and never closed here.
 fn hand_retired_handle_to_opener(input: &mut Input, retire: Option<PCM>) {
     let device = direct_device(input);
     let open_period = direct_open_period(input);
@@ -928,8 +872,8 @@ fn direct_open_period(input: &Input) -> u32 {
 
 /// While `Absent`: adopt a finished open if the opener thread has one ready, else
 /// count the period-based retry latch down and QUEUE the next attempt when it
-/// reaches 0 (C3). No wall clock — the countdown is one decrement per render
-/// period — and, since #2533, no blocking: the `snd_pcm_open` runs on
+/// reaches 0. No wall clock — the countdown is one decrement per render
+/// period — and no blocking: the `snd_pcm_open` runs on
 /// `fanin-direct-opener`, so an unattachable gadget costs this loop one
 /// non-blocking `try_recv` per period instead of a full open attempt every ~2 s
 /// inside the period budget. A successful reopen transitions to `Present` and
@@ -986,16 +930,16 @@ fn adopt_open_outcome(outcome: DirectOpenOutcome, input: &mut Input) -> DirectCa
             }
             if let Some(obs) = &input.direct_obs {
                 obs.present.store(true, Ordering::Relaxed);
-                // Fresh handle: clear the flowing→dead latch (C). The reopened PCM
+                // Fresh handle: clear the flowing→dead latch. The reopened PCM
                 // must observe avail > 0 at least once before a new zero-avail run
                 // can be classified as a zombie again — so a reopen that lands back
                 // on a still-zombie gadget (card node exists, avail stays 0) does
                 // NOT immediately re-fire, bounding reopens to one per real rebuild.
                 obs.frames_flowed_since_open.store(false, Ordering::Relaxed);
-                // The liveness probe (C, defect 2026-07-06) needs no per-handle
-                // re-capture — it queries the LIVE reopened handle each tick — so
-                // there is no baseline to (re)arm and no way for a racy open to
-                // permanently disarm the signal. Re-base only the cadence anchor to
+                // The liveness probe needs no per-handle re-capture — it queries
+                // the LIVE reopened handle each tick — so there is no baseline
+                // to (re)arm and no way for a racy open to permanently disarm
+                // the signal. Re-base only the cadence anchor to
                 // the current (cumulative-since-boot) drain count so the first probe
                 // on the fresh handle waits a full interval PAST this reopen rather
                 // than firing immediately (the drain count never resets, so storing 0
@@ -1025,7 +969,7 @@ fn adopt_open_outcome(outcome: DirectOpenOutcome, input: &mut Input) -> DirectCa
         }
         DirectOpenOutcome::Failed { errno, detail } => {
             // Still absent — re-arm the retry latch. No per-retry log (only the
-            // present/absent transitions log, C3); the errno and detail are kept
+            // present/absent transitions log); the errno and detail are kept
             // at debug so a persistent open failure is diagnosable without
             // per-2 s journal spam on an unplugged host.
             if let Some(obs) = &input.direct_obs {

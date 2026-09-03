@@ -97,6 +97,28 @@ async def test_manual_start_refused_when_measurement_active(caplog):
     assert "reason=measurement_active" in caplog.text
 
 
+async def test_manual_start_refused_when_paused_asks_for_an_early_retry():
+    """A refused press is the household asking whether the outage is
+    over, so it shortens the supervisor's wait too (issue #3855)."""
+    wl = _make_wake_loop()
+    nudges = 0
+
+    def _nudge() -> bool:
+        nonlocal nudges
+        nudges += 1
+        return True
+
+    wl._connection = types.SimpleNamespace(
+        is_paused=lambda: True,
+        last_failure_detail=lambda: None,
+        request_reconnect_now=_nudge,
+    )
+
+    assert await wl.manual_session_start() == "PAUSED"
+    _assert_no_turn_no_duck(wl)
+    assert nudges == 1
+
+
 async def test_manual_start_does_not_repeat_begin_owned_cleanup():
     """A failed begin that released its episode is not cleaned twice."""
 

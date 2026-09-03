@@ -324,15 +324,16 @@ def test_pyproject_base_install_stays_minimal():
         assert not any(dep.startswith(dep_prefix) for dep in base)
         assert any(dep.startswith(dep_prefix) for dep in full)
     # A push-to-talk-only streambox runs the assistant, so it carries the
-    # provider/tool SDKs; it never builds a wake detector, opens the local
-    # mic, or talks to the XVF3800, so those four runtimes stay full-only.
+    # provider/tool SDKs; it never builds a wake detector or talks to the
+    # XVF3800, so those runtimes stay full-only. pyalsaaudio is NOT one of
+    # them: a streambox installs jasper-usbsink-volume.service, whose bridge
+    # reads the gadget mixer through it.
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     assert set(streambox) < set(full)
     assert {_distribution_name(dep) for dep in set(full) - set(streambox)} == {
         "onnxruntime",
         "pyusb",
         "libusb_package",
-        "pyalsaaudio",
     }
 
 
@@ -386,6 +387,11 @@ def test_streambox_parking_disables_brain_units():
     parking = text.split("park_streambox_brain_units() {", 1)[1].split("\n}", 1)[0]
     assert "jasper-voice.service" in parking
     assert "systemctl disable --now" in parking
+    # #3697 (ADR-0226): the only path a streambox can carry these enabled is
+    # a full->streambox conversion, since install_streambox_systemd_units
+    # never stages or enables them itself.
+    assert "jasper-enhanced-aec-install.service" in parking
+    assert "jasper-enhanced-aec-reconcile.path" in parking
 
 
 def _installer_function_body(name: str) -> str:

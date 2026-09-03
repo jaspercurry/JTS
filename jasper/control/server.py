@@ -1679,22 +1679,31 @@ def _make_handler(
             timeout: float | None = None,
             missing_error: str | None = "voice_daemon not running",
             log_label: str = "voice command",
+            refusal_event: str | None = None,
         ) -> dict[str, Any] | None:
             try:
                 kwargs = {} if timeout is None else {"timeout": timeout}
                 return asyncio.run(
                     _voice_socket_command(voice_socket_path, cmd, **kwargs),
                 )
-            except FileNotFoundError as e:
-                error = (
-                    f"voice_daemon unreachable: {e}"
-                    if missing_error is None else missing_error
-                )
-                self._send_json({"error": error}, status=503)
-                return None
             except (OSError, asyncio.TimeoutError) as e:
+                # FileNotFoundError is an OSError subtype; it gets the
+                # caller's friendlier missing_error text where one is given,
+                # everything else (ConnectionRefusedError, read timeout, ...)
+                # the generic message. Both mean the same thing to a
+                # caller: the daemon could not be reached right now.
+                error = (
+                    missing_error
+                    if isinstance(e, FileNotFoundError) and missing_error is not None
+                    else f"voice_daemon unreachable: {e}"
+                )
+                if refusal_event:
+                    log_event(
+                        logger, refusal_event,
+                        reason="voice_daemon_unreachable", cmd=cmd,
+                    )
                 self._send_json(
-                    {"error": f"voice_daemon unreachable: {e}"},
+                    {"error": error, "reason": "voice_daemon_unreachable"},
                     status=503,
                 )
                 return None

@@ -10,10 +10,9 @@ controls on the Pi side:
   - "PCM Capture Volume"   (integer, range card-defined)
   - "PCM Capture Switch"   (bool — Mac mute toggle)
 
-This module polls those controls at 4 Hz via `amixer cget`, maps the
-raw value to JTS's 0-100 listening_level by inverting macOS's observed
-square-root step transfer (see `_raw_to_pct`), and POSTs to
-jasper-control's /volume/set endpoint with
+This module maps the raw value to JTS's 0-100 listening_level by
+inverting macOS's observed square-root step transfer (see
+`_raw_to_pct`), and POSTs to jasper-control's /volume/set endpoint with
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
 prevention — so a remote twist that triggered an outbound write to the
@@ -21,33 +20,20 @@ gadget mixer (we don't actually do this — see
 docs/historical/usbsink-implementation-appendix.md §3.2 "Why no outbound
 write back to the host") wouldn't bounce back as a phantom user-side change.
 
-Polling vs event-driven. The naive choice would be pyalsaaudio's
-event API + asyncio.add_reader on the mixer FD. We picked polling
-for production-grade reasons:
-
-  - 250 ms latency is imperceptible. Mac slider moves are sparse user
-    actions (a few per minute at most); the response feels instant.
-  - One fewer system dependency. `amixer` is in alsa-utils which
-    install.sh already requires; pyalsaaudio would mean a new apt
-    package, a new Python dep, and one more thing to be wrong on
-    upgrade.
-  - Robust under daemon restart. Mixer-event subscribers have to
-    handle the FD lifecycle (re-subscribe after card hot-unplug,
-    drain events on resume). Polling is stateless.
-
-We DO subprocess `amixer` rather than directly hitting /dev/snd/
-controlC* — wrapping the C API via ctypes was the other alternative
-considered, but rejected as RAM-equivalent and harder to debug.
-`amixer cget` output is stable and easy to parse with a regex.
+Reads are event-driven: `alsaaudio.Mixer.polldescriptors()` hands over
+the control FDs and `asyncio.add_reader` wakes the loop, so nothing runs
+between host slider moves. Discovery still shells out to `amixer` once —
+the simple-mixer API exposes neither the numids nor the DB_MINMAX TLV.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import subprocess
-import time
-from typing import Optional
+from types import ModuleType
+from typing import Any, Optional
 
 from jasper.control.client import AsyncControlClient, ControlError
 from jasper.log_event import log_event
@@ -55,41 +41,15 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 
-# Poll cadence. 250 ms = 4 Hz. Faster wastes CPU; slower introduces
-# perceptible lag.
-POLL_INTERVAL_SEC = 0.25
-# When jasper-control declines an observation — e.g. the active-source gate
-# (USB isn't the active source yet) or a recent cross-process write (remote/
-# web/voice moved the canonical level within PERSISTENCE_ECHO_WINDOW_SEC) —
-# retry with a capped exponential backoff rather than hammering /volume/set
-# at the poll cadence forever. (volume_coordinator.py's own-echo window is
-# NOT one of these: it's stamped only for Spotify's and Bluetooth's outbound
-# writes, and USB never writes back to the gadget mixer, so it can never
-# fire for USBSINK.) POST_RETRY_INTERVAL_SEC is the starting delay — short
-# enough to close the boot/deploy race where the first mixer read arrives
-# before source activation — and each consecutive decline of the SAME value
-# doubles the delay (POST_RETRY_BACKOFF_FACTOR) up to POST_RETRY_CEILING_SEC.
-#
-# The ceiling is kept deliberately small — this backoff is NOT what kills the
-# measured journal spam (jasper-control's event=volume.set at INFO, ~3,200
-# lines/hour on the jts3 lab Pi, 2026-08-20 — see jasper/control/handlers/
-# volume.py, whose DEBUG demotion owns that fix regardless of this ceiling).
-# What the ceiling still has to bound: (1) residual HTTP+mux IPC volume and
-# flight-recorder-ring pressure — at the 5 s ceiling, up to ~3600/5 = 720
-# POSTs/hour once backed off, vs. ~3,200/hour unbacked-off; (2) the USB
-# source-handoff volume-mismatch window — a value pinned at the ceiling plus
-# a host that starts playback right after plays at the stale canonical level
-# for up to one ceiling-length window (plus one poll tick: ~5.25 s at the
-# current ceiling) before the next retry lands, then jumps without
-# transition to the true slider position. A 30 s ceiling was rejected here:
-# it left the same ~3,200/hour spam un-killed by this backoff alone, cut the
-# residual POST rate only to ~120/hour, and widened the handoff window to
-# ~30.25 s — a jts3 measurement (21%->70%) implies an unattributed +24.75 dB
-# jump (the percent pair was measured; the dB figure is percent_to_db
-# arithmetic over it, not a separate dB measurement). A changed host value,
-# or an accepted post, resets the backoff to the base interval, so once
-# jasper-control starts accepting again the current slider position lands
-# within one ceiling-length window rather than waiting out the full backoff.
+# jasper-control declines an observation while USB is not the active source,
+# and while a measurement holds the fader. A declined host slider MOVE is
+# re-presented on a capped exponential backoff, so a host that starts playback
+# right after moving its slider plays at the stale canonical level for at most
+# one ceiling-length window rather than until the next move. A 30 s ceiling was
+# rejected: a jts3 measurement (21%->70%) implies a +24.75 dB unattributed jump
+# held that much longer. The STARTUP snapshot is deliberately not retried —
+# it is not proof of a host action, and re-presenting it cost a measured 708
+# declined POSTs/hour on an idle jts3 with nothing to publish.
 POST_RETRY_INTERVAL_SEC = 1.0
 POST_RETRY_BACKOFF_FACTOR = 2.0
 POST_RETRY_CEILING_SEC = 5.0
@@ -100,6 +60,9 @@ POST_RETRY_CEILING_SEC = 5.0
 # but the ALSA mixer name stays "PCM Capture Volume".
 VOL_CONTROL_NAME = "PCM Capture Volume"
 SWITCH_CONTROL_NAME = "PCM Capture Switch"
+# ALSA's simple-mixer layer merges the two controls above into one element.
+# `alsaaudio.mixers(cardindex=...)` reports exactly ["PCM"] for this card.
+MIXER_ELEMENT_NAME = "PCM"
 
 # Where jasper-control listens. The /volume/set endpoint accepts an
 # optional `source` field; with source="usbsink" the coordinator
@@ -134,7 +97,6 @@ _NUMID_RE = re.compile(r"numid=(\d+),iface=MIXER,name='([^']+)'")
 # TLV dB line uses `min=-50.00dB` (decimal + `dB`), which this integer-only,
 # comma-terminated pattern deliberately does not match.
 _RANGE_RE = re.compile(r"min=(-?\d+),max=(-?\d+)")
-_VALUES_RE = re.compile(r": values=([^\n]+)")
 # DB_MINMAX TLV: `dBminmax-min=<X>dB,max=<Y>dB` (amixer also prints
 # `dBminmaxmute-` for the MUTE variant — same min/max fields). This is the
 # kernel's ground-truth physical dB scale; preferred over reconstruction.
@@ -167,8 +129,16 @@ USBSINK_VOLUME_STEP_DB = 1.0
 # tests/test_usbsink_volume_bridge.py — the bridge only reads physical dB back.
 
 
+def _load_alsaaudio() -> ModuleType:
+    """Import the Linux-only mixer binding without breaking non-Linux tooling."""
+
+    import alsaaudio  # type: ignore[import-not-found]
+
+    return alsaaudio
+
+
 class VolumeBridge:
-    """Polls the gadget mixer at 4 Hz, POSTs changes to jasper-control.
+    """Watches the gadget mixer's control FDs, POSTs changes to jasper-control.
 
     Lifecycle:
         bridge.run()  # async, blocks until cancelled
@@ -179,10 +149,8 @@ class VolumeBridge:
     cross-process write within the persistence echo window; NOT the
     coordinator's own-echo window, which is never stamped for USB) is
     retried with a capped exponential backoff until the controller
-    acknowledges it, so a long-lived decline costs one POST every
-    POST_RETRY_CEILING_SEC rather than one per poll. Accepted values
-    are deduplicated locally, while the coordinator owns source and
-    echo policy.
+    acknowledges it. Accepted values are deduplicated locally, while
+    the coordinator owns source and echo policy.
     """
 
     def __init__(
@@ -190,15 +158,15 @@ class VolumeBridge:
         card_name: str = "UAC2Gadget",
         control_url: str = DEFAULT_CONTROL_URL,
         *,
-        poll_interval_sec: float = POLL_INTERVAL_SEC,
         discovery_retry_interval_sec: float = 5.0,
         http_timeout_sec: float = 2.0,
+        alsaaudio_module: ModuleType | None = None,
     ) -> None:
         self._card_name = card_name
         self._control_url = control_url.rstrip("/")
-        self._poll_interval = poll_interval_sec
         self._discovery_retry_interval = discovery_retry_interval_sec
         self._http_timeout = http_timeout_sec
+        self._alsa = alsaaudio_module
 
         # Cached lookups, populated in _discover().
         self._vol_numid: Optional[int] = None
@@ -214,21 +182,23 @@ class VolumeBridge:
         self._db_max: float = USBSINK_VOLUME_DB_MAX
         self._db_source: str = "reconstructed"
 
-        # Last value we POSTed — dedupes successive identical polls.
+        # Last value we POSTed — dedupes repeated observations.
         # None until jasper-control confirms that the observation was accepted;
         # transport success alone is insufficient because the controller
         # deliberately declines observations from an inactive source.
         self._last_published_pct: Optional[int] = None
-        self._last_attempted_pct: Optional[int] = None
-        self._retry_not_before: float = 0.0
-        # Current backoff step for a repeated decline of _last_attempted_pct.
-        # Starts at (and resets to) the base interval; see the constants'
-        # comment above for the growth/reset rules.
-        self._retry_backoff_sec: float = POST_RETRY_INTERVAL_SEC
-        # First mixer snapshot after bridge startup is state discovery, not
-        # proof of a new host action. Keep its identity through bounded retries
-        # so a restarted bridge cannot erase a mute asserted by another surface.
-        self._initial_observed_pct: Optional[int] = None
+        # Last value the mixer reported, and whether the host has moved the
+        # slider since startup. Until it has, what we read is state discovery
+        # rather than a host action — a restarted bridge must not erase a mute
+        # asserted by another surface. The latch stays set once armed, so a
+        # move back to the startup value is still intent.
+        self._last_observed_pct: Optional[int] = None
+        self._host_moved: bool = False
+        # Re-presents one declined host slider move; see the retry constants.
+        self._retry_task: Optional[asyncio.Task[None]] = None
+
+        # Simple-mixer handle for the card, opened after discovery.
+        self._mixer: Any | None = None
 
         # Bound once `run()` clears mixer discovery (mirrors where the old
         # httpx client was opened). None means discovery has not succeeded
@@ -237,61 +207,134 @@ class VolumeBridge:
         self._control: Optional[AsyncControlClient] = None
 
     async def run(self) -> None:
-        """Discover the gadget mixer's numids + range, then poll for
-        changes forever. Cancellable from the daemon's shutdown path."""
-        # Defer mixer discovery until run() — at __init__ time the
-        # gadget card may not have enumerated yet (init.service has
-        # only just returned).
-        while True:
-            try:
-                self._discover()
-                break
-            except VolumeBridgeUnavailable as e:
-                log_event(
-                    logger,
-                    "usbsink.volume_bridge_unavailable",
-                    reason=e,
-                    retry_sec=self._discovery_retry_interval,
-                    level=logging.WARNING,
-                )
-                await asyncio.sleep(self._discovery_retry_interval)
-
-        self._control = AsyncControlClient(
-            self._control_url, timeout=self._http_timeout,
-        )
-        log_event(
-            logger,
-            "usbsink.volume_bridge_started",
-            card=self._card_name,
-            vol_numid=self._vol_numid,
-            switch_numid=self._switch_numid,
-            # Step-index range AND the resolved physical dB range, so an
-            # operator can see e.g. `range=0..50 db=-50.0..0.0 db_source=tlv`
-            # and tell whether the advertised range actually stuck.
-            range=f"{self._vol_min}..{self._vol_max}",
-            db=f"{self._db_min:.1f}..{self._db_max:.1f}",
-            db_source=self._db_source,
-        )
+        """Discover the gadget mixer's numids + range, then serve its
+        control-FD events forever. Cancellable from the daemon's shutdown
+        path. A mixer that breaks under us (the gadget function
+        re-enumerated) falls back into discovery rather than exiting."""
         try:
             while True:
-                await asyncio.sleep(self._poll_interval)
+                # Defer mixer discovery until run() — at __init__ time the
+                # gadget card may not have enumerated yet (init.service has
+                # only just returned).
                 try:
-                    await self._tick()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    # One bad poll shouldn't kill the loop — log
-                    # and continue. Persistent failures get caught
-                    # by the daemon's diagnostic log.
+                    self._discover()
+                    self._open_mixer()
+                except VolumeBridgeUnavailable as e:
                     log_event(
                         logger,
-                        "usbsink.volume_tick_error",
-                        error=e,
-                        level=logging.DEBUG,
+                        "usbsink.volume_bridge_unavailable",
+                        reason=e,
+                        retry_sec=self._discovery_retry_interval,
+                        level=logging.WARNING,
                     )
+                    await asyncio.sleep(self._discovery_retry_interval)
+                    continue
+                if self._control is None:
+                    self._control = AsyncControlClient(
+                        self._control_url, timeout=self._http_timeout,
+                    )
+                log_event(
+                    logger,
+                    "usbsink.volume_bridge_started",
+                    card=self._card_name,
+                    vol_numid=self._vol_numid,
+                    switch_numid=self._switch_numid,
+                    # Step-index range AND the resolved physical dB range, so an
+                    # operator can see e.g. `range=0..50 db=-50.0..0.0
+                    # db_source=tlv` and tell whether the advertised range
+                    # actually stuck.
+                    range=f"{self._vol_min}..{self._vol_max}",
+                    db=f"{self._db_min:.1f}..{self._db_max:.1f}",
+                    db_source=self._db_source,
+                )
+                if await self._watch_mixer():
+                    await asyncio.sleep(self._discovery_retry_interval)
         except asyncio.CancelledError:
             log_event(logger, "usbsink.volume_bridge_stopping")
             raise
+        finally:
+            self._cancel_retry()
+            self._close_mixer()
+
+    # ------------------------------------------------------------------
+    # Mixer event loop
+    # ------------------------------------------------------------------
+
+    def _open_mixer(self) -> None:
+        """Open the card's simple-mixer element, or raise Unavailable."""
+        try:
+            if self._alsa is None:
+                self._alsa = _load_alsaaudio()
+            indexes = dict(
+                zip(self._alsa.cards(), self._alsa.card_indexes()),
+            )
+            # `cards()` returns ALSA card IDs (the `amixer -c` argument);
+            # `card_name()` returns the driver's pretty name and does NOT
+            # match, so it cannot be used to resolve the index.
+            index = indexes.get(self._card_name)
+            if index is None:
+                raise VolumeBridgeUnavailable(
+                    f"card {self._card_name!r} not in {sorted(indexes)}",
+                )
+            self._mixer = self._alsa.Mixer(
+                control=MIXER_ELEMENT_NAME, cardindex=index,
+            )
+        except VolumeBridgeUnavailable:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise VolumeBridgeUnavailable(f"mixer open failed: {e}") from e
+
+    def _close_mixer(self) -> None:
+        mixer, self._mixer = self._mixer, None
+        if mixer is not None:
+            with contextlib.suppress(Exception):
+                mixer.close()
+
+    async def _watch_mixer(self) -> bool:
+        """Publish the current value, then one more on every mixer event.
+
+        Returns True (rather than raising) when the control FDs stop working,
+        so run() can back off and rediscover the card.
+        """
+        mixer = self._mixer
+        assert mixer is not None
+        loop = asyncio.get_running_loop()
+        woken = asyncio.Event()
+        broken: list[BaseException] = []
+
+        def _on_readable() -> None:
+            # handleevents() drains the control FD. Skipping it would leave
+            # the descriptor readable and spin the loop.
+            try:
+                mixer.handleevents()
+            except Exception as e:  # noqa: BLE001
+                broken.append(e)
+            woken.set()
+
+        fds = [int(fd) for fd, _mask in mixer.polldescriptors()]
+        for fd in fds:
+            loop.add_reader(fd, _on_readable)
+        try:
+            while True:
+                try:
+                    await self._observe()
+                except Exception as e:  # noqa: BLE001
+                    broken.append(e)
+                if broken:
+                    log_event(
+                        logger,
+                        "usbsink.volume_mixer_reset",
+                        card=self._card_name,
+                        error=broken[0],
+                        level=logging.WARNING,
+                    )
+                    return True
+                await woken.wait()
+                woken.clear()
+        finally:
+            for fd in fds:
+                loop.remove_reader(fd)
+            self._close_mixer()
 
     # ------------------------------------------------------------------
     # Discovery: find numids + range
@@ -371,54 +414,68 @@ class VolumeBridge:
         return None
 
     # ------------------------------------------------------------------
-    # Per-tick: read both controls, post if changed
+    # Observation: read both controls, post if changed
     # ------------------------------------------------------------------
 
-    async def _tick(self) -> None:
-        raw_vol = await asyncio.to_thread(self._read_int_value, self._vol_numid)
-        if raw_vol is None:
+    async def _observe(self) -> None:
+        """Read the mixer once and publish the value if it is new."""
+        mixer = self._mixer
+        assert mixer is not None and self._alsa is not None
+        values = mixer.getvolume(units=self._alsa.VOLUME_UNITS_RAW)
+        if not values:
             return
         muted = False
         if self._switch_numid is not None:
-            muted = await asyncio.to_thread(
-                self._read_switch_value, self._switch_numid,
-            )
+            # getrec() reports the capture switch: 0 on a muted channel, and
+            # raises on an element that has none. Mute overrides to 0% —
+            # better to underrepresent volume than to let a channel through
+            # when the user expected silence.
+            muted = any(int(v) == 0 for v in mixer.getrec())
+        pct = 0 if muted else self._raw_to_pct(int(values[0]))
+        if pct == self._last_observed_pct:
+            return
+        if self._last_observed_pct is not None:
+            self._host_moved = True
+        self._last_observed_pct = pct
+        await self._publish(pct)
 
-        # Map raw → percent. Mute overrides to 0.
-        pct = 0 if muted else self._raw_to_pct(raw_vol)
-        if self._initial_observed_pct is None:
-            self._initial_observed_pct = pct
+    async def _publish(self, pct: int) -> None:
+        await self._cancel_retry_and_wait()
         if pct == self._last_published_pct:
             return
-        now = time.monotonic()
-        if pct == self._last_attempted_pct:
-            if now < self._retry_not_before:
-                return
-        else:
-            # The target value changed since our last attempt (a fresh
-            # slider move, possibly while we were backing off a previous
-            # decline) — always attempt immediately, and reset the backoff
-            # so this new value isn't delayed by the old one's decline
-            # history.
-            self._retry_backoff_sec = POST_RETRY_INTERVAL_SEC
-        self._last_attempted_pct = pct
-        accepted = await self._post(
-            pct,
-            initial=(
-                self._last_published_pct is None
-                and pct == self._initial_observed_pct
-            ),
-        )
-        if accepted:
+        initial = self._last_published_pct is None and not self._host_moved
+        outcome = await self._post(pct, initial=initial)
+        if outcome is True:
             self._last_published_pct = pct
-            self._retry_not_before = 0.0
-            self._retry_backoff_sec = POST_RETRY_INTERVAL_SEC
-        else:
-            self._retry_not_before = now + self._retry_backoff_sec
-            self._retry_backoff_sec = min(
-                self._retry_backoff_sec * POST_RETRY_BACKOFF_FACTOR,
-                POST_RETRY_CEILING_SEC,
-            )
+        elif outcome is None or not initial:
+            # Only an explicit decline of the startup snapshot is dropped. No
+            # answer at all is the boot race — jasper-control is still coming
+            # up (observed on jts3: the first POST after a reboot timed out) —
+            # and the snapshot is still the only thing that will sync the host
+            # slider until the user next touches it.
+            self._retry_task = asyncio.create_task(self._retry_declined(pct))
+
+    async def _retry_declined(self, pct: int) -> None:
+        """Re-present one unacknowledged value until the controller takes it."""
+        delay = POST_RETRY_INTERVAL_SEC
+        while True:
+            await asyncio.sleep(delay)
+            if await self._post(pct) is True:
+                self._last_published_pct = pct
+                return
+            delay = min(delay * POST_RETRY_BACKOFF_FACTOR, POST_RETRY_CEILING_SEC)
+
+    async def _cancel_retry_and_wait(self) -> None:
+        task, self._retry_task = self._retry_task, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    def _cancel_retry(self) -> None:
+        task, self._retry_task = self._retry_task, None
+        if task is not None:
+            task.cancel()
 
     def _raw_to_pct(self, raw: int) -> int:
         """THE volume curve: raw mixer STEP INDEX -> JTS 0-100 percent.
@@ -456,51 +513,23 @@ class VolumeBridge:
         pct = step_fraction * step_fraction * 100.0
         return max(0, min(100, round(pct)))
 
-    # ------------------------------------------------------------------
-    # amixer subprocess helpers
-    # ------------------------------------------------------------------
-
     def _cget(self, numid: int) -> str:
-        """Synchronous cget — used at discovery time. The async path
-        wraps this in asyncio.to_thread()."""
+        """Synchronous cget — used at discovery time only."""
         proc = subprocess.run(
             ["amixer", "-c", self._card_name, "cget", f"numid={numid}"],
             capture_output=True, text=True, timeout=2.0, check=False,
         )
         return proc.stdout
 
-    def _read_int_value(self, numid: int) -> Optional[int]:
-        out = self._cget(numid)
-        m = _VALUES_RE.search(out)
-        if m is None:
-            return None
-        # values can be "50" or "50,50" for stereo. Take first.
-        first = m.group(1).split(",")[0].strip()
-        try:
-            return int(first)
-        except ValueError:
-            return None
-
-    def _read_switch_value(self, numid: int) -> bool:
-        """Switch controls report 'on' / 'off' rather than int."""
-        out = self._cget(numid)
-        m = _VALUES_RE.search(out)
-        if m is None:
-            return False
-        # Stereo switch sometimes reports "on,on" or "off,off"; if
-        # either channel is off, treat as muted.
-        parts = [p.strip() for p in m.group(1).split(",")]
-        if not parts:
-            return False
-        return any(p != "on" for p in parts)
-
     # ------------------------------------------------------------------
     # jasper-control POST
     # ------------------------------------------------------------------
 
-    async def _post(self, pct: int, *, initial: bool = False) -> bool:
+    async def _post(self, pct: int, *, initial: bool = False) -> Optional[bool]:
+        """True when jasper-control applied the observation, False when it
+        deliberately declined it, None when no usable answer came back."""
         if self._control is None:
-            return False
+            return None
         try:
             resp = await self._control.set_volume(
                 pct,
@@ -515,7 +544,7 @@ class VolumeBridge:
                 error=e,
                 level=logging.WARNING,
             )
-            return False
+            return None
         if not resp.ok:
             log_event(
                 logger,
@@ -524,7 +553,7 @@ class VolumeBridge:
                 status=resp.status,
                 level=logging.WARNING,
             )
-            return False
+            return None
         try:
             payload = resp.json()
         except (TypeError, ValueError):
@@ -548,7 +577,7 @@ class VolumeBridge:
         else:
             # A successful but unparseable response cannot prove that the
             # source-active gate accepted the observation.
-            return False
+            return None
         log_event(
             logger,
             "usbsink.volume_observed",

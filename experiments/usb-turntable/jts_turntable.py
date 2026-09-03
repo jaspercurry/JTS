@@ -47,7 +47,12 @@ MEASUREMENT_MIN_DEGREES = -TRAVEL_ENVELOPE_DEGREES
 MEASUREMENT_MAX_DEGREES = TRAVEL_ENVELOPE_DEGREES
 TRAVEL_ENVELOPE_EXCEEDED = "travel_envelope_exceeded"
 TRAVEL_OFFSET_UNREADABLE = "travel_offset_unreadable"
-AUTOSTOP_ATTEMPTS = 4
+# 7 retries * 1.5s stays under the unit's TimeoutStartSec=40s. More attempts
+# buys more real settling time, not a longer per-attempt window: an
+# unapproved startup byte fails synchronize() immediately, it never times
+# out, so a controller still emitting post-power-on noise needs repeated
+# tries rather than a longer wait per try.
+AUTOSTOP_ATTEMPTS = 8
 AUTOSTOP_RETRY_SECONDS = 1.5
 AUTOSTOP_PRODUCT = "MT320RUBL40ProV3"
 AUTOSTOP_IO_TIMEOUT = 1.5

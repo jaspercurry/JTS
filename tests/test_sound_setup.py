@@ -66,7 +66,7 @@ from jasper.sound.settings import (
     load_sound_settings,
 )
 from jasper.volume_curve import percent_to_db
-from jasper.web import sound_setup
+from jasper.web import sound_setup, volume_floor_tone
 
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
@@ -6248,7 +6248,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     FakeVolumeFloorToneRunner.instances.clear()
     fake = FakeVolumeCamilla(db=-18.0, muted=True)
     _install_floor_tone_owner(fake)
-    session = sound_setup._VolumeFloorToneSession()
+    session = volume_floor_tone._VolumeFloorToneSession()
 
     payload = await sound_setup._audition_volume_floor(
         {"volume_floor_db": -24.0},
@@ -6316,6 +6316,45 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert not settings_path.exists()
 
 
+async def test_audition_volume_floor_update_survives_a_withdrawn_owner(
+    tmp_path: Path, monkeypatch,
+):
+    """An owner withdrawn mid-audition degrades the update, it does not fail it.
+
+    Same contract as starting with no owner registered: the tone keeps
+    playing at the floor it already holds rather than the request raising.
+    """
+    from jasper.volume_owner import install_volume_owner
+
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+    fake = FakeVolumeCamilla(db=-18.0, muted=False)
+    _install_floor_tone_owner(fake)
+    session = volume_floor_tone._VolumeFloorToneSession()
+
+    await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+    held_db = fake.db
+    install_volume_owner(None)
+
+    payload = await sound_setup._audition_volume_floor(
+        {"volume_floor_db": -36.0},
+        camilla_factory=lambda: fake,
+        session=session,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+
+    assert payload["status"] == "updated"
+    assert payload["volume_floor_db"] == -36.0
+    assert fake.db == pytest.approx(held_db)
+    assert FakeVolumeFloorToneRunner.instances[0].stopped is False
+
+
 def _dominant_frequency_hz(samples: np.ndarray, sample_rate: int) -> float:
     window = np.hanning(len(samples))
     spectrum = np.fft.rfft(samples.astype(np.float64) * window)
@@ -6329,7 +6368,7 @@ def test_volume_floor_reference_tone_uses_low_mid_high_sequence(
 ) -> None:
     monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
 
-    wav_path = sound_setup._volume_floor_tone_wav_path()
+    wav_path = volume_floor_tone._volume_floor_tone_wav_path()
 
     assert wav_path.name.startswith("volume_floor_reference_")
     with wave.open(str(wav_path), "rb") as wav:
@@ -6338,9 +6377,9 @@ def test_volume_floor_reference_tone_uses_low_mid_high_sequence(
         pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
 
     segment_n = int(
-        round(sound_setup.VOLUME_FLOOR_TONE_SEGMENT_DURATION_S * sample_rate)
+        round(volume_floor_tone.VOLUME_FLOOR_TONE_SEGMENT_DURATION_S * sample_rate)
     )
-    for index, expected in enumerate(sound_setup.VOLUME_FLOOR_TONE_FREQS_HZ):
+    for index, expected in enumerate(volume_floor_tone.VOLUME_FLOOR_TONE_FREQS_HZ):
         segment = pcm[index * segment_n:(index + 1) * segment_n]
         assert _dominant_frequency_hz(segment, sample_rate) == pytest.approx(
             expected,
@@ -6357,7 +6396,7 @@ async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
     FakeVolumeFloorToneRunner.instances.clear()
     fake = BlockingVolumeCamilla(block_on_volume_call=2)
     _install_floor_tone_owner(fake)
-    session = sound_setup._VolumeFloorToneSession()
+    session = volume_floor_tone._VolumeFloorToneSession()
 
     await sound_setup._audition_volume_floor(
         {"volume_floor_db": -24.0},

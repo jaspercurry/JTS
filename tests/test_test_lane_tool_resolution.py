@@ -1303,37 +1303,55 @@ def test_test_merge_mypy_failure_stops_before_pytest_and_fails_the_lane(
 
 
 @pytest.mark.parametrize(
-    ("script", "routed_test", "expected"),
+    ("script", "routed_tests", "expected"),
     (
-        ("jasper-camilla-recover", "tests/test_camilla_recover_script.py", "named"),
-        ("jasper-apply-airplay-mode", "tests/test_airplay_render.py", "grep"),
+        (
+            "jasper-camilla-recover",
+            ("tests/test_camilla_recover_script.py",),
+            "named",
+        ),
+        ("jasper-apply-airplay-mode", ("tests/test_airplay_render.py",), "grep"),
+        (
+            # issue #3846's tests/test_aec_reconcile_rule_pins.py sits beside
+            # the convention match (tests/test_aec_reconcile.py) rather than
+            # replacing it, so the convention branch alone silently ran only
+            # one of the two -- caught only by re-deriving the same glob idiom
+            # the jasper/*/*.py arm already uses for sibling test files.
+            "jasper-aec-reconcile",
+            ("tests/test_aec_reconcile.py", "tests/test_aec_reconcile_rule_pins.py"),
+            "glob",
+        ),
     ),
 )
 def test_fast_lane_routes_deploy_bin_scripts_to_their_tests(
     tmp_path: Path,
     script: str,
-    routed_test: str,
+    routed_tests: tuple[str, ...],
     expected: str,
 ) -> None:
     """A deploy/bin shell script must select the tests that exercise it.
 
     These scripts are reached through subprocess, so the jasper/*.py arms
     cannot route them and before this arm a change under deploy/bin selected
-    nothing at all. Both halves of the arm are pinned because only one of
-    them is a naming convention: `jasper-camilla-recover` has a test named
-    after it, while `jasper-apply-airplay-mode` has none and is covered by
-    tests/test_airplay_render.py, whose 18 macOS-only failures reached main
-    green through this gap. The `grep` case's stub carries the script's name
-    so the sandbox reproduces how the real tree pins it -- by literal
-    reference, not by filename.
+    nothing at all. The three cases pin the arm's three ways of finding a
+    test: `jasper-camilla-recover` has a test named after it,
+    `jasper-apply-airplay-mode` has none and is covered by
+    tests/test_airplay_render.py instead (whose 18 macOS-only failures
+    reached main green through this gap), and `jasper-aec-reconcile` has a
+    named test PLUS a sibling glob match that the named-only check used to
+    miss. The `grep` case's stub carries the script's name so the sandbox
+    reproduces how the real tree pins it -- by literal reference, not by
+    filename.
     """
     selected = _fast_lane_selected_tests(
         tmp_path,
         changed_path=f"deploy/bin/{script}",
-        routed_tests=(routed_test,),
+        routed_tests=routed_tests,
         test_contents=(
-            {routed_test: f"# exercises {script}\n"} if expected == "grep" else None
+            {routed_tests[0]: f"# exercises {script}\n"}
+            if expected == "grep"
+            else None
         ),
     )
 
-    assert routed_test in selected, selected
+    assert set(routed_tests) <= selected, selected

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.cli import doctor
+from tests._aec_bridge_helpers import _rms_log_line
 
 
 @pytest.fixture(autouse=True)
@@ -32,16 +33,6 @@ def _probe_lock_in_test_tmp(monkeypatch, tmp_path):
         str(tmp_path / "doctor-aec-probe.lock"),
     )
 
-
-def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
-    """Synthesize one bridge `rms over` log line in the journal `--output=cat`
-    format the parser sees."""
-    return (
-        f"2026-05-16 17:00:00,000 aec-bridge INFO "
-        f"rms over 5.0s: ref={ref} mic={mic} aec={aec} → "
-        f"attenuation={attn_db:.1f} dB (frames=1 ref_q=0 mic_q=0 "
-        f"ref_clip=0.00% out_clip=0.00%)"
-    )
 
 
 def test_active_aec_probe_is_owned_by_dedicated_module(monkeypatch):

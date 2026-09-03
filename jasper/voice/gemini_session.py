@@ -12,13 +12,14 @@ from typing import AsyncIterator, Callable
 from google import genai
 from google.genai import types
 
-from jasper.backoff import reconnect_backoff_delay
+from jasper.backoff import ReconnectNudge, reconnect_delay, sleep_or_nudge
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     Deferred,
     OutageTracker,
     http_status,
+    is_transient,
     survive_terminal_initial_connect,
 )
 from .session import (
@@ -526,16 +527,21 @@ class GeminiLiveConnection:
         context_reset_sec: float = 0.0,
         keepalive_period_sec: float = KEEPALIVE_PERIOD_SEC,
         # Production: leave None → supervisor reconnects FOREVER with
-        # `reconnect_backoff_delay(attempt)` (1, 2, 4, 8, 16, 32, 60,
-        # 60, …s with ±25% jitter). Tests pass a bounded tuple to make
+        # `reconnect_delay()` (1, 2, 4, 8, 16, 32, 60, 60, …s with ±25%
+        # jitter while the failure is transient; a fixed slow poll once
+        # it is terminal). Tests pass a bounded tuple to make
         # exhaustion observable and runs fast.
         backoff_schedule: tuple[float, ...] | None = None,
         # Test seam: replace `client.aio.live.connect` so unit tests can
         # mock the SDK without touching the network.
         connect_factory=None,
+        # Test seam: replace the backoff wait so unit tests observe the
+        # schedule without sleeping it. Matches OpenAIRealtimeConnection.
+        sleep=None,
     ) -> None:
         self._client = genai.Client(api_key=api_key) if connect_factory is None else None
         self._connect_factory = connect_factory
+        self._sleep = sleep if sleep is not None else asyncio.sleep
         self._model = model
         self._voice = voice
         self._context_reset_sec = context_reset_sec
@@ -595,6 +601,9 @@ class GeminiLiveConnection:
         # Triggered by the receive loop when it hits a drop / GoAway /
         # exception so the supervisor wakes up and reconnects.
         self._reconnect_event: asyncio.Event = asyncio.Event()
+        # Separate from `_reconnect_event` (which means "the session
+        # dropped"): this one only shortens an in-flight backoff wait.
+        self._nudge_event: asyncio.Event = asyncio.Event()
         self._supervisor_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
         # Set when a GoAway lands mid-turn with ample time_left: the
@@ -608,6 +617,8 @@ class GeminiLiveConnection:
         self._connected_event: asyncio.Event = asyncio.Event()
 
         self._outage = OutageTracker()
+        # Rate gate for `request_reconnect_now`.
+        self._reconnect_nudge = ReconnectNudge()
 
     def _set_state(self, new_state: "ConnectionState") -> None:
         """Update connection state with structured logging.
@@ -762,6 +773,21 @@ class GeminiLiveConnection:
 
     def wake_cue(self) -> str:
         return self._outage.wake_cue
+
+    def request_reconnect_now(self) -> bool:
+        """Cut the current backoff wait short and retry at once.
+
+        The daemon calls this when it refuses a wake because the
+        connection is paused: during the 15-minute terminal poll the
+        wake word is the household asking whether the outage is over,
+        and they should not wait out the interval. Rate-gated, so
+        repeated wakes cannot outpace the transient ramp."""
+        if not self.is_paused():
+            return False
+        if not self._reconnect_nudge.allow():
+            return False
+        self._nudge_event.set()
+        return True
 
     def supports_server_vad(self) -> bool:
         return False
@@ -1236,6 +1262,10 @@ class GeminiLiveConnection:
 
         last_exc: Exception | None = None
         handle_dropped = False
+        # Seeds the first delay; the previous failure's classification
+        # picks every one after that.
+        last_transient = True
+        self._nudge_event.clear()
         attempt = 0
         # Production: `self._backoff_schedule is None` → infinite loop.
         # Tests pass a bounded tuple to make exhaustion observable.
@@ -1248,7 +1278,7 @@ class GeminiLiveConnection:
             delay = (
                 self._backoff_schedule[attempt - 1]
                 if bounded
-                else reconnect_backoff_delay(attempt)
+                else reconnect_delay(attempt, transient=last_transient)
             )
             async with self._state_lock:
                 self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
@@ -1256,9 +1286,13 @@ class GeminiLiveConnection:
                 "live connection: reconnect attempt %d after %.1fs backoff",
                 attempt, delay,
             )
-            await asyncio.sleep(delay)
+            await self._backoff_sleep(delay)
             if self._stopping.is_set():
                 return
+            # This attempt answers every nudge raised so far, including
+            # any raised during the previous attempt. Clearing here (not
+            # inside the wait) is what keeps those from being discarded.
+            self._nudge_event.clear()
             try:
                 await self._open_session()
                 if handle_dropped:
@@ -1270,6 +1304,7 @@ class GeminiLiveConnection:
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
+                transient = is_transient(e)
                 is_409, status = _is_409_conflict(e)
                 handle_short = (
                     (self._resumption_handle or "")[:8]
@@ -1289,6 +1324,15 @@ class GeminiLiveConnection:
                         attempt, type(e).__name__,
                         self._outage.detail, handle_short,
                     )
+                if transient and not last_transient and not bounded:
+                    # The provider stopped rejecting us outright and is
+                    # only failing normally now, so it is recovering.
+                    # Restart the ramp at 1 s instead of resuming
+                    # wherever the slow poll left the counter. Bounded
+                    # (test) schedules index by `attempt`, so resetting
+                    # one would replay the schedule forever.
+                    attempt = 0
+                last_transient = transient
                 # Drop the cached resumption handle on the first failure
                 # of ANY kind. A server-invalidated handle that surfaces
                 # as anything other than a 409 (the killer: WebSocket
@@ -1320,6 +1364,15 @@ class GeminiLiveConnection:
                 "live connection: bounded test schedule exhausted after %d "
                 "retries. Last error: %s", attempt - 1, last_exc,
             )
+
+    async def _backoff_sleep(self, delay: float) -> None:
+        """Wait out the backoff, unless a caller asks to retry now.
+
+        A bare sleep here is uninterruptible, so the 15-minute terminal
+        poll would ignore `request_reconnect_now` for up to 15 minutes.
+        `stop()` cancels the supervisor task, which unwinds through here
+        and cancels both waiters."""
+        await sleep_or_nudge(delay, self._nudge_event, sleep=self._sleep)
 
     async def _receive_loop(self) -> None:
         """Iterate the SDK's lower-level `session._receive()` and route

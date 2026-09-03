@@ -729,9 +729,6 @@ fi
 # it: its only reader is this script's own bounded post-install restart policy
 # below.
 for key in \
-    JASPER_CAPTURE_RELAY_BASE \
-    JASPER_CAPTURE_ORIGIN \
-    JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN \
     JASPER_BUILD_SANDBOX \
     JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ \
     JASPER_BUILD_SANDBOX_MEMORY_HIGH \

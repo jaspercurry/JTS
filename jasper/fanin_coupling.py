@@ -81,21 +81,18 @@ def ring_capacity_frames() -> int:
     ioplug takes its slot count from the conf.d block instead, and a disagreeing
     pair fails the attach outright rather than resizing anything.
 
-    THIS FUNCTION IS ISSUE #2147's SEAM. That issue makes the slot size derive
+    THIS FUNCTION IS ISSUE #2147's SEAM: landing it makes the slot size derive
     from the DAC floor across all four components (fan-in, the ioplug, the
-    conf.d render, the Camilla emitter); the constant product below is what it
-    replaces with the box's real geometry. Landing it does not remove the
-    clamp in ``camilla_config_contract.resolve_camilla_latency_for_devices`` —
-    it makes the clamp stop biting, because a board that earns a bigger ring
-    would then report one here and its floor would fit.
+    conf.d render, the Camilla emitter) instead of the constant product below.
+    It does not remove the clamp in
+    ``camilla_config_contract.resolve_camilla_latency_for_devices`` — it makes
+    the clamp stop biting, because a board that earns a bigger ring would then
+    report one here and its floor would fit.
 
     The two are the same defect on different axes: #2147 is the PERIOD axis
     (a DAC's declared ``outputd_period_frames`` cannot reach the ring), and the
     clamp is the CHUNK axis (a DAC's declared ``camilla_chunksize`` reached the
-    ring when it could not fit). Note that #2147's stated mitigation — non-128
-    boxes "keep loopback coupling" — no longer exists: ADR-0100 left shm_ring
-    the only transport, which is why the chunk axis surfaced as a crash loop on
-    jts4 rather than as a fallback.
+    ring when it could not fit).
     """
 
     return RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
@@ -124,9 +121,8 @@ class RingCamillaGeometry(TypedDict):
 #
 # NOT the fallback for an ordinary sound/correction graph. Those carry the box's
 # own floor clamped to the ring's capacity
-# (``camilla_config_contract.resolve_camilla_latency_for_devices``) — jts.local
-# runs 256/1536 across this ring — so moving them onto this pair is a retune
-# with a listening test, not a refactor.
+# (``camilla_config_contract.resolve_camilla_latency_for_devices``), so moving
+# them onto this pair is a retune with a listening test, not a refactor.
 #
 # ``MappingProxyType`` so a caller cannot retune every ring box by mutating it;
 # the cast is what keeps ``**RING_CAMILLA_GEOMETRY`` per-key typed at the two
@@ -188,9 +184,9 @@ RING_WIRE_FORMATS = (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE)
 # times — a half-applied render is exactly what that comparison catches.
 #
 # THE KEY HAS NO WRITER, AND THAT IS WHAT MAKES IT A ROLLBACK LEVER. Since the
-# resolver's default went wide (convergence design §3.2/B3), the only reason to
-# set this key is to pin a box NARROW — and a lever a reconciler could rewrite on
-# the next boot, deploy or udev pass would not be one. So nothing in this repo
+# resolver's default is wide, the only reason to set this key is to pin a box
+# NARROW — and a lever a reconciler could rewrite on the next boot, deploy or
+# udev pass would not be one. So nothing in this repo
 # writes it: every production site under jasper/, deploy/ and scripts/ that
 # names the key is a READ, a gate's error string, or prose. Adding a writer
 # would silently destroy the fleet's only way back to the narrow wire, so
@@ -240,14 +236,14 @@ DEFAULT_OUTPUTD_RING_SLOTS = 2
 RING_PLAYBACK_DEVICE = "jts_ring_playback"
 
 # ---------------------------------------------------------------------------
-# The ACTIVE ring (ring v2 R7b) — a THIRD ring file and a THIRD ioplug PCM,
+# The ACTIVE ring — a THIRD ring file and a THIRD ioplug PCM,
 # carrying a roleful box's POST-crossover per-driver program from CamillaDSP to
 # outputd. Ring B above carries a full-range stereo program; this one does not,
 # and the two must never be confused, which is why the role is carried in the
 # NAME rather than inferred from a width.
 #
-# WHY THE NAME AND NOT THE WIDTH. On jts3 — the first box this rung serves —
-# the active lane is TWO channels (woofer + compression-driver tweeter), so
+# WHY THE NAME AND NOT THE WIDTH. On a two-way roleful box, the active lane is
+# TWO channels (woofer + compression-driver tweeter), so
 # ``content_channels == 2`` is true of the active ring and of the stereo ring
 # alike. No channel-count test can tell them apart there. A distinct device
 # name, a distinct ring path, and outputd's allowlist over the pair are what
@@ -322,10 +318,8 @@ class RingWire:
 
     The ring's four independent ends — fan-in (the Ring A writer), the two
     ``jts_ring`` ioplug PCMs CamillaDSP opens, and outputd (the post-DSP ring's
-    reader) —
-    each declare a geometry, and the attach compares them field-by-field. While
-    every axis was a constant, coherence was held by everyone reading the same
-    literal. This object is what replaces that: ONE resolution, four declarers.
+    reader) — each declare a geometry, and the attach compares them
+    field-by-field: ONE resolution, four declarers.
 
     **Equality only, never a ranking.** A declared wire either equals the
     resolved one or the end refuses to arm. No axis here supports a "wider is
@@ -369,8 +363,8 @@ def resolve_ring_wire_format(raw: str | None) -> str:
       REGRESSION on the hop the ring replaces: the loopback CamillaDSP→outputd
       hop already carries
       :data:`~jasper.camilla_config_contract.DEFAULT_PLAYBACK_FORMAT` (S32_LE),
-      so arming a ring at S16_LE would narrow a hop that was wide before the arm
-      (convergence design §3.2). Nothing in this repo WRITES this key — see
+      so arming a ring at S16_LE would narrow a hop that was wide before the
+      arm. Nothing in this repo WRITES this key — see
       :data:`RING_WIRE_FORMAT_ENV_VAR` — so an operator's ``S16_LE`` is a
       rollback lever no boot, deploy or udev pass can overwrite;
     - exactly ``S16_LE`` / ``S32_LE`` after trimming → that token. The match is
@@ -508,10 +502,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       same chain, defaulting to :data:`RING_WIRE_FORMAT_WIDE` when the box
       declares nothing. The layout's accept-set is wider (S16LE and S32LE, both
       ends of the ring already parse both), so which one a box carries is a
-      DECLARATION, not a policy constant — until PR #2335 this axis was
-      pinned narrow here with no input at all, which meant an operator could
-      declare a wide wire to fan-in and every Python end would still emit and
-      render narrow (jts3's blocked wide arm). The shipped conf.d DECLARES the
+      DECLARATION, not a policy constant. The shipped conf.d DECLARES the
       wide token in every block rather than omitting the key, so an unrendered
       conf.d and an undeclared box agree because the file says so — the C
       ioplug's own default is still the narrow token
@@ -530,9 +521,9 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       preflights own that. **They do not simply refuse it**: a box with no Ring
       B may still arm the ACTIVE ring, which is a different transport with its
       own width (``ring_active_channels`` below). ``ring_topology_ready``'s
-      ACTIVE arm admits a ROLEFUL topology — jts3's DAC8x today, and since P8b
-      item 1b a roleful composite — once its endpoint is staged. What genuinely
-      cannot arm either ring is an explicit mono, or a PASSIVE composite.
+      ACTIVE arm admits a ROLEFUL topology, including a roleful composite,
+      once its endpoint is staged. What genuinely cannot arm either ring is an
+      explicit mono, or a PASSIVE composite.
     - ``period_frames`` — :data:`RING_SLOT_FRAMES`, fan-in's compile-time slot
       size. Reading it through the resolver is what gives issue #2147 a seam:
       making the slot floor-derived becomes "this axis stops being a constant"

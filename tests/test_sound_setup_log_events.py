@@ -13,24 +13,35 @@ import logging
 from collections import Counter
 from pathlib import Path
 
-from jasper.web import sound_setup
+from jasper.web import sound_setup, volume_floor_tone
 
 
 def _sound_event_calls() -> list[ast.Call]:
-    source = Path(sound_setup.__file__).read_text()
-    tree = ast.parse(source)
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "log_event"
-        and len(node.args) >= 2
-        and isinstance(node.args[1], ast.Constant)
-        and isinstance(node.args[1].value, str)
-        and node.args[1].value.startswith("sound.")
-    ]
-    return sorted(calls, key=lambda node: node.lineno)
+    """Every ``sound.*`` event the page emits, across the modules it spans.
+
+    The volume-floor tone owns its own module; its events stay inside this
+    contract so the split cannot quietly retire them.
+    """
+    calls: list[ast.Call] = []
+    for module in (sound_setup, volume_floor_tone):
+        tree = ast.parse(Path(module.__file__).read_text())
+        calls.extend(
+            sorted(
+                (
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "log_event"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[1].value, str)
+                    and node.args[1].value.startswith("sound.")
+                ),
+                key=lambda node: node.lineno,
+            )
+        )
+    return calls
 
 
 def _sound_route_failure_calls() -> list[ast.Call]:
@@ -245,10 +256,10 @@ def test_volume_floor_exception_keeps_error_level_and_traceback(
         raise OSError("synthetic aplay failure")
 
     monkeypatch.delenv("JASPER_LOG_JSON", raising=False)
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _raise_oserror)
-    runner = sound_setup._LoopingVolumeFloorTone(tmp_path / "tone.wav")
+    monkeypatch.setattr(volume_floor_tone.subprocess, "Popen", _raise_oserror)
+    runner = volume_floor_tone._LoopingVolumeFloorTone(tmp_path / "tone.wav")
 
-    with caplog.at_level(logging.ERROR, logger=sound_setup.__name__):
+    with caplog.at_level(logging.ERROR, logger=volume_floor_tone.__name__):
         runner._run()
 
     records = [
