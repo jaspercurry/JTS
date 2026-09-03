@@ -3062,7 +3062,7 @@ def test_install_removes_the_retired_audio_topology_state():
     # The doctor's side of the pair: the remedy still names re-running the
     # installer, which the step above is what makes true.
     doctor_src = (
-        REPO_ROOT / "jasper" / "cli" / "doctor" / "audio_runtime.py"
+        REPO_ROOT / "jasper" / "cli" / "doctor" / "audio_runtime_fanin.py"
     ).read_text(encoding="utf-8")
     assert "audio_topology.env" in doctor_src
     assert "Re-run " in doctor_src

@@ -22,7 +22,7 @@ from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
 from ._registry import doctor_check
 from ._shared import CheckResult, _read_status_socket, _run
-from .audio_runtime import _FANIN_STATUS_SOCKET, _requires_roleful_graph
+from .audio_runtime_fanin import _FANIN_STATUS_SOCKET, _requires_roleful_graph
 from .audio_runtime_outputd import _outputd_reconciled_env
 from .correction import _active_camilla_config_path
 

@@ -296,7 +296,7 @@ _MIN_TTS_GAIN_PAT = re.compile(
 
 
 def test_assistant_gain_floor_matches_rust_and_doctor() -> None:
-    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor import audio_runtime_fanin
 
     text = (REPO / _RUST_SHARED_LOUDNESS).read_text()
     match = _MIN_TTS_GAIN_PAT.search(text)
@@ -305,10 +305,10 @@ def test_assistant_gain_floor_matches_rust_and_doctor() -> None:
         "The doctor's assistant-gain floor is pinned to this literal."
     )
     rust_floor = float(match.group(1))
-    assert rust_floor == audio_runtime._ASSISTANT_GAIN_FLOOR_DB, (
+    assert rust_floor == audio_runtime_fanin._ASSISTANT_GAIN_FLOOR_DB, (
         f"assistant-gain floor drift: Rust MIN_TTS_GAIN_DB={rust_floor} != "
         f"doctor _ASSISTANT_GAIN_FLOOR_DB="
-        f"{audio_runtime._ASSISTANT_GAIN_FLOOR_DB} — keep them in lockstep so "
+        f"{audio_runtime_fanin._ASSISTANT_GAIN_FLOOR_DB} — keep them in lockstep so "
         "jasper-doctor judges published final_gain_db against the bound the "
         "engine actually enforces."
     )

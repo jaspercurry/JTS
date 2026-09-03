@@ -985,8 +985,8 @@ def test_the_installer_ships_the_renderer_lane_confd():
 # --- fan-in's own contract ------------------------------------------------
 
 
-def _audio_runtime():
-    """The doctor's audio_runtime module, imported through the package.
+def _audio_runtime_fanin():
+    """The doctor's fan-in check module, imported through the package.
 
     `jasper.cli.doctor` populates a global check registry at import and refuses
     a duplicate order, so importing a submodule directly on a fresh interpreter
@@ -995,7 +995,7 @@ def _audio_runtime():
     """
     from jasper.cli import doctor
 
-    return doctor.audio_runtime
+    return doctor.audio_runtime_fanin
 
 
 def test_the_doctor_lane_roster_follows_the_armed_set(tmp_path):
@@ -1005,17 +1005,17 @@ def test_the_doctor_lane_roster_follows_the_armed_set(tmp_path):
     path = str(tmp_path / "lanes.env")
     rl.render_renderer_lanes_env(("spotify",), path=path)
 
-    roster = dict(_audio_runtime()._fanin_expected_inputs(lanes_env=path))
+    roster = dict(_audio_runtime_fanin()._fanin_expected_inputs(lanes_env=path))
     assert roster["spotify"] == rl.renderer_ring_path("spotify")
     assert roster["airplay"] == "hw:Loopback,1,1", "unarmed lanes are untouched"
 
 
 def test_the_doctor_lane_roster_is_the_shipped_one_when_nothing_is_armed(tmp_path):
-    audio_runtime = _audio_runtime()
+    audio_runtime_fanin = _audio_runtime_fanin()
     path = str(tmp_path / "absent.env")
     assert (
-        audio_runtime._fanin_expected_inputs(lanes_env=path)
-        == audio_runtime._FANIN_EXPECTED_ALOOP_INPUTS
+        audio_runtime_fanin._fanin_expected_inputs(lanes_env=path)
+        == audio_runtime_fanin._FANIN_EXPECTED_ALOOP_INPUTS
     )
 
 

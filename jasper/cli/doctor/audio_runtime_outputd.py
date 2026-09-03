@@ -15,7 +15,7 @@ import os
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _read_status_socket_bytes, _run
-from .audio_runtime import _assistant_gain_fault
+from .audio_runtime_fanin import _assistant_gain_fault
 
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 

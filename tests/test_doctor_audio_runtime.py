@@ -27,6 +27,7 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.cli.doctor import (
     audio_runtime,
+    audio_runtime_fanin,
     audio_runtime_outputd,
     audio_runtime_ring,
 )
@@ -68,7 +69,7 @@ def _patch_asound_conf(
             return stale
         return real_path_cls(arg)
 
-    monkeypatch.setattr(doctor.audio_runtime, "Path", fake_path)
+    monkeypatch.setattr(doctor.audio_runtime_fanin, "Path", fake_path)
 
 
 _FANIN_ASOUND = """
@@ -226,7 +227,7 @@ def test_check_camilla_service_fails_when_unit_is_not_installed(monkeypatch):
 
 def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
     """Answer systemctl for every check module that reads a unit's state."""
-    for module in (doctor.audio_runtime, doctor.audio_runtime_outputd):
+    for module in (doctor.audio_runtime_fanin, doctor.audio_runtime_outputd):
         monkeypatch.setattr(module, "_run", _fake_systemctl(enabled, active))
 
 
@@ -337,11 +338,11 @@ def _host_clock_status(
 
 
 def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
-    l0 = doctor.audio_runtime._host_clock_health_from_status(_host_clock_status())
+    l0 = doctor.audio_runtime_fanin._host_clock_health_from_status(_host_clock_status())
     assert l0.status == "ok"
     assert "ladder=l0_locked" in l0.detail
 
-    retry = doctor.audio_runtime._host_clock_health_from_status(
+    retry = doctor.audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(ladder="probing", phase="retry_wait", attempt=2, retries=1)
     )
     assert retry.status == "ok"
@@ -354,7 +355,7 @@ def test_host_clock_doctor_ok_for_l0_and_bounded_retry():
     ["probe_noncompliant", "lost_authority", "actuator_unavailable"],
 )
 def test_host_clock_doctor_warns_with_exact_l2_reason(reason):
-    result = doctor.audio_runtime._host_clock_health_from_status(
+    result = doctor.audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(ladder="l2_fallback", reason=reason)
     )
     assert result.status == "warn"
@@ -362,7 +363,7 @@ def test_host_clock_doctor_warns_with_exact_l2_reason(reason):
 
 
 def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch():
-    unavailable = doctor.audio_runtime._host_clock_health_from_status(
+    unavailable = doctor.audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(
             ladder="l2_fallback",
             reason="actuator_unavailable",
@@ -375,7 +376,7 @@ def test_host_clock_doctor_warns_on_unavailable_or_generation_mismatch():
     assert "capture_generation=4" in unavailable.detail
     assert "control_generation=None" in unavailable.detail
 
-    mismatch = doctor.audio_runtime._host_clock_health_from_status(
+    mismatch = doctor.audio_runtime_fanin._host_clock_health_from_status(
         _host_clock_status(control_generation=3)
     )
     assert mismatch.status == "warn"
@@ -653,7 +654,7 @@ def test_status_socket_byte_reader_enforces_total_deadline(monkeypatch):
     fake = _FakeSocket(chunks=[b"x", b"y", b""])
     monkeypatch.setattr(doctor.socket, "socket", lambda *a, **kw: fake)
     monkeypatch.setattr(
-        doctor.audio_runtime.time,
+        doctor._shared.time,
         "monotonic",
         Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1]),
     )
@@ -705,7 +706,7 @@ def test_status_socket_strict_wrapper_and_lossy_caller_keep_decode_ownership(
 
 def test_check_fanin_service_keeps_one_bounded_status_retry(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
-    monkeypatch.setattr(doctor.audio_runtime.time, "sleep", lambda _: None)
+    monkeypatch.setattr(doctor.audio_runtime_fanin.time, "sleep", lambda _: None)
     first = _FakeSocket(error=OSError("transient refusal"))
     second = _FakeSocket(payload=_fanin_status_payload())
     pending = [first, second]
@@ -867,7 +868,7 @@ def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
     ],
 )
 def test_assistant_gain_fault_pins_the_shared_loudness_contract(loudness, faulty):
-    fault = doctor.audio_runtime._assistant_gain_fault(loudness)
+    fault = doctor.audio_runtime_fanin._assistant_gain_fault(loudness)
     assert (fault is not None) is faulty, fault
 
 
@@ -1886,7 +1887,7 @@ def test_fanin_asound_wiring_fails_when_the_lanes_shear_from_the_wire(
     actually resolves rather than a literal."""
     _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
     monkeypatch.setattr(
-        doctor.audio_runtime, "read_declared_ring_wire_format", lambda: "S16_LE"
+        doctor.audio_runtime_fanin, "read_declared_ring_wire_format", lambda: "S16_LE"
     )
     r = doctor.check_fanin_asound_wiring()
     assert r.status == "fail"
@@ -2245,9 +2246,9 @@ def _make_card(tmp_path: Path, open_subs: dict[str, list[int]] | None = None) ->
     """
     open_subs = open_subs or {}
     root = tmp_path / "asound"
-    card = root / audio_runtime._ALOOP_CARD_ID
-    for pcm_dir in audio_runtime._ALOOP_PCM_DIRS:
-        for pair in range(audio_runtime._ALOOP_SUBSTREAMS):
+    card = root / audio_runtime_fanin._ALOOP_CARD_ID
+    for pcm_dir in audio_runtime_fanin._ALOOP_PCM_DIRS:
+        for pair in range(audio_runtime_fanin._ALOOP_SUBSTREAMS):
             sub = card / pcm_dir / f"sub{pair}"
             sub.mkdir(parents=True)
             is_open = pair in open_subs.get(pcm_dir, [])
@@ -2260,7 +2261,7 @@ def _make_card(tmp_path: Path, open_subs: dict[str, list[int]] | None = None) ->
 @pytest.fixture()
 def proc_root(monkeypatch, tmp_path):
     def _set(root: Path) -> None:
-        monkeypatch.setenv(audio_runtime._ALOOP_PROC_ROOT_ENV, str(root))
+        monkeypatch.setenv(audio_runtime_fanin._ALOOP_PROC_ROOT_ENV, str(root))
 
     return _set
 
@@ -2291,21 +2292,21 @@ def test_no_aloop_card_is_ok(proc_root, tmp_path):
     empty = tmp_path / "asound"
     empty.mkdir()
     proc_root(empty)
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "ok"
     assert "not loaded" in result.detail
 
 
 def test_all_closed_is_ok(proc_root, tmp_path):
     proc_root(_make_card(tmp_path))
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "ok"
     assert "no pair currently open" in result.detail
     # The remnant's size is REPORTED, not merely asserted — risk 5.1 in the
     # design is "the remnant becomes permanent by silence".
     assert (
         f"{len(_EXPECTED_REGISTERED_PAIRS)} of "
-        f"{audio_runtime._ALOOP_SUBSTREAMS} pairs"
+        f"{audio_runtime_fanin._ALOOP_SUBSTREAMS} pairs"
     ) in result.detail
     # The program path is off snd-aloop entirely (ADR-0100); the text must
     # not still name a content lane that no longer exists.
@@ -2322,7 +2323,7 @@ def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
     box is HEALTHY. If this check ever fails it, the check is wrong.
     """
     proc_root(_make_card(tmp_path, {"pcm1c": [3]}))
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "ok"
     assert "[3]" in result.detail
 
@@ -2344,7 +2345,7 @@ def test_positive_control_foreign_substream_fails(
     the playback side would fail this.
     """
     proc_root(_make_card(tmp_path, {pcm_dir: [pair]}))
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "fail"
     assert f"{pcm_dir}/sub{pair}" in result.detail
     assert "no registered purpose" in result.detail
@@ -2353,7 +2354,7 @@ def test_positive_control_foreign_substream_fails(
 def test_positive_control_names_the_offender(proc_root, tmp_path):
     """The FAIL names the offender — the design asks for pid/process."""
     proc_root(_make_card(tmp_path, {"pcm0p": [5]}))
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "fail"
     assert "pid=4242" in result.detail
     # And it tells the operator what to do about it.
@@ -2370,7 +2371,7 @@ def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
     indistinguishable and the bound was asserted but never proven.
     """
     monkeypatch.setattr(
-        audio_runtime,
+        audio_runtime_fanin,
         "_derive_registered_pairs",
         lambda: {0: "fan-in input lane 'spotify'"},
     )
@@ -2378,14 +2379,14 @@ def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
         _make_card(
             tmp_path,
             {
-                pcm: [p for p in range(audio_runtime._ALOOP_SUBSTREAMS) if p != 0]
-                for pcm in audio_runtime._ALOOP_PCM_DIRS
+                pcm: [p for p in range(audio_runtime_fanin._ALOOP_SUBSTREAMS) if p != 0]
+                for pcm in audio_runtime_fanin._ALOOP_PCM_DIRS
             },
         )
     )
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "fail"
-    cap = audio_runtime._ALOOP_OFFENDER_DETAIL_CAP
+    cap = audio_runtime_fanin._ALOOP_OFFENDER_DETAIL_CAP
     shown = result.detail.count("/sub")
     assert shown <= cap, f"detail listed {shown} offenders, cap is {cap}"
     # The truncation is DISCLOSED, not silent — an operator must not think
@@ -2401,12 +2402,12 @@ def test_unreadable_proc_is_warn_not_fail(proc_root, tmp_path):
     root in CI.
     """
     root = tmp_path / "asound"
-    card = root / audio_runtime._ALOOP_CARD_ID
-    for pcm_dir in audio_runtime._ALOOP_PCM_DIRS:
-        for pair in range(audio_runtime._ALOOP_SUBSTREAMS):
+    card = root / audio_runtime_fanin._ALOOP_CARD_ID
+    for pcm_dir in audio_runtime_fanin._ALOOP_PCM_DIRS:
+        for pair in range(audio_runtime_fanin._ALOOP_SUBSTREAMS):
             (card / pcm_dir / f"sub{pair}" / "status").mkdir(parents=True)
     proc_root(root)
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "warn"
     assert "could not be verified" in result.detail
 
@@ -2414,25 +2415,25 @@ def test_unreadable_proc_is_warn_not_fail(proc_root, tmp_path):
 def test_missing_substreams_are_not_evidence(proc_root, tmp_path):
     """A narrower snd-aloop is not a fault — absence is not an offender."""
     root = tmp_path / "asound"
-    card = root / audio_runtime._ALOOP_CARD_ID
+    card = root / audio_runtime_fanin._ALOOP_CARD_ID
     sub = card / "pcm0p" / "sub0"
     sub.mkdir(parents=True)
     (sub / "status").write_text("closed\n", encoding="utf-8")
     proc_root(root)
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "ok"
 
 
 def test_check_never_raises_on_hostile_status(proc_root, tmp_path):
     """A garbage/empty status file must not crash the doctor."""
     root = _make_card(tmp_path)
-    card = root / audio_runtime._ALOOP_CARD_ID
+    card = root / audio_runtime_fanin._ALOOP_CARD_ID
     (card / "pcm0p" / "sub0" / "status").write_text("", encoding="utf-8")
     (card / "pcm0p" / "sub1" / "status").write_text(
         "\x00\xff garbage", encoding="utf-8", errors="replace"
     )
     proc_root(root)
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status in {"ok", "warn", "fail"}
 
 
@@ -2460,7 +2461,7 @@ def _modprobe_substreams() -> int:
 
 def test_walker_range_matches_modprobe_pcm_substreams():
     """The walker must scan exactly the substreams the module creates."""
-    assert audio_runtime._ALOOP_SUBSTREAMS == _modprobe_substreams()
+    assert audio_runtime_fanin._ALOOP_SUBSTREAMS == _modprobe_substreams()
 
 
 # --------------------------------------------------------------------------
@@ -2469,7 +2470,7 @@ def test_walker_range_matches_modprobe_pcm_substreams():
 
 def test_derived_set_matches_the_expected_allocation():
     """Dropping a pair from the owning constant changes this set."""
-    derived = audio_runtime._derive_registered_pairs()
+    derived = audio_runtime_fanin._derive_registered_pairs()
     assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
 
 
@@ -2483,44 +2484,41 @@ def test_every_registered_pair_open_is_ok(proc_root, tmp_path, pair):
     that a real box holds open is a red doctor on healthy hardware.
     """
     proc_root(_make_card(tmp_path, {"pcm0p": [pair], "pcm1c": [pair]}))
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "ok", f"pair {pair} open read as {result.detail}"
 
 
 def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
     """A partial derivation would SHRINK the set and red-doctor a healthy box,
     so an unparseable source must return None (-> warn), never a subset."""
-    from jasper.cli.doctor import audio_runtime
 
     monkeypatch.setattr(
-        audio_runtime,
+        audio_runtime_fanin,
         "_FANIN_EXPECTED_ALOOP_INPUTS",
         [("spotify", "hw:Loopback,1,0"), ("airplay", "not-a-pcm")],
     )
-    assert audio_runtime._derive_registered_pairs() is None
+    assert audio_runtime_fanin._derive_registered_pairs() is None
 
 
 def test_derivation_rejects_a_non_loopback_card(monkeypatch):
-    from jasper.cli.doctor import audio_runtime
 
     monkeypatch.setattr(
-        audio_runtime,
+        audio_runtime_fanin,
         "_FANIN_EXPECTED_ALOOP_INPUTS",
         [("spotify", "hw:SomeOtherCard,1,0")],
     )
-    assert audio_runtime._derive_registered_pairs() is None
+    assert audio_runtime_fanin._derive_registered_pairs() is None
 
 
 def test_unparseable_source_constant_is_warn(proc_root, tmp_path, monkeypatch):
     """An unparseable owner degrades the FULL check to warn, never to a
     shrunken set that red-doctors a healthy box."""
-    from jasper.cli.doctor import audio_runtime
 
     monkeypatch.setattr(
-        audio_runtime, "_FANIN_EXPECTED_ALOOP_INPUTS", [("spotify", "not-a-pcm")]
+        audio_runtime_fanin, "_FANIN_EXPECTED_ALOOP_INPUTS", [("spotify", "not-a-pcm")]
     )
     proc_root(_make_card(tmp_path))
-    result = audio_runtime.check_aloop_registered_substreams()
+    result = audio_runtime_fanin.check_aloop_registered_substreams()
     assert result.status == "warn"
     assert "could not derive" in result.detail
 
@@ -2531,14 +2529,14 @@ def test_retired_pairs_are_not_registered(pair):
     owning constant fails here — the deletion is what the guard protects, and
     a registered pair is a pair whose resurrection reads as healthy.
     """
-    derived = audio_runtime._derive_registered_pairs()
+    derived = audio_runtime_fanin._derive_registered_pairs()
 
     assert pair not in derived
 
 
 def test_registered_pairs_are_within_the_module_range():
     substreams = _modprobe_substreams()
-    derived = audio_runtime._derive_registered_pairs()
+    derived = audio_runtime_fanin._derive_registered_pairs()
     for pair in derived:
         assert 0 <= pair < substreams, (
             f"registered pair {pair} is outside pcm_substreams={substreams}"
@@ -2626,9 +2624,9 @@ def _run_check(monkeypatch, *, cfg_text, tmp_path):
     # _active_camilla_config_path returns (statefile, active_config_path|None) —
     # mock the REAL tuple shape (a str-only mock masked a production TypeError).
     monkeypatch.setattr(
-        audio_runtime, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
+        audio_runtime_fanin, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
     )
-    return audio_runtime.check_fanin_coupling()
+    return audio_runtime_fanin.check_fanin_coupling()
 
 
 @pytest.mark.parametrize("cfg_text", [_ALSA_CFG, _ALSA_LOCAL_PIPE_CFG, _RAWFILE_CFG])
@@ -2713,7 +2711,7 @@ def test_check_fanin_coupling_value_reads_the_shared_predicate(
     monkeypatch.setattr(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
-    res = audio_runtime.check_fanin_coupling_value()
+    res = audio_runtime_fanin.check_fanin_coupling_value()
     assert res.status == status
     if status == "warn":
         assert raw in res.detail, "the operator needs the stale token named"
@@ -3092,7 +3090,7 @@ def test_a_roleful_box_with_a_clear_marker_goes_up_the_ladder(monkeypatch, tmp_p
     retired ones absent, so a partial re-point cannot pass.
     """
     monkeypatch.setattr(
-        audio_runtime, "_requires_roleful_graph", lambda: True)
+        audio_runtime_fanin, "_requires_roleful_graph", lambda: True)
     res = _run_check(monkeypatch, cfg_text=_STALE_RING_CFG, tmp_path=tmp_path)
     assert res.status == "warn"
     assert "jts_ring_active_playback" in res.detail
@@ -3117,7 +3115,7 @@ def test_a_passive_box_on_the_wrong_ring_keeps_the_plain_remedy(
     ladder would be worse advice, not more of it.
     """
     monkeypatch.setattr(
-        audio_runtime, "_requires_roleful_graph", lambda: False)
+        audio_runtime_fanin, "_requires_roleful_graph", lambda: False)
     res = _run_check(monkeypatch, cfg_text=_STALE_RING_CFG, tmp_path=tmp_path)
     assert res.status == "warn"
     assert "jasper-fanin-coupling-reconcile shm_ring" in res.detail
@@ -3438,7 +3436,7 @@ def test_an_unreadable_topology_fails_soft_to_not_roleful(monkeypatch, tmp_path,
     monkeypatch.setattr(output_topology, "load_output_topology_strict", _raise)
     _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
 
-    assert audio_runtime._requires_roleful_graph() is False
+    assert audio_runtime_fanin._requires_roleful_graph() is False
     assert "ROLEFUL" not in audio_runtime_ring.check_ring_conf_floor_render().detail
 
 
@@ -3458,7 +3456,7 @@ def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
     )
     _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
 
-    assert audio_runtime._requires_roleful_graph() is True
+    assert audio_runtime_fanin._requires_roleful_graph() is True
     assert "ROLEFUL" in audio_runtime_ring.check_ring_conf_floor_render().detail
 
 
@@ -5061,9 +5059,9 @@ def test_check_fanin_binary_installed_reports_missing(
     tmp_path: Path,
 ) -> None:
     binary = tmp_path / "jasper-fanin"
-    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
+    monkeypatch.setattr(audio_runtime_fanin, "Path", lambda _path: binary)
 
-    result = audio_runtime.check_fanin_binary_installed()
+    result = audio_runtime_fanin.check_fanin_binary_installed()
 
     assert result.name == "jasper-fanin binary"
     assert result.status == "fail"
@@ -5080,9 +5078,9 @@ def test_check_fanin_binary_installed_reports_nonexecutable(
     binary = tmp_path / "jasper-fanin"
     binary.write_bytes(b"fan-in")
     binary.chmod(0o644)
-    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
+    monkeypatch.setattr(audio_runtime_fanin, "Path", lambda _path: binary)
 
-    result = audio_runtime.check_fanin_binary_installed()
+    result = audio_runtime_fanin.check_fanin_binary_installed()
 
     assert result.name == "jasper-fanin binary"
     assert result.status == "fail"
@@ -5098,9 +5096,9 @@ def test_check_fanin_binary_installed_reports_executable_size(
     binary = tmp_path / "jasper-fanin"
     binary.write_bytes(b"x" * 2500)
     binary.chmod(0o755)
-    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
+    monkeypatch.setattr(audio_runtime_fanin, "Path", lambda _path: binary)
 
-    result = audio_runtime.check_fanin_binary_installed()
+    result = audio_runtime_fanin.check_fanin_binary_installed()
 
     assert result.name == "jasper-fanin binary"
     assert result.status == "ok"
