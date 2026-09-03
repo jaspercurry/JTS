@@ -1483,12 +1483,10 @@ async def _get_state(
             # like the doctor and audio_health surfaces, so a down CamillaDSP
             # cannot make a parked box read as not-parked.
             "active_speaker_parked": _active_speaker_parked_snapshot(),
-            # Per-bridge health inside jasper-input (ADR-0225): that unit
-            # stays `active` while one bridge loops in restart backoff, so
-            # `restarts` climbing with a non-null `last_error` is the only
-            # non-journal sign of a wedged accessory. `last_error` is an
-            # exception class name, never a message (device identifiers).
-            # present=false means the unit is stopped or pre-first-publish.
+            # Per-bridge health inside jasper-input (ADR-0225), which stays
+            # `active` while one bridge loops in restart backoff. `last_error`
+            # is an exception class name, never a message — a bridge fault can
+            # name the device.
             "accessory_bridges": accessory_bridges.snapshot(),
         },
         "home_assistant": ha_status,

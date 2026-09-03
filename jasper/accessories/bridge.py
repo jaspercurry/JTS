@@ -56,7 +56,7 @@ from .registry import (
     lookup,
     lookup_by_name,
 )
-from .supervisor import Bridge, supervise
+from .supervisor import STATUS_PATH, Bridge, supervise
 
 logger = logging.getLogger(__name__)
 
@@ -755,7 +755,7 @@ def _published_mic_adapters() -> dict[str, Bridge]:
     }
 
 
-async def _run_bridges(control_url: str) -> None:
+async def _run_bridges(control_url: str, status_path: str = STATUS_PATH) -> None:
     bridges: dict[str, Bridge] = {
         "hid": lambda: _run_hid_bridge(control_url),
         **_published_mic_adapters(),
@@ -773,7 +773,7 @@ async def _run_bridges(control_url: str) -> None:
                 loop.add_signal_handler(sig, current.cancel)
     log_event(logger, "accessory.bridges_started", bridges=",".join(bridges))
     try:
-        await supervise(bridges)
+        await supervise(bridges, status_path=status_path)
     except asyncio.CancelledError:
         log_event(logger, "accessory.bridges_stopped")
 

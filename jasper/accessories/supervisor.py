@@ -11,12 +11,6 @@ HID bridge is how volume and push-to-talk reach jasper-control. This
 supervisor makes the restart unit the task instead: each bridge runs in its
 own loop, a crash is logged and retried after a fixed backoff, and no bridge
 can end the process or another bridge's run.
-
-That isolation is also what hides a wedged bridge: the unit stays ``active``
-while one bridge loops in backoff forever, and the journal is the only place
-that says so. So the supervisor also publishes a per-bridge restart count and
-last failure class to :data:`STATUS_PATH`, which
-``/state.resilience.accessory_bridges`` reads.
 """
 from __future__ import annotations
 
@@ -40,12 +34,13 @@ RESTART_BACKOFF_SEC = 2.0
 # attempt count rides along on every failure line.
 MAX_RESTART_BACKOFF_SEC = 60.0
 
-# jasper-input's own RuntimeDirectory (deploy/systemd/jasper-input.service).
-# systemd reaps it when the unit stops, so a file that exists always describes
-# the process running now — there is no staleness stamp to carry or check.
+# jasper-input's RuntimeDirectory (deploy/systemd/jasper-input.service), which
+# systemd reaps on stop — so a present file always describes the process
+# running now, and no staleness stamp is needed. 0640 + the parent's group so
+# jasper-control (Group=jasper, like this unit) can read it.
 STATUS_PATH = "/run/jasper-input/status.json"
-# Group-readable so jasper-control (Group=jasper, like this unit) can read it.
 _STATUS_FILE_MODE = 0o640
+_publish_failure_warned = False
 
 Bridge = Callable[[], Awaitable[None]]
 
@@ -53,8 +48,7 @@ Bridge = Callable[[], Awaitable[None]]
 def _publish(
     health: Mapping[str, Any], status_path: str | os.PathLike
 ) -> None:
-    """Fail-soft: the journal already carries the failure this file mirrors,
-    so an unwritable /run costs observability, never a bridge."""
+    global _publish_failure_warned
     try:
         atomic_write_json(
             status_path,
@@ -63,23 +57,26 @@ def _publish(
             group_from_parent=True,
         )
     except OSError as exc:
+        # Fail-soft — an unwritable /run costs observability, never a bridge.
+        # One WARNING per process (a missing RuntimeDirectory is a deploy bug
+        # worth seeing once), then quiet: this runs on every restart.
         log_event(
             logger,
             "accessory.status_publish_failed",
-            level=logging.DEBUG,
+            level=logging.DEBUG if _publish_failure_warned else logging.WARNING,
             err=type(exc).__name__,
         )
+        _publish_failure_warned = True
 
 
 def snapshot(status_path: str | os.PathLike = STATUS_PATH) -> dict[str, Any]:
     """Read side of :data:`STATUS_PATH`, for ``/state``. Never raises.
 
-    ``bridges`` maps each supervised bridge to ``restarts`` (failures since
-    this process started; it only ever grows) and ``last_error`` (the failing
-    exception's CLASS NAME only — a bridge fault's message can carry a device
-    name or address). ``last_error`` clears when the bridge returns cleanly,
-    so a bridge running again after a crash still shows what it crashed on.
-    A missing or corrupt file reads as ``present: False``."""
+    ``last_error`` is the failing exception's CLASS NAME only — a bridge
+    fault's message can carry a device name or address — and is set only while
+    that bridge waits out its backoff, so it discriminates a bridge wedged
+    right now from one that crashed and is running again. ``restarts`` carries
+    the history."""
     try:
         with open(status_path, encoding="utf-8") as f:
             raw = json.load(f)
@@ -88,7 +85,10 @@ def snapshot(status_path: str | os.PathLike = STATUS_PATH) -> dict[str, Any]:
             "bridges": {
                 str(name): {
                     "restarts": int(entry["restarts"]),
-                    "last_error": entry["last_error"],
+                    "last_error": (
+                        None if entry["last_error"] is None
+                        else str(entry["last_error"])
+                    ),
                 }
                 for name, entry in raw["bridges"].items()
             },
@@ -107,6 +107,9 @@ async def _run_forever(
     consecutive_failures = 0
     entry = health[name]
     while True:
+        if entry["last_error"] is not None:
+            entry["last_error"] = None
+            _publish(health, status_path)
         try:
             await bridge()
         except asyncio.CancelledError:
@@ -126,9 +129,6 @@ async def _run_forever(
             )
         else:
             consecutive_failures = 0
-            if entry["last_error"] is not None:
-                entry["last_error"] = None
-                _publish(health, status_path)
             log_event(logger, "accessory.bridge_exited", bridge=name)
         await asyncio.sleep(min(
             backoff_sec * 2 ** max(consecutive_failures - 1, 0),

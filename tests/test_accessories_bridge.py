@@ -930,41 +930,44 @@ async def test_a_restart_waits_out_the_backoff_instead_of_spinning(tmp_path):
     assert attempts == ["mic"]
 
 
-async def test_the_status_file_carries_each_bridges_restarts_and_error_class(
-    tmp_path,
+@pytest.mark.parametrize(
+    "backoff_sec,last_error", [(3600.0, "TimeoutError"), (0.0, None)],
+)
+async def test_last_error_means_parked_in_backoff_right_now(
+    backoff_sec: float, last_error: Optional[str], tmp_path,
 ):
-    """A bridge looping in backoff leaves the unit `active`, so /state reads
-    this file instead. last_error is the exception CLASS only — a bridge fault
-    message can name the device."""
+    """The unit stays `active` either way, so this file is what tells a wedged
+    bridge from one that crashed once and is running again: `last_error` holds
+    only while the bridge waits out its backoff, `restarts` keeps the history.
+    The class name is published, never the message (device identifiers)."""
     status_path = tmp_path / "status.json"
-    recovered = asyncio.Event()
+    retried = asyncio.Event()
     attempts: List[str] = []
 
     async def flaky() -> None:
         attempts.append("mic")
-        if len(attempts) <= 2:
+        if len(attempts) == 1:
             raise TimeoutError("wiim remote 2 at aa:bb:cc:dd:ee:ff")
-        recovered.set()
+        retried.set()
         await asyncio.Event().wait()
+
+    def bridges_seen() -> dict:
+        return snapshot(status_path)["bridges"]
 
     still_running = await _supervise_until(
         {"mic": flaky, "hid": _healthy_bridge(asyncio.Event())},
-        recovered.is_set,
-        backoff_sec=0.0,
+        retried.is_set if backoff_sec == 0.0
+        else lambda: bridges_seen().get("mic", {}).get("restarts") == 1,
+        backoff_sec=backoff_sec,
         status_path=status_path,
     )
 
     assert still_running
-    assert snapshot(status_path) == {
-        "present": True,
-        "bridges": {
-            "mic": {"restarts": 2, "last_error": "TimeoutError"},
-            "hid": {"restarts": 0, "last_error": None},
-        },
+    assert bridges_seen() == {
+        "mic": {"restarts": 1, "last_error": last_error},
+        "hid": {"restarts": 0, "last_error": None},
     }
-    assert snapshot(tmp_path / "absent.json") == {
-        "present": False, "bridges": {},
-    }
+    assert snapshot(tmp_path / "absent.json")["present"] is False
 
 
 def test_every_declared_adapter_mic_has_an_in_process_adapter():
@@ -1002,7 +1005,7 @@ def test_a_published_source_selects_its_adapter(monkeypatch, tmp_path):
 
 
 async def test_a_termination_signal_runs_every_bridge_teardown_to_completion(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ):
     """Every pair/forget `try-restart`s this unit, and the bridges release real
     resources in their own finally blocks — GATT StopNotify and the D-Bus
@@ -1042,7 +1045,11 @@ async def test_a_termination_signal_runs_every_bridge_teardown_to_completion(
         bridge_mod, "_published_mic_adapters", lambda: {"mic": bridge("mic")},
     )
 
-    task = asyncio.create_task(bridge_mod._run_bridges("http://127.0.0.1:8780"))
+    task = asyncio.create_task(
+        bridge_mod._run_bridges(
+            "http://127.0.0.1:8780", str(tmp_path / "status.json"),
+        ),
+    )
     await asyncio.wait_for(started.wait(), timeout=5.0)
 
     assert set(handlers) == {signal.SIGINT, signal.SIGTERM}
