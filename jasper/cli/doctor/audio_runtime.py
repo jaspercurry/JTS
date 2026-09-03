@@ -877,9 +877,10 @@ def check_fanin_ring_stall() -> CheckResult:
     stuck = int(ring.get("stuck_reader_drops") or 0)
     no_reader = int(ring.get("drop_no_reader") or 0)
     last_ms = int(ring.get("last_stall_ms") or 0)
+    clockless = int(ring.get("clockless_paces") or 0)
     counts = (
         f"stuck_reader_drops={stuck}, drop_no_reader={no_reader}, "
-        f"last_stall_ms={last_ms}"
+        f"last_stall_ms={last_ms}, clockless_paces={clockless}"
     )
     if bool(ring.get("stall_active")):
         return CheckResult(

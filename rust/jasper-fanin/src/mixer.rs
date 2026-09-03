@@ -8,7 +8,8 @@
 //! gadget), sums them sample-wise, and publishes the sum to the program SHM
 //! ring, this daemon's only final-output transport (ADR-0100).
 //!
-//! PACING: the blocking ring publish is the metronome — see
+//! PACING: the blocking ring publish is the metronome, with [`PeriodPacer`] as
+//! the floor under it when nothing downstream blocks — see
 //! [`write_ring_period`]. INPUTS are opened NON-BLOCKING: a renderer that is
 //! not producing returns `-EAGAIN` and the lane renders silence for that
 //! period, and an overrun is `try_recover`ed and rendered as silence too.
@@ -496,18 +497,98 @@ fn auto_trim_decision(
     }
 }
 
+/// How far SHORT of one nominal period the pacer aims, in percent — i.e. how
+/// far fan-in may RUN AHEAD of real time while nothing downstream blocks.
+///
+/// Two things bound this. It must be well clear of any crystal error (real pairs
+/// sit within a few hundred ppm), because the pacer must never govern the rate
+/// below the DAC's: the DAC clock reaches this loop ONLY as ring back-pressure
+/// (CamillaDSP's rate adjuster is off for a ring sink — ADR-0218 — and
+/// jasper-outputd owns no resampler), so a pacer slower than the DAC would drain
+/// the ring until CamillaDSP short-reads. And it must refill the ring quickly
+/// after a drain (cold start, a CamillaDSP reattach): the fill rate is
+/// `h/(1-h)` of nominal, so 25% refills the deepest supported ring
+/// ([`crate::config::RING_SLOTS_MAX`] slots, 42.7 ms) in ~128 ms and the
+/// 2-slot default in ~16 ms, against ~3 s and ~0.4 s at 1%. The cost of running
+/// ahead is bounded the same way: a free-run tops out at 1.33x real time.
+const PACE_HEADROOM_PERCENT: u64 = 25;
+
+/// The shortest sleep the pacer will take on a CLOCKLESS period (see
+/// [`PeriodPacer`]).
+///
+/// `RLIMIT_RTTIME` counts RT CPU BETWEEN blocking calls, not wall time, so a
+/// clockless period that overran its deadline (computing a zero sleep) would
+/// still leave the loop un-blocked. This floor keeps every clockless period
+/// ending in a real `nanosleep` however long the work took.
+const PACE_MIN_SLEEP_NS: u64 = 100_000;
+
+/// Absolute-deadline floor under the work loop's period.
+///
+/// WHY the loop needs a floor at all: jasper-fanin runs SCHED_FIFO under
+/// `LimitRTTIME=200000` with soft == hard (deploy/systemd/jasper-fanin.service),
+/// so once the loop burns 200 ms of RT CPU without a blocking syscall the kernel
+/// raises SIGXCPU and, the limit being hard, SIGKILL with it — the journal shows
+/// `status=9/KILL`. Every input is opened NON-BLOCKING, so the loop's only other
+/// candidates for a blocking call are the ring publish — which blocks only while
+/// the ring is FULL and a live reader drains it — and the drop path. A
+/// downstream reader that FREE-RUNS (CamillaDSP still up and reading after
+/// jasper-outputd stops) drains the ring faster than real time forever: it never
+/// fills, no slot is ever dropped, nothing blocks, and the daemon is killed
+/// within a second. An ABSENT reader is safe (it drops); a live-but-unpaced one
+/// is fatal.
+struct PeriodPacer {
+    /// The targeted period in nanoseconds — one nominal period
+    /// (`period_frames / sample_rate`) less [`PACE_HEADROOM_PERCENT`],
+    /// precomputed so the hot loop never divides.
+    target_ns: u64,
+    /// End of the period in flight; `None` until the first period anchors it.
+    deadline_ns: Option<u64>,
+}
+
+impl PeriodPacer {
+    fn new(period_ns: u64) -> Self {
+        Self {
+            target_ns: period_ns * (100 - PACE_HEADROOM_PERCENT) / 100,
+            deadline_ns: None,
+        }
+    }
+
+    /// Close the period ending at `now_ns` (`CLOCK_MONOTONIC`), open the next,
+    /// and return the nanoseconds to sleep. Zero when the period already spent
+    /// its own wall time downstream, so the pacer never double-paces a period the
+    /// ring publish already paced.
+    ///
+    /// Deadlines are ABSOLUTE (`deadline += target`) so per-period scheduling
+    /// jitter cannot accumulate into a rate error. A period that OVERRAN its
+    /// deadline re-anchors on `now` instead of owing the difference: the
+    /// back-to-back catch-up periods that a carried backlog would produce are
+    /// themselves unpaced, which is the burst `LimitRTTIME` kills.
+    fn pace(&mut self, now_ns: u64) -> u64 {
+        match self.deadline_ns {
+            Some(deadline_ns) if now_ns < deadline_ns => {
+                self.deadline_ns = Some(deadline_ns + self.target_ns);
+                deadline_ns - now_ns
+            }
+            _ => {
+                self.deadline_ns = Some(now_ns + self.target_ns);
+                0
+            }
+        }
+    }
+}
+
 /// The Ring A output — the daemon's ONLY final-output transport (ADR-0100).
 ///
 /// The blocking ring publish (bounded, on a full-ring-with-live-reader) is the
-/// sole timing owner of the fan-in work loop. NO ALSA playback PCM is opened:
-/// the ring is the whole output, and CamillaDSP reads it via a
-/// capture-direction ioplug.
+/// timing owner of the fan-in work loop whenever a paced reader is draining;
+/// [`PeriodPacer`] is the floor under the periods where nothing downstream
+/// blocks. NO ALSA playback PCM is opened: the ring is the whole output, and
+/// CamillaDSP reads it via a capture-direction ioplug.
 struct RingOutput {
     writer: RingWriter,
     counters: RingCounters,
-    /// One period in nanoseconds (period_frames / 48000). The reader-absent
-    /// self-pacing sleep, precomputed so the hot loop never divides.
-    self_pace_period_ns: u64,
+    /// Wall-time floor under one period.
+    pace: PeriodPacer,
     /// Edge-detection state machine for the ring stall event (issue #1524).
     stall: RingStallTracker,
 }
@@ -801,6 +882,15 @@ struct RingCounters {
     /// Duration in ms of the current (if `stall_active`) or most-recent stall
     /// episode; 0 if none has ever occurred.
     last_stall_ms: Arc<AtomicU64>,
+    /// Periods whose ONLY pacer was [`PeriodPacer`] — neither a blocking publish
+    /// nor a dropped slot spent the period's wall time.
+    ///
+    /// It climbs in bursts whenever the ring has room (a cold start, a CamillaDSP
+    /// reattach) and stops once back-pressure resumes. Climbing at the PERIOD
+    /// RATE while `full_waits` stays flat is the diagnostic: it means the pacer,
+    /// not the DAC, is the metronome — the free-running-reader shape
+    /// [`PeriodPacer`] exists for.
+    clockless_paces: Arc<AtomicU64>,
 }
 
 impl RingCounters {
@@ -813,6 +903,7 @@ impl RingCounters {
             occupancy: Arc::new(AtomicU64::new(0)),
             stall_active: Arc::new(AtomicBool::new(false)),
             last_stall_ms: Arc::new(AtomicU64::new(0)),
+            clockless_paces: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -839,6 +930,8 @@ pub struct RingObservability {
     pub drop_no_reader: Arc<AtomicU64>,
     pub stall_active: Arc<AtomicBool>,
     pub last_stall_ms: Arc<AtomicU64>,
+    /// See [`RingCounters::clockless_paces`].
+    pub clockless_paces: Arc<AtomicU64>,
 }
 
 /// Render a ring header `sample_format` id as the wire vocabulary token
@@ -1367,8 +1460,7 @@ impl Mixer {
         // NOTHING else is opened. The ring IS the program path: no ALSA playback
         // PCM is opened or fed (ADR-0100).
         let counters = RingCounters::new();
-        let self_pace_period_ns =
-            (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
+        let period_ns = (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
         // The wire this ring OBSERVABLY carries, read back from the header the
         // writer attached against — not echoed from config, so it is what the
         // reader on the other end sees.
@@ -1396,11 +1488,12 @@ impl Mixer {
             drop_no_reader: Arc::clone(&counters.drop_no_reader),
             stall_active: Arc::clone(&counters.stall_active),
             last_stall_ms: Arc::clone(&counters.last_stall_ms),
+            clockless_paces: Arc::clone(&counters.clockless_paces),
         };
         let output = RingOutput {
             writer,
             counters,
-            self_pace_period_ns,
+            pace: PeriodPacer::new(period_ns),
             stall: RingStallTracker::new(),
         };
 
@@ -1911,19 +2004,19 @@ impl Mixer {
 /// 32 ticks × the clamped `min(period/4, 2 ms)` sleep — with the pinned 128-frame
 /// slot that tick is ~0.667 ms, so the cap is ~21 ms per full slot) while the
 /// ring is full AND a live reader (CamillaDSP) is draining — that block is the
-/// loop's pacer, transitively DAC-paced through Ring B. When the reader is
-/// ABSENT/stale the writer free-run-drops instead of blocking, so the daemon must
-/// self-pace: sleep one period per dropped publish so a readerless ring settles
-/// to ~48 kHz instead of hot-spinning. The bounded publish wait plus at most one
-/// period sleep keeps `step()` well under the 5 s watchdog threshold; the
-/// writer's heartbeat is bumped inside each publish.
+/// loop's pacer, transitively DAC-paced through Ring B. Every OTHER period —
+/// reader absent (free-run drops), reader stale, or a reader draining faster than
+/// real time so the ring never fills — is paced by [`PeriodPacer`] instead, whose
+/// deadline sleep is what keeps the loop off `LimitRTTIME`. The bounded publish
+/// wait plus at most one period sleep keeps `step()` well under the 5 s watchdog
+/// threshold; the writer's heartbeat is bumped inside each publish.
 ///
 /// **Ring stall self-recovery + observability (issue #1524).** A reader that
 /// stays heartbeat-live but stops advancing `read_seq` (CamillaDSP wedged in
 /// Prepared, still polling) would otherwise pin every publish in the bounded
 /// wait, running fan-in at ~1/9 real time and back-pressuring the input lanes.
 /// The writer DEMOTES such a reader past its grace and free-runs
-/// (`DroppedStuckDemoted`), which the self-pace below turns back into real-time
+/// (`DroppedStuckDemoted`), which the pacer below turns back into real-time
 /// pacing. This function additionally feeds the writer's per-period stall signals
 /// to a [`RingStallTracker`] and logs ONE edge-triggered
 /// `event=fanin.ring.stall_detected` / `stall_cleared`.
@@ -1960,8 +2053,8 @@ fn write_ring_period(
             PublishOutcome::Published => {
                 published_slots += 1;
             }
-            // A demoted publish (issue #1524) is a drop like the others, so it
-            // self-paces below and fan-in returns to real time.
+            // A demoted publish (issue #1524) is a drop like the others, so
+            // the pacer below returns fan-in to real time.
             PublishOutcome::DroppedNoReader
             | PublishOutcome::DroppedStuck
             | PublishOutcome::DroppedStuckDemoted => {
@@ -1971,6 +2064,11 @@ fn write_ring_period(
     }
 
     let m = ring.writer.metrics();
+    // Read BEFORE the store below overwrites it: the counter still holds last
+    // period's value, so this is the delta. `full_waits` ticks once per publish
+    // that entered the bounded back-pressure wait, and that wait is a
+    // `nanosleep` — so a nonzero delta means this period already blocked.
+    let publish_blocked = m.full_waits > ring.counters.full_waits.load(Ordering::Relaxed);
     ring.counters
         .published
         .store(m.published_slots, Ordering::Relaxed);
@@ -1991,8 +2089,9 @@ fn write_ring_period(
     // observability.
     let liveness = ring.writer.reader_liveness();
     let stall_ns = ring.writer.ns_since_read_seq_advance();
+    let now_ns = jasper_ring::monotonic_ns();
     if let Some(event) = ring.stall.observe(RingStallInput {
-        now_ns: jasper_ring::monotonic_ns(),
+        now_ns,
         stall_ns,
         dropped_this_period,
         reader_live: liveness.live,
@@ -2017,18 +2116,27 @@ fn write_ring_period(
         .last_stall_ms
         .store(ring.stall.last_stall_ms(), Ordering::Relaxed);
 
-    // Reader-absent self-pacing: if ANY slot free-run-dropped this period, sleep
-    // one period so a readerless ring settles to ~48 kHz instead of hot-spinning
-    // (the blocking publish is the pacer only while a live reader drains). A
-    // live-reader period never sleeps here — the publish block already paced it.
-    if dropped_this_period {
+    // Wall-time floor under the period. A CLOCKLESS period — neither the publish
+    // nor a drop spent its wall time — is the one whose only blocking syscall is
+    // this sleep, so it is floored at `PACE_MIN_SLEEP_NS` even when the deadline
+    // has already passed. Every other period is left exactly as the pacer found
+    // it: a zero sleep after back-pressure, so the DAC keeps owning the rate.
+    let mut sleep_ns = ring.pace.pace(now_ns);
+    let clockless = !publish_blocked && !dropped_this_period;
+    if clockless {
+        ring.counters
+            .clockless_paces
+            .fetch_add(1, Ordering::Relaxed);
+        sleep_ns = sleep_ns.max(PACE_MIN_SLEEP_NS);
+    }
+    if sleep_ns > 0 {
         let ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: ring.self_pace_period_ns as _,
+            tv_sec: (sleep_ns / 1_000_000_000) as _,
+            tv_nsec: (sleep_ns % 1_000_000_000) as _,
         };
         // SAFETY: a valid timespec pointer; NULL remainder is fine (a signal-
-        // interrupted sleep just shortens this one self-pace tick — the next
-        // period re-evaluates).
+        // interrupted sleep just shortens this one period — the absolute
+        // deadline puts the next one back on phase).
         unsafe {
             libc::nanosleep(&ts, std::ptr::null_mut());
         }
@@ -4415,9 +4523,8 @@ mod tests {
         let ring = RingOutput {
             writer,
             counters,
-            // One 256-frame period at 48k, in ns — used only on the reader-absent
-            // self-pace path (avoided in these live-reader tests).
-            self_pace_period_ns: 256 * 1_000_000_000 / 48_000,
+            // One 256-frame period at 48k, in ns.
+            pace: PeriodPacer::new(256 * 1_000_000_000 / 48_000),
             stall: RingStallTracker::new(),
         };
         (ring, path)
@@ -4814,11 +4921,41 @@ mod tests {
         assert_eq!(ring_wire_format_label(99), "unknown");
     }
 
-    /// Reader-absent: `write_ring_period` free-run-drops and self-paces (never
+    /// The pacer is a FLOOR, not a rate governor. An instant period is slept out
+    /// to its absolute deadline; a period that already spent its own wall time
+    /// downstream (the blocking ring publish) sleeps zero and re-anchors, so
+    /// back-pressure — the DAC clock — keeps owning the rate. Absolute deadlines
+    /// mean a late wake does not push the grid out.
+    #[test]
+    fn period_pacer_floors_idle_periods_and_yields_to_backpressure() {
+        let period_ns = 256 * 1_000_000_000 / 48_000;
+        let mut pacer = PeriodPacer::new(period_ns);
+        let target = pacer.target_ns;
+
+        // The first period only anchors the deadline.
+        let t0 = 1_000_000_000u64;
+        assert_eq!(pacer.pace(t0), 0);
+
+        // Instant periods are slept out to their own absolute deadlines; a period
+        // that woke LATE by `jitter` still lands on the original grid rather than
+        // pushing it out by the jitter.
+        assert_eq!(pacer.pace(t0), target);
+        let jitter = 1_000u64;
+        assert_eq!(pacer.pace(t0 + target + jitter), target - jitter);
+
+        // Back-pressure: this period spent many periods' worth of wall time
+        // downstream. No sleep, and the next deadline re-anchors on now instead
+        // of owing a backlog of unpaced catch-up periods.
+        let blocked = t0 + 10 * target;
+        assert_eq!(pacer.pace(blocked), 0);
+        assert_eq!(pacer.pace(blocked), target);
+    }
+
+    /// Reader-absent: `write_ring_period` free-run-drops and paces (never
     /// hot-spins). Counters reflect the drops; occupancy stays bounded. This
     /// stands in the "CamillaDSP not yet up / reloading" turn.
     #[test]
-    fn ring_output_free_runs_and_self_paces_without_reader() {
+    fn ring_output_free_runs_and_paces_without_reader() {
         let period_frames = 256u32;
         let (mut ring, path) = tmp_ring_output(2, "no_reader");
         // No reader attached: reader_pid == 0.
@@ -4826,8 +4963,8 @@ mod tests {
         let output_buf = vec![7i16; total];
 
         // Fill the ring, then publish several more periods. Each free-run-drops
-        // the oldest and self-paces one period; bound the wall time so the
-        // self-pacing sleep can't wedge the loop.
+        // the oldest; the pacer sleeps each period out to its deadline. Bound
+        // the wall time so that sleep can't wedge the loop.
         let start = std::time::Instant::now();
         let mut per_period_published = Vec::with_capacity(4);
         for _ in 0..4 {
@@ -4849,11 +4986,11 @@ mod tests {
             0,
             "a fully-dropped readerless period must count 0 frames"
         );
-        // 4 periods * (2 slots each) with a per-period self-pace sleep (~5.3 ms):
-        // bounded well under the 5 s watchdog threshold.
+        // 4 periods * (2 slots each), each paced to the deadline: bounded well
+        // under the 5 s watchdog threshold.
         assert!(
             elapsed < std::time::Duration::from_secs(1),
-            "self-pacing must stay bounded, got {elapsed:?}"
+            "pacing must stay bounded, got {elapsed:?}"
         );
         // Drops accrued as NO-READER drops (dead reader); the stuck-reader
         // counter stays zero and no stall episode is logged (reason=no_reader
@@ -5037,7 +5174,7 @@ mod tests {
     /// End-to-end through `write_ring_period`: while a live reader is wedged the
     /// per-period wall time is dominated by the bounded back-pressure waits;
     /// after the writer DEMOTES it (grace crossed) the period collapses back to
-    /// ~one self-pace sleep (real time), the drops are attributed to
+    /// one pacer sleep (real time), the drops are attributed to
     /// `stuck_reader_drops`, and the stall episode is surfaced as active.
     #[test]
     fn ring_step_returns_to_realtime_after_demotion() {
@@ -5074,8 +5211,8 @@ mod tests {
         ring.writer
             .set_read_seq_advance_age_for_test(jasper_ring::STUCK_READER_GRACE_NS + 10_000_000);
 
-        // POST-GRACE: demotion → the period is now just the ~5.3 ms self-pace,
-        // an order of magnitude below the pre-grace wall time.
+        // POST-GRACE: demotion → the period is now just the pacer sleep, an
+        // order of magnitude below the pre-grace wall time.
         let post = std::time::Instant::now();
         assert_eq!(
             write_ring_period(&mut ring, &output_buf, NO_WIDE_PAYLOAD, period_frames),
