@@ -31,12 +31,6 @@ reflection's own level), and weaker reflections or 20 dB SNR are, BY DESIGN,
 not reliably caught by a delta-only synthetic test. This file pins the
 reliable envelope and separately pins the graceful (never-silent,
 never-wrong-applied) fallback when nothing crosses threshold.
-
-(An earlier version of this docstring cited "missing a reflection is the
-dangerous direction; raise K, not lower it" as standing guidance. That was
-measured backwards and corrected in #1983 — see
-``test_moving_k_off_the_shipped_operating_point_costs_the_evidence_band``,
-which pins both failure directions through the gate fragment.)
 """
 from __future__ import annotations
 
@@ -91,13 +85,13 @@ def test_consult_table_constants_pinned():
 def test_moving_k_off_the_shipped_operating_point_costs_the_evidence_band():
     """#1983 — both directions of K are lossy, observed through the fragment.
 
-    Module guidance used to read "raise K, not lower it", which is backwards.
-    Measured on 1,980 annotated RIRs plus 12,750 synthetic injections with
-    the criteria frozen before the run
-    (``captures/detector-certification-20260801`` §4.2), P_D is unimodal with
-    its maximum at the shipped K = 12 while P_FA rises monotonically, so
-    raising K is strictly dominated. Both costs are asymmetric and both are
-    real, so both are pinned here rather than only the optimistic one.
+    Module guidance used to read "raise K, not lower it", which is backwards
+    in both directions. Per :data:`~jasper.audio_measurement.gating`'s
+    ``REFLECTION_THRESHOLD_DB`` block, raising K past the P_D peak is
+    strictly dominated (both error rates degrade together), and K = 12 is the
+    hardware FLOOR of the range that reproduces this speaker's anatomy, not
+    merely a corpus optimum. Both costs are pinned here rather than only the
+    optimistic one.
     """
     n, p = int(0.030 * SR), 500
 
@@ -108,9 +102,8 @@ def test_moving_k_off_the_shipped_operating_point_costs_the_evidence_band():
     # inside the 2 kHz crossover's evidence band, destroying it. The feature
     # sits at -14 dB so both probes below clear the hysteresis level by 2 dB
     # rather than tying with it.
-    early = _delta_ir(n, p)
+    early, _ = _delta_ir_with_reflection(n, p, 4.0, -6.0)
     early[p + int(round(0.646e-3 * SR))] = 10 ** (-14 / 20)
-    early[p + int(round(4.0e-3 * SR))] = 10 ** (-6 / 20)
 
     _gated, shipped = gating.gate_impulse_response(early, SR)
     assert shipped["floor_source"] == gating.FLOOR_MEASURED
@@ -206,8 +199,9 @@ def test_raising_q_to_the_corpus_optimum_rejects_the_speakers_own_reflection():
     _gated, raised = gating.gate_impulse_response(ir, SR, prominence_db=13.5)
     assert raised["floor_source"] == gating.FLOOR_SEARCH_BOUND
     assert raised["window_ms"] == pytest.approx(gating.SEARCH_T_MAX_MS)
-    # The cost of the rejection is an over-claim, not a refusal: the floor
-    # follows the 7 ms ceiling, well below the real reflection-free span.
+    # The cost of the rejection is an over-claim, not a refusal: the window
+    # stretches to the 7 ms ceiling, so the floor lands well below what the
+    # real span supports.
     assert raised["f_valid_floor_hz"] < shipped["f_valid_floor_hz"]
 
 
