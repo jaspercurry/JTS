@@ -296,10 +296,10 @@ def ripple_reservation_due(
 ) -> bool:
     """Does this accepted MEASURE owe the household a ripple reservation?
 
-    **This decides a disclosure, never a refusal** (owner ruling 2026-08-03,
-    #2087). A predicted ripple above the threshold says the two branches sum
-    less coherently in this room than the calibration corpus did; the capture is
-    still accepted, and what changes is what the household is TOLD.
+    **This decides a disclosure, never a refusal.** See ADR-0002. A predicted
+    ripple above the threshold says the two branches sum less coherently in
+    this room than the calibration corpus did; the capture is still accepted,
+    and what changes is what the household is TOLD.
 
     The caller establishes that a candidate EXISTS; this owns the other half of
     the shipped skip — without an alignment estimate there is no reservation to

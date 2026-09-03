@@ -107,6 +107,8 @@ class CaptureAnswer(Protocol):
     #: The mic/cal identity REFERENCE — which calibration the operator chose
     #: (mode, calibration id, serial). Resolved into a stored record by the
     #: session's injected resolver; the answer only carries the reference.
+    #: Injected at
+    #: ``jasper.web.correction_crossover_v2.bind_production_analyze(resolve_calibration=...)``.
     setup: Mapping[str, Any] | None
 
     #: The source's own per-take account of the recording, carrying the

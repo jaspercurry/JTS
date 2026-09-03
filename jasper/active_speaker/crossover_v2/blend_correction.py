@@ -33,7 +33,8 @@ iteration, still a TOTAL re-derived every round::
 Refusals HOLD the incumbent rather than revert (panel ruling, 2026-08-18): an
 instrument that could not measure has no standing to remove a correction
 adopted on measured evidence. :data:`BLEND_NO_INCUMBENT` is the one arm that
-cannot hold — see its own comment below.
+cannot hold: its cost is that it REMOVES an applied correction (``filters=()``),
+reachable only through a corrupt or absent applied profile.
 
 Scope tripwire: this reads the summed response against an analytic,
 offset-invariant reference and commands a common-mode filter. Reading a
