@@ -24,7 +24,7 @@ import pytest
 
 from jasper import atomic_io, enhanced_aec
 from jasper.audio_profile_state import MicProbe
-from jasper.chip_aec_policy import (
+from jasper.chip_aec.policy import (
     ACTION_FIX_MIC_PROFILE,
     BLOCKER_DAC,
     BLOCKER_MIC,

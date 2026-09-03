@@ -4,7 +4,7 @@
 
 import pytest
 
-from jasper.chip_aec_health import ACTION_RECOMMISSION, AlignmentHealth
+from jasper.chip_aec.health import ACTION_RECOMMISSION, AlignmentHealth
 from jasper.audio_profile_state import (
     AecIntent,
     MicProbe,

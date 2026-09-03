@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from jasper.chip_aec_alignment import (
+from jasper.chip_aec.alignment import (
     HARDWARE_CLASS_IDENTITY_FIELDS,
     AlignmentIdentity,
     hardware_class_identity,

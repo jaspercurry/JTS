@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any, Iterator
 
-from .. import chip_aec_commission_record as commission_record
+from ..chip_aec import record as commission_record
 from .. import enhanced_aec
 from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
@@ -41,7 +41,7 @@ from ..usb_mic import (
     read_usb_mic_leg,
     usb_mic_leg_choices,
 )
-from ..chip_aec_policy import (
+from ..chip_aec.policy import (
     combine_mic_availability,
     effective_chip_aec_dac_gate,
 )
@@ -560,7 +560,7 @@ def _chip_aec_gate(
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
     dac_gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     # Fold the input-mic fact into the DAC-only gate so blockers +
-    # recommended_action use chip_aec_policy's single canonical vocabulary
+    # recommended_action use chip_aec.policy's single canonical vocabulary
     # (BLOCKER_MIC / BLOCKER_DAC). Do not re-add a parallel code scheme here.
     gate = combine_mic_availability(
         dac_gate,

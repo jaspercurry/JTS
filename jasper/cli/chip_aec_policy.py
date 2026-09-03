@@ -17,8 +17,8 @@ import shlex
 import sys
 from typing import Any
 
-from ..chip_aec_health import DISPOSITIONS, alignment_health
-from ..chip_aec_policy import resolve_chip_aec_dac_gate
+from ..chip_aec.health import DISPOSITIONS, alignment_health
+from ..chip_aec.policy import resolve_chip_aec_dac_gate
 from ..route_latency.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
 
 

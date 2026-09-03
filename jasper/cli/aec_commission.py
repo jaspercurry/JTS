@@ -36,7 +36,7 @@ from jasper.camilla import (
     declare_main_volume_db,
     read_main_volume_db,
 )
-from jasper.chip_aec_alignment import (
+from jasper.chip_aec.alignment import (
     ARTIFACT_PATH,
     AlignmentArtifact,
     LevelProbe,
@@ -59,13 +59,13 @@ from jasper.chip_aec_alignment import (
     read_capture,
     WINDOW_CENTER,
 )
-from jasper.chip_aec_commission_record import (
+from jasper.chip_aec.record import (
     CommissionOutcome,
     OUTCOME_PATH,
     write as write_outcome_record,
 )
-from jasper.chip_aec_policy import STATUS_APPROVED, static_dac_qualification
-from jasper.chip_aec_shipped_alignment import render_entry
+from jasper.chip_aec.policy import STATUS_APPROVED, static_dac_qualification
+from jasper.chip_aec.shipped import render_entry
 from jasper.cli import aec_init
 from jasper.correction.coordinator import (
     HeldWindow,
@@ -898,7 +898,7 @@ def _signal(signum: int, _frame: FrameType | None) -> None:
 def _emit_class_entry(path: Path) -> int:
     """Print this artifact as a shipped hardware-class row, and change nothing.
 
-    The harvest step behind `jasper.chip_aec_shipped_alignment`: one file read,
+    The harvest step behind `jasper.chip_aec.shipped`: one file read,
     source to stdout, no chip, no network, no writes — so it runs off a copied
     artifact on a laptop as readily as on the box that commissioned it.
     """
@@ -917,7 +917,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="ARTIFACT",
         help=(
             "read a commissioned alignment artifact (default: this box's) and "
-            "print it as a jasper.chip_aec_shipped_alignment registry entry, "
+            "print it as a jasper.chip_aec.shipped registry entry, "
             "then exit without commissioning anything"
         ),
     )

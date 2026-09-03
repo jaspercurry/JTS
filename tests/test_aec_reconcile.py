@@ -14,10 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from jasper import chip_aec_health, wake_legs
+from jasper import wake_legs
+from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.audio_profile_state import ALL_PROFILES, profile_env_updates
-from jasper.chip_aec_health import AlignmentHealth, alignment_health
+from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
 from jasper.env_load import parse_env_file
 from jasper.control import aec_endpoints
@@ -968,7 +969,7 @@ def _drive_alignment_disposition(tmp_path: Path, disposition: str) -> Path:
 def test_every_published_record_is_the_one_chip_aec_health_writes(
     tmp_path: Path, disposition: str
 ) -> None:
-    """The reconciler publishes jasper.chip_aec_health's record verbatim, for
+    """The reconciler publishes jasper.chip_aec.health's record verbatim, for
     every disposition it can reach, stamped with the mode file's selection."""
     published = _drive_alignment_disposition(tmp_path, disposition)
 

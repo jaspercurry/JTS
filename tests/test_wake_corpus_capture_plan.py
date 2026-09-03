@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.chip_aec_policy import ChipAecGate
+from jasper.chip_aec.policy import ChipAecGate
 from jasper.wake_corpus import bridge_session
 from jasper.web import wake_corpus_setup
 

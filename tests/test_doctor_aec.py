@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper import chip_aec_health
+from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli import doctor
 

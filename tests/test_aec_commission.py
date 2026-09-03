@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from jasper import chip_aec_shipped_alignment as shipped
+from jasper.chip_aec import shipped as shipped
 from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
-from jasper.chip_aec_alignment import (
+from jasper.chip_aec.alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
     LevelProbe,

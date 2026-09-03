@@ -33,7 +33,7 @@ VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice
 # accessory_mic_present below). This script stays the single writer of the
 # derived AND; the accessory owner asks it to re-derive by starting this unit.
 VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/voice-input-absent}"
-# The chip_aec_health record jasper-aec-init publishes for the pass it ran, as
+# The chip_aec.health record jasper-aec-init publishes for the pass it ran, as
 # shell assignments. aec_init.py owns the path literal (ALIGNMENT_RECORD_PATH)
 # and is its only writer; this script is its only reader. Absent means the run
 # reached no verdict, which for a zero exit is a fully applied alignment.
@@ -737,7 +737,7 @@ CHIP_AEC_GATE_CARRY_NOTE="chip-AEC DAC gate could not be evaluated; carrying las
 # the verdict last resolved for the SAME DAC — write_chip_aec_gate_env records
 # it for exactly this read — so a missing interpreter cannot drop a
 # commissioned box off chip-AEC. An absent id or status, or a different DAC,
-# withholds the record — never the selection; jasper.chip_aec_policy's module
+# withholds the record — never the selection; jasper.chip_aec.policy's module
 # docstring owns the rule.
 carry_chip_aec_dac_gate() {
     local dac_id="$1" testing="$2" detail
@@ -1730,7 +1730,7 @@ park_to_reference_leg() {
 # leftover for a consumer with no stamp to check. A mode file predating
 # JASPER_AUDIO_INPUT_PROFILE reaches those guards already stamped — see
 # ensure_mode_file's backfill, which runs before any of this.
-# jasper.chip_aec_policy's module docstring owns the reading rule, for this
+# jasper.chip_aec.policy's module docstring owns the reading rule, for this
 # record and the DAC one alike; jasper.audio_profile_state applies it here.
 #
 # Apostrophes are STRIPPED from the reason, not quoted. It is the only free text
@@ -1761,7 +1761,7 @@ _apply_alignment_payload() {
     commit_alignment_record
 }
 
-# Publish jasper.chip_aec_health's record for a disposition token, plus
+# Publish jasper.chip_aec.health's record for a disposition token, plus
 # --reason/--action for the dispositions whose text this script measured itself.
 # ADR-0101: an unresolvable vocabulary is unmeasured, not a demotion — with no
 # interpreter the last record stands, as carry_chip_aec_dac_gate carries the
@@ -1769,7 +1769,7 @@ _apply_alignment_payload() {
 publish_alignment_record() {
     local payload=""
     if command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
-        # Output is produced by jasper.chip_aec_health with shlex.quote.
+        # Output is produced by jasper.chip_aec.health with shlex.quote.
         payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.chip_aec_policy \
             --alignment "$@" --selection "$AUDIO_INPUT_PROFILE" || true)"
     fi

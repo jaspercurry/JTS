@@ -15,7 +15,7 @@ publishes as the `JASPER_AEC_CHIP_AEC_ALIGNMENT_*` record and
 instead of scanning prose.  `reason` is operator text — it is shown, never
 matched, so a consumer that switches on it is reading the wrong field.
 
-Pure: no device, filesystem, service or env access.  `jasper.chip_aec_policy`
+Pure: no device, filesystem, service or env access.  `jasper.chip_aec.policy`
 owns who may READ the published record; this module owns what it says.
 
 `jasper-aec-init` publishes the record for the pass it ran; the reconciler
@@ -31,7 +31,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from .chip_aec_alignment import PER_UNIT_IDENTITY_FIELDS
+from .alignment import PER_UNIT_IDENTITY_FIELDS
 
 STATUS_READY = "ready"
 STATUS_DISCLOSED_STALE = "disclosed_stale"
@@ -141,7 +141,7 @@ class AlignmentHealth:
     def applies_to(self, selection: str, *, custom_profile: str) -> bool:
         """Whether this record answers for `selection`.
 
-        `jasper.chip_aec_policy`'s module docstring is the serving rule: the
+        `jasper.chip_aec.policy`'s module docstring is the serving rule: the
         record is stamped with the selection it was written under and serves
         ONLY that one.  The reconciler writes it on managed-XVF paths alone
         and never clears it, so a record read under any other selection is a
