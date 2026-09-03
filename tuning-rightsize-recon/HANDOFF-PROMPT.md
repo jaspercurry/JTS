@@ -43,7 +43,11 @@ then AGENTS.md, then the plan on the evidence branch, before touching anything.
   graph commissioning lane deleted (ADR-0230); `jasper-round-views
   directivity` writes `directivity.json` beside a round (#3865 closed); the
   JTS3 preset back in `jasper/active_speaker/presets/`.
-- **Cloud-binding pair** — `<CLOUD_BINDING_STATUS>`.
+- **Cloud-binding** — PR #3916 → main `02caa904e`: the MEASURE take now banks
+  `validity_floor_hz` and `repeat_curves` per occurrence (additive; ADR-0228
+  S3), and `jasper-round-views cloud-binding` writes `cloud_binding.json`:
+  did the cloud's null evidence bind the linearization fit. Rounds banked
+  before it answer `fit_inputs_not_banked`.
 - **Still open, deliberately:** #3869 (five dead defs, draft) waits for the
   owner's nod under the deletion rule below.
 
@@ -78,11 +82,10 @@ then AGENTS.md, then the plan on the evidence branch, before touching anything.
 Run these yourself; do not trust this prompt or the wave log over the tree.
 
 1. `git fetch origin && git log --oneline -5 origin/main` — confirm
-   `f2920ee04` is an ancestor. Confirm no open PR named
-   `claude/tuning-rightsize/*` other than #3869 (and the cloud-binding pair if
-   §1 says it is still open).
+   `02caa904e` is an ancestor. Confirm no open PR named
+   `claude/tuning-rightsize/*` other than #3869.
 2. `bash scripts/test-merge` on main in a clean checkout, or read the CI run
-   for `f2920ee04`: the lane must be green. In a container without
+   for `02caa904e`: the lane must be green. In a container without
    PortAudio/dbus/spotipy expect exactly the baseline set of collection errors
    (`tests/test_aec_bridge_*`, `test_wiim_remote_mic`,
    `test_lazy_imports[jasper-aec-bridge]`) and nothing else.
@@ -98,8 +101,10 @@ Run these yourself; do not trust this prompt or the wave log over the tree.
    (startup_load, commissioning_*, the web-facing flow modules).
 5. The toolbox is real: on the Pi (or a banked round copied to the laptop),
    `jasper-round-views directivity <round-dir>` writes `directivity.json`;
-   `jasper-round-views --help` lists ten (or eleven with `cloud-binding`)
-   subcommands; the runbook tool menu matches `--help`.
+   `jasper-round-views --help` lists eleven subcommands; the runbook tool
+   menu row matches `--help` (regenerate with
+   `PYTHONPATH=. python3 scripts/generate-tuning-tool-menu.py`, which needs
+   the repo on the path).
 6. Spot-check three prose-pass files against main's pre-wave text for
    falsified sentences: `git show 0649334a^:jasper/active_speaker/delta_probe.py`
    versus HEAD around the classification-threshold constants. The wave-2
@@ -148,9 +153,6 @@ in `tests/test_audio_measurement_gating.py` → behaviour pins; the
 - `jasper-round-views inventory <round-dir>`: which artifacts a round has and
   which subcommand produces each missing one. Small; closes the "was this
   round ever analysed for X" gap.
-- If the cloud-binding pair did not land (§1), finish it: bank
-  `validity_floor_hz` and the repeat occurrences on the MEASURE take
-  (additive; ADR-0228 S3), then the `cloud-binding` view.
 - `driver_protection.py:243,616` cite doctrine §5 for a rule §5 does not
   state; repoint to ADR-0227 (one-line prose edits).
 - `attempts_loop.replay` / `first_stop_index` / `summarize` are orphaned with

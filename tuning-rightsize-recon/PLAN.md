@@ -334,3 +334,10 @@ mechanics, the exclusion list, the prose bar, deletion rules, report format.
   runbook-menu + methodology-pointer shape; JSON bundles, no database.
 - Wave 3 and the verification checklist for a fresh agent:
   `tuning-rightsize-recon/HANDOFF-PROMPT.md`.
+- 2026-09-03 18:55Z: **wave 2 merged** — PR #3914 → main f2920ee04 (100 files,
+  +6,702/−19,850; ADR-0228/0229/0230; #3836 lane deleted under the owner's
+  re-ruling); PR #3916 → main 02caa904e (bank fit inputs + jasper-round-views
+  cloud-binding). Owner rulings added: bass plan stays (ADR-0229); deletions
+  need a SPENT/SUPERSEDED/PROMOTE verdict (EXEC-W2.md); build toward the
+  toolbox (CLI + artifact + menu row + methodology pointer); no database.
+  Wave 3 handed to a fresh agent: HANDOFF-PROMPT.md in this directory.
