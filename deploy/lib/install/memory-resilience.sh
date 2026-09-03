@@ -78,9 +78,10 @@ _print_reboot_required_marker() {
 
 
 # Compute vm.min_free_kbytes from MemTotal_kB.
-# Formula: clamp(0.02 × memtotal_kb, 8192, 262144) — 2% of total RAM,
-# with an 8 MB floor (Pi Foundation default; never reduce below) and
-# 256 MB ceiling. See deploy/sysctl/99-jts-vm.conf header for rationale.
+# Formula: clamp(0.02 × memtotal_kb, 16384, 262144) — 2% of total RAM,
+# with a 16 MB floor (Raspberry Pi OS ships 16384 in
+# /etc/sysctl.d/98-rpi.conf; never reduce below) and a 256 MB ceiling.
+# See deploy/sysctl/99-jts-vm.conf header for rationale.
 # Args:  $1 = memtotal_kb (integer)
 # Output: integer to stdout
 #
@@ -91,7 +92,7 @@ _compute_min_free_kbytes() {
     awk -v m="${memtotal_kb}" '
         BEGIN {
             v = int(m * 0.02 + 0.5)
-            if (v < 8192) v = 8192
+            if (v < 16384) v = 16384
             if (v > 262144) v = 262144
             printf "%d\n", v
         }
