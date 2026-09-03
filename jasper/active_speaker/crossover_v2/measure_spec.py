@@ -6,8 +6,8 @@
 
 The mic-only parameter surface ships COMPLETE, with the unbuilt regimes as loud
 stubs — a value returned to the caller, never a log line and never a raise
-(``docs/REFACTOR-TUNING-2026-08.md`` §4, ruling S12). A preset is a saved
-:class:`MeasureSpec` and nothing more. The vocabulary is copied from
+(ruling S12 -- see ADR-0228). A preset is a saved :class:`MeasureSpec` and
+nothing more. The vocabulary is copied from
 :mod:`.contracts` rather than imported from its owners, which cost ~1,100
 modules including ``numpy`` on a 1 GB Pi.
 """

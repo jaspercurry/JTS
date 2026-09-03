@@ -2345,9 +2345,8 @@ def test_no_axis_combination_can_keep_a_graph_that_measured_worse():
 
 #: The strangler destination, module by module. ``verification.py`` was this
 #: pin's original subject; the wave-1 engine modules join it because the
-#: direction law binds the whole package and they are its newest members —
-#: ``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1 asks for exactly this
-#: repointing, and for the two assertions below to survive it verbatim.
+#: direction law binds the whole package and they are its newest members. The
+#: two assertions below survive that repointing verbatim.
 #:
 #: A module that lands in the engine adds its name here, in the same PR. This
 #: is a SOURCE-TEXT pin, which the charter otherwise forbids: it reads the

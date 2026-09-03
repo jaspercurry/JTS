@@ -326,9 +326,8 @@ class AngleCaptureRequest:
     nobody named. Nothing parses it -- the stops are the walk.
 
     ``polarity`` and ``inverted_role`` are walk-level rather than per-stop
-    because the reverse-null is **one act at one place**
-    (``docs/REFACTOR-TUNING-2026-08.md`` §1: design-axis-only, where the
-    per-driver sweeps are per-position). They name what the session's
+    because the reverse-null is **one act at one place** -- design-axis-only,
+    where the per-driver sweeps are per-position. They name what the session's
     design-axis MEASURE capture rides, not what happens at a stop -- which is
     also why they sit beside ``mover`` and not on :class:`AngleStop`.
 

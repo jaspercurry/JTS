@@ -4,11 +4,11 @@
 
 """The one owner of CamillaDSP's main fader — four ranked claim kinds.
 
-``docs/REFACTOR-TUNING-2026-08.md`` §3 collapses **18 production-reachable
-fader writers**, nine of which can interleave inside a single crossover-v2
-measurement session with nothing arbitrating between them, into one owner
-exposing four claim kinds: **household · transient-duck · session-measurement ·
-commissioning**. This module is that owner.
+**18 production-reachable fader writers**, nine of which can interleave inside
+a single crossover-v2 measurement session with nothing arbitrating between them,
+collapse into one owner exposing four claim kinds: **household ·
+transient-duck · session-measurement · commissioning**. This module is that
+owner.
 
 **What "ranked" means, exactly.** Three of the four kinds declare a LEVEL: an
 absolute dB the fader should read. They are totally ordered — household <

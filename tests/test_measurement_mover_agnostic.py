@@ -4,8 +4,8 @@
 
 """MS-17's structural pin: the measurement engine does not know who moved the mic.
 
-``docs/REFACTOR-TUNING-2026-08.md`` §2 MS-17 states the invariant and names this
-test as the thing that makes it operable rather than aspirational: the engine
+MS-17 (ADR-0228) states the invariant and names this test as the thing that
+makes it operable rather than aspirational: the engine
 below the front-end seam imports nothing from the arm tooling and nothing from
 the web front end, so a third mover — phone-guided, or whatever comes next — is
 added with zero engine edits.
