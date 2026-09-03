@@ -30,18 +30,21 @@ def _fanin_status(
     output_xruns: int = 0,
     input_buffer_frames: int = 4096,
     progress_age_ms: int = 0,
+    selected_input: str | None = None,
+    ring: dict | None = None,
 ) -> dict:
+    airplay_input = {
+        "label": "airplay",
+        "pcm": "hw:Loopback,1,1",
+        "frames_read": airplay_frames,
+        "xrun_count": airplay_xruns,
+    }
+    if ring is not None:
+        airplay_input["ring"] = ring
     return {
         "input_buffer_frames": input_buffer_frames,
-        "selected_input": None,
-        "inputs": [
-            {
-                "label": "airplay",
-                "pcm": "hw:Loopback,1,1",
-                "frames_read": airplay_frames,
-                "xrun_count": airplay_xruns,
-            },
-        ],
+        "selected_input": selected_input,
+        "inputs": [airplay_input],
         "output": {
             "sample_rate": 48000,
             "period_frames": 256,
@@ -957,3 +960,167 @@ def test_run_sleep_floor_bounds_the_tick_rate(
     monkeypatch.setattr(airplay_health.time, "sleep", fake_sleep)
     sampler._run()
     assert captured == [expected_sleep]
+
+
+def _ring(**overrides) -> dict:
+    ring = {
+        "attached": True,
+        "writer_alive": True,
+        "writer_pid": 1,
+        "occupancy": 1,
+        "empty_reads": 1000,
+        "startup_empty_reads": 0,
+        "epoch_resets": 0,
+        "slot_frames": 256,
+        "n_slots": 8,
+        "detach_reason": "none",
+    }
+    ring.update(overrides)
+    return ring
+
+
+def test_ring_block_surfaces_empty_reads_rate_and_silent_ms() -> None:
+    now = [1000.0]
+    statuses = [
+        _fanin_status(selected_input="airplay", ring=_ring(empty_reads=1000)),
+        _fanin_status(selected_input="airplay", ring=_ring(empty_reads=1100)),
+    ]
+    sampler = _sampler(fanin_probe=lambda: statuses.pop(0), time_fn=lambda: now[0])
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+
+    airplay_obs = sampler.snapshot()["current"]["fanin"]["inputs"]["airplay"]
+    assert airplay_obs["ring"]["empty_reads"] == 1100
+    assert airplay_obs["empty_reads_per_sec"] == 20.0
+    # 20 empty_reads/s * 256 slot_frames / 48000 Hz * 1000 = 106.67 ms/s.
+    assert airplay_obs["silent_ms_per_sec"] == 106.7
+
+
+def test_link_counters_read_iface_and_snmp_fields(tmp_path, monkeypatch) -> None:
+    wireless = tmp_path / "wireless"
+    wireless.write_text(
+        "Inter-| sta-|   Quality        |   Discarded packets               "
+        "| Missed | WE\n"
+        " face | tus | link level noise |  nwid  crypt   frag  retry   misc "
+        "| beacon | 22\n"
+        " wlan0: 0000   61.  -49.  -256        0      0      0      2      0"
+        "        0\n",
+        encoding="utf-8",
+    )
+    snmp = tmp_path / "snmp"
+    snmp.write_text(
+        "Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors\n"
+        "Udp: 123 4 0 100 7 0\n"
+        "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens "
+        "AttemptFails EstabResets CurrEstab InSegs OutSegs\n"
+        "Tcp: 1 200 120000 -1 10 5 0 0 2 5000 4800\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "wlan0_rx_bytes").write_text("1000\n", encoding="utf-8")
+
+    monkeypatch.setattr(airplay_health, "PROC_NET_WIRELESS_PATH", str(wireless))
+    monkeypatch.setattr(airplay_health, "PROC_NET_SNMP_PATH", str(snmp))
+    monkeypatch.setattr(
+        airplay_health,
+        "SYS_CLASS_NET_RX_BYTES_TMPL",
+        str(tmp_path / "{iface}_rx_bytes"),
+    )
+
+    counters = airplay_health._read_link_counters()
+
+    assert counters == {
+        "iface": "wlan0",
+        "rx_bytes": 1000,
+        "udp_in_datagrams": 123,
+        "udp_rcvbuf_errors": 7,
+        "tcp_in_segs": 5000,
+    }
+
+
+def test_link_counters_absent_proc_files_yield_none_not_zero(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        airplay_health, "PROC_NET_WIRELESS_PATH", str(tmp_path / "no-wireless"),
+    )
+    monkeypatch.setattr(
+        airplay_health, "PROC_NET_SNMP_PATH", str(tmp_path / "no-snmp"),
+    )
+    monkeypatch.setattr(
+        airplay_health,
+        "SYS_CLASS_NET_RX_BYTES_TMPL",
+        str(tmp_path / "{iface}_rx_bytes"),
+    )
+
+    counters = airplay_health._read_link_counters()
+
+    assert counters == {
+        "iface": None,
+        "rx_bytes": None,
+        "udp_in_datagrams": None,
+        "udp_rcvbuf_errors": None,
+        "tcp_in_segs": None,
+    }
+
+
+def test_link_probe_counter_deltas_become_per_second_rates() -> None:
+    counters = [
+        {
+            "iface": "wlan0", "rx_bytes": 1000, "udp_in_datagrams": 100,
+            "udp_rcvbuf_errors": 0, "tcp_in_segs": 50,
+        },
+        {
+            "iface": "wlan0", "rx_bytes": 6000, "udp_in_datagrams": 600,
+            "udp_rcvbuf_errors": 2, "tcp_in_segs": 300,
+        },
+    ]
+    now = [1000.0]
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(),
+        link_probe=lambda: counters.pop(0),
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+
+    link = sampler.snapshot()["current"]["link"]
+    assert link["rx_bytes_per_sec"] == 1000.0
+    assert link["udp_in_datagrams_per_sec"] == 100.0
+    assert link["udp_rcvbuf_errors_delta"] == 2
+    assert link["tcp_in_segs_per_sec"] == 50.0
+
+
+def test_link_baseline_resets_on_ring_epoch_change() -> None:
+    now = [1000.0]
+    statuses = [
+        _fanin_status(selected_input="airplay", airplay_frames=0, ring=_ring()),
+        _fanin_status(selected_input="airplay", airplay_frames=5000, ring=_ring()),
+        _fanin_status(
+            selected_input="airplay", airplay_frames=5000,
+            ring=_ring(epoch_resets=1),
+        ),
+    ]
+    rx_bytes = iter([10000, 15000, 15000])
+    sampler = _sampler(
+        fanin_probe=lambda: statuses.pop(0),
+        link_probe=lambda: {
+            "iface": "wlan0", "rx_bytes": next(rx_bytes),
+            "udp_in_datagrams": 0, "udp_rcvbuf_errors": 0, "tcp_in_segs": 0,
+        },
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    assert (
+        sampler.snapshot()["current"]["link"]["rx_bytes_per_sec_baseline"] == 1000.0
+    )
+
+    now[0] += 5.0
+    sampler._tick()
+    assert sampler.snapshot()["current"]["link"]["rx_bytes_per_sec_baseline"] is None

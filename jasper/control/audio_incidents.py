@@ -66,6 +66,34 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+# Verdict tokens produced by audio_health._input_attribution — kept in sync
+# by hand since this module has no probes and must not import the composer.
+_ATTRIBUTION_VERDICTS = frozenset({"network", "internal:receiver", "unknown"})
+_ATTRIBUTION_MAX_DETAILS = 5
+_ATTRIBUTION_FIELD_MAX_LEN = 160
+
+
+def _clean_attribution(raw: Any) -> dict[str, Any] | None:
+    """Bounded, allowlisted like the rest of the freeze frame: an unknown
+    or corrupt verdict token is dropped rather than rendered."""
+    attribution = _mapping(raw)
+    verdict = attribution.get("verdict")
+    if verdict not in _ATTRIBUTION_VERDICTS:
+        return None
+    details_raw = attribution.get("details")
+    details: list[dict[str, str]] = []
+    if isinstance(details_raw, list):
+        for row in details_raw[:_ATTRIBUTION_MAX_DETAILS]:
+            row = _mapping(row)
+            label, value = row.get("label"), row.get("value")
+            if isinstance(label, str) and isinstance(value, str):
+                details.append({
+                    "label": label[:_ATTRIBUTION_FIELD_MAX_LEN],
+                    "value": value[:_ATTRIBUTION_FIELD_MAX_LEN],
+                })
+    return {"verdict": verdict, "details": details}
+
+
 def _clean_freeze_frame(raw: Any) -> dict[str, Any]:
     """Keep only the start evidence the dashboard actually renders."""
     context = _mapping(raw)
@@ -81,6 +109,9 @@ def _clean_freeze_frame(raw: Any) -> dict[str, Any]:
     )
     if delay is not None:
         out["output"] = {"snd_pcm_delay_ms": delay}
+    attribution = _clean_attribution(context.get("attribution"))
+    if attribution is not None:
+        out["attribution"] = attribution
     return out
 
 

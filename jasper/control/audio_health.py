@@ -36,6 +36,8 @@ from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..source_intent import read_source_intents
 from .airplay_health import (
+    ATTRIBUTION_NETWORK_RATIO,
+    ATTRIBUTION_RECEIVER_RATIO,
     CAMILLA_UNIT_FULL,
     AirPlayHealthSampler,
     SAMPLE_INTERVAL_SEC,
@@ -1631,6 +1633,82 @@ def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
     return float(delay)
 
 
+# AirPlay drop attribution: network vs internal:receiver, for an
+# airplay.input_unavailable incident on a ring-armed lane (jts4-class
+# Zero 2 W). A closed token set — "unknown" is a first-class, expected
+# answer, not a failure to classify.
+_ATTRIBUTION_RECEIVER_STOPPED_STATES = frozenset({"T", "D", "Z"})
+_ATTRIBUTION_LABELS = {
+    "network": (
+        "Audio stopped arriving over Wi-Fi (sender paused, or the link dropped)"
+    ),
+    "internal:receiver": (
+        "Audio arrived but the receiver on this speaker did not play it"
+    ),
+    "unknown": "Not enough evidence to say",
+}
+
+
+def _input_attribution(
+    airplay: Mapping[str, Any],
+    active_source: str | None,
+) -> dict[str, Any] | None:
+    """Network vs internal:receiver verdict, evaluated only for AirPlay on a
+    ring-armed lane. Rules, first match wins:
+
+    1. no ring block, no baseline, or no link sample -> unknown
+    2. receiver stopped/swapping (state T/D/Z, or majflt this tick) ->
+       internal:receiver (checked first: a stalled receiver in TCP mode
+       also collapses rx, so this must outrank the rate rule)
+    3. UDP RcvbufErrors climbed -> internal:receiver (arrived, not drained)
+    4. rx rate < NETWORK_RATIO * baseline -> network
+    5. rx rate >= RECEIVER_RATIO * baseline -> internal:receiver
+    6. else -> unknown
+    """
+    if active_source != Source.AIRPLAY.value:
+        return None
+    current = _mapping(airplay.get("current"))
+    fanin = _mapping(current.get("fanin"))
+    source_input = _mapping(_mapping(fanin.get("inputs")).get(Source.AIRPLAY.value))
+    ring = _mapping(source_input.get("ring"))
+    link = _mapping(current.get("link"))
+    receiver = _mapping(link.get("receiver"))
+
+    baseline = _finite_number(link.get("rx_bytes_per_sec_baseline"))
+    rx_rate = _finite_number(link.get("rx_bytes_per_sec"))
+    state = receiver.get("state")
+    majflt_rate = _finite_number(receiver.get("majflt_per_sec"))
+    rcvbuf_delta = _finite_number(link.get("udp_rcvbuf_errors_delta"))
+
+    if not ring or baseline is None or rx_rate is None:
+        verdict = "unknown"
+    elif state in _ATTRIBUTION_RECEIVER_STOPPED_STATES or (
+        majflt_rate is not None and majflt_rate > 0
+    ):
+        verdict = "internal:receiver"
+    elif rcvbuf_delta is not None and rcvbuf_delta > 0:
+        verdict = "internal:receiver"
+    elif rx_rate < ATTRIBUTION_NETWORK_RATIO * baseline:
+        verdict = "network"
+    elif rx_rate >= ATTRIBUTION_RECEIVER_RATIO * baseline:
+        verdict = "internal:receiver"
+    else:
+        verdict = "unknown"
+
+    details = [_detail("Verdict", _ATTRIBUTION_LABELS[verdict])]
+    if rx_rate is not None and baseline:
+        details.append(_detail(
+            "Link rate",
+            f"{rx_rate:.0f} B/s (baseline {baseline:.0f} B/s)",
+        ))
+    if state is not None:
+        details.append(_detail("Receiver state", state))
+    packet_rate = _finite_number(link.get("udp_in_datagrams_per_sec"))
+    if packet_rate is not None:
+        details.append(_detail("Packets in", f"{float(packet_rate):.0f}/s"))
+    return {"verdict": verdict, "details": details[:5]}
+
+
 def _incident_context(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
@@ -1644,11 +1722,15 @@ def _incident_context(
         if active_source is not None else {}
     )
     output = _mapping(_mapping(outputd).get("dac"))
-    return {
+    context: dict[str, Any] = {
         "clock_mode": _mapping(fanin.get("host_clock")).get("ladder"),
         "input": {"rms_dbfs": source_input.get("rms_dbfs")},
         "output": {"snd_pcm_delay_ms": _fresh_dac_delay_ms(output)},
     }
+    attribution = _input_attribution(airplay, active_source)
+    if attribution is not None:
+        context["attribution"] = attribution
+    return context
 
 
 def _receiver_latency(
@@ -1832,8 +1914,24 @@ def _incident_impact(issue: Mapping[str, Any]) -> str:
     }.get(str(issue.get("impact")), "Audio quality may have been affected.")
 
 
+_AIRPLAY_INPUT_UNAVAILABLE_KEY = f"{Source.AIRPLAY.value}.input_unavailable"
+_LIKELY_AREA_BY_VERDICT = {
+    "network": "Wi-Fi link to this speaker",
+    "internal:receiver": "AirPlay receiver on this speaker",
+}
+
+
 def _likely_area(issue: Mapping[str, Any]) -> str:
     key = str(issue.get("key") or "")
+    if key == _AIRPLAY_INPUT_UNAVAILABLE_KEY:
+        attribution = _mapping(
+            _mapping(_mapping(issue.get("context")).get("started")).get(
+                "attribution",
+            ),
+        )
+        area = _LIKELY_AREA_BY_VERDICT.get(str(attribution.get("verdict")))
+        if area is not None:
+            return area
     if key.startswith("path.outputd"):
         return "Final output stage"
     if key.startswith(("path.fanin", "path.camilla", "path.transport")):
@@ -1851,6 +1949,14 @@ def _likely_area(issue: Mapping[str, Any]) -> str:
 def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
     context = _mapping(_mapping(issue.get("context")).get("started"))
+    if issue.get("key") == _AIRPLAY_INPUT_UNAVAILABLE_KEY:
+        attribution_details = _mapping(context.get("attribution")).get("details")
+        if isinstance(attribution_details, list):
+            evidence.extend(
+                _detail(str(row["label"]), str(row["value"]))
+                for row in attribution_details
+                if isinstance(row, Mapping) and row.get("label") and row.get("value")
+            )
     if context.get("clock_mode"):
         evidence.append(_detail("Clock mode", context["clock_mode"]))
     input_context = _mapping(context.get("input"))
@@ -1865,7 +1971,7 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
             "DAC queue",
             f"{float(output_context['snd_pcm_delay_ms']):.1f} ms",
         ))
-    return evidence
+    return evidence[:5]
 
 
 def _timestamp(value: Any, default: float) -> float:
@@ -2240,6 +2346,7 @@ def compose_audio_health(
                 "summary_30m": copy.deepcopy(ap.get("summary_30m")),
                 "storm": copy.deepcopy(ap.get("storm")),
             },
+            "link": copy.deepcopy(current.get("link")),
         },
     }
 
