@@ -4,46 +4,13 @@
 
 """Where findings live: inside the session bundle, for exactly as long as it.
 
-**Q-C, ruled by the owner 2026-07-29 night (issue #1866): bundle-lifetime
-retention.** "A finding lives inside the session bundle whose evidence it
-cites and dies with it — structurally satisfying the plan's pinned constraint
-(a finding must not outlive, or silently predecease, the evidence it cites).
-Longitudinal analysis reads across bundles via WO-1's stable cross-store
-session identity. A summary ledger for long-horizon retrospectives is
-explicitly deferred to a later WO."
-
-The ruling is implemented by *choosing the right container*, not by writing a
-retention loop. A finding set is published as one ordinary artifact in the
-commissioning evidence bundle, so:
-
-* **It cannot outlive its evidence.** ``bundles.enforce_retention`` evicts a
-  bundle with ``shutil.rmtree`` — the whole directory, JSON and WAVs
-  together. There is no per-file tier that could take the evidence and leave
-  the finding. This half needs no code at all, which is the point: a
-  retention rule that is a consequence of the storage shape cannot drift from
-  it. It is pinned by test anyway, because "no code" is exactly the kind of
-  guarantee that quietly stops being true when someone adds a pruner.
-* **It cannot silently predecease its evidence.** Nothing prunes *inside* a
-  living bundle today, but a finding that cited a vanished or altered
-  artifact would still be the more dangerous failure — a diagnosis that reads
-  fine and rests on nothing. So :func:`read_finding_set` re-resolves and
-  re-hashes every bundle citation by default and raises
-  :class:`FindingEvidenceMissing` rather than returning a finding whose
-  support it could not confirm.
-
-**Provenance marker discipline** (§7's acceptance: "old bundles without
-findings readable"). Absence of the artifact is a *state*, not an error:
-:func:`read_finding_set` returns ``None`` for every bundle written before
-attribution existed. An artifact that is present but carries an empty
-``findings`` list is the different, meaningful statement that attribution ran
-and found nothing. The two are never conflated, which is what lets a reader
-distinguish "this speaker is clean" from "nobody looked".
-
-**Write-once is inherited, deliberately.** ``CommissioningEvidenceStore``
-publishes canonical JSON at a path that may never be rewritten with different
-bytes. A finding set is produced once, at group close, from evidence that is
-itself already write-once — so the constraint costs nothing and buys
-tamper-evidence for free.
+Bundle-lifetime retention (Q-C, #1866), implemented by choosing the container
+rather than writing a retention loop: a finding set is one ordinary artifact in
+the commissioning evidence bundle, which ``bundles.enforce_retention`` evicts
+whole. :func:`read_finding_set` re-resolves and re-hashes every bundle citation
+by default and raises rather than returning a finding whose support it could
+not confirm. An absent artifact returns ``None`` (a legacy bundle); a present
+one with an empty list means attribution ran and found nothing.
 """
 
 from __future__ import annotations
@@ -66,27 +33,19 @@ class FindingStorageError(RuntimeError):
 class FindingEvidenceMissing(FindingStorageError):
     """A persisted finding cites evidence the bundle can no longer produce.
 
-    The loud half of the bundle-lifetime rule. Raised when a citation's
-    artifact is gone, unreadable, or no longer hashes to what the finding
-    recorded — never swallowed, because the failure mode this prevents is a
-    diagnosis that still reads convincingly after its support disappeared.
+    Raised when a citation's artifact is gone, unreadable, or no longer hashes
+    to what the finding recorded — never swallowed.
     """
 
 
 def findings_relative_path(relay_session_id: str, phase: str) -> str:
     """The **publish** path for one phase's finding set.
 
-    Per phase, not per session, for the same reason
-    ``bind_cloud_publisher`` writes ``cloud_measure.json`` and
-    ``cloud_verify.json`` separately: the pre-apply and post-apply groups
-    close at genuinely different times in one session, and the store is
-    write-once, so a shared path would collide on the second close.
-
-    Note the store's own path asymmetry, which is easy to get wrong:
-    ``publish_json_artifact`` takes this *short* path and prefixes it with
-    its artifact namespace itself, while ``identify_artifact`` and every
-    ``ArtifactIdentity.relative_path`` use the *full* bundle-relative one.
-    :func:`findings_artifact_path` is the full form.
+    Per phase, not per session: the pre-apply and post-apply groups close at
+    different times and the store is write-once, so a shared path would
+    collide. ``publish_json_artifact`` takes this SHORT path and prefixes it
+    with its artifact namespace itself; :func:`findings_artifact_path` is the
+    full bundle-relative form every reader and citation uses.
     """
 
     if not relay_session_id or not phase:
@@ -98,9 +57,8 @@ def findings_artifact_path(relay_session_id: str, phase: str) -> str:
     """The full bundle-relative path — what a reader and a citation use.
 
     The namespace prefix is imported from the store rather than spelled here,
-    so the two cannot drift apart into a publish that succeeds and a read
-    that silently reports "no findings" — which is exactly the failure this
-    asymmetry produces if the prefix is duplicated.
+    so a publish that succeeds and a read that reports "no findings" cannot
+    drift apart.
     """
 
     from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
@@ -111,10 +69,9 @@ def findings_artifact_path(relay_session_id: str, phase: str) -> str:
 def bundle_evidence_ref(artifact: Any, session: SessionIdentity) -> EvidenceRef:
     """An :class:`EvidenceRef` for one published bundle artifact.
 
-    Takes the ``ArtifactIdentity`` the evidence store already returned from
-    its publish, so the locator and the digest are the store's own — never
-    re-derived here, which would be a second computation of the one fact that
-    makes a citation checkable.
+    The locator and digest are the store's own, from the ``ArtifactIdentity``
+    its publish returned; re-deriving them here would be a second computation
+    of the one fact that makes a citation checkable.
     """
 
     try:
@@ -136,11 +93,8 @@ def publish_finding_set(
     """Publish one phase's findings into the session bundle.
 
     Returns the store's ``ArtifactIdentity``. Raises
-    :class:`FindingStorageError` on any store refusal — this function does
-    **not** swallow failures, matching ``bind_cloud_publisher``: the fail-soft
-    boundary belongs at the caller, so every other caller keeps the strictness
-    the store was built for. (``bind_position_retention`` catches inside itself
-    instead — it is the exception, and says why.)
+    :class:`FindingStorageError` on any store refusal — the fail-soft boundary
+    belongs at the caller.
     """
 
     if not isinstance(finding_set, FindingSet):
@@ -161,14 +115,11 @@ def read_finding_set(
 ) -> FindingSet | None:
     """Reopen one phase's findings, or ``None`` if this bundle has none.
 
-    ``None`` is the legacy/absent answer and is not an error — see the
-    provenance-marker discipline in this module's docstring.
-
-    ``verify_evidence`` defaults to **True**: every bundle citation is
-    re-resolved and re-hashed, and a citation that cannot be confirmed raises
-    :class:`FindingEvidenceMissing`. Pass ``False`` only for a caller that
-    genuinely wants the record without its support — a listing, an audit of
-    what *was* written — and that is prepared to say so.
+    ``None`` is the legacy/absent answer and is not an error.
+    ``verify_evidence`` defaults to True: every bundle citation is re-resolved
+    and re-hashed, and one that cannot be confirmed raises
+    :class:`FindingEvidenceMissing`. Pass False only for a caller that wants
+    the record without its support.
     """
 
     path = findings_artifact_path(relay_session_id, phase)
@@ -196,20 +147,15 @@ def read_finding_set(
 def verify_finding_evidence(store: Any, finding_set: FindingSet) -> None:
     """Confirm every bundle citation still resolves to the exact cited bytes.
 
-    Only ``commissioning_bundle`` citations are checked, and that asymmetry
-    is the design rather than a shortcut: the bundle is the one store whose
-    lifetime is bound to the finding's. The capture ring prunes oldest-first
-    on its own schedule and the laptop archive is off-device, so a citation
-    into either is a cross-store *join*, recorded so the join exists at all,
-    and its absence says nothing about whether the finding is still
-    supported. ``Finding`` guarantees at least one bundle citation, so every
-    finding is covered by this check.
+    Only ``commissioning_bundle`` citations are checked: the bundle is the one
+    store whose lifetime is bound to the finding's. A citation into the capture
+    ring or the laptop archive is a cross-store join whose absence says nothing
+    about support. ``Finding`` guarantees at least one bundle citation.
     """
 
-    # Every finding a group produces cites the SAME cloud artifact, so a
-    # naive walk re-reads and re-hashes one file once per finding. Memoize by
-    # locator: the digest of a write-once artifact cannot change underneath a
-    # single verification pass, and the read is what costs.
+    # Every finding a group produces cites the SAME cloud artifact, so memoize
+    # by locator: a write-once artifact's digest cannot change underneath one
+    # verification pass, and the read is what costs.
     digests: dict[str, str] = {}
     for finding in finding_set.findings:
         for cite in finding.cites:
@@ -236,12 +182,9 @@ def verify_finding_evidence(store: Any, finding_set: FindingSet) -> None:
 def _is_missing(exc: BaseException) -> bool:
     """Is this store failure "the artifact is not there" rather than a fault?
 
-    Matched on the store's own stable error code
-    (``CommissioningEvidenceStoreErrorCode.MISSING``) with a
-    ``FileNotFoundError`` fallback, so a test double that raises the ordinary
-    OS error reads the same way. Anything else is a real failure and stays
-    one — an unreadable or oversized artifact must not be mistaken for a
-    legacy bundle.
+    Matched on the store's stable ``MISSING`` error code with a
+    ``FileNotFoundError`` fallback for test doubles. An unreadable or oversized
+    artifact must not be mistaken for a legacy bundle.
     """
 
     if isinstance(exc, FileNotFoundError):
