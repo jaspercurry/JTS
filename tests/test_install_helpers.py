@@ -518,6 +518,53 @@ def test_ensure_state_dir_does_not_rechmod_an_existing_dir(tmp_path):
     )
 
 
+def test_persist_install_profile_does_not_rechmod_an_existing_state_dir(tmp_path):
+    """`persist_install_profile`'s marker defaults under STATE_DIR, so its
+    `install -d -m 0750 "$(dirname "$marker")"` targets STATE_DIR itself on
+    the production path — the same re-chmod trap `ensure_state_dir` closed
+    (#3879), left open here. Pin that an existing parent dir never reaches
+    `install` at all, via a fake `install` on PATH that records invocations."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_dir.chmod(0o770)  # mkdir(mode=...) is masked by umask; chmod isn't
+    marker = state_dir / "install_profile"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "install.calls"
+    fake_install = bin_dir / "install"
+    fake_install.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> "
+        + shlex.quote(str(calls))
+        + "\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_install.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && persist_install_profile full "
+            + shlex.quote(str(marker)),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not calls.exists(), (
+        "persist_install_profile called `install -d` on an existing parent dir: "
+        f"{calls.read_text(encoding='utf-8') if calls.exists() else ''}"
+    )
+    assert stat.S_IMODE(state_dir.stat().st_mode) == 0o770
+
+
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
     install_root = tmp_path / "opt/jasper"
     pip = install_root / ".venv/bin/pip"

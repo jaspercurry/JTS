@@ -337,7 +337,13 @@ persist_install_profile() {
     local profile="$1"
     local marker="${2:-${INSTALL_PROFILE_MARKER}}"
     profile="$(normalize_install_profile "${profile}")" || return $?
-    install -d -m 0750 "$(dirname "${marker}")"
+    # `install -d -m` re-chmods an EXISTING dir — the marker's parent is
+    # STATE_DIR itself on the default marker path, so this briefly narrowed
+    # an already-widened 0770 STATE_DIR to 0750 on every deploy, the same
+    # trap ensure_state_dir closed (#3879). Only create, never re-chmod.
+    local marker_dir
+    marker_dir="$(dirname "${marker}")"
+    [[ -d "${marker_dir}" ]] || install -d -m 0750 "${marker_dir}"
     local tmp="${marker}.tmp.$$"
     printf '%s\n' "${profile}" > "${tmp}"
     chmod 0644 "${tmp}"
