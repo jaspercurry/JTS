@@ -84,7 +84,7 @@ __TABS__
 
 <section id="placement" data-envelope-section="placement" class="info-card hidden">
   <h2 class="section__title">Place the microphone</h2>
-  <p id="placement-instruction">Put the microphone at head height where you normally listen, pointing up, and keep the room quiet.</p>
+  <p id="placement-instruction">Put the microphone at head height where you normally listen, aimed as its calibration file says, and keep the room quiet.</p>
   <div id="position-prompt" class="note-box hidden">
     <p style="margin:0; font-weight:600">Move to position <span id="position-current">2</span> of <span id="position-total">__DEFAULT_ROOM_POSITION_COUNT__</span>.</p>
     <p class="hint" style="margin-top:0.3em">Move about 30 cm from the previous position, keep the microphone at ear height, then continue.</p>
