@@ -174,11 +174,6 @@ def approved_chip_aec_dac_ids() -> tuple[str, ...]:
 
 
 APPROVED_DAC_IDS = frozenset(approved_chip_aec_dac_ids())
-KNOWN_CALIBRATION_REQUIRED_DAC_IDS = frozenset(
-    profile.id
-    for profile in dac_profiles.all_profiles()
-    if profile.chip_aec_qualification != STATUS_APPROVED
-)
 
 
 def static_dac_qualification(dac_id: object) -> DacChipAecQualification:

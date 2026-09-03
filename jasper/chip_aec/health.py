@@ -102,6 +102,17 @@ _DISPOSITIONS = {
 # edge instead of raising here.
 DISPOSITIONS = tuple(sorted((*_DISPOSITIONS, APPLIED)))
 
+
+def render_shell_assignments(values: Mapping[str, str]) -> str:
+    """One `KEY=quoted-value` line per pair; free text whitespace-collapsed
+    onto one line here so no writer has to do it itself."""
+
+    return "".join(
+        f"{key}={shlex.quote(' '.join(value.split()))}\n"
+        for key, value in values.items()
+    )
+
+
 STATUS_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS"
 REASON_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON"
 ACTION_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION"
@@ -127,16 +138,9 @@ class AlignmentHealth:
         }
 
     def to_shell(self) -> str:
-        """The record as the shell assignments its consumers eval.
+        """The record as the shell assignments its consumers eval."""
 
-        One line per key, so free text is folded onto one line here rather than
-        in each writer.
-        """
-
-        return "".join(
-            f"{key}={shlex.quote(' '.join(value.split()))}\n"
-            for key, value in self.to_env().items()
-        )
+        return render_shell_assignments(self.to_env())
 
     def applies_to(self, selection: str, *, custom_profile: str) -> bool:
         """Whether this record answers for `selection`.
