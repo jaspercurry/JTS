@@ -38,6 +38,9 @@ _TWO_SIBLINGS = (
         # A typo (JASPER_PEERING=banana) resolves to off; silence would leave
         # the operator believing peering is on.
         ("JASPER_PEERING=banana\n", "warn", peering.REASON_PEERING_MODE_UNKNOWN),
+        # Unbalanced quote: only a matching pair is stripped, so the doctor
+        # reports the same value peering.config.load_config resolves.
+        ("JASPER_PEERING='on\n", "warn", peering.REASON_PEERING_MODE_UNKNOWN),
     ],
     ids=["absent", "off", "on", "malformed", "unbalanced-quote"],
 )
