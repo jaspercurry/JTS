@@ -43,11 +43,9 @@ from ..usb_mic import (
 )
 from ..chip_aec_policy import (
     combine_mic_availability,
-    gate_from_runtime_env,
-    resolve_chip_aec_dac_gate,
+    effective_chip_aec_dac_gate,
 )
 from ..wake_models import WAKE_MODEL_FILE
-from ..output_hardware import published_dac_id
 
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
@@ -560,12 +558,7 @@ def _chip_aec_gate(
         ),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    dac_gate = gate_from_runtime_env(env)
-    if dac_gate is None:
-        dac_gate = resolve_chip_aec_dac_gate(
-            published_dac_id(env),
-            testing_requested=testing_requested,
-        )
+    dac_gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     # Fold the input-mic fact into the DAC-only gate so blockers +
     # recommended_action use chip_aec_policy's single canonical vocabulary
     # (BLOCKER_MIC / BLOCKER_DAC). Do not re-add a parallel code scheme here.

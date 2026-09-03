@@ -409,3 +409,14 @@ def combine_mic_availability(
         auto_allowed=gate.auto_allowed,
         blockers=tuple(blockers),
     )
+
+
+def effective_chip_aec_dac_gate(
+    env: Mapping[str, str], *, testing_requested: bool,
+) -> ChipAecGate:
+    """A served record wins over a fresh lookup — see the module docstring's
+    "served record" paragraph."""
+
+    return gate_from_runtime_env(env) or resolve_chip_aec_dac_gate(
+        published_dac_id(env), testing_requested=testing_requested,
+    )
