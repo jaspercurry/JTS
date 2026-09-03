@@ -13,37 +13,27 @@ warns ahead of that reboot instead of after it.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 from ...audio_hardware.dac import by_id
 from ...audio_hardware.usb_port_role import (
-    DEFAULT_BOOT_CONFIG_PATH,
+    boot_config_path,
     configured_i2s_overlays,
+    overlay_declared_anywhere,
+    read_boot_config_or_none,
 )
+from ...control.transport_park import I2S_DAC_OVERLAY_CHECK_NAME as CHECK_NAME
 from ...output_topology import OutputTopologyError, load_output_topology_strict
 from ._registry import doctor_check
 from ._shared import CheckResult
 
 REASON_SKIPPED = "skipped"
+REASON_BOOT_CONFIG_UNREADABLE = "boot_config_unreadable"
 REASON_OVERLAY_PRESENT = "overlay_present"
+REASON_OVERLAY_PRESENT_SCOPED = "overlay_present_scoped"
 REASON_OVERLAY_MISSING = "overlay_missing"
 
-#: Display name, shared with the ring-transport-park renderer
-#: (:mod:`.audio_runtime`) so a DAC-not-recognized park can point at this
-#: check by name without a second hardcoded copy of it.
-CHECK_NAME = "I2S DAC overlay persists"
 
-
-def _boot_config_path() -> Path:
-    return Path(os.environ.get("JTS_BOOT_CONFIG_FILE", DEFAULT_BOOT_CONFIG_PATH))
-
-
-def _read_boot_config(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
+def _skipped(detail: str) -> CheckResult:
+    return CheckResult(CHECK_NAME, "ok", f"skipped — {detail}", reason=REASON_SKIPPED)
 
 
 @doctor_check(order=20.55, group="audio")
@@ -55,45 +45,44 @@ def check_i2s_dac_overlay_persists() -> CheckResult:
     try:
         topology = load_output_topology_strict()
     except OutputTopologyError as exc:
-        return CheckResult(
-            label,
-            "ok",
-            f"skipped — saved output topology is unavailable or invalid: {exc}",
-            reason=REASON_SKIPPED,
-        )
+        return _skipped(f"saved output topology is unavailable or invalid: {exc}")
 
     device_id = topology.hardware.device_id
     if not device_id or device_id == "unknown":
-        return CheckResult(
-            label, "ok", "skipped — no saved output topology configured",
-            reason=REASON_SKIPPED,
-        )
+        return _skipped("no saved output topology configured")
 
     profile = by_id(device_id)
     if profile is None:
-        return CheckResult(
-            label,
-            "ok",
-            f"skipped — {device_id} has no registry DAC profile",
-            reason=REASON_SKIPPED,
-        )
+        return _skipped(f"{device_id} has no registry DAC profile")
 
     if profile.connection != "i2s" or not profile.dtoverlay:
+        return _skipped(f"{device_id} is not an I2S HAT DAC")
+
+    config_path = boot_config_path()
+    content = read_boot_config_or_none(config_path)
+    if content is None:
         return CheckResult(
             label,
-            "ok",
-            f"skipped — {device_id} is not an I2S HAT DAC",
-            reason=REASON_SKIPPED,
+            "warn",
+            f"could not read {config_path} — cannot confirm "
+            f"dtoverlay={profile.dtoverlay} survives a reboot",
+            reason=REASON_BOOT_CONFIG_UNREADABLE,
         )
 
-    config_path = _boot_config_path()
-    overlays = configured_i2s_overlays(_read_boot_config(config_path))
-    if profile.dtoverlay.lower() in overlays:
+    if profile.dtoverlay.lower() in configured_i2s_overlays(content):
         return CheckResult(
             label,
             "ok",
             f"dtoverlay={profile.dtoverlay} present in {config_path}",
             reason=REASON_OVERLAY_PRESENT,
+        )
+    if overlay_declared_anywhere(content, profile.dtoverlay):
+        return CheckResult(
+            label,
+            "ok",
+            f"dtoverlay={profile.dtoverlay} present in {config_path} "
+            "under a model-scoped section",
+            reason=REASON_OVERLAY_PRESENT_SCOPED,
         )
     return CheckResult(
         label,
