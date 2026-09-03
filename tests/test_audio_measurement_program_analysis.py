@@ -5,7 +5,7 @@
 """Pure analysis of an excitation-program capture (crossover conductor W1).
 
 Synthetic-fixture round-trips for
-docs/crossover-measurement-productization-design.md §5.6. A "capture" is
+docs/historical/crossover-measurement-productization-design.md §5.6. A "capture" is
 composed by convolving each program channel with a distinct synthetic driver
 IR (a band-passed impulse at a known delay/amplitude/polarity), summing to
 mono, applying a known global offset + clock drift ε + additive noise, and —

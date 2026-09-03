@@ -749,7 +749,7 @@ def test_snapshot_refuses_a_fine_grid_whose_endpoint_exceeds_dsp_delay_bound():
 # --- prove_static_delay_binding: the one-shot static (non-walk) proof ------
 #
 # Wave 4 of the crossover measurement v2 redesign
-# (docs/crossover-measurement-productization-design.md §5.8) needs a simple
+# (docs/historical/crossover-measurement-productization-design.md §5.8) needs a simple
 # "this final compiled graph binds exactly one requested Delay filter, on the
 # right channels, at the right value" proof — distinct from the
 # DelayGraphSnapshot/confirm_delay_candidate pair above, which binds TWO

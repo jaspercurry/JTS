@@ -29,7 +29,7 @@
 > architecture.
 >
 > Canonical operational truth: [tuning-operator-runbook.md](../tuning-operator-runbook.md).
-> v2 decision record: [crossover-measurement-productization-design.md](../crossover-measurement-productization-design.md).
+> v2 decision record: [crossover-measurement-productization-design.md](crossover-measurement-productization-design.md).
 > Keep those two authoritative; this doc is the plan + decision log until the
 > work lands, after which the durable outcomes fold into the HANDOFF and this
 > doc is archived.

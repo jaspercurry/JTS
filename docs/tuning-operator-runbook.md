@@ -13,7 +13,7 @@
 > | What is the current session boundary? `open` / `measure` / `close`, with four seam fields | [`session.py`](../jasper/active_speaker/crossover_v2/session.py), [`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py), and [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md) |
 > | Where is the program going? What is funded, deleted, pinned? | [`tuning-master-plan.md`](tuning-master-plan.md) |
 > | Why is it like this? Bench results, decision archaeology, the failure taxonomy, the W6 gotcha catalog | [`historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md) |
-> | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md) |
+> | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](historical/crossover-measurement-productization-design.md) |
 > | **How do I actually drive it tonight?** | this file |
 >
 > Read the doctrine once per session. Read this whenever you forget a workflow step.

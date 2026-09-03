@@ -5,7 +5,7 @@
 """v2 measured-crossover apply extension — trims + optional delay/polarity.
 
 Wave 4 of the crossover-measurement v2 redesign
-(``docs/crossover-measurement-productization-design.md`` §5.8). This is a
+(``docs/historical/crossover-measurement-productization-design.md`` §5.8). This is a
 **new, standalone candidate model** — it does not extend or reuse
 :class:`jasper.active_speaker.measured_candidate.MeasuredElectricalCandidate`,
 the null-walk/evidence-store candidate built for the v1 flow (§5.9 of the

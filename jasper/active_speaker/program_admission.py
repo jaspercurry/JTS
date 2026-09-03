@@ -7,8 +7,9 @@
 A CHECK/MEASURE program (:mod:`jasper.audio_measurement.program`) is one 2-channel
 WAV that sequences per-driver stimuli by channel. Before it may play, and again
 at play time from a fresh byte readback, it must be admitted. Admission has two
-independent parts (docs/crossover-measurement-productization-design.md §5.3 +
-the Wave 2 attestation strengthening):
+independent parts
+(docs/historical/crossover-measurement-productization-design.md §5.3 + the
+Wave 2 attestation strengthening):
 
 1. **N per-segment prepared plans.** Every non-silence segment is turned into a
    :class:`~jasper.active_speaker.excitation_safety_plan.RequestedDriverExcitationPlan`

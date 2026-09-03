@@ -341,11 +341,13 @@ in wave 7e; ticket 2.4 still names the R17 deliverable it retires.
 **Standing, compatible (no action):** `gating-v2-plan.md`
 (feeds the kernel), `HANDOFF-bass-extension-plan.md` (parked; converges at
 4.4),
-`room-correction-regime-plan.md` (parked under the Loop C pin),
-`crossover-measurement-productization-design.md`,
-`two-stage-commission-flow-plan.md`, and the information-design docs.
-`tuning-operator-runbook.md` stays the
-operational canon and `crossover-v2-engine-design.md` carries the file map. The
+`room-correction-regime-plan.md` (parked under the Loop C pin), and the
+information-design docs. `tuning-operator-runbook.md` stays the
+operational canon. Three landed records moved to
+[`historical/`](historical/): the productization design, the two-stage
+commission flow plan, and
+[`crossover-v2-engine-design.md`](historical/crossover-v2-engine-design.md),
+which carries the file map. The
 Wave-2 deletion PRs landed: `fc_selector.py` is gone and `fc_sweep`'s sweep half
 with it, so the file map carries no rows for them to amend.
 
@@ -410,7 +412,7 @@ every deletion PR in this wave: run `bash scripts/tense-grep.sh --all`
 against a pre-cut baseline plus a subject sweep for the deleted thing's own
 vocabulary; update `docs/doc-map.toml` routing; update
 `crossover_v2/__init__`'s module docstring; amend
-`crossover-v2-engine-design.md`'s file-map rows.
+`historical/crossover-v2-engine-design.md`'s file-map rows.
 2.1 Layers-doc P2 amendment + pointer to this plan (lands with/after 2.2–2.4
     so prose states what is); also trues up the Measurement Program v2
     section's ×3 anchor-repeat count to the adopted ×4.

@@ -4,8 +4,9 @@
 
 """Excitation-program model + composers for the crossover session flow.
 
-The v2 crossover measurement flow (docs/crossover-measurement-productization-design.md
-§5.3) replaces a distributed transaction of per-sweep taps with a single
+The v2 crossover measurement flow
+(docs/historical/crossover-measurement-productization-design.md §5.3)
+replaces a distributed transaction of per-sweep taps with a single
 **excitation program**: a pure-data schedule of stimuli the Pi compiles once,
 plays as one continuous stream, and analyzes as ``(program, capture) →
 analysis`` (see :mod:`jasper.audio_measurement.program_analysis`). This module

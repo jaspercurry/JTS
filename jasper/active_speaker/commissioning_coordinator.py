@@ -31,10 +31,8 @@ COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 # A step this speaker's shape will never run. Distinct from "done" (which claims
 # work happened) and from "todo"/"active" (which promise work still can); the
 # /sound/ page renders it as an explanatory card instead of a dead end. The
-# spelling is deliberate and shared: it is the word the /correction/ journey's
-# closed step vocabulary already uses for a passive topology
-# (docs/correction-journey-design.md §5, "this step doesn't apply") and the word
-# `driver_target_proof.source` below already reports for the same shape.
+# spelling is deliberate and shared: it is the word `output_topology.py` and
+# `driver_target_proof.source` below already report for the same shape.
 STEP_STATUS_NOT_REQUIRED = "not_required"
 # The matching terminal view status: the flow is finished, and finished WITHOUT
 # an active-crossover commissioning ladder ever applying to this speaker.
