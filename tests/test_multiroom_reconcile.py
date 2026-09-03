@@ -1021,7 +1021,7 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     monkeypatch.setattr(
         reconcile_mod,
         "_converge_sources_after_role",
-        lambda: (
+        lambda **_kwargs: (
             order.append(f"start-owner:{reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT}")
             or True
         ),
@@ -1175,7 +1175,7 @@ def test_follower_to_solo_keeps_sources_denied_until_role_lands(
         order.append("apply")
         return 0
 
-    def converge_after_grant():
+    def converge_after_grant(**_kwargs):
         landed = json.loads(status_path.read_text())
         assert landed["local_sources_allowed"] is True
         assert landed["blocked_reason"] == ""
@@ -1237,7 +1237,7 @@ def test_failed_follower_to_solo_transition_stays_parked_across_retry(
 
     monkeypatch.setattr(reconcile_mod, "_apply", apply_while_denied)
 
-    def converge_after_role():
+    def converge_after_role(**_kwargs):
         status = json.loads(status_path.read_text())
         if apply_attempt == 1:
             assert status["local_sources_allowed"] is False
@@ -1531,6 +1531,51 @@ def test_plan_leader_owns_only_snap_units():
     p = plan(_leader())
     by_unit = {i.unit: i.desired for i in p.intents}
     assert by_unit == {SNAPSERVER_UNIT: "start", SNAPCLIENT_UNIT: "start"}
+
+
+@pytest.mark.parametrize(
+    ("active_states", "expect_changed"),
+    [
+        pytest.param(
+            {SNAPSERVER_UNIT: "inactive", SNAPCLIENT_UNIT: "inactive"},
+            False,
+            id="already_stopped_matches_stop_plan",
+        ),
+        pytest.param(
+            {SNAPSERVER_UNIT: "active", SNAPCLIENT_UNIT: "inactive"},
+            True,
+            id="live_unit_still_running_is_a_change",
+        ),
+        pytest.param(
+            {SNAPSERVER_UNIT: "unknown-state", SNAPCLIENT_UNIT: "inactive"},
+            True,
+            id="unproven_probe_counts_as_changed",
+        ),
+    ],
+)
+def test_plan_changes_units_reflects_live_state(
+    monkeypatch,
+    active_states,
+    expect_changed,
+):
+    """A `stop` intent against an already-inactive unit is not a change; a
+    live/unproven unit is. This gates whether main() can skip the post-role
+    source barrier."""
+    import subprocess as sp
+    from jasper.multiroom.reconcile import _plan_changes_units
+
+    def fake_run(argv, **kw):
+        unit = argv[2]
+        return sp.CompletedProcess(
+            argv,
+            0,
+            stdout=f"{active_states[unit]}\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    solo_plan = plan(_disabled())
+    assert _plan_changes_units(solo_plan.intents) is expect_changed
 
 
 def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(), absent=()):
@@ -2880,7 +2925,7 @@ def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._converge_sources_after_role() is True
+    assert reconcile_mod._converge_sources_after_role(grouping_active=True, units_changed=False) is True
     assert calls == [
         [
             "systemctl",
@@ -2923,7 +2968,7 @@ def test_converge_sources_drains_old_activation_before_fresh_pass(monkeypatch):
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._converge_sources_after_role() is True
+    assert reconcile_mod._converge_sources_after_role(grouping_active=True, units_changed=False) is True
 
     argv = [call[0] for call in calls]
     assert argv[-2:] == [
@@ -2962,7 +3007,7 @@ def test_converge_sources_unknown_state_uses_safe_barrier(monkeypatch):
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._converge_sources_after_role() is True
+    assert reconcile_mod._converge_sources_after_role(grouping_active=True, units_changed=False) is True
     assert calls[-2:] == [
         ["systemctl", "start", reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT],
         [
@@ -2990,7 +3035,13 @@ def test_converge_sources_barrier_timeout_fails_without_fresh_pass(
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-    assert reconcile_mod._converge_sources_after_role() is False
+    assert (
+        reconcile_mod._converge_sources_after_role(
+            grouping_active=True,
+            units_changed=False,
+        )
+        is False
+    )
     assert (
         calls.count(
             [
@@ -3002,6 +3053,54 @@ def test_converge_sources_barrier_timeout_fails_without_fresh_pass(
         == 1
     )
     assert not any("restart" in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("grouping_active", "units_changed", "expect_start"),
+    [
+        pytest.param(False, False, False, id="solo_no_role_change_skips"),
+        pytest.param(False, True, True, id="solo_unit_changed_runs_barrier"),
+        pytest.param(True, False, True, id="grouping_active_always_runs_barrier"),
+    ],
+)
+def test_converge_sources_barrier_gated_by_role_change(
+    monkeypatch,
+    grouping_active,
+    units_changed,
+    expect_start,
+):
+    """The post-role source barrier forces a ~30s audio-hardware-reconcile pass
+    (Wants=/After=), so it must run only when something for source-intent to
+    react to actually happened: grouping is active, or the unit plan moved a
+    unit. A quiescent solo pass must not pay that cost every boot."""
+    import subprocess as sp
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[:3] == [
+            "systemctl",
+            "show",
+            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
+        ]:
+            return sp.CompletedProcess(argv, 0, stdout="inactive\n", stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    result = reconcile_mod._converge_sources_after_role(
+        grouping_active=grouping_active,
+        units_changed=units_changed,
+    )
+    assert result is True
+    start_calls = [
+        c
+        for c in calls
+        if c == ["systemctl", "start", reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT]
+    ]
+    assert bool(start_calls) is expect_start
+    if not expect_start:
+        assert calls == []
 
 
 def test_restart_unit_reset_failed_is_fail_soft(monkeypatch):
