@@ -507,13 +507,10 @@ def test_hotplug_stop_retry_budget_is_bounded(turntable, capsys) -> None:
 
     output = parse_json_lines(capsys)
     assert [record["event"] for record in output] == [
-        "turntable_autostop.retry",
-        "turntable_autostop.retry",
-        "turntable_autostop.retry",
-        "turntable_autostop.exhausted",
-    ]
+        "turntable_autostop.retry"
+    ] * (turntable.AUTOSTOP_ATTEMPTS - 1) + ["turntable_autostop.exhausted"]
     assert output[-1]["attempts"] == turntable.AUTOSTOP_ATTEMPTS
-    assert sleeps == [turntable.AUTOSTOP_RETRY_SECONDS] * 3
+    assert sleeps == [turntable.AUTOSTOP_RETRY_SECONDS] * (turntable.AUTOSTOP_ATTEMPTS - 1)
     assert len(factory.open_calls) == turntable.AUTOSTOP_ATTEMPTS
 
 

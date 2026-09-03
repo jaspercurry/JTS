@@ -47,7 +47,14 @@ MEASUREMENT_MIN_DEGREES = -TRAVEL_ENVELOPE_DEGREES
 MEASUREMENT_MAX_DEGREES = TRAVEL_ENVELOPE_DEGREES
 TRAVEL_ENVELOPE_EXCEEDED = "travel_envelope_exceeded"
 TRAVEL_OFFSET_UNREADABLE = "travel_offset_unreadable"
-AUTOSTOP_ATTEMPTS = 4
+# 7 retries * 1.5s stays under the unit's TimeoutStartSec=40s. Widened from 4
+# after a cold-boot coldplug exhausted all 4 attempts (~5s) with a different
+# unapproved startup byte each try -- the controller was still emitting
+# post-power-on noise and never landed a clean 0xFE/0xFF startup shape
+# (jts3, 2026-09-03). More attempts buys more real settling time, not a
+# longer per-attempt window: an unapproved byte fails synchronize()
+# immediately, it never times out.
+AUTOSTOP_ATTEMPTS = 8
 AUTOSTOP_RETRY_SECONDS = 1.5
 AUTOSTOP_PRODUCT = "MT320RUBL40ProV3"
 AUTOSTOP_IO_TIMEOUT = 1.5
