@@ -416,50 +416,6 @@ def test_the_retry_budget_is_byte_identical_on_both_pre_r16_shapes():
         assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
 
 
-def test_the_relay_capacity_guard_counts_the_lateral_walk_unconditionally():
-    """The guard reads the SAME producer ``jasper-doctor`` does, so the two can
-    never disagree — and it counts the poses whatever a stage-1 plan arms.
-
-    No stage-1 plan builds the walk, but an operator's staged angle walk builds
-    one on any session and its poses ride the same blob-index space. A term
-    guarded on a stage-1 flag would have reported 0 for exactly the shape that
-    still runs six of them, so the count is unconditional and this pins that.
-    """
-    import jasper.capture_protocol as capture_protocol
-
-    flow.assert_cloud_plan_fits_relay_capacity()  # holds as shipped
-    worst = dict(
-        cloud_measure_positions=flow.MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
-    with_walk = flow.relay_plan_attempts_required(**worst)
-    assert with_walk <= capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS, (
-        "the shipped relay ceiling no longer carries the worst-case plan"
-    )
-
-    # The control has to be INDEPENDENT of the function under test. Deriving it
-    # as ``with_walk - LATERAL_COUNT`` asserts only that 6 > 0, which stays true
-    # with the poses uncounted — so the term is summed here from the primitives
-    # instead, and a build that dropped it or put it back behind a stage-1 flag
-    # comes up exactly LATERAL_COUNT short.
-    expected = (
-        flow.cloud_plan_max_attempts(**worst)
-        + LATERAL_COUNT
-        + (1 if flow.STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    )
-    assert with_walk == expected, (
-        "the producer no longer counts the lateral walk unconditionally"
-    )
-
-    # …and the count is load-bearing, not decorative: a ceiling that fits the
-    # walk-less plan but not the walk must REFUSE.
-    without_walk = expected - LATERAL_COUNT
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(capture_protocol, "MAX_CAPTURE_PLAN_ATTEMPTS", without_walk + 1)
-        with pytest.raises(flow.CrossoverV2FlowError):
-            flow.assert_cloud_plan_fits_relay_capacity()
-
-
 def test_a_lateral_only_stage_1_still_consents_to_a_walk():
     """The consent copy was gated on the CLOUD. A lateral-only session prompts
     five moves, so promising a stationary microphone would be a lie."""

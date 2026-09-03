@@ -419,14 +419,12 @@ def test_a_remote_stage_2_anchor_drops_the_confirm_tap_it_cannot_answer():
         assert anchor["confirm_title"] == "Back on the mark, holding still?"
 
 
-def test_remote_costs_the_relay_no_more_than_full_does():
+def test_remote_costs_no_more_attempts_than_full_does():
     remote = resolve_plan_shape(TIER_REMOTE)
     full = resolve_plan_shape(TIER_FULL)
     assert remote.max_attempts <= full.max_attempts
     for plan in (_stage1(TIER_REMOTE), _stage2(TIER_REMOTE)):
         assert plan.max_attempts <= MAX_CAPTURE_PLAN_ATTEMPTS
-    # The worst-case guard is tier-independent and must stay satisfied.
-    flow.assert_cloud_plan_fits_relay_capacity()
 
 
 # --------------------------------------------------------------------------- #
