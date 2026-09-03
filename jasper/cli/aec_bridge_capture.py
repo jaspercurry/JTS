@@ -54,7 +54,7 @@ MIC_CHANNELS = _mic_profile.RECOMMENDED_FIRMWARE.capture_channels
 MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 
 
-def usb_capture_rate(*, usb_mic_device: str, usb_mic_rate: int) -> int:
+def _usb_capture_rate(*, usb_mic_device: str, usb_mic_rate: int) -> int:
     """Return the USB mic capture rate PortAudio can actually open."""
     if usb_mic_rate > 0:
         return usb_mic_rate
@@ -197,7 +197,7 @@ def usb_mic_thread(
     JASPER_AEC_CORPUS_USB_ENABLED=1.
     """
 
-    usb_rate = usb_capture_rate(
+    usb_rate = _usb_capture_rate(
         usb_mic_device=usb_mic_device, usb_mic_rate=usb_mic_rate,
     )
     capture_block = max(1, round(FRAME_SAMPLES * usb_rate / SAMPLE_RATE))

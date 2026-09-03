@@ -793,7 +793,6 @@ def _aec_loop(  # noqa: PLR0915
             os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
         ),
     )
-    import math
     import wave
     if production_chip_aec_enabled and (not chip_aec_qs or not chip_beam_plan):
         raise RuntimeError("chip-AEC mode requires a validated chip beam plan")
