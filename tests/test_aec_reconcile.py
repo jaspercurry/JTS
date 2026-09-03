@@ -166,6 +166,9 @@ def _run_reconcile(
             "JASPER_VOICE_RESTART_INTENT_MARKER": str(
                 tmp_path / "run" / "voice-restart-intent"
             ),
+            "JASPER_AEC_BRIDGE_READY_MARKER": str(
+                tmp_path / "run" / "aec-bridge-ready"
+            ),
             "JASPER_SYSTEMCTL": str(fake_systemctl),
             "JASPER_SYSTEMCTL_LOG": str(systemctl_log),
             # The script's Python bridges: pin the interpreter running the
@@ -232,6 +235,20 @@ def _write_card(tmp_path: Path, card: str = "Array", channels: int = 6) -> None:
     (card_dir / "stream0").write_text(
         f"Playback:\n  Status: Stop\nCapture:\n  Channels: {channels}\n"
     )
+
+
+def _ready_marker(tmp_path: Path) -> Path:
+    """The volatile POSITIVE verdict jasper-aec-bridge.service reads through
+    ``ConditionPathExists=``. This reconciler is its single writer;
+    ``_run_reconcile`` redirects it into tmp_path."""
+    return tmp_path / "run" / "aec-bridge-ready"
+
+
+def _prepublish_ready_marker(tmp_path: Path) -> None:
+    """Stand in for an earlier pass that admitted the bridge."""
+    marker = _ready_marker(tmp_path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("reason=previous\n")
 
 
 def _marker(tmp_path: Path) -> Path:
@@ -573,6 +590,10 @@ def test_a_unit_that_will_not_come_up_faults_and_parks(
     assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=fault" in body
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
     assert _marker(tmp_path).exists()
+    # The bridge case publishes before its restart, so the park has to take the
+    # verdict back — while that restart's Restart=on-failure is re-arming every
+    # 2 s into StartLimitAction=reboot.
+    assert not _ready_marker(tmp_path).exists()
     commands = _systemctl_log(tmp_path)
     assert VOICE_RESTART_CMD not in commands
     if failing_unit == "jasper-outputd.service":
@@ -586,7 +607,7 @@ def _init_exit_systemctl(tmp_path: Path, status: int, *, bridge: str = "active")
 
     `bridge` picks how the AEC bridge behaves afterwards: it comes up
     (`active`), its restart fails outright (`restart_fails`), or its restart
-    reports success because the unit's ExecCondition SKIPPED it (`skipped`) —
+    reports success because the unit's start condition SKIPPED it (`skipped`) —
     the case where a bare exit-status check would certify a bridge that is not
     running.
     """
@@ -664,9 +685,9 @@ def test_a_disclosed_pass_settles_its_mic_leg_before_its_one_output_bounce(
     # the leg vector the pass settled on, so it can never load the attempt's.
     #
     # Three shapes reach the verdict. The bridge comes up and carries software
-    # AEC3; its restart fails; or its restart exits 0 because the ExecCondition
-    # SKIPPED the unit — `systemctl restart` cannot tell the last two apart, so
-    # the unit is asked. Without a bridge nothing writes udp:9876, and
+    # AEC3; its restart fails; or its restart exits 0 because the ready-marker
+    # condition SKIPPED the unit — `systemctl restart` cannot tell the last two
+    # apart, so the unit is asked. Without a bridge nothing writes udp:9876, and
     # jasper-voice bound to an unfed socket stalls into WatchdogSec=30s and the
     # unit's StartLimitAction=reboot, so those two take the direct mic.
     carried = bridge == "active"
@@ -684,6 +705,9 @@ def test_a_disclosed_pass_settles_its_mic_leg_before_its_one_output_bounce(
     assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
     assert f"JASPER_MIC_DEVICE={'udp:9876' if carried else 'Array'}" in body
     assert not _marker(tmp_path).exists()
+    # The disclose route publishes before it asks the unit, so a bridge that
+    # never came up has to leave the verdict withdrawn.
+    assert _ready_marker(tmp_path).exists() is carried
     lines = _systemctl_log(tmp_path).splitlines()
     assert VOICE_RESTART_CMD in lines
     # Reading aec-init's exit status is the hand-off into the disclose path;
@@ -1165,34 +1189,29 @@ def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
     assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
-def _stop_aec_init(tmp_path: Path) -> dict[str, str]:
-    return {
-        "JASPER_SYSTEMCTL": str(
-            _systemctl_reporting(tmp_path, "is-active", "jasper-aec-init.service", 1)
-        )
-    }
+def _aec_disabled_direct_mic_box(tmp_path: Path) -> None:
+    """The operator's opt-out on a non-XVF mic: `stop_aec_and_clear_legs`."""
+    _stage(
+        tmp_path,
+        "UsbMic",
+        extra="JASPER_MIC_DEVICE_CANDIDATES=UsbMic\n",
+        mode="disabled",
+        card="UsbMic",
+        channels=2,
+    )
 
 
-def _disable_aec(tmp_path: Path) -> dict[str, str]:
-    (tmp_path / "aec_mode.env").write_text("JASPER_AEC_MODE=disabled\n")
-    return {}
+def _two_channel_managed_xvf_box(tmp_path: Path) -> None:
+    """A managed XVF below the 6-channel endpoint the bridge reads: the park."""
+    _stage(tmp_path, "Array", profile="auto", channels=2)
 
 
-def _downgrade_firmware(tmp_path: Path) -> dict[str, str]:
-    (tmp_path / "asound" / "Array" / "stream0").write_text("Capture:\n  Channels: 2\n")
-    return {}
-
-
-@pytest.mark.parametrize(
-    ("prepare", "expected"),
-    [(None, 0), (_stop_aec_init, 1), (_disable_aec, 1), (_downgrade_firmware, 1)],
-    ids=("armed", "init-down", "aec-disabled", "two-channel"),
-)
-def test_check_aec_ready_reflects_mode_unit_and_firmware(
+def test_a_ready_pass_publishes_the_verdict_before_it_starts_the_bridge(
     tmp_path: Path,
-    prepare: Callable[[Path], dict[str, str]] | None,
-    expected: int,
 ) -> None:
+    """The bridge's ConditionPathExists is evaluated by PID 1 when it runs the
+    start job, and a condition-skipped restart still exits 0 — so a pass that
+    restarted the bridge before publishing would silently leave it down."""
     _stage(
         tmp_path,
         "Array",
@@ -1200,49 +1219,69 @@ def test_check_aec_ready_reflects_mode_unit_and_firmware(
         profile="auto",
         channels=6,
     )
-    extra_env = prepare(tmp_path) if prepare is not None else {}
+    witness, _ = _fake_systemctl(
+        tmp_path, name="systemctl-witness", witness="JASPER_AEC_BRIDGE_READY_MARKER"
+    )
 
-    result = _run_reconcile(tmp_path, "--check-aec-ready", extra_env=extra_env)
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(witness)}
+    )
 
-    assert result.returncode == expected
+    assert result.returncode == 0, result.stderr
+    assert _ready_marker(tmp_path).exists()
+    assert (
+        "present=1 restart jasper-aec-bridge.service"
+        in _systemctl_log(tmp_path).splitlines()
+    )
 
 
 @pytest.mark.parametrize(
-    "status, expected",
-    [
-        ("ready", 0),
-        ("disclosed_stale", 0),
-        ("checking", 1),
-        ("unavailable", 1),
-        ("fault", 1),
-        ("", 1),
-    ],
+    "stage",
+    [_aec_disabled_direct_mic_box, _two_channel_managed_xvf_box],
+    ids=("aec-disabled", "two-channel"),
 )
-def test_the_bridge_execcondition_admits_every_running_alignment(
-    tmp_path: Path, status: str, expected: int
+def test_a_not_ready_pass_withdraws_the_verdict(
+    tmp_path: Path, stage: Callable[[Path], None]
 ) -> None:
-    # ADR-0101: `disclosed_stale` is a box that IS hearing — on the banked chip
-    # alignment or on software AEC3 — and the bridge carries its audio either
-    # way, so it must start. Only a refusal, a fault, or the mid-bounce
-    # `checking` keeps it out.
-    _stage(
+    """Both teardown shapes withdraw it — the direct-mic/opt-out route that
+    clears the legs and the managed park — so nothing can restart the bridge
+    back on top of the mic the pass just handed to jasper-voice."""
+    _prepublish_ready_marker(tmp_path)
+    stage(tmp_path)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert not _ready_marker(tmp_path).exists()
+
+
+def test_a_pass_that_dies_before_it_settles_withdraws_the_verdict(
+    tmp_path: Path,
+) -> None:
+    """Fail closed, and with no exit trap: the pass withdraws before it starts
+    re-deriving and only republishes where a verdict settles, so one that never
+    settles leaves nothing standing for hardware nobody re-checked. Reached by
+    making the env file unwritable (its parent is a regular file), which aborts
+    the pass under `set -e` at its first env write."""
+    _stage(tmp_path, "Array", profile="auto", channels=6)
+    _prepublish_ready_marker(tmp_path)
+    (tmp_path / "blocker").write_text("not a directory\n")
+
+    result = _run_reconcile(
         tmp_path,
-        "Array",
-        extra=f"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS={status}\n",
-        profile="auto",
-        channels=6,
+        "--reason",
+        "test",
+        extra_env={"JASPER_ENV_FILE": str(tmp_path / "blocker" / "jasper.env")},
     )
 
-    assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == expected
+    assert result.returncode != 0
+    assert not _ready_marker(tmp_path).exists()
 
 
-@pytest.mark.parametrize(("channels", "expected"), [(6, 0), (2, 1)])
-def test_the_bridge_execcondition_admits_the_managed_aec3_fallback(
-    tmp_path: Path, channels: int, expected: int
-) -> None:
-    # A managed XVF whose chip leg is unavailable still needs the bridge when
-    # the mic can carry software AEC3 — that leg IS the wake path there.
-    # Below the 6-channel endpoint there is nothing for the bridge to read.
+def test_the_managed_aec3_fallback_publishes_the_verdict(tmp_path: Path) -> None:
+    """A managed XVF whose chip leg the DAC gate refuses still needs the bridge:
+    software AEC3 on the same UDP carrier IS the wake path there, so the
+    disclose route publishes exactly like the chip route above."""
     _stage(
         tmp_path,
         "Array",
@@ -1251,10 +1290,13 @@ def test_the_bridge_execcondition_admits_the_managed_aec3_fallback(
             "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale\n"
         ),
         profile="auto",
-        channels=channels,
+        channels=6,
     )
 
-    assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == expected
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _ready_marker(tmp_path).exists()
 
 
 # ---------- Wake-detection leg mapping ------------------------------------
@@ -2285,30 +2327,6 @@ def test_profile_managed_mic_swap_rederives_stale_aec_card(
     assert "hw:CARD=L16K6Ch,DEV=0" not in body
 
 
-def test_check_only_does_not_mask_stale_profile_managed_aec_card(
-    tmp_path: Path,
-) -> None:
-    """The bridge ExecCondition is read-only and must not say "ready" for
-    an env file the bridge itself would still read as the wrong card. The
-    normal reconciler pass heals this before enabling/restarting the unit."""
-    env_file = _stage(
-        tmp_path,
-        "udp:9876",
-        extra=(
-            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
-            "JASPER_AEC_MIC_DEVICE=L16K6Ch\n"
-        ),
-        profile="xvf_chip_aec",
-        card="Array",
-        channels=6,
-    )
-
-    result = _run_reconcile(tmp_path, "--check-aec-ready")
-
-    assert result.returncode == 1
-    assert "JASPER_AEC_MIC_DEVICE=L16K6Ch" in env_file.read_text()
-
-
 def test_custom_profile_preserves_hand_pinned_aec_card_and_chip_ref(
     tmp_path: Path,
 ) -> None:
@@ -2548,11 +2566,14 @@ def test_reconcile_is_noop_while_foreground_commissioner_owns_lifecycle(
 ) -> None:
     """Any pass under a LIVE marker that is not the commissioner's own
     reason-keyed arm call — hotplug from its volatile XVF reset, timers,
-    deploys — mutates nothing, and the bridge ExecCondition stays closed."""
+    deploys — mutates nothing but the bridge verdict, which it withdraws: the
+    commissioner has stopped the bridge for its audible measurement and nothing
+    may restart it until the cleanup pass republishes."""
     env_file = _write_env(tmp_path, "Array")
     before = env_file.read_bytes()
     (tmp_path / "chip-aec-commission-active").write_text("pid=123\n")
     (tmp_path / "proc" / "123").mkdir(parents=True)
+    _prepublish_ready_marker(tmp_path)
 
     result = _run_reconcile(tmp_path, "--reason", "hotplug")
 
@@ -2561,7 +2582,7 @@ def test_reconcile_is_noop_while_foreground_commissioner_owns_lifecycle(
     assert not (tmp_path / "aec_mode.env").exists()
     assert not (tmp_path / "xvf3800.json").exists()
     assert _systemctl_log(tmp_path) == ""
-    assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
+    assert not _ready_marker(tmp_path).exists()
 
 
 def test_live_commission_marker_arm_reason_pass_arms_reference_vector_only(
@@ -2572,7 +2593,7 @@ def test_live_commission_marker_arm_reason_pass_arms_reference_vector_only(
     preflight can find outputd's native chip-ref writer) and hands outputd a
     start — nothing else. Voice, the bridge, aec-init, the wizard mode file,
     and the mic-profile state cache all stay owned by the commissioner, and
-    the bridge ExecCondition stays closed."""
+    the bridge verdict stays withdrawn."""
     from jasper.cli.aec_commission import ARM_RECONCILE_REASON
 
     env_file = _write_env(
@@ -2611,7 +2632,7 @@ def test_live_commission_marker_arm_reason_pass_arms_reference_vector_only(
         "reset-failed jasper-outputd.service",
         "restart jasper-outputd.service",
     ]
-    assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
+    assert not _ready_marker(tmp_path).exists()
     # A repeated arm call converges: an unchanged vector hands outputd
     # nothing to restart.
     rerun = _run_reconcile(tmp_path, "--reason", ARM_RECONCILE_REASON)
@@ -2745,19 +2766,6 @@ def test_a_usable_mic_clears_a_stale_marker(
     assert expected_command in _systemctl_log(tmp_path).splitlines()
 
 
-def test_reconcile_check_only_does_not_touch_marker(tmp_path: Path) -> None:
-    # --check-aec-ready is the bridge's ExecCondition: a pure read, it must
-    # never create or remove the marker.
-    _stage(tmp_path, "udp:9876", mode="auto")
-    _marker(tmp_path).write_text("reason=preexisting\n")
-
-    result = _run_reconcile(tmp_path, "--check-aec-ready")
-
-    # No card -> not aec-ready -> exit 1, but the marker is untouched.
-    assert result.returncode == 1
-    assert _marker(tmp_path).read_text() == "reason=preexisting\n"
-
-
 # --- measurement-class mic identity + hotplug change-gating ----------------
 #
 # Two coupled behaviours, both driven by the same udev rule
@@ -2875,6 +2883,10 @@ def test_unchanged_pass_skips_the_voice_restart_and_the_chip_aec_bounce(
     assert "event=aec_reconcile.chip_aec_bounce_skipped" in result.stderr
     assert "reason=no_voice_relevant_change" in result.stderr
     assert f"alignment={alignment}" in result.stderr
+    # Skipping the bounce is not skipping the verdict: every pass withdraws it
+    # before re-deriving, so a settled box has to be re-admitted or the next
+    # `systemctl restart jasper-aec-bridge` from any other owner is skipped.
+    assert _ready_marker(tmp_path).exists()
 
 
 def test_a_software_fallback_disclosure_keeps_bouncing_so_the_race_can_heal(
@@ -3316,19 +3328,6 @@ def test_a_declared_intent_marker_defeats_the_gate_once(tmp_path: Path) -> None:
     result = _run_reconcile(tmp_path, "--reason", "systemd")
     assert result.returncode == 0, result.stderr
     assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
-
-
-def test_a_check_only_pass_leaves_the_intent_marker(tmp_path: Path) -> None:
-    """--check-aec-ready cannot act on intent; consuming it there would eat
-    the restart the marker was left to cause."""
-    _armed_chip_aec_box(tmp_path)
-    marker = tmp_path / "run" / "voice-restart-intent"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("enhanced_aec_v2_activation\n")
-
-    _run_reconcile(tmp_path, "--check-aec-ready")
-
-    assert marker.exists()
 
 
 def test_intent_marker_path_literal_agrees_across_writer_and_consumer() -> None:

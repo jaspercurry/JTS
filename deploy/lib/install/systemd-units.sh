@@ -1114,11 +1114,16 @@ park_streambox_brain_units() {
     done
     systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
         >/dev/null 2>&1 || true
-    # The marker's only writer (jasper-aec-reconcile) is parked above, so a
-    # stale one would condition-fail every jasper-voice start the accessory
-    # reconciler issues for a paired mic remote.
+    # Both markers' only writer (jasper-aec-reconcile) is parked above, so
+    # neither can be corrected until the next boot, and each fails in its own
+    # direction. A stale voice-input-absent would condition-fail every
+    # jasper-voice start the accessory reconciler issues for a paired mic
+    # remote; a stale aec-bridge-ready would admit the bridge that voice's
+    # reconciler-owned Wants= drop-in pulls with it (ADR-0224), on a box with
+    # no XVF and nothing left to withdraw the verdict.
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     rm -f "${STATE_DIR}/voice-input-absent"
+    rm -f /run/jasper-aec-reconcile/aec-bridge-ready
 }
 
 enable_streambox_web_sockets() {

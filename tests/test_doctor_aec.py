@@ -1646,6 +1646,41 @@ def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
     assert result.status == "ok"
 
 
+def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
+    monkeypatch, tmp_path
+):
+    """ADR-0224. Without the ready marker systemd never even runs the start
+    job, so a down bridge is a reconciler problem; with it, the bridge itself
+    failed. Same severity, different diagnosis and different remedy — the row
+    has to name which."""
+    from jasper.mics import xvf3800
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
+
+    marker = tmp_path / "aec-bridge-ready"
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(
+        xvf3800,
+        "capture_channels",
+        lambda: xvf3800.RECOMMENDED_FIRMWARE.capture_channels,
+    )
+
+    withheld = doctor.aec.check_aec_bridge_running()
+    marker.write_text("reason=systemd\n")
+    admitted = doctor.aec.check_aec_bridge_running()
+
+    assert withheld.status == "fail"
+    assert admitted.status == "fail"
+    assert str(marker) in withheld.detail
+    assert withheld.detail != admitted.detail
+
+
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {

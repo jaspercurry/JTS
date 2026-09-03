@@ -70,6 +70,12 @@ VOICE_RESTART_STAMP="${JASPER_VOICE_RESTART_STAMP:-/run/jasper-aec-reconcile/voi
 # that can act on it. The path literal is duplicated in that Python writer
 # and pinned by tests/test_aec_reconcile.py.
 VOICE_RESTART_INTENT_MARKER="${JASPER_VOICE_RESTART_INTENT_MARKER:-/run/jasper-aec-reconcile/voice-restart-intent}"
+# This script's published verdict "the AEC bridge may run", read through
+# jasper-aec-bridge.service's ConditionPathExists= (ADR-0224). Volatile (/run,
+# not /var/lib) so an empty boot means "no verdict yet". The path literal is
+# duplicated in that unit and jasper/aec_ready.py; agreement is pinned by
+# tests/test_aec_bridge_systemd.py.
+AEC_BRIDGE_READY_MARKER="${JASPER_AEC_BRIDGE_READY_MARKER:-/run/jasper-aec-reconcile/aec-bridge-ready}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 DEFAULT_MIC_DEVICE_CANDIDATES="Array,L16K2Ch,L16K6Ch,C16K2Ch,C16K6Ch"
@@ -83,7 +89,6 @@ OUTPUTD_CONTROL_SOCKET="${JASPER_OUTPUTD_CONTROL_SOCKET:-/run/jasper-outputd/con
 COMMISSION_MARKER="${JASPER_AEC_COMMISSION_MARKER:-/run/jasper-chip-aec-commission/active}"
 PROC_ROOT="${JASPER_PROC_ROOT:-/proc}"
 REASON="manual"
-CHECK_ONLY=0
 OUTPUTD_RESTART_NEEDED=0
 # Sticky "this pass changed something jasper-voice would pick up by
 # restarting" flag — see mark_voice_restart_if_changed and
@@ -133,7 +138,7 @@ load_env_file_lib
 
 usage() {
     cat <<'EOF'
-Usage: jasper-aec-reconcile [--reason TEXT] [--check-aec-ready]
+Usage: jasper-aec-reconcile [--reason TEXT]
 
 Reconcile microphone/AEC systemd state:
   - auto + supported 6-channel XVF present -> JASPER_MIC_DEVICE=udp:PORT, AEC on
@@ -141,9 +146,8 @@ Reconcile microphone/AEC systemd state:
   - owned mic config + no mic present -> clear stale UDP, stop voice
   - custom JASPER_MIC_DEVICE -> leave voice config alone, keep AEC off
 
---check-aec-ready exits 0 only when AEC mode is auto and the configured
-AEC mic is present with 6 channels. It performs no mutations and is used as
-jasper-aec-bridge.service's ExecCondition.
+Every pass publishes its bridge verdict to the ready marker
+jasper-aec-bridge.service gates on.
 EOF
 }
 
@@ -153,10 +157,6 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { usage >&2; exit 2; }
             REASON="$2"
             shift 2
-            ;;
-        --check-aec-ready)
-            CHECK_ONLY=1
-            shift
             ;;
         -h|--help)
             usage
@@ -174,6 +174,35 @@ log() {
     echo "jasper-aec-reconcile[$REASON]: $*" >&2
 }
 
+ensure_parent_dir() {
+    local dir
+    dir="$(dirname "$1")"
+    [[ -d "$dir" ]] || install -d -m 0755 "$dir" 2>/dev/null
+}
+
+# Publish / withdraw the bridge verdict. Best-effort, like the voice-input gate
+# writers: a marker we cannot write costs a bridge start, not correctness, and
+# the next pass retries. Publishing must PRECEDE any start/restart of the
+# bridge — PID 1 evaluates ConditionPathExists when it runs the job, and a
+# condition-skipped restart still exits 0.
+publish_aec_bridge_ready() {
+    if ensure_parent_dir "$AEC_BRIDGE_READY_MARKER" \
+        && printf 'reason=%s\n' "$REASON" \
+            > "$AEC_BRIDGE_READY_MARKER" 2>/dev/null; then
+        return 0
+    fi
+    log "event=aec_reconcile.aec_ready_marker_write_failed marker=${AEC_BRIDGE_READY_MARKER}"
+}
+
+revoke_aec_bridge_ready() {
+    rm -f "$AEC_BRIDGE_READY_MARKER" 2>/dev/null || true
+}
+
+# Withdraw FIRST, on every pass, and republish only where a verdict settles.
+# Load-bearing for the bridge's StartLimitAction=reboot, and why no EXIT trap
+# is needed — ADR-0224 has the derivation.
+revoke_aec_bridge_ready
+
 commission_marker_live() {
     local line pid
     [[ -f "$COMMISSION_MARKER" ]] || return 1
@@ -184,8 +213,8 @@ commission_marker_live() {
 
 # The commissioner owns every lifecycle mutation while its process is alive.
 # Its one volatile USB reset fires hotplug; that pass — and every other pass
-# under a live marker — mutates nothing and the bridge ExecCondition stays
-# closed. The single exception is the commissioner's OWN arm call, keyed on
+# under a live marker — mutates nothing and the bridge verdict stays
+# withdrawn. The single exception is the commissioner's OWN arm call, keyed on
 # --reason below: the resting software-AEC3 env has no chip-ref writer armed
 # and the commissioning preflight needs outputd carrying one, and only this
 # script writes that vector. The reason literal is mirrored by
@@ -196,7 +225,9 @@ COMMISSION_ARM_REASON="chip-aec-commission-arm"
 COMMISSION_ARM=0
 if commission_marker_live; then
     log "commissioning marker present; foreground commissioner owns AEC lifecycle"
-    [[ "$CHECK_ONLY" == "1" ]] && exit 1
+    # The verdict simply stays withdrawn: the commissioner stops the bridge for
+    # its audible measurement and never starts it again, and its cleanup pass
+    # runs marker-free and republishes.
     if [[ "$REASON" == "$COMMISSION_ARM_REASON" ]]; then
         COMMISSION_ARM=1
     else
@@ -204,7 +235,7 @@ if commission_marker_live; then
     fi
 elif [[ -e "$COMMISSION_MARKER" ]]; then
     log "removing stale commissioning marker"
-    [[ "$CHECK_ONLY" == "1" ]] || rm -f "$COMMISSION_MARKER"
+    rm -f "$COMMISSION_MARKER"
 fi
 
 clear_mic_profile_state() {
@@ -232,7 +263,7 @@ observe_mic_profile_state() {
     # XVF reset fires hotplug while the card is off the bus); caching that
     # transient absence would mislead every state-file reader until the
     # post-commission pass.
-    if [[ "$CHECK_ONLY" != "1" && "$COMMISSION_ARM" != "1" ]]; then
+    if [[ "$COMMISSION_ARM" != "1" ]]; then
         args+=(--state-path "$MIC_PROFILE_STATE_PATH" --write-state)
     fi
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
@@ -488,10 +519,8 @@ voice_start_inputs_match_stamp() {
 # current is REMOVED rather than left stale — a stale-but-matching stamp is the
 # one failure that could suppress a restart that was needed.
 record_voice_restart_stamp() {
-    local dir
-    dir="$(dirname "$VOICE_RESTART_STAMP")"
     if [[ -n "$INSTALLED_BUILD_ID" ]] \
-        && { [[ -d "$dir" ]] || install -d -m 0755 "$dir" 2>/dev/null; } \
+        && ensure_parent_dir "$VOICE_RESTART_STAMP" \
         && voice_start_inputs > "$VOICE_RESTART_STAMP" 2>/dev/null; then
         return 0
     fi
@@ -587,10 +616,9 @@ write_mic_profile_env() {
 #
 # Written ONCE per pass, before the branch tree, so no RECONCILING path can
 # exit leaving a stale value behind, and every restart_voice below picks up the
-# fresh one. Two exits precede it, both deliberate no-op modes that mutate
-# nothing at all: `--check-aec-ready` (a read-only ExecCondition probe) and the
-# live-commissioning-marker hand-off, where the foreground commissioner owns
-# every lifecycle mutation. Same shape as write_mic_profile_env above.
+# fresh one. One exit precedes it: the live-commissioning-marker hand-off,
+# where the foreground commissioner owns every lifecycle mutation. Same shape
+# as write_mic_profile_env above.
 write_local_mic_presence_env() {
     local value="unknown"
     if is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
@@ -1445,6 +1473,7 @@ stop_disable_aec() {
     if "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service >/dev/null 2>&1; then
         VOICE_RESTART_NEEDED=1
     fi
+    revoke_aec_bridge_ready
     run_systemctl stop jasper-aec-bridge.service jasper-aec-init.service
     run_systemctl disable jasper-aec-bridge.service jasper-aec-init.service
     set_voice_bridge_want off
@@ -1461,7 +1490,7 @@ stop_disable_aec() {
 # StartLimitBurst=4 into ITS StartLimitAction=reboot, and a transient success
 # opens the single-open XVF capture device jasper-voice may be holding
 # directly — worst case a disclosed_stale box, whose alignment status the
-# bridge's ExecCondition admits. The UDP legs go with it: a
+# published verdict admits. The UDP legs go with it: a
 # JASPER_MIC_DEVICE_RAW=udp: left from an attempt leaves voice's secondary
 # UdpMicCapture spinning on a port nobody talks to.
 stop_aec_and_clear_legs() {
@@ -1476,6 +1505,7 @@ enable_start_aec() {
     # follows it: the daemon would be left reading a socket that just went
     # away. Caller-independent, so no call site can forget it.
     VOICE_RESTART_NEEDED=1
+    publish_aec_bridge_ready
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
     set_voice_bridge_want on
     reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
@@ -1666,6 +1696,7 @@ park_managed_xvf() {
     # before it starts voice.
     local reason="$1"
     mark_voice_input_absent "$reason"
+    revoke_aec_bridge_ready
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
     reset_failed_units jasper-voice.service jasper-aec-bridge.service
     log "managed XVF parked: ${reason}"
@@ -1678,6 +1709,12 @@ park_managed_xvf() {
 # direct-mic/disabled resting state, not a park.
 park_to_reference_leg() {
     local status_reason="$1" action="$2" park_reason="$3"
+    # FIRST, ahead of the env writes and the blocking outputd bounce below:
+    # this is reached from a bridge restart that just failed for real, so
+    # Restart=on-failure is re-arming every 2 s and the ~6-8 s those steps take
+    # is enough standing marker to spend the rest of StartLimitBurst.
+    # park_managed_xvf withdraws again; the call is idempotent.
+    revoke_aec_bridge_ready
     write_alignment_env "fault" "$status_reason" "$action"
     write_leg_env "reference" "0" "0" "1" "0" "0"
     restart_outputd_if_needed
@@ -1752,11 +1789,14 @@ disclose_stale_chip_aec() {
         # every udev event, deploy and wizard save for as long as it stands is
         # the deafness the gate exists to stop.
         if aec_stack_bounce_can_be_skipped; then
+            # The skip still has to re-admit the live bridge for its NEXT
+            # start; enable_start_aec publishes on the other branch.
+            publish_aec_bridge_ready
             log "event=aec_reconcile.disclosed_bounce_skipped reason=no_voice_relevant_change alignment=disclosed_stale profile=${AUDIO_INPUT_PROFILE:-unknown}"
         else
             enable_start_aec
         fi
-        # `systemctl restart` exits 0 when an ExecCondition SKIPS the unit, so
+        # `systemctl restart` exits 0 when a start condition SKIPS the unit, so
         # its status is not evidence anything is running — if the bypass init
         # re-run above failed, the condition skips and the "restart" still
         # succeeds. Ask the unit instead: only an ACTIVE bridge is writing
@@ -1801,6 +1841,7 @@ activate_managed_chip_aec() {
         || ( "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "disclosed_stale" \
             && "${JASPER_AEC_CHIP_AEC_ENABLED:-0}" == "1" ) ]] \
         && aec_stack_bounce_can_be_skipped; then
+        publish_aec_bridge_ready
         log "event=aec_reconcile.chip_aec_bounce_skipped reason=no_voice_relevant_change alignment=${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-unknown} profile=${AUDIO_INPUT_PROFILE:-unknown} mic=${CURRENT_MIC:-<unset>}"
         return 0
     fi
@@ -1833,7 +1874,18 @@ activate_managed_chip_aec() {
         else
             write_alignment_env "ready" "commissioned alignment applied and verified" ""
         fi
-        if ! "$SYSTEMCTL" restart jasper-aec-bridge.service; then
+        # Both branches are running states (ADR-0101) and aec-init just applied
+        # the alignment, so the verdict is settled before the bridge is asked
+        # to start — its condition is read from the marker.
+        publish_aec_bridge_ready
+        # The restart's own status is necessary but not sufficient, for the
+        # reason disclose_stale_chip_aec names: it also exits 0 when a start
+        # condition SKIPS the unit, and publish above is best-effort — a marker
+        # that failed to write would leave a skipped restart looking like
+        # success, then `ready` and a voice restart onto a udp: carrier nothing
+        # feeds. Ask the unit too.
+        if ! "$SYSTEMCTL" restart jasper-aec-bridge.service \
+            || ! "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service; then
             park_to_reference_leg \
                 "chip-AEC bridge failed after alignment reapply" \
                 "Inspect jasper-aec-bridge, then run the reconciler" \
@@ -1975,11 +2027,11 @@ load_env_file "$ENV_FILE"
 # and the restart gate below see the same pass-start view.
 snapshot_pass_start_env
 read_installed_build_id
-if [[ "$CHECK_ONLY" != "1" && "$COMMISSION_ARM" != "1" ]]; then
+if [[ "$COMMISSION_ARM" != "1" ]]; then
     ensure_mode_file
     # Declared intent beats change detection — but only on a pass that can
-    # act on it; a --check or arm-only pass must leave the marker for the
-    # real one (the arm dispatch never restarts voice).
+    # act on it; an arm-only pass must leave the marker for the real one
+    # (the arm dispatch never restarts voice).
     consume_voice_restart_intent
 fi
 load_env_file "$MODE_FILE"
@@ -2008,9 +2060,7 @@ if [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
 fi
 split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE:-$MIC_DEVICE_CANDIDATES_DEFAULT}}"
 prime_measurement_usb_ids
-if [[ "$CHECK_ONLY" != "1" ]]; then
-    derive_profile_managed_aec_mic_device
-fi
+derive_profile_managed_aec_mic_device
 if [[ -z "$AEC_MIC_DEVICE" ]]; then
     if AEC_MIC_DEVICE="$(first_present_candidate)"; then
         :
@@ -2083,29 +2133,6 @@ if [[ "$AUDIO_INPUT_PROFILE" == "custom" && "$LEG_CHIP_AEC" == "1" ]]; then
     fi
 fi
 refresh_chip_aec_dac_gate "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
-
-if [[ "$CHECK_ONLY" == "1" ]]; then
-    if managed_xvf_policy_applies; then
-        # `disclosed_stale` is a RUNNING state (ADR-0101): the alignment is
-        # applied, or the box has fallen back to software AEC3, and the bridge
-        # carries either. Only `unavailable`/`fault` — and the transient
-        # `checking` — keep the bridge out.
-        if [[ "$LEG_CHIP_AEC" == "1" ]]; then
-            [[ "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "ready" \
-                || "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "disclosed_stale" ]] \
-                && "$SYSTEMCTL" is-active --quiet jasper-aec-init.service
-            exit
-        fi
-        # No chip leg, but a 6-channel mic: the bridge carries software AEC3 on
-        # the same UDP carrier, which is what the disclose path hands voice.
-        [[ "$LEG_RAW" == "1" ]] && aec_ready "$AEC_MIC_DEVICE"
-        exit
-    fi
-    if [[ "$AEC_MODE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
-        exit 0
-    fi
-    exit 1
-fi
 
 FALLBACK_MIC="$(first_candidate)"
 PRESENT_MIC=""
@@ -2227,6 +2254,9 @@ if aec_ready "$AEC_MIC_DEVICE"; then
     write_leg_env "1" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
     restart_outputd_if_needed
     if aec_stack_bounce_can_be_skipped; then
+        # The skip still has to re-admit the live bridge for its NEXT start;
+        # enable_start_aec publishes on the other branch.
+        publish_aec_bridge_ready
         log "event=aec_reconcile.aec_stack_bounce_skipped reason=no_voice_relevant_change profile=${AUDIO_INPUT_PROFILE}"
     else
         enable_start_aec
