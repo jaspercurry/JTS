@@ -766,13 +766,10 @@ def finalize_retained_candidate_apply(
         apply_state=apply_state,
         state_path=state_path,
     )
-    # #1666: build_baseline_profile_candidate now writes every candidate to a
+    # build_baseline_profile_candidate writes every candidate to a
     # source-fingerprinted sibling, never the canonical baseline_config_path()
-    # name directly -- the same treatment as the /correction/ apply/restore
-    # seam in baseline_profile.py, since commissioning rides the identical
-    # write-then-apply-then-persist shape (and is, on a fresh speaker, the
-    # apply that would otherwise leave the canonical file never created at
-    # all). Fail-soft; never raises.
+    # name, so on a fresh speaker the canonical file would otherwise never be
+    # created (#1666). Fail-soft; never raises.
     promote_applied_baseline_candidate(applied, config_path=config_path)
     lifecycle = run_store.lifecycle_state(run)
     if lifecycle == "candidate_ready":
@@ -1115,11 +1112,9 @@ async def _apply_measured_candidate_owned(
         run_store.release_live_mutation(run, current_mutation)
         current_mutation = None
     if current_mutation is not None and current_mutation.status == "retained":
-        # #1666 review S1: this idempotent-retry fast path finalizes an
-        # already-proven candidate (persist + promote + prune), never
-        # re-running the DSP apply -- but promote/prune still touch the
-        # shared candidate-siblings directory, so they must run under the
-        # same dsp_writer_lock as the slow path below, not unlocked.
+        # This idempotent-retry fast path never re-runs the DSP apply, but its
+        # promote/prune still touch the shared candidate-siblings directory, so
+        # they take the same dsp_writer_lock as the slow path below.
         async with dsp_writer_lock(
             baseline_config_path(config_path).parent, source=APPLY_SOURCE
         ):
@@ -1228,12 +1223,11 @@ async def _apply_measured_candidate_owned(
                     if (
                         # KNOWN DEFECT (issue #2202) — do not "fix" in
                         # isolation. `expected_graph` fingerprints the
-                        # JTS-compiled candidate .yml straight off disk;
+                        # JTS-compiled candidate .yml off disk while
                         # `observed_graph` is CamillaDSP's default-filled
-                        # readback, so these cannot agree on real hardware.
-                        # Same class as the live-graph boundary below, which
-                        # this check gates — commissioning apply is production
-                        # wired and blocked here before reaching it.
+                        # readback, so these cannot agree on real hardware, and
+                        # commissioning apply is blocked here before reaching
+                        # the live-graph boundary this check gates.
                         observed_graph.fingerprint != expected_graph.fingerprint
                         or observed.state.get("config_path")
                         != _candidate_path(baseline)
