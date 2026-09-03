@@ -509,12 +509,22 @@ fn auto_trim_decision(
 /// free-run to ~real time.
 const PACE_HEADROOM_PERCENT: u64 = 1;
 
+/// The shortest sleep the pacer will take on a CLOCKLESS period.
+///
+/// `RLIMIT_RTTIME` counts RT CPU BETWEEN blocking calls, not wall time, so a
+/// clockless period that overran its deadline (computing a zero sleep) would
+/// still leave the loop un-blocked. This floor keeps every clockless period
+/// ending in a real `nanosleep` however long the work took. It never reaches the
+/// back-pressured path, where the publish already blocked.
+const PACE_MIN_SLEEP_NS: u64 = 100_000;
+
 /// Absolute-deadline floor under the work loop's period.
 ///
 /// WHY the loop needs a floor at all: jasper-fanin runs SCHED_FIFO under
-/// `LimitRTTIME=200000` (deploy/systemd/jasper-fanin.service), so the kernel
-/// SIGKILLs the work loop once it burns 200 ms of RT CPU without a blocking
-/// syscall. Every input is opened NON-BLOCKING, so the loop's only other
+/// `LimitRTTIME=200000` with soft == hard (deploy/systemd/jasper-fanin.service),
+/// so once the loop burns 200 ms of RT CPU without a blocking syscall the kernel
+/// raises SIGXCPU and, the limit being hard, SIGKILL with it — the journal shows
+/// `status=9/KILL`. Every input is opened NON-BLOCKING, so the loop's only other
 /// candidates for a blocking call are the ring publish — which blocks only while
 /// the ring is FULL and a live reader drains it — and the drop path. A
 /// downstream reader that FREE-RUNS (CamillaDSP still up and reading after
@@ -531,14 +541,6 @@ struct PeriodPacer {
     deadline_ns: Option<u64>,
 }
 
-/// What [`PeriodPacer::pace`] decided for one period.
-struct PaceDecision {
-    /// Nanoseconds to sleep so this period ends on its deadline. Zero when the
-    /// period already spent its own wall time downstream, so the pacer never
-    /// double-paces a period the ring publish already paced.
-    sleep_ns: u64,
-}
-
 impl PeriodPacer {
     fn new(period_ns: u64) -> Self {
         Self {
@@ -547,24 +549,25 @@ impl PeriodPacer {
         }
     }
 
-    /// Close the period ending at `now_ns` (`CLOCK_MONOTONIC`) and open the next.
+    /// Close the period ending at `now_ns` (`CLOCK_MONOTONIC`), open the next,
+    /// and return the nanoseconds to sleep. Zero when the period already spent
+    /// its own wall time downstream, so the pacer never double-paces a period the
+    /// ring publish already paced.
     ///
     /// Deadlines are ABSOLUTE (`deadline += target`) so per-period scheduling
     /// jitter cannot accumulate into a rate error. A period that OVERRAN its
     /// deadline re-anchors on `now` instead of owing the difference: the
     /// back-to-back catch-up periods that a carried backlog would produce are
     /// themselves unpaced, which is the burst `LimitRTTIME` kills.
-    fn pace(&mut self, now_ns: u64) -> PaceDecision {
+    fn pace(&mut self, now_ns: u64) -> u64 {
         match self.deadline_ns {
             Some(deadline_ns) if now_ns < deadline_ns => {
                 self.deadline_ns = Some(deadline_ns + self.target_ns);
-                PaceDecision {
-                    sleep_ns: deadline_ns - now_ns,
-                }
+                deadline_ns - now_ns
             }
             _ => {
                 self.deadline_ns = Some(now_ns + self.target_ns);
-                PaceDecision { sleep_ns: 0 }
+                0
             }
         }
     }
@@ -2044,7 +2047,7 @@ fn write_ring_period(
             PublishOutcome::Published => {
                 published_slots += 1;
             }
-            // A demoted publish (issue #1524) is a drop like the others, so it
+            // A demoted publish (issue #1524) is a drop like the others, so
             // the pacer below returns fan-in to real time.
             PublishOutcome::DroppedNoReader
             | PublishOutcome::DroppedStuck
@@ -2055,6 +2058,11 @@ fn write_ring_period(
     }
 
     let m = ring.writer.metrics();
+    // Read BEFORE the store below overwrites it: the counter still holds last
+    // period's value, so this is the delta. `full_waits` ticks once per publish
+    // that entered the bounded back-pressure wait, and that wait is a
+    // `nanosleep` — so a nonzero delta means this period already blocked.
+    let publish_blocked = m.full_waits > ring.counters.full_waits.load(Ordering::Relaxed);
     ring.counters
         .published
         .store(m.published_slots, Ordering::Relaxed);
@@ -2101,20 +2109,23 @@ fn write_ring_period(
         .last_stall_ms
         .store(ring.stall.last_stall_ms(), Ordering::Relaxed);
 
-    // Wall-time floor under the period. A period the ring publish already paced
-    // (or one that overran for any other reason) computes a zero sleep and is
-    // left alone; a period that cost nothing — no back-pressure, no drop — is
-    // slept out to its deadline so the loop always reaches a blocking syscall.
-    let pace = ring.pace.pace(jasper_ring::monotonic_ns());
-    if pace.sleep_ns > 0 {
-        if !dropped_this_period {
-            ring.counters
-                .clockless_paces
-                .fetch_add(1, Ordering::Relaxed);
-        }
+    // Wall-time floor under the period. A CLOCKLESS period — neither the publish
+    // nor a drop spent its wall time — is the one whose only blocking syscall is
+    // this sleep, so it is floored at `PACE_MIN_SLEEP_NS` even when the deadline
+    // has already passed. Every other period is left exactly as the pacer found
+    // it: a zero sleep after back-pressure, so the DAC keeps owning the rate.
+    let mut sleep_ns = ring.pace.pace(jasper_ring::monotonic_ns());
+    let clockless = !publish_blocked && !dropped_this_period;
+    if clockless {
+        ring.counters
+            .clockless_paces
+            .fetch_add(1, Ordering::Relaxed);
+        sleep_ns = sleep_ns.max(PACE_MIN_SLEEP_NS);
+    }
+    if sleep_ns > 0 {
         let ts = libc::timespec {
-            tv_sec: (pace.sleep_ns / 1_000_000_000) as _,
-            tv_nsec: (pace.sleep_ns % 1_000_000_000) as _,
+            tv_sec: (sleep_ns / 1_000_000_000) as _,
+            tv_nsec: (sleep_ns % 1_000_000_000) as _,
         };
         // SAFETY: a valid timespec pointer; NULL remainder is fine (a signal-
         // interrupted sleep just shortens this one period — the absolute
@@ -4922,21 +4933,21 @@ mod tests {
 
         // The first period only anchors the deadline.
         let t0 = 1_000_000_000u64;
-        assert_eq!(pacer.pace(t0).sleep_ns, 0);
+        assert_eq!(pacer.pace(t0), 0);
 
         // Instant periods are slept out to their own absolute deadlines; a period
         // that woke LATE by `jitter` still lands on the original grid rather than
         // pushing it out by the jitter.
-        assert_eq!(pacer.pace(t0).sleep_ns, target);
+        assert_eq!(pacer.pace(t0), target);
         let jitter = 1_000u64;
-        assert_eq!(pacer.pace(t0 + target + jitter).sleep_ns, target - jitter);
+        assert_eq!(pacer.pace(t0 + target + jitter), target - jitter);
 
         // Back-pressure: this period spent many periods' worth of wall time
         // downstream. No sleep, and the next deadline re-anchors on now instead
         // of owing a backlog of unpaced catch-up periods.
         let blocked = t0 + 10 * target;
-        assert_eq!(pacer.pace(blocked).sleep_ns, 0);
-        assert_eq!(pacer.pace(blocked).sleep_ns, target);
+        assert_eq!(pacer.pace(blocked), 0);
+        assert_eq!(pacer.pace(blocked), target);
     }
 
     /// Reader-absent: `write_ring_period` free-run-drops and paces (never
