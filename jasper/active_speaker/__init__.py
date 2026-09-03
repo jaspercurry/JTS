@@ -6,7 +6,7 @@
 
 Most of this package does not emit audio or grant playback authority — the
 exception is `web_commissioning`, whose safety-gated driver/summed test and
-capture-sweep flows launch `aplay` / `play_sweep` to produce real hardware
+capture-sweep flows launch `aplay` to produce real hardware
 audio.
 
 Package-level names resolve lazily (PEP 562): importing a submodule such as

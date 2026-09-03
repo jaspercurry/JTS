@@ -8,6 +8,7 @@ Stays outside ``jasper.correction`` (import cycle) and stdlib-only (socket-activ
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,6 +17,11 @@ if TYPE_CHECKING:
 
 # Lane name on an unarmed box.
 CORRECTION_SUBSTREAM = "correction_substream"
+
+# Where the lane's generated WAVs are cached. deploy/install.sh creates it and
+# the correction unit's ReadWritePaths admits it; moving it means grepping the
+# tree for the literal, which is spelled outside Python too.
+CORRECTION_TONE_DIR = Path("/var/lib/jasper/correction/tones")
 
 # 0o007: shared ring HEADER must land 0660 (pinned `UMask=0007` in tests/test_renderer_ring_lanes.py); root's inherited 0022 breaks it.
 CORRECTION_PLAY_UMASK = 0o007
