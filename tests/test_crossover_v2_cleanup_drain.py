@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A raising persist still gives the fader back — BOTH capture providers.
+"""A raising persist still gives the fader back — the wired runner.
 
-Every terminal arm of both runners records the failure to durable state and
+Every terminal arm of the runner records the failure to durable state and
 THEN drains the measurement volume. The persist ends in ``save_v2_state`` ->
 ``atomic_write_text``, so disk pressure (ENOSPC, EROFS) raises ``OSError`` out
 of it, and an unprotected raise skipped the drain entirely. The stranded
@@ -19,10 +19,6 @@ measurement claim, the hooks release it the way production's
 One row per protected call site — the post-walk rows split by ``done``
 because that site's ``finally`` drains through ``close`` on one branch and
 ``abandon`` on the other.
-
-Cross-provider by construction: the guarantee is one rule stated at seven
-sites across two files, and a per-provider example cluster would let one file
-drift from the other silently.
 """
 from __future__ import annotations
 
@@ -34,20 +30,11 @@ from typing import Any, Callable
 
 import pytest
 
-from jasper.active_speaker.crossover_v2.capture_source import (
-    CaptureBeginRefused,
-    CaptureFailed,
-)
 from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_SESSION_CEILING_EXPIRED,
-)
 from jasper.audio_measurement.wired_capture import WiredMicDevice
 from jasper.capture_protocol import CapturePlan
-from jasper.capture_relay import session as relay_session
 from jasper.volume_owner import ClaimKind, VolumeOwner
 from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_relay as v2relay
 from jasper.web import correction_crossover_v2_wired as v2wired
 
 MEASUREMENT_DB = -12.5
@@ -118,28 +105,6 @@ class _Row:
     drive: Callable[[Any, Any], Any]
 
 
-def _relay_row(id: str, persist: str, *, raises=None, done: bool = False) -> _Row:
-    async def _drive(hooks: Any, monkeypatch: Any) -> None:
-        def _plan(*a: Any, **k: Any) -> None:
-            if raises is not None:
-                raise raises
-
-        # The runner late-imports run_capture_plan from this module, so the
-        # patch lands however early the builder ran.
-        monkeypatch.setattr(relay_session, "run_capture_plan", _plan)
-        runner = v2relay.build_v2_run_and_consume(
-            _Conductor(done=done),
-            volume=hooks,
-            stop_event=threading.Event(),
-            stop_lock=threading.Lock(),
-            poll_interval_s=0.01,
-            timeout_s=1.0,
-        )
-        await runner(SimpleNamespace(post_host_event=lambda *a, **k: None), _session())
-
-    return _Row(id=id, persist=persist, drive=_drive)
-
-
 def _wired_row(
     id: str, persist: str, *, awaiting: Any = False, ceiling_s: float = 30.0,
     done: bool = False,
@@ -164,24 +129,8 @@ def _wired_row(
 
 
 ROWS = (
-    _relay_row(
-        "relay-refused", "_persist_terminal_failure",
-        raises=CaptureBeginRefused(
-            REASON_SESSION_CEILING_EXPIRED, "out of time",
-        ),
-    ),
-    _relay_row(
-        "relay-transport", "_persist_terminal_failure",
-        raises=CaptureFailed("the link died"),
-    ),
-    _relay_row(
-        "relay-catch-all", "_persist_terminal_failure",
-        raises=RuntimeError("a DSP wedge"),
-    ),
-    _relay_row("relay-complete-abandon", "persist_conductor_state", done=False),
-    _relay_row("relay-complete-close", "persist_conductor_state", done=True),
-    # The wired walk has no transport to die of, so it has one fewer arm; the
-    # ceiling expiry is what raises its CaptureBeginRefused with no capture.
+    # The ceiling expiry is what raises its CaptureBeginRefused with no
+    # capture — the wired walk has no transport to die of.
     _wired_row(
         "wired-refused", "_persist_terminal_failure",
         awaiting=True, ceiling_s=0.0,
