@@ -8717,7 +8717,6 @@ def _arm_stage_1(monkeypatch) -> None:
     asserts about a decision the preparer takes before any bundle is opened, so
     a bundle opening at all is the failure, not a fixture gap.
     """
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(
         v2host, "reconcile_session_volume_for_new_session", lambda *_a: None,

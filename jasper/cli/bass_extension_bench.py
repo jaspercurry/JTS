@@ -141,8 +141,8 @@ def _run_live(args: argparse.Namespace, manifest: CampaignManifest, target_ids: 
     text, LT/subsonic params, owner channels) from the household's confirmed
     bass-extension profile, and the on-device
     :class:`~jasper.bass_extension.bench.executor.PlayAndCapture` collaborator
-    (the phone capture-relay session composition) — assembling both
-    correctly is an on-device integration exercise this hardware-free
+    (the wired-mic session composition) — assembling both correctly is an
+    on-device integration exercise this hardware-free
     implementation session could not responsibly author untested. Both are
     named, narrow next steps, not open questions — tracked as
     https://github.com/jaspercurry/JTS/issues/1738 ("Bass extension: final
