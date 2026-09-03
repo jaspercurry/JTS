@@ -2436,25 +2436,19 @@ def default_setup_calibration_for_v2() -> Any | None:
 
     Every v2 capture logged ``crossover_v2_uncalibrated_capture`` even when
     the household had a resolvable stored mic (a UMIK-2 by serial, ingested
-    via ``/correction/calibration/fetch``). Root cause: ``resolve_setup_calibration``
-    is only as good as what the phone posts in ``setup.calibration`` — and a
-    v2 capture-plan session has no calibration-picker screen of its own. The
-    LEGACY per-driver crossover flow gets away with this because its
-    calibration choice comes from the ``level_ramp`` level-match page the
-    household visits FIRST in the same phone tab (the capture page's
-    ``setupState`` module variable survives the in-tab hash navigation from
-    that page into the driver sweeps that follow); v2 has no preceding
-    level-match page (design: CHECK's own pilot pairs solve gain), so it
-    never had a carrier for the same hint.
+    via ``/correction/calibration/fetch``). Root cause:
+    ``resolve_setup_calibration`` is only as good as the reference the capture
+    carries in ``setup.calibration``, and a v2 session has no
+    calibration-picker screen of its own (design: CHECK's own pilot pairs
+    solve gain), so nothing carried the household's remembered mic into it.
 
-    Reuses ``correction_setup._default_setup_calibration_for_spec`` — the
-    SAME household-mic-hint resolver the legacy level-match handlers already
-    pass into ``build_level_ramp_spec``. Threaded into
+    Reuses ``correction_setup._default_setup_calibration_for_spec`` — the ONE
+    household-mic-hint resolver. Threaded into
     ``build_v2_session_spec``/``build_v2_verify_session_spec`` via their
-    shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``
-    (W6.12 added the parameter there); the capture page applies it SILENTLY
-    (no extra tap) when nothing has already been chosen for that page load.
-    Fail-soft: any resolution miss yields no hint, never blocks session open.
+    shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``, and
+    the measurement source mints the capture's own reference from it
+    (``correction_crossover_v2_wired._wired_setup_reference``). Fail-soft: any
+    resolution miss yields no hint, never blocks session open.
     """
     from .correction_setup import _default_setup_calibration_for_spec
 
@@ -2470,15 +2464,13 @@ def default_setup_calibration_for_v2() -> Any | None:
 
 
 def _setup_calibration_observation(setup: Any) -> tuple[str, str]:
-    """What the capture's phone-reported setup held, redacted-safe (W6.13).
+    """What the capture's own setup reference held, redacted-safe (W6.13).
 
     Returns ``(mode, calibration_id)`` for the uncalibrated-capture WARN so a
-    live journal line settles empirically whether the phone sent NO setup at
-    all (``mode="absent"``) or sent one whose calibration didn't resolve
-    (e.g. ``mode="none"``, or a stale ``calibration_id``) — the round-5
-    ambiguity. Only the mode and the calibration_id (a stored-record id, not
-    a secret) are ever extracted; a serial or an uploaded calibration file
-    body never reaches the journal.
+    live journal line settles empirically whether the capture carried NO setup
+    at all (``mode="absent"``) or one whose calibration didn't resolve (e.g.
+    ``mode="none"``, or a stale ``calibration_id``). Only the mode and the
+    calibration_id (a stored-record id, not a secret) are ever extracted.
     """
     if not isinstance(setup, Mapping):
         return "absent", ""
