@@ -857,6 +857,7 @@ async def test_observe_skips_capture_switch_when_the_card_has_none(monkeypatch):
         ({"percent": 31, "observation_applied": False}, False),
         ({"percent": 64, "observation_applied": True}, True),
         ({"percent": 64}, True),  # rolling upgrade: old control response
+        ("not-a-mapping", None),  # 2xx that proves nothing
     ],
 )
 async def test_post_requires_application_acknowledgement(payload, expected):
@@ -887,6 +888,27 @@ async def test_post_requires_application_acknowledgement(payload, expected):
     bridge._control = _Control()
 
     assert await bridge._post(64) is expected
+
+
+async def test_unanswered_startup_snapshot_is_retried(monkeypatch):
+    """A DECLINED snapshot is dropped, but an UNANSWERED one is not: after a
+    reboot the bridge's first POST can time out while jasper-control is still
+    starting (observed on jts3), and the snapshot is then the only thing that
+    will sync the host slider until the user next touches it."""
+    mixer = _FakeMixer(raw=41)
+    bridge = _ready_bridge(mixer)
+    bridge._mixer = mixer
+    attempts: list[bool] = []
+
+    async def _no_answer(pct: int, *, initial: bool = False) -> bool | None:
+        attempts.append(initial)
+        return None
+
+    monkeypatch.setattr(bridge, "_post", _no_answer)
+    await bridge._observe()
+    assert attempts == [True]
+    assert bridge._retry_task is not None
+    await bridge._cancel_retry_and_wait()
 
 
 def test_raw_step_index_matches_pyalsaaudio_normalized_percent():

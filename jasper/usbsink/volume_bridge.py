@@ -444,17 +444,23 @@ class VolumeBridge:
         if pct == self._last_published_pct:
             return
         initial = self._last_published_pct is None and not self._host_moved
-        if await self._post(pct, initial=initial):
+        outcome = await self._post(pct, initial=initial)
+        if outcome is True:
             self._last_published_pct = pct
-        elif not initial:
+        elif outcome is None or not initial:
+            # Only an explicit decline of the startup snapshot is dropped. No
+            # answer at all is the boot race — jasper-control is still coming
+            # up (observed on jts3: the first POST after a reboot timed out) —
+            # and the snapshot is still the only thing that will sync the host
+            # slider until the user next touches it.
             self._retry_task = asyncio.create_task(self._retry_declined(pct))
 
     async def _retry_declined(self, pct: int) -> None:
-        """Re-present one declined host slider move until it is accepted."""
+        """Re-present one unacknowledged value until the controller takes it."""
         delay = POST_RETRY_INTERVAL_SEC
         while True:
             await asyncio.sleep(delay)
-            if await self._post(pct):
+            if await self._post(pct) is True:
                 self._last_published_pct = pct
                 return
             delay = min(delay * POST_RETRY_BACKOFF_FACTOR, POST_RETRY_CEILING_SEC)
@@ -519,9 +525,11 @@ class VolumeBridge:
     # jasper-control POST
     # ------------------------------------------------------------------
 
-    async def _post(self, pct: int, *, initial: bool = False) -> bool:
+    async def _post(self, pct: int, *, initial: bool = False) -> Optional[bool]:
+        """True when jasper-control applied the observation, False when it
+        deliberately declined it, None when no usable answer came back."""
         if self._control is None:
-            return False
+            return None
         try:
             resp = await self._control.set_volume(
                 pct,
@@ -536,7 +544,7 @@ class VolumeBridge:
                 error=e,
                 level=logging.WARNING,
             )
-            return False
+            return None
         if not resp.ok:
             log_event(
                 logger,
@@ -545,7 +553,7 @@ class VolumeBridge:
                 status=resp.status,
                 level=logging.WARNING,
             )
-            return False
+            return None
         try:
             payload = resp.json()
         except (TypeError, ValueError):
@@ -569,7 +577,7 @@ class VolumeBridge:
         else:
             # A successful but unparseable response cannot prove that the
             # source-active gate accepted the observation.
-            return False
+            return None
         log_event(
             logger,
             "usbsink.volume_observed",
