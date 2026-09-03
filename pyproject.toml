@@ -33,10 +33,10 @@ streambox = [
     "google-auth>=2.36",
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.150",
-    "evdev>=1.7; sys_platform == 'linux'",
+    "evdev>=2.0; sys_platform == 'linux'",
     "pyudev>=0.24",
     "dbus-next>=0.2.3",
-    "zeroconf>=0.149,<1.0",
+    "zeroconf>=0.151.3,<1.0",
     "cryptography>=50.0.0",
 ]
 
@@ -80,7 +80,7 @@ full = [
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
     "httpx==0.28.1",
-    "onnxruntime>=1.17",
+    "onnxruntime>=1.29",
     # The subway fallback only needs the standard GTFS-Realtime wire
     # schema. nyct-gtfs hard-pins the unsupported protobuf 4.25.3 runtime;
     # use the maintained schema bindings and keep the shared protobuf
@@ -110,7 +110,7 @@ full = [
     # jasper-input: third-party HID accessory bridge (volume knobs,
     # macro pads, etc.) reads /dev/input/event* via python-evdev and
     # watches for hot-plug via pyudev. Tiny pure-Python deps.
-    "evdev>=1.7; sys_platform == 'linux'",
+    "evdev>=2.0; sys_platform == 'linux'",
     "pyudev>=0.24",
     # Web-driven BT pairing for HID accessories. dbus-next is the
     # asyncio-native bluez D-Bus client; lighter and more reliable
@@ -125,7 +125,7 @@ full = [
     # the dual-stack conflict (pyvisa-py#378). Imported lazily inside
     # jasper.peering.discovery so the package is import-cheap when
     # peering is OFF (the default). ~5-8 MB Pss when active.
-    "zeroconf>=0.149,<1.0",
+    "zeroconf>=0.151.3,<1.0",
     # jasper.capture_relay.crypto: AES-256-GCM decryption of the phone-mic
     # capture blob the Pi pulls from the relay (the page encrypts with
     # WebCrypto; the Pi decrypts here before feeding the existing room/

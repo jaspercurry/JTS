@@ -46,7 +46,7 @@ charset-normalizer==3.5.1
 cryptography==50.0.1
 dbus-next==0.2.3
 distro==1.9.0
-evdev==1.9.3
+evdev==2.0.0
 flatbuffers==25.12.19
 google-api-core==2.34.0
 google-api-python-client==2.199.0
@@ -68,7 +68,7 @@ joblib==1.5.3
 libusb-package==1.0.30.0
 numpy==2.4.6
 oauthlib==3.3.1
-onnxruntime==1.27.0
+onnxruntime==1.29.0
 openai==2.41.1
 openwakeword==0.6.0
 packaging==26.3
@@ -105,4 +105,4 @@ urllib3==2.7.0
 websocket-client==1.9.1
 websockets==16.0
 wheel==0.47.0
-zeroconf==0.149.16
+zeroconf==0.151.3
