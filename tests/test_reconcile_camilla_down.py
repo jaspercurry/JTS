@@ -47,8 +47,10 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.state_paths import (
+    BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
+)
 from jasper.active_speaker.baseline_profile import (
-    STATE_PATH_ENV,
     build_baseline_profile_candidate,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview

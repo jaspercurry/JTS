@@ -4373,7 +4373,7 @@ def outputd_active_lane_decision(
             ok=False, width=None, reason=f"active_graph_cap_channels_invalid:{cap}",
         )
 
-    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
     from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
     from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH
@@ -4661,7 +4661,7 @@ def safe_graph_for_current_topology(
     The PARKED shape needs nothing either way — its ``File`` sink is DAC- and
     transport-agnostic by construction."""
 
-    from jasper.active_speaker.baseline_profile import baseline_profile_state_path
+    from jasper.active_speaker.state_paths import baseline_profile_state_path
     from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
     from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
     from jasper.bass_extension.profile import DEFAULT_PROFILE_PATH

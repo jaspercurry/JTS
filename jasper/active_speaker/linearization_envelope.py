@@ -55,15 +55,17 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.audio_measurement.spatial_combine import BandSpread
 
 from ._common import DRIVER_CLASSES
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.program_analysis import DriverResponse
 
 
 class ReasonCode(StrEnum):
