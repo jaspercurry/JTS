@@ -360,13 +360,15 @@ PTT_KEEPALIVE_INTERVAL_SEC = 2.0
 # the guard test cannot drift from the registry entry.
 NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
 
-# How long a manual (button) session start waits out a paused connection
-# before refusing. Most pauses are now a planned session rotation, which
-# is back inside ~400 ms; refusing instantly turns those into a dead
-# press. Must stay under jasper.control.client.DEFAULT_TIMEOUT (2.0 s)
-# with room for the round trip, or the caller times out before it can
-# read the refusal.
-MANUAL_START_PAUSED_WAIT_SEC = 1.2
+# How long a wake or a manual (button) session start waits out a paused
+# connection before taking the turn anyway. Most pauses are a planned
+# session rotation, whose gap is one teardown plus one connect (p50
+# ~350 ms, p99 5.3 s); refusing instantly turns the common ones into
+# a dead press and a false 'can't connect' cue. The bound keeps the
+# SUCCESS path — which returns as soon as the turn opens — inside
+# jasper.control.client.DEFAULT_TIMEOUT (2.0 s) with room for the
+# round trip. A refusal outlives that either way: it cues first.
+PAUSED_CONNECTION_WAIT_SEC = 1.2
 
 # Per-leg score-freshness window. When a leg fires, another leg's most-
 # recent score counts toward `fired_legs` (and the per-leg log line) only
@@ -3835,7 +3837,13 @@ class WakeLoop:
                 await self._telemetry_outcome("gate_blocked", "spend_cap_reached")
                 await self._play_cue("spend_cap_reached")
                 return
-            if conn_paused:
+            # `conn_paused` was snapshotted before arbitration. Re-check
+            # with a bounded wait: a planned session rotation is a pause
+            # that clears on its own, and answering a wake with a
+            # "can't connect" cue during one would be a false alarm.
+            if conn_paused and not await self._await_connection(
+                PAUSED_CONNECTION_WAIT_SEC,
+            ):
                 logger.warning(
                     "wake detected but live connection is paused (reconnect/backoff); "
                     "ignoring this wake event",
@@ -3843,9 +3851,9 @@ class WakeLoop:
                 await self._telemetry_stage("gate_blocked")
                 await self._telemetry_outcome("gate_blocked", "connection_paused")
                 # The cue comes first: it is the household's answer, and
-                # nothing after it may be allowed to swallow it.
+                # nothing after it may be allowed to swallow it. The
+                # early-retry nudge already went out with the wait.
                 await self._play_cue(self._connection.wake_cue())
-                self._connection.request_reconnect_now()
                 return
 
             await self._begin_turn(
@@ -4551,10 +4559,9 @@ class WakeLoop:
         """Nudge a paused connection and wait a bounded time for it.
 
         Returns whether the connection became usable. A planned session
-        rotation clears in a few hundred ms, so a press landing in one
-        should still get its turn; a real outage never clears, and the
-        bound is what keeps the refusal inside the control client's
-        request timeout."""
+        rotation usually clears in a few hundred ms, so a press landing
+        in one should still get its turn; a real outage never clears,
+        which is what the bound is for."""
         self._connection.request_reconnect_now()
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout_sec
@@ -4595,10 +4602,10 @@ class WakeLoop:
             # Refused ahead of the mute/measuring/cap/paused gates: those
             # describe transient state, this the speaker's permanent shape, so
             # ranking it lower would let a passing BUSY or MUTED mask a
-            # request that can never succeed. It is also the one refusal here
-            # that gets a cue — the others answer a state the household just
-            # chose, this one answers "I pressed something and nothing
-            # happened".
+            # request that can never succeed. Cued, like the paused refusal
+            # below and unlike the mute/measuring ones: those answer a state
+            # the household just chose, these answer "I pressed something and
+            # nothing happened".
             log_event(
                 logger,
                 "session.manual_refused",
@@ -4637,7 +4644,7 @@ class WakeLoop:
         if not self._spend_cap.allowed():
             return "CAP"
         if self._connection.is_paused() and not await self._await_connection(
-            MANUAL_START_PAUSED_WAIT_SEC,
+            PAUSED_CONNECTION_WAIT_SEC,
         ):
             # Still paused after the wait: this is a real outage, not a
             # rotation. Cue first — a press that produces nothing is the
@@ -4646,7 +4653,7 @@ class WakeLoop:
                 logger,
                 "session.manual_refused",
                 reason="connection_paused",
-                waited_sec=MANUAL_START_PAUSED_WAIT_SEC,
+                waited_sec=PAUSED_CONNECTION_WAIT_SEC,
             )
             await self._play_cue(self._connection.wake_cue())
             return "PAUSED"

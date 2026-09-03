@@ -13,6 +13,7 @@ from google import genai
 from google.genai import types
 
 from jasper.backoff import ReconnectNudge, reconnect_delay, sleep_or_nudge
+from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
@@ -152,7 +153,9 @@ def _close_code_and_reason(exc: Exception) -> tuple[int | None, str | None]:
     if isinstance(code, int):
         return code, getattr(rcvd, "reason", None)
     api_code = getattr(exc, "code", None)
-    if isinstance(api_code, int):
+    # `APIError.code` is normally an HTTP status; only the 1000-4999
+    # WebSocket close range is what this reports.
+    if isinstance(api_code, int) and 1000 <= api_code <= 4999:
         return api_code, getattr(exc, "message", None)
     return None, None
 
@@ -638,11 +641,11 @@ class GeminiLiveConnection:
         self._nudge_event: asyncio.Event = asyncio.Event()
         self._supervisor_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
-        # Set when a GoAway lands mid-turn with ample time_left: the
-        # reconnect is deferred and fired from `_on_turn_released` so the
-        # in-flight turn isn't torn down mid-reply. Same shared mechanism
-        # OpenAI uses for its proactive-watchdog deferral — here the
-        # trigger is the GoAway branch in _receive_loop (see _supervisor).
+        # Set when a reconnect comes due mid-turn — a GoAway with ample
+        # time_left, or a planned rotation. The reconnect is deferred and
+        # fired from `_on_turn_released` so the in-flight turn isn't torn
+        # down mid-reply. Same shared mechanism OpenAI uses for its
+        # proactive-watchdog deferral.
         self._deferred_reconnect = Deferred()
         # Pause turn acquisition while a reconnect is in progress so
         # the daemon doesn't try to send audio into a half-open WS.
@@ -913,11 +916,12 @@ class GeminiLiveConnection:
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
-        # Fire any reconnect a mid-turn GoAway deferred for this turn.
+        # Fire any reconnect deferred for this turn — a mid-turn GoAway
+        # or a planned rotation that came due while the user was talking.
         if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
             logger.info(
-                "live connection: GoAway reconnect — turn just ended, "
-                "firing the deferred reconnect",
+                "live connection: turn just ended, firing the deferred "
+                "reconnect (planned=%s)", self._planned_rotate,
             )
 
     def _note_cumulative_usage(
@@ -1056,7 +1060,7 @@ class GeminiLiveConnection:
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            survive_terminal_initial_connect(e, self._reconnect_event.set)
+            survive_terminal_initial_connect(e, self._trigger_reconnect)
 
     async def _open_session_with_409_retry(
         self,
@@ -1240,18 +1244,25 @@ class GeminiLiveConnection:
             ConnectionState.CLOSED,
         ):
             return
-        self._planned_rotate = True
         if self._active_turn is not None:
-            logger.info(
-                "event=gemini.session.rotate reason=planned "
-                "outcome=deferred uptime_sec=%.0f", delay_sec,
+            self._planned_rotate = True
+            log_event(
+                logger,
+                "session.rotate",
+                reason="planned",
+                outcome="deferred",
+                after_sec=round(delay_sec),
             )
             self._deferred_reconnect.request()
             return
-        logger.info(
-            "event=gemini.session.rotate reason=planned outcome=now "
-            "uptime_sec=%.0f resumption=%s", delay_sec,
-            (self._resumption_handle or "")[:8] or "<new>",
+        self._planned_rotate = True
+        log_event(
+            logger,
+            "session.rotate",
+            reason="planned",
+            outcome="now",
+            after_sec=round(delay_sec),
+            resumption=(self._resumption_handle or "")[:8] or "<new>",
         )
         self._reconnect_event.set()
 
@@ -1274,8 +1285,8 @@ class GeminiLiveConnection:
         if self._rotate_task is not None:
             self._rotate_task.cancel()
             try:
-                await self._rotate_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                await asyncio.wait_for(self._rotate_task, timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):  # noqa: BLE001
                 pass
             self._rotate_task = None
         if self._receive_task is not None:
@@ -1305,6 +1316,14 @@ class GeminiLiveConnection:
         self._connected_event.clear()
         teardown_ms = (_time.monotonic() - t0) * 1000
         logger.info("live connection: session torn down in %.0fms", teardown_ms)
+
+    def _trigger_reconnect(self) -> None:
+        """Wake the supervisor for an UNPLANNED reconnect.
+
+        Clears any queued planned-rotation flag so a genuine failure can
+        never inherit the rotation's zero-backoff first attempt."""
+        self._planned_rotate = False
+        self._reconnect_event.set()
 
     async def _supervisor_loop(self) -> None:
         """Run for the connection's lifetime. Wakes on `_reconnect_event`,
@@ -1505,7 +1524,7 @@ class GeminiLiveConnection:
                     logger.warning(
                         "live connection: _receive returned None (clean close), reconnecting"
                     )
-                    self._reconnect_event.set()
+                    self._trigger_reconnect()
                     return
                 # Connection-level: session resumption handle.
                 sru = getattr(response, "session_resumption_update", None)
@@ -1543,7 +1562,7 @@ class GeminiLiveConnection:
                         "live connection: GoAway received, time_left=%s, will reconnect",
                         time_left,
                     )
-                    self._reconnect_event.set()
+                    self._trigger_reconnect()
                     continue
                 # Per-turn routing — but first check whether this
                 # response is "stale" from a prior turn we already
@@ -1616,7 +1635,7 @@ class GeminiLiveConnection:
                     "live connection: receive loop error (%s: %s), reconnecting",
                     type(e).__name__, e,
                 )
-            self._reconnect_event.set()
+            self._trigger_reconnect()
 
     async def _maybe_reset_context(self) -> None:
         """If the connection has been idle longer than the configured
@@ -1668,7 +1687,7 @@ class GeminiLiveConnection:
                 "triggering supervisor reconnect",
                 type(e).__name__, e,
             )
-            self._reconnect_event.set()
+            self._trigger_reconnect()
             raise
         # Reset the idle marker so we don't immediately re-trigger.
         self._last_turn_end_at = asyncio.get_event_loop().time()

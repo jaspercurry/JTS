@@ -1352,6 +1352,8 @@ async def test_planned_rotation_defers_until_the_active_turn_ends():
         # `.code` — this is the server's idle abort on jts4.
         (_api_error(1008, "The operation was aborted."),
          (1008, "The operation was aborted.")),
+        # An HTTP status is not a WebSocket close code.
+        (_api_error(503, "unavailable"), (None, None)),
         (RuntimeError("no code anywhere"), (None, None)),
     ],
 )
@@ -1359,3 +1361,33 @@ def test_close_code_extraction(exc, expected):
     """Both exception shapes the receive loop can see must yield the
     close code as a value, not just as prose inside the message."""
     assert _close_code_and_reason(exc) == expected
+
+
+async def test_unplanned_drop_does_not_inherit_the_rotation_zero_backoff():
+    """A rotation deferred behind a live turn must not hand its
+    skip-the-backoff ticket to a real failure that lands first."""
+    delays: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    factory = _FakeConnect()
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        backoff_schedule=None,
+        connect_factory=factory,
+        rotate_after_sec=0.05,
+        sleep=_sleep,
+    )
+    await conn.start(ToolRegistry(), "system")
+    try:
+        turn = await conn.acquire_turn()
+        await _wait_until(lambda: conn._deferred_reconnect.pending, timeout=3.0)
+        # The server drops us before the turn ends.
+        factory.sessions[0].feed_error(_ws_close_error(1006, "abnormal closure"))
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        assert delays and delays[0] > 0.0, delays
+        await turn.release()
+    finally:
+        await conn.stop()

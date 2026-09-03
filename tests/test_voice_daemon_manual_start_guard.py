@@ -125,7 +125,7 @@ async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
     supervisor's wait (issue #3855)."""
     from jasper import voice_daemon
 
-    monkeypatch.setattr(voice_daemon, "MANUAL_START_PAUSED_WAIT_SEC", 0.2)
+    monkeypatch.setattr(voice_daemon, "PAUSED_CONNECTION_WAIT_SEC", 0.2)
     wl = _make_wake_loop()
     wl._play_cue = _SpyCalls()
     state = _paused_connection(wl, paused_for_sec=99.0)
@@ -144,7 +144,7 @@ async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
     once the fresh session is up, instead of a dead PAUSED."""
     from jasper import voice_daemon
 
-    monkeypatch.setattr(voice_daemon, "MANUAL_START_PAUSED_WAIT_SEC", 1.2)
+    monkeypatch.setattr(voice_daemon, "PAUSED_CONNECTION_WAIT_SEC", 1.2)
     wl = _make_wake_loop()
     wl._play_cue = _SpyCalls()
     _paused_connection(wl, paused_for_sec=0.3)

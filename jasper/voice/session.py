@@ -374,8 +374,9 @@ class LiveConnection(Protocol):
 
     One instance per daemon: opened at startup, kept alive for the
     daemon's lifetime via the provider's session-resumption mechanism,
-    closed at shutdown. Internally manages reconnection, keepalive, and
-    context-reset on long idle gaps.
+    closed at shutdown. Internally manages reconnection (including any
+    rotation the provider's session cap forces) and context-reset on
+    long idle gaps.
 
     Three implementations ship today: Gemini Live, OpenAI Realtime, and
     Grok (a thin OpenAI subclass). A fourth provider plugs in by writing
@@ -389,7 +390,7 @@ class LiveConnection(Protocol):
         system_instruction: "str | Callable[[], str]",
     ) -> None:
         """Open the connection and start the background tasks
-        (receive loop, keepalive, reconnect supervisor). Returns once
+        (receive loop, reconnect supervisor). Returns once
         the initial handshake completes, or — when the provider rejects
         it terminally — returns with the connection paused
         (``is_paused()`` True, ``last_failure_detail()`` set) and the

@@ -50,8 +50,9 @@ FLUSH_LEVEL = logging.WARNING
 # Gemini reconnect churn on jts4 produced 42k of 44k lines/day). Explicit
 # dumps (`dump()`, SIGUSR1, "flag that") are never rate-limited.
 AUTO_FLUSH_MIN_INTERVAL_SEC = 3600.0
-# Signatures are per call site, so this only binds if a daemon logs
-# WARNING+ through f-strings from many places.
+# Hard cap on tracked signatures. Only binds when a daemon logs WARNING+
+# through f-strings (one signature per call, not per call site) from many
+# places; over the cap the map is aged and, failing that, reset.
 _AUTO_FLUSH_SIG_MAX = 512
 _FLIGHTREC_FORMAT = "%(asctime)s flightrec %(levelname)s %(name)s: %(message)s"
 
@@ -94,11 +95,18 @@ class RingFlushHandler(logging.Handler):
     def _auto_flush_due(self, record: logging.LogRecord) -> bool:
         """Whether this WARNING+ record may trigger an automatic dump.
 
-        Keyed on logger name + unformatted message, i.e. the call site,
-        so one chronic warning cannot starve every other one of its
-        first dump. The ring keeps buffering either way — a suppressed
-        signature still appears as context in the next dump."""
-        sig = f"{record.name}:{record.msg}"
+        Keyed on the record's origin, so one chronic warning cannot
+        starve every other one of its first dump. The ring keeps
+        buffering either way — a suppressed signature still appears as
+        context in the next dump.
+
+        `log_event` renders every field VALUE into the message, so its
+        records are keyed on `jasper_event` (the event name) instead;
+        `record.msg` there is a different string on every call and would
+        defeat the floor entirely.
+        """
+        origin = getattr(record, "jasper_event", None) or record.msg
+        sig = f"{record.name}:{origin}"
         now = time.monotonic()
         last = self._last_auto_flush.get(sig)
         if last is not None and now - last < AUTO_FLUSH_MIN_INTERVAL_SEC:
@@ -108,6 +116,11 @@ class RingFlushHandler(logging.Handler):
             self._last_auto_flush = {
                 k: v for k, v in self._last_auto_flush.items() if v >= cutoff
             }
+            if len(self._last_auto_flush) >= _AUTO_FLUSH_SIG_MAX:
+                # Nothing aged out: a daemon is producing signatures
+                # faster than the floor retires them. Start over rather
+                # than rebuild an oversized dict on every record.
+                self._last_auto_flush.clear()
         self._last_auto_flush[sig] = now
         return True
 
