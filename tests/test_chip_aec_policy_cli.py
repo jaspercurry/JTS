@@ -2,7 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Direct contracts for the shell-facing chip-AEC policy shim."""
+"""Direct contracts for the shell-facing chip-AEC policy shim.
+
+The socket wire protocol itself (missing socket, timeout, malformed JSON,
+non-object reply) is `jasper.route_latency.status_socket.read_status_socket`'s
+contract, pinned in `tests/test_route_latency_status_socket.py`; this shim
+only wraps that reader, so its own test covers the empty-path short-circuit
+and that a read failure is turned into a `(None, str)` pair rather than
+raising.
+"""
 
 from __future__ import annotations
 
@@ -14,64 +22,22 @@ from jasper.chip_aec_policy import ChipAecGate
 from jasper.cli import chip_aec_policy
 
 
-class _Socket:
-    def __init__(self, chunks):
-        self.chunks = iter(chunks)
-        self.sent = []
-        self.timeout = None
-        self.path = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return None
-
-    def settimeout(self, timeout):
-        self.timeout = timeout
-
-    def connect(self, path):
-        self.path = path
-
-    def sendall(self, payload):
-        self.sent.append(payload)
-
-    def recv(self, _size):
-        return next(self.chunks, b"")
-
-
-def test_query_outputd_status_owns_socket_protocol(monkeypatch):
-    sock = _Socket([b'{"reference_', b'outputs": {}}', b""])
-    monkeypatch.setattr(
-        chip_aec_policy.socket,
-        "socket",
-        lambda *_args: sock,
-    )
-
-    payload, error = chip_aec_policy._query_outputd_status(
-        "/run/outputd.sock", timeout=0.25
-    )
-
-    assert payload == {"reference_outputs": {}}
-    assert error == ""
-    assert sock.timeout == 0.25
-    assert sock.path == "/run/outputd.sock"
-    assert sock.sent == [b"STATUS\n"]
-
-
-def test_query_outputd_status_classifies_empty_invalid_and_non_object(monkeypatch):
+def test_query_outputd_status_empty_path_short_circuits():
     assert chip_aec_policy._query_outputd_status("") == (
         None, "STATUS socket path is empty"
     )
-    for body, expected in ((b"{", "invalid STATUS JSON"), (b"[]", "not an object")):
-        monkeypatch.setattr(
-            chip_aec_policy.socket,
-            "socket",
-            lambda *_args, body=body: _Socket([body, b""]),
-        )
-        payload, error = chip_aec_policy._query_outputd_status("/run/test.sock")
-        assert payload is None
-        assert expected in error
+
+
+def test_query_outputd_status_returns_none_and_error_on_read_failure(monkeypatch):
+    def _raise(*_args, **_kwargs):
+        raise OSError("no such socket")
+
+    monkeypatch.setattr(chip_aec_policy, "read_status_socket", _raise)
+
+    payload, error = chip_aec_policy._query_outputd_status("/run/outputd.sock")
+
+    assert payload is None
+    assert "no such socket" in error
 
 
 def test_shell_assignments_quote_values():

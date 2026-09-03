@@ -8,38 +8,22 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
-import socket
 import sys
 from typing import Any
 
 from ..chip_aec_policy import resolve_chip_aec_dac_gate
+from ..route_latency.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
 
 
-def _query_outputd_status(path: str, *, timeout: float = 1.0) -> tuple[dict[str, Any] | None, str]:
+def _query_outputd_status(
+    path: str, *, timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS
+) -> tuple[dict[str, Any] | None, str]:
     if not path:
         return None, "STATUS socket path is empty"
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            sock.connect(path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            total = 0
-            while total < 65536:
-                chunk = sock.recv(8192)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-    except OSError as exc:
-        return None, f"STATUS socket {path}: {exc}"
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except json.JSONDecodeError as exc:
-        return None, f"invalid STATUS JSON: {exc}"
-    if not isinstance(payload, dict):
-        return None, "STATUS payload is not an object"
-    return payload, ""
+        return read_status_socket(path, timeout=timeout), ""
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return None, str(exc)
 
 
 def _shell_assignments(gate, *, testing_requested: bool) -> str:
