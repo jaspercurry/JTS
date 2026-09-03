@@ -651,7 +651,8 @@ _SYSTEMD_UNITS_LIB = _INSTALL_LIB_DIR / "systemd-units.sh"
 
 def test_mask_distro_background_units_masks_present_timers_only(tmp_path):
     """Only the timers the image actually carries are masked (`mask --now` on
-    an absent unit would fail the install), and cloud-init is opted out via
+    an absent unit would fail the install); each masked unit's stale
+    Result=resources failed-state is cleared; and cloud-init is opted out via
     its own sentinel rather than by removing the package."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -685,16 +686,17 @@ def test_mask_distro_background_units_masks_present_timers_only(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (cloud_dir / "cloud-init.disabled").exists()
-    masked = [
-        line.split()[-1]
-        for line in log.read_text(encoding="utf-8").splitlines()
-        if line.startswith("mask ")
-    ]
+    calls = log.read_text(encoding="utf-8").splitlines()
+    masked = [line.split()[-1] for line in calls if line.startswith("mask ")]
     assert masked == [
         "apt-daily.timer",
         "apt-daily-upgrade.timer",
         "man-db.timer",
     ]
+    reset = [
+        line.split()[-1] for line in calls if line.startswith("reset-failed ")
+    ]
+    assert reset == masked
 
 
 def _run_tune_nginx_worker_processes(conf: Path) -> None:
