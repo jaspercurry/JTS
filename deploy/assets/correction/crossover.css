@@ -133,14 +133,6 @@
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 38%, transparent);
 }
 
-.section-head {
-  display: flex;
-  gap: 1rem;
-  align-items: flex-start;
-  justify-content: space-between;
-  flex-wrap: wrap;
-}
-
 .measurement-list {
   display: grid;
   gap: 0.7rem;
