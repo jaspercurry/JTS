@@ -45,13 +45,13 @@ from jasper.cli import (
 )
 from jasper.cli.aec_bridge import (
     BridgeStalled,
-    FRAME_SAMPLES,
     OUT_PORT,
     OUT_PORT_RAW,
     _aec_loop,
     _shutdown,
 )
 from jasper.cli.aec_bridge_config import OUT_HOST
+from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
 from jasper.cli.aec_bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
 
 
@@ -103,18 +103,14 @@ class _ScriptedMicQ:
 
 @pytest.fixture(autouse=True)
 def _reset_shutdown_and_stub_sd(monkeypatch):
-    """Each test gets a clean `_shutdown` and a no-op
-    `sd.RawOutputStream` (the loop opens one on entry).
+    """Each test gets a clean `_shutdown` and a stubbed `sd` module.
 
     Clears both the module Event and the top-of-file import. The loop's
     actual check goes through the module-dict lookup.
     """
     aec_bridge._shutdown.clear()
     _shutdown.clear()
-    out_stream = MagicMock()
-    sd_mod = MagicMock()
-    sd_mod.RawOutputStream = MagicMock(return_value=out_stream)
-    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
+    monkeypatch.setattr(aec_bridge_config, "sd", MagicMock())
     aec_bridge._bridge_stats.reset()
     yield
     aec_bridge._shutdown.clear()
@@ -360,10 +356,23 @@ def test_raw0_port_default_9879():
     assert DEFAULT_AEC_RAW0_PORT == 9879
 
 
-def test_aec_loop_emits_raw0_when_raw0_q_passed(monkeypatch):
-    """When raw0_q is provided, 4 raw0 frames in → one packet out on
-    OUT_PORT_RAW0. Byte-distinct from the mic_q frames so we can
-    verify the right bytes landed on the right port.
+@pytest.mark.parametrize(
+    ("leg_kwarg", "sockets_before_leg", "port_attr", "frames_via_ref_q"),
+    [
+        pytest.param("raw0_q", 2, "OUT_PORT_RAW0", False, id="raw0_q"),
+        pytest.param("emit_ref", 3, "OUT_PORT_REF", True, id="emit_ref"),
+    ],
+)
+def test_aec_loop_emits_single_opt_in_leg(
+    monkeypatch, leg_kwarg, sockets_before_leg, port_attr, frames_via_ref_q,
+):
+    """A single opt-in leg (raw0 / ref) emits exactly its own packet to its
+    own port, byte-distinct from the mic_q and primary-AEC frames so we can
+    verify the right bytes landed on the right socket.
+
+    `raw0_q` takes its frames via a dedicated kwarg queue; `emit_ref` is a
+    bool flag and instead reuses the loop's own `ref_q` positional arg —
+    hence the `frames_via_ref_q` switch.
 
     Uses the top-of-file `_aec_loop` and `_ScriptedMicQ` to share
     the same `_shutdown` Event the autouse fixture manages —
@@ -371,34 +380,36 @@ def test_aec_loop_emits_raw0_when_raw0_q_passed(monkeypatch):
     failure mode.
     """
     import socket as real_socket
-    from jasper.cli.aec_bridge import OUT_PORT_RAW0
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
 
-    aec_sock = _mock_socket()
-    raw_sock = _mock_socket()
-    raw0_sock = _mock_socket()
-    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
+    leading_socks = [_mock_socket() for _ in range(sockets_before_leg)]
+    leg_sock = _mock_socket()
+    socket_factory = MagicMock(side_effect=[*leading_socks, leg_sock])
     monkeypatch.setattr(real_socket, "socket", socket_factory)
 
-    # 4 mic frames + 4 distinct raw0 frames → exactly 1 packet per leg.
+    # 4 mic frames + 4 distinct leg frames → exactly 1 packet per leg.
     mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    raw0_frames = [bytes([i + 200]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    leg_frames = [bytes([i + 50]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
     aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
     engine = MagicMock()
     engine.process.side_effect = aec_frames
 
-    _aec_loop(
-        _AlwaysEmptyQ(), _ScriptedMicQ(mic_frames), engine,
-        raw0_q=_ScriptedMicQ(raw0_frames),
-    )
+    if frames_via_ref_q:
+        ref_q = _ScriptedMicQ(leg_frames)
+        extra_kwargs = {leg_kwarg: True}
+    else:
+        ref_q = _AlwaysEmptyQ()
+        extra_kwargs = {leg_kwarg: _ScriptedMicQ(leg_frames)}
 
-    # raw0 emitted exactly its 1280-sample packet to OUT_PORT_RAW0.
-    raw0_sock.sendto.assert_called_once()
-    call = raw0_sock.sendto.call_args
-    assert call.args[0] == b"".join(raw0_frames)
-    assert call.args[1] == (OUT_HOST, OUT_PORT_RAW0)
-    assert len(call.args[0]) == OUT_FRAME_BYTES
+    _aec_loop(ref_q, _ScriptedMicQ(mic_frames), engine, **extra_kwargs)
+
+    port = getattr(aec_bridge, port_attr)
+    leg_sock.sendto.assert_called_once_with(
+        b"".join(leg_frames), (OUT_HOST, port),
+    )
+    assert len(leg_sock.sendto.call_args.args[0]) == OUT_FRAME_BYTES
+    leg_sock.close.assert_called_once()
 
 
 def test_aec_loop_chip_aec_mode_defaults_to_primary_only(monkeypatch):
@@ -627,43 +638,6 @@ def test_aec_loop_corpus_chip_aec_flag_emits_promised_beams(monkeypatch):
     chip_210_sock.sendto.assert_called_once_with(
         b"".join(chip_210_frames), (OUT_HOST, OUT_PORT_CHIP_AEC_210),
     )
-
-
-def test_aec_loop_emits_ref_when_enabled(monkeypatch):
-    """Corpus ref output is opt-in and emits the exact 16 kHz ref
-    frames the AEC loop consumed."""
-    import socket as real_socket
-    from jasper.cli.aec_bridge import OUT_PORT_REF
-
-    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
-    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
-
-    aec_sock = _mock_socket()
-    raw_sock = _mock_socket()
-    raw0_sock = _mock_socket()
-    ref_sock = _mock_socket()
-    socket_factory = MagicMock(
-        side_effect=[aec_sock, raw_sock, raw0_sock, ref_sock],
-    )
-    monkeypatch.setattr(real_socket, "socket", socket_factory)
-
-    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    ref_frames = [bytes([i + 50]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    engine = MagicMock()
-    engine.process.side_effect = aec_frames
-
-    _aec_loop(
-        _ScriptedMicQ(ref_frames),
-        _ScriptedMicQ(mic_frames),
-        engine,
-        emit_ref=True,
-    )
-
-    ref_sock.sendto.assert_called_once_with(
-        b"".join(ref_frames), (OUT_HOST, OUT_PORT_REF),
-    )
-    ref_sock.close.assert_called_once()
 
 
 def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
