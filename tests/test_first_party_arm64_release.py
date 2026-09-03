@@ -1054,8 +1054,8 @@ def test_arm64_workflow_is_manual_native_and_non_publishing() -> None:
     assert "workflow_dispatch:" in workflow
     assert "runs-on: ubuntu-24.04-arm" in workflow
     assert (
-        "image: debian:trixie-20260713-slim@sha256:"
-        "020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd"
+        "image: debian:trixie-20260824-slim@sha256:"
+        "d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
     ) in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "scripts/build-first-party-arm64-release.py" in workflow

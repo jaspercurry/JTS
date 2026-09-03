@@ -286,7 +286,7 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
     )
 
     assert "astral-sh/setup-uv@" in workflow
-    assert 'version: "0.11.14"' in workflow
+    assert 'version: "0.12.9"' in workflow
     assert sync in workflow
     assert openwakeword in workflow
     assert workflow.index(sync) < workflow.index(openwakeword)
