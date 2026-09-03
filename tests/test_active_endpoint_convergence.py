@@ -368,11 +368,14 @@ def test_a_convergence_that_raises_costs_the_box_its_convergence_not_its_reconci
     from jasper.fanin import coupling_reconcile as cr
 
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    converged: list[str] = []
+
+    def _raise_after_recording(**kwargs):
+        converged.append(kwargs["reason"])
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+
     monkeypatch.setattr(
-        "jasper.fanin.converge.converge_active_endpoint",
-        lambda **k: (_ for _ in ()).throw(
-            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
-        ),
+        "jasper.fanin.converge.converge_active_endpoint", _raise_after_recording
     )
     reached: list[str] = []
     monkeypatch.setattr(
@@ -398,6 +401,7 @@ def test_a_convergence_that_raises_costs_the_box_its_convergence_not_its_reconci
         rc = cr._run_entry_verb(args)
 
     assert rc == 0
+    assert converged == ["test"], "the pass's own reason must reach the step"
     assert reached == ["pass ran"], "the reconcile must still run"
     assert any("converge_raised" in r.getMessage() for r in caplog.records)
 

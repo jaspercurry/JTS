@@ -2034,7 +2034,6 @@ def test_f_presence_proximity_is_derived_from_the_smoothing_window(monkeypatch):
 
     monkeypatch.setattr(module, "_smoothing_bandwidth_hz", _spy)
     report = module.classify_dip_position_variance(combined, band_hz=NOTCH_BAND_HZ)
-    monkeypatch.undo()
 
     assert report.dips
     # Every window this stage asks for is the diagnostic curve's own fraction
@@ -2043,7 +2042,6 @@ def test_f_presence_proximity_is_derived_from_the_smoothing_window(monkeypatch):
     assert {dip.f_center_hz for dip in report.dips} <= {f for f, _frac in calls}
 
     # And it tracks the fraction rather than a constant: a coarser diagnostic
-    # curve gives a wider window at the same frequency.
-    assert module._smoothing_bandwidth_hz(4000.0, 3) > module._smoothing_bandwidth_hz(
-        4000.0, 6
-    )
+    # curve gives a wider window at the same frequency. Asked of ``real``,
+    # which the patch never replaced.
+    assert real(4000.0, 3) > real(4000.0, 6)
