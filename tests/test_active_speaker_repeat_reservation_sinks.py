@@ -16,8 +16,7 @@ audio-emitting captures at ``MAX_ATTEMPTS`` — so ``admission_attempts`` and th
 - B2: ``measurement._durable_repeat_summary`` via ``_repeat_int`` on
   ``per_repeat.attempt`` (the durable persistence path).
 
-These are hardware-free and do NOT import ``jasper.capture_relay`` (blocked in
-some CI containers by a broken ``cryptography``/``_cffi_backend``).
+These are hardware-free.
 """
 
 from __future__ import annotations
@@ -136,12 +135,8 @@ def test_completing_set_after_two_refunded_transports_stores_and_persists():
 
 
 def _constant_from_source(path: str, name: str) -> int:
-    """Read an int constant textually.
-
-    These tests deliberately do NOT import ``jasper.capture_relay`` (a broken
-    ``cryptography``/``_cffi_backend`` blocks it in some CI containers), and the
-    v2 plan budget is read the same way for symmetry.
-    """
+    """Read an int constant textually, so the v2 plan budget above is read
+    the same way for symmetry."""
     source = Path(path).read_text(encoding="utf-8")
     match = re.search(rf"^{name}\s*=\s*(\d+)", source, re.MULTILINE)
     assert match is not None, f"{name} not found in {path}"
