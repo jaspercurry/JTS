@@ -41,6 +41,7 @@ from ..linearization_fit import (
     fit_driver_linearization,
     measurement_hole_bands_hz,
 )
+from ..profile import LEVEL_MATCH_AXIS
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
@@ -545,19 +546,6 @@ class LinearizationRequest:
 #: level fact; the passband estimate sizes the fixed attenuation. The gap is
 #: reported, never reconciled.
 LEVEL_DEFINITIONS_DIFFER_REASON = "level_definitions_differ"
-
-#: WHICH AXIS the level fact was matched on.
-#:
-#: Stated rather than assumed because where woofer beaming and horn directivity
-#: mismatch, the on-axis, listening-window and power-response ratios differ and
-#: **there is no single correct level**. A tool that matched one of them and did
-#: not say which has published a number whose meaning cannot be recovered.
-#:
-#: The value is derived, not chosen: the level fact is computed from the MEASURE
-#: capture's per-driver responses, and ``spatial._DESIGN_AXIS_GEOMETRY`` places
-#: every such capture at ``degrees=0``, one mark distance out. So the match is
-#: ON AXIS — neither the listening window nor the power response.
-LEVEL_MATCH_AXIS = "design_axis_0deg"
 
 #: How far the two level definitions may sit apart before the difference is
 #: DISCLOSED.

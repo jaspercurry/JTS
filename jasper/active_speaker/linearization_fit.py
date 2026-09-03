@@ -27,11 +27,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.camilla_config_contract import SHELF_Q as _HIGHSHELF_Q
 from jasper.correction.peq import design_peq, predicted_response
@@ -50,6 +49,9 @@ from .linearization_envelope import (
     ReasonCode,
     _ladder_smooth,
 )
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.program_analysis import DriverResponse
 
 # --------------------------------------------------------------------------- #
 # fitting policy constants

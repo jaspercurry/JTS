@@ -3571,7 +3571,7 @@ def solve_branch_trims(
     directivity mismatch, the on-axis, listening-window and power-response
     ratios differ and there is no single correct level — which is why the axis
     these levels were read on is stated rather than assumed
-    (``intervention.LEVEL_MATCH_AXIS``).
+    (``active_speaker.profile.LEVEL_MATCH_AXIS``).
 
     Each ``*_span_hz`` is that branch's own validity span (default Fc ∓ 1
     octave); :func:`branch_level_bands_hz` turns the pair into the mirrored

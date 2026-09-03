@@ -41,8 +41,10 @@ from typing import Any
 import pytest
 import yaml as yaml_parser
 
+from jasper.active_speaker.state_paths import (
+    BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
+)
 from jasper.active_speaker.baseline_profile import (
-    STATE_PATH_ENV,
     recompose_applied_baseline_yaml,
 )
 from jasper.active_speaker.playback_route import (

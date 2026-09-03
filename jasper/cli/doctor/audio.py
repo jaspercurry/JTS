@@ -1138,7 +1138,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             "fail",
             f"statefile points at missing config {config_path}",
         )
-    from ...active_speaker.baseline_profile import baseline_profile_state_path
+    from ...active_speaker.state_paths import baseline_profile_state_path
     from ...active_speaker.staging import staged_metadata_path
     from ...bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
     from ...bass_extension.profile import DEFAULT_PROFILE_PATH
