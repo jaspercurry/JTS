@@ -20,11 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .chip_aec_health import (
+from .chip_aec.health import (
     ACTION_RECOMMISSION, ENV_KEYS, STATUS_DISCLOSED_STALE, STATUS_READY,
     AlignmentHealth,
 )
-from .chip_aec_policy import (
+from .chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
 
@@ -643,7 +643,7 @@ def build_audio_profile_status(
         PROFILE_XVF_CHIP_AEC,
         PROFILE_XVF_CHIP_AEC_TESTING,
     }
-    # Serving rule for both records: jasper.chip_aec_policy's module docstring.
+    # Serving rule for both records: jasper.chip_aec.policy's module docstring.
     alignment = runtime.chip_aec_alignment
     alignment_owned = alignment.applies_to(selection, custom_profile=PROFILE_CUSTOM)
     alignment_status = alignment.status if alignment_owned else ""

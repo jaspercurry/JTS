@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper import chip_aec_health
-from jasper import chip_aec_shipped_alignment as shipped_alignment
+from jasper.chip_aec import health as chip_aec_health
+from jasper.chip_aec import shipped as shipped_alignment
 from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
@@ -44,7 +44,7 @@ from jasper.env_load import parse_env_file
 # tests/test_aec_init.py pins this against jasper-outputd.service's own
 # EnvironmentFile= line.
 from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
-from jasper.chip_aec_alignment import (
+from jasper.chip_aec.alignment import (
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
     identity_divergence,
@@ -61,7 +61,7 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_statu
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
-# Where this run publishes its `jasper.chip_aec_health` verdict, as the shell
+# Where this run publishes its `jasper.chip_aec.health` verdict, as the shell
 # assignments jasper-aec-reconcile evals and copies into /etc/jasper/jasper.env.
 # Absent means this run reached no verdict (a bypass/corpus run, or one killed
 # before its `finally` — a SIGKILL, an OOM kill, an unmet `Requires=`). The
@@ -105,7 +105,7 @@ _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
 MAX_REFERENCE_PERIODS_IN_FLIGHT = 2
 # Where the writer's own recent per-write observations live in STATUS, and the
 # keys one entry carries.  outputd publishes raw observations; every acceptance
-# rule over them is here and in jasper/chip_aec_alignment.py.
+# rule over them is here and in jasper/chip_aec/alignment.py.
 RECENT_WRITES_KEY = "recent_writes"
 # How long to wait between STATUS reads.  Polling harder buys nothing: outputd's
 # state server is one thread that sleeps 500 ms between accepts and answers one
@@ -993,7 +993,7 @@ class BankedAlignment:
 
     ``shipped_label`` names the hardware-class row this ran from when nothing is
     banked on the unit; ``identity_diff`` is what the unit's own commissioned
-    identity disagrees with live.  `jasper.chip_aec_health` turns them into the
+    identity disagrees with live.  `jasper.chip_aec.health` turns them into the
     household verdict — they are facts here, never prose.
     """
 
@@ -1011,7 +1011,7 @@ def resolve_banked_alignment(
     """Resolve the K this run applies, against the live native-reference queue.
 
     ADR-0101: a proof that stopped describing this box is applied and disclosed,
-    not parked. This returns what moved; `jasper.chip_aec_health` judges it into
+    not parked. This returns what moved; `jasper.chip_aec.health` judges it into
     the `disclosed_stale` the reconciler publishes.
 
     Raises:

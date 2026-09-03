@@ -11,10 +11,10 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from jasper import chip_aec_alignment as alignment
-from jasper import chip_aec_shipped_alignment as shipped
+from jasper.chip_aec import alignment as alignment
+from jasper.chip_aec import shipped as shipped
 from jasper.audio_measurement import alignment as kernel_alignment
-from jasper.chip_aec_alignment import (
+from jasper.chip_aec.alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
     MicTiming,

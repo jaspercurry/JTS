@@ -37,7 +37,7 @@ from .audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
-from .chip_aec_policy import (
+from .chip_aec.policy import (
     APPROVED_DAC_IDS,
     HIFIBERRY_DAC8X_DAC_ID,
     STATUS_APPROVED,

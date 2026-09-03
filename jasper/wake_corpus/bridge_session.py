@@ -45,7 +45,7 @@ from jasper.audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
-from jasper.chip_aec_policy import effective_chip_aec_dac_gate
+from jasper.chip_aec.policy import effective_chip_aec_dac_gate
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,

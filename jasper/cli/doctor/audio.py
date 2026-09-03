@@ -680,7 +680,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
 
     This is NOT the chip-AEC gate: USB sync mode is *one* clock-coherence
     signal, while the binding production gate is the fixed DAC-profile
-    qualification (`resolve_chip_aec_dac_gate` in jasper/chip_aec_policy.py).
+    qualification (`resolve_chip_aec_dac_gate` in jasper/chip_aec/policy.py).
     An async-but-approved DAC still passes that gate. Read this check as an
     observation that helps explain a chip-AEC verdict, never as an
     enable/disable switch.

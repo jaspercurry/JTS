@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.chip_aec_commission_record import CommissionOutcome, read, write
+from jasper.chip_aec.record import CommissionOutcome, read, write
 
 
 @pytest.mark.parametrize(

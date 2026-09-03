@@ -35,8 +35,8 @@ from ...audio_profile_state import (
 from ...audio_validation import CHIP_AEC_PROFILE
 from ...audio_validation import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
 from ...audio_validation import latest_artifact_summary as _audio_validation_summary
-from ...chip_aec_health import STATUS_READY
-from ...chip_aec_policy import (
+from ...chip_aec.health import STATUS_READY
+from ...chip_aec.policy import (
     STATUS_APPROVED,
     effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
@@ -269,7 +269,7 @@ def _assess_chip_aec_alignment(
 ) -> CheckResult:
     """Render the published chip-AEC alignment record as one doctor row.
 
-    `jasper.chip_aec_health` judges the record and `AlignmentHealth.
+    `jasper.chip_aec.health` judges the record and `AlignmentHealth.
     applies_to` says which selection it answers for; this only reports what
     they say. An absent or unowned record is not a fault: on `custom` the
     chip arms on the live evidence `_wake_engine` checks, and on a managed

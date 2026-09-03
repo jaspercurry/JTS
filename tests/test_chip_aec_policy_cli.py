@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import chip_aec_health
-from jasper.chip_aec_policy import ChipAecGate
+from jasper.chip_aec import health as chip_aec_health
+from jasper.chip_aec.policy import ChipAecGate
 from jasper.cli import chip_aec_policy
 
 ROOT = Path(__file__).resolve().parents[1]

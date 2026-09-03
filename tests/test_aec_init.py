@@ -19,12 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from jasper import chip_aec_alignment as alignment
-from jasper import chip_aec_shipped_alignment as shipped_alignment
-from jasper import chip_aec_health
+from jasper.chip_aec import alignment as alignment
+from jasper.chip_aec import shipped as shipped_alignment
+from jasper.chip_aec import health as chip_aec_health
 from jasper import output_hardware
-from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
-from jasper.chip_aec_health import AlignmentHealth, alignment_health
+from jasper.chip_aec.alignment import AlignmentArtifact, AlignmentIdentity
+from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
 from jasper.env_load import parse_env_file
 from jasper.mics import xvf3800

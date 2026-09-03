@@ -4,7 +4,7 @@
 
 import pytest
 
-from jasper.chip_aec_policy import (
+from jasper.chip_aec.policy import (
     ACTION_RUN_TESTING_AND_VALIDATE,
     ACTION_USE_CHIP_AEC,
     ACTION_USE_SOFTWARE_OR_TEST,
