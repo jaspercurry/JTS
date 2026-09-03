@@ -8,6 +8,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 
 from jasper.tools import PythonExecutor, Tool, ToolDefinition, ToolRegistry
 from jasper.tools.catalog import build_catalog
@@ -20,6 +21,7 @@ from jasper.tools.weather import (
 from jasper.tools.travel_routes import (
     TRAVEL_ROUTES_TOOL_LABELS,
     TRAVEL_ROUTES_TOOL_NAME,
+    TRAVEL_ROUTES_TOOL_PARAMETERS,
     TRAVEL_ROUTES_TOOL_TIMEOUT_SEC,
 )
 from tests._tool_pack_contract import (
@@ -255,6 +257,57 @@ async def test_travel_routes_pack_dispatches_through_executor_boundary():
         "travel_mode": "drive",
         "max_routes": 1,
     }]
+
+
+def test_travel_routes_schema_has_no_empty_enum_value_and_is_optional():
+    """Gemini's Live API closes the connection (error 1007,
+    BidiGenerateContentRequest.setup validation) if a tool's `enum` contains
+    "". `travel_mode` must express "no preference" by omission, not by an
+    empty-string enum member."""
+    travel_mode_schema = TRAVEL_ROUTES_TOOL_PARAMETERS["properties"]["travel_mode"]
+    assert "" not in travel_mode_schema["enum"]
+    assert "travel_mode" not in TRAVEL_ROUTES_TOOL_PARAMETERS["required"]
+
+
+@pytest.mark.parametrize(
+    ("call_args", "expected_travel_mode"),
+    [
+        pytest.param(
+            {"destination": "30 Rock", "max_routes": 1}, "", id="omitted",
+        ),
+        pytest.param(
+            {"destination": "30 Rock", "travel_mode": "drive", "max_routes": 1},
+            "drive",
+            id="explicit_mode",
+        ),
+    ],
+)
+async def test_travel_routes_omitted_mode_dispatches_as_no_preference(
+    call_args, expected_travel_mode,
+):
+    class StubRoutes:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_travel_routes(self, *, destination, travel_mode="", max_routes=1):
+            self.calls.append(travel_mode)
+            return {"ok": True, "routes": []}
+
+    routes = StubRoutes()
+    reg = ToolRegistry()
+    register_packs(
+        reg,
+        full_tool_deps(google_routes=routes),
+        disabled=frozenset(),
+        disabled_packs=frozenset(),
+        packs=(_pack("travel_routes"),),
+    )
+
+    await assert_dispatch_cases(
+        reg,
+        [DispatchCase(TRAVEL_ROUTES_TOOL_NAME, call_args, {"ok": True, "routes": []})],
+    )
+    assert routes.calls == [expected_travel_mode]
 
 
 def test_travel_routes_pack_is_needs_setup_without_client():
