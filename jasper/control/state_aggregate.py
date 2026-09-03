@@ -862,6 +862,222 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _persisted_volume_state() -> tuple[int | None, float | None]:
+    """Persisted listening level and main volume; ``(None, None)`` if unreadable."""
+    listening_level: int | None = None
+    persisted_main_volume_db: float | None = None
+    try:
+        from ..volume_coordinator import VolumeState
+        from ..volume_persistence import VolumePersistence
+
+        path = os.environ.get(
+            "JASPER_VOLUME_STATE_PATH",
+            "/var/lib/jasper/speaker_volume.json",
+        )
+        record = VolumePersistence(path).load()
+        if record is not None:
+            listening_level = VolumeState.from_record(record).effective_percent
+            if math.isfinite(record.main_volume_db):
+                persisted_main_volume_db = round(record.main_volume_db, 2)
+    except (OSError, ValueError):
+        pass
+    return listening_level, persisted_main_volume_db
+
+
+def _sound_profile_state() -> dict[str, Any] | None:
+    """Persisted sound profile + output settings for ``/state.audio.sound``."""
+    try:
+        from ..dsp_apply import last_dsp_apply_state
+        from ..sound.profile import (
+            build_sound_filters,
+            estimate_headroom_db,
+            load_profile,
+        )
+        from ..sound.settings import load_sound_settings, output_trim_db
+
+        profile = load_profile()
+        sound_settings = load_sound_settings()
+        return {
+            "enabled": profile.enabled,
+            "curve_id": profile.curve_id,
+            "simple_eq": profile.simple_eq.to_dict(),
+            "parametric_band_count": len(profile.parametric_bands),
+            "filter_count": len(build_sound_filters(profile)),
+            "headroom_db": estimate_headroom_db(profile),
+            "match_loudness": sound_settings.match_loudness,
+            "headroom_trim_db": sound_settings.headroom_trim_db,
+            "output_trim_db": output_trim_db(profile, sound_settings),
+            "updated_at": profile.updated_at or None,
+            "last_dsp_apply": last_dsp_apply_state(),
+        }
+    except Exception:  # noqa: BLE001
+        logger.exception("sound profile state probe failed")
+        return None
+
+
+def _spotify_state() -> dict[str, Any]:
+    """Renderer state for ``/state.renderers.spotify``."""
+    from .. import librespot_state
+
+    blob = librespot_state.read(librespot_state.configured_path())
+    return {
+        "playing": bool(blob.get("playing", False)),
+        "track_id": blob.get("track_id"),
+        "uri": blob.get("uri"),
+        "session_active": bool(blob.get("session_active", False)),
+    }
+
+
+def _active_source(
+    *,
+    voice_session: bool,
+    mux_status: dict | None,
+    spotify_playing: bool,
+    airplay_playing: bool | None,
+    usbsink_state: dict[str, Any] | None,
+) -> str:
+    """Pick ``/state.active_source``.
+
+    Mux owns the effective audible source in both manual and auto mode; the
+    raw renderer probes are a fallback for when mux is unavailable or has no
+    selected winner yet.
+    """
+    mux_effective_source = None
+    if isinstance(mux_status, dict):
+        raw_selected = mux_status.get("selected_source")
+        if isinstance(raw_selected, str):
+            mux_effective_source = raw_selected
+        else:
+            raw_winner = mux_status.get("winner")
+            if isinstance(raw_winner, str):
+                mux_effective_source = raw_winner
+
+    if voice_session:
+        return "voice"
+    if mux_effective_source:
+        return mux_effective_source
+    if spotify_playing:
+        return "spotify"
+    if airplay_playing:
+        return "airplay"
+    if usbsink_state is not None and usbsink_state.get("playing"):
+        # `playing` is authoritative on both box shapes: solo reads the
+        # bridge's RMS-gated flag, combo derives it from the fan-in DIRECT
+        # lane's level (audible above the shared -60 dBFS gate), so a combo
+        # box streaming silence reads false exactly like solo.
+        return "usbsink"
+    return "idle"
+
+
+def _grouping_state(outputd_status: dict | None) -> dict[str, Any] | None:
+    """Multiroom grouping for ``/state.grouping``, with the bonded-leader
+    AirPlay latency fit attached. ``enabled=True`` with a non-null error is
+    the fail-LOUD "configured but broken" state; ``None`` means the fresh
+    read itself failed."""
+    try:
+        state: dict | None = read_grouping_state(
+            local_outputd_reader=lambda: outputd_status,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("grouping state read failed")
+        state = None
+    return with_airplay_latency_fit(state)
+
+
+def _active_speaker_setup_state(
+    active_config_path: str | None,
+) -> dict[str, Any] | None:
+    """Pass-through of the speaker-setup readiness snapshot; no key filtering."""
+    try:
+        return read_active_speaker_setup_status(
+            active_config_path=active_config_path,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        logger.exception("active speaker setup status read failed")
+        return None
+
+
+def _audition_state() -> dict[str, Any] | None:
+    """Reduced-graph audition record for ``/state.audition``.
+
+    Non-null means somebody is auditioning a reduced graph, so every other
+    reading of this speaker's sound is about THAT graph. ``stale`` marks a
+    record whose owner died without restoring the applied graph.
+    """
+    try:
+        from ..active_speaker.audition import read_audition_state
+
+        state: dict | None = read_audition_state()
+        if state is not None:
+            state = dict(state)
+            state["stale"] = (
+                float(state.get("deadline_at") or 0.0) <= time.time()
+            )
+        return state
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        logger.exception("audition state read failed")
+        return None
+
+
+def _bass_extension_state() -> dict[str, Any] | None:
+    try:
+        from ..bass_extension.profile import bass_extension_state_summary
+
+        return bass_extension_state_summary()
+    except (
+        ImportError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        KeyError,
+        AttributeError,
+    ):
+        logger.exception("bass extension profile state read failed")
+        return None
+
+
+def _transit_state(read_state: Callable[[], dict]) -> dict[str, Any] | None:
+    """Transit city packs for ``/state.transit``; ``None`` when the read failed."""
+    try:
+        return read_state()
+    except Exception:  # noqa: BLE001
+        logger.exception("transit state read failed")
+        return None
+
+
+def _output_hardware_state() -> dict[str, Any] | None:
+    try:
+        from ..output_hardware import load_state
+
+        hardware = load_state()
+        return hardware.to_dict() if hardware is not None else None
+    except Exception:  # noqa: BLE001
+        logger.exception("output hardware state read failed")
+        return None
+
+
+def _service_states(
+    snapshot: Callable[[], dict[str, dict[str, Any]]] | None,
+) -> dict[str, dict[str, Any]] | None:
+    try:
+        return snapshot() if snapshot else None
+    except Exception:  # noqa: BLE001
+        logger.exception("service state snapshot read failed")
+        return None
+
+
+def _tools_state() -> dict[str, Any] | None:
+    """Tool catalog summary for ``/state.tools``; ``None`` when the read failed."""
+    try:
+        from ..tool_catalog_view import summary
+
+        return summary()
+    except Exception:  # noqa: BLE001
+        logger.exception("tool catalog state read failed")
+        return None
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -885,9 +1101,7 @@ async def _get_state(
     completes in ~200 ms typical."""
     from datetime import datetime, timezone
 
-    from .. import librespot_state
     from ..camilla import CamillaController
-    from ..output_hardware import load_state as _load_output_hardware_state
     from ..speaker_name import read_state as _read_speaker_name_state
     from ..voice.provider_state import (
         read_active_model_from_env_files,
@@ -904,54 +1118,8 @@ async def _get_state(
     # ("", None) when unconfigured; never a guessed default.
     active_provider = read_active_provider_state()
 
-    listening_level: int | None = None
-    persisted_main_volume_db: float | None = None
-    try:
-        from ..volume_coordinator import VolumeState
-        from ..volume_persistence import VolumePersistence
-
-        path = os.environ.get(
-            "JASPER_VOLUME_STATE_PATH",
-            "/var/lib/jasper/speaker_volume.json",
-        )
-        record = VolumePersistence(path).load()
-        if record is not None:
-            listening_level = VolumeState.from_record(record).effective_percent
-            if math.isfinite(record.main_volume_db):
-                persisted_main_volume_db = round(record.main_volume_db, 2)
-    except (OSError, ValueError):
-        pass
-
-    sound_profile: dict[str, Any] | None
-    try:
-        from ..dsp_apply import last_dsp_apply_state
-        from ..sound.profile import (
-            build_sound_filters,
-            estimate_headroom_db,
-            load_profile,
-        )
-        from ..sound.settings import load_sound_settings, output_trim_db
-
-        profile = load_profile()
-        sound_settings = load_sound_settings()
-        sound_profile = {
-            "enabled": profile.enabled,
-            "curve_id": profile.curve_id,
-            "simple_eq": profile.simple_eq.to_dict(),
-            "parametric_band_count": len(profile.parametric_bands),
-            "filter_count": len(build_sound_filters(profile)),
-            "headroom_db": estimate_headroom_db(profile),
-            # Global output settings + the effective trim they apply, so the
-            # dashboard can explain why a profile sounds quieter/level-matched.
-            "match_loudness": sound_settings.match_loudness,
-            "headroom_trim_db": sound_settings.headroom_trim_db,
-            "output_trim_db": output_trim_db(profile, sound_settings),
-            "updated_at": profile.updated_at or None,
-            "last_dsp_apply": last_dsp_apply_state(),
-        }
-    except Exception:  # noqa: BLE001
-        logger.exception("sound profile state probe failed")
-        sound_profile = None
+    listening_level, persisted_main_volume_db = _persisted_volume_state()
+    sound_profile = _sound_profile_state()
 
     # Slow probes — fan out in parallel.
     def _round_db(value: float | None) -> float | None:
@@ -1121,7 +1289,7 @@ async def _get_state(
         )
         raise
 
-    spotify_blob = librespot_state.read(librespot_state.configured_path())
+    spotify = _spotify_state()
     if sound_profile is not None:
         runtime = _sound_runtime_status(
             sound_profile,
@@ -1135,12 +1303,6 @@ async def _get_state(
         sound_profile["runtime_active"] = runtime["active"]
         sound_profile["active_config_path"] = runtime["active_config_path"]
     speaker_name_state = _read_speaker_name_state()
-    spotify = {
-        "playing": bool(spotify_blob.get("playing", False)),
-        "track_id": spotify_blob.get("track_id"),
-        "uri": spotify_blob.get("uri"),
-        "session_active": bool(spotify_blob.get("session_active", False)),
-    }
 
     # USB Audio Input — fourth renderer. Fan-in owns the live DIRECT lane;
     # kernel UDC state owns host connection. No copied state file or resident
@@ -1154,37 +1316,13 @@ async def _get_state(
 
     voice_status = voice_st or {}
     voice_session = bool(voice_st) and voice_status.get("state") == "SESSION"
-    # Active-source picks. Mux owns the effective audible source in
-    # both manual and auto mode. Fall back to raw renderer probes only
-    # when mux is unavailable or has no selected winner yet.
-    mux_effective_source = None
-    if isinstance(mux_st, dict):
-        raw_selected = mux_st.get("selected_source")
-        if isinstance(raw_selected, str):
-            mux_effective_source = raw_selected
-        else:
-            raw_winner = mux_st.get("winner")
-            if isinstance(raw_winner, str):
-                mux_effective_source = raw_winner
-
-    if voice_session:
-        active_source: str = "voice"
-    elif mux_effective_source:
-        active_source = mux_effective_source
-    elif spotify["playing"]:
-        active_source = "spotify"
-    elif airplay:
-        active_source = "airplay"
-    elif usbsink_state is not None and usbsink_state.get("playing"):
-        # Fallback (only when mux is unavailable / has no winner yet). The
-        # `playing` flag is authoritative on both box shapes now: solo reads the
-        # bridge's RMS-gated flag; combo derives it from the fan-in DIRECT lane's
-        # level (audible above the shared -60 dBFS gate — never a stale idle
-        # default). A combo box streaming silence reads playing=false and does
-        # not fire this branch, matching solo.
-        active_source = "usbsink"
-    else:
-        active_source = "idle"
+    active_source = _active_source(
+        voice_session=voice_session,
+        mux_status=mux_st,
+        spotify_playing=spotify["playing"],
+        airplay_playing=airplay,
+        usbsink_state=usbsink_state,
+    )
 
     volume_policy = build_volume_policy_snapshot(
         active_source=active_source,
@@ -1195,115 +1333,22 @@ async def _get_state(
         diagnostics=_read_volume_diagnostics(),
     )
 
-    # Multiroom grouping. Re-reads /var/lib/jasper/grouping.env fresh
-    # (never os.environ — jasper-control isn't restarted on a wizard
-    # save). read_grouping_state is itself total, but guard the section
-    # so any future read change can't take the whole /state down: a
-    # broken read leaves grouping null and the rest of /state intact.
-    # enabled=False means grouping is off (solo); enabled=True with a
-    # non-null error is the fail-LOUD "configured but broken" state.
-    try:
-        grouping_state: dict | None = read_grouping_state(
-            local_outputd_reader=lambda: outputd_st,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("grouping state read failed")
-        grouping_state = None
-
-    # Bonded-leader AirPlay latency fit (Stage D observability — see
-    # jasper/multiroom/airplay_latency.py). The shared composer (also used by
-    # /rooms.json) attaches it non-mutatingly; read_grouping_state stays a pure
-    # config projection and the gated, cached journal read lives behind the
-    # helper. Total (returns {"applicable": False} on solo without touching the
-    # journal), so the grouping section survives a broken read.
-    grouping_state = with_airplay_latency_fit(grouping_state)
-
-    try:
-        active_speaker_setup = read_active_speaker_setup_status(
-            active_config_path=camilla_st.get("active_config_path"),
-        )
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        logger.exception("active speaker setup status read failed")
-        active_speaker_setup = None
-
-    # Null means the speaker is on its applied graph. Non-null means somebody is
-    # auditioning a reduced one, and every other reading of this speaker's sound
-    # is about THAT graph. `stale` marks a record whose owner died without
-    # restoring: the graph is still reduced, but nothing is going to put it back.
-    try:
-        from ..active_speaker.audition import read_audition_state
-
-        audition_state: dict | None = read_audition_state()
-        if audition_state is not None:
-            audition_state = dict(audition_state)
-            audition_state["stale"] = (
-                float(audition_state.get("deadline_at") or 0.0) <= time.time()
-            )
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        logger.exception("audition state read failed")
-        audition_state = None
-
-    try:
-        from ..bass_extension.profile import bass_extension_state_summary
-
-        bass_extension_state = bass_extension_state_summary()
-    except (
-        ImportError,
-        OSError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-        KeyError,
-        AttributeError,
-    ):
-        logger.exception("bass extension profile state read failed")
-        bass_extension_state = None
-
-    # Transit city packs. Re-reads /var/lib/jasper/transit.env fresh (never
-    # os.environ — jasper-control isn't restarted on a /transit/ save, only
-    # jasper-voice is). read_transit_state is itself total, but guard the
-    # section so a future read change can't take the whole /state down: a
-    # broken read leaves transit null and the rest of /state intact.
-    try:
-        transit_state: dict | None = read_transit_state_func()
-    except Exception:  # noqa: BLE001
-        logger.exception("transit state read failed")
-        transit_state = None
-    try:
-        output_hardware = _load_output_hardware_state()
-        output_hardware_state = (
-            output_hardware.to_dict()
-            if output_hardware is not None
-            else None
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("output hardware state read failed")
-        output_hardware_state = None
-
-    try:
-        service_states = (
-            service_states_snapshot() if service_states_snapshot else None
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("service state snapshot read failed")
-        service_states = None
+    grouping_state = _grouping_state(outputd_st)
+    active_speaker_setup = _active_speaker_setup_state(
+        camilla_st.get("active_config_path"),
+    )
+    audition_state = _audition_state()
+    bass_extension_state = _bass_extension_state()
+    transit_state = _transit_state(read_transit_state_func)
+    output_hardware_state = _output_hardware_state()
+    service_states = _service_states(service_states_snapshot)
 
     audio_graph_state = _audio_graph_state(
         fanin_status=fanin_st,
         outputd_status=outputd_st,
         service_states=service_states,
     )
-
-    # Tool catalog summary. Fresh read of /run/jasper/tools.json (written by
-    # jasper-voice) + the wizard-owned disabled-set — never os.environ, since
-    # jasper-control isn't restarted on a /tools/ toggle. Light view module
-    # (json + tool_state only). Guarded so a read change can't take /state down.
-    try:
-        from ..tool_catalog_view import summary as _tool_summary
-        tools_state: dict | None = _tool_summary()
-    except Exception:  # noqa: BLE001
-        logger.exception("tool catalog state read failed")
-        tools_state = None
+    tools_state = _tools_state()
 
     # Conversation history is a read-only Feature surface. Settings are
     # wizard-owned and read fresh; the SQLite store is opened read-only so
