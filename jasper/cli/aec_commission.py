@@ -59,6 +59,11 @@ from jasper.chip_aec_alignment import (
     read_capture,
     WINDOW_CENTER,
 )
+from jasper.chip_aec_commission_record import (
+    CommissionOutcome,
+    OUTCOME_PATH,
+    write as write_outcome_record,
+)
 from jasper.chip_aec_policy import STATUS_APPROVED, static_dac_qualification
 from jasper.chip_aec_shipped_alignment import render_entry
 from jasper.cli import aec_init
@@ -74,9 +79,6 @@ from jasper.mics import xvf3800
 logger = logging.getLogger("jasper.aec_commission")
 _T = TypeVar("_T")
 MARKER = Path("/run/jasper-chip-aec-commission/active")
-# Last-run outcome for status surfaces (/aec `commission`, the wake page).
-# Same shape family as jasper.cli.xvf_firmware_update's STATE_PATH record.
-STATE_PATH = Path("/var/lib/jasper/chip-aec-commission.json")
 # Where a rejected run's captures land instead of unwinding with the temp
 # dir, and how many rejections are kept.  Three is the run of rejections the
 # owner already has (#3271); a run retains two timing phases x MIC_COUNT x
@@ -543,17 +545,8 @@ def _write_outcome(state_path: Path, *, outcome: str, detail: str) -> None:
     run's own verdict (the exception already propagating, or the artifact
     already published)."""
     try:
-        atomic_write_json(
-            state_path,
-            {
-                "schema_version": 1,
-                "state": outcome,
-                "detail": detail,
-                "updated_at": time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-                ),
-            },
-            mode=0o644,
+        write_outcome_record(
+            state_path, CommissionOutcome.now(state=outcome, detail=detail)
         )
     except OSError as exc:
         log_event(
@@ -569,7 +562,7 @@ def run_commissioning(
     *,
     marker_path: Path = MARKER,
     artifact_path: Path = ARTIFACT_PATH,
-    state_path: Path = STATE_PATH,
+    state_path: Path = OUTCOME_PATH,
     rejection_dir: Path = REJECTED_CAPTURE_DIR,
     effective_uid: int | None = None,
 ) -> AlignmentArtifact:

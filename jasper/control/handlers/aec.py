@@ -12,6 +12,14 @@ from .. import server as _server
 from ._base import ControlHandlerMixin
 
 
+def _commission_start_body(*, running: bool) -> dict[str, Any]:
+    """The `commission` object on a start refusal: no run's verdict to report.
+
+    Same keys as GET /aec's, so one client-side reader handles both.
+    """
+    return {"running": running, "state": "", "detail": ""}
+
+
 class AecRoutes(ControlHandlerMixin):
     def _get_aec(self) -> None:
         # AEC bridge state + per-leg config + wake
@@ -441,7 +449,7 @@ class AecRoutes(ControlHandlerMixin):
                 self._send_json(
                     {
                         "error": "chip-AEC re-commissioning is already running",
-                        "commission": {"running": True},
+                        "commission": _commission_start_body(running=True),
                     },
                     status=409,
                 )
@@ -452,7 +460,7 @@ class AecRoutes(ControlHandlerMixin):
                 {
                     "error": "the re-commissioning run could not be started",
                     "code": "aec_commission_start_failed",
-                    "commission": {"running": False},
+                    "commission": _commission_start_body(running=False),
                 },
                 status=502,
             )
