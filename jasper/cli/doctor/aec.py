@@ -16,6 +16,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import NamedTuple
 from ... import enhanced_aec
 from ...audio_profile_state import (
     AecIntent,
@@ -539,12 +540,45 @@ def check_aec_bridge_running() -> CheckResult:
     )
 
 
-# Compiled once: matches the bridge's periodic RMS log lines, e.g.
-# "rms over 5.0s: ref=15694 mic=2077 aec=311 → attenuation=-16.5 dB (...)".
+# The bridge emits one of two RMS window shapes per 5 s, chosen by whether
+# production chip AEC is armed (jasper/cli/aec_bridge.py):
+#   software AEC3: "rms over 5.0s: ref=15694 mic=2077 aec=311 →
+#                   attenuation=-16.5 dB (...)"
+#   chip AEC:      "chip_aec rms over 5.0s: ref=15694 near=chip_aec_210:2077
+#                   primary=chip_aec_150:311 level_delta=-16.5 dB (...)"
 _AEC_RMS_RE = re.compile(
-    r"rms over [\d.]+s: ref=(\d+) mic=(\d+) aec=(\d+) → "
-    r"attenuation=(-?\d+\.\d+) dB"
+    r"rms over [\d.]+s: ref=(?P<ref>\d+) mic=(?P<mic>\d+) aec=\d+ → "
+    r"attenuation=(?P<level>-?\d+\.\d+) dB"
 )
+_CHIP_AEC_RMS_RE = re.compile(
+    r"chip_aec rms over [\d.]+s: ref=(?P<ref>\d+) near=[^\s:]+:(?P<mic>\d+) "
+    r"primary=[^\s:]+:\d+ level_delta=-?\d+\.\d+ dB"
+)
+
+
+class _RmsWindow(NamedTuple):
+    """`level_db` is AEC3 `attenuation` and is None on chip AEC, whose
+    `level_delta` compares two beams the chip already cancelled."""
+
+    ref: int
+    mic: int
+    level_db: float | None
+    chip: bool
+
+
+def _parse_rms_window(line: str) -> _RmsWindow | None:
+    """Parse either bridge RMS log shape into one record, else None."""
+    if m := _CHIP_AEC_RMS_RE.search(line):
+        return _RmsWindow(
+            ref=int(m["ref"]), mic=int(m["mic"]), level_db=None, chip=True,
+        )
+    if m := _AEC_RMS_RE.search(line):
+        return _RmsWindow(
+            ref=int(m["ref"]), mic=int(m["mic"]),
+            level_db=float(m["level"]), chip=False,
+        )
+    return None
+
 
 # Thresholds for `check_aec_bridge_output_health`.
 # Ambient room (no music) puts mic at ~600 RMS at our chip-side AGC
@@ -851,29 +885,42 @@ def _assess_aec_bridge_output(
     healthy_ref_windows = 0
     healthy_windows = 0
     total_windows = 0
+    chip_windows = 0
 
     for line in journal_text.split("\n"):
-        m = _AEC_RMS_RE.search(line)
-        if not m:
+        w = _parse_rms_window(line)
+        if w is None:
             continue
-        ref = int(m.group(1))
-        mic = int(m.group(2))
-        attn_db = float(m.group(4))
         total_windows += 1
+        if w.chip:
+            chip_windows += 1
         # ref ≥ silent-threshold = the reference chain delivered
         # real samples in this window. Any single occurrence proves the
-        # chain works end-to-end.
-        if ref >= _AEC_REF_SILENT_THRESHOLD:
+        # chain works end-to-end. Both shapes carry the same `ref`: the
+        # outputd speaker monitor, upstream of whichever AEC runs.
+        if w.ref >= _AEC_REF_SILENT_THRESHOLD:
             healthy_ref_windows += 1
         # mic > music-threshold = something acoustic was loud enough to
         # plausibly be music (ambient is ~600 RMS, well below). ref <
         # silent-threshold = ref path silent in this window.
-        if mic > _AEC_MIC_MUSIC_THRESHOLD and ref < _AEC_REF_SILENT_THRESHOLD:
+        # `ref` is the only field identical across both shapes. On chip AEC
+        # `mic` is the already-cancelled 210° beam, not the raw-ish beam this
+        # threshold was calibrated on, so this gate — and the FAIL it feeds —
+        # is less sensitive there. The chip line logs no raw near-end level
+        # to compare instead (raw mic 0 is capture channel 2, exported on its
+        # own UDP leg and never logged).
+        if w.mic > _AEC_MIC_MUSIC_THRESHOLD and w.ref < _AEC_REF_SILENT_THRESHOLD:
             silent_ref_count += 1
         # "Healthy AEC work" = music-loud mic + meaningful attenuation.
         # Below the music threshold AEC output is just noise floor so we
         # can't tell whether the attenuation number means anything.
-        if mic > _AEC_MIC_MUSIC_THRESHOLD and attn_db <= -8.0:
+        # `level_db is None` excludes chip windows, which carry no
+        # attenuation-equivalent to threshold.
+        if (
+            w.level_db is not None
+            and w.mic > _AEC_MIC_MUSIC_THRESHOLD
+            and w.level_db <= -8.0
+        ):
             healthy_windows += 1
 
     # Failure mode 1 — ref path broken. The 2026-05-15 dsnoop rate-lock
@@ -921,13 +968,17 @@ def _assess_aec_bridge_output(
             ),
         )
 
-    # No log windows = bridge restarted within the last 90 s OR
-    # journal isn't capturing the level (unlikely on default config).
+    # An active bridge writes an RMS window every 5 s, so an empty 90 s
+    # window is missing evidence, not evidence of health: a restart loop, a
+    # wedged processing thread, or a journal not capturing INFO all look
+    # like this. Warn rather than assert an unverified ok.
     if total_windows == 0:
         return CheckResult(
-            "AEC bridge output", "ok",
-            "no recent RMS windows logged "
-            "(bridge may have just started)",
+            "AEC bridge output", "warn",
+            "no recent RMS windows logged while the bridge is running "
+            "(expected one per 5 s) — bridge may have just restarted, or "
+            "its processing loop is wedged. Check: journalctl -u "
+            "jasper-aec-bridge -e",
         )
 
     # silent_ref bursts with a healthy ref path = the false-positive
@@ -945,17 +996,36 @@ def _assess_aec_bridge_output(
             f"healthy in {healthy_ref_windows}/{total_windows} windows",
         )
 
+    # Chip AEC: the bridge runs no canceller, so the line carries no
+    # attenuation-equivalent to evaluate. Report the evidence that does
+    # exist; the ref-path branches above remain the verdict-bearing part on
+    # this profile. Only when EVERY window is chip-shaped — a mixed journal
+    # (a restart across a profile change) still owes the AEC3 assessment.
+    if chip_windows == total_windows:
+        return CheckResult(
+            "AEC bridge output", "ok",
+            f"chip AEC: {total_windows} recent windows; ref carried signal "
+            f"in {healthy_ref_windows}/{total_windows} (the chip cancels "
+            f"upstream, so this profile logs no attenuation to evaluate)",
+        )
+
+    mixed = (
+        f"; {chip_windows}/{total_windows} windows are chip-shaped and carry "
+        f"no attenuation" if chip_windows else ""
+    )
+
     # All windows quiet — speaker has been idle, nothing to assess.
     if healthy_windows == 0 and silent_ref_count == 0:
         return CheckResult(
             "AEC bridge output", "ok",
             f"no music activity in last 90 s "
-            f"({total_windows} log windows; no AEC work to evaluate)",
+            f"({total_windows} log windows; no AEC work to evaluate){mixed}",
         )
 
     summary = (
         f"{healthy_windows}/{total_windows} recent windows show real AEC "
         f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB)"
+        f"{mixed}"
     )
     if silent_ref_count:
         # Non-zero silent_ref without hitting the FAIL threshold —

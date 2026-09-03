@@ -32,6 +32,21 @@ def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
     )
 
 
+def _chip_rms_log_line(
+    ref: int, near: int, primary: int, level_delta_db: float,
+) -> str:
+    """Synthesize one `chip_aec rms over` line — the shape the bridge emits
+    instead of the AEC3 one when production chip AEC is armed. Legs are the
+    fixed 150/210 ASR beams (`jasper/cli/aec_bridge.py`)."""
+    return (
+        f"2026-09-02 17:00:00,000 aec-bridge INFO "
+        f"chip_aec rms over 5.0s: ref={ref} near=chip_aec_210:{near} "
+        f"primary=chip_aec_150:{primary} "
+        f"level_delta={level_delta_db:.1f} dB (frames=1 ref_q=0 mic_q=0 "
+        f"ref_starve=0 ref_clip=0.00% out_clip=0.00%)"
+    )
+
+
 def _bridge_reference_stats(
     source: str,
     *,
@@ -89,8 +104,8 @@ def _healthy_journal(windows: int = 8) -> str:
 @pytest.mark.parametrize(
     "journal, status, must_name",
     [
-        # No rms lines: the bridge probably just restarted inside the window.
-        ("", "ok", "no recent rms windows"),
+        # An active bridge logs a window every 5 s: none is missing evidence.
+        ("", "warn", "no recent rms windows"),
         # Mic and ref both quiet — the speaker has been idle.
         (
             "\n".join(
@@ -132,6 +147,73 @@ def test_assess_aec_bridge_output_verdicts(journal, status, must_name):
 
     assert r.status == status
     assert must_name in r.detail.lower() or must_name in r.detail
+
+
+@pytest.mark.parametrize(
+    "journal",
+    [
+        "\n".join(
+            _rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)
+            for _ in range(8)
+        ),
+        "\n".join(
+            _chip_rms_log_line(
+                ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
+            )
+            for _ in range(8)
+        ),
+    ],
+    ids=["aec3", "chip"],
+)
+def test_assess_aec_bridge_output_counts_windows_in_both_log_shapes(journal):
+    """The bridge emits a different RMS line under chip AEC. Both shapes must
+    reach the assessment as counted windows: a shape the parser drops makes
+    the check report on zero evidence."""
+    lines = journal.split("\n")
+
+    total_windows = [
+        w for w in map(doctor._parse_rms_window, lines) if w is not None
+    ]
+
+    assert len(total_windows) == len(lines) > 0
+    assert doctor._assess_aec_bridge_output(journal).status == "ok"
+
+
+def test_chip_windows_never_count_as_attenuation_evidence():
+    """A chip `level_delta` of -24 dB reads like deep AEC3 attenuation but is
+    the delta between two beams the chip already cancelled, so it must never
+    be counted as proof the canceller did work."""
+    journal = "\n".join(
+        _chip_rms_log_line(
+            ref=1_200, near=2_400, primary=150, level_delta_db=-24.1,
+        )
+        for _ in range(8)
+    )
+
+    windows = [doctor._parse_rms_window(line) for line in journal.split("\n")]
+
+    assert all(w is not None and w.chip and w.level_db is None for w in windows)
+    assert doctor._assess_aec_bridge_output(journal).status == "ok"
+
+
+def test_one_chip_window_does_not_displace_the_aec3_assessment():
+    """A restart across a profile change leaves both shapes in one journal.
+    The chip summary is for an all-chip journal; a mixed one still owes the
+    AEC3 verdict over its AEC3 windows."""
+    journal = "\n".join(
+        [_rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)] * 17
+        + [
+            _chip_rms_log_line(
+                ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
+            )
+        ]
+    )
+
+    result = doctor._assess_aec_bridge_output(journal)
+
+    assert result.status == "ok"
+    # Both counts reported: 17 AEC3 windows assessed, 1 chip window disclosed.
+    assert "17/18" in result.detail and "1/18" in result.detail
 
 
 def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
@@ -811,8 +893,7 @@ def test_check_undeclared_reference_stats_fall_back_to_journal(
 
     result = doctor.aec.check_aec_bridge_output_health()
 
-    assert result.status == "ok"
-    assert "no recent RMS windows" in result.detail
+    assert result.status == "warn"
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 
@@ -879,8 +960,7 @@ def test_check_oversized_json_integer_preserves_fallback_without_traceback(
 
     result = doctor.aec.check_aec_bridge_output_health()
 
-    assert result.status == "ok"
-    assert "no recent RMS windows" in result.detail
+    assert result.status == "warn"
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 
@@ -1081,8 +1161,7 @@ def test_neither_route_outputd_keeps_the_journal_fallback(
 
     result = doctor.aec.check_aec_bridge_output_health()
 
-    assert result.status == "ok"
-    assert "no recent RMS windows" in result.detail
+    assert result.status == "warn"
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 

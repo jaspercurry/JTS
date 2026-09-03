@@ -30,7 +30,7 @@ from ...audio_measurement.correction_lane import (
 from ...control import client as control
 from ...correction.coordinator import MeasurementWindowError, measurement_window
 from ._shared import CheckResult, _run
-from .aec import _AEC_MIC_MUSIC_THRESHOLD, _AEC_RMS_RE
+from .aec import _AEC_MIC_MUSIC_THRESHOLD, _parse_rms_window
 
 
 # A 5 s, -26 dBFS sine played to the correction lane reaches the bridge's
@@ -366,12 +366,12 @@ def _play_and_assess_probe() -> list[CheckResult]:
     max_mic = 0
     window_count = 0
     for line in journal.stdout.split("\n"):
-        match = _AEC_RMS_RE.search(line)
-        if not match:
+        window = _parse_rms_window(line)
+        if window is None:
             continue
         window_count += 1
-        max_ref = max(max_ref, int(match.group(1)))
-        max_mic = max(max_mic, int(match.group(2)))
+        max_ref = max(max_ref, window.ref)
+        max_mic = max(max_mic, window.mic)
 
     if window_count == 0:
         results.append(CheckResult(
