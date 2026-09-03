@@ -1846,7 +1846,7 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     the marker's writer runs first (``jasper-audio-hardware-reconcile``,
     ``Before=jasper-outputd``) and kicks ``jasper-fanin-coupling-auto.service``,
     which runs this. Between those two the pair is legitimately crossed;
-    :func:`jasper.audio_runtime_plan.transport_coherence_report` reports that
+    :func:`jasper.transport_coherence.transport_coherence_report` reports that
     window as the first-arm waypoint (a note) rather than a contradiction,
     because a refusal there could only fire while the projection is stale and
     would block the writer that converges it.

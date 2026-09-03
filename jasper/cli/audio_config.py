@@ -32,8 +32,8 @@ from jasper.audio_runtime_plan import (
     outputd_latency_floor_actions,
     route_owned_env_actions,
     resolve_audio_route_profile,
-    transport_coherence_report,
 )
+from jasper.transport_coherence import transport_coherence_report
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     outputd_capture_device_for_playback,
