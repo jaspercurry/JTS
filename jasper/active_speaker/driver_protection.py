@@ -239,8 +239,8 @@ def declared_protection_highpass_floor_hz(driver: Any) -> float | None:
     The commissioning-tone gate is deliberately NOT monotone (a published floor
     below the class default admits a tone the class default refused).
 
-    ``None`` means *no floor is declared* — never a floor of zero and never the
-    class-default policy floor (docs/measurement-loop-doctrine.md §5).
+    ``None`` means *no floor is declared* — never a floor of zero and never
+    the class-default policy floor (ADR-0227 §1).
     """
 
     if not isinstance(driver, Mapping):
@@ -612,11 +612,11 @@ def apply_driver_low_limit(
     low limit is left ALONE rather than stamped into an inverted range; the
     ``..._outside_hard_band`` vocabulary is what names that.
 
-    **A code default may UNBLOCK; it may never REFUSE**
-    (docs/measurement-loop-doctrine.md §5), so a ``style_default`` low limit is
-    NOT stamped: the stamped high-pass feeds the preset, the derived protection
-    clamp and the ``path_safety`` load gate, and inventing one would refuse a
-    design the household chose on a number this module made up.
+    **A code default may UNBLOCK; it may never REFUSE** (ADR-0227 §1), so a
+    ``style_default`` low limit is NOT stamped: the stamped high-pass feeds the
+    preset, the derived protection clamp and the ``path_safety`` load gate, and
+    inventing one would refuse a design the household chose on a number this
+    module made up.
     """
 
     if not isinstance(driver, Mapping):
