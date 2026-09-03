@@ -33,10 +33,14 @@ from .session import (
 logger = logging.getLogger(__name__)
 
 
-# Keepalive period — Vertex Live API closes idle connections after 10
-# min (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting).
-# 4 min gives 6+ min headroom even if the keepalive task lags briefly.
-KEEPALIVE_PERIOD_SEC = 240.0
+# Planned session rotation. On gemini-3.1-flash-live-preview the server
+# aborts an idle session at 150.1 s ±1 s with WebSocket close 1008 and no
+# preceding GoAway (measured on jts4: n=516, floor 150.06 s; WS pings do
+# not count as activity). Rotating at 135 s keeps ~15 s of headroom over
+# that floor — comfortably more than the p99 connect (5.3 s) plus
+# teardown. Raise only with a fresh lifetime measurement; the cap is
+# per-model and undocumented.
+SESSION_ROTATE_AFTER_SEC = 135.0
 
 # Age-out window for un-acked `activity_end`s. If the server hasn't
 # returned a `turn_complete` within this many seconds of our send, we
@@ -132,6 +136,25 @@ def _is_409_conflict(exc: Exception) -> tuple[bool, int | None]:
     if "409" in msg or "Conflict" in msg:
         return True, status
     return False, status
+
+
+def _close_code_and_reason(exc: Exception) -> tuple[int | None, str | None]:
+    """Pull the WebSocket close code out of a receive-loop exception.
+
+    Two shapes carry it. ``websockets`` raises with the frame itself on
+    ``exc.rcvd``. The genai SDK consumes the frame and re-raises
+    ``APIError``, which keeps the close code on ``.code`` and puts it in
+    the message only as prose — so the server's 1008 idle abort was
+    otherwise unattributable in the journal.
+    """
+    rcvd = getattr(exc, "rcvd", None)
+    code = getattr(rcvd, "code", None)
+    if isinstance(code, int):
+        return code, getattr(rcvd, "reason", None)
+    api_code = getattr(exc, "code", None)
+    if isinstance(api_code, int):
+        return api_code, getattr(exc, "message", None)
+    return None, None
 
 
 class GeminiLiveTurn:
@@ -525,7 +548,9 @@ class GeminiLiveConnection:
         model: str,
         voice: str = "Aoede",
         context_reset_sec: float = 0.0,
-        keepalive_period_sec: float = KEEPALIVE_PERIOD_SEC,
+        # 0 disables the planned rotation (tests, and any model whose
+        # server does not abort idle sessions).
+        rotate_after_sec: float = SESSION_ROTATE_AFTER_SEC,
         # Production: leave None → supervisor reconnects FOREVER with
         # `reconnect_delay()` (1, 2, 4, 8, 16, 32, 60, 60, …s with ±25%
         # jitter while the failure is transient; a fixed slow poll once
@@ -545,7 +570,7 @@ class GeminiLiveConnection:
         self._model = model
         self._voice = voice
         self._context_reset_sec = context_reset_sec
-        self._keepalive_period_sec = keepalive_period_sec
+        self._rotate_after_sec = rotate_after_sec
         self._backoff_schedule = backoff_schedule
 
         self._registry: ToolRegistry | None = None
@@ -595,9 +620,16 @@ class GeminiLiveConnection:
         # docstring on _prune_unack_activity_ends for the design.
         self._unack_activity_end_times: list[float] = []
 
-        # Background tasks: receive loop, keepalive, reconnect supervisor.
+        # Background tasks: receive loop, rotate watchdog, reconnect
+        # supervisor.
         self._receive_task: asyncio.Task | None = None
-        self._keepalive_task: asyncio.Task | None = None
+        # Fires at `rotate_after_sec` into each session; re-armed on every
+        # successful open and cancelled by `_teardown_session`.
+        self._rotate_task: asyncio.Task | None = None
+        # Set only by the rotate watchdog: tells `_reconnect_with_backoff`
+        # this reconnect is ours, not a failure, so the first attempt
+        # skips the backoff wait.
+        self._planned_rotate = False
         # Triggered by the receive loop when it hits a drop / GoAway /
         # exception so the supervisor wakes up and reconnects.
         self._reconnect_event: asyncio.Event = asyncio.Event()
@@ -672,24 +704,23 @@ class GeminiLiveConnection:
             self._system_instruction_provider = lambda: instruction
         await self._do_initial_connect()
         self._supervisor_task = asyncio.create_task(self._supervisor_loop())
-        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
     async def stop(self) -> None:
         if self._state is ConnectionState.CLOSED:
             return
         self._stopping.set()
         # Cancel background tasks first so they don't fight us during teardown.
-        for task in (self._supervisor_task, self._keepalive_task, self._receive_task):
+        for task in (self._supervisor_task, self._rotate_task, self._receive_task):
             if task is not None:
                 task.cancel()
-        for task in (self._supervisor_task, self._keepalive_task, self._receive_task):
+        for task in (self._supervisor_task, self._rotate_task, self._receive_task):
             if task is not None:
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
         self._supervisor_task = None
-        self._keepalive_task = None
+        self._rotate_task = None
         self._receive_task = None
         # Best-effort close of the SDK session.
         await self._teardown_session()
@@ -1005,18 +1036,13 @@ class GeminiLiveConnection:
             session_resumption=self._build_session_resumption(),
         )
 
-    def _build_session_resumption(self) -> "types.SessionResumptionConfig | None":
-        # Only include sessionResumption when we actually have a cached
-        # handle (i.e. on a reconnect after the server gave us a
-        # new_handle). On the first connect, NONE of Google's reference
-        # demos send this field — sending `SessionResumptionConfig(
-        # handle=None)` on a fresh connect is semantically odd ("resume
-        # session None") and may put the server into a state where
-        # subsequent turns silently fail. Verified against the four
-        # GoogleCloudPlatform/generative-ai live-API demos: zero of
-        # them set this field at all.
-        if self._resumption_handle is None:
-            return None
+    def _build_session_resumption(self) -> "types.SessionResumptionConfig":
+        # Always send the field. The server only emits
+        # `SessionResumptionUpdate` when the setup message asked for
+        # resumption, so omitting it on the first connect meant we never
+        # received a handle and every reconnect started cold
+        # (https://ai.google.dev/api/live). `handle=None` is the
+        # documented "start a new session but do send me handles" form.
         return types.SessionResumptionConfig(handle=self._resumption_handle)
 
     async def _do_initial_connect(self) -> None:
@@ -1181,6 +1207,53 @@ class GeminiLiveConnection:
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTED)
         self._connected_event.set()
+        self._start_rotate_watchdog()
+
+    def _start_rotate_watchdog(self) -> None:
+        """Arm the planned-rotation timer for the session just opened.
+
+        No-op when `rotate_after_sec` is 0 — bare construction in tests
+        doesn't spawn a surprise task."""
+        if self._rotate_after_sec <= 0:
+            return
+        self._rotate_task = asyncio.create_task(
+            self._rotate_watchdog(self._rotate_after_sec),
+            name="jasper-gemini-rotate-watchdog",
+        )
+
+    async def _rotate_watchdog(self, delay_sec: float) -> None:
+        """Sleep out the session's useful life, then roll it deliberately.
+
+        The point is to replace a server-side 1008 abort — which lands as
+        a WARNING, a lost turn and a ~1.4 s socket gap — with a quiet
+        reconnect we choose the moment for. A turn in flight defers to
+        `_on_turn_released` via the shared `Deferred`, exactly as the
+        GoAway path does."""
+        try:
+            await asyncio.sleep(delay_sec)
+        except asyncio.CancelledError:
+            raise
+        if self._state in (
+            ConnectionState.RECONNECTING,
+            ConnectionState.PAUSED_FOR_BACKOFF,
+            ConnectionState.FAILED,
+            ConnectionState.CLOSED,
+        ):
+            return
+        self._planned_rotate = True
+        if self._active_turn is not None:
+            logger.info(
+                "event=gemini.session.rotate reason=planned "
+                "outcome=deferred uptime_sec=%.0f", delay_sec,
+            )
+            self._deferred_reconnect.request()
+            return
+        logger.info(
+            "event=gemini.session.rotate reason=planned outcome=now "
+            "uptime_sec=%.0f resumption=%s", delay_sec,
+            (self._resumption_handle or "")[:8] or "<new>",
+        )
+        self._reconnect_event.set()
 
     async def _teardown_session(self) -> None:
         """Tear down whatever's currently open — session + receive task —
@@ -1196,6 +1269,15 @@ class GeminiLiveConnection:
         bounded by the daemon's systemd TimeoutStopSec (90 s default)
         on shutdown."""
         t0 = _time.monotonic()
+        # Cancel the rotate watchdog first — it only makes sense against a
+        # live session, and we are about to drop this one.
+        if self._rotate_task is not None:
+            self._rotate_task.cancel()
+            try:
+                await self._rotate_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._rotate_task = None
         if self._receive_task is not None:
             self._receive_task.cancel()
             try:
@@ -1240,6 +1322,11 @@ class GeminiLiveConnection:
             raise
 
     async def _reconnect_with_backoff(self) -> None:
+        # Read-and-clear: a planned rotation is not a failure, so its
+        # first attempt skips the backoff wait entirely. Everything after
+        # that first attempt is an ordinary failure and backs off.
+        planned = self._planned_rotate
+        self._planned_rotate = False
         async with self._state_lock:
             self._set_state(ConnectionState.RECONNECTING)
         # Tear down the old session before opening a new one so we don't
@@ -1276,7 +1363,9 @@ class GeminiLiveConnection:
             if bounded and attempt > max_attempts:
                 break
             delay = (
-                self._backoff_schedule[attempt - 1]
+                0.0
+                if planned and attempt == 1
+                else self._backoff_schedule[attempt - 1]
                 if bounded
                 else reconnect_delay(attempt, transient=last_transient)
             )
@@ -1516,8 +1605,7 @@ class GeminiLiveConnection:
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            close_code = getattr(getattr(e, "rcvd", None), "code", None)
-            close_reason = getattr(getattr(e, "rcvd", None), "reason", None)
+            close_code, close_reason = _close_code_and_reason(e)
             if close_code is not None:
                 logger.warning(
                     "live connection: disconnected (code=%s reason=%r), reconnecting",
@@ -1529,45 +1617,6 @@ class GeminiLiveConnection:
                     type(e).__name__, e,
                 )
             self._reconnect_event.set()
-
-    async def _keepalive_loop(self) -> None:
-        """Periodically poke the WebSocket so Vertex doesn't close it
-        for the 10-min idle timeout
-        (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting).
-        Sending a no-op realtime input with no payload counts as activity
-        on the SDK's side without consuming Live tokens."""
-        try:
-            while not self._stopping.is_set():
-                await asyncio.sleep(self._keepalive_period_sec)
-                if self._stopping.is_set():
-                    return
-                if self._session is None or self._state in (
-                    ConnectionState.RECONNECTING,
-                    ConnectionState.PAUSED_FOR_BACKOFF,
-                    ConnectionState.FAILED,
-                ):
-                    continue
-                # No-op: with manual VAD enabled (the only mode we run
-                # in), sending audio outside an active turn (i.e. without
-                # being bracketed by activity_start / activity_end) is
-                # protocol-invalid and at best silently ignored, at worst
-                # logged server-side as a conflict / state-machine
-                # violation — strongly suspected as a contributor to
-                # 409 conflict entries in Cloud Logging despite our
-                # daemon's WebSocket staying up. The websockets library
-                # under genai already sends WS-level PING frames every
-                # ~20 s by default, which keeps the underlying TCP
-                # connection healthy. If Vertex's *application*-level
-                # 10-min idle timeout ever fires while we're in this
-                # state, the receive loop will see the close and the
-                # supervisor will reconnect cleanly. For our smart-
-                # speaker use case (frequent wakes), the 10-min timeout
-                # is unlikely to ever hit.
-                logger.debug(
-                    "live connection: keepalive tick (no-op; rely on WS-level pings)"
-                )
-        except asyncio.CancelledError:
-            raise
 
     async def _maybe_reset_context(self) -> None:
         """If the connection has been idle longer than the configured
