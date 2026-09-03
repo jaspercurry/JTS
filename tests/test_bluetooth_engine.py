@@ -1291,18 +1291,12 @@ def test_format_dbus_error_preserves_non_dbus_message():
             "timed out",
             "AuthenticationTimeout",
         ),
+        ("org.bluez.Error.Failed", "unmapped-reason", None),
     ],
 )
-def test_device_action_error_codes(error_type: str, detail: str, code: str):
+def test_device_action_error_codes(error_type: str, detail: str, code: str | None):
     result = _device_action_error(DBusError(error_type, detail))
     assert (result.ok, result.code) == (False, code)
-
-
-def test_device_action_error_unmatched_reason_has_no_code():
-    result = _device_action_error(
-        DBusError("org.bluez.Error.Failed", "unmapped-reason"),
-    )
-    assert (result.ok, result.code) == (False, None)
 
 
 async def test_connect_returns_connect_timeout_code_on_bluez_hang(monkeypatch):

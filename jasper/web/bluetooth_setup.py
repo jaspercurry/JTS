@@ -1045,7 +1045,7 @@ def _start_device_mutation(
                     address=mac_u,
                     status=_device_mutation_status(attempt),
                     code=result.code,
-                    **({"message": result.message} if not result.ok else {}),
+                    message=result.message if not result.ok else None,
                     duration_ms=round(
                         (time.monotonic() - attempt.created_at) * 1000,
                     ),

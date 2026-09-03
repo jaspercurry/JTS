@@ -732,36 +732,28 @@ class BluetoothEngine:
 
 # BlueZ >= 5.63 reports Device1.Connect failures as org.bluez.Error.Failed
 # with the message set to a reason token rather than a distinct error name.
+_NOT_ANSWERING = (
+    "The device didn't answer. Make sure its Bluetooth is on and it's nearby."
+)
+_REFUSED = (
+    "The device refused. If you removed JTS on the device, Forget it here "
+    "and pair again."
+)
+_BUSY = "Bluetooth is busy. Try again in a moment."
 _CONNECT_FAILURE_REASONS: dict[str, str] = {
-    "br-connection-page-timeout": (
-        "The device didn't answer. Make sure its Bluetooth is on and "
-        "it's nearby."
+    **dict.fromkeys(
+        ("br-connection-page-timeout", "le-connection-abort-by-local", "connect-timeout"),
+        _NOT_ANSWERING,
     ),
-    "le-connection-abort-by-local": (
-        "The device didn't answer. Make sure its Bluetooth is on and "
-        "it's nearby."
-    ),
-    "connect-timeout": (
-        "The device didn't answer. Make sure its Bluetooth is on and "
-        "it's nearby."
+    **dict.fromkeys(
+        ("br-connection-refused", "br-connection-key-missing", "le-connection-refused"),
+        _REFUSED,
     ),
     "br-connection-profile-unavailable": (
         "No usable profile between this speaker and the device. For a "
         "phone, check Bluetooth is on in Sources."
     ),
-    "br-connection-refused": (
-        "The device refused. If you removed JTS on the device, Forget "
-        "it here and pair again."
-    ),
-    "br-connection-key-missing": (
-        "The device refused. If you removed JTS on the device, Forget "
-        "it here and pair again."
-    ),
-    "le-connection-refused": (
-        "The device refused. If you removed JTS on the device, Forget "
-        "it here and pair again."
-    ),
-    "br-connection-busy": "Bluetooth is busy. Try again in a moment.",
+    "br-connection-busy": _BUSY,
     "br-connection-canceled": "Connection was cancelled.",
 }
 
@@ -775,14 +767,12 @@ _NAME_ERROR_REASONS: tuple[tuple[str, str], ...] = (
         "Could not connect. Try moving the device closer and retrying.",
     ),
     ("AlreadyExists", "This device is already paired."),
-    ("InProgress", "Bluetooth is busy. Try again in a moment."),
+    ("InProgress", _BUSY),
 )
 
 
 def _classify_dbus_error(err: DBusError) -> tuple[str, str | None]:
-    """Map a DBusError to (user-facing message, BlueZ reason code).
-    Maps known bluez error names and Connect() reason tokens to the
-    iPhone-equivalent copy."""
+    """Map a DBusError to (user-facing message, BlueZ reason code)."""
     name = err.type or ""
     msg = str(err)
     if msg in _CONNECT_FAILURE_REASONS:
