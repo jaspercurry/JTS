@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-import os
 import re
 import urllib.parse
 from collections.abc import Mapping
@@ -39,6 +38,7 @@ from ..speaker_name import (
     write_state,
 )
 from ..atomic_io import atomic_write_text
+from ..identity import resolve_hostname
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
 from ..speaker_name_discovery import NameConflict, find_name_conflicts
@@ -432,7 +432,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     _index_html(
                         current_name=state.name,
                         current_room=state.room,
-                        hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
+                        hostname=resolve_hostname(),
                         csrf_token=ctx["csrf_token"],
                         status_msg=ctx["flash"],
                     ),

@@ -11,6 +11,7 @@ from pathlib import Path
 from jasper.spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE,
     default_spotify_redirect_uri,
+    resolved_spotify_redirect_uri,
 )
 
 
@@ -45,9 +46,7 @@ def test_default_spotify_redirect_uri_preserves_exact_hostname() -> None:
     assert default_spotify_redirect_uri("").endswith("?host=")
 
 
-def test_existing_spotify_redirect_aliases_share_the_domain_owner(
-    monkeypatch,
-) -> None:
+def test_existing_spotify_redirect_aliases_share_the_domain_owner() -> None:
     from jasper.control import volume_ops
     from jasper.web import spotify_setup
 
@@ -56,17 +55,33 @@ def test_existing_spotify_redirect_aliases_share_the_domain_owner(
         spotify_setup.DEFAULT_BOUNCE_REDIRECT_URI_BASE
         == SPOTIFY_OAUTH_CALLBACK_BASE
     )
-    assert spotify_setup._default_bounce_redirect_uri("jts3.local") == (
-        default_spotify_redirect_uri("jts3.local")
-    )
 
+
+def test_resolved_spotify_redirect_uri_prefers_the_env_override(monkeypatch) -> None:
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
     monkeypatch.delenv("SPOTIFY_REDIRECT_URI", raising=False)
-    assert volume_ops._spotify_redirect_uri() == default_spotify_redirect_uri(
+    assert resolved_spotify_redirect_uri() == default_spotify_redirect_uri(
         "jts3.local"
     )
     monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "https://example.test/callback")
-    assert volume_ops._spotify_redirect_uri() == "https://example.test/callback"
+    assert resolved_spotify_redirect_uri() == "https://example.test/callback"
+
+
+def test_resolved_spotify_redirect_uri_uses_the_recorded_hostname(
+    monkeypatch, tmp_path,
+) -> None:
+    """Off-unit (no EnvironmentFile) the redirect must still name this box,
+    or the code bounces to a different speaker."""
+    identity_file = tmp_path / "identity.env"
+    identity_file.write_text(
+        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts5.local\n", encoding="utf-8",
+    )
+    monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
+    monkeypatch.delenv("SPOTIFY_REDIRECT_URI", raising=False)
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
+    assert resolved_spotify_redirect_uri() == default_spotify_redirect_uri(
+        "jts5.local"
+    )
 
 
 def test_callback_base_literal_has_one_python_owner() -> None:

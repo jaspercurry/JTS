@@ -102,7 +102,7 @@ from .source_state import (
     usbsink_direct_frames_read,
     usbsink_direct_streaming,
 )
-from .spotify_oauth import default_spotify_redirect_uri
+from .spotify_oauth import resolved_spotify_redirect_uri
 
 logger = logging.getLogger(__name__)
 
@@ -1784,12 +1784,10 @@ class Mux:
                 ),
                 default_name="default",
             )
-            hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-            default_redirect_uri = default_spotify_redirect_uri(hostname)
             result = build_clients(
                 registry,
                 client_id=client_id,
-                redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI") or default_redirect_uri,
+                redirect_uri=resolved_spotify_redirect_uri(),
             )
             if not result.clients:
                 logger.debug("spotify Web API: no accounts authorized")

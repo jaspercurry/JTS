@@ -12,7 +12,7 @@ without importing each other's private functions.
 
 from __future__ import annotations
 
-import os
+from ..identity import resolve_hostname
 
 
 def resolve_pair() -> tuple[dict | None, dict | None, str]:
@@ -32,7 +32,7 @@ def resolve_pair() -> tuple[dict | None, dict | None, str]:
     own = read_grouping_state()
     bond_id = str(own.get("bond_id") or "").strip()
     if not own.get("enabled") or not bond_id:
-        hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
+        hostname = resolve_hostname()
         return None, None, f"bond a pair first ({hostname}/rooms)"
     if str(own.get("role") or "") != "leader":
         return None, None, "open this page on the pair leader"

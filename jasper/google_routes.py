@@ -2,7 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Google Routes API client for destination ETA / directions voice tools."""
+"""Google Routes API client for destination ETA / directions voice tools.
+
+Every reader here — key, origin, travel mode, the speaker's own hostname —
+takes its value from the injected ``env`` mapping, so a caller can resolve a
+config for an environment its own process does not run in. The mapping
+defaults to ``os.environ`` at the two public entry points, and nothing below
+them reaches past it.
+"""
 from __future__ import annotations
 
 import logging
@@ -13,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from . import location_state
+from .identity import DEFAULT_HOSTNAME
 from .log_event import log_event
 from .tools import fence_untrusted
 
@@ -82,7 +90,7 @@ class GoogleRoutesConfig:
     api_key: str
     origin: location_state.SavedLocation
     default_mode: str = DEFAULT_TRAVEL_MODE
-    setup_url: str = "jts.local/transit"
+    setup_url: str = f"{DEFAULT_HOSTNAME}/transit"
 
 
 @dataclass(frozen=True)
@@ -99,7 +107,7 @@ class GoogleRoutesConfigStatus:
 
 
 def _setup_url(env: Mapping[str, str]) -> str:
-    hostname = (env.get("JASPER_HOSTNAME") or "jts.local").strip() or "jts.local"
+    hostname = (env.get("JASPER_HOSTNAME") or "").strip() or DEFAULT_HOSTNAME
     return f"{hostname}/transit"
 
 
