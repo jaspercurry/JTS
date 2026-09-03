@@ -18,12 +18,16 @@ matched, so a consumer that switches on it is reading the wrong field.
 Pure: no device, filesystem, service or env access.  `jasper.chip_aec_policy`
 owns who may READ the published record; this module owns what it says.
 
-`checking` and the two `unavailable` records stay reconciler literals — they
-report the lifecycle around an alignment pass, not a verdict about one, and
-carry no alignment inputs to judge.
+`jasper-aec-init` publishes the record for the pass it ran; the reconciler
+asks this module by disposition token for the ones only it can see — the
+lifecycle around a pass (`checking`, the two `unavailable` shapes) and the
+faults on either side of it.  Dispositions whose reason is a capability detail
+the caller measured take it as `reason`/`action`; the status is always this
+module's.
 """
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -42,6 +46,8 @@ ACTION_INSPECT_ALIGNMENT = (
 )
 ACTION_INSPECT_OUTPUTD = "Inspect jasper-outputd, then run the reconciler"
 ACTION_INSPECT_BRIDGE = "Inspect jasper-aec-bridge, then run the reconciler"
+ACTION_RECONNECT_XVF = "Reconnect the managed XVF3800 microphone"
+ACTION_CONNECT_SUPPORTED_XVF = "Connect a supported XVF microphone"
 
 REASON_APPLIED = "commissioned alignment applied and verified"
 REASON_NOT_COMMISSIONED = (
@@ -51,18 +57,28 @@ REASON_OUTPUTD_ENV_STALE = "jasper-outputd has not loaded the current output dec
 REASON_REAPPLY_FAILED = "silent chip-AEC alignment reapply failed"
 REASON_REFERENCE_PRODUCER_DOWN = "final chip-reference producer failed to start"
 REASON_BRIDGE_FAILED = "chip-AEC bridge failed after alignment reapply"
+REASON_VALIDATING = "validating commissioned alignment"
+REASON_XVF_ABSENT = "managed XVF is not present"
 
 # What one alignment pass resolved.  APPLIED means the chip is holding a banked
 # K; COMMISSION_REQUIRED/OUTPUTD_ENV_STALE/REAPPLY_FAILED are jasper-aec-init's
-# non-zero exits, and the last two are the reconciler's own faults around it.
+# exits, and the rest are what the reconciler sees around a pass: the faults on
+# either side of it, the transient while it runs, an absent or unusable managed
+# XVF, and the two capability disclosures whose detail it measured itself.
 APPLIED = "applied"
 COMMISSION_REQUIRED = "commission_required"
 OUTPUTD_ENV_STALE = "outputd_env_stale"
 REAPPLY_FAILED = "reapply_failed"
 REFERENCE_PRODUCER_DOWN = "reference_producer_down"
 BRIDGE_FAILED = "bridge_failed"
+CHECKING = "checking"
+XVF_ABSENT = "xvf_absent"
+XVF_UNUSABLE = "xvf_unusable"
+DAC_UNCALIBRATED = "dac_uncalibrated"
+DISCLOSED = "disclosed"
 
-_FAILURES = {
+# disposition -> (status, reason, action); None takes the caller's own text.
+_DISPOSITIONS = {
     COMMISSION_REQUIRED: (
         STATUS_DISCLOSED_STALE, REASON_NOT_COMMISSIONED, ACTION_RECOMMISSION,
     ),
@@ -74,7 +90,17 @@ _FAILURES = {
         STATUS_FAULT, REASON_REFERENCE_PRODUCER_DOWN, ACTION_INSPECT_OUTPUTD,
     ),
     BRIDGE_FAILED: (STATUS_FAULT, REASON_BRIDGE_FAILED, ACTION_INSPECT_BRIDGE),
+    CHECKING: (STATUS_CHECKING, REASON_VALIDATING, ""),
+    XVF_ABSENT: (STATUS_UNAVAILABLE, REASON_XVF_ABSENT, ACTION_RECONNECT_XVF),
+    XVF_UNUSABLE: (STATUS_UNAVAILABLE, None, ACTION_CONNECT_SUPPORTED_XVF),
+    DAC_UNCALIBRATED: (STATUS_DISCLOSED_STALE, None, ACTION_RECOMMISSION),
+    DISCLOSED: (STATUS_DISCLOSED_STALE, None, None),
 }
+
+# The closed vocabulary `alignment_health` accepts, so a caller that takes a
+# disposition from an operator or a shell argument can reject a typo at its own
+# edge instead of raising here.
+DISPOSITIONS = tuple(sorted((*_DISPOSITIONS, APPLIED)))
 
 STATUS_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS"
 REASON_KEY = "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON"
@@ -99,6 +125,18 @@ class AlignmentHealth:
             ACTION_KEY: self.action,
             SELECTION_KEY: self.selection,
         }
+
+    def to_shell(self) -> str:
+        """The record as the shell assignments its consumers eval.
+
+        One line per key, so free text is folded onto one line here rather than
+        in each writer.
+        """
+
+        return "".join(
+            f"{key}={shlex.quote(' '.join(value.split()))}\n"
+            for key, value in self.to_env().items()
+        )
 
     def applies_to(self, selection: str, *, custom_profile: str) -> bool:
         """Whether this record answers for `selection`.
@@ -147,6 +185,8 @@ def alignment_health(
     disposition: str,
     *,
     selection: str = "",
+    reason: str = "",
+    action: str = "",
     shipped_label: str = "",
     identity_diff: Sequence[str] = (),
 ) -> AlignmentHealth:
@@ -158,11 +198,20 @@ def alignment_health(
     APPLIED pass into `disclosed_stale` while the chip keeps its alignment.
     They are mutually exclusive: a box with nothing banked has no commissioned
     identity to diverge from.
+
+    `reason`/`action` are read only by the dispositions that declare their slot
+    open; every other disposition's text is this module's.
     """
 
-    failure = _FAILURES.get(disposition)
-    if failure is not None:
-        return AlignmentHealth(*failure, selection)
+    fixed = _DISPOSITIONS.get(disposition)
+    if fixed is not None:
+        status, fixed_reason, fixed_action = fixed
+        return AlignmentHealth(
+            status,
+            reason if fixed_reason is None else fixed_reason,
+            action if fixed_action is None else fixed_action,
+            selection,
+        )
     if disposition != APPLIED:
         raise ValueError(f"unknown alignment disposition: {disposition!r}")
 

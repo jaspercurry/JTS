@@ -21,9 +21,12 @@ import pytest
 
 from jasper import chip_aec_alignment as alignment
 from jasper import chip_aec_shipped_alignment as shipped_alignment
+from jasper import chip_aec_health
 from jasper import output_hardware
 from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
+from jasper.chip_aec_health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
+from jasper.env_load import parse_env_file
 from jasper.mics import xvf3800
 from tests._log_events import event_fields, event_records
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
@@ -34,12 +37,26 @@ _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 ROOT = Path(__file__).resolve().parents[1]
 
 
+_SELECTION = "xvf_chip_aec"
+
+
 @pytest.fixture(autouse=True)
-def disclosure_file(tmp_path, monkeypatch) -> Path:
-    """Keep `publish_disclosure` off the host's /run for every test here."""
-    path = tmp_path / "alignment-disclosure"
-    monkeypatch.setenv("JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE", str(path))
+def alignment_record(tmp_path, monkeypatch) -> Path:
+    """Keep the published record off the host's /run for every test here, and
+    give every run one mode-file selection to stamp it with."""
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text(
+        f"JASPER_AUDIO_INPUT_PROFILE={_SELECTION}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("JASPER_AEC_MODE_FILE", str(mode_file))
+    path = tmp_path / "alignment"
+    monkeypatch.setenv("JASPER_AEC_ALIGNMENT_RECORD_FILE", str(path))
     return path
+
+
+def _published(path: Path) -> AlignmentHealth:
+    """The record this run left for jasper-aec-reconcile."""
+    return AlignmentHealth.from_env(parse_env_file(str(path)))
 
 
 class _Closeable:
@@ -170,7 +187,7 @@ def test_corpus_profile_applies_and_verifies_expected_chip_routes(monkeypatch) -
 
 
 def test_production_chip_profile_uses_chip_flag_and_delay(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     dev = _FakeXvfDevice()
     _install_fake_xvf(monkeypatch, dev)
@@ -217,9 +234,11 @@ def test_production_chip_profile_uses_chip_flag_and_delay(
     assert writes["AUDIO_MGR_OP_L"] == [7, 0]
     assert writes["AUDIO_MGR_OP_R"] == [7, 1]
     assert dev.dev.closed is True
-    # An alignment that matched has nothing to disclose, so the reconciler is
-    # left to publish `ready`.
-    assert not disclosure_file.exists()
+    # An alignment that matched has nothing to disclose, so the record the
+    # reconciler copies into jasper.env is `ready`.
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.APPLIED, selection=_SELECTION
+    )
 
 
 def test_production_chip_profile_parks_when_nothing_is_banked_or_shipped(
@@ -298,7 +317,7 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
     ],
 )
 def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
-    monkeypatch, disclosure_file, changes, discloses
+    monkeypatch, alignment_record, changes, discloses
 ) -> None:
     # ADR-0101: the proof stopped describing this box, nothing observably
     # broke. The banked K is applied and the chip armed; what the household
@@ -318,11 +337,14 @@ def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
     # What the disclosure SAYS is pinned once, on the judge
     # (tests/test_chip_aec_health.py); this altitude owns only whether one was
     # published at all.
-    assert disclosure_file.exists() is discloses
+    assert (
+        _published(alignment_record).status
+        == chip_aec_health.STATUS_DISCLOSED_STALE
+    ) is discloses
 
 
 def test_an_older_schema_artifact_is_treated_as_nothing_banked(
-    monkeypatch, disclosure_file, tmp_path
+    monkeypatch, alignment_record, tmp_path
 ) -> None:
     # An artifact predating the current schema cannot be compared against
     # this box, so the reader refuses it like any other invalid artifact and
@@ -360,7 +382,7 @@ def _shipped_row(
 
 
 def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     # ADR-0101 / #2984 Q1: an XVF that is there gets chip AEC. A box that has
     # never been commissioned runs from the proof its hardware class ships and
@@ -377,11 +399,11 @@ def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [row.sys_delay]
-    assert disclosure_file.exists()
+    assert _published(alignment_record).status == chip_aec_health.STATUS_DISCLOSED_STALE
 
 
 def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
-    monkeypatch, disclosure_file, caplog
+    monkeypatch, alignment_record, caplog
 ) -> None:
     # The shipped row is for a different DAC, so it says nothing about this
     # box: no K to run from, and the commissioner is the answer. The park
@@ -398,7 +420,9 @@ def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
         assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
 
     assert _write_map(dev)["SHF_BYPASS"] == [1]
-    assert not disclosure_file.exists()
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.COMMISSION_REQUIRED, selection=_SELECTION
+    )
     assert row.divergence(_live_identity()) == ("output_id",)
 
 
@@ -458,7 +482,7 @@ def test_a_shipped_k_the_driver_cap_refuses_parks_instead_of_faulting(
 
 
 def test_a_commissioned_artifact_outranks_the_row_shipped_for_its_class(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     # Commissioning personalizes: once this unit has measured its own K, the
     # class default is never consulted again.
@@ -475,7 +499,9 @@ def test_a_commissioned_artifact_outranks_the_row_shipped_for_its_class(
     assert aec_init.main() == 0
 
     assert _write_map(dev)["AUDIO_MGR_SYS_DELAY"] == [-38]
-    assert not disclosure_file.exists()
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.APPLIED, selection=_SELECTION
+    )
 
 
 def test_build_identity_binds_physical_xvf_and_usb_output() -> None:
@@ -1877,7 +1903,7 @@ def test_a_spread_past_the_horizon_names_the_ceiling_not_a_shortfall(
 
 
 def test_a_moved_live_queue_arms_the_delay_k_resolves_without_disclosure(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     # Every outputd restart re-opens the chip-reference PCM at a different fill,
     # and K - live median is exactly what absorbs it: jts.local commissioned at
@@ -1897,11 +1923,13 @@ def test_a_moved_live_queue_arms_the_delay_k_resolves_without_disclosure(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [245 - 266]
-    assert not disclosure_file.exists()
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.APPLIED, selection=_SELECTION
+    )
 
 
 def test_a_queue_that_resolves_past_the_driver_cap_leaves_the_chip_bypassed(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     # The declared CHIP_AEC_SYS_DELAY_MIN..MAX range is the one thing K may not
     # resolve outside of: no delay is written, the chip stays bypassed, and the
