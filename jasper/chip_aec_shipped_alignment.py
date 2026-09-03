@@ -66,7 +66,24 @@ class ShippedAlignment:
 
 
 # Harvested rows are pasted here.
-REGISTRY: tuple[ShippedAlignment, ...] = ()
+REGISTRY: tuple[ShippedAlignment, ...] = (
+    # Measured jts.local 2026-09-02, K reproducible ±3 frames over 4 runs.
+    ShippedAlignment(
+        label='xvf3800_legacy_square_6ch on apple_usb_c_dongle',
+        identity={
+            'xvf_firmware': 'a1f70651e992d6f0bcff655b26925d33999b9c2d',
+            'fixed_profile': '9e62ab0f4589a48f9918ce08974879ea41f381903da18c48e8e9a05ea595bb9e',
+            'output_id': 'apple_usb_c_dongle',
+            'output_pcm': 'single_alsa:outputd_dac',
+            'output_rate': 48000,
+            'output_channels': 2,
+            'output_period': 128,
+            'output_buffer': 256,
+        },
+        k_samples=248,
+        sys_delay=48,
+    ),
+)
 
 
 def _refuse_duplicate_classes(entries: Sequence[ShippedAlignment]) -> None:
