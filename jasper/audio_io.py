@@ -27,6 +27,7 @@ from .assistant_loudness import (
     upsample_2x,
 )
 from .assistant_volume import EffectiveVolumeContext
+from .dsp_numpy import resample_poly
 from .log_event import log_event
 from .tts_routing import FANIN_TTS_SOCKET
 
@@ -203,11 +204,9 @@ class MicCapture:
         if self._decimation == 1:
             chunk = ch0.astype(np.int16, copy=True)
         else:
-            # Polyphase resample with built-in anti-alias filter. We use
-            # scipy here (already installed transitively for openwakeword)
-            # rather than naive stride-decimation, which would alias voice
-            # content above 8 kHz back into the audible band.
-            from scipy.signal import resample_poly  # local import: keeps daemon startup fast
+            # Polyphase resample with a built-in anti-alias filter, not
+            # naive stride-decimation, which would alias voice content
+            # above 8 kHz back into the audible band.
             resampled = resample_poly(
                 ch0.astype(np.float32), up=1, down=self._decimation,
             )
