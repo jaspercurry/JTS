@@ -5,7 +5,7 @@
 """Drive the crossover-v2 position gate with the lab turntable arm.
 
 Both ends of this loop already shipped and nothing joined them: the session
-publishes ``relay.position_pending`` -- ``{index, attempt, degrees, role,
+publishes ``capture.position_pending`` -- ``{index, attempt, degrees, role,
 action}`` on ``GET /correction/crossover/status`` -- and holds every begin until
 something POSTs ``/correction/crossover/v2/position-ready``; the turntable
 adapter moves the microphone. Between them sat a throwaway script, rewritten per
@@ -22,11 +22,11 @@ the microphone taps to advance; this is the lab-arm path only, and it is opt-in
     poll status -> power preflight -> move -> settle -> position-ready
 
 **A walk ends when its session does.** The same poll carries the session's own
-``relay.status``, and the three terminal values (:data:`SESSION_ENDED_STATUSES`)
+``capture.status``, and the three terminal values (:data:`SESSION_ENDED_STATUSES`)
 are the walk's cue to stop: ``complete`` is a clean finish, ``stopped`` is
 :data:`EXIT_SESSION_STOPPED`, ``failed`` carries the session's own error into
 :data:`EXIT_SESSION_FAILED`. A terminal status only counts once this walk has
-seen its session LIVE, because the wizard keeps one relay slot and a walk is
+seen its session LIVE, because the wizard keeps one capture slot and a walk is
 launched before its session opens -- so the first polls of a round read the
 PREVIOUS round's outcome.
 
@@ -119,7 +119,7 @@ DEFAULT_IDLE_CEILING_S = 1200.0
 #: In flight, nothing pending, nothing released for this long. The signature of
 #: a REJECTED capture, which renders a human "Try again" that no unattended run
 #: can press (issue #2506). Named rather than waited out. "In flight" is the
-#: session's own published status, not merely the presence of a relay block --
+#: session's own published status, not merely the presence of a capture block --
 #: see :func:`poll_from_status`.
 DEFAULT_STUCK_ALARM_S = 300.0
 
@@ -129,7 +129,7 @@ DEFAULT_STUCK_ALARM_S = 300.0
 #: none of those get better by waiting and every one of them is a typo away.
 DEFAULT_UNREADABLE_CEILING_S = 60.0
 
-#: The ``relay.status`` values that mean the session is OVER — the wizard's own
+#: The ``capture.status`` values that mean the session is OVER — the wizard's own
 #: three terminal arms (``_run_capture``'s ``_run``). Every other value,
 #: INCLUDING one this module does not recognise, reads as in flight: ending a
 #: walk early strands a round, while waiting one more poll costs one poll, so
@@ -243,7 +243,7 @@ class PowerVerdict:
 
 @dataclass(frozen=True)
 class Pending:
-    """What the session is waiting for -- ``relay.position_pending``, typed."""
+    """What the session is waiting for -- ``capture.position_pending``, typed."""
 
     index: int
     attempt: int
@@ -261,7 +261,7 @@ class Poll:
     """One read of the envelope.
 
     ``failed_error`` is the session's OWN error string when it reported
-    ``relay.status == "failed"``. It rides the same payload the pending does, so
+    ``capture.status == "failed"``. It rides the same payload the pending does, so
     reading it turns a dead session into an immediate exit instead of a wait for
     :data:`DEFAULT_STUCK_ALARM_S` and a guess. Which SESSION it is attributed to
     is the walk's own to decide, not this reader's -- see
@@ -277,9 +277,9 @@ class Poll:
     trip the idle ceiling; it is :data:`WalkConfig.unreadable_ceiling_s` that
     ends an unbroken run of them, by its own name.
 
-    ``ended`` is the TERMINAL ``relay.status`` a finished session published
+    ``ended`` is the TERMINAL ``capture.status`` a finished session published
     (:data:`SESSION_ENDED_STATUSES`), or empty. It is a third state rather than
-    the negation of ``in_flight``: no relay block at all is "no session has
+    the negation of ``in_flight``: no capture block at all is "no session has
     opened yet", which is what a walk launched ahead of its session sees and
     must keep waiting through, while a terminal block is "the session this walk
     was serving is over" and is the walk's own cue to stop.
@@ -821,7 +821,7 @@ class ArmWalk:
 
         Reached only once ``_saw_session`` -- the walk has read at least one
         LIVE, readable poll -- and that latch is load-bearing rather than
-        defensive. The wizard keeps ONE relay slot, and it keeps the FINISHED
+        defensive. The wizard keeps ONE capture slot, and it keeps the FINISHED
         session's block in it, because that block is what the status page
         renders the outcome from. A walk is launched BEFORE its session opens
         (the staged-walk check needs a not-yet-open session to answer), so the
@@ -926,7 +926,7 @@ class ArmWalk:
 
 
 def pending_from_capture(capture: Mapping[str, Any]) -> Pending | None:
-    """``relay.position_pending`` -> :class:`Pending`, or ``None``.
+    """``capture.position_pending`` -> :class:`Pending`, or ``None``.
 
     Absent, malformed, or missing its index all read the same way: nothing to
     serve. A hold this loop cannot parse is one it must not move for.
@@ -953,8 +953,8 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     ``readable=False`` so an unbroken run of them is named for what it is rather
     than diagnosed as a stuck capture.
 
-    **A relay block is not by itself a live session.** The wizard keeps the
-    finished session's block in its single relay slot -- that block IS what the
+    **A capture block is not by itself a live session.** The wizard keeps the
+    finished session's block in its single capture slot -- that block IS what the
     status page renders the outcome from -- so a terminal ``status`` has to be
     read, not merely the block's presence. Reading only ``"failed"`` (which this
     did) left ``"complete"`` and ``"stopped"`` looking exactly like a live

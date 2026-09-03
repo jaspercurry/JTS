@@ -1086,7 +1086,7 @@ def _dummy_program():
 # (`json.dumps(..., separators=(",", ":"))`), so these really are the bytes the
 # phone receives — not a proxy for them.
 #
-# WHAT MUST NEVER CHANGE THEM: raising the relay's transport ceiling
+# WHAT MUST NEVER CHANGE THEM: raising the capture's transport ceiling
 # (`capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`). That is the original point
 # of this pin — the capacity raise from 8 to 32 had to be invisible to the
 # shipped flows, and a value-level assertion alone would not have caught a
@@ -1108,7 +1108,7 @@ def _dummy_program():
 # session emits CHECK + MEASURE + N−1 prompted pre-apply positions + VERIFY
 # + M−1 prompted post-apply positions. The re-verify re-arm plan is UNCHANGED
 # and its digest is byte-for-byte the pre-PR-3b one: it re-runs the
-# single-position tracking verdict, and evidence cannot cross relay sessions
+# single-position tracking verdict, and evidence cannot cross capture sessions
 # anyway (§5.6), so a cloud there could never join the original one.
 #
 # RE-DERIVED 2026-07-26 (round-1 review): N 8 → 9 (adjudication 3a — the
@@ -1219,8 +1219,8 @@ def _dummy_program():
 # are plans with no prompted position and no CHECK entry, so an identical
 # digest is the proof that a prompt-copy rewrite reached exactly the entries it
 # was about. Byte lengths grew and are pinned alongside the hashes because this
-# copy sits inside the relay's 4 KiB per-screen cap — see
-# ``test_cloud_plan_stays_inside_the_relay_spec_byte_budgets`` for the margin.
+# copy sits inside the capture's 4 KiB per-screen cap — see
+# ``test_cloud_plan_stays_inside_the_capture_spec_byte_budgets`` for the margin.
 #
 # RE-DERIVED 2026-07-30 (issue #1941 stage 2, R4 — the vocabulary sweep). COPY
 # ONLY, and a single string of it: the 1-entry recovery re-verify's ``body``

@@ -78,7 +78,7 @@ def cap_capture_tail(
 ) -> tuple[np.ndarray, int]:
     """Retain a bounded capture tail and return its source start offset.
 
-    Relay capture starts before an unbounded network wait but stops just after
+    Capture starts before an unbounded network wait but stops just after
     the sweep, so crossover analysis needs the TAIL, unlike
     :func:`cap_capture_length`, whose callers retain the beginning.
     """
@@ -90,7 +90,7 @@ def cap_capture_tail(
         return captured, 0
     start = len(captured) - max_samples
     logger.warning(
-        "deconv: retaining final %d of %d samples for relay sweep analysis",
+        "deconv: retaining final %d of %d samples for capture sweep analysis",
         max_samples,
         len(captured),
     )

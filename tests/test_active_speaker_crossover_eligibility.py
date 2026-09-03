@@ -57,7 +57,7 @@ def _evidence() -> dict:
             "accepted": True,
             "confirmation_source": "capture_begin",
             "acknowledgement_binding_sha256": "4" * 64,
-            "capture_session_id": "relay-woofer",
+            "capture_session_id": "capture-woofer",
             "capture_protocol_version": 2,
             "capture_page_build": "20260712.1",
             "speaker_group_id": "mono",
@@ -549,7 +549,7 @@ def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
         "placement_proof": normalized_placement_proof(
             policy_id="driver_same_distance_v1",
             acknowledgement_binding="ack",
-            capture_session_id="relay-1",
+            capture_session_id="capture-1",
             capture_page={
                 "capture_protocol_version": 2,
                 "capture_page_build": "20260711.1",
@@ -697,7 +697,7 @@ def _real_sweep_capture(
         "accepted": True,
         "confirmation_source": "capture_begin",
         "acknowledgement_binding_sha256": "5" * 64,
-        "capture_session_id": f"relay-{role}",
+        "capture_session_id": f"capture-{role}",
         "capture_protocol_version": 2,
         "capture_page_build": "20260711.1",
         "speaker_group_id": "mono",

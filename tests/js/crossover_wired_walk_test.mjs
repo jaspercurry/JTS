@@ -7,7 +7,7 @@
 // pinned here in the order a round meets them — opening, pending, the release
 // POST, capturing, the screen taking the control back, wind-down, terminal —
 // then the two holds this panel must NOT serve: one a driver releases, and a
-// relay session, whose phone owns the tap.
+// capture session, whose phone owns the tap.
 
 import assert from "node:assert/strict";
 import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";

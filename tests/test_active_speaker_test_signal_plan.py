@@ -302,7 +302,7 @@ def test_driver_ambient_duration_is_right_sized_per_driver_not_worst_case() -> N
     capture spec's ambient_duration_ms and this plan module's own duration
     table must agree, per driver kind, through
     ``jasper.active_speaker.test_signal_plan.driver_ambient_duration_s`` — the
-    single function the relay spec builder (correction_setup._open) resolves
+    single function the capture spec builder (correction_setup._open) resolves
     the per-driver ambient window through."""
     from jasper.active_speaker.test_signal_plan import (
         AMBIENT_DURATION_MARGIN_S,

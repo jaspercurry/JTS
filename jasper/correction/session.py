@@ -72,7 +72,7 @@ from .status import (
 from ..log_event import log_event
 
 
-# Owned by the session layer so HTTP, relay and browser entry paths cannot
+# Owned by the session layer so HTTP and browser entry paths cannot
 # drift into different measurement semantics.
 DEFAULT_ROOM_POSITION_COUNT = 6
 ROOM_POSITION_COUNT_CHOICES = (1, 3, DEFAULT_ROOM_POSITION_COUNT)
@@ -335,7 +335,7 @@ class MeasurementSession:
         self._autolevel_reset_intent: object | None = None
         self._background_audio_task: asyncio.Task[Any] | None = None
 
-        # P2 relay-closed level match. The lock store is per-geometry, so a
+        # P2 status-fed level match. The lock store is per-geometry, so a
         # near-field lock and a listening-position lock coexist.
         self.level_lock_store = LevelLockStore()
         self._last_level_match: LevelMatchOutcome | None = None
@@ -343,7 +343,7 @@ class MeasurementSession:
         # to start while it is occupied and clears it identity-guarded.
         self._level_match_session: LevelMatchSession | None = None
         self._level_match_task: asyncio.Task[Any] | None = None
-        # Cleanup can fire from relay failure, reset and apply at once; serialize
+        # Cleanup can fire from capture failure, reset and apply at once; serialize
         # so the lease releases once and a failed write stays retryable.
         self._level_restore_lock = asyncio.Lock()
         # The local browser learns its realized device only after `/start`.
@@ -1200,7 +1200,7 @@ class MeasurementSession:
     ) -> dict[str, Any]:
         """Bind the realized local-browser input before its first upload.
 
-        Only the parked pre-sweep state is mutable; relay setup continues
+        Only the parked pre-sweep state is mutable; capture setup continues
         through its own versioned binding path.
         """
         report = browser_audio.assess_browser_audio_path(
@@ -2258,10 +2258,10 @@ class MeasurementSession:
         wait_for_armed: bool = True,
         armed_timeout_s: float | None = None,
     ) -> LevelMatchOutcome:
-        """Relay-closed, settle-based level match for one mic geometry.
+        """Status-fed, settle-based level match for one mic geometry.
 
-        ``read_status`` is the relay status reader, injected so this method
-        never imports the relay client; in production it must be a cached
+        ``read_status`` is the status reader, injected so this method
+        never imports the wizard's HTTP client; in production it must be a cached
         background-poller snapshot, never a blocking per-call HTTP GET. A
         terminal LOCKED stores a per-geometry lock in ``level_lock_store``.
         """

@@ -698,7 +698,7 @@ def _append_capture_entry(
         and placement_proof.get("accepted") is True
         and placement_proof.get("policy_id") == placement.get("policy_id")
     ):
-        # The acknowledgement is server-normalized after the relay verifies
+        # The acknowledgement is server-normalized after the host verifies
         # the operator's checked box.  This repairs the former dead literal:
         # an opened bundle starts false and flips only on real accepted proof.
         placement["acknowledged"] = True

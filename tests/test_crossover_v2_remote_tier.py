@@ -503,7 +503,7 @@ def test_releasing_nothing_is_refused_rather_than_remembered():
 def test_a_hold_whose_driver_never_answers_expires_loudly():
     """A hold is unbounded as far as the transport is concerned — the phone
     re-posts forever and rearms the runner's clock — so a dead driver would pin
-    the measurement volume, the paused voice, and the relay slot indefinitely.
+    the measurement volume, the paused voice, and the capture slot indefinitely.
     The gate ends it instead of holding for good."""
     now = {"t": 0.0}
     gate = PositionGate(clock=lambda: now["t"])
@@ -529,7 +529,7 @@ def test_a_walk_that_outlives_its_ceiling_is_named_rather_than_left_generic():
     catch one that answers every position too slowly to finish: stage 1 gates
     nine begins under a 2520 s ceiling, so ~280 s a move exhausts the session
     with no single hold anywhere near 600 s. That death used to limp on to the
-    relay link's own expiry and reach the household as ``capture_timeout`` — a
+    capture session's own expiry and reach the household as ``capture_timeout`` — a
     claim about a transport that never failed. It ends here instead, by name.
     """
     now = {"t": 0.0}
@@ -1454,7 +1454,7 @@ def _json_handler(payload: str):
 
 @contextmanager
 def _live_remote_slot(gate):
-    """Claim the process's single relay slot for a crossover v2 session."""
+    """Claim the process's single capture slot for a crossover v2 session."""
     from jasper.web import correction_setup
 
     correction_setup._set_capture_slot(None)
@@ -1467,8 +1467,8 @@ def _live_remote_slot(gate):
         correction_setup._set_capture_slot(None)
 
 
-def test_a_live_hold_reaches_the_envelope_on_the_relay_block():
-    """The driver's read path: the gate owns the fact, the relay block carries
+def test_a_live_hold_reaches_the_envelope_on_the_capture_block():
+    """The driver's read path: the gate owns the fact, the capture block carries
     it, and the envelope copies that block through verbatim."""
     gate = PositionGate()
     with _live_remote_slot(gate) as setup:
@@ -1487,7 +1487,7 @@ def test_a_live_hold_reaches_the_envelope_on_the_relay_block():
 
 def test_a_finished_session_stops_advertising_its_hold():
     """The strand check. A hold published into durable state could outlive the
-    session holding it; riding the relay slot means the existing terminal
+    session holding it; riding the capture slot means the existing terminal
     transition drops it, with no new cleanup path to forget."""
     gate = PositionGate()
     with _live_remote_slot(gate) as setup:
@@ -1529,7 +1529,7 @@ def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
         with pytest.raises(CaptureBeginRefused) as refused:
             gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
         assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
-    # A tap-paced session (every relay round) registers no gate at all, and
+    # A tap-paced session (every ungated round) registers no gate at all, and
     # the same poll must still enforce the ceiling rather than raise on the
     # missing gate.
     setup._enforce_session_volume_ceiling(stale)
@@ -1695,7 +1695,7 @@ def test_the_release_route_is_allowlisted_and_matches_the_minted_action():
 
 
 def test_a_tap_paced_session_registers_no_gate_at_all():
-    """A session opened with no gate advertises no hold — the relay round's
+    """A session opened with no gate advertises no hold — the capture round's
     shape, and the one a household paces with its own taps on the page."""
     from jasper.web import correction_setup
 

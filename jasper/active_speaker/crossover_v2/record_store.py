@@ -177,9 +177,9 @@ class BankedRecordStore:
     """:class:`~.session_seams.RecordStore` over the evidence bundle.
 
     Keyed on ``capture_session_id`` and not the bundle id: every reader globs
-    ``evidence/v1/artifacts/crossover_v2/{relay}/…`` and
+    ``evidence/v1/artifacts/crossover_v2/{capture}/…`` and
     ``evidence_packet.round_artifact_dir`` reports that directory's name AS the
-    relay id.
+    capture id.
     """
 
     evidence: CommissioningEvidenceStore
@@ -246,7 +246,7 @@ class BankedRecordStore:
         """This session across two namespaces, as the cloud payload records it.
 
         The bundle id is canonical because the bundle is the retention unit;
-        the relay id is minted after it and is not derivable from it.
+        the capture id is minted after it and is not derivable from it.
         """
         return SessionIdentity(
             session_id=str(self.evidence.session_id),

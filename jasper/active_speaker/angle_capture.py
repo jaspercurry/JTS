@@ -624,7 +624,7 @@ def walk_price(
 class ResolvedStop:
     """One stop, resolved into what the shipped runner already consumes.
 
-    ``index`` is the 1-based capture index the relay drives (``index ==
+    ``index`` is the 1-based capture index the capture drives (``index ==
     accepted_count + 1``), so this tuple IS the running order and the same index
     space :func:`index_phase_map` and the plan entries are built in.
 
@@ -760,7 +760,7 @@ WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 #: rather than stalling a live session one 600 s hold at a time.
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
-#: The composed session would need more relay blob indexes than exist.
+#: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
 
 #: The session already plans a lateral group. Declared here so the vocabulary
@@ -934,7 +934,7 @@ def session_lateral_walk(
 
     The capacity bound asks :func:`stage1_plan_max_attempts`, the same producer
     the emitted plan sets ``max_attempts`` from. A second copy of that
-    arithmetic is a gate that refuses walks the relay would have taken, which is
+    arithmetic is a gate that refuses walks the capture would have taken, which is
     what the first one did.
     """
     from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
@@ -963,7 +963,7 @@ def session_lateral_walk(
         raise LateralWalkRefused(
             WALK_OVER_CAPTURE_CAPACITY,
             f"{base_entries} session captures + {len(request.stops)} stops = "
-            f"{entries} entries, needing {attempts} relay blob indexes over a "
+            f"{entries} entries, needing {attempts} capture blob indexes over a "
             f"ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
         )
     return tuple(stop.prompt for stop in resolve_request(request))

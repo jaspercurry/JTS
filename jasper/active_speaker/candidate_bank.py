@@ -29,7 +29,7 @@ follow-up, not a claim this module already makes.
 recomputes the fingerprint from the artifact's own ``_core()`` and refuses
 ``candidate_tampered`` when the stored value disagrees, so a byte edited on
 disk cannot survive a load. This module adds bounds (how many artifacts, how
-many bytes) and identity resolution (which bundle, which relay session); it
+many bytes) and identity resolution (which bundle, which capture session); it
 computes nothing about the candidate itself. Both the mint path
 (``bind_evidence_publishers.publish_candidate``) and the apply path
 (``handle_v2_apply``) verify through that same ``from_mapping``, so reusing it
@@ -37,7 +37,7 @@ here introduces no second hasher rather than merely matching one.
 
 **Lineage is part of the answer.** A banked candidate is only re-applyable if
 the apply path can find its artifact again, and that lookup is keyed on the
-bundle id *and* the minting relay session id together. Both ride on
+bundle id *and* the minting capture session id together. Both ride on
 :class:`BankedCandidate` for that reason, not as provenance decoration.
 
 **Why it sits here and not under ``crossover_v2/``.** Its two collaborators —
@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 #: Where a published crossover-v2 candidate artifact lives, relative to the
 #: bundle root. ``*`` one is the bundle id (``bundles.open_bundle``'s 12-hex
 #: session id, which is also the directory name); ``*`` two is the MINTING
-#: relay session id. The two namespaces are distinct on disk and conflating
+#: capture session id. The two namespaces are distinct on disk and conflating
 #: them joins the wrong round to the wrong bundle.
 CANDIDATE_ARTIFACT_GLOB = "*/evidence/v1/artifacts/crossover_v2/*/candidate.json"
 
@@ -136,7 +136,7 @@ def _identity_from_path(path: Path) -> tuple[str, str]:
     """``(bundle_session_id, capture_session_id)`` for one artifact path.
 
     Positional rather than parsed: the glob fixes the depth, so the minting
-    relay session is the artifact's own directory and the bundle is five levels
+    capture session is the artifact's own directory and the bundle is five levels
     above it.
     """
     parents = path.parents

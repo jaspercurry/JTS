@@ -201,7 +201,7 @@ def test_stage_1_plans_exactly_one_entry_baseline_and_it_is_last():
 
     assert labels.count("entry_baseline") == 1
     assert labels[-1] == "entry_baseline"
-    # The relay drives 0-based entry indexes; the last entry must address the
+    # The capture drives 0-based entry indexes; the last entry must address the
     # last slot, or "last in the list" would not mean "last in the session".
     assert plan.entries[-1].index == plan.capture_target - 1
 

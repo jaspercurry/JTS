@@ -105,7 +105,7 @@ def _live_state_path(session_dir: Path) -> tuple[Path | None, str]:
 
     One flow state exists per speaker against up to twelve retained session
     directories. The two ids are compared in the one namespace they share: the
-    state's ``session_id`` is a RELAY id, and the bundle files its round
+    state's ``session_id`` is a CAPTURE id, and the bundle files its round
     artifacts under that same id (:func:`~.evidence_packet.round_artifact_dir`).
     An absent or unreadable state file is not refused here — nothing claims it
     belongs to another round.

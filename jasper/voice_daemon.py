@@ -547,7 +547,7 @@ MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC = (
 # backstop: a coordinator killed mid-sweep never sends MEASURE_RESUME, and
 # without this the speaker would stay silent forever. Named because it is a
 # contract, not a local timeout — a legitimate window can outlive it (a
-# relay setup may wait minutes for a human), so the coordinator renews the
+# capture setup may wait minutes for a human), so the coordinator renews the
 # lease every `correction.coordinator.MEASUREMENT_LEASE_REFRESH_SEC`. That
 # interval must stay under this one with room for a retry, or a healthy
 # long window would un-gate mid-sweep and let household music back into the

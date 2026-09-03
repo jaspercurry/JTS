@@ -78,7 +78,7 @@ from jasper.audio_measurement.spatial_combine import (
 from tests import _flat_lin_corpus as corpus
 from tests.active_speaker_fixtures import mono_output_topology
 
-RELAY = "cap_Ktm3xQ2p"
+CAPTURE = "cap_Ktm3xQ2p"
 PHASE = "cloud_measure"
 
 
@@ -100,7 +100,7 @@ def _seed_evidence(store: CommissioningEvidenceStore) -> tuple[SessionIdentity, 
 
     identity = SessionIdentity(session_id=store.session_id)
     artifact = store.publish_json_artifact(
-        f"crossover_v2/{RELAY}/{PHASE}.json",
+        f"crossover_v2/{CAPTURE}/{PHASE}.json",
         {"schema_version": 1, "kind": "jts_crossover_v2_cloud_evidence"},
     )
     return identity, bundle_evidence_ref(artifact, identity)
@@ -136,9 +136,9 @@ def test_a_finding_round_trips_through_the_real_evidence_store(tmp_path: Path) -
     )
 
     publish_finding_set(
-        store, capture_session_id=RELAY, phase=PHASE, finding_set=built
+        store, capture_session_id=CAPTURE, phase=PHASE, finding_set=built
     )
-    reopened = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+    reopened = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
 
     assert reopened == built
 
@@ -160,14 +160,14 @@ def test_a_finding_does_not_outlive_the_bundle_that_holds_its_evidence(
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
         ),
     )
     findings_path = bundle_dir / "evidence/v1/artifacts" / findings_relative_path(
-        RELAY, PHASE
+        CAPTURE, PHASE
     )
     assert findings_path.is_file()
 
@@ -192,7 +192,7 @@ def test_bundle_eviction_takes_findings_and_evidence_together(
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
@@ -222,7 +222,7 @@ def test_a_finding_may_not_silently_predecease_its_evidence(
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
@@ -232,11 +232,11 @@ def test_a_finding_may_not_silently_predecease_its_evidence(
     (bundle_dir / cite.locator).unlink()
 
     with pytest.raises(FindingEvidenceMissing, match="no longer produce"):
-        read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+        read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
     # An explicit opt-out still exists for a caller that wants the record
     # without its support — but it has to ask.
     assert read_finding_set(
-        store, capture_session_id=RELAY, phase=PHASE, verify_evidence=False
+        store, capture_session_id=CAPTURE, phase=PHASE, verify_evidence=False
     ) is not None
 
 
@@ -254,7 +254,7 @@ def test_altered_evidence_is_as_loud_as_missing_evidence(tmp_path: Path) -> None
     )
     publish_finding_set(
         store,
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity,
@@ -264,7 +264,7 @@ def test_altered_evidence_is_as_loud_as_missing_evidence(tmp_path: Path) -> None
     )
 
     with pytest.raises(FindingEvidenceMissing, match="but the bundle now holds"):
-        read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+        read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
 
 
 # --------------------------------------------------------------------------- #
@@ -279,7 +279,7 @@ def test_a_bundle_written_before_attribution_stays_readable(tmp_path: Path) -> N
     store, _ = _open_store(tmp_path)
     _seed_evidence(store)
 
-    assert read_finding_set(store, capture_session_id=RELAY, phase=PHASE) is None
+    assert read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE) is None
 
 
 def test_ran_and_found_nothing_is_not_the_same_as_nobody_looked(
@@ -292,16 +292,16 @@ def test_ran_and_found_nothing_is_not_the_same_as_nobody_looked(
     store, _ = _open_store(tmp_path)
     identity, _cite = _seed_evidence(store)
 
-    assert read_finding_set(store, capture_session_id=RELAY, phase=PHASE) is None
+    assert read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE) is None
     publish_finding_set(
         store,
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=()
         ),
     )
-    empty = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+    empty = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
 
     assert empty is not None
     assert empty.findings == ()
@@ -313,12 +313,12 @@ def test_a_corrupt_record_is_a_failure_not_a_legacy_bundle(tmp_path: Path) -> No
     predates attribution" — that would turn a real fault into a shrug."""
 
     store, bundle_dir = _open_store(tmp_path)
-    path = bundle_dir / "evidence/v1/artifacts" / findings_relative_path(RELAY, PHASE)
+    path = bundle_dir / "evidence/v1/artifacts" / findings_relative_path(CAPTURE, PHASE)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"schema":"jts_attribution_finding_set/1"}', encoding="utf-8")
 
     with pytest.raises(FindingStorageError):
-        read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+        read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
 
 
 def test_findings_inherit_the_bundle_s_group_readable_mode(tmp_path: Path) -> None:
@@ -332,13 +332,13 @@ def test_findings_inherit_the_bundle_s_group_readable_mode(tmp_path: Path) -> No
     identity, cite = _seed_evidence(store)
     publish_finding_set(
         store,
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
         phase=PHASE,
         finding_set=FindingSet(
             session=identity, produced_by=PRODUCED_BY, findings=(_finding(cite),)
         ),
     )
-    path = bundle_dir / "evidence/v1/artifacts" / findings_relative_path(RELAY, PHASE)
+    path = bundle_dir / "evidence/v1/artifacts" / findings_relative_path(CAPTURE, PHASE)
 
     assert BUNDLE_FILE_MODE == 0o640
     assert path.stat().st_mode & 0o777 == BUNDLE_FILE_MODE
@@ -830,14 +830,14 @@ def test_the_cloud_artifact_and_its_findings_share_one_identity(
     tmp_path: Path,
 ) -> None:
     """The hop that matters most: the finding set and the evidence it cites
-    resolve to the same session, and the relay id rides as an alias rather
+    resolve to the same session, and the capture id rides as an alias rather
     than as a competing identity."""
 
     from jasper.web import correction_crossover_v2 as v2host
 
     store, bundle_dir = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, RELAY, refs)(
+    v2host.bind_cloud_publisher(store, CAPTURE, refs)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
 
@@ -845,16 +845,16 @@ def test_the_cloud_artifact_and_its_findings_share_one_identity(
         (
             bundle_dir
             / "evidence/v1/artifacts/crossover_v2"
-            / RELAY
+            / CAPTURE
             / f"{PHASE}.json"
         ).read_text()
     )
     cloud_identity = read_session_identity(cloud)
     assert cloud_identity is not None
     assert cloud_identity.session_id == store.session_id
-    assert cloud_identity.aliases["capture_session_id"] == RELAY
+    assert cloud_identity.aliases["capture_session_id"] == CAPTURE
 
-    findings = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+    findings = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
     assert findings is not None
     assert findings.session == cloud_identity
 
@@ -871,18 +871,18 @@ def test_the_live_seam_promotes_carve_outs_and_cites_the_cloud_artifact(
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, RELAY, refs)(
+    v2host.bind_cloud_publisher(store, CAPTURE, refs)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
 
-    findings = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+    findings = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
     assert findings is not None
     assert [f.mechanism for f in findings.findings] == ["M2"]
     assert findings.findings[0].confidence == "unsure"
     assert findings.findings[0].fix_class == "carve"
     assert refs["finding_artifacts"][PHASE]
     cite = findings.findings[0].cites[0]
-    assert cite.locator.endswith(f"crossover_v2/{RELAY}/{PHASE}.json")
+    assert cite.locator.endswith(f"crossover_v2/{CAPTURE}/{PHASE}.json")
     assert len(cite.sha256) == 64
 
 
@@ -898,12 +898,12 @@ def test_a_findings_failure_never_fails_the_cloud_publish(tmp_path: Path) -> Non
     refs: dict = {}
 
     # A carve-out block shaped in a way promotion cannot read at all.
-    v2host.bind_cloud_publisher(store, RELAY, refs)(
+    v2host.bind_cloud_publisher(store, CAPTURE, refs)(
         PHASE, {"available": True, "carve_outs": "not-a-list"}
     )
 
     assert refs["cloud_artifacts"][PHASE]
-    empty = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+    empty = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
     assert empty is not None and empty.findings == ()
 
 
@@ -946,7 +946,7 @@ def _publish_candidate_artifact(store: CommissioningEvidenceStore) -> None:
     artifact is exactly the failure ``read_finding_set`` exists to catch.
     """
     store.publish_json_artifact(
-        f"crossover_v2/{RELAY}/candidate.json",
+        f"crossover_v2/{CAPTURE}/candidate.json",
         {"kind": "jts_crossover_v2_candidate", "linearization": {}},
     )
 
@@ -969,9 +969,9 @@ def test_the_banked_frame_finding_lands_in_the_bundle_and_reopens(
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+    v2host.bind_findings_publisher(store, CAPTURE, refs)(_LEVEL_FRAME_RECORD)
 
-    findings = read_finding_set(store, capture_session_id=RELAY, phase="measure")
+    findings = read_finding_set(store, capture_session_id=CAPTURE, phase="measure")
     assert findings is not None
     assert [f.mechanism for f in findings.findings] == ["M7"]
     finding = findings.findings[0]
@@ -984,7 +984,7 @@ def test_the_banked_frame_finding_lands_in_the_bundle_and_reopens(
     assert finding.evidence["realized_difference_db"] == -0.828
     # …and the citation is the candidate this finding is about.
     cite = finding.cites[0]
-    assert cite.locator.endswith(f"crossover_v2/{RELAY}/candidate.json")
+    assert cite.locator.endswith(f"crossover_v2/{CAPTURE}/candidate.json")
     assert len(cite.sha256) == 64
     assert refs["finding_artifacts"]["measure"]
 
@@ -1005,14 +1005,14 @@ def test_the_frame_finding_takes_its_own_phase_so_the_cloud_set_survives(
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, RELAY, refs)(
+    v2host.bind_cloud_publisher(store, CAPTURE, refs)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+    v2host.bind_findings_publisher(store, CAPTURE, refs)(_LEVEL_FRAME_RECORD)
 
-    cloud_set = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
-    frame_set = read_finding_set(store, capture_session_id=RELAY, phase="measure")
+    cloud_set = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
+    frame_set = read_finding_set(store, capture_session_id=CAPTURE, phase="measure")
     assert cloud_set is not None and frame_set is not None
     assert [f.mechanism for f in cloud_set.findings] == ["M2"]
     assert [f.mechanism for f in frame_set.findings] == ["M7"]
@@ -1039,16 +1039,16 @@ def test_a_frame_finding_failure_never_costs_the_session(tmp_path: Path) -> None
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     # (a) no candidate artifact to cite.
-    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
-    assert read_finding_set(store, capture_session_id=RELAY, phase="measure") is None
+    v2host.bind_findings_publisher(store, CAPTURE, refs)(_LEVEL_FRAME_RECORD)
+    assert read_finding_set(store, capture_session_id=CAPTURE, phase="measure") is None
     assert "finding_artifacts" not in refs
 
     # (b) a record promotion cannot read.
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, RELAY, refs)(
+    v2host.bind_findings_publisher(store, CAPTURE, refs)(
         {**_LEVEL_FRAME_RECORD, "f_hi_hz": None}
     )
-    assert read_finding_set(store, capture_session_id=RELAY, phase="measure") is None
+    assert read_finding_set(store, capture_session_id=CAPTURE, phase="measure") is None
     assert "finding_artifacts" not in refs
 
 
@@ -1071,7 +1071,7 @@ def test_the_banked_finding_is_read_back_for_the_household_to_see(
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+    v2host.bind_findings_publisher(store, CAPTURE, refs)(_LEVEL_FRAME_RECORD)
 
     projected = refs[v2host.FINDING_HOUSEHOLD_REFS_KEY]
     assert len(projected) == 1
@@ -1110,11 +1110,11 @@ def test_a_carve_out_set_is_recorded_but_never_projected(tmp_path: Path) -> None
 
     store, _ = _open_store(tmp_path)
     refs: dict = {}
-    v2host.bind_cloud_publisher(store, RELAY, refs)(
+    v2host.bind_cloud_publisher(store, CAPTURE, refs)(
         PHASE, {"available": True, "carve_outs": _carve_outs()}
     )
     # Recorded — the durable finding set exists and reopens.
-    banked = read_finding_set(store, capture_session_id=RELAY, phase=PHASE)
+    banked = read_finding_set(store, capture_session_id=CAPTURE, phase=PHASE)
     assert banked is not None and [f.mechanism for f in banked.findings] == ["M2"]
     # …and NOT on the household wire.
     assert v2host.FINDING_HOUSEHOLD_REFS_KEY not in refs
@@ -1139,20 +1139,20 @@ def test_a_finding_whose_evidence_vanished_is_never_projected(
     store, bundle = _open_store(tmp_path)
     refs: dict = {}
     _publish_candidate_artifact(store)
-    v2host.bind_findings_publisher(store, RELAY, refs)(_LEVEL_FRAME_RECORD)
+    v2host.bind_findings_publisher(store, CAPTURE, refs)(_LEVEL_FRAME_RECORD)
     assert refs[v2host.FINDING_HOUSEHOLD_REFS_KEY]
 
     # The cited artifact goes away underneath a second read.
     (
         Path(store.bundle_dir)
-        / "evidence" / "v1" / "artifacts" / "crossover_v2" / RELAY / "candidate.json"
+        / "evidence" / "v1" / "artifacts" / "crossover_v2" / CAPTURE / "candidate.json"
     ).unlink()
     with pytest.raises(FindingEvidenceMissing):
-        read_finding_set(store, capture_session_id=RELAY, phase="measure")
+        read_finding_set(store, capture_session_id=CAPTURE, phase="measure")
 
     fresh: dict = {}
     v2host._bank_household_findings(
-        store, capture_session_id=RELAY, phase="measure", refs=fresh,
+        store, capture_session_id=CAPTURE, phase="measure", refs=fresh,
     )
     assert fresh == {}
     assert bundle.exists()
@@ -1173,7 +1173,7 @@ def test_a_missing_finding_set_projects_nothing_rather_than_an_empty_claim(
     store, _ = _open_store(tmp_path)
     refs: dict = {}
     v2host._bank_household_findings(
-        store, capture_session_id=RELAY, phase="measure", refs=refs,
+        store, capture_session_id=CAPTURE, phase="measure", refs=refs,
     )
     assert refs == {}
 
@@ -1189,7 +1189,7 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
 
     store, bundle_dir = _open_store(tmp_path)
     refs: dict = {}
-    bank = v2host.bind_position_retention(store, RELAY, refs, asyncio.run)
+    bank = v2host.bind_position_retention(store, CAPTURE, refs, asyncio.run)
 
     class _Result:
         wav = b"take-bytes"
@@ -1206,7 +1206,7 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
             "prompt": "Two hand-widths LEFT of the mark.",
             "wide": False,
             "captured_at": 1.0,
-            "session_id": RELAY,
+            "session_id": CAPTURE,
             "wav_sha256": "c" * 64,
         },
     )
@@ -1246,7 +1246,7 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     from jasper.web import correction_crossover_v2 as v2host
 
     store, bundle_dir = _open_store(tmp_path)
-    bank = v2host.bind_position_retention(store, RELAY, {}, asyncio.run)
+    bank = v2host.bind_position_retention(store, CAPTURE, {}, asyncio.run)
 
     class _Result:
         wav = b"take-bytes"
@@ -1267,7 +1267,7 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
             "prompt": "",
             "wide": False,
             "captured_at": 1.0,
-            "session_id": RELAY,
+            "session_id": CAPTURE,
             "wav_sha256": "d" * 64,
         },
     )

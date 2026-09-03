@@ -64,7 +64,7 @@ PHASE_REVIEW = "review"
 PHASE_CLOSING = "closing"
 PHASE_DONE = "done"
 
-# The capturing phases in CANONICAL ORDER — the ones bound to the relay
+# The capturing phases in CANONICAL ORDER — the ones bound to the capture
 # session's evidence and invalidated on a new session (§5.6). A given session
 # runs a SUBSET of these, so a journey walks its own
 # :attr:`JourneyPlan.phases` rather than this tuple. Consumers that only have
@@ -138,7 +138,7 @@ def validated_lateral_consumer(consumer: str, *, states_own_poses: bool) -> str:
 
 @dataclass(frozen=True)
 class JourneyPlan:
-    """What ONE relay session will walk, derived once from its index map.
+    """What ONE capture session will walk, derived once from its index map.
 
     The four fields are one fact — this session's shape — computed together in
     :meth:`from_index_map` and then frozen, so a plan cannot drift from the map
@@ -148,7 +148,7 @@ class JourneyPlan:
     contain no VERIFY while the verification is still part of the journey.
     """
 
-    #: Capture-plan index → phase, exactly as the relay will drive it.
+    #: Capture-plan index → phase, exactly as the capture will drive it.
     index_phase_map: Mapping[int, str]
     #: The phases this session runs, in :data:`CAPTURE_PHASES` order.
     phases: tuple[str, ...]
@@ -164,7 +164,7 @@ class JourneyPlan:
         *,
         post_apply_verifies: bool | None = None,
     ) -> "JourneyPlan":
-        """Derive the plan from the relay index map the session will emit.
+        """Derive the plan from the capture index map the session will emit.
 
         ``post_apply_verifies=None`` keeps the phase-derived reading; the
         measuring stage, whose own plan carries no VERIFY, declares it, and
@@ -225,7 +225,7 @@ class CommissionJourney:
     is observed (:meth:`mark_applied`) — and everything else is derived from
     those plus the frozen plan.
 
-    There is no illegal-transition guard, and that is a decision: the relay
+    There is no illegal-transition guard, and that is a decision: the capture
     drives indexes in order and re-accepting a settled position is how a
     geometry retake legitimately lands, so a guard here would have to encode the
     capture layer's retry policy. What this class owns is that the derivations
@@ -257,7 +257,7 @@ class CommissionJourney:
         """Record one resolved capture, closing its group when that was the last.
 
         ``_group_accepted`` means RESOLVED, not "has a curve": a position the
-        flow gave up on lands here too, because the relay advanced past it and
+        flow gave up on lands here too, because the capture advanced past it and
         the phase would otherwise never close.
         """
         if phase not in self._group_accepted:
@@ -358,7 +358,7 @@ CAPABILITY_ENTRY_BASELINE = "entry_baseline"
 class V2StageCapabilities:
     """What ONE commission stage binds, and what it needs handed to it.
 
-    The v2 commission runs as two relay sessions against two session objects,
+    The v2 commission runs as two capture sessions against two session objects,
     binding identical seams except in two places.
 
     ``provides`` lists ONLY the seams that DIFFER between stages — the ones

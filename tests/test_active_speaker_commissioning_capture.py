@@ -1004,7 +1004,7 @@ def _repeat(
 
 
 def _reference_axis_proof(
-    *, comparison_hex: str = "a", capture_session_id: str = "relay-reference"
+    *, comparison_hex: str = "a", capture_session_id: str = "capture-reference"
 ) -> dict:
     return {
         "schema_version": 1,
@@ -1319,7 +1319,7 @@ def test_aggregate_never_mixes_reference_axis_placement_bindings():
     assert result["per_repeat"][1]["reject_reason"] == "capture_context_mismatch"
 
 
-def test_aggregate_accepts_fresh_relay_binding_for_each_fixed_axis_repeat():
+def test_aggregate_accepts_fresh_capture_binding_for_each_fixed_axis_repeat():
     repeats = []
     for index, level in enumerate((-30.0, -30.1, -29.9), start=1):
         repeat = _repeat(level)
@@ -1333,7 +1333,7 @@ def test_aggregate_accepts_fresh_relay_binding_for_each_fixed_axis_repeat():
             }],
         })
         repeat["placement_proof"] = _reference_axis_proof(
-            capture_session_id=f"relay-reference-{index}"
+            capture_session_id=f"capture-reference-{index}"
         )
         repeat["placement_proof"]["acknowledgement_binding_sha256"] = (
             f"{index:x}" * 64
@@ -1868,7 +1868,7 @@ def _capture_summed(
         placement_proof = normalized_placement_proof(
             policy_id=SUMMED_PLACEMENT_POLICY_ID,
             acknowledgement_binding=f"binding-{playback_id}-abcdefghijkl",
-            capture_session_id=f"relay-{playback_id}",
+            capture_session_id=f"capture-{playback_id}",
             capture_page={
                 "capture_protocol_version": 3,
                 "capture_page_build": "20260712.2",

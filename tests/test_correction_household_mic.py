@@ -6,7 +6,7 @@
 household's remembered measurement microphone (Wave-2 persistence).
 
 Before this module, nothing about the measurement mic survived across
-sessions: the phone relay's setup validated against a per-run
+sessions: the capture page's setup validated against a per-run
 ``setup_binding_id`` and an uploaded calibration carried no serial, so
 neither path could ever be found again on a later run. These tests pin the
 record's round-trip, its fail-soft behavior on a malformed file, and the

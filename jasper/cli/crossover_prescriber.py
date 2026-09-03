@@ -1147,7 +1147,7 @@ def _add_evidence_args(
         nargs="?" if optional_positional else None,
         help=(
             "a commissioning bundle directory (the one holding info.json and "
-            "evidence/v1/artifacts/crossover_v2/<relay-session-id>/), or a "
+            "evidence/v1/artifacts/crossover_v2/<capture-session-id>/), or a "
             "banked round tree holding one"
             + (
                 ". Omit on a virgin speaker with no session yet -- status "

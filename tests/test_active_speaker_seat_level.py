@@ -445,7 +445,7 @@ def test_the_step_is_the_measured_gap():
         pytest.approx(7.6)
     )
     # Uncapped by default: a caller whose own geometry bounds the jump passes
-    # no cap (the phone-relay kernel's settled jump).
+    # no cap (the browser capture kernel's settled jump).
     assert capped_gap_step_db(measured_db=0.0, target_db=90.0) == pytest.approx(90.0)
 
 
@@ -507,7 +507,7 @@ def test_the_climb_bite_is_deliberately_not_the_calibration_step_limit():
 
 
 def test_the_kernel_jump_is_the_same_policy():
-    """The phone-relay kernel's settled jump computes the shared step too.
+    """The browser capture kernel's settled jump computes the shared step too.
 
     ``RampController._apply_jump`` aims at the window midpoint from a settled
     read; that is ``capped_gap_step_db`` with no cap. Pinned so a future edit
@@ -3562,7 +3562,7 @@ def test_a_failing_sample_source_on_a_leg_refuses_instead_of_raising(tmp_path):
             # a fade revisits levels, so "where it was when the feed died" is a
             # fact only this moment has.
             raised.append(volume.commanded[-1])
-            raise RuntimeError("the capture relay dropped the feed")
+            raise RuntimeError("the capture dropped the feed")
         return await mic.next_samples()
 
     clock = FakeClock()
@@ -3588,7 +3588,7 @@ def test_a_failing_sample_source_on_a_leg_refuses_instead_of_raising(tmp_path):
     assert result.status == "refused"
     assert result.reason == slr.REFUSE_RAMP_ERROR
     assert result.detail is not None
-    assert "the capture relay dropped the feed" in result.detail
+    assert "the capture dropped the feed" in result.detail
     assert not tone.playing
     assert result.restored is True
     assert not (tmp_path / "seat_level_reference.json").exists()

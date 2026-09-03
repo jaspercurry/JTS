@@ -645,10 +645,10 @@ def test_verify_phase_screen():
     # STAGE 2's entry point (two-stage work order D2, PR-T3). The measuring
     # session ended at the review screen and the household applied from there,
     # so the post-apply check is a NEW session somebody has to start — and
-    # deliberately so, because the relay TTL begins ticking at open and the
+    # deliberately so, because the session TTL begins ticking at open and the
     # household is still walking back to fetch the phone. It used to be None:
     # the same screen rendered mid-session while the phone drove it, and the
-    # shared relay gate still suppresses this action while stage 2's own relay
+    # shared capture gate still suppresses this action while stage 2's own capture
     # is in flight.
     assert env["next_action"] == {
         "id": "verify_start",
@@ -2673,7 +2673,7 @@ def test_session_restart_template():
 
 
 def test_user_stopped_renders_session_restart_with_honest_copy():
-    """A deliberate phone Stop is not a relay-transport death (gotcha #18) —
+    """A deliberate phone Stop is not a transport death (gotcha #18) —
     same session_restart template/action shape, but the copy must not claim
     a timeout that never happened."""
     env = build_crossover_envelope_v2(_status(
@@ -2697,10 +2697,10 @@ def test_verify_fail_one_default_screen():
     expert = [a for a in env["alternate_actions"] if a.get("expert")]
     assert [a["id"] for a in expert] == ["verify_remeasure"]
     # W6.12: the way back and Re-measure must survive the JS action-row's
-    # relay-in-flight gate (a real window right after a failed capture,
+    # capture-in-flight gate (a real window right after a failed capture,
     # before the phone side has fully wound down) — the same show_during_capture
     # escape hatch W6.10 gave the review screen's Apply. "Try again" starts a
-    # brand new relay session, so it deliberately does NOT carry the flag.
+    # brand new capture session, so it deliberately does NOT carry the flag.
     way_back = next(
         a for a in env["alternate_actions"] if a["id"] == "republish_previous"
     )
@@ -4050,7 +4050,7 @@ def test_verify_level_shift_copy_matches_the_controls_on_its_own_screen():
 
 def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
     """The household's field report on this screen was that "Try again" was the
-    only obvious control, so they took it until the relay session expired. For a
+    only obvious control, so they took it until the capture session expired. For a
     verdict that has already established the mismatch repeats, that button is a
     dead lever presented as the next step: it opens a fresh /v2/verify and
     re-checks the SAME applied graph.
@@ -4073,8 +4073,8 @@ def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
     # alternate — a primary the screen steers towards is not a disclosure.
     assert "expert" not in env["next_action"]
     # …and it keeps the flag that makes it survive the wizard's
-    # relay-in-flight gate while the ended session winds down. On a primary
-    # the same flag also suppresses the connect link/QR for that dead relay,
+    # capture-in-flight gate while the ended session winds down. On a primary
+    # the same flag also stands the dead capture's own controls down,
     # which is the wanted behaviour for a verdict that ends the session.
     assert env["next_action"]["show_during_capture"] is True
     ids = [a["id"] for a in env["alternate_actions"]]
@@ -4180,7 +4180,7 @@ def test_a_budget_zero_code_reaching_this_screen_by_the_applied_override_keeps_r
     rows that land on this screen only because something is applied (W6.7
     ruling 3). Their zero budget says no further CAPTURE of what failed can
     help; it says nothing about the VERIFY check, and here "Try again" means a
-    fresh /v2/verify session — which for a dead relay is precisely the fix.
+    fresh /v2/verify session — which for a dead capture is precisely the fix.
     Keying on budget alone would have taken the working button away."""
     for code in (REASON_CAPTURE_TIMEOUT, REASON_USER_STOPPED):
         assert REASON_REGISTRY[code].retry_budget == 0, code
@@ -4296,7 +4296,7 @@ def test_check_phase_agc_failure_still_renders_its_normal_template():
     assert env["alternate_actions"] == []
 
 
-def test_verify_phase_relay_timeout_also_renders_verify_fail():
+def test_verify_phase_capture_timeout_also_renders_verify_fail():
     """A non-agc code (REASON_CAPTURE_TIMEOUT's own template is
     session_restart) gets the same applied override -- ANY failure code
     surfacing once genuinely applied is entitled to the route out."""
@@ -4534,8 +4534,8 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
     assert len(way_back) == 1
     assert way_back[0]["endpoint"] == "/correction/crossover/v2/republish"
     assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
-    # Survives the JS relay-in-flight gate (W6.12): a get-me-out affordance
-    # must stay visible while a failed capture's relay is still winding down.
+    # Survives the JS capture-in-flight gate (W6.12): a get-me-out affordance
+    # must stay visible while a failed capture is still winding down.
     assert way_back[0]["show_during_capture"] is True
 
 
@@ -4921,7 +4921,7 @@ def test_durable_phases_are_exempt_from_the_session_clock(phase, screen):
     assert env["screen"] == screen
 
 
-@pytest.mark.parametrize("relay_status,screen", [
+@pytest.mark.parametrize("capture_status,screen", [
     # The wizard still holds the slot: the session cannot be over, whatever
     # the clock says. An unknown status reads as in flight for the same
     # reason ``SESSION_ENDED_STATUSES`` does.
@@ -4932,13 +4932,13 @@ def test_durable_phases_are_exempt_from_the_session_clock(phase, screen):
     ("stopped", "microphone_check"),
     ("failed", "microphone_check"),
 ])
-def test_a_live_relay_outranks_the_clock(relay_status, screen):
+def test_a_live_capture_outranks_the_clock(capture_status, screen):
     """A commission's own wall-clock ceiling is 3600 s and the closing screen's
     confirm waits on a human, so an in-flight session can idle past the
     freshness window — and a slot the wizard still holds proves it is not
     over."""
     status = _dead_session_status("verify", applied=True)
-    status["capture"] = {"status": relay_status}
+    status["capture"] = {"status": capture_status}
     assert build_crossover_envelope_v2(status)["screen"] == screen
 
 
@@ -5006,11 +5006,11 @@ def test_banked_progress_line_is_silent_when_state_cannot_support_it(v2):
             if n["code"] == "crossover_v2_banked_progress"] == []
 
 
-# --- W6.1 Finding D: the v2 relay slot is visible in the envelope ----------------
+# --- W6.1 Finding D: the v2 capture slot is visible in the envelope ----------------
 
 
-def test_envelope_carries_relay_block_awaiting_and_after_failure():
-    """The v2 envelope threads status['relay'] into BOTH the awaiting-phone
+def test_envelope_carries_capture_block_awaiting_and_after_failure():
+    """The v2 envelope threads status['capture'] into BOTH the awaiting-phone
     screen and the failure screen, so a page reload keeps the tap link and the
     failure copy reaches the household (Finding D — the slot was invisible)."""
     from jasper.active_speaker.crossover_v2.refusal_copy import (

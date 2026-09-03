@@ -283,7 +283,7 @@ def _sibling_bundle(
     production, which for ``_bundle``'s own shape is one level too shallow.
     """
     bundle_dir = root / name
-    round_dir = bundle_dir / "evidence/v1/artifacts/crossover_v2" / f"relay_{name}"
+    round_dir = bundle_dir / "evidence/v1/artifacts/crossover_v2" / f"capture_{name}"
     round_dir.mkdir(parents=True)
     (bundle_dir / "info.json").write_text(json.dumps({
         "kind": "jts_active_speaker_commissioning_bundle",
@@ -325,7 +325,7 @@ def test_the_history_reads_sibling_bundles_oldest_first(tmp_path):
     assert history["rounds_covered"] == 3
     assert [row["ordinal"] for row in history["rounds"]] == [1, 2, 3]
     assert [row["round_id"] for row in history["rounds"]] == [
-        "relay_r1", "relay_r2", "relay_r3",
+        "capture_r1", "capture_r2", "capture_r3",
     ]
     # The campaign's own runaway signature, oldest first -- readable left to
     # right, and no drift verdict published about it.
@@ -445,7 +445,7 @@ def test_the_history_is_bounded_at_max_rounds(tmp_path):
     history = packet["structural_history"]
     assert history["rounds_covered"] == 8
     assert [row["round_id"] for row in history["rounds"]] == [
-        f"relay_r{i}" for i in range(3, 11)
+        f"capture_r{i}" for i in range(3, 11)
     ]
 
 

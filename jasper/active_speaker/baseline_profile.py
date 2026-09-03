@@ -557,7 +557,7 @@ def _measured_level_trims(
     single owner of which one wins. The PREFERRED source is the base trim
     :mod:`jasper.active_speaker.driver_base_trim` banks — the level match a
     successful apply was actually playing, written by the apply seam itself.
-    The FALLBACK, unchanged, is the guided per-driver captures the relay flow
+    The FALLBACK, unchanged, is the guided per-driver captures the capture flow
     promotes. A banked trim is preferred only because it is the level match the
     speaker last committed to, not because it is a better measurement — so a
     usable guided answer whose captures postdate the record's ``measured_at``

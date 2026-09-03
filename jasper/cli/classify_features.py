@@ -10,7 +10,7 @@ the evidence packet looks for it. No Pi is touched, nothing is re-measured, and
 no capture is re-taken.
 
 ``<bundle-dir>`` is a commissioning bundle — the directory holding ``info.json``
-beside ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``. The round
+beside ``evidence/v1/artifacts/crossover_v2/<capture-session-id>/``. The round
 directory inside it is found by the SAME rule the packet reader uses
 (:func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`),
 so the artifact cannot land where the reader does not look, and a bundle
@@ -23,7 +23,7 @@ either of two places, resolved by
 shares, so the two readers cannot answer "where do the programs live"
 differently. Beside the JSON receipts themselves is tried first; only when
 neither admissible phase is there does resolution fall back to a SIBLING
-``crossover_v2/<relay>/`` directory next to, not inside, ``evidence/`` — the
+``crossover_v2/<capture>/`` directory next to, not inside, ``evidence/`` — the
 shape ``scripts/bank-crossover-round.sh`` actually produces, because it tars
 a live Pi session bundle verbatim and that is where the product's own sole
 program-WAV writer (``correction_crossover_v2.py``) has always filed them.
@@ -186,10 +186,10 @@ def main(argv: list[str] | None = None) -> int:
             # the fix there is naming which round, not where programs live.
             message += (
                 " — bundle_dir must hold info.json beside "
-                "evidence/v1/artifacts/crossover_v2/<relay>/, either the "
+                "evidence/v1/artifacts/crossover_v2/<capture>/, either the "
                 "campaign-receipts shape (program WAVs filed right there) or "
                 "the shape bank-crossover-round.sh pulls (program WAVs in a "
-                "sibling crossover_v2/<relay>/ directory instead)"
+                "sibling crossover_v2/<capture>/ directory instead)"
             )
         return fail_with_payload(
             message,

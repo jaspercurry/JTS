@@ -175,7 +175,7 @@ def test_the_snapshot_carries_no_retry_ledger_so_a_resume_restores_full_extras()
 
     **Reachability, stated honestly so this is not read as a live defect
     report.** ``prepare_v2_session`` is the only production caller of
-    ``hydrate``, and it always passes a NEW relay session id, so production
+    ``hydrate``, and it always passes a NEW capture session id, so production
     takes the different-session branch (a fresh start at CHECK, where a reset
     pool is simply correct). The same-session branch exercised here is
     reachable machinery with its own documented resume semantics; what is

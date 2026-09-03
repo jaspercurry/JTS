@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Correction-side level-match adapter: relay feed, geometry lock, drift check.
+"""Correction-side level-match adapter: level feed, geometry lock, drift check.
 
 The kernel ramp math is tested in ``test_audio_measurement_ramp.py``; here we
-test the correction glue with a fake relay (a status dict the feed reads) and a
+test the correction glue with a fake feed (a status dict the feed reads) and a
 fake clock — no network, no CamillaDSP. The protocol-honesty items the review
 demanded are pinned here: run-token scoping (a previous run's persisted slot
 never cancels or feeds a retry), seq-regression as a new stream (phone page
 reload), the armed gate (no tone until the phone armed), the latched
-journal-spam warnings, and the terminal host event re-posted until the relay
+journal-spam warnings, and the terminal host event re-posted until the capture
 echoes it back.
 """
 
@@ -209,7 +209,7 @@ def test_phone_reported_armed_token_scoping():
     assert phone_reported_armed({"armed": True}, run_token="run-B") is False
 
 
-# --- relay feed: dedup, regression, abort, rate limit, latched warnings -------
+# --- level feed: dedup, regression, abort, rate limit, latched warnings -------
 
 
 class Clock:
@@ -234,7 +234,7 @@ def _feed(status_ref, clock, **kw):
     )
 
 
-async def test_relay_feed_dedupes_and_detects_abort():
+async def test_level_feed_dedupes_and_detects_abort():
     clock = Clock()
     ref = {"status": {"event": _batch([{"seq": 1, "rms_dbfs": -30.0}])}}
     feed = _feed(ref, clock)
@@ -249,7 +249,7 @@ async def test_relay_feed_dedupes_and_detects_abort():
     assert feed.aborted_reason == "backgrounded"
 
 
-async def test_relay_feed_seq_regression_is_a_new_stream():
+async def test_level_feed_seq_regression_is_a_new_stream():
     # A phone page reload mid-ramp resets its counter; the feed must consume
     # the new stream rather than dropping every sample as stale (the review's
     # permanent-starvation case).
@@ -264,7 +264,7 @@ async def test_relay_feed_seq_regression_is_a_new_stream():
     assert await feed.next_samples() == []
 
 
-async def test_relay_feed_ignores_stale_previous_run_slot():
+async def test_level_feed_ignores_stale_previous_run_slot():
     # The previous run's final event (abort superset + samples, another token)
     # persists in the slot: a fresh tokened feed must ignore it completely —
     # no insta-cancel, no stale samples.
@@ -286,7 +286,7 @@ async def test_relay_feed_ignores_stale_previous_run_slot():
     assert [s.seq for s in await feed.next_samples()] == [1]
 
 
-async def test_relay_feed_rate_limits_reads():
+async def test_level_feed_rate_limits_reads():
     clock = Clock()
     calls = {"n": 0}
 
@@ -304,13 +304,13 @@ async def test_relay_feed_rate_limits_reads():
     assert calls["n"] <= 5
 
 
-async def test_relay_feed_latches_read_failure_warning(caplog):
+async def test_level_feed_latches_read_failure_warning(caplog):
     clock = Clock()
     calls = {"n": 0}
 
     def read_status():
         calls["n"] += 1
-        raise RuntimeError("relay down")
+        raise RuntimeError("feed down")
 
     feed = LevelStatusFeed(
         read_status=read_status, monotonic=clock.now, min_read_interval_s=0.0
@@ -322,7 +322,7 @@ async def test_relay_feed_latches_read_failure_warning(caplog):
     assert len(warnings) == 1  # latched, not per tick
 
 
-async def test_relay_feed_latches_schema_mismatch_warning(caplog):
+async def test_level_feed_latches_schema_mismatch_warning(caplog):
     clock = Clock()
     bad = _batch([{"seq": 1, "rms_dbfs": -30.0}])
     bad["level_batch"]["schema"] = 999
@@ -484,7 +484,7 @@ def test_describe_ramp_refusal_unknown_code_falls_back_but_includes_the_code():
 def test_level_match_refused_str_is_the_homeowner_message():
     """Hardware run 20: a measurement refusal's ``str(exc)`` is what reaches
     the household when a caller falls back to the generic ``str(exc)`` path --
-    the phone's ``sweep_failed`` host event and the wizard's relay status line
+    the phone's ``sweep_failed`` host event and the wizard's capture status line
     (``jasper.web.correction_setup._capture_failure_message``) both do. So the
     mapping from code to household copy must happen AT THE RAISE SITE: the
     exception's own ``str`` is the mapped sentence, never a raw diagnostic.
@@ -498,12 +498,12 @@ def test_level_match_refused_str_is_the_homeowner_message():
     assert isinstance(exc, RuntimeError)  # caught by the existing except tuples
 
 
-# --- LevelMatchSession end-to-end with a fake relay ---------------------------
+# --- LevelMatchSession end-to-end with a fake feed ---------------------------
 
 
 class FakeChain:
-    """Fake speaker+relay: the mic level tracks commanded volume + gain, streamed
-    back through a mutable relay status dict as armed level batches. The Pi's
+    """Fake speaker+feed: the mic level tracks commanded volume + gain, streamed
+    back through a mutable status dict as armed level batches. The Pi's
     host events land in the same status dict (host_event echo works)."""
 
     def __init__(
@@ -615,7 +615,7 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
 
 
 async def test_level_match_session_unattested_verified_locks_like_attested():
-    """End-to-end through the full relay adapter: an unattested (undefined
+    """End-to-end through the full feed adapter: an unattested (undefined
     AGC) chain — the wire-level agc_frozen is false on every sample — still
     locks IN_WINDOW once the staircase's slope is empirically verified, and
     the stored lock reads as trustworthy (agc_frozen=True), identically to
@@ -681,7 +681,7 @@ async def test_level_match_persists_bounded_low_evidence_in_lock_snapshot():
 
 
 async def test_level_match_terminal_state_repost_never_stops_on_first_echo():
-    # The relay event slot is a whole-meta read-modify-write race: a phone
+    # The capture event slot is a whole-meta read-modify-write race: a phone
     # batch post whose read predates the Pi's terminal write reverts
     # host_event when it lands. Stopping the re-post schedule on a single
     # confirmed echo left exactly that revert window with nobody re-posting —
@@ -765,7 +765,7 @@ async def test_level_match_waits_for_armed_and_times_out():
 
 
 async def test_level_match_token_scoped_retry_ignores_stale_abort():
-    # Run 2 of the same relay session: the slot still holds run 1's abort
+    # Run 2 of the same capture session: the slot still holds run 1's abort
     # superset. The tokened feed must ignore it and complete run 2 normally.
     sess = _session()
     chain = FakeChain(gain_db=10.0, start_vol=-30.0, run_token="run-2")
@@ -1349,7 +1349,7 @@ async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_pat
         )
 
 
-async def test_crossover_claimed_run_must_match_relay_token(tmp_path):
+async def test_crossover_claimed_run_must_match_the_run_token(tmp_path):
     from jasper.active_speaker.capture_geometry import driver_level_geometry
     from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
@@ -1364,11 +1364,11 @@ async def test_crossover_claimed_run_must_match_relay_token(tmp_path):
         return True
 
     with pytest.raises(
-        CrossoverLevelRunError, match="does not match the relay run token"
+        CrossoverLevelRunError, match="does not match the capture run token"
     ):
         await lease.run_level_match(
             geometry,
-            run_token="relay-token",
+            run_token="run-token",
             level_run_id="c" * 32,
             get_main_volume_db=get_volume,
             set_main_volume_db=set_volume,

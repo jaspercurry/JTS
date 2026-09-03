@@ -136,13 +136,12 @@ def _write_volume_safety_state(path: Path | None, payload: Mapping[str, Any]) ->
 class CrossoverLevelLease:
     """Geometry-keyed gain lease and durable restore intent for Layer A.
 
-    The shared :class:`LevelMatchSession` owns ramp math and relay semantics;
+    The shared :class:`LevelMatchSession` owns ramp math and feed semantics;
     this thin domain owner supplies only single-flight lifetime, observability,
     and the target/original pair. The process-global production lease injects a
     durable state path; ordinary test instances stay in-memory unless they opt
     into one. The target is asserted only inside a sweep window and restored in
-    that window's ``finally``. It deliberately owns no CamillaDSP or relay
-    client.
+    that window's ``finally``. It deliberately owns no CamillaDSP client.
     """
 
     def __init__(
@@ -486,7 +485,7 @@ class CrossoverLevelLease:
             )
 
             raise CrossoverLevelRunError(
-                "crossover level run id does not match the relay run token"
+                "crossover level run id does not match the capture run token"
             )
         config = (
             self._level_run_store.begin_backend(level_run_id, geometry=str(geometry))
@@ -583,7 +582,6 @@ class CrossoverLevelLease:
             self.noise_floor_db = None
             self.mic_calibration = None
             self.input_device = None
-            self.relay_setup_binding = None
             self._repeat_sessions = {}
             self._repeat_failures = {}
             self._durable_repeat_progress = {}
@@ -1083,9 +1081,9 @@ def reset_measurement_journey() -> dict[str, Any]:
     applied/loaded (``baseline_profile``, ``startup_load``). See
     ``jasper.active_speaker.reset`` for the artifact-by-artifact rationale.
 
-    Callers MUST stop any in-flight relay/level-match session before
+    Callers MUST stop any in-flight capture/level-match session before
     calling this — see ``_handle_crossover_reset`` in
-    ``jasper.web.correction_setup``, which reuses the relay-cancel path
+    ``jasper.web.correction_setup``, which reuses the capture-cancel path
     first. This function only owns the in-process lease and the durable
     journey files; it never touches CamillaDSP.
 
@@ -1702,7 +1700,7 @@ async def play_driver_capture_sweep(
 
     ``fanin_gate_context`` threads through to
     ``web_commissioning.play_driver_capture_sweep`` — set only by the
-    relay flow when this sweep runs inside a correction measurement window
+    capture flow when this sweep runs inside a correction measurement window
     (see ``FaninGateContext``).
     """
 

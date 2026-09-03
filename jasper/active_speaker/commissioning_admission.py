@@ -95,8 +95,8 @@ ADMISSION_HANDOFF_SCHEMA_VERSION = 2
 ADMISSION_HANDOFF_KIND = "jts_active_driver_capture_admission_handoff"
 ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS = -12.0
 ACTIVE_DRIVER_CAPTURE_REPEAT_COUNT = 1
-# The relay's armed-to-sweep deadline must also contain the controlled ambient
-# interval, longest protected sweep, graph load/readback/restore, and relay
+# The armed-to-sweep deadline must also contain the controlled ambient
+# interval, longest protected sweep, graph load/readback/restore, and status
 # posts, so the budget is explicit rather than a profile cooldown that can only
 # time out after the phone starts recording.
 ACTIVE_DRIVER_CAPTURE_GRAPH_AND_STATUS_BUDGET_S = 9.0

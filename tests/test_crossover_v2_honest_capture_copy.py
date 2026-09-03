@@ -255,7 +255,7 @@ def test_the_registry_holds_the_no_evidence_rendering():
 def test_the_selector_is_the_one_voice_for_every_surface(pilot_heard):
     """One failure, one account of it.
 
-    The relay verdict, the budget refusal, and the envelope each render this
+    The capture verdict, the budget refusal, and the envelope each render this
     sentence from their own surface. They agree because they all ask
     :func:`reason_message`; a caller that went back to ``spec.message`` would
     break this.
@@ -421,7 +421,7 @@ def test_a_persisted_code_never_carries_another_failures_evidence(
 ):
     """The caller-side half of the pairing rule.
 
-    The relay-death arm persists ``capture_timeout`` over whatever the last
+    The capture-death arm persists ``capture_timeout`` over whatever the last
     capture failed on. Ungated, that wrote ``{"code": "capture_timeout",
     "pilot_heard": True}`` — one failure's code with another's evidence. Only
     ``locate_failed`` reads the key today, so no wrong sentence shipped, but

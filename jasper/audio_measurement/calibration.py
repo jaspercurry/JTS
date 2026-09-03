@@ -70,7 +70,7 @@ def model_label_aliases(model_key: str) -> list[str]:
 def supported_model_options() -> tuple[dict[str, Any], ...]:
     """Public, UI-safe model picker options derived from SUPPORTED_MODELS.
 
-    The phone relay page consumes these via CaptureSpec, so adding a supported
+    The capture page consumes these via CaptureSpec, so adding a supported
     measurement mic is a registry edit, not a separate page edit.
     """
     return tuple(
@@ -788,7 +788,7 @@ def find_stored_calibration(
     most recently fetched match, or ``None``; corrupt records are skipped, not
     fatal. ``orientation="unknown"`` (the default) matches ANY stored
     orientation: the write side stamps the REAL inferred orientation, so a
-    literal match would permanently miss the cache for the phone-relay flow,
+    literal match would permanently miss the cache for the browser capture flow,
     which never declares one. A caller naming "0deg"/"90deg" still matches
     exactly.
     """

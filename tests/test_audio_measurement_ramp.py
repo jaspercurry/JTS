@@ -7,7 +7,7 @@
 The controller is pure: a fake clock, a fake volume setter, and a fake mic-sample
 source that models the chain gain ``G`` (``mic_dbfs = main_volume + G``) let us
 drive the whole state machine deterministically — no CamillaDSP, no aplay, no
-relay. Two fakes model two regimes:
+capture. Two fakes model two regimes:
 
   * :class:`ChainModel` — a dense per-tick feed (fast property tests for the
     cap/clip/trust invariants);
@@ -15,14 +15,14 @@ relay. Two fakes model two regimes:
     reproduced the blocker with: the phone measures at batch cadence, each
     reading reflects the volume ``meas_lag`` earlier, the batch reaches the Pi
     ``transport_lag`` after measurement, and each batch is delivered exactly
-    once (the relay's last-write-wins slot + seq dedup). The panel's exact
+    once (the capture's last-write-wins slot + seq dedup). The panel's exact
     failing schedules (0.75 s cadence across phases; 0.5 s ± 30 ms jitter) are
     encoded below and MUST LOCK.
 
 The safety proof the panel probes:
 
   * every ramp-commanded volume is ``<=`` the dynamic cap AND ``<= 0 dB``, and
-    never non-finite (a NaN-poisoned relay batch cannot reach the setter);
+    never non-finite (a NaN-poisoned batch cannot reach the setter);
   * stop-ahead + the settle jump never imply a mic level above ``window_high``;
   * ``clip=true`` aborts immediately with a fade; a vanished feed aborts;
   * ``maxed_out`` requires trusted evidence, never creates a measurement lock,
@@ -351,7 +351,7 @@ def test_settle_hold_must_cover_loop_latency():
         MeasurementRamp(settle_hold_s=1.0, max_loop_latency_s=2.0)
 
 
-def test_dynamic_cap_matches_relay_level_defaults():
+def test_dynamic_cap_matches_level_defaults():
     cfg = MeasurementRamp()
     # The cap may be limited by the absolute ceiling, but never floored upward
     # beyond original+bump.
@@ -802,7 +802,7 @@ async def test_agc_unattested_indeterminate_bounded_low_fails_closed_to_maxed_ou
 
 
 @pytest.mark.parametrize("phase", [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.74])
-async def test_sparse_relay_cadence_locks(phase):
+async def test_sparse_feed_cadence_locks(phase):
     clock = FakeClock()
     cfg = MeasurementRamp()
     chain = SparseChain(
@@ -1022,7 +1022,7 @@ def test_level_sample_from_dict_rejects_non_finite():
 
 
 async def test_nan_poisoned_batches_never_reach_the_setter():
-    # Every third sample is NaN (a hostile relay post): the ramp must still
+    # Every third sample is NaN (a hostile post): the ramp must still
     # lock on the finite samples, and no commanded volume is ever non-finite.
     cfg = MeasurementRamp(**FAST)
     chain = ChainModel(gain_db=10.0, start_vol=-30.0, nan_every=3)

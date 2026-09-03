@@ -65,7 +65,7 @@ CROSSOVER_AMBIENT_DURATION_S = (
     max(DRIVER_SWEEP_DURATIONS_S.values()) + AMBIENT_DURATION_MARGIN_S
 )
 
-# The public capture page's deadline begins at ``armed`` and includes relay
+# The capture page's deadline begins at ``armed`` and includes transport
 # polling, the controlled ambient interval, DSP setup, the sweep, and post-roll.
 # A 45-second, 48 kHz mono PCM16 WAV is about 4.32 MB, so the old 3 MiB browser
 # bridge cap could reject a completely legal capture after the user waited for
@@ -84,7 +84,7 @@ def driver_sweep_duration_s(role: str) -> float:
     """Return the protected measurement-sweep duration for ``role``.
 
     This is intentionally colocated with the driver-safe frequency planner:
-    relay/UI code must not invent a second duration table.  The explicit
+    capture/UI code must not invent a second duration table.  The explicit
     tweeter clamp is defense in depth if the table is edited later.
     """
 

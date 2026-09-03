@@ -251,7 +251,7 @@ def test_an_absent_report_is_unreported_never_zero():
     ],
 )
 def test_an_untrustworthy_count_leaves_the_check_unevaluated_never_failed(hostile):
-    """The report is phone-supplied JSON the relay never parses. A value this
+    """The report is phone-supplied JSON the capture never parses. A value this
     module cannot trust must not be coerced into a discrepancy — a diagnostic
     that refuses a good capture by misreading its own metadata is worse than no
     diagnostic at all."""
@@ -538,7 +538,7 @@ def test_silent_blocks_counts_only_the_input_starved_callbacks():
     each capture. Its ONE increment lives in the else-branch of "was I handed an
     input channel at all", and pinning that is what keeps three prose claims
     honest at once — this module's read-set comment, the capture page's report
-    comment, and `docs/phone-mic-relay-plan.md`'s field list all say the counter
+    comment, and the field list all say the counter
     cannot see a zero-FILLED block, and all three become wrong together the day
     someone starts counting content here without renaming the field.
     """

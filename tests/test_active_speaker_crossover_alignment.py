@@ -592,7 +592,7 @@ def _state(*, calibrated, in_phase_null=None, reverse_null=None, group="mono"):
             "placement_proof": normalized_placement_proof(
                 policy_id=SUMMED_PLACEMENT_POLICY_ID,
                 acknowledgement_binding="binding-summed-abcdefghijkl",
-                capture_session_id="relay-summed",
+                capture_session_id="capture-summed",
                 capture_page={
                     "capture_protocol_version": 2,
                     "capture_page_build": "20260712.2",

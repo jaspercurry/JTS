@@ -167,7 +167,7 @@ _QUIET = aw.Poll(None, False, None)
 _IN_FLIGHT_QUIET = aw.Poll(None, True, None)
 #: What an unreachable, 403ing, or non-JSON status endpoint reads as.
 _UNREADABLE = aw.Poll(None, True, None, readable=False)
-#: The three terminal blocks a finished session leaves in the relay slot, in
+#: The three terminal blocks a finished session leaves in the capture slot, in
 #: the shape ``poll_from_status`` really mints them (``in_flight`` is FALSE --
 #: the block is the outcome the status page renders, not a live session).
 _COMPLETE = aw.Poll(None, False, None, ended="complete")
@@ -824,7 +824,7 @@ def test_a_session_that_finished_is_never_diagnosed_as_a_stuck_capture():
     """The 2026-08-21 jts3 incident, as a test.
 
     A stage-1 measure round served every planned position, the session closed
-    itself cleanly, and the walk -- which read only the PRESENCE of the relay
+    itself cleanly, and the walk -- which read only the PRESENCE of the capture
     block, never its terminal ``status`` -- called that "in flight with nothing
     pending" and fired the stuck alarm 300 s later. rc 6 on a round that had
     measured everything it was asked for, and the laptop runner skipped banking.
@@ -873,7 +873,7 @@ def test_a_session_that_ends_parks_the_arm_like_every_other_exit():
 
 @pytest.mark.parametrize("residue", [_COMPLETE, _STOPPED, _failed("last round")])
 def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
-    """The wizard keeps ONE relay slot, and a walk is launched BEFORE its
+    """The wizard keeps ONE capture slot, and a walk is launched BEFORE its
     session opens -- so the first polls of round N+1 read round N's terminal
     block. Ending on it would report the previous round's verdict as this
     walk's, and after the first round of a night nothing would ever measure."""
@@ -1056,7 +1056,7 @@ def test_no_expectation_means_no_staged_check():
 # --------------------------------------------------------------------------- #
 
 
-def test_a_pending_is_read_off_the_relay_block():
+def test_a_pending_is_read_off_the_capture_block():
     poll = aw.poll_from_status({"capture": {"status": "running", "position_pending": {
         "index": 3, "attempt": 2, "degrees": -22, "role": "offax"}}})
     assert poll.pending == aw.Pending(3, 2, -22, "offax")
@@ -1071,7 +1071,7 @@ def test_a_hold_that_cannot_be_parsed_is_never_moved_for(pending):
     assert aw.pending_from_capture({"position_pending": pending}) is None
 
 
-def test_a_failed_relay_carries_its_own_error():
+def test_a_failed_capture_carries_its_own_error():
     poll = aw.poll_from_status({"capture": {"status": "failed", "error": "boom"}})
     assert poll.failed_error == "boom"
     bare = aw.poll_from_status({"capture": {"status": "failed"}})
@@ -1084,12 +1084,12 @@ def test_an_unreadable_status_is_in_flight_not_finished():
     assert poll.in_flight and poll.pending is None and poll.failed_error is None
 
 
-def test_no_relay_block_is_no_session():
+def test_no_capture_block_is_no_session():
     assert aw.poll_from_status({"capture": None}) == aw.Poll(None, False, None)
 
 
 @pytest.mark.parametrize("status", sorted(aw.SESSION_ENDED_STATUSES))
-def test_a_terminal_relay_block_is_not_a_live_session(status):
+def test_a_terminal_capture_block_is_not_a_live_session(status):
     """The block the status page renders the OUTCOME from is not a session.
 
     Reading its presence as "in flight" is what turned a finished round into
@@ -1114,7 +1114,7 @@ def test_anything_not_terminal_reads_as_in_flight(status):
 def test_the_walks_terminal_statuses_are_the_wizards_own_three():
     """One vocabulary, two modules -- pinned rather than trusted.
 
-    ``jasper.web.correction_setup`` owns the relay slot: ``_run_capture``
+    ``jasper.web.correction_setup`` owns the capture slot: ``_run_capture``
     writes every terminal status a session can end on, and
     ``_CAPTURE_IN_FLIGHT_STATUSES`` names the rest. A fourth terminal arm added
     there without a matching name here would leave the walk reading a finished

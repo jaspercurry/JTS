@@ -223,9 +223,9 @@ def test_long_inflight_request_cannot_trigger_idle_exit() -> None:
 def test_hold_defers_the_idle_exit_while_background_work_runs() -> None:
     """A hold keeps the process alive across work that serves no request.
 
-    The 2026-07-29 JTS3 incident (issue #1854): correction-web's phone-relay
+    The 2026-07-29 JTS3 incident (issue #1854): correction-web's browser capture
     measurement session runs on background workers and its mid-session traffic
-    is all OUTBOUND to the relay, so the tracker saw zero inbound requests for
+    is all OUTBOUND to the capture, so the tracker saw zero inbound requests for
     600 s and `os._exit(0)`'d 5 s after the verify capture arrived. The hold is
     what makes "idle" mean abandoned again.
 
@@ -275,14 +275,14 @@ def test_hold_is_released_when_the_body_raises() -> None:
     """A failing session must not leave the wizard immortal.
 
     Every terminal path of the correction runner is an exception path (user
-    stop, relay timeout, begin-refused, the catch-all cleanup arm), so a hold
+    stop, capture timeout, begin-refused, the catch-all cleanup arm), so a hold
     that only released on success would leak on the common cases.
     """
     tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
 
-    with pytest.raises(RuntimeError, match="relay died"):
+    with pytest.raises(RuntimeError, match="capture died"):
         with tracker.hold("measurement-session"):
-            raise RuntimeError("relay died")
+            raise RuntimeError("capture died")
 
     assert tracker._active_requests == 0
     assert tracker._holds == {}
@@ -396,7 +396,7 @@ def test_no_hold_holds_nothing_and_matches_the_real_seam() -> None:
     with tracker._lock:
         tracker._last_request = time.monotonic() - 600
 
-    with _systemd.no_hold("relay:room_sweep"):
+    with _systemd.no_hold("capture:room_sweep"):
         expired, _idle, active = tracker._idle_status()
         assert active == 0
         assert expired is True, "no_hold defers nothing"
@@ -418,21 +418,21 @@ def test_two_holds_under_one_label_survive_until_the_last_release(
 ) -> None:
     """Sessions can overlap under one label, so the label is refcounted.
 
-    Production-reachable: ``_run_capture``'s runner frees the relay slot
+    Production-reachable: ``_run_capture``'s runner frees the capture slot
     (`_set_capture_slot({"status": "complete"})`) BEFORE its ``finally``
     releases the hold, so the next session's POST can claim the slot and take a
-    second hold under the same ``relay:<kind>`` label while the first is still
+    second hold under the same ``capture:<kind>`` label while the first is still
     unwinding. If release popped the label outright, the deferred-exit line
     would report `holds: none` while a hold was demonstrably outstanding.
     """
     tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
     log = logging.getLogger("jasper.web._systemd")
 
-    with tracker.hold("relay:crossover_v2:session"):
-        with tracker.hold("relay:crossover_v2:session"):
-            assert tracker._holds == {"relay:crossover_v2:session": 2}
+    with tracker.hold("capture:crossover_v2:session"):
+        with tracker.hold("capture:crossover_v2:session"):
+            assert tracker._holds == {"capture:crossover_v2:session": 2}
         # One released; the label survives with the remaining holder.
-        assert tracker._holds == {"relay:crossover_v2:session": 1}
+        assert tracker._holds == {"capture:crossover_v2:session": 1}
         assert tracker._active_requests == 1
         with tracker._lock:
             tracker._last_request = time.monotonic() - 600
@@ -442,7 +442,7 @@ def test_two_holds_under_one_label_survive_until_the_last_release(
         # ...and the deferred line still names it rather than "none".
         with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
             tracker._log_deferred_exit(log, 600.0, 1)
-        assert "relay:crossover_v2:session" in _deferred_records(caplog)[-1].getMessage()
+        assert "capture:crossover_v2:session" in _deferred_records(caplog)[-1].getMessage()
 
     assert tracker._holds == {}
 
@@ -498,7 +498,7 @@ def test_a_long_busy_stretch_escalates_the_deferred_line_to_warning(
         # The stretch ends with the last hold, so a later one starts fresh.
         assert tracker._busy_since is None
         caplog.clear()
-        with tracker.hold("relay:room_sweep"):
+        with tracker.hold("capture:room_sweep"):
             tracker._deferred_logged_at = None
             tracker._log_deferred_exit(log, 601.0, 1)
             assert _deferred_records(caplog)[0].levelno == logging.INFO, (
@@ -511,7 +511,7 @@ def test_busy_stretch_spans_requests_and_holds_without_a_gap() -> None:
 
     The escalation asks "has this process been unable to go idle for too long",
     which is a property of the busy counter, not of any single label — so a
-    request handing off to a hold (exactly what starting a relay session does)
+    request handing off to a hold (exactly what starting a capture session does)
     must not look like a fresh stretch.
     """
     tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
@@ -520,7 +520,7 @@ def test_busy_stretch_spans_requests_and_holds_without_a_gap() -> None:
     started = tracker._busy_since
     assert started is not None
 
-    with tracker.hold("relay:crossover_v2:session"):
+    with tracker.hold("capture:crossover_v2:session"):
         tracker.request_finished()  # the POST returns; the hold carries on
         assert tracker._active_requests == 1
         assert tracker._busy_since == started, "the stretch did not restart"

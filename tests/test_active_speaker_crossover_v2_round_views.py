@@ -115,7 +115,7 @@ def _make_round_dir(
     position_degrees: dict[str, float] | None = None,
 ) -> Path:
     """One banked round directory, in the tree ``bank-crossover-round.sh``
-    produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/``.
+    produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<capture>/``.
 
     ``position_curves`` maps ``position_id -> (role, magnitude_db)``.
     ``spec_smoothing_fraction`` / ``positions_smoothing_fraction`` are
@@ -238,7 +238,7 @@ def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
     session handed the current one would be graded on another round's verify
     curve, verdicts and ordinal — wrong numbers rather than missing ones. The
     two ids are compared in the namespace they share: the state's own
-    ``session_id`` against the relay directory the bundle filed its round
+    ``session_id`` against the capture directory the bundle filed its round
     artifacts under.
     """
     curves = {"cloud_verify_02": ("onax", _flat_curve())}
@@ -1286,7 +1286,7 @@ def _bank_entry_baseline_take(
 ) -> None:
     """One write-once entry-baseline take, in the tree the store banks to.
 
-    ``crossover_v2/<relay>/positions/<take_id>.json`` — the path
+    ``crossover_v2/<capture>/positions/<take_id>.json`` — the path
     ``contracts.BANKED_TAKE_GLOB`` selects and
     ``position_cycle.read_entry_baseline_take`` opens. Written as the real
     record is shaped rather than as the reader's narrowed view, so a change to

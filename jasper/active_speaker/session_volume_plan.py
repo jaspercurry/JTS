@@ -19,7 +19,7 @@ restore-exactly-once — but adds the lifecycle a *session* needs that a per-ste
 lease does not:
 
 * a durable ``opened_at`` timestamp and a hard wall-clock ceiling (default
-  1800 s ≈ 2× the relay TTL), so a walked-away user cannot pin the speaker at
+  1800 s ≈ 2× the session TTL), so a walked-away user cannot pin the speaker at
   measurement volume indefinitely;
 * abandon as a defined event set — explicit close, a session-death hook the
   flow (Wave 5) calls, and the wall-clock ceiling — each draining the same
@@ -82,7 +82,7 @@ SCHEMA_VERSION = 1
 STATE_KIND = "jts_crossover_session_volume"
 
 # The wall-clock ceiling on an open session's held measurement volume. ~2x the
-# relay TTL: long enough that no legitimate CHECK->MEASURE->apply->VERIFY run is
+# session TTL: long enough that no legitimate CHECK->MEASURE->apply->VERIFY run is
 # cut short, short enough that a walked-away user's speaker returns to household
 # volume within a bounded window even if no close/session-death event fires.
 DEFAULT_WALL_CLOCK_CEILING_S = 1800.0

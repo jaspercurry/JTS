@@ -77,7 +77,7 @@ STIMULUS_NOT_COMPOSED = "program_not_composed"
 #: finished or placed, and the record is banked with an empty ``wav_path``.
 STIMULUS_NOT_CAPTURED = "stimulus_not_captured"
 #: This host bound no capture half, so the stimulus played and nothing on this
-#: box recorded it (a phone-relay session answers through
+#: box recorded it (a browser capture answers through
 #: :class:`~.capture_source.CaptureAnswer` instead). NOT a failure: an empty
 #: ``wav_path`` beside an empty ``incident`` is what made ``analyze``'s skip
 #: unattributable.
@@ -149,7 +149,7 @@ class ProgramPlaybackTransaction:
     the level, and MS-14's proof is taken through that claim before ``run``.
 
     ``capture`` is ``None`` on a host that does not record what it plays: the
-    Pi's wired microphone binds one, and a phone-relay session binds none.
+    Pi's wired microphone binds one, and a browser capture binds none.
     """
 
     def __init__(

@@ -219,7 +219,7 @@ def _consume_verify(
     """Drive the production VERIFY trigger site.
 
     ``_consume_verify`` is where the Express tier grades its round, and it is
-    the real entry point the relay runner calls — not a test-only shim. Reached
+    the real entry point the capture runner calls — not a test-only shim. Reached
     directly because the runner in between is a thread and a websocket.
 
     **The take this mints under the defaults is a PHANTOM: do not assert on

@@ -213,7 +213,7 @@ def clear_active_speaker_measurement_journey() -> dict[str, Any]:
     what is cleared and why the rest is kept.
 
     Callers own the surrounding choreography: stop any in-flight
-    relay/level-match session and invalidate the comparison-set/level-lock lease
+    capture/level-match session and invalidate the comparison-set/level-lock lease
     BEFORE calling this, so no capture is orphaned mid-flight.
     """
 

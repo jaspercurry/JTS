@@ -937,7 +937,7 @@ def test_worst_case_measure_with_prelude_stays_under_capture_wav_cap():
         leading_pilot_gains_db=(-6.0, -6.0), leading_pilot_role="woofer",
         courtesy_prelude=True,
     )
-    # Capture-side WAV: mono 16-bit, program length + the relay capture-plan
+    # Capture-side WAV: mono 16-bit, program length + the capture-plan
     # margin (2000 ms — lockstep with crossover_v2_flow.CAPTURE_ENTRY_MARGIN_MS;
     # mirrored, not imported, per the audio_measurement layering boundary).
     margin_samples = int(round(2.0 * program.sample_rate_hz))

@@ -4,10 +4,10 @@
 
 """What crosses — and what is lost at — the crossover-v2 stage-1 → stage-2 bridge.
 
-The v2 commission runs as TWO relay sessions, from one preparer
+The v2 commission runs as TWO capture sessions, from one preparer
 (:func:`~jasper.web.correction_crossover_v2.prepare_v2_session`) under its two
 ``verify_only`` settings. Stage 1 measures and stops; the household applies;
-stage 2 opens a BRAND-NEW relay session with a BRAND-NEW conductor. Nothing is
+stage 2 opens a BRAND-NEW capture session with a BRAND-NEW conductor. Nothing is
 handed between them in memory: the only channel is the durable state file
 :func:`~jasper.web.correction_crossover_v2.persist_conductor_state` writes and
 the verify-only prepare reads back.
@@ -594,7 +594,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
     swapped for the other publisher, or left pointing at another session's
     bundle. The seam is the only place that binding is observable, so the seam
     is what this reads: call what the conductor holds and require the artifact
-    to land in this stage's own bundle under the relay session id this stage
+    to land in this stage's own bundle under the capture session id this stage
     minted.
     """
     from jasper.audio_measurement.program_analysis import GainPlan
@@ -1868,7 +1868,7 @@ def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
     """Opening stage 2 rebinds the session id and keeps what stage 1 earned.
 
     The first thing the verify-only prepare's ``_open`` does after building its
-    conductor is persist it, under the relay session id THIS stage just minted.
+    conductor is persist it, under the capture session id THIS stage just minted.
     Everything the measuring session banked has to survive that rebind, or the
     household loses it on the very first post-apply screen.
     """
@@ -1876,7 +1876,7 @@ def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
 
     _conductor, state = _stage_2(monkeypatch)
 
-    # The minted id from the relay, not the measuring session's — the rebind
+    # The minted id from the capture, not the measuring session's — the rebind
     # is the write this test is about, so name the value rather than assert an
     # inequality the fixture guarantees on its own.
     assert state["session_id"] == _MINTED_CAPTURE_SESSION_ID
@@ -2333,7 +2333,7 @@ def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):
     """The join, end to end: construction, identity, and the declared level.
 
     This is what makes ``crossover-v2-engine-design.md``'s *"constructed only
-    in tests"* false. The session's identity is the RELAY session id — the
+    in tests"* false. The session's identity is the CAPTURE session id — the
     directory name every banked path carries and every reader globs — and its
     one declared level is the context's, because a session measuring at a level
     the host did not declare is the defect the one-level rule deletes.

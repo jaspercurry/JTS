@@ -11,7 +11,7 @@ the evidence packet looks for it — and touches no Pi, re-measures nothing, and
 re-takes no capture.
 
 ``<bundle-dir>`` is a commissioning bundle: the directory holding ``info.json``
-beside ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/``. The round
+beside ``evidence/v1/artifacts/crossover_v2/<capture-session-id>/``. The round
 directory inside it is found by the SAME rule the packet reader uses
 (:func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`),
 so the artifact cannot land where the reader does not look, and a bundle
@@ -254,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
         if why == NO_ROUND_ARTIFACTS_REASON:
             message += (
                 " — bundle_dir must hold info.json beside "
-                "evidence/v1/artifacts/crossover_v2/<relay>/"
+                "evidence/v1/artifacts/crossover_v2/<capture>/"
             )
         return fail_with_payload(
             message,

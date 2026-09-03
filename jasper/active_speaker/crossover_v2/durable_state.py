@@ -19,7 +19,7 @@ The carry-forward rules are the interesting half. A key is either written fresh
 by this session or inherited from the state being replaced, in one of three
 shapes named at each rule: **unconditional** (the host-owned apply keys, which a
 session-scoped guard would drop on the first post-apply write because the
-deferred VERIFY auto-arms under a new relay session id —
+deferred VERIFY auto-arms under a new capture session id —
 ``test_every_host_owned_apply_key_survives_persist_conductor_state`` derives
 that set mechanically), **session-scoped** (a previous session's answer says
 nothing about this one), and **phase-gated** (keyed on the phase that PRODUCES
@@ -98,7 +98,7 @@ class ConductorState:
 
 @dataclass(frozen=True)
 class V2ConductorSnapshot:
-    """Durable phase state, bound to the relay session (§5.6).
+    """Durable phase state, bound to the capture session (§5.6).
 
     Persisted under the session's commissioning run;
     :meth:`CrossoverV2Session.hydrate` keeps the accepted phases only when the
@@ -135,8 +135,8 @@ class V2ConductorSnapshot:
     # otherwise reads identically at the confirm screen, during the fit, and
     # after a session that produced nothing.
     cloud_close: str = ""
-    # Attempt history is journey-scoped, not relay-session-scoped: a second
-    # apply→VERIFY runs under a fresh relay session, so these records survive
+    # Attempt history is journey-scoped, not capture-session-scoped: a second
+    # apply→VERIFY runs under a fresh capture session, so these records survive
     # ``hydrate``'s session rebind while CHECK/MEASURE evidence does not.
     #
     # Surviving is not the same as being COMPARABLE (#2081): they also survive
@@ -450,9 +450,9 @@ def attempt_record_from_verify(
     capture incomparable. Any evaluated failure does, and carries both the
     failed and not-evaluated names.
 
-    ``sitting_id`` is the relay session that captured this sweep, and is
+    ``sitting_id`` is the capture session that captured this sweep, and is
     REQUIRED rather than defaulted because the available default — ``""`` — is
-    what the kernel reads as "unrecorded" and refuses on (#2081). The relay
+    what the kernel reads as "unrecorded" and refuses on (#2081). The capture
     session is the right proxy for one continuous microphone sitting for the
     reason ``hydrate`` invalidates CHECK and MEASURE across a rebind.
     """
@@ -1063,7 +1063,7 @@ def build_conductor_state(
     measure_sweep_durations_s = getattr(snap, "measure_sweep_durations_s", None)
     # GATED ON THE CODE BEING PERSISTED, not on the conductor's own: several
     # terminal arms supply a ``failure_code`` the capture loop never produced
-    # (the relay-death arm persists ``capture_timeout`` over whatever the last
+    # (the session-death arm persists ``capture_timeout`` over whatever the last
     # capture failed on), and ungated this would pair one failure's code with
     # another's evidence.
     failure_pilot_heard = (
@@ -1401,7 +1401,7 @@ def build_conductor_state(
     }
     # A conductor that declares no tier of its own — the verify-only re-arm —
     # must not erase which instrument produced the applied result. Carried
-    # forward UNCONDITIONALLY, because the re-arm runs under a brand-new relay
+    # forward UNCONDITIONALLY, because the re-arm runs under a brand-new capture
     # session id and a session-scoped guard would drop it on "Try again".
     if not state["tier"] and prior.get("tier"):
         state["tier"] = str(prior["tier"])
@@ -1410,7 +1410,7 @@ def build_conductor_state(
     #
     # Carried, because a verify session's first writes run BEFORE any usable
     # VERIFY attempt has set its own reference, and a session-id guard is the
-    # wrong one for a re-arm under a new relay session id.
+    # wrong one for a re-arm under a new capture session id.
     #
     # Dropped by a measuring session, because a pilot transfer is captured
     # THROUGH the applied graph: across an apply the two numbers answer
@@ -1439,7 +1439,7 @@ def build_conductor_state(
     if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
         state["applied"] = True
     if state["candidate"] is None and isinstance(prior.get("candidate"), Mapping):
-        # A verify-only re-arm mints a new relay session around the
+        # A verify-only re-arm mints a new capture session around the
         # already-applied candidate and has no candidate object of its own, but
         # the fingerprint is the attempts loop's stable write identity, so
         # erasing it turns recovery into a second record. A measuring session
@@ -1523,7 +1523,7 @@ def build_conductor_state(
     #
     #   * ``previous_candidate_fingerprint`` UNCONDITIONALLY, because the
     #     deferred VERIFY that auto-arms after every successful apply runs
-    #     under a BRAND-NEW relay session id, so a session-id gate would lose
+    #     under a BRAND-NEW capture session id, so a session-id gate would lose
     #     the pointer on that first post-apply snapshot.
     #
     #   * ``apply_blocked`` session-scoped (#1605), because it is only set on a

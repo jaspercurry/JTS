@@ -193,7 +193,7 @@ class RoleExecutor(Protocol):
     """Plays admitted stimuli, captures near-field, and analyzes to records.
 
     The real binding rides the existing admission chain, ramp/safe_playback,
-    located playback, capture relay, and the analysis kernels; the hardware-free
+    located playback, capture, and the analysis kernels; the hardware-free
     tests mock it. It records its artifacts through ``sink``. It owns the
     acoustic capture + analysis; the runner owns every live-graph activation
     (including the paired reference activation) and the disposition decision.

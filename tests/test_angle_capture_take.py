@@ -366,7 +366,7 @@ def test_a_document_staged_before_elevation_existed_reads_as_mark_height(slot):
 def test_a_staged_walk_refuses_while_the_session_already_walks_one(slot, caplog):
     """Two lateral groups cannot share one session's index space.
 
-    Also the relay arithmetic: ``MAX_CLOUD_MEASURE_POSITIONS``' own note sizes
+    Also the capture arithmetic: ``MAX_CLOUD_MEASURE_POSITIONS``' own note sizes
     the ceiling for the paused walk's six poses and says not to spend the slack,
     and a second walk on top is exactly that spend.
     """
@@ -931,7 +931,7 @@ def test_the_preparer_feeds_map_spec_and_conductor_from_one_take():
     """ONE take, read by everything that must agree about the walk.
 
     Source-read rather than driven, for the reason the sibling tier pin gives:
-    driving ``_open`` needs a live relay. What matters is the wiring -- a second
+    driving ``_open`` needs a live capture. What matters is the wiring -- a second
     take would hand the map and the spec different walks, and a surface left
     unthreaded would render one walk while the conductor ran another.
 
@@ -1043,7 +1043,7 @@ def test_the_silent_shape_change_is_gone_from_the_take(slot):
 def test_the_take_reads_the_sessions_own_cloud_shape(slot):
     """The capacity gate needs this session's retake budget, not a guess.
 
-    A cloud group costs two more relay indexes than a cloud-less session of the
+    A cloud group costs two more capture indexes than a cloud-less session of the
     same length, because only a cloud budgets geometry retakes. The stop count
     below is chosen so that fact is the ONLY thing separating the two calls:
     same document length, same ``base_entries``, opposite verdicts. Anything

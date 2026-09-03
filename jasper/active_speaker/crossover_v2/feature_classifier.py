@@ -552,7 +552,7 @@ def load_round_captures(
 
     ``session_id`` scopes the ring to this round. It is the BUNDLE session id
     (``info.json``'s), which is what a sidecar stamps into
-    ``jts_session_identity``; the relay id that names ``round_dir`` is a
+    ``jts_session_identity``; the capture id that names ``round_dir`` is a
     different namespace. Omitting it admits every capture in the ring, which
     is correct only when the ring holds one round. ``walk_logs`` are optional:
     without them captures carry no angle and the timing test says it did not
@@ -1597,7 +1597,7 @@ def _timing_scatter(
 ) -> dict[str, Any]:
     """Arrival-time scatter between captures at the SAME angle.
 
-    The raw arrival spread is dominated by the relay's capture-start offset,
+    The raw arrival spread is dominated by the capture's capture-start offset,
     which every other test removes by re-finding the peak. The SUB-SAMPLE
     residual is what survives into a phase comparison, measured by
     cross-spectrum phase slope over the direct-sound window. It needs an

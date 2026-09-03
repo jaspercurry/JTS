@@ -1435,7 +1435,7 @@ measured latency claim; Wave 4 must test the real phone/relay tail. Planning and
 execution consume that same serialized ramp config. A changed environment after
 claim cannot silently change the executing ramp.
 
-The durable current-run phases are exactly `awaiting_capture`, `running`,
+The durable current-run phases are exactly `awaiting_phone`, `running`,
 `succeeded`, `failed`, and `interrupted`. One atomic claim mints the run id; that
 same id is the existing token-scoped relay `run_token`. An identical active
 request returns `duplicate_active`; an identical current success returns

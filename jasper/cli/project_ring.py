@@ -10,7 +10,7 @@ Offline and laptop-side: it reads a commissioning bundle and writes the
 re-measured, and the bundle is only read.
 
 ``<bundle-dir>`` is the same directory those two take — ``info.json`` beside
-``evidence/v1/artifacts/crossover_v2/<relay-session-id>/`` — and the round
+``evidence/v1/artifacts/crossover_v2/<capture-session-id>/`` — and the round
 inside it is found by the SAME rule they use, so a bundle carrying more than
 one round is refused here rather than pooled into one ring.
 

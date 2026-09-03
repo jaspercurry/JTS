@@ -16,8 +16,8 @@ re-activates the service without losing any connections.
 Background work must hold the tracker:
   Inbound requests are the only activity this module can observe on its
   own. Work a request STARTS but does not await — the correction wizard's
-  phone-relay measurement session, whose mid-session traffic is all
-  OUTBOUND to the relay — therefore looks exactly like an abandoned tab,
+  browser capture measurement session, whose mid-session traffic is all
+  OUTBOUND to the capture — therefore looks exactly like an abandoned tab,
   and the process exits out from under it (2026-07-29 JTS3 incident,
   issue #1854: a verify capture died 5 s after arriving). Whoever owns
   that work's lifetime wraps it in `IdleShutdownTracker.hold()`, which
@@ -93,9 +93,9 @@ DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 # Derivation (this module stays generic — it deliberately does NOT import the
 # correction session model, so the number is a literal and this comment is the
 # audit trail): the longest-lived hold any wizard takes today is
-# correction-web's crossover-v2 relay session, whose own sizing is
+# correction-web's crossover-v2 capture session, whose own sizing is
 # `session_volume_plan.MAX_WALL_CLOCK_CEILING_S` = 3600 s — the hard cap on
-# `crossover_v2_flow.session_wall_clock_ceiling_s`. (NOT the relay
+# `crossover_v2_flow.session_wall_clock_ceiling_s`. (NOT the capture
 # `DEFAULT_TTL_S`: a cloud session legitimately outlasts that, which is why
 # the ceiling had to be scaled per-entry in the first place.) A hold may then
 # stand a little past the cap through the terminal drain / analysis / purge
@@ -361,7 +361,7 @@ class IdleShutdownTracker:
 
         Why this exists: inbound requests were the only activity the tracker
         could observe, so work a request STARTS but does not await — the
-        correction wizard's phone-relay measurement session, whose mid-session
+        correction wizard's browser capture measurement session, whose mid-session
         traffic is all outbound — read as an abandoned tab and the process
         exited mid-flight (issue #1854).
 
@@ -382,7 +382,7 @@ class IdleShutdownTracker:
             with self._lock:
                 self._drop_busy_locked()
                 # Two sessions can legitimately overlap under one label (the
-                # relay slot frees before the hold does), so the label survives
+                # capture slot frees before the hold does), so the label survives
                 # until its LAST holder leaves.
                 remaining = self._holds.get(name, 0) - 1
                 if remaining > 0:

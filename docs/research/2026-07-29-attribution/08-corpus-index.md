@@ -63,7 +63,7 @@ bundle's own `info.json`; note that a bundle's `started_at` is the moment the
 | `e0d5385c09d0` | 07-28 13:06 → 16:22 | `cap_lMo1I-yx…` | db0ca6ba9 | 11 | clean check (SNR 51.8/25.2 dB), ε 30.8 ppm, delay 22.8 µs, snap found |
 | `9445639e508f` | 07-28 16:22 → 07-29 08:27 | `cap_-Us10xOR…` | 790c10864 | 6 | **the #1838 field run** — MEASURE 24 dB too quiet, CaptureTimeout, applied nothing |
 | `7f54494228cc` | 07-29 08:27 → 11:58 | `cap_J2OLTNvz…` | 0a3d78128 | 30 | **the Fc-forensics session** — applied `b0d89e3e`; source of #1855/#1857/#1867/#1868/#1869 |
-| `8c2d69a5bfbd` | 07-29 11:58 → 12:00 (open) | `cap_6lv47oF_…` | 8b2b1fb5a | 34 | **the noon re-run** — VERIFY failed twice (3.665 → 3.820 dB max vs 1.5 dB tol), then `capture_timeout` |
+| `8c2d69a5bfbd` | 07-29 11:58 → 12:00 (open) | `cap_6lv47oF_…` | 8b2b1fb5a | 34 | **the noon re-run** — VERIFY failed twice (3.665 → 3.820 dB max vs 1.5 dB tol), then `relay_timeout` |
 
 Six of twelve slots hold ≤6 files. **Two hold nothing but `info.json`** — the
 slot machinery mints a bundle whether or not a capture ever happens.

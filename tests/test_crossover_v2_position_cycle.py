@@ -84,7 +84,7 @@ def test_fewer_than_one_take_is_refused(per_position):
         expand_angle_spec("0,7", per_position)
 
 
-def test_there_is_no_ceiling_here_because_the_relay_owns_that_bound():
+def test_there_is_no_ceiling_here_because_the_plan_owns_that_bound():
     """A second, lower ceiling invented on the laptop would refuse walks the
     speaker would have taken — ``session_lateral_walk`` refuses by name."""
     assert staged_stops(expand_angle_spec("0", 64)) == 64
@@ -142,10 +142,10 @@ def _record(
 _BANKED_ARTIFACTS = "evidence/v1/artifacts/crossover_v2"
 
 
-def _bank(root: Path, records, *, capture: str = "relay-1") -> Path:
+def _bank(root: Path, records, *, capture: str = "capture-1") -> Path:
     """A banked round: the bundle tree ``bank-crossover-round.sh`` untars.
 
-    ``<round>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/positions/``
+    ``<round>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<capture>/positions/``
     — the same tree ``test_active_speaker_crossover_v2_round_views``'s
     ``_make_round_dir`` builds, because both model one bank's output.
     """
@@ -174,7 +174,7 @@ def test_the_index_projects_the_speakers_own_take_records(tmp_path):
     assert document["schema_version"] == SCHEMA_VERSION
     assert document["derived_at"] == "2026-08-21T12:00:00Z"
     assert document["sources"] == [
-        f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-1/positions"
+        f"bundle/sess-1/{_BANKED_ARTIFACTS}/capture-1/positions"
     ]
     assert document["takes"] == [
         {"index": 1, "attempt": 1, "take_id": "lateral_01_a01", "position_deg": 0,
@@ -261,10 +261,10 @@ def test_the_clouds_positions_are_not_takes_of_this_walk(tmp_path):
     """The same directory holds the CLOUD group's positions — one publisher
     serves both — so the phase is what separates them."""
     _bank(tmp_path, [_record(1, 0)])
-    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
+    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "capture-1/positions"
     (positions / "cloud_02_a01.json").write_text(json.dumps({
         "schema_version": 1, "kind": POSITION_EVIDENCE_KIND,
-        "capture_session_id": "relay-1", "phase": "cloud_measure",
+        "capture_session_id": "capture-1", "phase": "cloud_measure",
         "index": 2, "attempt": 1, "take_id": "cloud_02_a01",
     }))
 
@@ -296,7 +296,7 @@ def test_the_index_and_the_evidence_packet_share_one_accept_rule(tmp_path):
 
 def test_a_foreign_json_file_in_the_positions_dir_is_not_a_take(tmp_path):
     _bank(tmp_path, [_record(1, 0)])
-    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
+    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "capture-1/positions"
     (positions / "notes.json").write_text(json.dumps({"phase": PHASE_LATERAL}))
 
     assert len(position_cycle_document(tmp_path, derived_at=STAMP)["takes"]) == 1
@@ -306,21 +306,21 @@ def test_one_corrupt_sidecar_does_not_cost_the_index_the_takes_that_are_fine(
     tmp_path
 ):
     _bank(tmp_path, [_record(1, 0), _record(2, 7)])
-    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "relay-1/positions"
+    positions = tmp_path / "bundle/sess-1" / _BANKED_ARTIFACTS / "capture-1/positions"
     (positions / "lateral_03_a01.json").write_text("{ truncated")
 
     assert len(position_cycle_document(tmp_path, derived_at=STAMP)["takes"]) == 2
 
 
-def test_takes_from_two_relay_sessions_name_both_sources(tmp_path):
-    _bank(tmp_path, [_record(1, 0)], capture="relay-1")
-    _bank(tmp_path, [_record(2, 7)], capture="relay-2")
+def test_takes_from_two_capture_sessions_name_both_sources(tmp_path):
+    _bank(tmp_path, [_record(1, 0)], capture="capture-1")
+    _bank(tmp_path, [_record(2, 7)], capture="capture-2")
 
     document = position_cycle_document(tmp_path, derived_at=STAMP)
 
     assert document["sources"] == [
-        f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-1/positions",
-        f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-2/positions",
+        f"bundle/sess-1/{_BANKED_ARTIFACTS}/capture-1/positions",
+        f"bundle/sess-1/{_BANKED_ARTIFACTS}/capture-2/positions",
     ]
 
 
@@ -545,9 +545,9 @@ def test_the_fixture_tree_and_the_real_store_agree_on_the_layout(tmp_path):
     """
     from jasper.active_speaker.commissioning_evidence_store import _artifact_path
 
-    written = _artifact_path("crossover_v2/relay-1/positions/lateral_01_a01.json")
+    written = _artifact_path("crossover_v2/capture-1/positions/lateral_01_a01.json")
 
-    assert written == f"{_BANKED_ARTIFACTS}/relay-1/positions/lateral_01_a01.json"
+    assert written == f"{_BANKED_ARTIFACTS}/capture-1/positions/lateral_01_a01.json"
 
 
 # --------------------------------------------------------------------------- #

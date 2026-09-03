@@ -51,7 +51,7 @@ from jasper.attribution.session_identity import (
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 
-RELAY = "cap-relay-1"
+CAPTURE = "cap-capture-1"
 
 
 def _bundle(tmp_path: Path) -> Mapping[str, Any]:
@@ -72,7 +72,7 @@ def real_store(tmp_path):
         evidence=CommissioningEvidenceStore.open(
             info["bundle_dir"], expected_session_id=info["session_id"],
         ),
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
     )
 
 
@@ -237,19 +237,19 @@ async def test_different_bytes_at_one_path_refuse(real_store):
     )
 
 
-async def test_the_record_lands_under_the_relay_id(real_store):
-    """P7: the directory keys on the RELAY session, not the record's own.
+async def test_the_record_lands_under_the_capture_id(real_store):
+    """P7: the directory keys on the CAPTURE session, not the record's own.
 
-    ``round_artifact_dir`` reports that directory's name AS the relay id, so a
+    ``round_artifact_dir`` reports that directory's name AS the capture id, so a
     store minting it from ``record["session_id"]`` files the record where no
     reader looks.
     """
     record_id = await real_store.bank(_take())
 
-    assert record_id.startswith(f"crossover_v2/{RELAY}/positions/")
+    assert record_id.startswith(f"crossover_v2/{CAPTURE}/positions/")
     found, why = round_artifact_dir(Path(real_store.evidence.bundle_dir))
     assert found is not None, why
-    assert found.name == RELAY
+    assert found.name == CAPTURE
     assert (found / "positions" / "pose_00_a01.json").is_file()
 
 
@@ -328,7 +328,7 @@ async def test_a_folded_kind_lands_where_its_reader_looks(
     """
     record_id = await real_store.bank(record)
 
-    assert record_id == f"crossover_v2/{RELAY}/{filename}"
+    assert record_id == f"crossover_v2/{CAPTURE}/{filename}"
 
     found, why = round_artifact_dir(Path(real_store.evidence.bundle_dir))
     assert found is not None, why
@@ -340,7 +340,7 @@ async def test_a_banked_cloud_result_carries_the_session_identity(real_store):
 
     ``publish_cloud`` stamps the session identity so a finding can cite the
     artifact across two id namespaces. The store is the writer now, so the
-    stamp is the store's, and it names both namespaces because the relay id is
+    stamp is the store's, and it names both namespaces because the capture id is
     minted after the bundle id and is not derivable from it.
     """
     record = {
@@ -352,7 +352,7 @@ async def test_a_banked_cloud_result_carries_the_session_identity(real_store):
     banked = _banked_file(real_store, record_id)
     stamped = banked[SESSION_IDENTITY_KEY]
     assert stamped["session_id"] == real_store.evidence.session_id
-    assert RELAY in stamped["aliases"].values()
+    assert CAPTURE in stamped["aliases"].values()
     assert banked["ripple_db"] == 3.0
 
 
@@ -380,7 +380,7 @@ async def test_a_builder_shaped_record_routes_on_its_measure_kind(real_store):
 
     record_id = await real_store.bank(record)
 
-    assert record_id == f"crossover_v2/{RELAY}/positions/{record['take_id']}.json"
+    assert record_id == f"crossover_v2/{CAPTURE}/positions/{record['take_id']}.json"
     banked = _banked_file(real_store, record_id)
     assert banked["kind"] == position_cycle.POSITION_EVIDENCE_KIND
     assert banked["measure_kind"] == MEASURE_KIND_BASELINE
@@ -401,7 +401,7 @@ async def test_a_take_whose_measure_kind_is_unresolved_still_banks(real_store):
 
     record_id = await real_store.bank(record)
 
-    assert record_id == f"crossover_v2/{RELAY}/positions/{record['take_id']}.json"
+    assert record_id == f"crossover_v2/{CAPTURE}/positions/{record['take_id']}.json"
     banked = _banked_file(real_store, record_id)
     assert banked["kind"] == position_cycle.POSITION_EVIDENCE_KIND
     assert banked["measure_kind"] == ""

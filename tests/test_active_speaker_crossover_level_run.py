@@ -371,7 +371,7 @@ def test_public_snapshot_and_durable_file_contain_no_transport_secrets(tmp_path)
     assert "ramp_config" not in public
     assert "owner_id" not in public
     assert public["result_available"] is False
-    for forbidden in ("tap_link", "pull_token", "relay_token", "credential"):
+    for forbidden in ("tap_link", "pull_token", "credential"):
         assert forbidden not in serialized
 
 

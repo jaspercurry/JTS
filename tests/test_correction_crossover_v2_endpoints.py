@@ -327,11 +327,11 @@ def test_a_bad_first_begin_value_falls_back_to_the_default(monkeypatch, raw):
     assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S
 
 
-def test_the_first_begin_ceiling_is_the_relay_link_ceiling(monkeypatch):
+def test_the_first_begin_ceiling_is_the_session_ceiling(monkeypatch):
     """The ceiling IS ``MAX_TTL_S``, not a copy of it that agrees today.
 
     ``.env.example`` tells an operator the 3600 s bound is the longest link the
-    relay Worker grants, so nothing above it can mean anything on any stage.
+    the transport grants, so nothing above it can mean anything on any stage.
     That sentence is only true while the reader derives its ceiling from
     ``MAX_TTL_S`` — a hard-coded twin would pass every other test in this file
     and make the disclosure a lie the day either number moved.
@@ -1640,7 +1640,7 @@ def test_provenance_note_reflects_whether_the_group_matches_the_active_session()
 
 
 def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
-    """A new VERIFY relay keeps the applied candidate and its cloud evidence.
+    """A new VERIFY capture keeps the applied candidate and its cloud evidence.
 
     B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
     (the re-arm's ``index_phase_map={1: PHASE_VERIFY}``) has no
@@ -1694,7 +1694,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     })
 
     # The real production seam: the verify-only prepare's _open mints a
-    # conductor bound to a NEW relay session id and immediately persists it
+    # conductor bound to a NEW capture session id and immediately persists it
     # ("Keep the durable candidate/applied facts; rebind the session id.").
     conductor = CrossoverV2Session(
         session_id="cap_rearm_session",
@@ -1909,7 +1909,7 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
 
 # --- what the MEASURING session disclosed, across the stage-2 bundle hop -----
 #
-# The verify-only prepare opens a NEW relay session AND a NEW evidence bundle,
+# The verify-only prepare opens a NEW capture session AND a NEW evidence bundle,
 # so stage 2 runs under a conductor that never ran MEASURE and whose own
 # persist writes ``None`` over everything the measuring session banked. Without
 # the carry-forward the household reads the caveat on the screen where they
@@ -2394,7 +2394,7 @@ def test_the_preflight_runs_only_on_the_review_screen():
     No other screen may pay that, so the phase gate is a contract, not an
     optimisation — pinned by refusing to let a non-review phase call the
     predicate at all. (``closing`` is in the list for PR-T3's own reason: it
-    is a POLLED screen — the relay is still live — so the predicate running
+    is a POLLED screen — the capture is still live — so the predicate running
     there would be the 1.5 s write loop the cost paragraph names.)"""
     calls = []
 
@@ -2580,13 +2580,13 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
     **The cost paragraph, re-read.** ``attach_stage2_preflight`` is now
     genuinely reachable, once per envelope GET while the review interlude is
     on screen. T2 named the one shape it would not survive: a review screen
-    rendering beside a permanently in-flight relay, which would turn
+    rendering beside a permanently in-flight capture, which would turn
     ``ensure_crossover_preview_ready``'s writes into a 1.5 s loop. T3 owns
     re-checking that, and it holds — the review screen is reached only AFTER
-    stage 1's session has ended (its runner returns, the relay is purged, and
-    the wizard's poll stops at ``captureIsActive(env.relay)``), and the interlude
+    stage 1's session has ended (its runner returns, the capture is purged, and
+    the wizard's poll stops at ``captureIsActive(env.capture)``), and the interlude
     itself starts no session. The calls are bounded to the seconds a
-    just-closed relay spends winding down, exactly as T2 predicted.
+    just-closed capture spends winding down, exactly as T2 predicted.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         DEFAULT_CLOUD_VERIFY_POSITIONS,
@@ -2609,7 +2609,7 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
         assert sum(1 for p in stage2.values() if p == PHASE_VERIFY) == 1, tier
     # The corners of the configurable (N, M) space plus the shipped default.
     # N is DERIVED from its own two bounds rather than written out: the upper
-    # one moved (12 -> 11) when #2291's entry baseline took a relay blob index,
+    # one moved (12 -> 11) when #2291's entry baseline took a capture blob index,
     # and a literal here would have made this test fail for the wrong reason
     # instead of following the constant it is exercising the extremes of.
     #
@@ -2702,7 +2702,7 @@ def test_the_session_preparer_rearms_the_walked_away_volume_ceiling():
     """
     import inspect
 
-    # The derivation is now BOUND to a name (issue #2509 sizes the relay link
+    # The derivation is now BOUND to a name (issue #2509 sizes the capture session
     # from the same number), so pinning the two tokens separately would no
     # longer prove the value reaches the arm. Pin the binding and the arm.
     source = inspect.getsource(v2host.prepare_v2_session)
@@ -2972,7 +2972,7 @@ def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
     """#1927: the history the disclosure reads must survive the opening
     persist of a re-arm, which runs BEFORE any usable VERIFY attempt has set
     this session's own reference. Same carry-forward shape as ``tier`` and
-    ``cloud`` — a re-arm runs under a brand-new relay session id, so a
+    ``cloud`` — a re-arm runs under a brand-new capture session id, so a
     session-id guard would drop it on the first "Try again"."""
     reference = {"values": {"summed": -20.0}, "at": 1_700_000_000.0}
     v2host.save_v2_state({
@@ -2992,7 +2992,7 @@ def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
 
 
 def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
-    """The SEEDING path end to end, minus the relay: durable state carrying a
+    """The SEEDING path end to end, minus the capture: durable state carrying a
     previous session's reference → the value the verify-only prepare passes as
     ``verify_pilot_transfer_prior`` → a fresh conductor. The comparator stays
     empty; only the history arrives (#1927)."""
@@ -3017,7 +3017,7 @@ def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
     # …and the preparer really does route it to that argument, never to a
     # baseline. Source-read for the same reason
     # ``test_the_session_preparer_rearms_the_walked_away_volume_ceiling``
-    # uses one: driving ``_open`` needs a live relay.
+    # uses one: driving ``_open`` needs a live capture.
     source = inspect.getsource(v2host.prepare_v2_session)
     assert "pilot_transfer_prior_from_state(state)" in source
     assert "verify_pilot_transfer_prior=pilot_transfer_prior" in source
@@ -3066,7 +3066,7 @@ def test_prepare_refuses_when_volume_needs_recovery():
 
 def test_prepare_refuses_an_unknown_tier_before_touching_anything(caplog):
     """Flow-simplification §3: the wizard posts the household's explicit tier.
-    An id this build does not have must be refused BEFORE any relay
+    An id this build does not have must be refused BEFORE any capture
     registration or volume mutation, not silently measured as something else —
     so the gate runs ahead of every other one in the preparer.
 
@@ -4527,7 +4527,7 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
 def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
     """#2094: this seam is the ONLY place both halves of the frame ledger exist.
 
-    The page's account arrives on the relay's authenticated event channel and
+    The page's account arrives on the capture's authenticated event channel and
     the received count comes out of the WAV this function just decoded, so if
     the report does not cross here it never gets compared to anything — which
     is precisely the state the 2026-08-03 forensics found.
@@ -7756,7 +7756,7 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
     ``handle_v2_apply``/``observe_apply_success`` (both prove correct here);
     it was that ``persist_conductor_state`` built a fresh state dict that
     never carried the stash forward, so the deferred VERIFY that auto-arms
-    after every apply (the verify-only prepare mints a NEW relay session id
+    after every apply (the verify-only prepare mints a NEW capture session id
     and immediately calls ``persist_conductor_state`` to "rebind" it — see
     its own call site) wiped the just-recorded pointer. This test reproduces
     that exact rebind call (a real ``CrossoverV2Session``, not a mock)
@@ -7772,7 +7772,7 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
 
     def _simulate_deferred_verify_rearm(*, verify_session_id: str) -> None:
         """Exactly what the verify-only prepare's ``_open`` does: mint a fresh
-        conductor bound to a NEW relay session id, applied=True, and
+        conductor bound to a NEW capture session id, applied=True, and
         immediately persist it ("Keep the durable candidate/applied facts;
         rebind the session id.") — the real production seam this regression
         traces to, not a synthetic stand-in."""
@@ -8118,7 +8118,7 @@ def test_check_evidence_artifact_carries_the_per_role_level_solve():
 
     store = _RecordingEvidenceStore()
     publish_check, _publish_candidate, refs = v2host.bind_evidence_publishers(
-        store, "relay-session"
+        store, "capture-session"
     )
     plan = GainPlan(
         gain_db={"woofer": -19.0, "tweeter": -31.0},
@@ -8137,7 +8137,7 @@ def test_check_evidence_artifact_carries_the_per_role_level_solve():
 
     assert refs["check_artifact"] == "fp-check"
     (relpath, raw_payload), = store.published
-    assert relpath == "crossover_v2/relay-session/check.json"
+    assert relpath == "crossover_v2/capture-session/check.json"
     # Round-trips as JSON — the evidence store re-opens what it writes.
     payload = json.loads(json.dumps(raw_payload))
     assert payload["gain_plan_db"] == {"woofer": -19.0, "tweeter": -31.0}
@@ -8156,7 +8156,7 @@ def test_check_evidence_artifact_tolerates_a_plan_without_solves():
 
     store = _RecordingEvidenceStore()
     publish_check, _publish_candidate, _refs = v2host.bind_evidence_publishers(
-        store, "relay-session"
+        store, "capture-session"
     )
     publish_check(
         GainPlan(
@@ -8181,12 +8181,12 @@ def test_check_evidence_artifact_tolerates_a_plan_without_solves():
 
 
 def _bank_candidate(monkeypatch, tmp_path, candidate) -> None:
-    """Publish ``candidate`` into a bundle bank, at the path its minting relay
+    """Publish ``candidate`` into a bundle bank, at the path its minting capture
     session would have used — the artifact the automatic way back republishes."""
     root = tmp_path / "bank-sessions"
     path = (
         root / "bundleprior00" / "evidence" / "v1" / "artifacts"
-        / "crossover_v2" / "relay-prior-1" / "candidate.json"
+        / "crossover_v2" / "capture-prior-1" / "candidate.json"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
@@ -9121,7 +9121,7 @@ def test_an_inadmissible_pin_refuses_at_the_tap_before_any_side_effect(
 
     "At the tap" is the half that matters operationally: an operator walking a
     tournament must learn at the request, not after a ten-minute measurement
-    with a burned relay link behind it. So the refusal is asserted TOGETHER
+    with a burned capture session behind it. So the refusal is asserted TOGETHER
     with the absence of every side effect the preparer would otherwise leave —
     no evidence bundle (armed to fail in ``_arm_stage_1``, and reachable from
     here: nothing is stopping this run at an earlier tap), and no durable

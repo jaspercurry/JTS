@@ -958,7 +958,7 @@ async def test_every_banked_take_of_one_session_is_named_apart_from_the_others()
     names, or the second overwrites the first at the store's path.
 
     Uniqueness is claimed for the SESSION and no wider: two sessions are two
-    relay-scoped paths, which is what makes a global registry of minted ids
+    capture-scoped paths, which is what makes a global registry of minted ids
     unnecessary.
     """
     session, parts = _session()
@@ -1200,7 +1200,7 @@ def test_an_outcome_naming_a_stage_that_does_not_exist_is_refused():
 
 @pytest.mark.parametrize(
     "incident",
-    ["relay timed out", "RelayTimeout", "the fader could not be proven", "9lives"],
+    ["capture timed out", "CaptureTimeout", "the fader could not be proven", "9lives"],
 )
 def test_an_incident_that_is_a_sentence_rather_than_a_code_is_refused(
     incident: str,

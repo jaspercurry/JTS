@@ -76,7 +76,7 @@ REASON_LOCATE_FAILED = "locate_failed"
 REASON_CAPTURE_TIMEOUT = "capture_timeout"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # The play seam refused or failed the program (safety re-admission over-cap, a
-# graph-restore failure, a session program error) — distinct from a relay
+# graph-restore failure, a session program error) — distinct from a capture
 # transport death (``capture_timeout``). Terminal: a play-time refusal is a bug,
 # a tampered readback, or a genuinely infeasible profile.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
@@ -155,11 +155,11 @@ REASON_DELAY_IMPLAUSIBLE = "delay_implausible"
 # code: an apply failure says nothing about the mic position.
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
-# relay-transport death — see the catch-all's exception classification in
+# transport death — see the catch-all's exception classification in
 # jasper.web.correction_crossover_v2.
 REASON_USER_STOPPED = "user_stopped"
 # The deferred apply/"review" hold (CaptureBeginDeferred "awaiting_apply")
-# expired before an apply completed. Distinct from a relay-transport death
+# expired before an apply completed. Distinct from a transport death
 # (capture_timeout) and a deliberate phone Stop (user_stopped). Retained but
 # unreached: no shipped session holds for an apply.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
@@ -567,7 +567,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # NOT a literal: the sentence's one writer is
         # ``locate_failed_message``, and what the registry holds is its
         # no-pilot-evidence rendering, true for any reader with no capture in
-        # hand. The relay verdict and the envelope re-render it with the
+        # hand. The capture verdict and the envelope re-render it with the
         # measured fact.
         RetryableReasonCopy(
             locate_failed_diagnosis(None),
@@ -745,7 +745,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # UMIK-2 or a laptop. ONE string renders on TWO surfaces where "try
         # again" is a DIFFERENT control — the measurement page's in-session
         # re-arm, which re-compares against the SAME reference and repeats
-        # until the budget dies, and the wizard's FRESH relay session, which
+        # until the budget dies, and the wizard's FRESH capture session, which
         # re-baselines and settles in one capture — so it names the escalation
         # conditionally rather than commanding or dismissing the retry.
         RetryableReasonCopy(
@@ -995,7 +995,7 @@ def reason_message(
     """The household sentence for ``code``, given what the capture measured.
 
     THE single copy selector: one failure is narrated on surfaces that never
-    see each other — the relay verdict (:meth:`PhaseVerdict.to_capture_dict`),
+    see each other — the capture verdict (:meth:`PhaseVerdict.to_capture_dict`),
     the envelope (``crossover_envelope_v2._reason_message``), and the
     apply-seam refusal — and a household looking at two of them after ONE
     failure must not be handed two accounts of it. Adding a third
@@ -1063,7 +1063,7 @@ NON_RETRIABLE_CODES = frozenset(
 
 @dataclass(frozen=True)
 class PhaseVerdict:
-    """A consume verdict: the relay dict + the internal reason (if any)."""
+    """A consume verdict: the capture dict + the internal reason (if any)."""
 
     accepted: bool
     code: str | None = None

@@ -161,7 +161,7 @@ def handle_v2_republish(
     * ``session_id`` — NOT just review identity. It is a **path component**:
       :func:`_reopen_candidate_artifact` rebuilds
       ``<bundle>/evidence/v1/artifacts/crossover_v2/<session_id>/candidate.json``
-      from it, so it must be the MINTING relay session, not a fresh id.
+      from it, so it must be the MINTING capture session, not a fresh id.
     * ``evidence.bundle_session_id`` — which bundle holds that path.
     * ``accepted_phases`` containing ``"measure"`` — :func:`_update_current_review`
       gates on it, and that CAS is what admits :func:`observe_apply_success`.

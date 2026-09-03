@@ -971,7 +971,7 @@ def test_driver_capture_sweep_standalone_mode_owns_and_releases_its_own_gate(
 def test_driver_capture_sweep_nested_mode_selects_and_restores_under_outer_owner(
     monkeypatch,
 ):
-    """FaninGateContext set (the crossover-driver-sweep relay flow, running
+    """FaninGateContext set (the crossover-driver-sweep capture flow, running
     inside a correction measurement window): the tone selects under the
     OUTER owner (never its own 'active-speaker-commissioning') and, on
     completion, relabels back to the outer owner's prior label — never a

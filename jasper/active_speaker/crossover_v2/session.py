@@ -502,7 +502,7 @@ class TuningSession:
 
         ``n`` counts takes minted by THIS session, in memory, so two records of
         one session never collide however many specs or rungs produced them.
-        Uniqueness across sessions is the store's relay-scoped path, not a name.
+        Uniqueness across sessions is the store's capture-scoped path, not a name.
         The attempt is ``0`` on every engine take: the suffix exists because a
         geometry RETAKE reuses its position id.
         """

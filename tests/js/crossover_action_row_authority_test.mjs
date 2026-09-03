@@ -53,7 +53,7 @@ function check(condition, message) {
   passed += 1;
 }
 
-// --- (a) relay in flight: the relay link is the primary; action row empty --
+// --- (a) capture in flight: the capture session is the primary; action row empty --
 render({
   verdict_text: "Awaiting phone",
   steps: [],
@@ -64,7 +64,7 @@ render({
 });
 check(actionRowChildren().length === 0, "(a) capture in flight: action row is empty");
 
-// --- (b) relay terminal: the first next_action is the primary -------------
+// --- (b) capture terminal: the first next_action is the primary -------------
 render({
   verdict_text: "Stopped",
   steps: [],
@@ -83,8 +83,8 @@ check(
   "(b) capture terminal: renders the envelope's next_action",
 );
 
-// --- (c) action completes and its own response started a relay ------------
-// runAction()'s optimistic hide (using response.relay) and its finally
+// --- (c) action completes and its own response started a capture ------------
+// runAction()'s optimistic hide (using response.capture) and its finally
 // (skipped when captureStarted) must together leave the row empty throughout
 // — not just after the eventual refresh().
 render({
@@ -112,11 +112,11 @@ check(
   "(c) action started a capture: action row stays empty after completion",
 );
 
-// --- (d) action completes with no relay: the fresh next_action shows ------
+// --- (d) action completes with no capture: the fresh next_action shows ------
 // This is also the exact historical bug shape: the action's own response
-// carries no relay (captureStarted === false), but by the time the finally
+// carries no capture (captureStarted === false), but by the time the finally
 // block runs, the server's envelope (fetched by the awaited refresh())
-// already reports the SAME relay as active — from an earlier action, a
+// already reports the SAME capture as active — from an earlier action, a
 // concurrent poll, or the phone side racing ahead. The pre-fix finally
 // called renderActions(envelope.next_action, ...) unconditionally, so this
 // exact combination reproduced the two-primary-buttons bug even though this
@@ -139,7 +139,7 @@ check(
   "(d1) no capture from this action, but envelope reports one active: action row stays empty",
 );
 
-// The ordinary (non-buggy) shape of (d): no relay anywhere. The action row
+// The ordinary (non-buggy) shape of (d): no capture anywhere. The action row
 // must NOT stay stuck hidden — the fresh next_action renders normally.
 nextEnvelope = {
   verdict_text: "Ready for the next step",
@@ -186,9 +186,9 @@ check(
   "stopCapture finally: renders the post-stop envelope's next_action via the shared authority",
 );
 
-// --- (e) a show_during_capture PRIMARY renders alone during a live relay -----
+// --- (e) a show_during_capture PRIMARY renders alone during a live capture -----
 // W6.10 blocker #2's general mechanism: a next_action marked show_during_capture
-// renders as the SINGLE primary even while the phone relay is in flight (the
+// renders as the SINGLE primary even while the capture is in flight (the
 // gate that otherwise suppresses next_action beside a live phone link, so a
 // second capture can't be started, has an explicit escape hatch for the one
 // action that legitimately needs to stay reachable throughout a hold) — the
@@ -232,11 +232,11 @@ check(
   "(e) show_during_capture: the candidate card is shown",
 );
 
-// --- (f) verify_fail during a live relay: Undo + Re-measure show, Try again gated -
-// W6.12 P0-adjacent fix: right after a failed VERIFY capture the relay object
+// --- (f) verify_fail during a live capture: Undo + Re-measure show, Try again gated -
+// W6.12 P0-adjacent fix: right after a failed VERIFY capture the capture object
 // can still be transitioning ("stopping" while the walk drains) for a real
 // window before it settles. Before this
-// fix the relay gate blanket-cleared EVERY alternate action during that
+// fix the capture gate blanket-cleared EVERY alternate action during that
 // window, so the household saw NO buttons at all on the verify_fail screen
 // and had no obvious reason to guess "hit Stop" to make them reappear.
 // The way back and verify_remeasure carry show_during_capture (the same

@@ -1035,7 +1035,7 @@ def test_a_settled_last_pose_closes_the_walk_too():
     with c._close_lock:
         verdict = c._settled_group_verdict(PHASE_LATERAL, last, {"left_out": True})
 
-    # Still "accepted" on the wire — the relay's only "move on" signal.
+    # Still "accepted" on the wire — the capture's only "move on" signal.
     assert verdict.accepted is True
     assert verdict.payload == {"left_out": True}
 

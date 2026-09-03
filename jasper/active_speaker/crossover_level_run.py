@@ -4,9 +4,9 @@
 
 """Durable identity and timeout correlation for crossover level runs.
 
-The correction relay owns phone transport and the shared measurement kernel
+The correction wizard owns the browser transport and the shared measurement kernel
 owns ramp math.  This Active-owned state machine binds those two asynchronous
-surfaces to one exact request without retaining relay links or credentials.
+surfaces to one exact request without retaining capture sessions or credentials.
 It is deliberately separate from the crossover volume-safety latch: run state
 explains progress and deduplicates dispatch, while the volume latch remains the
 authority for recovery after any possible listening-level mutation.
@@ -868,7 +868,7 @@ class CrossoverLevelRunStore:
                         "successful crossover level run started no backend"
                     )
                 # The phone event may precede backend persistence but reach the
-                # Pi on the next relay poll. Exact current-owner correlation may
+                # Pi on the next status poll. Exact current-owner correlation may
                 # annotate that already-terminal success; it never reopens it.
                 updated["late_success"] = True
                 annotated_success = True
@@ -987,7 +987,7 @@ class CrossoverLevelRunStore:
         return self._finish(run_id, succeeded=False, reason=reason)
 
     def snapshot(self) -> dict[str, Any] | None:
-        """Return the browser-safe current run without config or relay secrets.
+        """Return the browser-safe current run without config or secrets.
 
         Takes only the in-process ``_THREAD_LOCK`` (never the advisory FILE
         lock), which is the ADR-0196 point: this poll -- hit every ~1.5 s for a

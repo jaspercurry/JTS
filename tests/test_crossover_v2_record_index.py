@@ -34,7 +34,7 @@ from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from tests.test_crossover_v2_record_store import (
-    RELAY,
+    CAPTURE,
     _bundle,
     _take,
 )
@@ -50,7 +50,7 @@ def store(tmp_path):
         evidence=CommissioningEvidenceStore.open(
             info["bundle_dir"], expected_session_id=info["session_id"],
         ),
-        capture_session_id=RELAY,
+        capture_session_id=CAPTURE,
     )
 
 

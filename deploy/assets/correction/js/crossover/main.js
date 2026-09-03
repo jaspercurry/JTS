@@ -658,7 +658,7 @@ function walkKey(prompt, pending, yielded) {
 
 // The walkthrough: which spot, in the capture plan's own words, and the
 // control that says the microphone is there (#2881). Reads
-// `relay.position_pending` — the hold the position gate publishes, which until
+// `capture.position_pending` — the hold the position gate publishes, which until
 // now only `jasper-arm-walk` ever rendered.
 //
 // Transport-agnostic by construction: NOTHING here tests which source the
@@ -671,7 +671,7 @@ function walkKey(prompt, pending, yielded) {
 //
 // `yielded` steps the panel aside when the SCREEN has minted its own control
 // for this session (the closing screen's Save / Record-again, the review
-// screen's Apply) — one primary at a time, the rule the action row's relay
+// screen's Apply) — one primary at a time, the rule the action row's capture
 // gate already holds.
 function renderWalk(capture, {active, yielded}) {
   const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
@@ -775,17 +775,17 @@ function actionRowKey(primary, alternates) {
 
 // Sole authority for what the action row shows given an envelope. Every
 // call-site (render, stopCapture's finally, runAction's finally) routes
-// through this so the relay-in-flight gate can't be forgotten or duplicated
+// through this so the capture-in-flight gate can't be forgotten or duplicated
 // at one of them — the 2026-07-16 two-primary-buttons bug was exactly that:
 // runAction's finally re-rendered envelope.next_action ungated, so a second
-// primary button could appear beside the "Open phone capture" relay link.
+// primary button could appear beside the "Open phone capture" capture session.
 function renderActionRow(env) {
   if (!env) return;
   const captureActive = captureIsActive(env.capture);
-  // The relay gate suppresses a next_action beside a live phone link so a
+  // The capture gate suppresses a next_action beside a live phone link so a
   // second capture can't be started (the 2026-07-16 two-primary-buttons bug).
   // The review screen's Apply is the exception: it is the PRIMARY action while
-  // the just-ended stage-1 relay is still winding down, so the envelope marks
+  // the just-ended stage-1 capture is still winding down, so the envelope marks
   // it show_during_capture and it renders through (W6.10 blocker #2).
   const showPrimary = !captureActive
     || (env.next_action && env.next_action.show_during_capture);
@@ -793,8 +793,8 @@ function renderActionRow(env) {
   // Only alternates the envelope explicitly marks show_during_capture survive
   // the gate — e.g. the verify_fail screen's "Go back to the previous
   // tuning" / Re-measure "get me out of this" affordances must stay visible
-  // even while a relay link is live.
-  // Every other alternate stays hidden while a relay is in flight.
+  // even while a capture session is live.
+  // Every other alternate stays hidden while a capture is in flight.
   const shownAlternates = captureActive
     ? alternates.filter((action) => action && action.show_during_capture)
     : alternates;
@@ -819,7 +819,7 @@ function renderActionRow(env) {
 // Whether the SCREEN has minted a primary the household is meant to press
 // while the session is still in flight — the review screen's Apply, and the
 // closing screen's Save / Record-again on a wired round. One primary at a
-// time: when this is true the relay block stops advertising a connect link
+// time: when this is true the capture block stops advertising a connect link
 // and the walkthrough stands down, so the two never compete.
 function screenOwnsLiveControl(env) {
   return Boolean(env && env.next_action && env.next_action.show_during_capture);
@@ -938,9 +938,9 @@ async function runAction(action, button) {
     captureStarted = Boolean(response && response.capture);
     if (captureStarted) {
       renderCapture(response.capture);
-      // The response's relay hasn't landed in `envelope` yet (that happens
+      // The response's capture hasn't landed in `envelope` yet (that happens
       // inside refresh() below) — hide the action row immediately against
-      // the relay we just started rather than waiting a round trip.
+      // the capture we just started rather than waiting a round trip.
       renderActionRow({capture: response.capture, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
@@ -985,9 +985,9 @@ async function runAction(action, button) {
     }
   } finally {
     busy = false;
-    // If relay registration succeeded but refresh failed, keep the old action
+    // If capture registration succeeded but refresh failed, keep the old action
     // hidden. Showing it beside a live phone link would permit a second run.
-    // renderActionRow re-applies the relay gate against the latest known
+    // renderActionRow re-applies the capture gate against the latest known
     // envelope. The prior version of this block rendered envelope.next_action
     // directly, without that gate — the 2026-07-16 two-primary-buttons bug.
     if (!captureStarted) {

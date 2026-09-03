@@ -61,7 +61,7 @@ MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
 # Who asked for one extra attempt. Pooled against the single bound above, but
 # recorded separately so the count the household reads is truthful about who
 # spent what. Observed at the REJECTION that kept the plan alive, never at
-# the relay's ``retake`` flag: a geometry rung rejects a good capture to hold
+# the capture's ``retake`` flag: a geometry rung rejects a good capture to hold
 # the runner on the same index, so it travels with ``retake=false``.
 ATTEMPT_INITIATOR_HOUSEHOLD = "household"
 ATTEMPT_INITIATOR_SPEAKER = "speaker"

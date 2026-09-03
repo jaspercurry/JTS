@@ -195,7 +195,7 @@ MEASURE_SWEEP_F_HI_HZ = 23_000.0
 # N-1 are bit-identical repeats used for the in-capture drift/glitch
 # estimator (design §3.1) — now for BOTH drivers, not just the woofer.
 # At the production defaults this composes a ~38.4 s MEASURE program; the
-# capture-side mono 16-bit WAV (program + the 2 s relay entry margin) is
+# capture-side mono 16-bit WAV (program + the 2 s capture entry margin) is
 # ~3.70 MiB against the 5 MiB
 # jasper.active_speaker.test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES
 # upload cap, i.e. ~1.30 MiB of headroom — spent down from ~2.9 MB pre-#1668

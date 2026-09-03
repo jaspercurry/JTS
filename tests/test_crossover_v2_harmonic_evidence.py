@@ -533,7 +533,7 @@ def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
     """The one seam `_scope_captures` cannot refuse is at least auditable.
 
     Nothing checks that the ``--state`` belongs to the round the scope selects:
-    the state's id is a RELAY id and the ring stamps a BUNDLE id, two
+    the state's id is a CAPTURE id and the ring stamps a BUNDLE id, two
     namespaces with no banked mapping between them, so a mismatched pair
     publishes a wrong drive through every gate cleanly. Recording the state's
     own id does not refuse that — it makes it checkable afterwards, which is

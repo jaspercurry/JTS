@@ -108,7 +108,7 @@ LINEARITY_SITE_COUNT = len(PLAIN_LINEARITY_PHASES) + 1
 
 
 def _refuse_at_measure() -> dict:
-    """Drive MEASURE with a non-linear capture and return its relay verdict."""
+    """Drive MEASURE with a non-linear capture and return its capture verdict."""
 
     fakes = FakeSeams()
     conductor = _conductor(fakes)

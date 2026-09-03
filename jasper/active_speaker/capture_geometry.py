@@ -5,7 +5,7 @@
 """Comparison-critical microphone placement for active-crossover captures.
 
 Per-driver levels are comparable only within the same server-proven microphone
-geometry. This module owns that small contract for relay copy, durable evidence,
+geometry. This module owns that small contract for capture copy, durable evidence,
 and level-lock identity. It records an operator attestation, not a measured
 distance; near-field and reference-axis locks must never substitute for one
 another.
@@ -65,7 +65,7 @@ DRIVER_PLACEMENT_TARGET_CM = 3.0
 # tests/test_active_speaker_commissioning_capture.py.
 PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
-# Capture geometry is speaker policy, never browser input. The relay verifies
+# Capture geometry is speaker policy, never browser input. The host verifies
 # one of these policy ids before playback and persists it in placement_proof;
 # analysis derives the DSP geometry from that server-owned proof. Lane B's
 # fixed-axis driver capture can therefore enter the same repeat/ambient/
@@ -238,7 +238,7 @@ def driver_capture_geometry(
     """Resolve driver analysis geometry from server-owned placement proof.
 
     Missing/legacy proof remains near-field so operator-only historical paths
-    preserve their behavior. A fixed-reference-axis relay must carry the
+    preserve their behavior. A fixed-reference-axis capture must carry the
     explicit reference-axis policy; no request field can opt into gating.
     Unknown policies fail closed rather than silently selecting a geometry.
     """
@@ -281,8 +281,7 @@ def driver_placement_instruction(role: str) -> str:
 # --- Aiming the microphone ---------------------------------------------------
 # The three fixed-axis instructions below used to end "Aim it according to its
 # calibration file." — an instruction a phone cannot follow, because a phone mic
-# has no calibration file (`jasper.web.correction_setup._relay_calibration_from_
-# setup` returns None for exactly that case) and a phone is the mic most
+# has no calibration file and a phone is the mic most
 # households bring. So the copy names the physical aim direction the way this
 # module's own near-field instruction already does ("pointed straight at it"),
 # and demotes the calibration file to the conditional it always was: a UMIK-2
@@ -504,7 +503,7 @@ def normalized_placement_proof(
     target_fingerprint: str,
     comparison_set: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Create the server-owned proof persisted after a verified relay arm."""
+    """Create the server-owned proof persisted after a verified capture arm."""
 
     if not comparison_set_valid(comparison_set):
         raise ValueError("active crossover comparison set is invalid")
@@ -576,9 +575,9 @@ def placement_proof_shape_valid(
 ) -> bool:
     """Whether one proof is complete before authoritative-set comparison.
 
-    Relay session and acknowledgement identities prove each individual arm,
+    Capture session and acknowledgement identities prove each individual arm,
     but are intentionally not stationary-repeat identity: the product creates
-    a fresh relay link for each repeat. Comparison/target/group/role are the
+    a fresh capture session for each repeat. Comparison/target/group/role are the
     cross-repeat binding and are checked separately by the aggregator.
     """
 

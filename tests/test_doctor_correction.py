@@ -123,7 +123,7 @@ def test_check_correction_idle_exit_holds_warns_on_leaked_hold(monkeypatch):
     this check surfaces the SAME evidence at the doctor surface (#1860)."""
     leaked_line = (
         "systemd idle-exit deferred: 1 active requests/holds after 7530s "
-        "idle, busy for 7530s (threshold 600s, holds: relay:level_ramp:room) "
+        "idle, busy for 7530s (threshold 600s, holds: capture:level_ramp:room) "
         "— busy past 7200s, so this is a LEAKED hold, not a long session: "
         "the process can no longer idle-exit and its on-idle-exit hook "
         "cannot run"
@@ -139,7 +139,7 @@ def test_check_correction_idle_exit_holds_warns_on_leaked_hold(monkeypatch):
     r = doctor.check_correction_idle_exit_holds()
     assert r.status == "warn"
     assert "7530s" in r.detail
-    assert "relay:level_ramp:room" in r.detail
+    assert "capture:level_ramp:room" in r.detail
 
 
 def test_check_correction_idle_exit_holds_reports_the_latest_of_several_lines(
@@ -149,14 +149,14 @@ def test_check_correction_idle_exit_holds_reports_the_latest_of_several_lines(
     line must not shadow the most recent evidence."""
     older = (
         "systemd idle-exit deferred: 1 active requests/holds after 7300s "
-        "idle, busy for 7300s (threshold 600s, holds: relay:crossover_v2:session) "
+        "idle, busy for 7300s (threshold 600s, holds: capture:crossover_v2:session) "
         "— busy past 7200s, so this is a LEAKED hold, not a long session: "
         "the process can no longer idle-exit and its on-idle-exit hook "
         "cannot run"
     )
     newer = (
         "systemd idle-exit deferred: 1 active requests/holds after 7830s "
-        "idle, busy for 7830s (threshold 600s, holds: relay:level_ramp:crossover) "
+        "idle, busy for 7830s (threshold 600s, holds: capture:level_ramp:crossover) "
         "— busy past 7200s, so this is a LEAKED hold, not a long session: "
         "the process can no longer idle-exit and its on-idle-exit hook "
         "cannot run"
@@ -177,7 +177,7 @@ def test_check_correction_idle_exit_holds_reports_the_latest_of_several_lines(
     r = doctor.check_correction_idle_exit_holds()
     assert r.status == "warn"
     assert "7830s" in r.detail
-    assert "relay:level_ramp:crossover" in r.detail
+    assert "capture:level_ramp:crossover" in r.detail
     assert "7300s" not in r.detail
 
 

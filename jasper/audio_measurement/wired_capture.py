@@ -8,7 +8,7 @@ The capture ENGINE behind the wired capture source
 (:mod:`jasper.web.correction_crossover_v2_wired`): parameterized ALSA capture
 from a Pi-attached measurement-class microphone (UMIK-class USB), with the
 frame accounting and dropout scanning that make a wired take gradeable by the
-same screening ladder that grades phone-relay takes. No web/session knowledge
+same screening ladder that grades browser capture takes. No web/session knowledge
 lives here — this module records, counts, and encodes; the provider decides
 when and what.
 

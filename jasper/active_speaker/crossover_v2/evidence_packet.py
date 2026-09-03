@@ -104,12 +104,12 @@ GENERATED_BY = (
 )
 
 #: Where a session bundle keeps its round artifacts. The ``<cap-id>`` directory
-#: under it is the relay session id, NOT the bundle's own ``session_id`` — two
+#: under it is the capture session id, NOT the bundle's own ``session_id`` — two
 #: distinct namespaces on disk.
 _EVIDENCE_GLOB = f"{EVIDENCE_ROOT}/artifacts/crossover_v2/*"
 
 #: :func:`round_artifact_dir`'s reason when no
-#: ``evidence/v1/artifacts/crossover_v2/<relay>/`` directory exists under the
+#: ``evidence/v1/artifacts/crossover_v2/<capture>/`` directory exists under the
 #: given path at all. Named so a caller can tell this refusal from "bundle
 #: carries more than one round" without parsing prose.
 NO_ROUND_ARTIFACTS_REASON = "no crossover_v2 round artifacts under evidence/v1"
@@ -183,7 +183,7 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns:
 #: :meth:`~.record_store.BankedRecordStore.bank` publishes
-#: ``crossover_v2/{relay}/positions/{take_id}.json`` under
+#: ``crossover_v2/{capture}/positions/{take_id}.json`` under
 #: ``{EVIDENCE_ROOT}/artifacts/``. :mod:`.position_cycle` reaches the same
 #: files from the BANKED ROUND root, which is why the accept rule is imported
 #: from there rather than restated here.
@@ -516,7 +516,7 @@ def round_program_dir(
     Two shapes, chosen by structure alone, never a flag. ``round_dir``
     (:func:`round_artifact_dir`'s return value) wins whenever it holds ANY of
     ``phases``' program WAVs. Otherwise the sibling
-    ``<session_dir>/crossover_v2/<relay>/``, which is where the product's sole
+    ``<session_dir>/crossover_v2/<capture>/``, which is where the product's sole
     producer (``_play`` in :mod:`jasper.web.correction_crossover_v2`) actually
     writes them — ``evidence/v1/artifacts/`` carries no ``*_program.wav``.
     Shared with :mod:`jasper.cli.classify_features` and
@@ -2676,7 +2676,7 @@ def build_crossover_evidence_packet(
     """Assemble one round's banked evidence into one versioned document.
 
     ``session_dir`` is a commissioning bundle: an ``info.json`` beside an
-    ``evidence/v1/artifacts/crossover_v2/<relay-session-id>/`` directory
+    ``evidence/v1/artifacts/crossover_v2/<capture-session-id>/`` directory
     holding the round receipt, the cloud evidence, the finding set and the
     per-position records.
 
@@ -2805,7 +2805,7 @@ def build_crossover_evidence_packet(
             "declared_geometry": _declared_geometry_block(declared_geometry_path),
             "note": (
                 "bundle_session_id and capture_session_id are different id "
-                "namespaces; the round artifacts are filed under the relay id"
+                "namespaces; the round artifacts are filed under the capture id"
             ),
         },
         "identity": {

@@ -196,7 +196,7 @@ def test_render_has_one_root_for_each_envelope_section():
         assert html.count(f'data-envelope-section="{section_id}"') == 1
 
     for deleted_id in (
-        "relay-panel", "relay-start-capture", "advanced-correction-options",
+        "advanced-correction-options",
         "mic-panel", "measurement-reports", "measure-section",
         "run-measurement", "apply-correction", "verify-correction",
         "repeat-position", "continue-position", "start",
@@ -584,7 +584,7 @@ def test_known_post_routes_reach_csrf_guard():
             f"{route} should reach the CSRF guard (403)"
         )
 
-    # Driver evidence requires the relay's signal-bounded quiet crop + repeat
+    # Driver evidence requires the capture's signal-bounded quiet crop + repeat
     # state machine. The former raw-WAV single-shot route had no product caller
     # and is deliberately absent rather than implicitly accepting null SNR.
     response = _drive("/crossover/driver-capture", method="POST", body=b"wav")
@@ -667,7 +667,7 @@ def test_the_500_arm_still_reports_unmapped_failures_verbatim(monkeypatch):
     )
 
     def _raise_oserror(*_a, **_k):
-        raise OSError("relay socket vanished")
+        raise OSError("capture socket vanished")
 
     monkeypatch.setattr(
         correction_setup, "_handle_crossover_v2_capture", _raise_oserror
@@ -676,7 +676,7 @@ def test_the_500_arm_still_reports_unmapped_failures_verbatim(monkeypatch):
 
     assert b"500" in resp.split(b"\r\n", 1)[0]
     body = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
-    assert body["error"] == "relay socket vanished"
+    assert body["error"] == "capture socket vanished"
 
 
 def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
@@ -1506,7 +1506,7 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     assert "Reset" in env["verdict_text"]
 
 
-# --- W6.1 Findings D + E2: v2 relay visibility + recover-volume routing ----------
+# --- W6.1 Findings D + E2: v2 capture visibility + recover-volume routing ----------
 
 
 class _CleanSessionVolumePlan:

@@ -2,8 +2,8 @@
 """Capture one synchronized UMIK/JTS correction diagnostic bundle.
 
 This is an operator tool, not a second measurement controller.  It observes the
-normal browser/relay level-match run without changing volume, starting audio, or
-posting relay events.  Raw room audio is intentionally local-only and stored in
+normal browser level-match run without changing volume, starting audio, or
+posting status events.  Raw room audio is intentionally local-only and stored in
 the gitignored ``captures/`` tree with restrictive permissions.
 """
 

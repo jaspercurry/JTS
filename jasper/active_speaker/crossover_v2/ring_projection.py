@@ -9,7 +9,7 @@ through :data:`~.evidence_packet.RING_SIDECAR_GLOB` — a sidecar JSON beside
 its WAV in a sibling ``wav/`` — the one thing #3285's bank does not carry.
 Two facts the bank spells differently are restated here: stems are
 ``<microseconds>_<take_id>``, and the ring is scoped by ``info.json``'s
-``session_id`` (the BUNDLE id), never the take record's relay ``session_id``,
+``session_id`` (the BUNDLE id), never the take record's capture ``session_id``,
 which rides along as an alias. Program WAVs are not projected — the CLIs
 resolve those from the bundle themselves.
 """
@@ -300,7 +300,7 @@ def _sidecar_document(
     try:
         identity = identity.with_alias(ALIAS_CAPTURE_SESSION_ID, capture_session_id)
     except SessionIdentityError:
-        # A relay id failing the identity charset is dropped rather than taking the
+        # A capture id failing the identity charset is dropped rather than taking the
         # projection with it: the alias is an audit join, `session_id` is the scope.
         pass
     stamp_session_identity(projected, identity)

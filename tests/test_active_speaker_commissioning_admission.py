@@ -373,7 +373,7 @@ def test_prepare_capture_plan_refuses_unbounded_cooldown(tmp_path, monkeypatch):
         )
 
 
-def test_automatic_cooldown_ceiling_fits_relay_recording_budget():
+def test_automatic_cooldown_ceiling_fits_capture_recording_budget():
     from jasper.active_speaker.commissioning_admission import (
         ACTIVE_DRIVER_CAPTURE_GRAPH_AND_STATUS_BUDGET_S,
     )

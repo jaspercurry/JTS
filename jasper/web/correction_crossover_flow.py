@@ -221,8 +221,8 @@ def handle_reset(
     ``jasper.web.correction_crossover_backend.reset_measurement_journey``.
 
     The caller (``correction_setup._handle_crossover_reset``) has already
-    requested a stop of any crossover-owned relay before this runs; ``relay``
-    here is only the freshest relay snapshot for the response, matching
+    requested a stop of any crossover-owned capture before this runs; ``capture``
+    here is only the freshest capture snapshot for the response, matching
     :func:`handle_status`/:func:`handle_envelope`.
     """
     from . import correction_crossover_backend as backend
@@ -373,7 +373,7 @@ def ensure_automatic_measurement_profile(
     automatically`` is one sequential intent, so this boundary performs the
     existing manual-preservation transaction when—and only when—the setup
     contract proves the current source is an exact match. Unsafe preservation
-    fails before relay registration or audio.
+    fails before capture registration or audio.
     """
     from . import correction_crossover_backend as backend
 

@@ -11,7 +11,7 @@ two consume, and a drift in either of them fails here rather than in a silent
 skip on a real round.
 
 The fixture banks what a wired round banks: per-take records under
-``evidence/v1/artifacts/crossover_v2/<relay>/positions/`` beside their capture
+``evidence/v1/artifacts/crossover_v2/<capture>/positions/`` beside their capture
 WAVs in ``summed/``, with BOTH ``captured_at`` shapes the builders emit — a
 phase capture's ``%Y-%m-%dT%H:%M:%SZ`` and a cloud position's float epoch.
 """
@@ -226,11 +226,11 @@ def test_two_takes_in_one_second_keep_distinct_stems(projection):
     assert [row.take_id for row in ties] == sorted(row.take_id for row in ties)
 
 
-def test_the_identity_is_the_bundle_id_with_the_relay_id_alongside(projection):
-    """The bundle id scopes; the relay id rides as an alias.
+def test_the_identity_is_the_bundle_id_with_the_capture_id_alongside(projection):
+    """The bundle id scopes; the capture id rides as an alias.
 
     Both readers scope on ``jts_session_identity.session_id``, and the take
-    record's own ``session_id`` is the RELAY namespace — stamping that one
+    record's own ``session_id`` is the CAPTURE namespace — stamping that one
     would scope every capture out. The alias is the join between the two
     namespaces that no banked artifact carried before.
     """

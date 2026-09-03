@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``web_measurement._stored_ambient_report`` — the driver-capture relay's
+"""``web_measurement._stored_ambient_report`` — the driver capture's
 controlled-pre-sweep validation stub (tuning-master-plan ticket 2.13).
 
 Before this ticket the returned dict also carried ``domain="controlled_pre_sweep"``

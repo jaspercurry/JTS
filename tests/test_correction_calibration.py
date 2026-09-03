@@ -433,7 +433,7 @@ def test_fetch_vendor_calibration_stamps_90deg_from_the_winning_url(tmp_path: Pa
 def test_fetch_vendor_calibration_stamps_real_orientation_regardless_of_hint(
     tmp_path: Path,
 ):
-    """The primary regression this fix targets: the phone-relay serial-fetch
+    """The primary regression this fix targets: the browser capture serial-fetch
     flow (the household's main onboarding path) never sends an orientation
     at all, so `orientation` stays its "unknown" default on every call --
     yet the STORED record must carry the REAL served orientation, not
@@ -627,7 +627,7 @@ def test_find_stored_calibration_unknown_query_matches_any_stored_orientation(
     """Gauge fix (2026-07-24): once the write side (fetch_vendor_calibration)
     started stamping the REAL served orientation instead of always
     "unknown", a lookup that still passes the default "unknown" hint (the
-    phone-relay flow, which never declares an orientation) must NOT
+    phone-capture flow, which never declares an orientation) must NOT
     permanently miss a "0deg"/"90deg"-tagged record — that would silently
     turn every phone-flow visit into a live vendor re-fetch instead of a
     cache hit. "unknown" means "caller doesn't know/care", so it matches

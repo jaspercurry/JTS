@@ -3375,7 +3375,7 @@ def _acoustic_measurements(
             placement_proof=normalized_placement_proof(
                 policy_id=DRIVER_PLACEMENT_POLICY_ID,
                 acknowledgement_binding=f"binding-{role}-abcdefghijkl",
-                capture_session_id=f"relay-{role}",
+                capture_session_id=f"capture-{role}",
                 capture_page=page,
                 speaker_group_id="mono",
                 role=role,
@@ -3424,7 +3424,7 @@ def _acoustic_measurements(
             "placement_proof": normalized_placement_proof(
                 policy_id=SUMMED_PLACEMENT_POLICY_ID,
                 acknowledgement_binding="binding-summed-abcdefghijkl",
-                capture_session_id="relay-summed",
+                capture_session_id="capture-summed",
                 capture_page=page,
                 speaker_group_id="mono",
                 role="summed",
