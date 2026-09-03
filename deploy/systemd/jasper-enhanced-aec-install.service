@@ -8,7 +8,6 @@ StartLimitBurst=4
 
 [Service]
 Type=oneshot
-ExecCondition=/opt/jasper/.venv/bin/jasper-enhanced-aec-install --check-profile
 ExecStart=/opt/jasper/.venv/bin/jasper-enhanced-aec-install
 TimeoutStartSec=30min
 TimeoutStopSec=10s

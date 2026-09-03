@@ -386,6 +386,11 @@ def test_streambox_parking_disables_brain_units():
     parking = text.split("park_streambox_brain_units() {", 1)[1].split("\n}", 1)[0]
     assert "jasper-voice.service" in parking
     assert "systemctl disable --now" in parking
+    # #3697 (ADR-0226): the only path a streambox can carry these enabled is
+    # a full->streambox conversion, since install_streambox_systemd_units
+    # never stages or enables them itself.
+    assert "jasper-enhanced-aec-install.service" in parking
+    assert "jasper-enhanced-aec-reconcile.path" in parking
 
 
 def _installer_function_body(name: str) -> str:
