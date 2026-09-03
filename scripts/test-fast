@@ -243,7 +243,10 @@ while IFS= read -r changed; do
       # it selecting zero tests). So: convention first, and only when that
       # finds nothing, the tests that name the script literally -- the broad
       # `grep` is the fallback and not the rule because the reconcile scripts
-      # are named in ~28 files each, several of them slow.
+      # are named in ~28 files each, several of them slow. issue #3846's
+      # tests/test_aec_reconcile_rule_pins.py sits beside the convention
+      # match and was silently unrun until this glob (same idiom as the
+      # jasper/*/*.py arm's add_globbed_tests calls above).
       script="${changed##*/}"
       script_module="${script#jasper-}"
       script_module="${script_module//-/_}"
@@ -256,6 +259,7 @@ while IFS= read -r changed; do
           script_matched=true
         fi
       done
+      add_globbed_tests "test_${script_module}_*.py" >/dev/null || true
       if [[ "${script_matched}" != true ]]; then
         while IFS= read -r script_test; do
           add_test_if_present "${script_test}"
