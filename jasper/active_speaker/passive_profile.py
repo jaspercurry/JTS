@@ -49,9 +49,9 @@ def passive_mains_compiles_roleful(
 
     That measured fact reaches the compiler two ways and BOTH are it: the
     candidate being compiled, on the apply itself, and the fingerprint the
-    already-applied profile's source records, on every later read-back. Read off
-    the applied anchor rather than the mutable saved candidate — the question is
-    what the speaker is PLAYING.
+    applied profile's source records, on every later read-back. Read off the
+    applied anchor, never the mutable saved candidate: the question is what the
+    speaker is PLAYING.
     """
     if not topology_is_passive_mains(topology):
         return False

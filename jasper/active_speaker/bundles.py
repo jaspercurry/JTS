@@ -4,45 +4,25 @@
 
 """Active-speaker commissioning bundle: durable, append-only session evidence.
 
-The active-crossover measurement flow already keeps a "latest-wins" current
-state ([`measurement.py`](measurement.py), backed by
-``/var/lib/jasper/active_speaker_measurements.json``) so the baseline compiler
-always has one clean answer to "what does the household's speaker currently
-measure as?". That pointer state intentionally overwrites itself on every new
-capture — it is not evidence for later forensics, corpus review, or "what
-actually happened during commissioning?" questions.
-
-This module is the missing append-only half, ported from the room-correction
-session-bundle pattern:
-one durable, hashed, retention-bounded directory per commissioning attempt
-(a "bundle"), holding the fingerprints, captures, and apply transaction that
-produced (or failed to produce) a baseline. It reuses
-``jasper.audio_measurement.bundles``'s neutral manifest primitives
-(:func:`~jasper.audio_measurement.bundles.record_artifact`,
-:func:`~jasper.audio_measurement.bundles.write_json_artifact`,
-:func:`~jasper.audio_measurement.bundles.read_artifact_manifest`) directly rather than
-forking them. The primitives resolve the owning bundle schema from ``info.json``;
-only the active-speaker-specific shape (its fields, retention policy, and the
-active core-artifact list) lives here.
+The append-only half of the measurement flow, whose latest-wins pointer state
+(``measurement.py``) overwrites itself on every capture: one durable, hashed,
+retention-bounded directory per commissioning attempt. Manifest primitives come
+from ``jasper.audio_measurement.bundles``; only the active-speaker shape (its
+fields, retention policy and core-artifact list) lives here.
 
 Two invariants keep ownership explicit:
 
-- **Split authority.** Capture, proposal, and apply payloads in ``info.json``
-  remain a fail-soft forensic mirror and are never reconstructed into
-  measurement or candidate authority. A *fresh* bundle directory additionally
-  owns Shared's exact admission marker and immutable generation/playback
-  artifacts. The Active playback adapter reopens those strict artifacts by
-  ``session_id``; missing or historical markers refuse audible production work.
+- **Split authority.** Capture, proposal and apply payloads in ``info.json`` are
+  a fail-soft forensic mirror, never reconstructed into measurement or candidate
+  authority. A FRESH bundle directory additionally owns Shared's exact admission
+  marker; a missing or historical marker refuses audible production work.
   Nothing in ``measurement.py`` imports this module.
 - **Fail-soft forensic writes.** Every public write entry point catches
-  ``OSError`` / :class:`~jasper.audio_measurement.bundles.BundleError` (plus a stray
-  ``ValueError`` normalized the same way), logs one
-  ``active_speaker.bundle_write_failed`` WARNING via
-  :func:`jasper.log_event.log_event`, and returns ``None`` instead of
-  raising. A forensic mirror failure does not undo an otherwise valid capture
-  or apply. Failure to create/reopen the admission authority is different: the
-  comparison flow may continue as non-admitted diagnostic evidence, but no
-  production playback or later positive authority may be minted from it.
+  ``OSError``/``BundleError``/``ValueError``, logs one
+  ``active_speaker.bundle_write_failed`` WARNING, and returns ``None``. Failure
+  to create or reopen the admission authority is different: the flow may
+  continue as non-admitted diagnostic evidence, but no production playback or
+  positive authority may be minted from it.
 """
 
 from __future__ import annotations
@@ -91,26 +71,17 @@ LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION = 5
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/active_speaker/sessions")
 SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
 
-# The owner of this ceiling is test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES,
-# aliased here (not mirrored). web_measurement's MAX_CAPTURE_WAV_BYTES is a
-# second alias of the SAME constant, so the two cannot drift apart — an earlier
-# comment named web_measurement as the thing being mirrored, which invited a
-# drift pin that could not fail. A bundle copy is never larger than the capture
-# it was made from, so one ceiling correctly bounds both.
+# Aliased, not mirrored, from the owner
+# test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES. A bundle copy is never
+# larger than the capture it was made from, so one ceiling bounds both.
 MAX_CAPTURE_WAV_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
-# Retention ceiling for the commissioning-bundle store. Raised 256 MiB → 1 GiB
-# for the position-group choreography (flat-linearization PR-3b): a cloud
-# session retains one capture WAV per prompted position — 13 more at the
-# shipped defaults (8 pre-apply + 5 post-apply), ~1-2 MiB each — so a run is
-# ~30 MB and twelve of them no longer fit under 256 MiB. Named corner-cut, recorded in
-# docs/historical/linearization-campaign-2026-07.md: full per-position WAVs are
-# kept rather than derived summaries, because the S0 forensics that produced
-# this program's central finding were only possible from raw WAVs. Disk is
-# cheap; the honesty is not.
+# Retention ceiling for the commissioning-bundle store. Sized so twelve cloud
+# sessions fit: a run retains one ~1-2 MiB capture WAV per prompted position,
+# around 30 MB. Full per-position WAVs are kept rather than derived summaries —
+# see docs/historical/linearization-campaign-2026-07.md.
 #
-# This is a RETENTION budget only. The publish-time free-space precondition
-# used to be defined as this same constant and is now frozen separately — see
+# A RETENTION budget only; the publish-time free-space precondition is
 # ``commissioning_evidence_store.MIN_FREE_SPACE_AFTER_PUBLISH_BYTES``.
 DEFAULT_SESSIONS_MAX_BYTES = 1024 * 1024 * 1024
 SESSIONS_MAX_BYTES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES"
@@ -123,15 +94,14 @@ SESSIONS_MAX_BUNDLES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES"
 # _copy_wav_into_bundle(). Files stay at this mode.
 BUNDLE_FILE_MODE = 0o640
 
-#: One capture entry's kind. ``driver`` is one driver alone, ``summed`` is
-#: every driver sounding at once, and ``sequential`` is every driver in turn
-#: inside ONE recording — the CHECK and MEASURE programs, which are neither of
-#: the other two and were recorded as ``summed`` until this value existed.
-#: Records banked before it keep that label; their ``phase`` disambiguates them.
+#: One capture entry's kind: ``driver`` is one driver alone, ``summed`` every
+#: driver at once, ``sequential`` every driver in turn inside ONE recording (the
+#: CHECK and MEASURE programs). Records banked before ``sequential`` existed
+#: read as ``summed``, disambiguated by their ``phase``.
 #:
 #: A ``sequential`` capture keeps ``summed``'s ``summed/`` subdirectory and
-#: ``summed_captures`` list: the kind names what was PLAYED, not where the
-#: bytes land, and an opened bundle's layout is write-once.
+#: ``summed_captures`` list: the kind names what was PLAYED, not where the bytes
+#: land, and an opened bundle's layout is write-once.
 CAPTURE_KIND_SEQUENTIAL = "sequential"
 _CAPTURE_KINDS = frozenset({"driver", "summed", CAPTURE_KIND_SEQUENTIAL})
 
@@ -217,11 +187,10 @@ def _safe_slug(value: Any, *, fallback: str) -> str:
 def capture_artifact_relpath(kind: str, group: Any, role: Any) -> str:
     """Deterministic bundle-relative WAV path for one driver/summed capture.
 
-    Callers (``web_measurement.py``) mint this path BEFORE the single
-    measurement write so the same relative path can be embedded as the
-    record's ``bundle_ref.artifact_path`` and later handed to
-    :func:`append_capture` as ``relative_path`` — the on-disk WAV then equals
-    the path the durable measurement record points at.
+    Minted BEFORE the measurement write so the same relative path can be
+    embedded as the record's ``bundle_ref.artifact_path`` and later handed to
+    :func:`append_capture`, keeping the on-disk WAV equal to the path the
+    durable measurement record names.
     """
 
     subdir = "captures" if kind == "driver" else "summed"
@@ -257,11 +226,8 @@ def _detect_build_sha() -> str | None:
 def _calibration_sha256(calibration_id: str) -> str | None:
     """Best-effort sha256 of the calibration file backing ``calibration_id``.
 
-    Prefers :class:`~jasper.audio_measurement.calibration.CalibrationRecord`'s
-    already-computed ``file_sha256``; falls back to hashing ``raw_path``
-    directly only if that field is somehow absent. Any lookup failure
-    (missing calibration, malformed metadata) yields ``None`` — a forensic
-    field, never a gate.
+    Any lookup failure (missing calibration, malformed metadata) yields
+    ``None``: a forensic field, never a gate.
     """
 
     if not calibration_id:
@@ -408,22 +374,14 @@ def open_bundle(
 ) -> dict[str, Any] | None:
     """Open a new active-speaker commissioning bundle.
 
-    Marks any prior ``state == "open"`` bundle ``abandoned`` first (at most
-    one open bundle at a time — a new comparison set supersedes the last),
-    mints a fresh ``session_id``, writes ``info.json`` with every SC-4
-    required field, then sweeps retention. ``comparison_set_fingerprint`` is
-    typically unknown at open time (the comparison set is minted moments
-    later by ``measurement.start_active_comparison_set``); pass ``None`` and
-    back-fill with :func:`attach_comparison_set` once it exists.
+    Marks any prior ``state == "open"`` bundle ``abandoned`` first — at most one
+    open bundle at a time. ``comparison_set_fingerprint`` is typically unknown
+    at open time; pass ``None`` and back-fill with :func:`attach_comparison_set`.
 
-    ``build_sha`` defaults to a best-effort read of
-    ``/var/lib/jasper/build.txt`` when not supplied.
-
-    Returns the info payload (with ``session_id`` and ``bundle_dir`` — a
-    string — merged in) or ``None`` on any I/O failure (WARN-logged; see
-    :func:`_fail_soft`). The comparison-set flow may continue diagnostically
-    after ``None``, but the resulting historical evidence cannot enter the
-    admitted playback/candidate path because it has no exact authority.
+    Returns the info payload (with ``session_id`` and a string ``bundle_dir``
+    merged in) or ``None`` on any I/O failure. The comparison-set flow may
+    continue diagnostically after ``None``, but the resulting evidence cannot
+    enter the admitted playback/candidate path, having no exact authority.
     """
 
     root = sessions_dir if sessions_dir is not None else _default_sessions_dir()
@@ -440,12 +398,9 @@ def open_bundle(
         else _calibration_sha256(calibration_id)
     )
 
-    # A caller-supplied topology that doesn't shape up as expected (a bad
-    # mock, a future caller change) must degrade to "no bundle recorded",
-    # like any other bundle-write failure — never crash the comparison-set
-    # flow it's describing. Normalize into BundleError so the shared
-    # fail-soft decorator's (OSError, BundleError, ValueError) guard covers
-    # it without widening that guard for every other entry point.
+    # A caller-supplied topology of an unexpected shape degrades to "no bundle
+    # recorded" rather than crashing the flow it describes. Normalized into
+    # BundleError so the shared fail-soft guard covers it without widening.
     try:
         topology_fingerprints = {
             "topology_id": topology.topology_id,
@@ -548,11 +503,9 @@ def attach_comparison_set(
 ) -> dict[str, Any] | None:
     """Back-fill the comparison-set fingerprint once it exists.
 
-    ``comparison_set_fingerprint`` is unknowable at :func:`open_bundle` time
-    (the comparison set is minted in the very next call at the actual
-    integration site); this fills the gap so the bundle carries the same
-    forensic convenience field as ``session_id``-joined measurement records,
-    without gating anything on it.
+    ``comparison_set_fingerprint`` is unknowable at :func:`open_bundle` time;
+    this fills the gap so the bundle carries the same forensic field as the
+    ``session_id``-joined measurement records, without gating anything on it.
     """
 
     info = _read_info(bundle_dir)
@@ -589,14 +542,10 @@ def mark_state(bundle_dir: Path, state: str) -> dict[str, Any] | None:
 def _capture_group_role(payload: Mapping[str, Any]) -> tuple[Any, Any]:
     """Resolve ``(group, role)`` for a capture entry.
 
-    Prefers top-level ``speaker_group_id`` / ``role`` keys on ``payload`` (a
-    caller — ``web_measurement.py`` — already has these in scope and can
-    enrich the payload it hands to :func:`append_capture`); falls back to the
-    nested ``measurement`` record, which carries them for a *recorded*
-    driver capture. A summed record's nested ``measurement`` never carries
-    ``role`` (group-level), and a *skipped* (``recorded=False``) capture has
-    no nested ``measurement`` record at all — for that case only the
-    caller-supplied top-level keys are available.
+    Prefers top-level ``speaker_group_id``/``role`` keys on ``payload``, falling
+    back to the nested ``measurement`` record, which carries them only for a
+    RECORDED driver capture: a summed record's nested ``measurement`` has no
+    ``role`` (group-level), and a skipped capture has no nested record at all.
     """
 
     measurement_block = payload.get("measurement")
@@ -775,12 +724,10 @@ def register_capture(
 ) -> dict[str, Any] | None:
     """Record a capture WAV the caller already wrote into the bundle.
 
-    :func:`append_capture`'s sibling for the callers that mint the bundle
-    relpath with :func:`capture_artifact_relpath` and stream the bytes
-    straight to it — the crossover-v2 cloud-position seam. There is no
-    source file outside the bundle to copy or size-guard, so this skips both
-    and does only the recording half: the manifest entry for the WAV, the
-    ``*.json`` sidecar, and the compact ``info.json`` entry.
+    :func:`append_capture`'s sibling for callers that mint the bundle relpath
+    with :func:`capture_artifact_relpath` and stream the bytes straight to it.
+    With no source file outside the bundle there is nothing to copy or
+    size-guard, so this does only the recording half.
     """
 
     if kind not in _CAPTURE_KINDS:
@@ -802,16 +749,13 @@ def append_capture(
 ) -> dict[str, Any] | None:
     """Copy one capture WAV into the bundle and record its compact entry.
 
-    ``payload`` is the dict a ``record_driver_acoustic_capture`` /
-    ``record_summed_acoustic_capture`` call returned (or a caller-enriched
-    superset of it — see :func:`_capture_group_role`). The full payload
-    (including the nested ``measurement`` record) is written verbatim as the
-    capture's ``*.json`` artifact; a compact entry (§4 of the design) is
-    appended to ``info.json``'s ``captures`` / ``summed_captures`` list.
+    ``payload`` is what a ``record_*_acoustic_capture`` call returned, or a
+    caller-enriched superset. It is written verbatim as the capture's ``*.json``
+    artifact, and a compact entry is appended to ``info.json``'s
+    ``captures``/``summed_captures`` list.
 
-    Guards the source file's existence and size before copying; a missing
-    or oversized source WARNs and returns ``None`` without touching the
-    bundle.
+    Guards the source file's existence and size before copying: a missing or
+    oversized source WARNs and returns ``None`` without touching the bundle.
     """
 
     if kind not in _CAPTURE_KINDS:
@@ -839,20 +783,14 @@ def append_repeat_capture(
 ) -> dict[str, Any] | None:
     """Copy one repeat-attempt WAV into ``repeat_captures/`` and record it.
 
-    Unlike :func:`append_capture`, a repeat attempt has no compact
-    ``info.json`` list entry of its own — the
-    ``commissioning_capture.aggregate_driver_repeats`` result already
-    indexes every attempt via its own ``per_repeat[]`` array (attached to
-    the WINNING capture's entry once the caller records the aggregate
-    through the normal :func:`append_capture` path), and that array is
-    where each repeat's ``artifact_path`` is discoverable. This function
-    only files the raw evidence: the WAV plus its quality JSON, both in the
-    manifest with a dependency edge between them, mirroring
-    :func:`append_capture`'s WAV+JSON pair.
+    Unlike :func:`append_capture`, a repeat attempt gets no compact
+    ``info.json`` entry: ``aggregate_driver_repeats``'s ``per_repeat[]`` array,
+    attached to the WINNING capture's entry, is where each repeat's
+    ``artifact_path`` is discoverable. This files only the raw evidence — the
+    WAV plus its quality JSON, with a manifest dependency edge between them.
 
     Returns ``{artifact_path, quality_json_path}`` or ``None`` on any
-    guard/write failure (WARN-logged; fail-soft, same as every other public
-    write entry point in this module).
+    guard/write failure.
     """
 
     source = _guarded_capture_source(
@@ -966,12 +904,10 @@ def record_apply(
 ) -> dict[str, Any] | None:
     """Record one apply attempt (success, failure, or refusal) into the bundle.
 
-    ``candidate`` is the baseline-profile candidate/applied/failed dict
-    ``apply_baseline_profile`` is about to return (any of its three return
-    shapes). Success is ``apply_state`` truthy AND ``candidate["status"] ==
-    "applied"``; anything else records ``state = "failed"`` (a refused/
-    blocked apply never reached the DSP transaction at all, so there is
-    nothing to roll back, but the attempt itself is still evidence).
+    ``candidate`` is any of ``apply_baseline_profile``'s three return shapes.
+    Success is ``apply_state`` truthy AND ``candidate["status"] == "applied"``;
+    anything else records ``state = "failed"`` — a refused apply never reached
+    the DSP transaction, but the attempt is still evidence.
     """
 
     info = _read_info(bundle_dir)
@@ -1027,10 +963,8 @@ def record_apply(
 def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     """Return ``info.json`` plus derived counts/sizes for one bundle.
 
-    Modeled on ``jasper.correction.bundles.summarize_bundle`` with its own
-    active-speaker-specific core-artifact list. Raises ``BundleError`` for a
-    missing/malformed bundle — callers that want to skip bad entries use
-    :func:`list_bundles`, which already does that.
+    Raises ``BundleError`` for a missing/malformed bundle; callers that want to
+    skip bad entries use :func:`list_bundles`.
     """
 
     if not bundle_dir.is_dir():
@@ -1088,17 +1022,13 @@ def enforce_retention(
 ) -> None:
     """Delete oldest whole bundles once storage exceeds the configured cap.
 
-    Every unfinished complete bundle (``state`` in
-    ``open``/``proposal_ready``) plus the single newest complete bundle are
-    protected, so a live or just-completed session can never be evicted by its
-    own size. Interrupted directories without parseable ``info.json`` still
-    count against both caps and are never protected. Deletion is whole-bundle
-    (``shutil.rmtree``), oldest-``started_at``-first among the unprotected set.
-    Fail-soft: any I/O error during the sweep is
-    WARN-logged and the sweep simply stops — this is always called from
-    :func:`open_bundle`'s own fail-soft wrapper, but is public and
-    independently fail-soft so a future direct caller (a maintenance script)
-    gets the same guarantee.
+    Every unfinished COMPLETE bundle (``state`` in ``open``/``proposal_ready``)
+    plus the single newest complete bundle are protected, so a live or
+    just-completed session cannot be evicted by its own size. Interrupted
+    directories without a parseable ``info.json`` count against both caps and
+    are never protected.
+    Deletion is whole-bundle, oldest-``started_at``-first among the unprotected.
+    Independently fail-soft: any I/O error WARNs and stops the sweep.
     """
 
     try:

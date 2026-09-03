@@ -1,38 +1,14 @@
 """L2 phase-aware crossover alignment — measurement-mode gate + refinement proposal.
 
-This is the L2 ("enthusiast, calibrated mic") brain on top of L1's magnitude-only
-level match. It owns two things and no I/O:
-
-1. **The phase_aware gate.** A polarity/delay decision is only trustworthy from a
-   real *calibrated* measurement mic — an uncalibrated phone's phase error is
-   ±20–40° at the crossover (research snapshot
-   ``docs/research/2026-06-19-active-crossover-calibration``). So
-   :func:`resolve_measurement_mode` is **downgrade-only**: it grants
-   ``phase_aware`` only when a calibrated mic is present, otherwise falls back to
-   ``magnitude_only``. It never silently upgrades.
-
-2. **The alignment proposal.** :func:`propose_crossover_alignment` turns the
-   summed-crossover null evidence into a SAFE, measurement-driven **polarity**
-   proposal plus a **delay status**. It is a *proposal*: it shows the evidence and
-   the human confirms; it never silently rewrites the design, never proposes
-   Fc/slope changes (out of scope), and never proposes a positive gain (level
-   matching is L1's attenuation-only job).
-
-**Why polarity from the null, and why no delay *value*.** The robust, capture-
-model-correct signal is the *summed* response (a magnitude ratio within ONE
-capture, immune to capture-start jitter): a correct crossover sums flat in phase
-and cancels deeply when one driver is inverted. Polarity is judged from the
-**reverse-vs-in-phase null margin** (both measured identically, so the
-measurement's dynamic-range cap cancels — far more robust than an absolute
-threshold). A delay *value* is deliberately NOT proposed here: JTS's near-field
-captures are browser-recorded with no sample-sync to the Pi's playback (see
-``recordDriverCapture`` / ``captureMicWavBase64``), so a per-driver IR arrival
-delta is capture jitter, not acoustic time-of-flight — and impulse response
-is not a substitute for phase-aware summation. The delay *value* therefore
-comes from the timing-locked
-reverse-polarity null **walk** (the deferred follow-up); here we surface a delay
-*status* (aligned vs needs-alignment) from the in-phase null so the maintainer
-knows whether to run it.
+Owns two things and no I/O. The phase_aware gate is downgrade-only: a
+polarity/delay decision needs a calibrated mic, because an uncalibrated phone's
+phase error is ±20–40° at the crossover
+(``docs/research/2026-06-19-active-crossover-calibration``). The alignment
+proposal judges polarity from the reverse-vs-in-phase null margin, so the
+measurement's dynamic-range cap cancels. No delay VALUE is proposed here:
+browser captures have no sample-sync to the Pi's playback, so an IR arrival
+delta is capture jitter, not time-of-flight — the value comes from the
+timing-locked null walk, and this surfaces only a delay STATUS.
 """
 
 from __future__ import annotations
@@ -50,10 +26,9 @@ MAGNITUDE_ONLY = "magnitude_only"
 PHASE_AWARE = "phase_aware"
 MEASUREMENT_MODES = frozenset({MAGNITUDE_ONLY, PHASE_AWARE})
 
-# Polarity confidence margin. The reverse-polarity null being this many dB DEEPER
-# than the in-phase null (or vice-versa) is a confident call. Relative, so the
-# smoothed-shoulder measurement's dynamic-range cap cancels — unlike an absolute
-# "reverse null >= 25 dB" gate, which the JTS measurement may never reach.
+# The reverse-polarity null being this many dB DEEPER than the in-phase null (or
+# vice-versa) is a confident call. Relative, so the smoothed-shoulder
+# measurement's dynamic-range cap cancels.
 POLARITY_MARGIN_DB = 8.0
 
 # Polarity actions (what the human is asked to confirm).
@@ -66,8 +41,8 @@ BLEND_FLAT = "flat"      # sums cleanly → time-aligned AND in phase
 BLEND_NULL = "null"      # deep cancellation → polarity or delay off
 BLEND_UNKNOWN = "unknown"
 
-# Delay status. The VALUE comes from the deferred timing-locked walk; this is the
-# in-phase null read so the maintainer knows whether alignment work is needed.
+# Delay status. The VALUE comes from the timing-locked walk; this is the
+# in-phase null read.
 DELAY_ALIGNED = "aligned"
 DELAY_NEEDS_ALIGNMENT = "needs_alignment"
 DELAY_UNKNOWN = "unknown"
@@ -102,12 +77,9 @@ def resolve_measurement_mode(
 ) -> ResolvedMode:
     """Gate the measurement mode on a calibrated mic. Downgrade-only.
 
-    ``phase_aware`` is granted only when ``has_calibrated_mic`` is True; otherwise
-    the request is downgraded to ``magnitude_only`` with reason
-    ``"no_calibrated_mic"``. An unknown/empty request resolves to
-    ``magnitude_only``. This function NEVER upgrades — a caller can only ever get
-    a mode at most as privileged as requested — so a phone can never authorize a
-    polarity/delay decision.
+    ``phase_aware`` is granted only when ``has_calibrated_mic`` is True;
+    otherwise the request downgrades to ``magnitude_only`` with reason
+    ``"no_calibrated_mic"``, as does an unknown/empty request. NEVER upgrades.
     """
     req = (requested or MAGNITUDE_ONLY).strip().lower()
     if req not in MEASUREMENT_MODES:
@@ -126,15 +98,12 @@ def resolve_measurement_mode(
 class CrossoverAlignmentProposal:
     """A measured, SAFE crossover refinement awaiting human confirmation.
 
-    ``authorized`` is False (no polarity/delay decision) unless the effective mode
-    is ``phase_aware`` (a calibrated mic). All values are PROPOSALS — the caller
-    previews the resulting baseline (which re-proves the runtime_contract tweeter
-    guard + the 0 dB ceiling) and the human confirms before anything is applied.
-    Each instance covers ONE crossover region — its own summed-null evidence,
-    own margin, own gates. A 3-way has two regions and therefore two of these;
+    ``authorized`` is False (no polarity/delay decision) unless the effective
+    mode is ``phase_aware``. All values are PROPOSALS: the caller previews the
+    resulting baseline and the human confirms. Each instance covers ONE
+    crossover region, so a 3-way has two;
     ``commissioning_capture.build_crossover_alignment_proposal`` is the caller
-    that iterates every region and builds one proposal per region, not this
-    dataclass or :func:`propose_crossover_alignment`.
+    that iterates the regions.
     """
 
     authorized: bool
@@ -186,15 +155,9 @@ def _classify_blend(in_phase_null_depth_db: float | None) -> str:
 def _alignment_snr_issue(null_depth_capped: bool) -> dict[str, str]:
     """The ``alignment_snr_insufficient`` issue for a degraded proposal.
 
-    Only called when the caller's degradation condition
-    (``alignment_snr_ok is False or null_depth_capped``) held, so exactly one
-    of those two is why — ``null_depth_capped`` is checked first because a
-    capped depth is the more specific, actionable fact. Names the REQUIRED
-    overlap-band SNR (a known constant, ``DRIVER.alignment_snr_ok_db``) — the
-    ACHIEVED dB is not known here (this function receives only the
-    boolean/capped verdict, not the raw number; see
-    :func:`jasper.audio_measurement.snr_policy.band_snr_verdicts` for the
-    per-band figures), so it is not claimed.
+    ``null_depth_capped`` is checked first, being the more specific fact. Names
+    the REQUIRED overlap-band SNR (``DRIVER.alignment_snr_ok_db``); the ACHIEVED
+    dB is not in scope here, so it is not claimed.
     """
     required = DRIVER.alignment_snr_ok_db
     if null_depth_capped:
@@ -375,27 +338,17 @@ def propose_crossover_alignment(
     else:
         delay_status = DELAY_UNKNOWN
 
-    # Second, independent gate: even a calibrated capture needs enough
-    # overlap-band SNR to trust a null/alignment call (see "Level control and
-    # SNR" in docs/active-crossover-information-design.md). A CONFIRMED
-    # insufficient SNR (alignment_snr_ok is False) or a capped null depth
-    # (the measured number itself wasn't fully provable) may not produce a
-    # confident keep/invert or an "aligned" delay status — degrade to review
-    # / unknown instead. alignment_snr_ok=None ("unknown/no evidence")
-    # deliberately does NOT degrade: it preserves the shipped margin/blend
-    # behavior for legacy callers and captures without usable ambient evidence.
-    # This never TIGHTENS the margin/blend
-    # classification above (computed from the raw depths); it only
-    # downgrades the outward action/status so the evidence stays visible.
+    # Second, independent gate: a confirmed insufficient SNR or a capped null
+    # depth may not produce a confident keep/invert or an "aligned" delay
+    # status. alignment_snr_ok=None does NOT degrade. This never tightens the
+    # margin/blend classification, only the outward action/status.
     if alignment_snr_ok is False or null_depth_capped:
         degraded = False
         if action in (POLARITY_KEEP, POLARITY_INVERT):
             action = POLARITY_REVIEW
-            # A "review" action always pairs with polarity="normal" elsewhere
-            # in this function (every OTHER path that sets POLARITY_REVIEW
-            # never touches polarity); reset it here too so a degraded
-            # candidate ("invert_tweeter") can't leak out looking like a
-            # still-standing recommendation.
+            # A "review" action always pairs with polarity="normal", so reset
+            # it here too: a degraded candidate ("invert_tweeter") must not
+            # leak out looking like a still-standing recommendation.
             polarity = "normal"
             degraded = True
         if delay_status == DELAY_ALIGNED:

@@ -34,8 +34,7 @@ bytes and re-runs the whole evaluation, so tampered bytes are caught before the
 verified-aplay path (which separately re-verifies the sha256).
 
 Refusals are typed and structured; nothing raises for an admissible-or-not
-verdict (malformed inputs / a non-confirmed profile still raise or refuse
-fail-closed). ``log_event`` fires on refusal.
+verdict, and ``log_event`` fires on refusal.
 """
 
 from __future__ import annotations
@@ -223,10 +222,8 @@ def _requested_segment_plan(
     assert segment.f1_hz is not None and segment.f2_hz is not None
     # The band this segment ACTUALLY emits, gate included. `f1_hz`/`f2_hz` are
     # the PARENT sweep's, which a gated channel keeps so the branches stay
-    # sample-identical where both play (see `ProgramSegment`); judging a gated
-    # segment by them would refuse a driver for frequencies the gate silences
-    # -- and, the other way round, would let an ungated claim stand for a
-    # channel that does emit them.
+    # sample-identical where both play; judging a gated segment by them refuses
+    # a driver for frequencies the gate silences, and vice versa.
     emitted_f1, emitted_f2 = segment_emitted_band_hz(segment)
     amplitude = 10.0 ** (float(segment.gain_db) / 20.0)
     duration_s = segment.n_samples / PROGRAM_SAMPLE_RATE_HZ
@@ -258,19 +255,14 @@ def _gate_leak_ratio_ceiling(segment: ProgramSegment) -> float:
     """Largest out-of-gate RMS the gate's OWN SHAPE can account for, as a
     fraction of the segment's amplitude.
 
-    Derived, not chosen. A gate silences its outside completely, so the honest
-    bound is the quietest sound the gate is permitted to make anywhere: the
-    first non-zero sample of its raised-cosine ramp,
-    ``0.5*(1 - cos(pi/fade))``. Energy at or above that outside the window is
-    louder than the gate's own quietest legitimate sample and therefore cannot
-    be the gate's doing.
+    Derived, not chosen: the quietest sound the gate may make anywhere is the
+    first non-zero sample of its raised-cosine ramp, ``0.5*(1 - cos(pi/fade))``,
+    so energy at or above that outside the window cannot be the gate's doing.
 
-    **A RATIO, because an absolute dBFS floor does not catch this.** These
-    programs are composed at the most restrictive driver cap -- tens of dB down
-    -- so an ungated parent sweep leaking at full segment amplitude can still
-    sit below a fixed -60 dBFS residual floor and pass. Measured against the
-    segment's own amplitude, an unapplied gate reads about -3 dB (RMS of a full
-    sine) against a bound near -93 dB, which is not a close call.
+    A RATIO, because these programs are composed at the most restrictive driver
+    cap — tens of dB down — so an ungated parent sweep leaking at full segment
+    amplitude still passes a fixed -60 dBFS residual floor. Against the segment's
+    own amplitude an unapplied gate reads about -3 dB versus a bound near -93 dB.
 
     ``fade == 0`` has no ramp to excuse anything, so only the sample format's
     own quantization step is allowed.
@@ -284,17 +276,11 @@ def _gate_leak_ratio_ceiling(segment: ProgramSegment) -> float:
 def _gate_leak_refusals(program: ExcitationProgram, pcm) -> list[str]:
     """Verify the RENDERED BYTES obey every gate their metadata claims.
 
-    The second, independent leg of the gate contract. The first is metadata:
-    :func:`segment_emitted_band_hz` narrows a gated segment's declared band and
-    admission judges that band against the driver's permitted one. But that leg
-    reads the SCHEDULE, so a renderer that silently stopped applying gates would
-    leave the narrow claim intact while the full parent sweep -- an octave below
-    a tweeter's declared floor -- reached the driver, and admission would
-    approve it. Metadata cannot verify itself.
-
-    So this measures the samples. Vacuous by construction for every ungated
-    segment: there is no gate claim to verify, so no check runs and the shipped
-    per-driver and summed programs are untouched.
+    The second, independent leg of the gate contract. The first
+    (:func:`segment_emitted_band_hz`) reads the SCHEDULE, so a renderer that
+    silently stopped applying gates would leave the narrow claim intact while
+    the full parent sweep reached the driver. Metadata cannot verify itself, so
+    this measures the samples. Vacuous by construction for an ungated segment.
     """
     import numpy as np
 
@@ -328,14 +314,11 @@ def _gate_leak_refusals(program: ExcitationProgram, pcm) -> list[str]:
 def _out_of_segment_mask(program: ExcitationProgram, channel: int, length: int) -> Any:
     """True where a channel is expected to be silent.
 
-    Scoped to ``known_audible_segments()`` (stimulus segments PLUS the
-    courtesy-tone prelude, issue #1677) rather than ``stimulus_segments()``
-    alone: the prelude is real, intentional audio outside any analyzed
+    Scoped to ``known_audible_segments()`` rather than ``stimulus_segments()``:
+    the courtesy-tone prelude (#1677) is real audio outside any analyzed
     stimulus window, so it must be excluded here too or every prelude-bearing
-    program would be refused as if the tone were leaked/tampered energy.
-    ``_channel_declared_peak_dbfs`` below stays scoped to ``stimulus_segments()``
-    on purpose (see its docstring) — this is the one admission surface the
-    prelude actually needs to change.
+    program is refused as if the tone were leaked energy.
+    ``_channel_declared_peak_dbfs`` stays scoped to ``stimulus_segments()``.
     """
     import numpy as np
 
@@ -354,15 +337,10 @@ def _channel_declared_peak_dbfs(program: ExcitationProgram, channel: int) -> flo
     """The manifest's expected true peak for one channel.
 
     Deliberately scoped to ``stimulus_segments()``, NOT
-    ``known_audible_segments()`` — the courtesy-tone prelude (issue #1677) is
-    derived to never exceed its channel's own loudest stimulus
-    (``courtesy_tone_gain_db``), so a correctly-rendered tone never changes
-    this value. Leaving the prelude out of the declared peak keeps
-    MANIFEST_PEAK_MISMATCH below as a free defense-in-depth check: if a future
-    bug ever rendered the tone louder than intended, the channel's actual
-    (bytes-measured) true peak would rise above this stimulus-only expectation
-    and the mismatch would correctly refuse the program, rather than the
-    expectation silently rising to match whatever the tone happened to do.
+    ``known_audible_segments()``: the courtesy-tone prelude never exceeds its
+    channel's loudest stimulus, so leaving it out keeps MANIFEST_PEAK_MISMATCH
+    able to catch a tone rendered louder than intended, instead of the
+    expectation rising to match whatever the tone did.
     """
     peaks = [
         float(segment.gain_db)
@@ -388,10 +366,9 @@ def _evaluate_program(
     segments: list[SegmentAdmission] = []
     channels: list[ChannelFacts] = []
     # ``(permitted_lo_hz, permitted_hi_hz, maximum_duration_s)`` per segment:
-    # the LIMIT side of two of the comparisons below, which `SegmentAdmission`
-    # does not carry because it records what was REQUESTED. Read only by the
-    # refusal log. A segment whose plan raised never gets an entry, and the log
-    # then omits both limits for it rather than printing a placeholder.
+    # the LIMIT side of two comparisons below, which `SegmentAdmission` does not
+    # carry because it records what was REQUESTED. Read only by the refusal log;
+    # a segment whose plan raised gets no entry and its limits are omitted.
     segment_limits: dict[str, tuple[float, float, float]] = {}
 
     try:
@@ -425,10 +402,9 @@ def _evaluate_program(
             program_id=program.program_id,
         )
         try:
-            # program_admission=True: a CHECK/MEASURE program's channel
-            # routing carries each driver's crossover filter (the tweeter's
-            # protective HP included) by construction -- the proven-HP path
-            # (see resolve_driver_excitation_ceilings).
+            # program_admission=True: a CHECK/MEASURE program's channel routing
+            # carries each driver's crossover filter (the tweeter's protective
+            # HP included) by construction — the proven-HP path.
             prepared = prepare_driver_excitation_plan(
                 topology,
                 safety_profile,
@@ -465,8 +441,8 @@ def _evaluate_program(
         refusals.append(ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
     else:
         # The gate contract's SECOND leg, under the metadata one rather than
-        # instead of it: the schedule's narrow band claim is judged above, and
-        # here the rendered samples are made to agree with it.
+        # instead of it: the rendered samples must agree with the schedule's
+        # narrow band claim judged above.
         leaked = _gate_leak_refusals(program, pcm)
         if leaked:
             log_event(
@@ -498,10 +474,9 @@ def _evaluate_program(
                 continue
             # float32 throughout: the whole-file materialization is the memory
             # hot spot on the 1 GB Pi (float64 doubled a ~20 s 2-ch program to
-            # ~19 MB transient). Peak/RMS at float32 precision is ~1e-6 dB —
-            # far inside the 0.5 dB manifest tolerance. The RMS accumulator
-            # stays float64 (dtype=) so a long quiet residual cannot lose
-            # low-level energy to float32 summation.
+            # ~19 MB transient), and float32 peak/RMS error (~1e-6 dB) is far
+            # inside the 0.5 dB manifest tolerance. The RMS accumulator stays
+            # float64 so a long quiet residual keeps its low-level energy.
             column = np.asarray(pcm[:, channel], dtype=np.float32)
             true_peak = float(np.max(np.abs(column))) if column.size else 0.0
             true_peak_dbfs = _dbfs(true_peak)
@@ -560,37 +535,15 @@ def _evaluate_program(
         refusals=unique_refusals,
     )
     if not admission.allowed:
-        # WHICH segment, and — for the two comparisons whose limit is not
-        # already on this line — the REQUESTED value beside the LIMIT it was
-        # judged against. That is the honest floor of what follows, stated
-        # exactly: `band=…/permitted=…` and `dur=…/max=…` are paired here;
-        # the effective peak's limit is the per-role cap in `role_caps_dbfs`;
-        # the repeat count is not rendered because it cannot be the failing
-        # comparison — `_requested_segment_plan` fixes every segment at one
-        # repeat, and both bounds on the maximum are at least one
-        # (`driver_safety` validates `max_repeat_count` with `minimum=1`, and
-        # `ACTIVE_DRIVER_MAX_REPEAT_COUNT` is 3).
-        #
-        # All of it is computed above and, until this line grew these fields,
-        # was discarded here — the aggregate reason alone cannot tell apart the
-        # comparisons folded into ``REQUEST_OUTSIDE_LIMITS``, and
-        # `program_segment_outside_limits` is also the catch-all
-        # `_map_safety_plan_error` returns for a plan that RAISED for some
-        # third reason (such a segment has no limits, so both pairs above are
-        # omitted for it rather than printed as placeholders).
-        #
-        # A 2026-08-23 jts3 bench triage read that one aggregate as a level
-        # breach on the woofer and re-derived a level fix for it; the real
-        # refusal was the woofer sweep's DURATION. The synchronized sweep
-        # rounds a requested length to the nearest phase-closing one, which for
-        # that driver's 150-4000 Hz band lands ABOVE the 4 s request at
-        # 4.0058 s (other band ratios round the other way), so it exceeded a
-        # declared ``max_sweep_duration_s`` of 4.0 by 5.8 ms — while that same
-        # segment's effective peak sat 10.5 dB inside its cap.
-        # `session_volume_db` is named for the same reason: a segment's
-        # effective peak is its digital gain PLUS this value (see
-        # `_requested_segment_plan`), so comparing a bare per-segment gain
-        # against an effective-peak cap is off by exactly this much.
+        # WHICH segment, and the REQUESTED value beside the LIMIT it was judged
+        # against, because the aggregate ``REQUEST_OUTSIDE_LIMITS`` cannot tell
+        # its folded comparisons apart: a bench triage once read it as a woofer
+        # level breach when the real refusal was DURATION (the synchronized
+        # sweep rounds to the nearest phase-closing length, exceeding a declared
+        # 4.0 s by 5.8 ms). The repeat count is not rendered because it cannot
+        # be the failing comparison — every segment is fixed at one repeat.
+        # `session_volume_db` is named because a segment's effective peak is its
+        # digital gain PLUS that value.
         durations_s = {
             segment.segment_id: segment.n_samples / PROGRAM_SAMPLE_RATE_HZ
             for segment in program.stimulus_segments()
@@ -671,12 +624,9 @@ def readmit_program_from_wav(
 ) -> ProgramAdmission:
     """Re-admit a program from a FRESH readback of its rendered WAV bytes.
 
-    The play-time gate: reads the actual WAV (not the in-memory program) and
-    re-runs the whole evaluation, so tampered bytes — an inflated channel, energy
-    leaked outside a stimulus window — are caught before playback. Mirrors the
-    driver-capture ``play_admitted_wav`` re-admission pattern, extended to
-    2-channel program WAVs with per-channel peak validation. Returns a fresh
-    :class:`ProgramAdmission` (a shape/rate/channel mismatch refuses fail-closed).
+    The play-time gate: reads the actual WAV, not the in-memory program, and
+    re-runs the whole evaluation, so tampered bytes are caught before playback.
+    A shape/rate/channel mismatch refuses fail-closed.
     """
     import numpy as np
     from scipy.io import wavfile
@@ -707,8 +657,8 @@ def readmit_program_from_wav(
             channels=(),
             refusals=(ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH,),
         )
-    # Invert write_program_wav's S16_LE scaling (peak 1.0 -> 32767). float32:
-    # halves the whole-file transient on the 1 GB Pi (see _evaluate_program).
+    # Invert write_program_wav's S16_LE scaling (peak 1.0 -> 32767); float32
+    # halves the whole-file transient on the 1 GB Pi.
     if np.issubdtype(data.dtype, np.integer):
         pcm = data.astype(np.float32) / np.float32(32767.0)
     else:
