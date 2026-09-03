@@ -13,8 +13,8 @@ consistent across providers. The generic retry schedule lives in
 :mod:`jasper.backoff` so non-voice subsystems do not depend on this
 private module.
 
-What's NOT here: the supervisor task itself, provider-specific close-code
-handling (Gemini's 409 / 1008) and resumption-handle logic. Those stay in
+What's NOT here: the supervisor task itself, provider-specific reconnect
+handling (Gemini's 409 retry) and resumption-handle logic. Those stay in
 `gemini_session.py` / `openai_session.py`.
 """
 from __future__ import annotations
@@ -61,6 +61,12 @@ _FOLDED_ERRNO = re.compile(r"\[Errno (-?\d+)\]")
 _OUT_OF_CREDIT_MARKERS = (
     "credit", "quota", "billing", "spending limit", "payment",
 )
+
+# RFC 6455 close codes that mean the server refused what we sent, not
+# that the link failed: 1002 protocol error, 1003 unsupported data,
+# 1007 invalid frame payload, 1008 policy violation. A provider rejects
+# a malformed `setup` message with one of these.
+_SETUP_REJECTION_CLOSE_CODES = frozenset({1002, 1003, 1007, 1008})
 
 # Cap on the cause string stored and logged. Comfortably fits a provider's
 # JSON error body; short enough that an HTML error page cannot flood the
@@ -116,6 +122,21 @@ def http_status(exc: BaseException) -> int | None:
     return status
 
 
+def provider_code(exc: BaseException) -> int | None:
+    """The code a failure carries where ``http_status`` cannot see it.
+
+    google-genai's ``APIError`` puts its code on ``.code`` (never
+    ``.status_code``); a websockets close puts the RFC 6455 close code
+    on ``.rcvd.code``."""
+    for candidate in (
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "rcvd", None), "code", None),
+    ):
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            return candidate
+    return None
+
+
 def is_transient(exc: BaseException) -> bool:
     """Whether retrying this failure can plausibly fix it.
 
@@ -123,7 +144,8 @@ def is_transient(exc: BaseException) -> bool:
     bursts, 409 (race against a recently-closed prior session). Not
     transient means terminal — no amount of retrying helps and a human
     must act: a rejected key, an account out of credit, a missing model,
-    a locally malformed config. See ADR-0215."""
+    a locally malformed config, a setup message the provider refuses.
+    See ADR-0215."""
     # Local-validation errors — never retry.
     if isinstance(exc, (TypeError, ValueError, ImportError, AttributeError)):
         return False
@@ -134,6 +156,12 @@ def is_transient(exc: BaseException) -> bool:
         if 400 <= status < 500 and status != 429 and status != 409:
             return False
         return True
+    code = provider_code(exc)
+    if code is not None:
+        if code in _SETUP_REJECTION_CLOSE_CODES:
+            return False
+        if 400 <= code < 500 and code != 429 and code != 409:
+            return False
     # No status — treat as transient (network blip, WS reset, etc.).
     return True
 

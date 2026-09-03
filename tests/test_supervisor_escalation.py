@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import socket
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +59,28 @@ class _Status:
         self.status_code = status_code
 
 
+class _Coded:
+    """A google-genai ``APIError``: the code is on ``.code``, never
+    ``.status_code``."""
+
+    def __init__(self, code: int) -> None:
+        self.code = code
+
+
+class _Closed(Exception):
+    """A websockets close: the RFC 6455 code is on ``.rcvd.code``."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"connection closed: {code}")
+        self.rcvd = SimpleNamespace(code=code)
+
+
+class _StatusAndCode(_Coded):
+    def __init__(self, status_code: int, code: int) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+
+
 # Captured verbatim from the live xAI 403 that motivated ADR-0215.
 _CREDIT_BODY = (
     b'{"error":"Your team has either used all available credits or reached'
@@ -96,6 +119,17 @@ def _wrapped(inner: BaseException) -> Exception:
         (OSError("network blip"), True),
         (ValueError("bad config"), False),
         (TypeError("wrong shape"), False),
+        (_Coded(1002), False),
+        (_Coded(1003), False),
+        (_Coded(1007), False),
+        (_Coded(1008), False),
+        (_Closed(1007), False),
+        (_Closed(1006), True),
+        (_Coded(400), False),
+        (_Coded(409), True),
+        (_Coded(429), True),
+        (_Coded(503), True),
+        (_StatusAndCode(500, 1007), True),
     ],
 )
 def test_is_transient_classifies_by_who_must_act(
