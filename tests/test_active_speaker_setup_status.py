@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 import jasper.active_speaker._common as _common
+import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
 from jasper.active_speaker import commissioning_verification
 from jasper.active_speaker.baseline_profile import (
@@ -327,7 +328,7 @@ def test_passive_speaker_is_ready_without_active_baseline(
 ) -> None:
     _save_topology(monkeypatch, tmp_path, _passive_topology())
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: pytest.fail("passive topology must not need baseline"),
     )
@@ -360,7 +361,7 @@ def test_unconfigured_speaker_is_not_passive_or_room_eligible(
     topology = new_topology_draft(hardware=_passive_topology().hardware)
     _save_topology(monkeypatch, tmp_path, topology)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: pytest.fail("unconfigured topology must not build baseline"),
     )
@@ -409,7 +410,7 @@ def test_zero_active_layout_requires_flat_dac_authority(
 ) -> None:
     _save_topology(monkeypatch, tmp_path, topology_factory())
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: pytest.fail("zero-active blocked topology must not build baseline"),
     )
@@ -443,7 +444,7 @@ def test_active_speaker_blocks_volume_and_grouping_until_baseline_is_applied(
     config_path = tmp_path / "active_speaker_baseline.yml"
     config_path.write_text("pipeline: []\n", encoding="utf-8")
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(
             status="blocked",
@@ -481,7 +482,7 @@ def test_active_speaker_allows_volume_and_grouping_after_applied_baseline(
     config_path = tmp_path / "active_speaker_baseline.yml"
     config_path.write_text("pipeline: []\n", encoding="utf-8")
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=config_path),
     )
@@ -517,7 +518,7 @@ def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning
     applied = _applied_acoustic_profile(config_path=config_path)
     _write_applied_graph(topology, applied, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(
             status="applied", config_path=config_path, measured=True
@@ -529,7 +530,7 @@ def test_active_speaker_allows_room_correction_only_after_acoustic_commissioning
         lambda _topology: _acoustic_measurement_state(),
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: applied,
     )
@@ -584,7 +585,7 @@ def test_applied_manual_snapshot_allows_room_without_phone_measurements(
     manual["recomposition_snapshot"]["tuning_owner"] = "manual"
     _write_applied_graph(topology, manual, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=config_path),
     )
@@ -594,7 +595,7 @@ def test_applied_manual_snapshot_allows_room_without_phone_measurements(
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: manual,
     )
@@ -639,7 +640,7 @@ def test_manual_room_authority_allows_program_filters_on_exact_layer_a(
     current_text = yaml.safe_dump(current, sort_keys=False)
     current_path.write_text(current_text, encoding="utf-8")
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=protected_path),
     )
@@ -649,7 +650,7 @@ def test_manual_room_authority_allows_program_filters_on_exact_layer_a(
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: manual,
     )
@@ -697,7 +698,7 @@ def test_manual_room_authority_explicitly_scopes_out_distributed_active(
         lambda: SimpleNamespace(enabled=True, error=None, role=role),
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=protected_path),
     )
@@ -707,7 +708,7 @@ def test_manual_room_authority_explicitly_scopes_out_distributed_active(
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: manual,
     )
@@ -759,7 +760,7 @@ def test_manual_room_authority_blocks_loaded_layer_a_mismatch(
     current["filters"]["as_tweeter_baseline_gain"]["parameters"]["gain"] = -9.0
     running_text = yaml.safe_dump(current, sort_keys=False)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=protected_path),
     )
@@ -769,7 +770,7 @@ def test_manual_room_authority_blocks_loaded_layer_a_mismatch(
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: manual,
     )
@@ -815,7 +816,7 @@ def test_durable_anchor_mismatch_names_the_field_and_both_values(
     anchor["filters"]["as_woofer_delay"]["parameters"]["delay"] = 0.1286
     anchor_path.write_text(yaml.safe_dump(anchor, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=protected_path),
     )
@@ -823,7 +824,7 @@ def test_durable_anchor_mismatch_names_the_field_and_both_values(
         setup_mod, "load_measurement_state", lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod, "load_applied_baseline_profile_state", lambda _path=None: manual,
+        baseline_mod, "load_applied_baseline_profile_state", lambda _path=None: manual,
     )
 
     status = setup_mod.read_active_speaker_setup_status(
@@ -855,7 +856,7 @@ def test_manual_room_authority_blocks_unverifiable_loaded_graph(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=protected_path),
     )
@@ -865,7 +866,7 @@ def test_manual_room_authority_blocks_unverifiable_loaded_graph(
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: manual,
     )
@@ -902,7 +903,7 @@ def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_cle
     automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
     _write_applied_graph(topology, automatic, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=config_path),
     )
@@ -912,7 +913,7 @@ def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_cle
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: automatic,
     )
@@ -947,7 +948,7 @@ def _denied_receipt_status(
     automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
     _write_applied_graph(topology, automatic, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=config_path),
     )
@@ -957,7 +958,7 @@ def _denied_receipt_status(
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: automatic,
     )
@@ -1125,10 +1126,10 @@ def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
     candidate = _candidate(status="draft", config_path=candidate_config_path)
     candidate["source"]["topology_fingerprint"] = "b" * 64
     monkeypatch.setattr(
-        setup_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
+        baseline_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
     )
     monkeypatch.setattr(
-        setup_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
+        baseline_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
     )
 
     status = setup_mod.read_active_speaker_setup_status(
@@ -1167,10 +1168,10 @@ def test_a_blocker_outranks_a_notice_for_the_setup_headline(
     candidate = _candidate(status="draft", config_path=config_path)
     candidate["source"]["topology_fingerprint"] = "b" * 64
     monkeypatch.setattr(
-        setup_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
+        baseline_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
     )
     monkeypatch.setattr(
-        setup_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
+        baseline_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
     )
 
     status = setup_mod.read_active_speaker_setup_status(
@@ -1200,7 +1201,7 @@ def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
     automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
     _write_applied_graph(topology, automatic, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=config_path),
     )
@@ -1210,7 +1211,7 @@ def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
         lambda _topology: {"summary": {}},
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: automatic,
     )
@@ -1248,7 +1249,7 @@ def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
     applied = _applied_acoustic_profile(config_path=config_path)
     _write_applied_graph(topology, applied, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(
             status="applied", config_path=config_path, measured=True
@@ -1260,7 +1261,7 @@ def test_legacy_applied_profile_is_safe_but_requires_snapshot_reapply(
         lambda _topology: _acoustic_measurement_state(),
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: _applied_acoustic_profile(
             config_path=config_path,
@@ -1314,7 +1315,7 @@ def test_manual_applied_snapshot_allows_room_without_summed_acoustic_evidence(
     applied = _applied_acoustic_profile(config_path=config_path)
     _write_applied_graph(topology, applied, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(
             status="applied",
@@ -1328,7 +1329,7 @@ def test_manual_applied_snapshot_allows_room_without_summed_acoustic_evidence(
         lambda _topology: _acoustic_measurement_state(summed=False),
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: applied,
     )
@@ -1356,7 +1357,7 @@ def test_applied_snapshot_remains_room_ready_when_mutable_driver_evidence_change
     applied = _applied_acoustic_profile(config_path=config_path)
     _write_applied_graph(topology, applied, config_path)
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(
             status="applied",
@@ -1371,7 +1372,7 @@ def test_applied_snapshot_remains_room_ready_when_mutable_driver_evidence_change
         lambda _topology: _acoustic_measurement_state(),
     )
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "load_applied_baseline_profile_state",
         lambda _path=None: applied,
     )
@@ -1394,7 +1395,7 @@ def test_active_speaker_loaded_commissioning_graph_still_blocks_controls(
     config_path = tmp_path / "active_speaker_baseline.yml"
     config_path.write_text("pipeline: []\n", encoding="utf-8")
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="applied", config_path=config_path),
     )
@@ -1416,7 +1417,7 @@ def test_active_speaker_ready_to_apply_is_not_configured(
     config_path = tmp_path / "active_speaker_baseline.yml"
     config_path.write_text("pipeline: []\n", encoding="utf-8")
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *a, **k: _candidate(status="ready_to_apply", config_path=config_path),
     )
@@ -1611,7 +1612,7 @@ def test_unreadable_baseline_profile_fails_closed(
     def _raise(*_args, **_kwargs):
         raise ValueError("baseline candidate could not be derived")
 
-    monkeypatch.setattr(setup_mod, "build_baseline_profile_candidate", _raise)
+    monkeypatch.setattr(baseline_mod, "build_baseline_profile_candidate", _raise)
     # Deterministic measurement state so the commissioning-phase assertion
     # below isn't at the mercy of whatever (if anything) is on disk at the
     # real default measurements path.
@@ -1651,7 +1652,7 @@ def test_commissioning_failed_phase_wired_through_full_status_read(
     config_path.write_text("pipeline: []\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        setup_mod,
+        baseline_mod,
         "build_baseline_profile_candidate",
         lambda *_a, **_k: {
             "status": "apply_failed",

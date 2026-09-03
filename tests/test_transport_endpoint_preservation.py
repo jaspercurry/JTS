@@ -496,7 +496,7 @@ async def test_the_drift_check_neutralizes_the_transport_axis(
     spy = mock.Mock(return_value=(None, []))
 
     with mock.patch(
-        "jasper.active_speaker.setup_status.recompose_applied_baseline_yaml", spy
+        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml", spy
     ):
         _layer_a_binding(topology, applied, ring_graph)
 

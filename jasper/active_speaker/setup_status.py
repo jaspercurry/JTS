@@ -28,14 +28,6 @@ from ._common import (
     ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
     ROOM_AUTHORITY_RECEIPT_UNREADABLE,
 )
-from .baseline_profile import (
-    active_layer_a_fingerprint,
-    active_layer_a_projection,
-    baseline_profile_state_path,
-    build_baseline_profile_candidate,
-    load_applied_baseline_profile_state,
-    recompose_applied_baseline_yaml,
-)
 from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
 from .crossover_contract import (
@@ -43,7 +35,6 @@ from .crossover_contract import (
     crossover_snapshot_state,
     legacy_manual_preservation_state,
 )
-from .design_draft import load_design_draft
 from .environment import read_camilla_statefile_config_path
 from .measurement import load_measurement_state
 from .profile import ActiveSpeakerConfigError
@@ -587,6 +578,8 @@ _LAYER_A_DIFFERENCE_LIMIT = 6
 def _layer_a_filter_fields(config_text: str) -> dict[str, Any]:
     """Flatten one graph's Layer-A filters to ``<filter>.<parameter>`` values."""
 
+    from .baseline_profile import active_layer_a_projection
+
     filters = active_layer_a_projection(config_text).get("filters")
     fields: dict[str, Any] = {}
     for name, definition in (
@@ -632,6 +625,11 @@ def _applied_layer_a_binding(
     active_config_text: str | None,
 ) -> dict[str, Any]:
     """Bind Active's immutable applied snapshot to the loaded Layer-A graph."""
+
+    from .baseline_profile import (
+        active_layer_a_fingerprint,
+        recompose_applied_baseline_yaml,
+    )
 
     unavailable = {
         "status": "unverifiable",
@@ -888,6 +886,16 @@ def read_active_speaker_setup_status(
             IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
             "active speaker setup/commissioning graph is loaded",
         ))
+
+    # Deferred past the passive/unconfigured returns above: jasper-control
+    # polls this on every box, so only an active speaker should pay the
+    # baseline/design stack's resident RSS (issue #3697).
+    from .baseline_profile import (
+        baseline_profile_state_path,
+        build_baseline_profile_candidate,
+        load_applied_baseline_profile_state,
+    )
+    from .design_draft import load_design_draft
 
     profile_summary: dict[str, Any] | None = None
     protected_profile_summary: dict[str, Any] | None = None
