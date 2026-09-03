@@ -118,7 +118,6 @@ SWEPT_SURFACES: tuple[str, ...] = (
 ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # --- Wire / protocol vocabulary. Renaming these is a relay protocol change,
     # not a copy change, and both sides of the transport already agree on them.
-    "awaiting_phone": "relay session state on the wire",
     "phone_feed_lost": "canonical snake_case refusal code (reason= log key)",
     "phone_never_armed": "canonical snake_case refusal code",
     "cancelled_before_phone_armed": "canonical snake_case refusal code",

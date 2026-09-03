@@ -65,7 +65,7 @@ def test_canonical_crossover_page_normalizes_server_action_urls() -> None:
     assert "publicCrossoverUrl(action.endpoint)" in source
     assert "href: publicCrossoverUrl(action.href)" in source
     assert "publicCrossoverUrl('/correction/crossover/envelope')" in source
-    assert "publicCrossoverUrl('/correction/crossover/relay-cancel')" in source
+    assert "publicCrossoverUrl('/correction/crossover/capture-cancel')" in source
     assert "publicCrossoverUrl('/correction/crossover/reset')" in source
 
 

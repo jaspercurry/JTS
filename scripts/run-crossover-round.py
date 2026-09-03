@@ -1033,7 +1033,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: WizardClient,
                        detail=_open_failure_detail(status, payload, target))
             return open_exit
         trail.emit("open", path=path, http=status, body=body,
-                   relay=_render(payload.get("relay") if isinstance(payload, Mapping)
+                   capture=_render(payload.get("capture") if isinstance(payload, Mapping)
                                  else payload))
 
         if walk is not None:

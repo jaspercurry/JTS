@@ -22,7 +22,7 @@ const baseEnvelope = {
   verdict_text: "",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: null,
   alternate_actions: [],
 };
@@ -120,7 +120,7 @@ assert.ok(
 // --- W6.11: the finally re-renders the action row (sibling parity) --------
 // render(response) inside the try runs WHILE busy is still true, so a fresh
 // next_action's button bakes `disabled: busy` = true. Only a re-render
-// AFTER busy flips back to false (the finally, matching stopRelay/runAction)
+// AFTER busy flips back to false (the finally, matching stopCapture/runAction)
 // clears it — before this fix "Start measurement" stayed disabled until a
 // manual reload.
 render({ ...baseEnvelope, grouping_member: false });

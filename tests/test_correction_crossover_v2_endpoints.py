@@ -2584,7 +2584,7 @@ def test_a_stage_1_map_has_no_verify_and_a_stage_2_map_does():
     ``ensure_crossover_preview_ready``'s writes into a 1.5 s loop. T3 owns
     re-checking that, and it holds — the review screen is reached only AFTER
     stage 1's session has ended (its runner returns, the relay is purged, and
-    the wizard's poll stops at ``relayIsActive(env.relay)``), and the interlude
+    the wizard's poll stops at ``captureIsActive(env.relay)``), and the interlude
     itself starts no session. The calls are bounded to the seconds a
     just-closed relay spends winding down, exactly as T2 predicted.
     """
@@ -8022,7 +8022,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
         monkeypatch.setenv(env_name, str(tmp_path / f"{env_name.lower()}.json"))
     fresh_lease = reset_backend.CrossoverLevelLease()
     monkeypatch.setattr(reset_backend, "level_lease", lambda: fresh_lease)
-    monkeypatch.setattr(reset_flow, "handle_status", lambda *, relay=None: ({}, 200))
+    monkeypatch.setattr(reset_flow, "handle_status", lambda *, capture=None: ({}, 200))
     monkeypatch.setattr(reset_flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",

@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // renderActionRow() is the SOLE authority for the action row across every
-// call-site (render(), stopRelay()'s finally, and both of runAction()'s
+// call-site (render(), stopCapture()'s finally, and both of runAction()'s
 // capture touch-points). This harness pins what each of those four shapes
 // leaves in the row: nothing while a capture is in flight, the envelope's
-// own next_action once it is terminal, and a show_during_relay action
+// own next_action once it is terminal, and a show_during_capture action
 // throughout a hold.
 
 import assert from "node:assert/strict";
@@ -26,7 +26,7 @@ globalThis.__postJSON = async () => postResponse;
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
-const { render, runAction, stopRelay } = await loadEsm(
+const { render, runAction, stopCapture } = await loadEsm(
   repoPath("deploy/assets/correction/js/crossover/main.js"),
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
@@ -34,7 +34,7 @@ const { render, runAction, stopRelay } = await loadEsm(
       "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
-    exportNames: ["render", "runAction", "stopRelay"],
+    exportNames: ["render", "runAction", "stopCapture"],
   },
 );
 
@@ -58,7 +58,7 @@ render({
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone" },
+  capture: { status: "awaiting_capture" },
   next_action: nextAction,
   alternate_actions: [],
 });
@@ -69,52 +69,52 @@ render({
   verdict_text: "Stopped",
   steps: [],
   nudges: [],
-  relay: { status: "stopped", error: "Measurement stopped safely." },
+  capture: { status: "stopped", error: "Measurement stopped safely." },
   next_action: nextAction,
   alternate_actions: [],
 });
-check(actionRowChildren().length === 1, "(b) relay terminal: one action rendered");
+check(actionRowChildren().length === 1, "(b) capture terminal: one action rendered");
 check(
   String(actionRowChildren()[0].className).includes("btn--primary"),
-  "(b) relay terminal: the rendered action is primary",
+  "(b) capture terminal: the rendered action is primary",
 );
 check(
   actionRowChildren()[0].textContent === "Continue",
-  "(b) relay terminal: renders the envelope's next_action",
+  "(b) capture terminal: renders the envelope's next_action",
 );
 
 // --- (c) action completes and its own response started a relay ------------
 // runAction()'s optimistic hide (using response.relay) and its finally
-// (skipped when relayStarted) must together leave the row empty throughout
+// (skipped when captureStarted) must together leave the row empty throughout
 // — not just after the eventual refresh().
 render({
   verdict_text: "Ready",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: nextAction,
   alternate_actions: [],
 });
 postResponse = {
-  relay: { status: "awaiting_phone" },
+  capture: { status: "awaiting_capture" },
 };
 nextEnvelope = {
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone" },
+  capture: { status: "awaiting_capture" },
   next_action: nextAction,
   alternate_actions: [],
 };
 await runAction({ ...nextAction }, element("continue-button"));
 check(
   actionRowChildren().length === 0,
-  "(c) action started a relay: action row stays empty after completion",
+  "(c) action started a capture: action row stays empty after completion",
 );
 
 // --- (d) action completes with no relay: the fresh next_action shows ------
 // This is also the exact historical bug shape: the action's own response
-// carries no relay (relayStarted === false), but by the time the finally
+// carries no relay (captureStarted === false), but by the time the finally
 // block runs, the server's envelope (fetched by the awaited refresh())
 // already reports the SAME relay as active — from an earlier action, a
 // concurrent poll, or the phone side racing ahead. The pre-fix finally
@@ -126,7 +126,7 @@ nextEnvelope = {
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone" },
+  capture: { status: "awaiting_capture" },
   next_action: nextAction,
   alternate_actions: [],
 };
@@ -136,7 +136,7 @@ await runAction(
 );
 check(
   actionRowChildren().length === 0,
-  "(d1) no relay from this action, but envelope reports one active: action row stays empty",
+  "(d1) no capture from this action, but envelope reports one active: action row stays empty",
 );
 
 // The ordinary (non-buggy) shape of (d): no relay anywhere. The action row
@@ -145,7 +145,7 @@ nextEnvelope = {
   verdict_text: "Ready for the next step",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: nextAction,
   alternate_actions: [],
 };
@@ -155,19 +155,19 @@ await runAction(
 );
 check(
   actionRowChildren().length === 1,
-  "(d2) no relay anywhere: the fresh next_action renders",
+  "(d2) no capture anywhere: the fresh next_action renders",
 );
 check(
   String(actionRowChildren()[0].className).includes("btn--primary"),
-  "(d2) no relay anywhere: the rendered action is primary",
+  "(d2) no capture anywhere: the rendered action is primary",
 );
 
-// --- stopRelay()'s finally also routes through the single authority -------
+// --- stopCapture()'s finally also routes through the single authority -------
 nextEnvelope = {
   verdict_text: "Stopped",
   steps: [],
   nudges: [],
-  relay: { status: "stopped", error: "Measurement stopped safely." },
+  capture: { status: "stopped", error: "Measurement stopped safely." },
   next_action: nextAction,
   alternate_actions: [],
 };
@@ -175,19 +175,19 @@ render({
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone" },
+  capture: { status: "awaiting_capture" },
   next_action: null,
   alternate_actions: [],
 });
-postResponse = { relay: { status: "stopping" } };
-await stopRelay();
+postResponse = { capture: { status: "stopping" } };
+await stopCapture();
 check(
   actionRowChildren().length === 1 && actionRowChildren()[0].textContent === "Continue",
-  "stopRelay finally: renders the post-stop envelope's next_action via the shared authority",
+  "stopCapture finally: renders the post-stop envelope's next_action via the shared authority",
 );
 
-// --- (e) a show_during_relay PRIMARY renders alone during a live relay -----
-// W6.10 blocker #2's general mechanism: a next_action marked show_during_relay
+// --- (e) a show_during_capture PRIMARY renders alone during a live relay -----
+// W6.10 blocker #2's general mechanism: a next_action marked show_during_capture
 // renders as the SINGLE primary even while the phone relay is in flight (the
 // gate that otherwise suppresses next_action beside a live phone link, so a
 // second capture can't be started, has an explicit escape hatch for the one
@@ -204,13 +204,13 @@ const holdPrimaryAction = {
   label: "Primary action during hold",
   endpoint: "/correction/crossover/v2/some-primary-action",
   body: { fingerprint: "fp-1" },
-  show_during_relay: true,
+  show_during_capture: true,
 };
 render({
   verdict_text: "Something to review while the phone holds",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone" },
+  capture: { status: "awaiting_capture" },
   next_action: holdPrimaryAction,
   alternate_actions: [],
   candidate_review: {
@@ -225,11 +225,11 @@ check(
   actionRowChildren().length === 1
     && String(actionRowChildren()[0].className).includes("btn--primary")
     && actionRowChildren()[0].textContent === "Primary action during hold",
-  "(e) show_during_relay: the primary renders during the hold",
+  "(e) show_during_capture: the primary renders during the hold",
 );
 check(
   !elements.get("crossover-review").hidden,
-  "(e) show_during_relay: the candidate card is shown",
+  "(e) show_during_capture: the candidate card is shown",
 );
 
 // --- (f) verify_fail during a live relay: Undo + Re-measure show, Try again gated -
@@ -239,7 +239,7 @@ check(
 // fix the relay gate blanket-cleared EVERY alternate action during that
 // window, so the household saw NO buttons at all on the verify_fail screen
 // and had no obvious reason to guess "hit Stop" to make them reappear.
-// The way back and verify_remeasure carry show_during_relay (the same
+// The way back and verify_remeasure carry show_during_capture (the same
 // escape hatch (e) uses for Apply); verify_retry ("Try again") deliberately
 // does not, since it starts a brand-new session and racing the one still
 // tearing down is exactly what the gate exists to prevent.
@@ -254,7 +254,7 @@ const wayBackAction = {
   label: "Go back to the previous tuning",
   endpoint: "/correction/crossover/v2/republish",
   body: { fingerprint: "fp-previous" },
-  show_during_relay: true,
+  show_during_capture: true,
 };
 const verifyRemeasureAction = {
   id: "verify_remeasure",
@@ -262,32 +262,32 @@ const verifyRemeasureAction = {
   endpoint: "/correction/crossover/v2/session",
   body: {},
   expert: true,
-  show_during_relay: true,
+  show_during_capture: true,
 };
 render({
   verdict_text: "That measurement didn't check out.",
   steps: [],
   nudges: [{ code: "verify_out_of_tolerance", severity: "warn", text: "x" }],
-  relay: { status: "stopping" },
+  capture: { status: "stopping" },
   next_action: verifyRetryAction,
   alternate_actions: [wayBackAction, verifyRemeasureAction],
 });
 const fLabels = actionRowChildren().map((child) => child.textContent);
 check(
   actionRowChildren().length === 2,
-  "(f) verify_fail during a live relay: exactly the way back + Re-measure render",
+  "(f) verify_fail during a live capture: exactly the way back + Re-measure render",
 );
 check(
   fLabels.includes("Go back to the previous tuning"),
-  "(f) verify_fail during a live relay: the way back renders",
+  "(f) verify_fail during a live capture: the way back renders",
 );
 check(
   fLabels.includes("Re-measure"),
-  "(f) verify_fail during a live relay: Re-measure renders",
+  "(f) verify_fail during a live capture: Re-measure renders",
 );
 check(
   !fLabels.includes("Try again"),
-  "(f) verify_fail during a live relay: Try again stays gated until Stop",
+  "(f) verify_fail during a live capture: Try again stays gated until Stop",
 );
 
 // --- (g) click-swallowing: an unchanged envelope must not replace the row --
@@ -310,7 +310,7 @@ const clickEnvelope = () => ({
   verdict_text: "Ready",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: clickAction,
   alternate_actions: [],
 });
@@ -370,7 +370,7 @@ render({
   verdict_text: "Choose how thorough a measurement to run below.",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: recommendedTierAction,
   alternate_actions: [otherTierAction],
 });
@@ -443,7 +443,7 @@ render({
   verdict_text: "Ready",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: nextAction,
   alternate_actions: [],
 });
@@ -469,14 +469,14 @@ render({
   verdict_text: "Review",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: {
     id: "review_apply",
     label: "Apply and verify",
     endpoint: "/correction/crossover/v2/apply",
     body: {expected_candidate_fingerprint: "fp-1"},
     enabled: false,
-    show_during_relay: true,
+    show_during_capture: true,
   },
   alternate_actions: [],
 });
@@ -492,14 +492,14 @@ render({
   verdict_text: "Review",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: {
     id: "review_apply",
     label: "Apply and verify",
     endpoint: "/correction/crossover/v2/apply",
     body: {expected_candidate_fingerprint: "fp-1"},
     enabled: true,
-    show_during_relay: true,
+    show_during_capture: true,
   },
   alternate_actions: [],
 });

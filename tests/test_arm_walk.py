@@ -1057,7 +1057,7 @@ def test_no_expectation_means_no_staged_check():
 
 
 def test_a_pending_is_read_off_the_relay_block():
-    poll = aw.poll_from_status({"relay": {"status": "running", "position_pending": {
+    poll = aw.poll_from_status({"capture": {"status": "running", "position_pending": {
         "index": 3, "attempt": 2, "degrees": -22, "role": "offax"}}})
     assert poll.pending == aw.Pending(3, 2, -22, "offax")
     assert poll.in_flight and poll.failed_error is None
@@ -1072,9 +1072,9 @@ def test_a_hold_that_cannot_be_parsed_is_never_moved_for(pending):
 
 
 def test_a_failed_relay_carries_its_own_error():
-    poll = aw.poll_from_status({"relay": {"status": "failed", "error": "boom"}})
+    poll = aw.poll_from_status({"capture": {"status": "failed", "error": "boom"}})
     assert poll.failed_error == "boom"
-    bare = aw.poll_from_status({"relay": {"status": "failed"}})
+    bare = aw.poll_from_status({"capture": {"status": "failed"}})
     assert bare.failed_error and "no error" in bare.failed_error
 
 
@@ -1085,7 +1085,7 @@ def test_an_unreadable_status_is_in_flight_not_finished():
 
 
 def test_no_relay_block_is_no_session():
-    assert aw.poll_from_status({"relay": None}) == aw.Poll(None, False, None)
+    assert aw.poll_from_status({"capture": None}) == aw.Poll(None, False, None)
 
 
 @pytest.mark.parametrize("status", sorted(aw.SESSION_ENDED_STATUSES))
@@ -1095,19 +1095,19 @@ def test_a_terminal_relay_block_is_not_a_live_session(status):
     Reading its presence as "in flight" is what turned a finished round into
     :data:`EXIT_STUCK` (2026-08-21, jts3).
     """
-    poll = aw.poll_from_status({"relay": {"status": status}})
+    poll = aw.poll_from_status({"capture": {"status": status}})
     assert poll.ended == status
     assert not poll.in_flight and poll.readable
 
 
 @pytest.mark.parametrize("status", [
-    "starting", "awaiting_phone", "committing", "finishing", "stopping",
+    "starting", "awaiting_capture", "committing", "finishing", "stopping",
     "a_status_this_module_has_never_heard_of", "",
 ])
 def test_anything_not_terminal_reads_as_in_flight(status):
     """The fail-safe direction: a status this module cannot name keeps the walk
     waiting. Ending early strands a round; one more poll costs one poll."""
-    poll = aw.poll_from_status({"relay": {"status": status}})
+    poll = aw.poll_from_status({"capture": {"status": status}})
     assert poll.in_flight and not poll.ended
 
 
@@ -1183,7 +1183,7 @@ def _loopback(pages, *, status: int = 200):
 
 def test_every_request_carries_the_speakers_own_host():
     session, opener = _loopback({
-        wc.STATUS_PATH: json.dumps({"relay": {"status": "running"}}),
+        wc.STATUS_PATH: json.dumps({"capture": {"status": "running"}}),
         wc.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok123">',
         aw.POSITION_READY_PATH: '{"ok": true}',
     })

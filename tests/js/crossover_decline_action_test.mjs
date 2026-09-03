@@ -25,7 +25,7 @@ globalThis.clearTimeout = () => {};
 
 const posted = [];
 let nextEnvelope = {
-  verdict_text: "", steps: [], nudges: [], relay: null,
+  verdict_text: "", steps: [], nudges: [], capture: null,
   next_action: null, alternate_actions: [],
 };
 globalThis.__getJSON = async () => nextEnvelope;
@@ -71,7 +71,7 @@ const ROOM = {
 };
 
 render({
-  verdict_text: "Review", steps: [], nudges: [], relay: null,
+  verdict_text: "Review", steps: [], nudges: [], capture: null,
   next_action: null,
   alternate_actions: [DECLINE, ROOM],
 });

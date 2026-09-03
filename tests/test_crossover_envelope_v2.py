@@ -2698,7 +2698,7 @@ def test_verify_fail_one_default_screen():
     assert [a["id"] for a in expert] == ["verify_remeasure"]
     # W6.12: the way back and Re-measure must survive the JS action-row's
     # relay-in-flight gate (a real window right after a failed capture,
-    # before the phone side has fully wound down) — the same show_during_relay
+    # before the phone side has fully wound down) — the same show_during_capture
     # escape hatch W6.10 gave the review screen's Apply. "Try again" starts a
     # brand new relay session, so it deliberately does NOT carry the flag.
     way_back = next(
@@ -2707,9 +2707,9 @@ def test_verify_fail_one_default_screen():
     remeasure = next(
         a for a in env["alternate_actions"] if a["id"] == "verify_remeasure"
     )
-    assert way_back["show_during_relay"] is True
-    assert remeasure["show_during_relay"] is True
-    assert "show_during_relay" not in env["next_action"]
+    assert way_back["show_during_capture"] is True
+    assert remeasure["show_during_capture"] is True
+    assert "show_during_capture" not in env["next_action"]
 
 
 def test_verify_fail_on_a_first_ever_apply_keeps_its_forward_actions():
@@ -4076,7 +4076,7 @@ def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
     # relay-in-flight gate while the ended session winds down. On a primary
     # the same flag also suppresses the connect link/QR for that dead relay,
     # which is the wanted behaviour for a verdict that ends the session.
-    assert env["next_action"]["show_during_relay"] is True
+    assert env["next_action"]["show_during_capture"] is True
     ids = [a["id"] for a in env["alternate_actions"]]
     # …and not offered twice.
     assert "verify_remeasure" not in ids
@@ -4536,7 +4536,7 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
     assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
     # Survives the JS relay-in-flight gate (W6.12): a get-me-out affordance
     # must stay visible while a failed capture's relay is still winding down.
-    assert way_back[0]["show_during_relay"] is True
+    assert way_back[0]["show_during_capture"] is True
 
 
 @pytest.mark.parametrize("screen_status", [
@@ -4597,7 +4597,7 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
             "label": "Go back to the previous tuning",
             "endpoint": "/correction/crossover/v2/republish",
             "body": {"fingerprint": _WAY_BACK_FP},
-            "show_during_relay": True,
+            "show_during_capture": True,
         },
     ]
 
@@ -4925,7 +4925,7 @@ def test_durable_phases_are_exempt_from_the_session_clock(phase, screen):
     # The wizard still holds the slot: the session cannot be over, whatever
     # the clock says. An unknown status reads as in flight for the same
     # reason ``SESSION_ENDED_STATUSES`` does.
-    ("awaiting_phone", "verify"),
+    ("awaiting_capture", "verify"),
     ("committing", "verify"),
     ("some_future_status", "verify"),
     ("complete", "microphone_check"),
@@ -4938,7 +4938,7 @@ def test_a_live_relay_outranks_the_clock(relay_status, screen):
     freshness window — and a slot the wizard still holds proves it is not
     over."""
     status = _dead_session_status("verify", applied=True)
-    status["relay"] = {"status": relay_status}
+    status["capture"] = {"status": relay_status}
     assert build_crossover_envelope_v2(status)["screen"] == screen
 
 
@@ -5017,17 +5017,17 @@ def test_envelope_carries_relay_block_awaiting_and_after_failure():
         REASON_PROGRAM_UNPLAYABLE,
     )
 
-    relay = {"tap_link": "https://capture.test/#s=cap_x", "status": "awaiting_phone"}
+    capture = {"tap_link": "https://capture.test/#s=cap_x", "status": "awaiting_capture"}
 
-    awaiting = build_crossover_envelope_v2({**_status(phase="check"), "relay": relay})
-    assert awaiting["relay"] == relay
+    awaiting = build_crossover_envelope_v2({**_status(phase="check"), "capture": capture})
+    assert awaiting["capture"] == capture
 
     failed = build_crossover_envelope_v2({
         **_status(phase="check", failure={"code": REASON_PROGRAM_UNPLAYABLE}),
-        "relay": relay,
+        "capture": capture,
     })
     assert failed["screen"] == "hard_stop"
-    assert failed["relay"] == relay
+    assert failed["capture"] == capture
     assert "safe limits" in failed["verdict_text"]
 
 

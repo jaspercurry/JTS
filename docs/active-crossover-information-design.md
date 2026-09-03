@@ -124,7 +124,7 @@
 >
 > **Wave 3 relay Stop boundary (2026-07-14; hardware-free).** The Crossover
 > page exposes one Stop action for active relay level and sweep work through
-> `/correction/crossover/relay-cancel`. While cancellation and exact cleanup are
+> `/correction/crossover/capture-cancel`. While cancellation and exact cleanup are
 > in flight, the server envelope reports `stopping` and withholds forward
 > actions; terminal `stopped` appears only after the owning worker has drained.
 > The subsequent persistence phase is visibly non-stoppable.
@@ -1435,7 +1435,7 @@ measured latency claim; Wave 4 must test the real phone/relay tail. Planning and
 execution consume that same serialized ramp config. A changed environment after
 claim cannot silently change the executing ramp.
 
-The durable current-run phases are exactly `awaiting_phone`, `running`,
+The durable current-run phases are exactly `awaiting_capture`, `running`,
 `succeeded`, `failed`, and `interrupted`. One atomic claim mints the run id; that
 same id is the existing token-scoped relay `run_token`. An identical active
 request returns `duplicate_active`; an identical current success returns

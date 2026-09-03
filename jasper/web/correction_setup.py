@@ -143,7 +143,7 @@ _capture_complete_request: Callable[[], None] | None = None
 # above, which is what stops a POST arriving after the walk from re-opening a
 # slot nothing is holding.
 _capture_retake_request: Callable[[], None] | None = None
-_CAPTURE_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
+_CAPTURE_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_capture"})
 _CAPTURE_IN_FLIGHT_STATUSES = _CAPTURE_STOPPABLE_STATUSES | {"stopping"}
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
@@ -332,7 +332,7 @@ _POST_ROUTES = frozenset({
     "/interpret",
     "/propose",
     "/propose/apply",
-    "/crossover/relay-cancel",
+    "/crossover/capture-cancel",
     "/crossover/reset",
     "/crossover/recover-volume",
     # v2 session flow — the only crossover-measurement flow. There is no
@@ -398,10 +398,10 @@ def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
     The process has one hardware-safe capture slot; a page must never render
     another flow's waiting state.
     """
-    relay = _get_capture_slot()
-    if relay is None:
+    capture = _get_capture_slot()
+    if capture is None:
         return None
-    if not str(relay.get("kind") or "").startswith(kind_prefix):
+    if not str(capture.get("kind") or "").startswith(kind_prefix):
         return None
     # A gated session's live position hold, merged in here rather than pushed
     # into the slot by the gate: the gate owns the fact and this is a read, so
@@ -416,15 +416,15 @@ def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
     # if its gate object is still referenced somewhere.
     with _session_lock:
         gate = _capture_position_gate
-    if gate is not None and relay.get("status") in _CAPTURE_IN_FLIGHT_STATUSES:
+    if gate is not None and capture.get("status") in _CAPTURE_IN_FLIGHT_STATUSES:
         try:
             pending = gate.pending()
         except (OSError, RuntimeError, ValueError):
             logger.warning("could not read the position gate", exc_info=True)
             pending = None
         if pending:
-            relay["position_pending"] = pending
-    return relay
+            capture["position_pending"] = pending
+    return capture
 
 
 def _enforce_session_volume_ceiling(v2host: Any) -> None:
@@ -489,15 +489,15 @@ def _publish_capture_waiting(kind_label: str) -> dict[str, Any]:
 
     global _capture_slot
     with _session_lock:
-        relay = _capture_slot
+        capture = _capture_slot
         if (
-            relay is None
-            or relay.get("kind") != kind_label
-            or relay.get("status") not in {"starting", "stopping"}
+            capture is None
+            or capture.get("kind") != kind_label
+            or capture.get("status") not in {"starting", "stopping"}
         ):
             raise RuntimeError("capture ownership changed while the session opened")
-        status = "awaiting_phone" if relay.get("status") == "starting" else "stopping"
-        _capture_slot = {**relay, "status": status}
+        status = "awaiting_capture" if capture.get("status") == "starting" else "stopping"
+        _capture_slot = {**capture, "status": status}
         return dict(_capture_slot)
 
 
@@ -511,10 +511,10 @@ def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
 
     global _capture_slot
     with _session_lock:
-        relay = _capture_slot
-        if relay is None or relay.get("status") not in _CAPTURE_STOPPABLE_STATUSES:
+        capture = _capture_slot
+        if capture is None or capture.get("status") not in _CAPTURE_STOPPABLE_STATUSES:
             raise ValueError("no matching capture is running")
-        if not str(relay.get("kind") or "").startswith(kind_prefix):
+        if not str(capture.get("kind") or "").startswith(kind_prefix):
             raise ValueError("no matching capture is running")
         callback = _capture_stop_request
         if callback is None:
@@ -526,12 +526,12 @@ def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
             callback()
         except (OSError, RuntimeError, ValueError) as exc:
             _capture_slot = {
-                **relay,
+                **capture,
                 "status": "failed",
                 "error": "the measurement stop signal failed",
             }
             raise RuntimeError("the measurement stop signal failed") from exc
-        _capture_slot = {**relay, "status": "stopping"}
+        _capture_slot = {**capture, "status": "stopping"}
         return dict(_capture_slot)
 
 
@@ -679,11 +679,11 @@ def _run_capture(
 
             try:
                 await kind.run_and_consume(rc.pi_session)
-                relay = _get_capture_slot()
+                capture = _get_capture_slot()
                 if (
-                    relay is not None
-                    and relay.get("kind") == kind.label
-                    and relay.get("status") == "stopping"
+                    capture is not None
+                    and capture.get("kind") == kind.label
+                    and capture.get("status") == "stopping"
                 ):
                     raise CaptureStopped("capture stopped")
                 _set_capture_slot({"status": "complete", "kind": kind.label})
@@ -2941,11 +2941,11 @@ def _handle_upload_capture(
 
 
 
-def _handle_crossover_relay_cancel() -> dict[str, Any]:
+def _handle_crossover_capture_cancel() -> dict[str, Any]:
     """Stop Crossover capture work and keep its slot until cleanup completes.
 
     The Stop button is already hidden once the rendered status turns terminal
-    (crossover/main.js's ``RELAY_STOPPABLE`` gate), but a poll-cycle race can
+    (crossover/main.js's ``CAPTURE_STOPPABLE`` gate), but a poll-cycle race can
     still let a click reach the server after the capture finished on its own
     (it completed, or another tab already stopped it). ``_request_capture_stop``
     raises a diagnostic message for that case; map it to a plain-language
@@ -2953,12 +2953,12 @@ def _handle_crossover_relay_cancel() -> dict[str, Any]:
     """
 
     try:
-        relay = _request_capture_stop("crossover_v2:")
+        capture = _request_capture_stop("crossover_v2:")
     except ValueError:
         raise ValueError(
             "This measurement already stopped — nothing more to do here."
         ) from None
-    return {"relay": relay}
+    return {"capture": capture}
 
 
 def _handle_crossover_v2_position_ready(
@@ -3117,7 +3117,7 @@ def _handle_crossover_v2_capture(
         request_complete=prepared.request_complete,
         request_retake=prepared.request_retake,
     )
-    return {"relay": _run_capture(kind, idle_hold=idle_hold)}
+    return {"capture": _run_capture(kind, idle_hold=idle_hold)}
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -3175,14 +3175,14 @@ def _handle_crossover_v2_decline(
 
     return correction_crossover_flow.handle_v2_decline(
         raw,
-        relay=_get_capture_slot_for("crossover_v2:"),
+        capture=_get_capture_slot_for("crossover_v2:"),
     )
 
 
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/reset: in-flow "start over" for the crossover flow.
 
-    Unlike ``_handle_crossover_relay_cancel``, an unstarted relay is the
+    Unlike ``_handle_crossover_capture_cancel``, an unstarted relay is the
     COMMON case here (most Start-over clicks happen between measurements,
     not mid-capture), so a "nothing to stop" ``ValueError`` is swallowed
     rather than surfaced. Any crossover-owned relay or level-match ramp is
@@ -3199,7 +3199,7 @@ def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     from . import correction_crossover_flow
 
     return correction_crossover_flow.handle_reset(
-        relay=_get_capture_slot_for("crossover_v2:"),
+        capture=_get_capture_slot_for("crossover_v2:"),
     )
 
 
@@ -4444,8 +4444,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                     return
 
-                if path == "/crossover/relay-cancel":
-                    self._send_json(_handle_crossover_relay_cancel())
+                if path == "/crossover/capture-cancel":
+                    self._send_json(_handle_crossover_capture_cancel())
                     return
 
                 if path == "/crossover/reset":
@@ -4557,7 +4557,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # force-drained here (cheap in-memory stale check first).
                     _enforce_session_volume_ceiling(v2host)
                     return correction_crossover_flow.handle_status(
-                        relay=_get_capture_slot_for("crossover_v2:"),
+                        capture=_get_capture_slot_for("crossover_v2:"),
                     )
 
                 self._serve_json_route(path, _crossover_status)
@@ -4571,7 +4571,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # so it promptly drains a walked-away or slow-driver session.
                     _enforce_session_volume_ceiling(v2host)
                     return correction_crossover_flow.handle_envelope(
-                        relay=_get_capture_slot_for("crossover_v2:"),
+                        capture=_get_capture_slot_for("crossover_v2:"),
                     )
 
                 self._serve_json_route(path, _crossover_envelope)

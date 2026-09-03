@@ -89,7 +89,7 @@ check(
   nextResponse = htmlResponse(403); // reject_csrf's shape: 403, HTML body
   let thrown = null;
   try {
-    await postJSON("/correction/crossover/relay-cancel", {});
+    await postJSON("/correction/crossover/capture-cancel", {});
   } catch (err) {
     thrown = err;
   }

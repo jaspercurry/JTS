@@ -551,7 +551,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/balance/reset",
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/apply", "/sync/stop", "/sync/reset",
-        "/crossover/relay-cancel",
+        "/crossover/capture-cancel",
         "/crossover/reset", "/crossover/recover-volume",
         # v2 conductor flow (Wave 5a) — the only crossover-measurement flow
         # since W5b retired the legacy per-driver flow and the
@@ -1519,18 +1519,17 @@ class _CleanSessionVolumePlan:
         return False
 
 
-def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
-    """Finding D: /crossover/envelope's relay lookup must match crossover_v2:* —
-    it filtered only crossover_sweep:/level_ramp:crossover, so ``relay`` came
-    back null during an awaiting-phone v2 session and a page reload lost the tap
-    link (and the failure copy never reached the household)."""
+def test_crossover_envelope_surfaces_the_v2_capture_slot(monkeypatch):
+    """Finding D: /crossover/envelope's capture lookup must match crossover_v2:*
+    — it filtered only crossover_sweep:/level_ramp:crossover, so ``capture`` came
+    back null during a live v2 session and a page reload lost the session's
+    status (and the failure copy never reached the household)."""
     import json
 
     from jasper.web import correction_crossover_v2 as v2host
 
     v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
     correction_setup._set_capture_slot({
-        "tap_link": "https://capture.test/#s=cap_x",
         "status": "waiting",
         "kind": v2host.V2_RELAY_KIND_SESSION,
     })
@@ -1538,9 +1537,9 @@ def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
         resp = _drive("/crossover/envelope")
         assert b"200" in resp.split(b"\r\n", 1)[0]
         body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
-        assert body["relay"] is not None
-        assert body["relay"]["tap_link"] == "https://capture.test/#s=cap_x"
-        assert body["relay"]["kind"] == "crossover_v2:session"
+        assert body["capture"] is not None
+        assert body["capture"]["status"] == "waiting"
+        assert body["capture"]["kind"] == "crossover_v2:session"
     finally:
         correction_setup._set_capture_slot(None)
         v2host.set_volume_plan_for_tests(None)

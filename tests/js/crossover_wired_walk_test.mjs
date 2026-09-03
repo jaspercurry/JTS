@@ -41,10 +41,10 @@ const { render } = await loadEsm(
 
 const walk = () => elements.get("crossover-walk");
 const walkAction = () => elements.get("crossover-walk-action");
-const relayStatus = () => elements.get("crossover-relay-status");
+const captureStatus = () => elements.get("crossover-capture-status");
 
 function assertWiredStatus() {
-  const text = relayStatus().textContent;
+  const text = captureStatus().textContent;
   assert.ok(text.length > 0, "a live session must never show a blank status");
 }
 
@@ -74,12 +74,12 @@ const PENDING = {
 // releases it, so no browser control may.
 const DRIVEN_PENDING = { ...PENDING, hand_released: false };
 
-function envelope(relay, extra = {}) {
+function envelope(capture, extra = {}) {
   return {
     verdict_text: "",
     steps: [],
     nudges: [],
-    relay,
+    capture,
     next_action: null,
     alternate_actions: [],
     ...extra,
@@ -95,7 +95,7 @@ assertWiredStatus();
 
 // -- state: PENDING — the hold a human releases ----------------------------- //
 render(envelope({
-  status: "awaiting_phone",
+  status: "awaiting_capture",
   source: "wired",
   position_pending: PENDING,
 }));
@@ -112,13 +112,13 @@ assert.equal(release.textContent, PENDING.action.label);
 assert.equal(release.disabled, false);
 // While HOLDING the status differs from the capturing sentence — the two
 // moments must not read alike.
-const holdingStatus = relayStatus().textContent;
+const holdingStatus = captureStatus().textContent;
 assertWiredStatus();
 
 // The release POSTs the endpoint the SERVER named, with the server's own body
 // — the index is checked against what is actually pending, so a control that
 // minted its own would release a position the microphone never reached.
-nextEnvelope = envelope({ status: "awaiting_phone", source: "wired" });
+nextEnvelope = envelope({ status: "awaiting_capture", source: "wired" });
 await release.click();
 assert.deepEqual(posted, [{
   path: "/correction/crossover/v2/position-ready",
@@ -130,7 +130,7 @@ assert.deepEqual(posted, [{
 // spot's identity has to survive that or the household loses their place for
 // the whole sweep. No button: there is nothing to press, and a live one would
 // double-fire into a 409.
-render(envelope({ status: "awaiting_phone", source: "wired" }));
+render(envelope({ status: "awaiting_capture", source: "wired" }));
 assert.equal(walk().hidden, false);
 assert.equal(elements.get("crossover-walk-progress").textContent, PROMPT.progress);
 assert.equal(elements.get("crossover-walk-headline").textContent, PROMPT.title);
@@ -143,10 +143,10 @@ assertWiredStatus();
 // Holding and capturing are different moments and must not read alike — the
 // status line is the only thing that distinguishes them once the panel's own
 // prompt is retained across the release.
-assert.notEqual(relayStatus().textContent, holdingStatus);
+assert.notEqual(captureStatus().textContent, holdingStatus);
 
 // -- state: the SCREEN takes the control back ------------------------------- //
-// The closing screen's Save / Record-again are `show_during_relay` primaries.
+// The closing screen's Save / Record-again are `show_during_capture` primaries.
 // One primary at a time: the walkthrough stands down rather than competing.
 // Labels come off the fixtures, so a re-word of the server's copy does not
 // need editing here — what is pinned is WHICH action reached the row.
@@ -155,14 +155,14 @@ const CLOSING_SAVE = {
   label: "Save this measurement",
   endpoint: "/correction/crossover/v2/complete",
   body: {},
-  show_during_relay: true,
+  show_during_capture: true,
 };
 const CLOSING_RETAKE = {
   id: "crossover_v2_retake",
   label: "Record the last spot again",
   endpoint: "/correction/crossover/v2/retake",
   body: {},
-  show_during_relay: true,
+  show_during_capture: true,
 };
 const CLOSING_ACTIONS = {
   next_action: CLOSING_SAVE,
@@ -171,7 +171,7 @@ const CLOSING_ACTIONS = {
 const actionLabels = () =>
   elements.get("crossover-action").children.map((node) => node.textContent);
 
-render(envelope({ status: "awaiting_phone", source: "wired" }, CLOSING_ACTIONS));
+render(envelope({ status: "awaiting_capture", source: "wired" }, CLOSING_ACTIONS));
 assert.equal(walk().hidden, true);
 assert.equal(walkAction().children.length, 0);
 assert.deepEqual(actionLabels(), [CLOSING_SAVE.label, CLOSING_RETAKE.label]);
@@ -181,12 +181,12 @@ assertWiredStatus();
 // The defect this pins: tapping Record-again puts the walk back at that slot
 // and the gate publishes a fresh hand-released hold — but the group stays
 // un-confirmed, so the screen is STILL `closing`. While the closing screen
-// mints its own `show_during_relay` primary, `yielded` is true and the panel
+// mints its own `show_during_capture` primary, `yielded` is true and the panel
 // hides, so the retake's prompt rendered NOWHERE and the hold ran out its
 // 600 s budget under a Save button. The server now withholds the pair while a
 // hold is open; this is the JS half of that contract.
 render(envelope({
-  status: "awaiting_phone",
+  status: "awaiting_capture",
   source: "wired",
   position_pending: PENDING,
 }));  // closing + held: no screen primary, so the walk owns the screen
@@ -199,13 +199,13 @@ assert.equal(retakeRelease.textContent, PENDING.action.label);
 // …the release still posts the server's own body, and the screen then returns
 // to the closing pair once the walk finishes the re-recorded spot.
 posted.length = 0;
-nextEnvelope = envelope({ status: "awaiting_phone", source: "wired" });
+nextEnvelope = envelope({ status: "awaiting_capture", source: "wired" });
 await retakeRelease.click();
 assert.deepEqual(posted, [{
   path: "/correction/crossover/v2/position-ready",
   body: PENDING.action.body,
 }]);
-render(envelope({ status: "awaiting_phone", source: "wired" }, CLOSING_ACTIONS));
+render(envelope({ status: "awaiting_capture", source: "wired" }, CLOSING_ACTIONS));
 assert.equal(walk().hidden, true);
 assert.deepEqual(actionLabels(), [CLOSING_SAVE.label, CLOSING_RETAKE.label]);
 
@@ -218,13 +218,13 @@ render(envelope({
 }));
 assert.equal(walk().hidden, true);
 assert.equal(
-  relayStatus().textContent,
+  captureStatus().textContent,
   "Stopping playback and restoring the speaker safely…",
 );
 
 // -- state: TERMINAL -------------------------------------------------------- //
 render(envelope({ status: "complete", source: "wired" }));
-assert.equal(elements.get("crossover-relay").hidden, true);
+assert.equal(elements.get("crossover-capture").hidden, true);
 assert.equal(walk().hidden, true);
 
 // -- a hold NOBODY here releases -------------------------------------------- //
@@ -232,7 +232,7 @@ assert.equal(walk().hidden, true);
 // the discriminator has to be the hold's `hand_released`, not the transport.
 // A release control here could free a position the arm has not reached.
 render(envelope({
-  status: "awaiting_phone",
+  status: "awaiting_capture",
   source: "wired",
   position_pending: DRIVEN_PENDING,
 }));
@@ -242,7 +242,7 @@ assertWiredStatus();
 
 // -- a hold nobody at this browser releases is not narrated as a wait ------- //
 render(envelope({
-  status: "awaiting_phone",
+  status: "awaiting_capture",
   source: "wired",
   position_pending: DRIVEN_PENDING,
 }));

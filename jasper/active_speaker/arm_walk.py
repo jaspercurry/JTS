@@ -925,13 +925,13 @@ class ArmWalk:
         )
 
 
-def pending_from_capture(relay: Mapping[str, Any]) -> Pending | None:
+def pending_from_capture(capture: Mapping[str, Any]) -> Pending | None:
     """``relay.position_pending`` -> :class:`Pending`, or ``None``.
 
     Absent, malformed, or missing its index all read the same way: nothing to
     serve. A hold this loop cannot parse is one it must not move for.
     """
-    raw = relay.get("position_pending")
+    raw = capture.get("position_pending")
     if not isinstance(raw, Mapping) or "index" not in raw or "degrees" not in raw:
         return None
     try:
@@ -965,15 +965,15 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     """
     if status is None:
         return Poll(None, True, None, readable=False)
-    relay = status.get("relay")
-    if not isinstance(relay, Mapping):
+    capture = status.get("capture")
+    if not isinstance(capture, Mapping):
         return Poll(None, False, None)
-    state = str(relay.get("status") or "")
+    state = str(capture.get("status") or "")
     failed = None
     if state == "failed":
-        failed = str(relay.get("error") or "(the session supplied no error)")
+        failed = str(capture.get("error") or "(the session supplied no error)")
     ended = state if state in SESSION_ENDED_STATUSES else ""
-    return Poll(pending_from_capture(relay), not ended, failed, ended=ended)
+    return Poll(pending_from_capture(capture), not ended, failed, ended=ended)
 
 
 def staged_walk_pending() -> bool:

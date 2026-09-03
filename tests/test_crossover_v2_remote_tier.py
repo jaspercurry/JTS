@@ -1474,8 +1474,8 @@ def test_a_live_hold_reaches_the_envelope_on_the_relay_block():
     with _live_remote_slot(gate) as setup:
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(2, 2, _entry(-22, POSITION_ROLE_OFFAX))
-        relay = setup._get_capture_slot_for("crossover_v2:")
-        pending = relay["position_pending"]
+        capture = setup._get_capture_slot_for("crossover_v2:")
+        pending = capture["position_pending"]
         assert pending["degrees"] == -22
         assert pending["index"] == 2
         assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
@@ -1499,8 +1499,8 @@ def test_a_finished_session_stops_advertising_its_hold():
             {"status": "complete", "kind": "crossover_v2:session"}
         )
         assert setup._capture_position_gate is None
-        relay = setup._get_capture_slot_for("crossover_v2:")
-        assert "position_pending" not in relay
+        capture = setup._get_capture_slot_for("crossover_v2:")
+        assert "position_pending" not in capture
         # …and a late driver POST cannot reach a gate nobody is holding.
         with pytest.raises(ValueError, match="no remote measurement is waiting"):
             setup._handle_crossover_v2_position_ready(_json_handler('{"index": 1}'))
@@ -1703,8 +1703,8 @@ def test_a_tap_paced_session_registers_no_gate_at_all():
     assert correction_setup._begin_capture_slot("crossover_v2:session")
     try:
         assert correction_setup._capture_position_gate is None
-        relay = correction_setup._get_capture_slot_for("crossover_v2:")
-        assert "position_pending" not in relay
+        capture = correction_setup._get_capture_slot_for("crossover_v2:")
+        assert "position_pending" not in capture
     finally:
         correction_setup._set_capture_slot(None)
 

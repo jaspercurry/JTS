@@ -48,7 +48,7 @@ const baseEnvelope = {
   nudges: [],
   expert_details: [],
   findings: [],
-  relay: null,
+  capture: null,
   next_action: null,
   alternate_actions: [],
   applied: { state: "none", label: "" },

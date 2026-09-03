@@ -20,9 +20,9 @@ const ids = [
   "crossover-review",
   "crossover-review-body",
   "crossover-action",
-  "crossover-relay",
-  "crossover-relay-status",
-  "crossover-relay-stop",
+  "crossover-capture",
+  "crossover-capture-status",
+  "crossover-capture-stop",
   "capture-status",
 ];
 

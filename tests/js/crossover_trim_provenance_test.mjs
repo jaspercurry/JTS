@@ -49,7 +49,7 @@ const baseEnvelope = {
   verdict_text: "",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: null,
   alternate_actions: [],
 };

@@ -205,7 +205,7 @@ class _Handler(BaseHTTPRequestHandler):
                        "application/json")
             return
         server.opened = True
-        self._send(200, json.dumps({"relay": {"status": "awaiting_phone"}}).encode(),
+        self._send(200, json.dumps({"capture": {"status": "awaiting_capture"}}).encode(),
                    "application/json")
 
 

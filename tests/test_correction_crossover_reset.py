@@ -167,7 +167,7 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
             "kept_ids": ["design_draft", "baseline_profile", "startup_load"],
         },
     )
-    monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
+    monkeypatch.setattr(flow, "handle_status", lambda *, capture=None: ({}, 200))
     monkeypatch.setattr(flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",
@@ -200,7 +200,7 @@ def _reset_scaffold(monkeypatch):
         "status": "cleared", "cleared_ids": [], "missing_ids": [],
         "error_ids": [], "kept_ids": [],
     })
-    monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
+    monkeypatch.setattr(flow, "handle_status", lambda *, capture=None: ({}, 200))
     monkeypatch.setattr(flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",
@@ -310,7 +310,7 @@ def test_handle_reset_refusal_leaves_v2_state_intact(monkeypatch, tmp_path):
 def test_handle_envelope_carries_grouping_member_flag(monkeypatch) -> None:
     """The polled envelope carries the grouping-member flag the grouping-aware
     Start-over confirm copy reads (adversarial-review S1b)."""
-    monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
+    monkeypatch.setattr(flow, "handle_status", lambda *, capture=None: ({}, 200))
     monkeypatch.setattr(flow, "_active_group_member", lambda: True)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",

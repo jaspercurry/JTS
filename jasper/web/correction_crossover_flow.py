@@ -86,7 +86,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 
   <section class="info-card" aria-live="polite">
     <div id="crossover-action" class="measurement-row__actions"></div>
-    <div id="crossover-relay" hidden>
+    <div id="crossover-capture" hidden>
       <!-- The walkthrough: one prompted spot at a time, for a session whose
            operator is at THIS browser rather than on a capture page (#2881).
            Eyebrow (which spot) / title (the move) / hint (the supporting
@@ -104,8 +104,8 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
         <p id="crossover-walk-detail" class="form-hint"></p>
         <div id="crossover-walk-action" class="measurement-row__actions"></div>
       </div>
-      <p id="crossover-relay-status" class="form-hint"></p>
-      <button id="crossover-relay-stop" class="btn btn--danger" type="button" hidden>Stop measurement</button>
+      <p id="crossover-capture-status" class="form-hint"></p>
+      <button id="crossover-capture-stop" class="btn btn--danger" type="button" hidden>Stop measurement</button>
     </div>
     <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
   </section>
@@ -124,12 +124,12 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 
 
 def handle_status(
-    *, relay: dict[str, Any] | None = None,
+    *, capture: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
     from . import correction_crossover_backend as backend
 
     payload = backend.status_payload()
-    payload["relay"] = dict(relay) if relay else None
+    payload["capture"] = dict(capture) if capture else None
     return payload, HTTPStatus.OK
 
 
@@ -184,7 +184,7 @@ def _build_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def handle_envelope(
-    *, relay: dict[str, Any] | None = None,
+    *, capture: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """GET /crossover/envelope: the server-computed commissioning screen envelope
     the dumb frontend renders each step from (revision plan §3.2), aligned with
@@ -192,7 +192,7 @@ def handle_envelope(
     passive speakers get ``active=False`` (Layer A hidden)."""
     from .correction_crossover_v2 import attach_stage2_preflight
 
-    status, _ = handle_status(relay=relay)
+    status, _ = handle_status(capture=capture)
     # Two-stage commission D3: a stage-2 openability refusal is knowable now,
     # so it is resolved here and rides the status the envelope renders from
     # as a DISCLOSURE (the apply transaction owns the refusal). A no-op on
@@ -209,7 +209,7 @@ def handle_envelope(
 
 
 def handle_reset(
-    *, relay: dict[str, Any] | None = None,
+    *, capture: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/reset: scoped "start over" for the measurement journey.
 
@@ -250,7 +250,7 @@ def handle_reset(
 
     reset_v2_journey_state()
 
-    status, _ = handle_status(relay=relay)
+    status, _ = handle_status(capture=capture)
     envelope = _build_envelope_logged(status)
     envelope["grouping_member"] = _active_group_member()
     # Surface the honest outcome, not the static intent: ``status`` is
@@ -269,7 +269,7 @@ def handle_reset(
 def handle_v2_decline(
     body: Mapping[str, Any] | None = None,
     *,
-    relay: dict[str, Any] | None = None,
+    capture: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/v2/decline: "Keep current sound", as a real action.
 
@@ -329,7 +329,7 @@ def handle_v2_decline(
         }, HTTPStatus.CONFLICT
 
     observe_review_decline(current)
-    return handle_envelope(relay=relay)
+    return handle_envelope(capture=capture)
 
 
 def playback_issue_text(payload: Any, fallback: str) -> str:

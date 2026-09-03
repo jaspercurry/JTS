@@ -388,7 +388,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
 
     def _fake_run_capture(kind, *, idle_hold):
         seen["orchestrator"] = idle_hold
-        return {"status": "awaiting_phone"}
+        return {"status": "awaiting_capture"}
 
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
@@ -468,7 +468,7 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
 
     def _fake_run_capture(kind, *, idle_hold):
         seen["kind"] = kind
-        return {"status": "awaiting_phone"}
+        return {"status": "awaiting_capture"}
 
     monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
     monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
@@ -3848,7 +3848,7 @@ def test_needs_noise_capture_offers_cancel_in_ui():
     assert "'needs_noise_capture'" in block
     assert "'preparing', 'sweeping', 'verifying'" in block
     policy = js.split("function applyButtonPolicy", 1)[1]
-    policy = policy.split("function renderRelayStatusFromSnapshot", 1)[0]
+    policy = policy.split("function renderCaptureStatusFromSnapshot", 1)[0]
     assert "cancellableStates.indexOf(state) !== -1" in policy
     assert "!(autolevelRamping && !relayMode)" not in policy
     assert "'Stop measurement'" in policy
