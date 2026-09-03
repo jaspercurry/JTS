@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guard: deploy/constraints-pi.txt must co-resolve with pyproject's
+"""Guard: deploy/constraints-pi.pins must co-resolve with pyproject's
 runtime requirements — the #1275 cross-ecosystem drift class.
 
-Background (#1275). ``deploy/constraints-pi.txt`` is a Pi-generated pip
+Background (#1275). ``deploy/constraints-pi.pins`` is a Pi-generated pip
 constraints overlay (``scripts/generate-pi-constraints.sh``) that
 ``install.sh`` passes to pip via ``-c`` on every deploy
-(``pip install -c deploy/constraints-pi.txt -e .[full]`` — see
+(``pip install -c deploy/constraints-pi.pins -e .[full]`` — see
 ``deploy/lib/install/python-runtime.sh``). It is a SEPARATE dependency
 ecosystem from ``uv.lock``/``pyproject.toml``: pip-side dependabot PRs
 edit this file, while uv-side PRs edit ``uv.lock``. On 2026-07-11 four
@@ -32,14 +32,14 @@ Each PR was green alone; NO CI check pip-resolved the file, so the
 unresolvable combination shipped. These three guards close that gap:
 
 1. ``test_pin_matches_uv_lock`` (parametrized) — DETERMINISTIC + OFFLINE.
-   Every package pinned in BOTH ``constraints-pi.txt`` and the co-resolved
+   Every package pinned in BOTH ``constraints-pi.pins`` and the co-resolved
    ``uv.lock`` (the authoritative resolution CI already validates via ``uv
    sync --locked``) must agree exactly, except the documented ``EXCEPTIONS``
    in ``scripts/align-pi-constraint-pins.py``. This is the guard that fails
    offline on the broken state — no network, no third-party deps.
 
 2. ``test_pip_dry_run_resolves_constraints`` — FAITHFUL + NETWORK.
-   Reproduces install.sh's ``pip install -c constraints-pi.txt <full
+   Reproduces install.sh's ``pip install -c constraints-pi.pins <full
    runtime reqs>`` with pip's real resolver in ``--dry-run`` mode, so it
    catches ANY conflict, including future classes the hard-pin list in
    guard 1 does not enumerate. Skips cleanly when PyPI is unreachable
@@ -70,7 +70,7 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
-_CONSTRAINTS = _ROOT / "deploy" / "constraints-pi.txt"
+_CONSTRAINTS = _ROOT / "deploy" / "constraints-pi.pins"
 _UV_LOCK = _ROOT / "uv.lock"
 _PYPROJECT = _ROOT / "pyproject.toml"
 
@@ -110,17 +110,17 @@ def test_walked_package_set_is_not_vacuous() -> None:
 def test_pin_matches_uv_lock(pkg: str) -> None:
     """The deterministic offline guard for the #1275 drift class.
 
-    Every package pinned in both constraints-pi.txt and the co-resolved
+    Every package pinned in both constraints-pi.pins and the co-resolved
     uv.lock (excluding documented EXCEPTIONS) must agree exactly. A
     mismatch means a pip-side bump landed without co-resolving uv.lock and
-    a fresh ``pip install -c deploy/constraints-pi.txt`` will
+    a fresh ``pip install -c deploy/constraints-pi.pins`` will
     ResolutionImpossible.
     """
     assert _CONS_VERSIONS[pkg] == _LOCK_VERSIONS[pkg], (
-        f"{pkg}: constraints-pi.txt=={_CONS_VERSIONS[pkg]} but "
-        f"uv.lock=={_LOCK_VERSIONS[pkg]} — deploy/constraints-pi.txt has "
+        f"{pkg}: constraints-pi.pins=={_CONS_VERSIONS[pkg]} but "
+        f"uv.lock=={_LOCK_VERSIONS[pkg]} — deploy/constraints-pi.pins has "
         "drifted from the co-resolved uv.lock (see #1275); a fresh deploy's "
-        "`pip install -c deploy/constraints-pi.txt -e .[full]` will fail "
+        "`pip install -c deploy/constraints-pi.pins -e .[full]` will fail "
         "with ResolutionImpossible.\n"
         "Fix: `python3 scripts/align-pi-constraint-pins.py` co-resolves it, "
         "or add a one-line EXCEPTIONS entry in that script if this "
@@ -144,7 +144,7 @@ def test_alignment_command_rewrites_drifted_pins_and_is_idempotent(
         '[[package]]\nname = "beta-pkg"\nversion = "1"\n'
         '[[package]]\nname = "only-in-lock"\nversion = "9"\n'
     )
-    constraints = tmp_path / "constraints-pi.txt"
+    constraints = tmp_path / "constraints-pi.pins"
     lock = tmp_path / "uv.lock"
     constraints.write_text(constraints_text, encoding="utf-8")
     lock.write_text(lock_text, encoding="utf-8")
@@ -166,7 +166,7 @@ def test_alignment_command_leaves_documented_exceptions_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    constraints = tmp_path / "constraints-pi.txt"
+    constraints = tmp_path / "constraints-pi.pins"
     lock = tmp_path / "uv.lock"
     constraints.write_text("held-back==1\n", encoding="utf-8")
     lock.write_text(
@@ -318,7 +318,7 @@ def test_pip_dry_run_resolves_constraints() -> None:
         timeout=600,
     )
     assert proc.returncode == 0, (
-        "pip could not resolve deploy/constraints-pi.txt against pyproject's "
+        "pip could not resolve deploy/constraints-pi.pins against pyproject's "
         "[full] runtime requirements — this is exactly what install.sh runs on "
         "every deploy (#1275). Resolver output:\n"
         + (proc.stderr or proc.stdout)[-3000:]

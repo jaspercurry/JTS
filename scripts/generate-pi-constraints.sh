@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Generate deploy/constraints-pi.txt from the LIVE Pi's resolved
+# Generate deploy/constraints-pi.pins from the LIVE Pi's resolved
 # dependency set, so install.sh can replay exactly those versions on
 # the next deploy instead of letting open-ranged pyproject deps
 # (openai>=, scipy>=, onnxruntime>=, ...) drift to whatever PyPI has
@@ -21,9 +21,9 @@
 # Workflow (generate → review → commit):
 #   1. Deploy + verify a known-good build on the Pi (jasper-doctor green).
 #   2. bash scripts/generate-pi-constraints.sh
-#   3. git diff deploy/constraints-pi.txt   # review version movements
+#   3. git diff deploy/constraints-pi.pins   # review version movements
 #   4. Commit the file. From then on, every install.sh run that sees
-#      deploy/constraints-pi.txt passes it to pip via `-c`, pinning the
+#      deploy/constraints-pi.pins passes it to pip via `-c`, pinning the
 #      whole tree. No file → installs behave exactly as before.
 #
 # Regenerate whenever you deliberately move dependencies (pyproject
@@ -51,7 +51,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/_lib.sh"
 
 PI_PIP="/opt/jasper/.venv/bin/pip"
-OUT_FILE="${REPO_ROOT}/deploy/constraints-pi.txt"
+OUT_FILE="${REPO_ROOT}/deploy/constraints-pi.pins"
 
 echo "==> reading resolved dependency set from ${PI_USER}@${PI_HOST}:${PI_PIP}"
 
@@ -89,7 +89,7 @@ if [[ -z "${pins}" ]]; then
 fi
 
 {
-    echo "# deploy/constraints-pi.txt — Pi-generated pip constraints."
+    echo "# deploy/constraints-pi.pins — Pi-generated pip constraints."
     echo "#"
     echo "# GENERATED FILE — do not hand-edit version pins. Regenerate with:"
     echo "#   bash scripts/generate-pi-constraints.sh"
@@ -115,5 +115,5 @@ fi
 
 count="$(grep -c '==' "${OUT_FILE}")"
 echo "==> wrote ${OUT_FILE} (${count} pins)"
-echo "    review:  git diff deploy/constraints-pi.txt"
+echo "    review:  git diff deploy/constraints-pi.pins"
 echo "    then commit — the next deploy picks it up automatically."

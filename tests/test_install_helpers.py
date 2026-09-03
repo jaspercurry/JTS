@@ -1351,7 +1351,7 @@ def test_main_preflights_build_user_before_mutation():
 
 
 # ----------------------------------------------------------------------
-# Pi-generated pip constraints (deploy/constraints-pi.txt)
+# Pi-generated pip constraints (deploy/constraints-pi.pins)
 # ----------------------------------------------------------------------
 
 _GENERATE_CONSTRAINTS_SH = (
@@ -1388,7 +1388,7 @@ def test_install_and_generate_scripts_parse():
 
 
 def test_pip_constraints_file_absent_is_graceful_noop(tmp_path):
-    """No deploy/constraints-pi.txt → empty output, rc 0 — installs run
+    """No deploy/constraints-pi.pins → empty output, rc 0 — installs run
     open-range exactly as before the feature existed."""
     (tmp_path / "deploy").mkdir()
     assert _run_constraints_helper(tmp_path) == ""
@@ -1397,7 +1397,7 @@ def test_pip_constraints_file_absent_is_graceful_noop(tmp_path):
 def test_pip_constraints_file_present_is_echoed(tmp_path):
     deploy = tmp_path / "deploy"
     deploy.mkdir()
-    constraints = deploy / "constraints-pi.txt"
+    constraints = deploy / "constraints-pi.pins"
     constraints.write_text("httpx==0.28.1\n", encoding="utf-8")
     assert _run_constraints_helper(tmp_path) == str(constraints)
 
@@ -1414,7 +1414,7 @@ def test_unpinned_pip_installs_carry_the_constraints_args():
 
 
 def test_pi_constraints_do_not_pin_non_pypi_flatbuffers_release():
-    constraints = (Path(__file__).parent.parent / "deploy" / "constraints-pi.txt")
+    constraints = (Path(__file__).parent.parent / "deploy" / "constraints-pi.pins")
     text = constraints.read_text(encoding="utf-8")
     generator = _GENERATE_CONSTRAINTS_SH.read_text(encoding="utf-8")
 

@@ -261,7 +261,7 @@ OOM-prone rebuild a current box skips. The same shape applies to:
 - **Cargo** (`cargo build --release --locked`): a `Cargo.lock` / dep
   bump anywhere in the skew window invalidates the incremental `target/`
   the installer otherwise preserves across runs.
-- **pip `[full]`** + `deploy/constraints-pi.txt`: a constraint/dep
+- **pip `[full]`** + `deploy/constraints-pi.pins`: a constraint/dep
   change forces wheel rebuilds of the heavy scientific deps
   (scipy/numpy/onnxruntime).
 

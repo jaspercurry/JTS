@@ -1,8 +1,14 @@
 # Group monthly version updates to limit review and CI bursts. Security updates
 # remain ungrouped because `applies-to` keeps its default of `version-updates`.
 # Python changes update `uv.lock`; changes on the Pi pin chain must also update
-# `deploy/constraints-pi.txt` with `python3 scripts/align-pi-constraint-pins.py`.
+# `deploy/constraints-pi.pins` with `python3 scripts/align-pi-constraint-pins.py`.
 # GitHub Actions and Cargo remain separate ecosystems.
+#
+# `deploy/constraints-pi.pins` deliberately isn't named `*.txt`/`*.in`: the uv
+# ecosystem's file fetcher matches those extensions (plus `uv.lock`) anywhere
+# in the repo tree and would otherwise text-bump its pins directly, skipping
+# uv.lock and landing every PR red against tests/test_constraints_pi_resolvable.py
+# (#1275). No `exclude-paths`-style option exists to do this via config instead.
 #
 # `python-runtime` excludes majors (update-types) so one suspect (e.g. an
 # openai/google-genai/evdev major) doesn't ride along with a batch of
