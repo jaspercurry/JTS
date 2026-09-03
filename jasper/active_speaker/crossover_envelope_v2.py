@@ -125,7 +125,7 @@ logger = logging.getLogger(__name__)
 # removed or re-typed, so an unredeployed page is unaffected). Exists for
 # the EXTERNAL DRIVER chaining rounds, which needs a stable way to know a
 # contract is present rather than probing a key that is `null` pre-VERIFY.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 15
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 16
 
 # The v2 step tuple (§5.9): these five are the whole journey.
 _STEP_IDS = (
