@@ -156,8 +156,8 @@ class VolumeRoutes(ControlHandlerMixin):
         # This runs BEFORE _observe_op so no coordinator is built and nothing
         # touches Camilla, and it returns the ESTABLISHED
         # `observation_applied: false` contract — the USB bridge already
-        # understands it and re-applies the household slider on its next tick
-        # once the hold lapses, so no bridge change is needed for correctness.
+        # understands it and re-presents the household slider on its retry
+        # backoff, so no bridge change is needed for correctness.
         # AUTHORITATIVE writes (no `source`: management UI, HID accessory,
         # voice "louder") stay allowed on purpose: those are a human at the
         # speaker, and this is not a nanny.

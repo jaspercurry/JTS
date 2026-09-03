@@ -4,24 +4,26 @@
 
 """Tests for jasper.usbsink.volume_bridge.VolumeBridge.
 
-Hardware-free: amixer subprocess calls are mocked at the boundary
-(`subprocess.run`). Tests exercise the discovery → tick → post
-state machine and the corner cases around mute, range, and missing
+Hardware-free: discovery's amixer subprocess calls are mocked at the
+boundary (`subprocess.run`) and the Linux-only `alsaaudio` binding is
+injected as a fake module. Tests exercise the discovery → mixer event →
+post state machine and the corner cases around mute, range, and missing
 controls.
 """
 from __future__ import annotations
 
 import asyncio
-import logging
+import os
 import re
 import subprocess
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jasper.usbsink.volume_bridge import (
-    POLL_INTERVAL_SEC,
+    MIXER_ELEMENT_NAME,
     POST_RETRY_BACKOFF_FACTOR,
     POST_RETRY_CEILING_SEC,
     POST_RETRY_INTERVAL_SEC,
@@ -52,6 +54,85 @@ def _set_range(bridge: VolumeBridge) -> None:
     bridge._db_min = TLV_DB_MIN
     bridge._db_max = TLV_DB_MAX
     bridge._db_source = "tlv"
+
+
+# ----------------------------------------------------------------------
+# Fake `alsaaudio` binding. The real one is Linux-only and needs a live
+# UAC2 gadget card; the shapes below are the ones jts3 reports (see
+# test_raw_step_index_matches_pyalsaaudio_normalized_percent).
+# ----------------------------------------------------------------------
+
+
+class _FakeMixer:
+    """One simple-mixer element backed by a real pipe, so the bridge's
+    `loop.add_reader` on `polldescriptors()` is exercised for real."""
+
+    def __init__(self, raw: int = 41) -> None:
+        self._read_fd, self._write_fd = os.pipe()
+        self.raw = raw
+        self.rec = [1]
+        self.fail: BaseException | None = None
+        self.handled = 0
+        self.closed = False
+
+    def polldescriptors(self):
+        return [(self._read_fd, 41)]
+
+    def handleevents(self) -> int:
+        self.handled += 1
+        os.read(self._read_fd, 4096)
+        if self.fail is not None:
+            raise self.fail
+        return 1
+
+    def getvolume(self, units=None):
+        if self.fail is not None:
+            raise self.fail
+        return [self.raw]
+
+    def getrec(self):
+        return list(self.rec)
+
+    def close(self) -> None:
+        self.closed = True
+        os.close(self._read_fd)
+        os.close(self._write_fd)
+
+    # --- test-side driver -------------------------------------------------
+    def emit(self, raw: int | None = None) -> None:
+        """Make the control FD readable, as a host slider move would."""
+        if raw is not None:
+            self.raw = raw
+        os.write(self._write_fd, b"x")
+
+
+def _fake_alsaaudio(*mixers: _FakeMixer) -> ModuleType:
+    module = ModuleType("alsaaudio")
+    module.VOLUME_UNITS_RAW = 1  # type: ignore[attr-defined]
+    module.cards = lambda: ["UMIK2", "UAC2Gadget"]  # type: ignore[attr-defined]
+    module.card_indexes = lambda: [0, 4]  # type: ignore[attr-defined]
+    pending = list(mixers)
+
+    def _mixer(control, cardindex):
+        assert control == MIXER_ELEMENT_NAME
+        assert cardindex == 4
+        return pending.pop(0)
+
+    module.Mixer = _mixer  # type: ignore[attr-defined]
+    return module
+
+
+def _ready_bridge(*mixers: _FakeMixer, **kwargs) -> VolumeBridge:
+    """A bridge past discovery, wired to fake mixers."""
+    bridge = VolumeBridge(
+        card_name="UAC2Gadget",
+        alsaaudio_module=_fake_alsaaudio(*mixers),
+        **kwargs,
+    )
+    bridge._vol_numid = 3
+    bridge._switch_numid = 2
+    _set_range(bridge)
+    return bridge
 
 
 # ----------------------------------------------------------------------
@@ -204,12 +285,9 @@ def test_discover_raises_on_amixer_missing_or_timeout():
             bridge._discover()
 
 
-async def test_run_retries_discovery_after_transient_mixer_miss():
-    bridge = VolumeBridge(
-        card_name="UAC2Gadget",
-        poll_interval_sec=60.0,
-        discovery_retry_interval_sec=0.01,
-    )
+async def test_run_retries_discovery_after_transient_mixer_miss(monkeypatch):
+    mixer = _FakeMixer()
+    bridge = _ready_bridge(mixer, discovery_retry_interval_sec=0.01)
     calls = 0
 
     def discover() -> None:
@@ -218,6 +296,10 @@ async def test_run_retries_discovery_after_transient_mixer_miss():
         if calls == 1:
             raise VolumeBridgeUnavailable("not enumerated yet")
 
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
+        return True
+
+    monkeypatch.setattr(bridge, "_post", _accept)
     with patch.object(bridge, "_discover", side_effect=discover):
         task = asyncio.create_task(bridge.run())
         try:
@@ -233,6 +315,45 @@ async def test_run_retries_discovery_after_transient_mixer_miss():
                 await task
 
 
+async def test_run_reopens_mixer_after_it_breaks(monkeypatch):
+    """The gadget function re-enumerating under the process invalidates the
+    control FDs. The bridge closes them and falls back into discovery instead
+    of exiting the unit."""
+    broken = _FakeMixer()
+    healthy = _FakeMixer()
+    bridge = _ready_bridge(broken, healthy, discovery_retry_interval_sec=0.01)
+    discovers = 0
+
+    def discover() -> None:
+        nonlocal discovers
+        discovers += 1
+
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
+        return True
+
+    monkeypatch.setattr(bridge, "_post", _accept)
+    with patch.object(bridge, "_discover", side_effect=discover):
+        task = asyncio.create_task(bridge.run())
+        try:
+            for _ in range(20):
+                if bridge._mixer is broken:
+                    break
+                await asyncio.sleep(0.01)
+            broken.fail = OSError(9, "Bad file descriptor")
+            broken.emit()
+            for _ in range(50):
+                if discovers >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert discovers >= 2
+            assert broken.closed
+            assert bridge._mixer is healthy
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
 def test_discover_raises_on_amixer_timeout():
     bridge = VolumeBridge(card_name="UAC2Gadget")
     with patch("subprocess.run") as run_mock:
@@ -241,94 +362,6 @@ def test_discover_raises_on_amixer_timeout():
         )
         with pytest.raises(VolumeBridgeUnavailable, match="amixer controls failed"):
             bridge._discover()
-
-
-# ----------------------------------------------------------------------
-# _read_int_value() — value parsing including stereo + malformed
-# ----------------------------------------------------------------------
-
-
-def test_read_int_value_parses_single_channel():
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process(_cget_volume(42))
-        assert bridge._read_int_value(1) == 42
-
-
-def test_read_int_value_parses_first_channel_of_stereo():
-    """Stereo cards report `values=L,R`. We take the left channel
-    (right tracks left for any sane host slider; if they diverge we
-    use the left to drive the JTS volume)."""
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process(
-            _cget_volume_stereo(75, 50),
-        )
-        assert bridge._read_int_value(1) == 75
-
-
-def test_read_int_value_returns_none_on_unparseable_output():
-    """Defensive: if amixer's output format ever changes shape (or we
-    hit a transient garbled read), _read_int_value returns None so
-    the tick loop skips this poll rather than crashing."""
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process(
-            "garbage output with no values line\n",
-        )
-        assert bridge._read_int_value(1) is None
-
-
-def test_read_int_value_returns_none_on_non_integer_value():
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process(
-            "  : values=not-an-int\n",
-        )
-        assert bridge._read_int_value(1) is None
-
-
-# ----------------------------------------------------------------------
-# _read_switch_value() — on/off, stereo, fail-safe to "muted"
-# ----------------------------------------------------------------------
-
-
-def test_read_switch_value_on_means_unmuted():
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process(_cget_switch("on"))
-        assert bridge._read_switch_value(2) is False  # not muted
-
-
-def test_read_switch_value_off_means_muted():
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process(_cget_switch("off"))
-        assert bridge._read_switch_value(2) is True
-
-
-def test_read_switch_value_stereo_half_muted_treated_as_muted():
-    """If either channel reports off, treat as muted overall — better
-    to underrepresent volume (silence) than overrepresent (let one
-    channel through when the user expected mute)."""
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process(
-            "  : values=on,off\n",
-        )
-        assert bridge._read_switch_value(2) is True
-
-
-def test_read_switch_value_returns_muted_on_unparseable():
-    """Two distinct fail-safe layers, pinned here: a totally unparseable
-    amixer read (no ``values=`` at all) fails OPEN (returns False/unmuted)
-    because the regex match fails entirely — that's this test's assertion.
-    The fail-safe-TO-MUTED layer is different: it only kicks in once
-    ``values=`` IS parsed but parses to something other than 'on'."""
-    bridge = VolumeBridge()
-    with patch("subprocess.run") as run_mock:
-        run_mock.return_value = _make_completed_process("garbage")
-        assert bridge._read_switch_value(2) is False  # missing values=
 
 
 # ----------------------------------------------------------------------
@@ -468,353 +501,245 @@ def test_usbgadget_volume_range_writes_are_best_effort():
 
 
 # ----------------------------------------------------------------------
-# Mute overrides percent to 0 (covered indirectly above, but pin it
-# at the _tick level too).
+# Mixer events -> POST. The bridge reads only when the control FDs say the
+# host moved something; nothing runs in between.
 # ----------------------------------------------------------------------
 
 
-async def test_tick_mute_overrides_to_zero(monkeypatch):
-    """When PCM Capture Switch reports muted, the POSTed percent is 0
-    regardless of the volume control's value."""
-    bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = 2
-    _set_range(bridge)
+async def _until(predicate, *, turns: int = 200) -> None:
+    for _ in range(turns):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition never became true")
 
-    # Patch the subprocess-backed reads to return non-zero vol + muted.
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 20)
-    monkeypatch.setattr(bridge, "_read_switch_value", lambda numid: True)
 
-    posted = []
+async def _settle(turns: int = 200) -> None:
+    """Give the loop plenty of turns without advancing wall time, so a
+    would-be poller or an immediate retry would have shown itself."""
+    for _ in range(turns):
+        await asyncio.sleep(0)
 
-    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
+
+async def test_mixer_event_posts_once_and_never_subprocesses(monkeypatch):
+    """One host slider move produces exactly one POST, and an idle bridge
+    spawns no processes at all — the 4 Hz `amixer cget` pair (two forks per
+    250 ms, ~700k forks/day on jts3) is gone."""
+    mixer = _FakeMixer(raw=25)  # step 25/50 -> 25%
+    bridge = _ready_bridge(mixer)
+    posted: list[int] = []
+
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
         posted.append(pct)
         return True
 
-    monkeypatch.setattr(bridge, "_post", _fake_post)
+    monkeypatch.setattr(bridge, "_post", _accept)
+    monkeypatch.setattr(bridge, "_discover", lambda: None)
 
-    await bridge._tick()
+    with patch("subprocess.run") as run_mock:
+        task = asyncio.create_task(bridge.run())
+        try:
+            await _until(lambda: posted == [25])
+            mixer.emit(40)  # step 40/50 -> 64%
+            await _until(lambda: posted == [25, 64])
+            await _settle()
+            assert posted == [25, 64]
+            assert mixer.handled == 1
+            assert run_mock.call_count == 0
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+async def test_repeated_identical_observation_is_deduplicated(monkeypatch):
+    """A mixer event that does not change the value POSTs nothing."""
+    mixer = _FakeMixer(raw=IDX_MAX)
+    bridge = _ready_bridge(mixer)
+    bridge._mixer = mixer
+    posted: list[int] = []
+
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
+        posted.append(pct)
+        return True
+
+    monkeypatch.setattr(bridge, "_post", _accept)
+
+    await bridge._observe()
+    await bridge._observe()
+    await bridge._observe()
+    assert posted == [100]
+
+
+async def test_mute_overrides_to_zero(monkeypatch):
+    """When the capture switch reports muted, the POSTed percent is 0
+    regardless of the volume control's value."""
+    mixer = _FakeMixer(raw=20)
+    mixer.rec = [0]
+    bridge = _ready_bridge(mixer)
+    bridge._mixer = mixer
+    posted: list[int] = []
+
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
+        posted.append(pct)
+        return True
+
+    monkeypatch.setattr(bridge, "_post", _accept)
+
+    await bridge._observe()
     assert posted == [0]
 
 
-async def test_tick_deduplicates_identical_polls(monkeypatch):
-    """The bridge POSTs ONLY when the observed percent changes. A
-    quiet user generates one POST per slider move, not per poll
-    tick."""
-    bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = None  # no switch control
-    _set_range(bridge)
+async def test_observe_skips_when_mixer_reports_no_values(monkeypatch):
+    """An empty read is skipped entirely — don't POST a stale value."""
+    mixer = _FakeMixer()
+    mixer.getvolume = lambda units=None: []  # type: ignore[method-assign]
+    bridge = _ready_bridge(mixer)
+    bridge._mixer = mixer
+    posted: list[int] = []
 
-    # A steady max-step read (index 50 -> 0 dB) maps to 100%.
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: IDX_MAX)
-    posted = []
-
-    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
         posted.append(pct)
         return True
 
-    monkeypatch.setattr(bridge, "_post", _fake_post)
+    monkeypatch.setattr(bridge, "_post", _accept)
 
-    await bridge._tick()
-    await bridge._tick()
-    await bridge._tick()
-    assert posted == [100]  # only first tick posted; subsequent are dedup'd
-
-
-async def test_tick_retries_observation_declined_before_source_activation(
-    monkeypatch,
-):
-    """HTTP 200 is not delivery: jasper-control can decline the initial
-    observation while USB is idle. Retry at a bounded cadence, then cache only
-    after the source-active gate accepts it."""
-    bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = None
-    _set_range(bridge)
-
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 40)
-    posted = []
-    outcomes = iter([False, True])
-
-    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
-        posted.append(pct)
-        return next(outcomes)
-
-    monkeypatch.setattr(bridge, "_post", _fake_post)
-
-    await bridge._tick()  # declined while inactive
-    await bridge._tick()  # bounded retry delay suppresses this poll
-    bridge._retry_not_before = 0.0  # advance beyond the retry interval
-    await bridge._tick()  # accepted on the next eligible retry
-    await bridge._tick()  # accepted value is now deduplicated
-
-    assert posted == [64, 64]
-    assert bridge._last_published_pct == 64
+    await bridge._observe()
+    assert posted == []
 
 
 # ----------------------------------------------------------------------
-# Bounded backoff for declined observations (jts3, 2026-08-20): jasper-control
-# can decline an observation for a long stretch — not just the boot/deploy
-# race above, but hours of USB being idle (the active-source gate) or a
-# recent cross-process write (remote/web/voice moved the canonical level
-# within the persistence echo window). Retrying at the flat base cadence
-# forever measured ~3,200 POSTs/hour reporting an unchanged slider. These
-# tests pin the capped-exponential-backoff fix: bounded retries, reset on
-# value change, reset on acceptance.
+# Declined observations. jasper-control declines while USB is not the active
+# source (volume_coordinator's source gate) and while a measurement holds the
+# fader. A host slider MOVE is re-presented on a capped backoff; the startup
+# snapshot is not (measured on an idle jts3: 708 declined POSTs/hour that had
+# nothing to publish).
 # ----------------------------------------------------------------------
 
 
 def test_ceiling_stays_within_handoff_latency_budget():
-    # Bounds the USB source-handoff volume-mismatch window (a value pinned
-    # at the ceiling, then an unattributed jump once the host starts
-    # playback — see the prose comment above the constants in
-    # volume_bridge.py) to roughly ceiling + one poll tick, under the ~10 s
-    # household-perception budget that window must stay under.
+    # Bounds the USB source-handoff volume-mismatch window (a declined move
+    # pinned at the ceiling, then an unattributed jump once the host starts
+    # playback — see the prose above the constants in volume_bridge.py) under
+    # the ~10 s household-perception budget that window must stay under.
     assert POST_RETRY_CEILING_SEC <= 10.0
 
 
-def _expected_declined_post_times(
-    window_sec: float,
-    *,
-    base: float = POST_RETRY_INTERVAL_SEC,
-    factor: float = POST_RETRY_BACKOFF_FACTOR,
-    ceiling: float = POST_RETRY_CEILING_SEC,
-) -> list[float]:
-    """Reproduce _tick()'s retry schedule analytically for a value that is
-    always declined: an immediate first attempt at t=0, then a retry every
-    `backoff` seconds where `backoff` starts at `base` and multiplies by
-    `factor` after each decline, capped at `ceiling`. Returns the POST
-    timestamps landing in [0, window_sec).
-
-    Deriving the expected count from the live constants — instead of a
-    hand-picked magic number — keeps the assertion meaningful no matter
-    what base/factor/ceiling are currently tuned to: an implementation bug
-    that disables growth (flat retries at `base` forever) or breaks the cap
-    (unbounded exponential growth) diverges sharply from this formula
-    either way. See the sensitivity check in the test below for a direct
-    demonstration that the formula (and thus the test) actually depends on
-    `ceiling` — a hardcoded `< N` upper bound does not.
-    """
-    times = [0.0]
-    backoff = base
-    t = 0.0
-    while True:
-        t += backoff
-        if t >= window_sec:
-            break
-        times.append(t)
-        backoff = min(backoff * factor, ceiling)
-    return times
-
-
-async def test_tick_declined_observation_backoff_is_bounded(monkeypatch, caplog):
-    """A value jasper-control keeps declining must not be retried at the base
-    poll cadence forever — unbounded retries mean unbounded HTTP+mux IPC
-    volume and flight-recorder-ring pressure, independent of log level.
-    Simulate a 10 simulated-minute window (via a controllable fake clock, so
-    the test runs instantly) of a constant, always-declined slider value and
-    assert BOTH the POST count and this bridge process's own DEBUG-level
-    deferral-log count stay far under the flat-cadence baseline (~2,400 over
-    the same window at the 4 Hz poll rate, ~600 at the old flat 1 Hz retry
-    cadence). Note: the journal spam actually MEASURED on jts3 was a
-    different process's line — jasper-control's event=volume.set at INFO,
-    fixed by the DEBUG demotion in jasper/control/handlers/volume.py — not
-    this bridge-side deferral line, which bounding POSTs here only bounds
-    for IPC/flight-recorder reasons."""
-    bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = None
-    _set_range(bridge)
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 40)  # steady pct 64
-
-    class _FakeDeclineResponse:
-        ok = True
-        status = 200
-
-        def __init__(self, pct: int) -> None:
-            self._pct = pct
-
-        def json(self):
-            return {"percent": self._pct, "observation_applied": False}
-
-    class _FakeDeclineControl:
-        """Stands in for AsyncControlClient: every observation is declined,
-        exercising the real _post() so its DEBUG log line is exercised too."""
-
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def set_volume(self, pct, *, source, observation_initial=False):
-            self.calls += 1
-            return _FakeDeclineResponse(pct)
-
-    fake_control = _FakeDeclineControl()
-    bridge._control = fake_control
-
-    fake_now = [0.0]
-    monkeypatch.setattr(
-        "jasper.usbsink.volume_bridge.time.monotonic", lambda: fake_now[0],
-    )
-
-    simulated_seconds = 600.0  # 10 simulated minutes
-    ticks = int(simulated_seconds / POLL_INTERVAL_SEC)
-
-    with caplog.at_level(logging.DEBUG, logger="jasper.usbsink.volume_bridge"):
-        for _ in range(ticks):
-            await bridge._tick()
-            fake_now[0] += POLL_INTERVAL_SEC
-
-    deferred_lines = [
-        r for r in caplog.records
-        if "event=usbsink.volume_observation_deferred" in r.getMessage()
-    ]
-
-    expected_times = _expected_declined_post_times(simulated_seconds)
-
-    # Exact match against the analytical schedule — not a hand-picked magic
-    # number. This fails in BOTH directions: mutation A (backoff growth
-    # disabled) posts at the flat base cadence (600 in this window, wildly
-    # more than expected), and a "cap removed" bug (unbounded exponential
-    # growth) posts far FEWER times than expected. A fixed upper bound like
-    # the previous `< 40` only ever catches the first direction.
-    assert fake_control.calls == len(expected_times)
-
-    # Sensitivity check: prove this bound actually tracks the ceiling,
-    # rather than being a fixed number that would keep passing regardless
-    # of what the ceiling is set to. (This is what a hardcoded `< 40` upper
-    # bound could not show: raising the ceiling to 300 s still satisfies
-    # `< 40`, so that version of the test would never notice.)
-    larger_ceiling_expected = _expected_declined_post_times(
-        simulated_seconds, ceiling=300.0,
-    )
-    assert len(larger_ceiling_expected) < len(expected_times)
-
-    # Every declined POST logs exactly one DEBUG deferral line in THIS
-    # process — bounding the POSTs bounds this count too, which matters for
-    # IPC/flight-recorder-ring pressure. This is NOT the journal spam
-    # actually measured on jts3: that was jasper-control's separate
-    # event=volume.set INFO line (a different process), fixed by the DEBUG
-    # demotion in jasper/control/handlers/volume.py regardless of this
-    # backoff.
-    assert len(deferred_lines) == fake_control.calls
-
-
-async def test_tick_value_change_resets_backoff(monkeypatch):
-    """A fresh slider move must not inherit the backoff accumulated while
-    retrying a different, now-stale value — it always gets an immediate
-    attempt, scheduled at the BASE retry interval rather than whatever
-    stretched-out interval the old value had reached."""
-    bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = None
-    _set_range(bridge)
-
-    raw = {"value": 40}  # -> pct 64
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: raw["value"])
-
-    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
-        return False  # always declined
-
-    monkeypatch.setattr(bridge, "_post", _fake_post)
-
-    fake_now = [0.0]
-    monkeypatch.setattr(
-        "jasper.usbsink.volume_bridge.time.monotonic", lambda: fake_now[0],
-    )
-
-    # Grind the backoff up past the base interval with several declines of
-    # the SAME value, each tick advancing the clock to the next eligible
-    # retry so every call actually attempts (rather than being gated).
-    await bridge._tick()
-    fake_now[0] = bridge._retry_not_before
-    await bridge._tick()
-    fake_now[0] = bridge._retry_not_before
-    await bridge._tick()
-    assert bridge._retry_backoff_sec > POST_RETRY_INTERVAL_SEC
-
-    # The slider moves to a new value well before the next scheduled retry
-    # for the OLD value.
-    assert fake_now[0] + 0.25 < bridge._retry_not_before
-    raw["value"] = 25  # -> pct 25
-    fake_now[0] += 0.25
-    await bridge._tick()
-
-    # The new value got an immediate attempt (not gated by the old, larger
-    # retry_not_before) and rescheduled its own retry at the BASE interval —
-    # proof the backoff was reset, not inherited.
-    assert bridge._last_attempted_pct == 25
-    assert bridge._retry_not_before == pytest.approx(
-        fake_now[0] + POST_RETRY_INTERVAL_SEC,
-    )
-
-
-async def test_tick_accepted_post_resets_backoff(monkeypatch):
-    """An accepted post must drop the backoff back to the base interval, not
-    leave it at whatever step the decline ramp had reached. Otherwise a
-    value that later flips accepted -> declined again (e.g. USB loses the
-    active source a second time) would inherit a stale, already-capped
-    backoff instead of starting the ramp over from a fresh, fast retry."""
-    bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = None
-    _set_range(bridge)
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: 40)  # pct 64
-
-    outcomes = iter([False, False, False, True])  # decline x3, then accept
-
-    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
-        return next(outcomes)
-
-    monkeypatch.setattr(bridge, "_post", _fake_post)
-
-    fake_now = [0.0]
-    monkeypatch.setattr(
-        "jasper.usbsink.volume_bridge.time.monotonic", lambda: fake_now[0],
-    )
-
-    await bridge._tick()
-    fake_now[0] = bridge._retry_not_before
-    await bridge._tick()
-    fake_now[0] = bridge._retry_not_before
-    await bridge._tick()
-    assert bridge._retry_backoff_sec > POST_RETRY_INTERVAL_SEC
-    fake_now[0] = bridge._retry_not_before
-    await bridge._tick()  # accepted this time
-
-    assert bridge._last_published_pct == 64
-    assert bridge._retry_backoff_sec == POST_RETRY_INTERVAL_SEC
-    assert bridge._retry_not_before == 0.0
-
-
-async def test_tick_marks_only_unchanged_startup_snapshot_as_initial(monkeypatch):
-    """A bridge restart labels discovery state, but a later host move is intent."""
-    bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = None
-    _set_range(bridge)
-
-    raw = {"value": 40}
-    monkeypatch.setattr(
-        bridge,
-        "_read_int_value",
-        lambda numid: raw["value"],
-    )
+async def test_declined_startup_snapshot_is_not_retried(monkeypatch):
+    """A restarted bridge re-reads the mixer, but that snapshot predates any
+    proof of a host action. Declined, it is dropped rather than re-presented
+    forever; the next real move is retried normally."""
+    mixer = _FakeMixer(raw=41)  # step 41/50 -> 67%
+    bridge = _ready_bridge(mixer)
     posted: list[tuple[int, bool]] = []
 
-    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
+    async def _decline(pct: int, *, initial: bool = False) -> bool:
         posted.append((pct, initial))
         return False
 
-    monkeypatch.setattr(bridge, "_post", _fake_post)
+    monkeypatch.setattr(bridge, "_post", _decline)
+    monkeypatch.setattr(bridge, "_discover", lambda: None)
 
-    await bridge._tick()
-    bridge._retry_not_before = 0.0
-    await bridge._tick()
-    raw["value"] = 25
-    await bridge._tick()
+    task = asyncio.create_task(bridge.run())
+    try:
+        await _until(lambda: posted == [(67, True)])
+        await _settle()
+        assert posted == [(67, True)]
+        assert bridge._retry_task is None
 
-    assert posted == [(64, True), (64, True), (25, False)]
+        mixer.emit(25)  # a real host move -> 25%
+        await _until(lambda: len(posted) == 2)
+        assert posted[1] == (25, False)
+        assert bridge._retry_task is not None
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_declined_host_move_retry_backoff_is_bounded(monkeypatch):
+    """A declined host move is re-presented until accepted, on a capped
+    exponential backoff: the true slider position lands within one
+    ceiling-length window of the source going active, without an unbounded
+    HTTP + mux IPC rate while it waits."""
+    bridge = _ready_bridge(_FakeMixer())
+    bridge._last_published_pct = 25  # a prior accepted value
+    bridge._initial_observed_pct = 25  # so 64% is a MOVE, not the snapshot
+
+    attempts = 0
+
+    async def _decline_then_accept(pct: int, *, initial: bool = False) -> bool:
+        nonlocal attempts
+        attempts += 1
+        return attempts >= 8
+
+    monkeypatch.setattr(bridge, "_post", _decline_then_accept)
+
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _record_sleep(delay):
+        delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _record_sleep)
+    await bridge._publish(64)
+    assert bridge._retry_task is not None
+    await bridge._retry_task
+
+    expected: list[float] = []
+    delay = POST_RETRY_INTERVAL_SEC
+    for _ in range(len(delays)):
+        expected.append(delay)
+        delay = min(delay * POST_RETRY_BACKOFF_FACTOR, POST_RETRY_CEILING_SEC)
+    assert delays == expected
+    assert max(delays) == POST_RETRY_CEILING_SEC
+    assert bridge._last_published_pct == 64
+
+
+async def test_new_move_replaces_the_value_being_retried(monkeypatch):
+    """A fresh slider move must not inherit the backoff of a now-stale value:
+    it is attempted immediately and the old retry is dropped."""
+    bridge = _ready_bridge(_FakeMixer())
+    bridge._last_published_pct = 25
+    bridge._initial_observed_pct = 25
+    posted: list[int] = []
+
+    async def _decline(pct: int, *, initial: bool = False) -> bool:
+        posted.append(pct)
+        return False
+
+    monkeypatch.setattr(bridge, "_post", _decline)
+
+    await bridge._publish(64)
+    stale = bridge._retry_task
+    assert stale is not None
+    await bridge._publish(36)
+
+    assert posted == [64, 36]
+    assert stale.cancelled()
+    assert bridge._retry_task is not stale
+
+
+async def test_marks_only_unchanged_startup_snapshot_as_initial(monkeypatch):
+    """A bridge restart labels discovery state, but a later host move is
+    intent — and only intent may clear a mute latched by another surface."""
+    mixer = _FakeMixer(raw=40)
+    bridge = _ready_bridge(mixer)
+    bridge._mixer = mixer
+    posted: list[tuple[int, bool]] = []
+
+    async def _decline(pct: int, *, initial: bool = False) -> bool:
+        posted.append((pct, initial))
+        return False
+
+    monkeypatch.setattr(bridge, "_post", _decline)
+
+    await bridge._observe()
+    mixer.raw = 25
+    await bridge._observe()
+
+    assert posted == [(64, True), (25, False)]
 
 
 @pytest.mark.parametrize(
@@ -855,22 +780,13 @@ async def test_post_requires_application_acknowledgement(payload, expected):
     assert await bridge._post(64) is expected
 
 
-async def test_tick_skips_when_raw_read_fails(monkeypatch):
-    """A transient parse failure on the volume read (e.g. amixer
-    returned garbled output) means the tick is skipped entirely —
-    don't POST a stale value, don't crash the loop."""
+def test_raw_step_index_matches_pyalsaaudio_normalized_percent():
+    """The bridge reads `getvolume(units=VOLUME_UNITS_RAW)` — the same 0-based
+    step index `amixer cget` printed — so the volume curve is unchanged by the
+    move off subprocesses. jts3 hardware, step 41 of 0..50: pyalsaaudio's
+    DEFAULT (linear, normalized) percent view reports 82, which is NOT a
+    listening level; the bridge's own curve maps that slider position to 67."""
     bridge = VolumeBridge()
-    bridge._vol_numid = 1
-    bridge._switch_numid = None
     _set_range(bridge)
-
-    monkeypatch.setattr(bridge, "_read_int_value", lambda numid: None)
-    posted = []
-
-    async def _fake_post(pct: int, *, initial: bool = False) -> bool:
-        posted.append(pct)
-        return True
-
-    monkeypatch.setattr(bridge, "_post", _fake_post)
-    await bridge._tick()
-    assert posted == []
+    assert round(41 * 100 / (IDX_MAX - IDX_MIN)) == 82
+    assert bridge._raw_to_pct(41) == 67

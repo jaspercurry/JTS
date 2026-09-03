@@ -94,9 +94,9 @@ def _module_loaded(name: str) -> bool:
 def _uac2_capture_rate() -> int | None:
     """Read u_audio's volatile ``Capture Rate`` control, or None if unreadable.
 
-    Subprocesses ``amixer`` for the same reasons the usbsink volume bridge does
-    (jasper/usbsink/volume_bridge.py): no python-alsa dependency, and stable
-    parseable output. ``_run`` is a bare ``subprocess.run``, so both failure
+    Subprocesses ``amixer`` because the control is an iface=PCM one the simple
+    mixer does not expose, and its output is stable and parseable. ``_run`` is
+    a bare ``subprocess.run``, so both failure
     modes have to be caught here: alsa-utils is not in install.sh's apt lists,
     and a wedged card — the very state this feeds — can hang the read past the
     timeout. Either one must read as "not observable", never as a doctor crash.
