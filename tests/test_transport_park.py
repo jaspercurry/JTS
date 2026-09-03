@@ -870,6 +870,71 @@ def test_the_remedy_converges_the_marker_it_reads():
     assert "jasper-audio-hardware-reconcile" in transport_park.ACTIVE_ENDPOINT_REMEDY
 
 
+@pytest.mark.parametrize(
+    "profile_id,status,topology_factory,expect_normal_remedy,expect_overlay_check_named",
+    [
+        pytest.param(
+            "hifiberry_dac8x", "ready",
+            lambda: _active_topology("stereo", "active_2_way"),
+            True, False, id="recognized_and_ready",
+        ),
+        pytest.param(
+            # active_profile_id needs ready+card-selected; observed_profile_id
+            # does not — a recognized-but-not-ready DAC keeps the normal
+            # remedy, never the reconciler's DRIVEN question.
+            "hifiberry_dac8x", "blocked",
+            lambda: _active_topology("stereo", "active_2_way"),
+            True, False, id="recognized_but_not_ready",
+        ),
+        pytest.param(
+            "unknown", "unknown",
+            lambda: _active_topology("stereo", "active_2_way"),
+            False, True, id="not_recognized_saved_dac_is_i2s",
+        ),
+        pytest.param(
+            "unknown", "unknown",
+            _composite_active_2way,
+            False, False, id="not_recognized_saved_dac_is_usb",
+        ),
+    ],
+)
+def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecognized_i2s_dac(
+    monkeypatch, tmp_path, profile_id, status, topology_factory,
+    expect_normal_remedy, expect_overlay_check_named,
+):
+    """#2575: the recorded remedy re-emits onto a ring endpoint and converges
+    it — neither step has a DAC to drive while none is RECOGNIZED. Every
+    reader of the park record (doctor, /state, the web card) shares this one
+    text, read at the snapshot altitude transport_park's docstring makes the
+    one place surfaces read the answer from."""
+    from jasper.output_hardware import OutputHardwareState, write_state
+
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_HARDWARE_STATE_PATH", str(tmp_path / "output_hardware.json")
+    )
+    write_state(
+        OutputHardwareState(
+            profile_id=profile_id,
+            profile_label=profile_id,
+            status=status,
+            physical_output_count=8,
+        )
+    )
+
+    state = transport_park.snapshot(topology_factory(), {})
+    assert state["status"] == "parked"
+    [park] = [
+        p for p in state["parks"]
+        if p["park_class"] == PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED
+    ]
+    remedy = park["remedy"]
+
+    assert (remedy == transport_park.ACTIVE_ENDPOINT_REMEDY) is expect_normal_remedy
+    assert (
+        transport_park.I2S_DAC_OVERLAY_CHECK_NAME in remedy
+    ) is expect_overlay_check_named
+
+
 def test_state_resilience_carries_the_park_reader():
     from jasper.control import state_aggregate
 

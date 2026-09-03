@@ -109,6 +109,7 @@ from .voice import (
 )
 from . import audio as audio
 from . import audio_runtime as audio_runtime
+from . import boot_config as boot_config
 from .audio import (
     check_alsa_card,
     _HW_SHORTHAND_RE,

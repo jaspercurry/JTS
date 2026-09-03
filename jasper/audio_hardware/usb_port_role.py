@@ -19,7 +19,7 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Iterable, Literal, Mapping
 
 from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from jasper.env_file import parse_env_lines
@@ -274,19 +274,24 @@ def configured_usb_role(content: str) -> UsbDataRole:
     return role
 
 
-def configured_i2s_overlays(
-    content: str,
-    *,
-    profiles: tuple[DacProfile, ...] | None = None,
-) -> tuple[str, ...]:
+def _overlay_values(lines: Iterable[str]) -> set[str]:
     overlays: set[str] = set()
-    for line in _global_or_all_lines(content):
+    for line in lines:
         stripped = line.lstrip()
         if not stripped or stripped.startswith("#"):
             continue
         match = _OVERLAY_LINE_RE.match(line)
         if match:
             overlays.add(match.group(1).lower())
+    return overlays
+
+
+def configured_i2s_overlays(
+    content: str,
+    *,
+    profiles: tuple[DacProfile, ...] | None = None,
+) -> tuple[str, ...]:
+    overlays = _overlay_values(_global_or_all_lines(content))
     candidates = profiles if profiles is not None else all_profiles()
     registered = {
         profile.dtoverlay.lower()
@@ -294,6 +299,17 @@ def configured_i2s_overlays(
         if profile.connection == "i2s" and profile.dtoverlay
     }
     return tuple(sorted(overlays & registered))
+
+
+def overlay_declared_anywhere(content: str, overlay: str) -> bool:
+    """Whether ``dtoverlay=<overlay>`` appears under ANY section, unlike
+    :func:`configured_i2s_overlays`'s global/``[all]``-only view.
+
+    The boot-config doctor check's fallback: a model-scoped line (say
+    ``[pi5]``) must not false-FAIL a check whose only job is catching the
+    line vanishing from the file entirely (#2575).
+    """
+    return overlay.lower() in _overlay_values(content.splitlines())
 
 
 def read_i2s_hat_intent(
@@ -407,6 +423,27 @@ def _read_text(path: str | Path) -> str:
         return Path(path).read_text(encoding="utf-8").replace("\x00", "").strip()
     except OSError:
         return ""
+
+
+def boot_config_path() -> Path:
+    """``config.txt``'s resolved path, honoring ``JTS_BOOT_CONFIG_FILE``."""
+
+    return Path(os.environ.get("JTS_BOOT_CONFIG_FILE", DEFAULT_BOOT_CONFIG_PATH))
+
+
+def read_boot_config_or_none(path: str | Path | None = None) -> str | None:
+    """``config.txt``'s content, or ``None`` if it could not be read.
+
+    Unlike :func:`_read_text` (whose callers treat a transient USB-port-role
+    read as equivalent to "not configured"), a caller confirming a saved
+    line is genuinely GONE — not merely unreadable right now — needs that
+    distinction kept.
+    """
+    target = Path(path) if path is not None else boot_config_path()
+    try:
+        return target.read_text(encoding="utf-8").replace("\x00", "")
+    except OSError:
+        return None
 
 
 def observed_active_role(udc_class_dir: str | Path) -> UsbDataRole:

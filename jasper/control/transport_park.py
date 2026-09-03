@@ -92,6 +92,49 @@ ACTIVE_ENDPOINT_REMEDY = (
     "--endpoint ring && sudo systemctl start jasper-audio-hardware-reconcile"
 )
 
+#: Recorded text when the reconciler's last-observed output hardware names no
+#: registry DAC: neither remedy step has anything to drive, so naming the
+#: normal command would send the household to run one that cannot work (#2575).
+NO_RECOGNIZED_DAC_REMEDY = "no recognized DAC; the remedy cannot converge"
+
+#: Display name of the jasper-doctor check that catches the underlying cause
+#: for an I2S box: its dtoverlay line dropped from config.txt ahead of the
+#: reboot that would lose the DAC. Owned here, not in the check's own module,
+#: so every reader of a park record (doctor, /state, the web card) names the
+#: same check without the control layer importing the cli layer.
+I2S_DAC_OVERLAY_CHECK_NAME = "I2S DAC overlay persists"
+
+
+def _active_endpoint_remedy(topology: "OutputTopology") -> str:
+    """The remedy for :data:`PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED`.
+
+    Reads the reconciler's last-observed output hardware ONCE, for whether the
+    DAC is *recognized* (``observed_profile_id`` — what the reconciler SAW),
+    never whether it is *driven* (``active_profile_id`` needs ``ready`` and a
+    selected card, which is irrelevant here: a recognized DAC that is merely
+    not ready yet keeps the normal remedy). Consuming that already-written
+    fact is not re-deriving ring eligibility — see the module docstring.
+
+    No record at all (state unavailable) is inconclusive, not a claim of
+    "nothing recognized" — it keeps the normal remedy too; only a record that
+    POSITIVELY names no DAC swaps the text.
+    """
+    from ..output_hardware import load_state as _load_output_hardware_state
+
+    state = _load_output_hardware_state()
+    if state is None or state.observed_profile_id is not None:
+        return ACTIVE_ENDPOINT_REMEDY
+
+    from ..audio_hardware.dac import by_id as _dac_by_id
+
+    profile = _dac_by_id(topology.hardware.device_id)
+    if profile is not None and profile.connection == "i2s":
+        return (
+            f"{NO_RECOGNIZED_DAC_REMEDY} — see jasper-doctor's "
+            f'"{I2S_DAC_OVERLAY_CHECK_NAME}" check'
+        )
+    return NO_RECOGNIZED_DAC_REMEDY
+
 
 @dataclass(frozen=True)
 class TransportPark:
@@ -265,7 +308,7 @@ def _assess(
             TransportPark(
                 park_class=PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
                 issue=None,
-                remedy=ACTIVE_ENDPOINT_REMEDY,
+                remedy=_active_endpoint_remedy(topology),
                 detail=(
                     f"this active-crossover box resolves a {active_ring}-channel "
                     "ACTIVE ring, but its endpoint marker has not converged onto "
