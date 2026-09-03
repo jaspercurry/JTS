@@ -94,8 +94,7 @@ executed under both.
    restart" and "an arm or a disarm"; the `test_ring_anchor_arm_acceptance`
    and `test_composite_ring_arm_enabling` modules), a branch or case of a
    conditional (`outputd`'s "both arms", `program_analysis`'s `None` and
-   low-SNR arms), and an arm of a comparison study
-   (`severed-twin-replay`'s three replay arms). The offline A/B emit bench
+   low-SNR arms), and an arm of a comparison study. The offline A/B emit bench
    is the one **covered** exception, not an unrelated sense: #2878 records
    that its "control-vs-treated legs genuinely ARE DSP variants under test —
    so the invariant does cover them", non-violating only because this
