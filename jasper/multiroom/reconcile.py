@@ -93,13 +93,17 @@ _MAX_SOURCE_RECONCILE_STARTS = 2  # drain prior pass, then run fresh role pass
 _MAX_PLAN_UNIT_INTENTS = 2  # snapserver + snapclient; sources have one owner
 _SNAPCAST_PROVISION_BUDGET_SEC = 420.0  # apt update 120 + install 300
 _MAX_POST_PLAN_BLOCKING_ACTIONS = 6
+# _plan_changes_units probes each plan intent's unit (one ActiveState read) BEFORE
+# _apply runs it.
+_UNIT_CHANGE_PROBE_CALLS = _MAX_PLAN_UNIT_INTENTS
 _BASE_RECONCILE_BUDGET_SEC = (
     _MAX_PLAN_UNIT_INTENTS * _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
     + _SNAPCAST_PROVISION_BUDGET_SEC
     + _MAX_POST_PLAN_BLOCKING_ACTIONS * _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+    + _UNIT_CHANGE_PROBE_CALLS * _SYSTEMCTL_CONTROL_TIMEOUT_SEC
 )
 _OWNER_CONTROL_CALLS_PER_HANDOFF = 2  # reset-failed + ActiveState probe
-_RECONCILE_TIMEOUT_MARGIN_SEC = 40.0
+_RECONCILE_TIMEOUT_MARGIN_SEC = 30.0
 _RECONCILE_SYSTEMD_TIMEOUT_SEC = (
     _BASE_RECONCILE_BUDGET_SEC
     + _MAX_SOURCE_RECONCILE_STARTS * _SOURCE_RECONCILE_START_TIMEOUT_SEC
@@ -1033,6 +1037,51 @@ def _unit_absent_stderr(stderr: str) -> bool:
     return "not loaded" in lowered or "not found" in lowered
 
 
+def _unit_active(unit: str) -> bool | None:
+    """Return whether `unit`'s live ``ActiveState`` counts as active.
+
+    ``None`` on a probe failure or an unrecognized state; callers treat that
+    as unproven and take the safe branch.
+    """
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", unit, "--property=ActiveState", "--value"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    state = (proc.stdout or "").strip().lower()
+    if proc.returncode == 0 and state in {
+        "active",
+        "activating",
+        "reloading",
+        "deactivating",
+    }:
+        return True
+    if proc.returncode == 0 and state in {"inactive", "failed"}:
+        return False
+    return None
+
+
+def _plan_changes_units(intents: tuple[UnitIntent, ...]) -> bool:
+    """Whether applying `intents` would flip any unit's live ``ActiveState``.
+
+    Probed BEFORE the plan runs, so an already-active unit getting `start` (or
+    an already-inactive unit getting `stop`) does not count as a change. A
+    probe failure counts as a change — the caller uses this to decide whether
+    the post-role source barrier can be skipped, and an unproven state must
+    not license skipping it.
+    """
+    for it in intents:
+        state = _unit_active(it.unit)
+        if state is None or state != (it.desired == "start"):
+            return True
+    return False
+
+
 def _apply(plan_: ReconcilePlan) -> int:
     """Apply a plan via systemctl. Returns a process exit code.
 
@@ -1237,56 +1286,22 @@ def _source_reconciler_activation_busy() -> bool | None:
     """Return whether the source owner has an activation that can absorb a start.
 
     ``systemctl is-active`` does not distinguish every oneshot state, so read
-    ``ActiveState`` directly. Unknown / probe failure returns ``None``; the
-    caller handles it in the safe direction.
+    ``ActiveState`` directly via :func:`_unit_active`. Unknown / probe failure
+    returns ``None``; the caller handles it in the safe direction.
     """
 
-    try:
-        proc = subprocess.run(
-            [
-                "systemctl",
-                "show",
-                SOURCE_INTENT_RECONCILE_UNIT,
-                "--property=ActiveState",
-                "--value",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+    state = _unit_active(SOURCE_INTENT_RECONCILE_UNIT)
+    if state is None:
         log_event(
             logger,
             "multiroom.reconcile.owner_state_probe_failed",
             unit=SOURCE_INTENT_RECONCILE_UNIT,
-            error=exc,
             level=logging.WARNING,
         )
-        return None
-    state = (proc.stdout or "").strip().lower()
-    if proc.returncode == 0 and state in {
-        "active",
-        "activating",
-        "reloading",
-        "deactivating",
-    }:
-        return True
-    if proc.returncode == 0 and state in {"inactive", "failed"}:
-        return False
-    log_event(
-        logger,
-        "multiroom.reconcile.owner_state_probe_failed",
-        unit=SOURCE_INTENT_RECONCILE_UNIT,
-        returncode=proc.returncode,
-        state=state or None,
-        stderr=(proc.stderr or "").strip() or None,
-        level=logging.WARNING,
-    )
-    return None
+    return state
 
 
-def _converge_sources_after_role() -> bool:
+def _converge_sources_after_role(*, grouping_active: bool, units_changed: bool) -> bool:
     """Run a fresh source pass after grouping's role plan and await it.
 
     A bare no-block start can join an activation that read the PREVIOUS role. So:
@@ -1297,7 +1312,19 @@ def _converge_sources_after_role() -> bool:
     ``restart`` — so an ordered source transition is not interrupted. The final
     call is blocking: grouping reports success only after source park/restore
     reaches its terminal result.
+
+    ``source-intent-reconcile.service`` in turn ``Wants=``/``After=``
+    ``audio-hardware-reconcile.service`` (a ~30 s pass on a Pi Zero 2 W), so this
+    barrier is skipped when grouping is off/solo AND the role plan touched no
+    unit — nothing changed for source-intent to react to.
     """
+    if not grouping_active and not units_changed:
+        log_event(
+            logger,
+            "multiroom.sources_barrier_skipped",
+            reason="no_role_change",
+        )
+        return True
 
     unit = SOURCE_INTENT_RECONCILE_UNIT
     _reset_failed_unit(unit)
@@ -2117,7 +2144,10 @@ def main(argv: list[str] | None = None) -> int:
     if not airplay_ok:
         rc = 1
 
-    # 4. The unit plan (stops before starts).
+    # 4. The unit plan (stops before starts). Probed before it runs — see
+    # _plan_changes_units — so the post-role source barrier below knows
+    # whether this pass actually moved a unit.
+    units_changed = _plan_changes_units(decision.intents)
     apply_rc = _apply(decision)
     rc = max(rc, apply_rc)
 
@@ -2463,7 +2493,10 @@ def main(argv: list[str] | None = None) -> int:
     # 7. Hand the completed role to the one source owner. It reads grouping
     # permission fresh and performs follower park or solo/leader restore for all
     # sources, including USB's arm -> advertise -> start sequence.
-    if not _converge_sources_after_role():
+    if not _converge_sources_after_role(
+        grouping_active=active,
+        units_changed=units_changed,
+    ):
         rc = 1
 
     log_event(logger, "multiroom.reconcile.done", rc=rc)
