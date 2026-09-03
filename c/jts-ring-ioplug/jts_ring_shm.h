@@ -93,20 +93,23 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 // respawn races its SIGKILLed predecessor's frozen heartbeat into an avoidable
 // -EBUSY; if the unit's start limit is tight, that loop PARKS it (the one
 // non-self-healing shape here). Every ring writer, checked:
-//   - librespot.service, shairport-sync.service: RestartSec=5 — clear it.
-//     shairport additionally opens its output PCM per AirPlay session, not at
-//     process start, so even a wedge-supervisor `systemctl restart` (which
-//     skips RestartSec) cannot race this window.
-//   - bluealsa-aplay.service: RestartSec=5, via the JTS drop-in
-//     deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf.
-//   - jasper-camilla: RestartSec=2 — sits ON the boundary.
-//   - jasper-snapclient.service (the grouping ingress ring on a bonded
-//     endpoint; the only writer here whose ring is neither a renderer lane
-//     nor the coupling's): RestartSec=3, StartLimitBurst=6 — a follower whose
-//     leader is powered off retries into this window, so the burst decides
-//     whether it re-joins or parks.
-//   - correction lane (jasper.audio_measurement.correction_lane): ephemeral
-//     aplay writers, no unit, no auto-respawn to clear.
+//
+// Parsed by tests/test_renderer_ring_lanes.py; keep the line grammar.
+//   - librespot.service            RestartSec=5  — clears it comfortably
+//   - bluealsa-aplay.service       RestartSec=5  — via the JTS drop-in
+//     deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf
+//   - jasper-camilla               RestartSec=2  — sits ON the boundary
+//   - shairport-sync.service       RestartSec=5  — clears it comfortably;
+//     also opens its output PCM per AirPlay session, not at process start,
+//     so even a wedge-supervisor `systemctl restart` (which skips
+//     RestartSec) cannot race this window
+//   - jasper-snapclient.service    RestartSec=3  — the grouping ingress
+//     ring on a bonded endpoint, StartLimitBurst=6: a follower whose leader
+//     is powered off retries into this window, so the burst decides
+//     whether it re-joins or parks
+//   - correction lane: EPHEMERAL aplay writers
+//     (jasper.audio_measurement.correction_lane) — no unit, no
+//     auto-respawn to clear
 // Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window
 // itself) and tests/test_renderer_ring_lanes.py, which walks this enumeration
 // against each unit's actual RestartSec.
