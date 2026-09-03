@@ -586,6 +586,7 @@ def test_service_cgroup_walk_is_cached_until_the_unit_set_changes(
     by the periodic rescan) both have to reach the table."""
     slice_dir = _make_fake_slice(str(tmp_path), {
         "jasper-voice.service": {"cpu.stat": "usage_usec 1000000\n"},
+        "jasper-control.service": {"cpu.stat": "usage_usec 2000000\n"},
     })
     walks = []
     real_list = SystemSampler._list_service_cgroups
@@ -600,36 +601,66 @@ def test_service_cgroup_walk_is_cached_until_the_unit_set_changes(
     s = SystemSampler()
 
     for _ in range(3):
-        assert [row["name"] for row in s._tick_services(slice_dir)] == [
-            "jasper-voice",
-        ]
+        assert sorted(
+            row["name"] for row in s._tick_services(slice_dir)
+        ) == ["jasper-control", "jasper-voice"]
     assert len(walks) == 1
 
     # A stopped unit takes its cgroup with it — visible on the next tick.
     import shutil
     shutil.rmtree(os.path.join(slice_dir, "jasper-voice.service"))
-    assert s._tick_services(slice_dir) == []
+    assert [row["name"] for row in s._tick_services(slice_dir)] == [
+        "jasper-control",
+    ]
     assert len(walks) == 2
 
-    # A started unit is picked up by the periodic rescan.
+    # A started unit keeps every cached path valid, so only the periodic
+    # rescan can pick it up.
     started = os.path.join(slice_dir, "jasper-outputd.service")
     os.makedirs(started)
     with open(os.path.join(started, "cpu.stat"), "w") as f:
-        f.write("usage_usec 2000000\n")
-    for _ in range(system_metrics.SERVICE_CGROUP_RESCAN_TICKS):
-        out = s._tick_services(slice_dir)
-    assert [row["name"] for row in out] == ["jasper-outputd"]
+        f.write("usage_usec 3000000\n")
+    for _ in range(system_metrics.SERVICE_CGROUP_RESCAN_TICKS - 1):
+        assert [row["name"] for row in s._tick_services(slice_dir)] == [
+            "jasper-control",
+        ]
+    assert sorted(
+        row["name"] for row in s._tick_services(slice_dir)
+    ) == ["jasper-control", "jasper-outputd"]
+    assert len(walks) == 3
 
 
-@pytest.mark.parametrize("elapsed,expected", [
-    (0.0, 5.0),
-    (2.5, 2.5),
-    (4.5, 1.0),
-    (30.0, 1.0),
+def test_service_cgroup_walk_result_is_not_cached_when_empty(
+    tmp_path, monkeypatch,
+) -> None:
+    """os.walk swallows its own errors, so an empty walk is indistinguishable
+    from a failed one — it must not blank the table for a whole rescan
+    window."""
+    walks = []
+    monkeypatch.setattr(
+        SystemSampler, "_list_service_cgroups",
+        staticmethod(lambda root_dir: walks.append(root_dir) or []),
+    )
+    s = SystemSampler()
+    missing = str(tmp_path / "no-cgroups")
+    s._tick_services(missing)
+    s._tick_services(missing)
+    assert len(walks) == 2
+
+
+@pytest.mark.parametrize("interval,elapsed,expected", [
+    (5.0, 0.0, 5.0),
+    (5.0, 2.5, 2.5),
+    (5.0, 4.5, 1.0),
+    (5.0, 30.0, 1.0),
+    # The floor never overrides a shorter configured cadence.
+    (0.5, 10.0, 0.5),
 ])
-def test_sampler_sleep_never_drops_below_the_floor(elapsed, expected) -> None:
+def test_sampler_sleep_never_drops_below_the_floor(
+    interval, elapsed, expected,
+) -> None:
     """A tick slower than the interval must not turn the loop into a spin."""
-    s = SystemSampler(sample_interval_sec=5.0)
+    s = SystemSampler(sample_interval_sec=interval)
     assert s._next_sleep_sec(elapsed) == pytest.approx(expected)
 
 

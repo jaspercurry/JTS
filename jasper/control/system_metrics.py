@@ -329,8 +329,13 @@ class SystemSampler:
             time.sleep(self._next_sleep_sec(elapsed))
 
     def _next_sleep_sec(self, elapsed: float) -> float:
-        """Pause before the next tick, never below MIN_SLEEP_SEC."""
-        return max(MIN_SLEEP_SEC, self._sample_interval - elapsed)
+        """Pause before the next tick, floored so a slow tick can't spin.
+
+        The floor never exceeds the configured interval, so a sampler
+        constructed with a sub-second cadence still honours it.
+        """
+        floor = min(MIN_SLEEP_SEC, self._sample_interval)
+        return max(floor, self._sample_interval - elapsed)
 
     def _tick(self) -> None:
         """Cheap-metric sample — /proc reads + statvfs + sysfs only."""
@@ -764,10 +769,15 @@ class SystemSampler:
         which is orders of magnitude cheaper than re-walking the tree) or
         SERVICE_CGROUP_RESCAN_TICKS elapsed, which is what catches a
         newly started unit.
+
+        An empty result is never cached: ``os.walk`` swallows its errors,
+        so "no services" is indistinguishable from "the walk failed", and
+        holding that for a minute would blank the table during exactly the
+        pressure event worth watching.
         """
         cache = self._service_cgroups_cache
         if (
-            cache is not None
+            cache
             and root_dir == self._service_cgroups_root
             and self._service_cgroups_ticks < SERVICE_CGROUP_RESCAN_TICKS
             and all(os.path.isdir(entry["path"]) for entry in cache)
