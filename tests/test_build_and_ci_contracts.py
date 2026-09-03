@@ -679,7 +679,7 @@ def test_linux_only_c_extensions_have_platform_markers() -> None:
         dependencies.extend(group)
     expected = {
         "pyalsaaudio": "pyalsaaudio>=0.11; sys_platform == 'linux'",
-        "evdev": "evdev>=1.7; sys_platform == 'linux'",
+        "evdev": "evdev>=2.0; sys_platform == 'linux'",
     }
 
     # A package may appear in more than one extra (evdev is in both install
