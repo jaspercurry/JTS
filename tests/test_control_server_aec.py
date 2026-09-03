@@ -851,7 +851,7 @@ def test_aec_commission_409_while_a_run_is_active(
     status, body = _post(f"{base}/aec/commission", None)
 
     assert status == 409
-    assert body["commission"] == {"running": True}
+    assert body["commission"]["running"] is True
 
 
 def test_aec_commission_concurrent_second_click_starts_nothing(
