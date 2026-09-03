@@ -108,45 +108,6 @@ retire_esp32_accessory_python_packages() {
         "${retired_packages[@]}" >/dev/null 2>&1
 }
 
-seed_capture_relay_env() {
-    # Existing boxes have a frozen first-install jasper.env. Add the relay keys
-    # if they predate the relay rollout, using the same public Jasper Tech relay
-    # defaults as .env.example. This helper is shared by the full and streambox
-    # profiles so every correction surface gets the same transport contract.
-    # The relay exists because mobile browsers require a publicly trusted HTTPS
-    # secure context for getUserMedia; the phone records on capture.jasper.tech
-    # while the LAN-only Pi pulls encrypted blobs over outbound HTTPS.
-    # Self-hosters can deploy the same Cloudflare code from relay/ and
-    # capture-page/ (see their README files) and override these via deploy env or
-    # by editing /etc/jasper/jasper.env. Existing non-empty custom values are
-    # preserved. To keep the on-Pi fallback, set
-    # JASPER_CAPTURE_RELAY_BASE=disabled (or off/0/none).
-    if [[ -n "${JASPER_CAPTURE_RELAY_BASE:-}" ]]; then
-        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "${JASPER_CAPTURE_RELAY_BASE}"
-        echo "  capture relay: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_RELAY_BASE=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
-        set_jasper_env_value JASPER_CAPTURE_RELAY_BASE "https://relay.jasper.tech"
-        echo "  capture relay: using Jasper Tech public relay"
-    fi
-    if [[ -n "${JASPER_CAPTURE_ORIGIN:-}" ]]; then
-        set_jasper_env_value JASPER_CAPTURE_ORIGIN "${JASPER_CAPTURE_ORIGIN}"
-        echo "  capture origin: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_ORIGIN=[[:space:]]*[^[:space:]]' "${ENV_DIR}/jasper.env"; then
-        set_jasper_env_value JASPER_CAPTURE_ORIGIN "capture.jasper.tech"
-        echo "  capture origin: using capture.jasper.tech"
-    fi
-    if [[ -n "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN:-}" ]]; then
-        set_jasper_env_value \
-            JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN \
-            "${JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN}"
-        echo "  capture relay registration token: configured from deploy environment"
-    elif ! grep -qE '^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=' "${ENV_DIR}/jasper.env"; then
-        printf 'JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=\n' >> "${ENV_DIR}/jasper.env"
-        echo "  capture relay registration token: unset"
-    fi
-    chmod 0640 "${ENV_DIR}/jasper.env"
-}
-
 # Pre-PR .env.example seeded this exact value uncommented; jasper.env is a
 # frozen first-install seed (never re-synced — see the comment above its
 # creation), so every existing Pi would keep the retired 1 GiB cap forever,
@@ -408,7 +369,6 @@ PY
         echo "starting jasper-voice — there is no default."
         echo
     fi
-    seed_capture_relay_env
     sed_inplace "${ENV_DIR}/jasper.env" \
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
@@ -417,7 +377,10 @@ PY
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
         -e '/^SPOTIPY_REDIRECT_URI=/d' \
         -e '/^JASPER_AEC_CHIP_AEC_DAC_AUTO=/d' \
-        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d'
+        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d' \
+        -e '/^JASPER_CAPTURE_RELAY_BASE=/d' \
+        -e '/^JASPER_CAPTURE_ORIGIN=/d' \
+        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
     migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         sed_inplace "${ENV_DIR}/jasper.env" '/^JASPER_AUDIO_DAC_ID=/d'
@@ -528,6 +491,11 @@ EOF
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: refreshed streambox defaults"
     fi
-    seed_capture_relay_env
-
+    # Streambox writes its own env rather than seeding from .env.example, so
+    # it does not reach the full profile's retirement list. Drop the same dead
+    # keys here; the token line can hold a real self-hosted secret.
+    sed_inplace "${ENV_DIR}/jasper.env" \
+        -e '/^JASPER_CAPTURE_RELAY_BASE=/d' \
+        -e '/^JASPER_CAPTURE_ORIGIN=/d' \
+        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
 }

@@ -1767,16 +1767,15 @@ tune_nginx_worker_processes() {
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
-    # HTTP. /correction/ is plain HTTP too: the mic rides the relay's publicly
-    # trusted capture origin, so no journey step redirects into the self-signed
-    # HTTPS origin (issue #2632). The legacy routes stay HTTP — Spotify's HTTPS
-    # requirement is satisfied by the GitHub Pages bounce, and there's no point
-    # breaking working flows for one feature.
-    #
-    # The HTTPS listener remains for the local getUserMedia hubs (a secure
-    # context is required there) but is entered deliberately, never by
-    # redirect. /google/ stays HTTP here; Google rejects mDNS redirect URIs, so
-    # it uses the same GitHub Pages bounce pattern as Spotify. The
+    # HTTP. /correction/ and the /sound/* measurement routes are proxied on
+    # both listeners, but browser mic capture only works on the HTTPS one:
+    # getUserMedia grants mic access in a secure context only. That origin is
+    # the installer's own self-signed cert, so it is entered deliberately and
+    # never by redirect — a cert interstitial is un-automatable (issue #2632).
+    # The legacy routes stay HTTP — Spotify's HTTPS requirement is satisfied
+    # by the GitHub Pages bounce, and there's no point breaking working flows
+    # for one feature. /google/ stays HTTP here; Google rejects mDNS redirect
+    # URIs, so it uses the same GitHub Pages bounce pattern as Spotify. The
     # correction-only cert is provisioned by provision_correction_tls() before
     # this function runs.
     install -d -m 0755 /etc/nginx/snippets
