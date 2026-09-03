@@ -653,7 +653,7 @@ def directivity_table(
     ``evaluable=False`` with every position still listed (UNSAMPLED, never
     an implied flat reference).
 
-    No production caller yet; #3865 wires it into analyze.
+    Consumed by ``jasper-round-views directivity`` (#3865).
     """
     reference = [p for p in positions if p.role == reference_role]
     if not reference:
