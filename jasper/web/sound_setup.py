@@ -79,7 +79,6 @@ from jasper.active_speaker.commission_wiring import (
     commission_seams,
     read_current_config_path,
     resolve_commission_inputs,
-    resolve_capture_preset,
     write_commission_path_safety,
 )
 
@@ -4663,10 +4662,6 @@ def _active_speaker_measurements_payload() -> dict[str, Any]:
         ),
     )
     return payload
-
-
-def _active_speaker_capture_preset(topology: OutputTopology) -> Any:
-    return resolve_capture_preset(topology)
 
 
 def _active_speaker_driver_measurement_payload(raw: dict[str, Any]) -> dict[str, Any]:
