@@ -248,10 +248,9 @@ class SummedAcousticResult:
     snr: dict[str, Any] | None = None
     ambient: dict[str, Any] | None = None
     # True when null_depth_db was reduced from its raw measured value because
-    # the overlap-band SNR could not prove a deeper null (see
-    # jasper.audio_measurement.snr_policy.cap_null_depth_db). The verdict
-    # above is always decided from the UNCAPPED measured depth; only the
-    # reported number is capped.
+    # the overlap-band SNR could not prove a deeper null. The verdict above is
+    # always decided from the UNCAPPED measured depth; only the reported
+    # number is capped.
     null_depth_capped: bool = False
     # Whether the crossover Fc (and its lower shoulder, Fc/2) sit above the
     # SC-2 low-frequency validity floor. True whenever gating was not applied
@@ -379,8 +378,7 @@ def _capture_to_magnitude(
     canonical acoustic bands, correct for the WIDE per-driver near-field sweep
     this path was built for. The caller MUST measure its signal side on that
     same table: the two are subtracted per ``band_id``. A sweep too narrow to
-    cover a canonical band needs a derived table instead
-    (:func:`~jasper.audio_measurement.snr_policy.sweep_excitation_bands`).
+    cover a canonical band needs a derived table instead.
     """
     if capture_geometry not in CAPTURE_GEOMETRIES:
         raise DriverAcousticsError(

@@ -61,9 +61,7 @@ capture group (CHECK/MEASURE/VERIFY each get their own).
    which MUST be measured with the room already quiet, i.e. after the
    warning rather than before it. The bound on the interval is therefore
    :data:`COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S` (settle + that window, and
-   nothing else); :func:`courtesy_beep_to_stimulus_gap_s` derives the
-   actual interval from any composed program, and composition tests pin
-   both rules.
+   nothing else); composition tests pin both rules.
 
 CHECK is the one composer whose prelude does not sit at sample 0, and it
 satisfies both rules anyway: its 12 s ``ambient`` window is the SESSION's
@@ -932,46 +930,6 @@ def courtesy_tone_stimulus(segment: ProgramSegment):
             f"produced {tone.size} samples, schedule says {segment.n_samples}"
         )
     return tone
-
-
-def courtesy_beep_to_stimulus_gap_s(program: ExcitationProgram) -> float | None:
-    """Seconds from the LAST courtesy beep to the first stimulus after it.
-
-    The acceptance criterion of the §2.5 pacing fix, made computable. Since
-    the 2026-07-28 reorder (issues #1810 / #1812) EVERY audible segment
-    follows the beeps, so "the first stimulus after them" is simply the
-    program's first stimulus: the leading pilot pair on MEASURE/VERIFY, the
-    first pilot on CHECK, the sweep on a legacy pilot-less program. Two
-    legitimate values, both bounded by
-    :data:`COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S`:
-
-    * :data:`COURTESY_TONE_TRAILING_SILENCE_S` — the settle alone, when the
-      first stimulus follows the prelude directly (CHECK; a program composed
-      without a leading pilot pair).
-    * that plus :data:`PILOT_AMBIENT_WINDOW_S` — when the pre-pilot ambient
-      window sits in between, which it must, because a noise floor measured
-      before the "go quiet" warning is not the floor the pilots play into.
-
-    Returns ``None`` for a program with no courtesy prelude, or one whose
-    prelude has no stimulus after it at all (which would be a composition
-    bug, not a pacing question).
-
-    Derived from the schedule rather than from the constants, so a composer
-    that quietly reinstated a lead-in between the beeps and the stimulus fails
-    the test that reads this instead of silently lengthening the wait again.
-    """
-    beeps = [seg for seg in program.segments if seg.kind == KIND_COURTESY_TONE]
-    if not beeps:
-        return None
-    beep_end = max(seg.start_sample + seg.n_samples for seg in beeps)
-    starts = [
-        seg.start_sample
-        for seg in program.segments
-        if seg.kind in STIMULUS_KINDS and seg.start_sample >= beep_end
-    ]
-    if not starts:
-        return None
-    return (min(starts) - beep_end) / program.sample_rate_hz
 
 
 def _insert_courtesy_prelude(

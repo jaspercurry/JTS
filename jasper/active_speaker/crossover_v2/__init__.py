@@ -168,11 +168,9 @@ imported by module path instead.
 The list above is deliberately unnumbered.  A stated count goes stale the next
 time a module arrives or leaves — as one did in #2291 Phase 5c-iii — and a
 count that disagrees with the list is worse than no count at all.  It is,
-however, COMPLETE: every module in this package appears above, and
-``test_package_enumeration_contract.py`` fails by name when one does not.  A
-list that quietly goes partial is worse than no list, because a reader takes
-the omission for "no such thing" — this one had drifted to fourteen unnamed
-modules before that guard existed.
+however, COMPLETE: every module in this package appears above.  A list that
+quietly goes partial is worse than no list, because a reader takes the
+omission for "no such thing".
 
 Dependency direction: this package imports no ``jasper.web`` and nothing from
 :mod:`jasper.active_speaker.crossover_v2_flow`.  The flow imports these

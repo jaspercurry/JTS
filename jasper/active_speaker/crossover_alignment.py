@@ -253,9 +253,8 @@ def propose_crossover_alignment(
     When ``alignment_snr_ok is False``: any ``keep``/``invert`` polarity action
     downgrades to ``review``, and ``delay_status`` can never read ``aligned``
     (downgrades to ``unknown``). ``null_depth_capped`` (either contributing
-    null depth was capped — see
-    :func:`jasper.audio_measurement.snr_policy.cap_null_depth_db`) forces the
-    same downgrade independently, even when ``alignment_snr_ok`` is ``True``:
+    null depth was capped) forces the same downgrade independently, even when
+    ``alignment_snr_ok`` is ``True``:
     a capped depth is, by construction, not fully proven. The margin/blend
     classification above is computed from the RAW depths regardless — only
     the outward action/status are downgraded, so the evidence stays visible

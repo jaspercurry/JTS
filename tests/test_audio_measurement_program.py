@@ -35,7 +35,6 @@ from jasper.audio_measurement.program import (
     COURTESY_TONE_BEEP_GAP_S,
     COURTESY_TONE_MARGIN_DB,
     COURTESY_TONE_TRAILING_SILENCE_S,
-    courtesy_beep_to_stimulus_gap_s,
     KIND_COURTESY_TONE,
     KIND_PILOT,
     KIND_SILENCE,
@@ -684,19 +683,6 @@ def test_the_beeps_are_followed_by_the_settle_and_nothing_else(phase):
     here instead of silently lengthening the wait again.
     """
     prog = _prelude_programs()[phase]
-    gap_s = courtesy_beep_to_stimulus_gap_s(prog)
-    # The single bound every composed program must respect.
-    assert gap_s <= COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S + 1e-3
-    # …and the exact value, derived from whether an ambient window sits
-    # between the beeps and the first stimulus rather than hand-tabulated
-    # per phase.
-    #
-    # The schedule walk below deliberately RE-DERIVES what
-    # `courtesy_beep_to_stimulus_gap_s` computes, rather than importing its
-    # answer: asserting a function's output against itself would pass for any
-    # composition. Two independent derivations of "where do the beeps end and
-    # the first stimulus begin" have to agree, so a bug in the shipped helper
-    # fails here instead of being ratified by it.
     beep_end = max(
         s.start_sample + s.n_samples
         for s in prog.segments if s.kind == KIND_COURTESY_TONE
@@ -705,6 +691,12 @@ def test_the_beeps_are_followed_by_the_settle_and_nothing_else(phase):
         s.start_sample for s in prog.segments
         if s.kind in STIMULUS_KINDS and s.start_sample >= beep_end
     )
+    gap_s = (first_stimulus - beep_end) / prog.sample_rate_hz
+    # The single bound every composed program must respect.
+    assert gap_s <= COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S + 1e-3
+    # …and the exact value, derived from whether an ambient window sits
+    # between the beeps and the first stimulus rather than hand-tabulated
+    # per phase.
     windowed = any(
         s.segment_id == AMBIENT_SEGMENT_ID
         and beep_end <= s.start_sample < first_stimulus
@@ -714,8 +706,6 @@ def test_the_beeps_are_followed_by_the_settle_and_nothing_else(phase):
         PILOT_AMBIENT_WINDOW_S if windowed else 0.0
     )
     assert gap_s == pytest.approx(expected, abs=1e-3)
-    # A program with no prelude has no interval to report — never a fake 0.
-    assert courtesy_beep_to_stimulus_gap_s(build_verify_program(1600.0)) is None
 
 
 @pytest.mark.parametrize(

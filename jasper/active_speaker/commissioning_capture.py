@@ -787,8 +787,7 @@ def _record_alignment_snr(summed_record: Any) -> tuple[bool | None, bool]:
     Reads the SC-1 alignment-class SNR block
     (``acoustic["snr"]``, see
     :func:`jasper.audio_measurement.snr_policy.band_snr_verdicts`) and the
-    capped-null flag (``acoustic["null_depth_capped"]``, see
-    :func:`jasper.audio_measurement.snr_policy.cap_null_depth_db`) that
+    capped-null flag (``acoustic["null_depth_capped"]``) that
     :func:`record_summed_acoustic_capture` persists when noise evidence was
     supplied.
 
