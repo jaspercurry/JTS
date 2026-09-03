@@ -4,24 +4,19 @@
 //
 // JTS Ring B — SHM ping-pong ring, C11 WRITER core (pure, no ALSA).
 //
-// This header is the C side of the SHM contract v1 documented in
-// rust/jasper-ring/src/lib.rs. Every offset here is `_Static_assert`ed against
-// the same numbers the Rust `jasper_ring::layout` module pins in its
-// golden-layout test — that pair is the cross-language drift guard. If you
-// change an offset, change BOTH sides in the same commit or one of the two
-// gates (this compile OR the Rust test) fails.
+// C side of the SHM contract v1 in rust/jasper-ring/src/lib.rs. Every offset
+// here is `_Static_assert`ed against the same numbers the Rust
+// `jasper_ring::layout` module pins in its golden-layout test; change an
+// offset on both sides in the same commit or one of the two gates fails.
 //
-// The WRITER is CamillaDSP via the ALSA ioplug (pcm_jts_ring.c); the reader is
+// WRITER: CamillaDSP via the ALSA ioplug (pcm_jts_ring.c). READER:
 // jasper-outputd (rust/jasper-ring). SPSC ping-pong: the writer publishes one
-// slot at a time with Release on write_seq; the reader consumes with Acquire on
-// write_seq and Release on read_seq. See the ownership discipline in the Rust
-// module doc; this core implements the WRITER half plus the shared create/attach
-// logic.
+// slot at a time with Release on write_seq; the reader consumes with Acquire
+// on write_seq and Release on read_seq.
 //
-// PRODUCT-INSTALLED, coupling-gated: this .so is shipped on every box via
-// deploy/lib/install/ring-platform.sh's /etc/alsa/conf.d/60-jts-ring.conf, but
-// stays INERT until the coupling reconciler arms shm_ring on a ring-eligible
-// box (see pcm_jts_ring.c's banner and ring-platform.sh for the arm path).
+// Shipped on every box via deploy/lib/install/ring-platform.sh's
+// /etc/alsa/conf.d/60-jts-ring.conf, but stays INERT until the coupling
+// reconciler arms shm_ring on a ring-eligible box.
 
 #ifndef JTS_RING_SHM_H
 #define JTS_RING_SHM_H
@@ -43,138 +38,83 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 #define JTS_RING_SAMPLE_FORMAT_S16LE 1u
 #define JTS_RING_SAMPLE_FORMAT_S32LE 2u
 
-// Channel accept-set for the wire: 2..=8. The floor is 2 because every producer
-// in the graph is at least a stereo program; explicit mono is representable in
-// the layout but refused by policy (no consumer). The ceiling is 8: the widest
-// registered DAC (DAC8x) is 8-channel, and jasper-outputd already bounds
-// JASPER_OUTPUTD_ACTIVE_CHANNELS at 2..=8. Like JTS_RING_MAX_SLOTS below, the
-// ceiling is tied cross-language by a source-grep test —
-// tests/test_ring_slot_ceiling_pin.py asserts JTS_RING_MAX_CHANNELS ==
-// MAX_RING_CHANNELS (rust/jasper-ring/src/layout.rs) == that outputd bound, so a
-// drift fails in CI rather than at RUNTIME on-Pi (the reader's geometry
-// validation rejects a channel count the writer created). Change them in the
-// same commit and the pin keeps passing.
+// Channel accept-set for the wire: 2..=8. Floor 2: every producer in the graph
+// is at least a stereo program; explicit mono is representable in the layout
+// but refused by policy. Ceiling 8: the widest registered DAC (DAC8x) is
+// 8-channel, and jasper-outputd bounds JASPER_OUTPUTD_ACTIVE_CHANNELS at
+// 2..=8. tests/test_ring_slot_ceiling_pin.py asserts JTS_RING_MAX_CHANNELS ==
+// MAX_RING_CHANNELS (rust/jasper-ring/src/layout.rs) == that outputd bound;
+// change all three in the same commit.
 #define JTS_RING_MIN_CHANNELS 2u
 #define JTS_RING_MAX_CHANNELS 8u
 
-// Slot-payload ceiling (bytes), enforced by jts_ring_geometry_validate. What it
-// bounds is the WRITER-CREATE path: create turns the requested geometry straight
-// into an ftruncate of JTS_RING_HEADER_BYTES + n_slots * slot_bytes, and
-// period_frames is otherwise checked only "> 0". With the accept-set widened to
-// 8 channels and S32 the worst-case slot is 16x v1's (4x channels x 2x sample
-// width), so this cap is what keeps a bad geometry from asking the kernel for an
-// unbounded file (and any attacher from mmapping it). The shipped worst case is
-// 8 ch x S32 x 128 frames = 4096 B; 64 KiB leaves room for a larger slot (issue
-// #2147 makes the slot floor-derived) without removing the bound.
+// Slot-payload ceiling (bytes), enforced by jts_ring_geometry_validate. Bounds
+// the WRITER-CREATE path: create ftruncates
+// JTS_RING_HEADER_BYTES + n_slots * slot_bytes straight from the requested
+// geometry (period_frames is otherwise checked only "> 0"), so this cap is
+// what keeps a bad geometry from asking the kernel for an unbounded file (and
+// any attacher from mmapping it). Shipped worst case: 8 ch x S32 x 128 frames
+// = 4096 B; 64 KiB leaves room to grow the slot floor (issue #2147) without
+// removing the bound.
 #define JTS_RING_MAX_SLOT_BYTES 65536u
 
 #define JTS_RING_MIN_SLOTS 2u
-// Ceiling 16: CamillaDSP's playback BufferManager
-// negotiates buffer = next_pow2(max(3*chunksize, 4*min_period)) and then drives
-// its rate controller toward `target_level` frames of device delay. With
-// slot_frames pinned at 128 (the outputd DAC-period contract), n_slots is the
-// ONLY axis for buffer depth (buffer = n_slots * period_frames). At n_slots=4
-// the buffer was 512 frames — smaller than both camilla's negotiated 1024 and
-// its target_level (1536), so the rate controller chased an unreachable target,
-// wound up, and drove the writer full (full_waits ~= every publish) into
-// stall/underrun flapping. 16 slots => 2048-frame buffer >= target_level with
-// headroom. Must be kept in lockstep with MAX_N_SLOTS in
-// rust/jasper-ring/src/layout.rs and MAX_SHM_RING_SLOTS in
-// rust/jasper-outputd/src/config.rs. Unlike the header OFFSETS (pinned
-// bit-for-bit by the golden-layout _Static_assert here and the Rust layout
-// test), these three MAX constants are tied by a source-grep CI test —
-// tests/test_ring_slot_ceiling_pin.py asserts all three are EQUAL, so a drift
-// fails in CI rather than only at RUNTIME on-Pi (the reader's geometry
-// validation rejects an out-of-range n_slots the writer created). Change all
-// three in the same commit and the pin keeps passing.
+// Ceiling 16: CamillaDSP's playback BufferManager negotiates
+// buffer = next_pow2(max(3*chunksize, 4*min_period)) and drives its rate
+// controller toward `target_level` frames of device delay. With slot_frames
+// pinned at 128 (the outputd DAC-period contract), n_slots is the ONLY axis
+// for buffer depth (buffer = n_slots * period_frames). At n_slots=4 the buffer
+// was 512 frames — smaller than both camilla's negotiated 1024 and its
+// target_level (1536) — so the rate controller chased an unreachable target
+// and drove the writer full (full_waits ~= every publish) into stall/underrun
+// flapping. 16 slots => 2048-frame buffer >= target_level with headroom.
+// Must stay in lockstep with MAX_N_SLOTS (rust/jasper-ring/src/layout.rs) and
+// MAX_SHM_RING_SLOTS (rust/jasper-outputd/src/config.rs);
+// tests/test_ring_slot_ceiling_pin.py asserts all three equal.
 #define JTS_RING_MAX_SLOTS 16u
 
-// Writer liveness window (ns): past this heartbeat age the reader is treated as
-// gone and the writer free-runs (drops frames) instead of blocking. Mirrors the
+// Writer liveness window (ns): past this heartbeat age the reader treats the
+// writer as gone and free-runs (drops frames) instead of blocking. Mirrors the
 // Rust WRITER_LIVENESS_TIMEOUT_NS.
 //
-// THE HEARTBEAT OWNS OBSERVABILITY, THE LOCK OWNS EXCLUSIVITY (U3/P6a). Since a
-// C writer holds an EXCLUSIVE flock on <ring>.writer.lock for the life of its
-// mapping, this window no longer decides who may WRITE a ring — it decides only
-// what a reader REPORTS (`writer_alive` in /state) and when a blocked writer
-// gives up on a reader. That split is deliberate and each half is the right
-// tool: a heartbeat is stamped on publish, so it correctly says "nothing is
-// flowing" the moment a renderer pauses — which is exactly what makes it WRONG
-// as an ownership test, because a paused renderer still owns its device. The
-// lock is fd-scoped, so it holds through a pause and drops automatically when
-// the process dies.
+// THE HEARTBEAT OWNS OBSERVABILITY, THE LOCK OWNS EXCLUSIVITY. A C writer holds
+// an EXCLUSIVE flock on <ring>.writer.lock for the life of its mapping, so this
+// window no longer decides who may WRITE — it decides only what a reader
+// REPORTS (`writer_alive` in /state) and when a blocked writer gives up on a
+// dead reader. The lock is fd-scoped (kernel-released on process death,
+// including SIGKILL, so a killed writer's ring is claimable immediately); the
+// heartbeat is stamped on publish, so a SIGKILLed writer leaves it frozen —
+// for up to this window a fresh writer is still refused by
+// foreign_writer_is_live even though the lock is already free. A paused (not
+// dead) renderer legitimately reports `writer_alive:false` while still holding
+// the lock; both are correct.
 //
-// PRECISELY, because "no timing window" would be false: the LOCK is windowless
-// — the kernel releases it with the fd, so a SIGKILLed writer's ring is
-// claimable immediately. The SECONDARY heartbeat guard is NOT. SIGKILL leaves
-// writer_pid stamped and the heartbeat frozen at its last publish, so for up to
-// this window a fresh writer is still refused by foreign_writer_is_live even
-// though the lock is already free. The window did not vanish when the lock
-// landed — it MOVED from the primary guard to the secondary one.
+// A ring writer's RestartSec must not fall below this window, or a fast
+// respawn races its SIGKILLed predecessor's frozen heartbeat into an avoidable
+// -EBUSY; if the unit's start limit is tight, that loop PARKS it (the one
+// non-self-healing shape here). Every ring writer, checked:
+//   - librespot.service, shairport-sync.service: RestartSec=5 — clear it.
+//     shairport additionally opens its output PCM per AirPlay session, not at
+//     process start, so even a wedge-supervisor `systemctl restart` (which
+//     skips RestartSec) cannot race this window.
+//   - bluealsa-aplay.service: RestartSec=5, via the JTS drop-in
+//     deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf.
+//   - jasper-camilla: RestartSec=2 — sits ON the boundary.
+//   - jasper-snapclient.service (the grouping ingress ring on a bonded
+//     endpoint; the only writer here whose ring is neither a renderer lane
+//     nor the coupling's): RestartSec=3, StartLimitBurst=6 — a follower whose
+//     leader is powered off retries into this window, so the burst decides
+//     whether it re-joins or parks.
+//   - correction lane (jasper.audio_measurement.correction_lane): ephemeral
+//     aplay writers, no unit, no auto-respawn to clear.
+// Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window
+// itself) and tests/test_renderer_ring_lanes.py, which walks this enumeration
+// against each unit's actual RestartSec.
 //
-// So a ring writer's RestartSec must not fall BELOW this window, or a fast
-// respawn races its own predecessor's frozen heartbeat into an avoidable
-// -EBUSY — and if its start limit is tight, that loop PARKS the unit, which is
-// the one non-self-healing shape here. (Strictly CLEARING the window is the
-// stronger bar, and it is pinned per-unit where each cadence is decided rather
-// than claimed for the whole set here — one writer below sits exactly ON the
-// boundary and says so.) Every ring writer's cadence, so the set is checkable
-// rather than assumed:
-//   - librespot.service            RestartSec=5  — clears it comfortably
-//   - bluealsa-aplay.service       RestartSec=5  — in the JTS drop-in
-//     deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf, which has
-//     owned it since before this lane wrote a ring (chosen for OOM/device
-//     churn; it satisfies the ring constraint too). The drop-in overrides
-//     whatever the packaged unit sets, so that value cannot bite
-//   - jasper-camilla               RestartSec=2  — sits ON the boundary for
-//     Ring B, worth knowing before anyone shortens it
-//   - shairport-sync.service       RestartSec=5  — clears it comfortably.
-//     Doubly insulated in practice: shairport opens its output PCM per
-//     AirPlay SESSION (sessioncontrol releases the device ~1 s after idle),
-//     not at process start, so even the Tier-3 wedge supervisor's
-//     `systemctl restart` — which skips RestartSec entirely — cannot race
-//     this window: it is gated on no-active-session (ring closed) and the
-//     new process's first ring open waits for the next session, human-paced
-//   - jasper-snapclient.service    RestartSec=3  — the grouping ingress ring
-//     on a BONDED endpoint (snapclient writes it, that box's CamillaDSP
-//     captures the same PCM). The only writer here whose ring is neither a
-//     renderer lane nor the coupling's, and the one that had to move: it
-//     shipped at 2 s, ON the boundary, with StartLimitBurst=4 — below even
-//     systemd's default. A follower whose leader is powered off retries into
-//     this window, so the burst is what decides whether it re-joins or parks
-//   - correction lane: EPHEMERAL aplay writers (wizards / correction web /
-//     operator CLIs via jasper.audio_measurement.correction_lane) — no unit,
-//     no auto-respawn, so no RestartSec to clear. The only programmatic
-//     re-spawners (sound_setup's volume-floor and summed-test loops) STOP on
-//     the first nonzero exit rather than retrying, so a writer killed inside
-//     this window surfaces as one cleanly-failed session, never a respawn
-//     loop; every other spawn is human-paced, orders of magnitude slower
-//     than the window. Stop-on-first-nonzero does NOT cover the one mid-flip
-//     residual: a spawn that opens a ring fan-in is not reading — not YET
-//     (an arm before fan-in's restart, inherent to every arm transaction)
-//     or no LONGER (a disarm racing a running loop) — SUCCEEDS: aplay exits
-//     0 into the free-running ring, so that loop iteration records silence
-//     AS DATA
-//     rather than an error. Bounded and accepted: flips are
-//     operator-initiated (the arm CLI prints the fan-in restart
-//     instruction), and the correction pipeline's capture-quality checks
-//     reject the truncated/absent capture the spanned iteration produces.
-// Pinned by test_writer_lock_survives_a_sigkilled_incumbent (the window itself)
-// and by tests/test_renderer_ring_lanes.py, which walks THIS ENUMERATION —
-// every entry names a real unit, its RestartSec matches what that unit
-// declares, and the renderer lanes are all present — so a writer added here
-// with a cadence nobody checked, or removed from here while it still writes,
-// fails there.
-//
-// One consequence worth naming: the two can legitimately disagree. A paused
-// renderer reports `writer_alive:false` while still holding the ring, and that
-// is correct on both counts.
-//
-// A Rust `RingWriter` does NOT take the lock (fan-in owns Ring A by
-// construction and has no second opener), so on a Rust-written ring the
-// heartbeat remains the only exclusivity signal available — which is why
-// `foreign_writer_is_live` still runs as a secondary guard rather than being
-// deleted.
+// A Rust `RingWriter` does not take the lock (fan-in owns Ring A by
+// construction, so there is no second opener), so on a Rust-written ring the
+// heartbeat is the only exclusivity signal — why `foreign_writer_is_live`
+// still runs there.
 #define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS 2000000000ull
 
 // One bounded attach budget covers the O_EXCL creator's ftruncate and its
@@ -277,21 +217,20 @@ typedef struct {
     uint64_t drop_no_reader;   // slots discarded because no live reader
     uint64_t full_waits;       // publish attempts that had to wait for space
     // EXCLUSIVE flock held for the life of this mapping (see
-    // JTS_RING_WRITER_LOCK_SUFFIX). -1 means NOT HELD, which happens on exactly
-    // one path: acquire_writer_lock could not open or chmod the lock FILE
-    // (-2 internally), so the open proceeded fail-open on the heartbeat guard
-    // alone and logged `event=jts_ring.writer.lock_unavailable`. A writer that
-    // was REFUSED the lock never gets a struct at all — jts_ring_writer_open
-    // returns -EBUSY before writer_take_mapping. So a live writer with -1 here
-    // is a ring running WITHOUT fd-scoped exclusivity, not merely one that has
-    // not taken it yet.
+    // JTS_RING_WRITER_LOCK_SUFFIX). -1 means NOT HELD: acquire_writer_lock
+    // could not open or chmod the lock file, so the open proceeded fail-open
+    // on the heartbeat guard alone and logged
+    // `event=jts_ring.writer.lock_unavailable`. A writer REFUSED the lock
+    // never gets a struct (jts_ring_writer_open returns -EBUSY before
+    // writer_take_mapping), so a live writer with -1 here is running WITHOUT
+    // fd-scoped exclusivity, not merely one that has not taken it yet.
     //
-    // RELEASE ORDERING (F-8): jts_ring_writer_close releases this AFTER its
+    // Release ordering: jts_ring_writer_close releases this fd AFTER its
     // `if (!w || !w->base) return;` guard, so a struct with a held fd but no
-    // mapping would leak the lock. That state is unreachable today — the fd is
-    // only ever stored by writer_take_mapping, which sets base in the same
-    // breath — and it is stated here so nobody makes it reachable by storing
-    // the fd earlier without moving the release ahead of the guard.
+    // mapping would leak the lock. Unreachable today — the fd is only ever
+    // stored by writer_take_mapping, which sets base in the same breath —
+    // keep it that way: never store the fd earlier without moving the
+    // release ahead of the guard.
     int writer_lock_fd;
 } jts_ring_writer_t;
 
@@ -343,23 +282,21 @@ size_t jts_ring_samples_per_slot(const jts_ring_geometry_t *g);
 size_t jts_ring_file_size(const jts_ring_geometry_t *g);
 // Bytes per sample for a ring sample_format id — the ONE place the format enum
 // becomes a width, shared by the geometry math here and the ioplug's staging
-// strides (so a conf-declared format moves both together). An unrecognized id
-// answers 2 and never reaches a copy path: jts_ring_geometry_validate rejects it
-// before any mapping, and an untrusted HEADER format only feeds the implied-file-
-// size cross-check in attach, which is followed by a field-by-field compare
-// against the expected format. Mirrors Geometry::bytes_per_sample in
-// rust/jasper-ring/src/layout.rs on the valid ids {S16LE=1, S32LE=2}; the two
-// diverge deliberately on an unrecognized id — this function still answers 2
-// (bounded sizing for attach diagnostics, per above) where the Rust side
-// returns Err (a hard config-error path with no diagnostic-sizing need).
+// strides. An unrecognized id answers 2 and never reaches a copy path
+// (jts_ring_geometry_validate rejects it before any mapping; an untrusted
+// HEADER format only feeds the implied-file-size cross-check in attach,
+// followed by a field-by-field compare against the expected format). Mirrors
+// Geometry::bytes_per_sample in rust/jasper-ring/src/layout.rs on the valid
+// ids {S16LE=1, S32LE=2}; the two diverge deliberately on an unrecognized id
+// (this returns 2 for bounded diagnostic sizing, Rust returns Err).
 size_t jts_ring_bytes_per_sample(uint32_t sample_format);
 // Returns 0 on valid, non-zero (a static reason string is set via *reason) on
-// an unsupported geometry. The accept-set is sample_format in {S16LE, S32LE},
+// an unsupported geometry. Accept-set: sample_format in {S16LE, S32LE},
 // channels 2..=8, rate 48000, period_frames > 0, n_slots 2..=16, and a slot
 // payload within JTS_RING_MAX_SLOT_BYTES. Both ends of the wire must accept
 // exactly this set — `jasper_ring::Geometry::validate_self` is the Rust half,
 // and a geometry one end creates but the other refuses fails at attach on-Pi.
-// The channel ceiling and the format ids are pinned across the two by
+// The channel ceiling and format ids are pinned across the two by
 // tests/test_ring_slot_ceiling_pin.py.
 int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason);
 
@@ -374,38 +311,30 @@ int jts_ring_geometry_validate(const jts_ring_geometry_t *g, const char **reason
 int jts_ring_writer_open(const char *path, const jts_ring_geometry_t *expected,
                          jts_ring_writer_t *out);
 
-// Publish one slot from `slot` — exactly jts_ring_slot_bytes(&w->geometry) bytes
-// of interleaved samples in the ring's declared format. The core is byte-
-// oriented: it memcpys the payload and never interprets a sample, so the caller
-// owns the typed view at its own boundary (the ioplug stages the ALSA format the
-// conf.d declared; the Rust reader hands out its own slice type).
-// Space discipline: load read_seq (Acquire); if W - R < n_slots, memcpy the
-// payload and store write_seq+1 (Release). If full: check reader liveness
-// (reader_pid != 0 AND heartbeat < 2 s). Reader alive -> clamped nanosleep,
-// re-check up to a bounded number of tries (productization: FUTEX_WAIT). Reader
-// dead/absent -> FREE-RUN by dropping the OLDEST slot: advance read_seq on the
-// absent reader's behalf (Release), then publish the new slot over the freed
-// lap (return JTS_RING_PUBLISH_DROPPED). This keeps occupancy bounded so Camilla
-// never wedges when outputd's flag is off. Always updates writer_heartbeat_ns.
+// Publish one slot from `slot` — exactly jts_ring_slot_bytes(&w->geometry)
+// bytes of interleaved samples in the ring's declared format. Byte-oriented:
+// memcpys the payload and never interprets a sample, so the caller owns the
+// typed view at its own boundary (the ioplug stages the ALSA format conf.d
+// declared; the Rust reader hands out its own slice type).
+// Space discipline: load read_seq (Acquire); if W - R < n_slots, memcpy and
+// store write_seq+1 (Release). If full: check reader liveness (reader_pid !=
+// 0 AND heartbeat < 2 s). Reader alive -> clamped nanosleep, bounded retries.
+// Reader dead/absent -> FREE-RUN: advance read_seq on its behalf (Release),
+// drop the oldest slot, publish over the freed lap
+// (JTS_RING_PUBLISH_DROPPED). Bounds occupancy so CamillaDSP never wedges
+// when outputd's flag is off. Always updates writer_heartbeat_ns.
 //
-// AVAIL-GATE INTERACTION (the B1 contract — read with pcm_jts_ring.c Q1/Q7 and
-// jts_ring_pointer_report below). This free-run branch is the DATA-PATH half of
-// readerless survival, but it is only REACHABLE when the ioplug keeps calling
-// publish. ALSA's `transfer` (publish's caller during playback) is gated on
-// `avail`, which the ioplug's `pointer` callback computes via
-// jts_ring_pointer_report. That function keeps the gate open in TWO ways, both
-// required: (1) DUAL-MODE in_flight — while the reader is heartbeat-dead it
-// discounts published-but-unread slots to 0, so a readerless full ring reports
-// avail ~= full instead of the 0 an honest occupancy*period in_flight would pin;
-// and (2) a REPORTED-POSITION clamp — because ALSA infers hw motion as a
-// mod-buffer delta, a raw pointer jump of exactly buffer_size (which the
-// dead-mode discount flip produces at occupancy == n_slots) would alias to a
-// zero delta and re-pin avail at 0 permanently, so each reported advance is
-// capped below buffer_size. Only with BOTH does transfer keep calling publish so
-// this branch can bound the ring. Do not "optimize" this into a bare
-// drop-newest: advancing read_seq (not just discarding) is what makes occupancy
-// bounded, which the dual-mode pointer and the honest live-reader delay both
-// depend on.
+// This free-run branch only runs when the ioplug keeps calling publish, which
+// ALSA's `transfer` gates on `avail` — computed by the ioplug's `pointer`
+// callback via jts_ring_pointer_report below. That function keeps the gate
+// open two ways, both required: dual-mode in_flight (discounts
+// published-but-unread slots to 0 while the reader is heartbeat-dead, so a
+// readerless full ring reports avail ~= full) and the reported-position clamp
+// (caps each advance below buffer_size so ALSA's mod-buffer delta inference
+// never aliases a dead-mode discount flip to zero and re-pins avail at 0). Do
+// not "optimize" this into a bare drop-newest: advancing read_seq — not just
+// discarding — is what bounds occupancy, and both pointer-side mechanisms
+// depend on that.
 jts_ring_publish_result_t jts_ring_writer_publish(jts_ring_writer_t *w,
                                                   const void *slot);
 
@@ -416,19 +345,18 @@ uint64_t jts_ring_writer_occupancy_slots(const jts_ring_writer_t *w);
 // True (1) iff a reader is currently live: reader_pid != 0 AND its heartbeat is
 // younger than JTS_RING_WRITER_LIVENESS_TIMEOUT_NS. Exposes the same predicate
 // jts_ring_writer_publish/can_accept use, so the ioplug's `pointer`/`delay` can
-// run the DUAL-MODE avail contract (see pcm_jts_ring.c jts_ring_pointer): report
-// honest occupancy-derived in-flight while a reader is live, but discount
-// published-but-unread slots to 0 in-flight while the reader is absent so ALSA's
-// `avail` never sticks at 0 on a readerless ring (the B1 wedge). Same-process
-// convenience wrapper over the writer's mmap; reads relaxed atomics only.
+// run the dual-mode avail contract: honest occupancy-derived in-flight while
+// live, discounted to 0 in-flight while absent, so ALSA's `avail` never sticks
+// at 0 on a readerless ring. Same-process convenience wrapper over the
+// writer's mmap; reads relaxed atomics only.
 int jts_ring_writer_reader_is_live(const jts_ring_writer_t *w);
 
 // True (1) iff a publish would proceed without blocking right now: either the
-// ring has space (occupancy < n_slots) OR there is no live reader (in which case
-// publish free-run-drops immediately). Used by the ioplug's poll_revents to
-// report POLLOUT honestly — space-or-free-run is "writable"; a full ring WITH a
-// live reader is genuinely not-yet-writable, so we withhold POLLOUT and let the
-// timerfd re-poll rather than busy-spinning the app on a slot it cannot take.
+// ring has space (occupancy < n_slots) OR there is no live reader (publish
+// free-run-drops immediately). Used by the ioplug's poll_revents to report
+// POLLOUT honestly — space-or-free-run is "writable"; a full ring WITH a live
+// reader is genuinely not-yet-writable, so POLLOUT is withheld and the timerfd
+// re-polls rather than busy-spinning the app on a slot it cannot take.
 int jts_ring_writer_can_accept(const jts_ring_writer_t *w);
 
 // Detach: clear writer_pid (if ours), munmap, close. Safe on a zeroed struct.
@@ -470,18 +398,16 @@ jts_ring_slot_read_t jts_ring_reader_consume(jts_ring_reader_t *r, void *out);
 
 // Self-heal an out-of-range occupancy: if W - R > n_slots (a correct writer
 // never lets this happen, but a reader that wedged past the liveness window
-// while the writer free-ran drop-oldest can observe it on resume), fast-forward
-// the local read_seq to the tip and publish it (Release), counting one
-// reader_resync. Returns 1 iff a resync happened. This is the SAME operation
-// jts_ring_reader_consume performs defensively — extracted so the CAPTURE
-// ioplug's per-wake service tick can run it too. Without a proactive resync the
-// reader is stuck: the avail paths correctly report 0 readable on an out-of-
-// range occupancy (jts_ring_capture_occupancy_bounded), but at avail 0 alsa-lib
-// never calls transfer, so consume never runs, so the local read_seq never
-// catches up — a permanent-silence wedge with a LIVE writer. Running it from the
-// tick (which fires on every wake, avail 0 or not) gives the reader an
-// avail-visible recovery path. Never discards readable data: it only fires once
-// the writer has already lapped the reader (those slots are unreadable anyway).
+// while the writer free-ran drop-oldest can observe it on resume), fast-
+// forward the local read_seq to the tip and publish it (Release), counting one
+// reader_resync. Returns 1 iff a resync happened.
+// Same operation jts_ring_reader_consume performs defensively, extracted so
+// the capture ioplug's per-wake service tick can run it without waiting for a
+// consume call: at avail 0 alsa-lib never calls transfer, so an out-of-range
+// occupancy (jts_ring_capture_occupancy_bounded correctly reports 0 readable)
+// would otherwise wedge the reader in permanent silence against a LIVE
+// writer. Never discards readable data — only fires once the writer has
+// already lapped the reader, whose slots are unreadable regardless.
 int jts_ring_reader_resync_if_overrun(jts_ring_reader_t *r);
 
 // Frames of buffering readable right now (W - R) * period_frames, for the
@@ -590,53 +516,49 @@ static inline uint64_t jts_ring_timer_cadence_ns(int pace_nominal, int stream_is
     return jts_ring_tick_ns(period_frames, rate);
 }
 
-// --- ioplug pointer core (shared by pcm_jts_ring.c AND test_ring_core.c) ---
+// --- ioplug pointer core (shared by pcm_jts_ring.c and test_ring_core.c) ---
 //
 // The one function that computes the value the ioplug `pointer` callback
-// returns to ALSA. It is a `static inline` in the header (not a .c symbol) so
-// BOTH the plugin (compiled only on-Pi with alsa-lib) and the host test
-// (compiled on any host) call the SAME code. A regression in this logic fails
-// the host `make test` — the round-3 review's "the test hand-copies plugin
-// logic, so a plugin regression leaves host tests green" finding.
+// returns to ALSA. `static inline` in the header (not a .c symbol) so both
+// the plugin (compiled only on-Pi with alsa-lib) and the host test (compiled
+// on any host) call the SAME code — a regression here fails the host
+// `make test` too, not just on-Pi.
 //
-// It owns ALL of the reported-position discipline in one place:
+// Owns the reported-position discipline in one place:
 //
-//   1. DUAL-MODE in_flight (the B1/round-3 avail-gate fix). Reader LIVE ->
-//      honest occupancy-derived in_flight (occupancy*period + stage); reader
-//      DEAD -> stage-only in_flight, so published-but-unread slots discount to
-//      0 and ALSA's `avail` never sticks at 0 on a readerless ring.
+//   1. DUAL-MODE in_flight. Reader LIVE -> honest occupancy-derived in_flight
+//      (occupancy*period + stage); reader DEAD -> stage-only in_flight, so
+//      published-but-unread slots discount to 0 and ALSA's `avail` never
+//      sticks at 0 on a readerless ring.
 //
-//   2. REPORTED-POSITION clamp (the round-4 mod-buffer-alias fix). ALSA infers
-//      hw motion in snd_pcm_ioplug_hw_ptr_update as
+//   2. REPORTED-POSITION clamp. ALSA infers hw motion in
+//      snd_pcm_ioplug_hw_ptr_update as
 //        delta = (this_pointer_return - last_pointer_return) mod buffer_size
 //      (verbatim: `if (hw >= last_hw) delta = hw - last_hw; else delta =
 //      buffer_size + hw - last_hw;`). A RAW advance of exactly buffer_size
 //      between two pointer reads aliases to the SAME value mod buffer_size, so
-//      delta reads 0 — ALSA's hw_ptr falls one whole lap behind, `avail` pins
-//      at 0 permanently, and the writer wedges (the round-3 review's Blocker).
-//      An advance > buffer_size in one step is even worse (it can alias to a
-//      backward apparent delta). Three shapes produce an exactly-buffer_size
-//      raw jump: (a) a live reader drains a full ring during an app gap >= one
-//      buffer duration (in_flight: n_slots*period -> 0); (b) the dead-mode
-//      discount flip at occupancy == n_slots when the reader dies mid-play
-//      (in_flight: n_slots*period -> ~0); (c) the dead->live recovery.
+//      delta reads 0 — ALSA's hw_ptr falls one whole lap behind and `avail`
+//      pins at 0 permanently. An advance > buffer_size in one step aliases to
+//      an apparent backward delta, which is worse. Three shapes produce an
+//      exactly-buffer_size raw jump: (a) a live reader drains a full ring
+//      during an app gap >= one buffer duration (in_flight: n_slots*period ->
+//      0); (b) the dead-mode discount flip at occupancy == n_slots when the
+//      reader dies mid-play (in_flight: n_slots*period -> ~0); (c) the
+//      dead->live recovery.
 //
-//      The fix: never let the REPORTED position advance >= buffer_size in one
-//      call. We track the last reported (pre-modulo) position in
-//      `last_reported` and clamp each call's forward step to at most
-//      buffer_size - period_frames. A true jump of a full buffer then completes
-//      over successive poll ticks (each reveals one more period of drain), so
-//      ALSA sees a sequence of visible sub-buffer deltas instead of one
-//      aliased-to-zero lap. Tick length is jts_ring_timer_cadence_ns's to decide.
-//      The clamp ALSO subsumes round-3's monotonic
-//      floor: because we only ever move `last_reported` FORWARD (by a bounded
-//      amount) and never below it, the reported position is non-decreasing by
-//      construction — one unified state, not two clamps.
+//      So the REPORTED position never advances >= buffer_size in one call:
+//      `last_reported` (pre-modulo) is clamped to at most
+//      buffer_size - period_frames of forward step per call. A true
+//      full-buffer jump then completes over successive poll ticks
+//      (jts_ring_timer_cadence_ns sets tick length), each revealing one more
+//      period of drain, so ALSA sees sub-buffer deltas instead of one
+//      aliased-to-zero lap. The clamp also gives a monotonic floor for free:
+//      `last_reported` only ever moves forward, so the reported position is
+//      non-decreasing by construction — one unified state, not two clamps.
 //
-// The caller returns `reported % buffer_size` to ALSA. The raw `last_reported`
-// is what this function reads/writes; the modulo happens at the call site
-// (exactly where ALSA wants a mod-buffer value, and where the raw value is
-// available for the delta math above to reason about).
+// The caller returns `reported % buffer_size` to ALSA; `last_reported` stays
+// the raw value this function reads/writes, so the delta math above always
+// has the pre-modulo position to reason about.
 
 // The state the pointer core carries across calls, cleared on (re)prepare. The
 // plugin embeds it in jts_ring_pcm_t; the host test embeds it in its ioplug model.
@@ -660,14 +582,14 @@ static inline void jts_ring_pointer_state_reset(jts_ring_pointer_state_t *st) {
     st->pace_prev_reader_live = 0;
 }
 
-// Arm the bucket and seed it FULL — a real device absorbs its prefill at once, and
-// an empty bucket paces that prefill at the ceiling instead (the 57 s startup bind
-// in the measurements jts_ring_pace_apply cites). One buffer, once, so it costs no
-// rate. `prev_reader_live` starts at 1 so an already-live reader is not read as a
-// dead->live edge and re-seeded on top. Forced-nonzero clock: 0 is the not-armed
-// sentinel. The gate lives HERE because the caller is shared by both directions and
-// every ungoverned PCM — which is what keeps the "all stay zero on an ungoverned
-// PCM" claim above true of the plugin.
+// Arm the bucket and seed it FULL — a real device absorbs its prefill at once;
+// an empty bucket would instead pace that prefill at the ceiling (a 57 s
+// startup bind measured on hardware, see test_ring_core.c). One buffer, once,
+// so it costs no rate. `prev_reader_live` starts at 1 so an already-live
+// reader is not read as a dead->live edge and re-seeded on top. Clock is
+// forced nonzero: 0 is the not-armed sentinel. Lives here (not in `start`)
+// because the caller is shared by both directions and every ungoverned PCM,
+// which keeps "all fields stay zero on an ungoverned PCM" true of the plugin.
 static inline void jts_ring_pace_arm(jts_ring_pointer_state_t *st, int pace_nominal,
                                      int stream_is_playback, uint64_t now_ns,
                                      uint64_t buffer_size) {
@@ -677,13 +599,13 @@ static inline void jts_ring_pace_arm(jts_ring_pointer_state_t *st, int pace_nomi
     st->pace_prev_reader_live = 1;
 }
 
-// The (re)prepare transition as ONE step: clear the report, then arm. ARMING
-// BELONGS AT PREPARE, NOT AT START — an unarmed bucket makes jts_ring_pace_apply
+// The (re)prepare transition as one step: clear the report, then arm. Arming
+// belongs at PREPARE, not at START: an unarmed bucket makes jts_ring_pace_apply
 // early-return, and a PCM can transfer indefinitely while still PREPARED (with
-// start_threshold > period and a dead reader, ALSA's start condition never trips
-// against the dead-reader discount). Armed at start, that window was ungoverned
-// free-run. Moving it costs one buffer: a long prepare->start gap refills the
-// bucket, capped at the burst the seed already grants.
+// start_threshold > period and a dead reader, ALSA's start condition never
+// trips against the dead-reader discount) — armed at start, that window was
+// ungoverned free-run. Moving it costs one buffer: a long prepare->start gap
+// refills the bucket, capped at the burst the seed already grants.
 static inline void jts_ring_pointer_prepare(jts_ring_pointer_state_t *st, int pace_nominal,
                                             int stream_is_playback, uint64_t now_ns,
                                             uint64_t buffer_size) {
@@ -692,45 +614,47 @@ static inline void jts_ring_pointer_prepare(jts_ring_pointer_state_t *st, int pa
 }
 
 // THE PACING GOVERNOR — one owner, PLAYBACK only. A floor under the failure a
-// DAC-clocked reader does not have: measured 2026-08-20, a stalled reader let this
-// ring's writer storm at 763x where a live one held it to 1.00x
-// (captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md — the file every hardware
-// number in this header points at). CAPTURE never calls it: a bind there starves
-// camilla on a DAC-vs-Pi clock difference.
+// DAC-clocked reader does not have: a stalled reader let this ring's writer
+// storm at 763x where a live one held it to 1.00x
+// (captures/8.7-EVIDENCE-grouping-ring-2026-08-20.md). CAPTURE never calls
+// it: a bind there would starve camilla on a DAC-vs-Pi clock difference.
 //
-// CONTRACT. A token bucket anchored to the PREVIOUS call. Each call refills by
-// what a nominal device would have clocked in `now_ns - pace_last_ns` plus the
+// A token bucket anchored to the PREVIOUS call. Each call refills by what a
+// nominal device would have clocked in `now_ns - pace_last_ns` plus the
 // headroom, caps at `buffer_size`, and grants at most what it holds. Returns
-// `honest` unchanged when the bucket covers the whole advance (a device-paced app
-// reads bit-for-bit as it would with no governor), else `last_reported + granted`.
-// `pace_nominal == 0`, or an unanchored bucket, returns `honest` untouched.
+// `honest` unchanged when the bucket covers the whole advance (a device-paced
+// app reads bit-for-bit as it would with no governor); otherwise
+// `last_reported + granted`. `pace_nominal == 0`, or an unanchored bucket,
+// returns `honest` untouched.
 //
-// IT RUNS BEFORE THE CLAMP so it sees the app's REAL demand: token spend and bound
-// accounting are both functions of `want`, which the clamp has already truncated to
-// buffer - period. Not for monotonicity — this anchors on `last_reported` and only
-// lowers, so it is monotone on its own.
+// Runs BEFORE the clamp so it sees the app's real demand: token spend and
+// bound accounting are functions of `want`, which the clamp has not yet
+// truncated to buffer - period. It anchors on `last_reported` and only
+// lowers, so it is monotone on its own — no separate floor needed here.
 //
-// Per-call anchoring is what keeps it from being an INTEGRATOR: an absolute anchor
-// accumulates a persistent clock difference without bound — a deficit that binds a
-// healthy stream, or a surplus released in one burst when the reader dies. The cap
-// bounds burst outright instead: one wake advances at most one buffer, however long
-// the stream idled. A PARTIAL grant is floored to a period multiple; a covering
-// grant is exact. Tokens are spent on the GRANT, and the caller's clamp may report
-// up to a period less.
+// Per-call anchoring (not an absolute one) is what keeps this from
+// integrating: an absolute anchor would accumulate a persistent clock
+// difference without bound — a deficit that binds a healthy stream, or a
+// surplus released in one burst when the reader dies. The cap bounds burst
+// outright instead: one wake advances at most one buffer, however long the
+// stream idled. A partial grant is floored to a period multiple; a covering
+// grant is exact. Tokens are spent on the grant, and the caller's clamp may
+// report up to a period less.
 //
-// RE-SEEDS ON READER dead->live — the same event that resyncs read_seq, i.e. the
-// device was re-prepared, so it gets its prefill again exactly as `start` does.
-// EDGE ONLY, and bounded by the liveness window: a reader must go heartbeat-dead
-// (JTS_RING_WRITER_LIVENESS_TIMEOUT_NS, 2 s) before it can come live, so flapping
-// caps at one buffer per 2 s = 1024 f/s against 48000, ~2.1% — and only for a
-// reader dying and returning twice a second forever, its own loud failure.
+// Re-seeds on reader dead->live — the same event that resyncs read_seq, i.e.
+// the device was re-prepared, so it gets its prefill again exactly as `start`
+// does. Edge only, bounded by the liveness window: a reader must go
+// heartbeat-dead (JTS_RING_WRITER_LIVENESS_TIMEOUT_NS, 2 s) before it can come
+// live, so flapping caps at one buffer per 2 s = 1024 f/s against 48000,
+// ~2.1% — and only for a reader dying and returning twice a second forever.
 //
-// A RESTARTED reader is not a resumed one: a fresh process starts with empty
+// A restarted reader is not a resumed one: a fresh process starts with empty
 // buffers that only the headroom surplus refills, so re-lock takes at least
-// downstream_buffer/headroom — 42.67 ms / 2500 ppm = ~17 s at today's constants
-// (~44 s observed 2026-08-20). The ~1 s expectation belongs to SIGCONT, same
-// process, buffers intact. Sizing the re-seed to the consumer's buffer would
-// shorten it and is deliberately NOT done: the plugin cannot know foreign buffers.
+// downstream_buffer/headroom — 42.67 ms / 2500 ppm = ~17 s at today's
+// constants (~44 s observed on hardware). The ~1 s expectation belongs to
+// SIGCONT, same process, buffers intact. Sizing the re-seed to the consumer's
+// buffer would shorten it and is deliberately NOT done: the plugin cannot
+// know foreign buffers.
 static inline uint64_t jts_ring_pace_apply(jts_ring_pointer_state_t *st, uint64_t honest,
                                            int pace_nominal, uint64_t now_ns, uint32_t rate,
                                            uint64_t buffer_size, uint32_t period_frames,
@@ -774,17 +698,18 @@ typedef struct {
     int bound;              // last announced state
 } jts_ring_pace_log_state_t;
 
-// EDGES only (a bound governor is the steady state under a dead reader), one BIND
-// per `interval_ns`, and a suppressed bind leaves `bound` clear so its release is
-// suppressed with it. `last_log_ns == 0` is a SENTINEL, never a timestamp to
-// subtract from: `now_ns` is CLOCK_MONOTONIC_RAW, so a PCM opened inside the first
-// interval after boot would otherwise lose its very first bind.
+// EDGES only (a bound governor is the steady state under a dead reader), one
+// bind per `interval_ns`; a suppressed bind leaves `bound` clear so its
+// release is suppressed with it. `last_log_ns == 0` is a SENTINEL, never a
+// timestamp to subtract from — `now_ns` is CLOCK_MONOTONIC_RAW, so a PCM
+// opened inside the first interval after boot would otherwise lose its first
+// bind.
 //
-// SO AN EDGE INSIDE A PRIOR EDGE'S WINDOW IS DELIBERATELY SILENT, re-announcing on
-// the next window: a real bind can go unlogged while the governor is visibly
-// working, and that is the rate limit, not a fault. Seeding at start removes the
-// case that made it bite — a clean start now produces no edge, so a later stall's
-// bind is reliably the first.
+// An edge inside a prior edge's window is deliberately silent, re-announcing
+// on the next window: that is the rate limit, not a fault — a real bind can
+// go unlogged while the governor is visibly working. Seeding at start removes
+// the case that made it bite: a clean start produces no edge, so a later
+// stall's bind is reliably the first.
 static inline jts_ring_pace_log_event_t
 jts_ring_pace_log_step(jts_ring_pace_log_state_t *ls, uint64_t bound_ns, uint64_t now_ns,
                        uint64_t interval_ns) {
@@ -865,44 +790,45 @@ static inline uint64_t jts_ring_pointer_report(jts_ring_pointer_state_t *st,
     return reported;
 }
 
-// --- ioplug CAPTURE pointer core (Ring A; shared by pcm_jts_ring.c AND
+// --- ioplug CAPTURE pointer core (Ring A; shared by pcm_jts_ring.c and
 //     test_ring_core.c, exactly like the playback core above) ---
 //
-// The capture direction is the MIRROR of the playback pointer discipline, with
-// two things flipped:
+// The capture direction MIRRORS the playback pointer discipline, with two
+// things flipped:
 //
-//   * ROLES. On playback the ioplug is the WRITER and hw_ptr tracks the READER's
-//     drain (appl - in_flight). On capture the ioplug is the READER and hw_ptr
-//     tracks the WRITER's PUBLISH: hw = appl_frames + readable, where `readable`
-//     is what the app can consume right now. ALSA's capture avail is
-//     hw_ptr - appl_ptr = readable, and it grants `transfer` at most `avail`
-//     frames — so `readable` is the gate that lets camilla pull data.
+//   * ROLES. On playback the ioplug is the WRITER and hw_ptr tracks the
+//     READER's drain (appl - in_flight). On capture the ioplug is the READER
+//     and hw_ptr tracks the WRITER's PUBLISH: hw = appl_frames + readable,
+//     where `readable` is what the app can consume right now. ALSA's capture
+//     avail is hw_ptr - appl_ptr = readable, and it grants `transfer` at most
+//     `avail` frames — so `readable` is the gate that lets camilla pull data.
 //
-//   * THE DUAL MODE. On playback a DEAD reader discounts in_flight to 0 so avail
-//     stays OPEN (the writer must keep flowing to bound the ring). On capture a
-//     DEAD WRITER is the case that must keep avail open the OTHER way: the ring
-//     is empty and never refills, so an honest `readable` (= 0) would pin avail
-//     at 0 forever and camilla would block in poll on a producer that is gone —
-//     pushing it toward capture-error/prepare flap during a routine fanin
-//     restart. So writer-dead FABRICATES one period of readable per silence tick
-//     (the caller supplies `silence_frames`, incremented on the timer path),
+//   * THE DUAL MODE. On playback a DEAD reader discounts in_flight to 0 so
+//     avail stays OPEN. On capture a DEAD WRITER is the case that must keep
+//     avail open the OTHER way: the ring is empty and never refills, so an
+//     honest `readable` (= 0) would pin avail at 0 forever and camilla would
+//     block in poll on a producer that is gone — pushing it toward
+//     capture-error/prepare flap during a routine fanin restart. So
+//     writer-dead FABRICATES one period of readable per silence tick (the
+//     caller supplies `silence_frames`, incremented on the timer path),
 //     which advances hw_ptr and arms POLLIN so `transfer` pulls a period of
-//     zeros. Writer ALIVE + ring empty is DIFFERENT and correct: `readable` is
-//     honestly 0, avail is 0, camilla blocks in poll — that block IS the pacing
-//     (the writer, DAC-paced transitively, will publish the next slot). We never
-//     fabricate silence while the writer is alive.
+//     zeros. Writer ALIVE + ring empty is different and correct: `readable`
+//     is honestly 0, avail is 0, camilla blocks in poll — that block IS the
+//     pacing (the writer, DAC-paced transitively, will publish the next
+//     slot). Silence is never fabricated while the writer is alive.
 //
-// THE ALIAS HAZARD MIRRORS EXACTLY. ALSA infers capture hw motion the same way
-// (delta = (this - last) mod buffer_size in snd_pcm_ioplug_hw_ptr_update). A
-// writer BURST of exactly buffer_size frames between two pointer reads (a fanin
-// step that publishes a full buffer while the app was mid-gap) makes the raw
-// hw advance by exactly buffer_size in one call -> aliases to a ZERO delta ->
-// ALSA's accumulated hw_ptr falls a lap behind -> avail pins at 0 permanently ->
-// camilla wedges reading a producer that is actually full. Same fix: never let
-// the REPORTED position advance >= buffer_size in one call; a full-buffer catch-
-// up spreads over successive ~period/4 ticks as visible sub-buffer deltas. The
-// clamp is also the non-decreasing floor (hw_ptr never steps backward across a
-// writer reattach / epoch flip). One unified reported-position state, same
+// The alias hazard mirrors exactly: ALSA infers capture hw motion the same
+// way (delta = (this - last) mod buffer_size in
+// snd_pcm_ioplug_hw_ptr_update). A writer BURST of exactly buffer_size frames
+// between two pointer reads (a fanin step publishing a full buffer while the
+// app was mid-gap) makes the raw hw advance by exactly buffer_size in one
+// call -> aliases to a ZERO delta -> ALSA's accumulated hw_ptr falls a lap
+// behind -> avail pins at 0 permanently -> camilla wedges reading a producer
+// that is actually full. Same fix: never let the REPORTED position advance
+// >= buffer_size in one call; a full-buffer catch-up spreads over successive
+// ~period/4 ticks as visible sub-buffer deltas. The clamp is also the
+// non-decreasing floor (hw_ptr never steps backward across a writer reattach
+// / epoch flip). One unified reported-position state, the same
 // jts_ring_pointer_state_t the playback path uses.
 typedef struct {
     uint64_t appl_frames;    // ALSA appl_ptr mirror (frames the app has READ, real + silence)
