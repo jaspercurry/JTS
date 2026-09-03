@@ -4,62 +4,15 @@
 
 """Shared CamillaDSP graph-safety primitives for active-speaker commissioning.
 
-This module is the single home for the shared parse adapters and fail-closed
-predicates the active-speaker commissioning paths use to assert invariants
-against a CamillaDSP graph:
-
-- every per-output commission mute is a hard −120 dB mute **and** wired to its
-  own channel (`output_hard_muted_and_wired`) — the crash-recovery boot state
-  and the "all others muted" half of per-driver isolation;
-- a per-driver unmute leaves exactly the target output un-muted and wired
-  (`output_unmuted_and_wired`);
-- richer, caller-specific invariants — e.g. an audible tweeter wrapped by the
-  protective Linkwitz-Riley high-pass + startup limiter — are composed in the
-  callers from `filter_param_matches` + `pipeline_contains_chain`, so each
-  caller keeps the per-check evidence its result dict reports.
-
-Before this module these checks were re-implemented across ``staging.py``
-(the staged-text and the live read-back paths). The duplication was in the
-*predicate logic*, not the parsing: the paths parse a CamillaDSP graph in
-legitimately different ways and that difference must be preserved —
-
-1. ``view_from_emitted_text`` — a line/indent text parser over the *JTS-emitted*
-   config. It doubles as an emitter-format-drift guard: it asserts the exact
-   emitted shape (inline ``channels: [..]`` / ``parameters: {..}``), not merely
-   a semantically-equivalent graph.
-2. ``view_from_camilla_dict`` — for CamillaDSP's *read-back* of the running
-   graph, which it re-serializes in its own dialect (block-style lists, the
-   scalar ``channel: N`` single-channel sugar, reordered keys, filled defaults)
-   that the text parser cannot read. The caller ``yaml.safe_load``s the
-   read-back and hands the dict here.
-
-3. ``view_from_yaml_dict`` — for ``runtime_contract``'s candidate/unknown graph:
-   a ``yaml.safe_load``ed emitted active config, accepting only the
-   ``channels: [..]`` list form (no scalar ``channel: N`` sugar). Dict-taking
-   like ``view_from_camilla_dict`` — ``runtime_contract`` ``yaml.safe_load``s the
-   text itself (it needs the raw dict for its two distinct parse-error codes,
-   ``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object``, which this view
-   collapses to ``parsed_ok=False``) and hands the dict here, so the text is
-   parsed once.
-
-All normalise to one :class:`GraphView`; the predicates run on the view, so the
-logic is shared while each source keeps its own parsing semantics.
-
-Everything here is pure and **fail-closed**: an unparseable graph, a missing
-filter, or a mismatched wiring yields ``parsed_ok=False`` / ``False`` so a
-caller can never read "safe" out of a graph it could not prove safe. The
-module is a leaf (stdlib only — callers own the ``yaml.safe_load``);
-active-speaker constants and filter names (``STARTUP_MUTE_GAIN_DB``,
-``output_commission_mute_name``, …) are passed in by callers so the primitives
-stay reusable.
-
-As the leaf, this module also OWNS the shared scalar matchers
-(``float_matches`` / ``float_value`` / ``truthy_bool``) the predicates here run
-on. They are the single home: this module's predicates and the raw-dict
-verifiers (``runtime_contract``'s baseline path) both import them from here, so
-no verifier re-implements them. The sibling ``graph_evidence`` owns the
-complementary, emitter-coupled half (filter names + raw-dict accessors); the two
-modules are independent.
+Three adapters normalise a graph into one :class:`GraphView` — the emitted text
+(a strict shape check that doubles as the emitter-drift guard), CamillaDSP's
+own read-back dialect, and a ``yaml.safe_load``ed candidate — and the
+fail-closed predicates then run on the view, so the logic is shared while each
+source keeps its parsing semantics. Everything is pure: an unparseable graph, a
+missing filter or a mismatched wiring yields ``parsed_ok=False``/``False``, so a
+caller can never read "safe" out of a graph it could not prove safe. A leaf
+(stdlib only — callers own the ``yaml.safe_load`` and pass in filter names), and
+the single home of the shared scalar matchers no verifier may re-implement.
 """
 
 from __future__ import annotations
@@ -70,8 +23,6 @@ from typing import Any, Mapping
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).
-# Ported verbatim from staging.py so the emitted-text adapter is an exact
-# behavioural match; staging.py imports these once it migrates onto the view.
 # --------------------------------------------------------------------------- #
 
 
@@ -125,10 +76,7 @@ def _top_level_sections(text: str) -> dict[str, list[str]]:
 
 # --------------------------------------------------------------------------- #
 # Scalar matchers — the shared scalar vocabulary, owned HERE (the leaf).
-#
-# The single home for the active-speaker scalar matchers: the predicates below
-# need them, and the raw-dict verifiers (``runtime_contract``'s baseline path)
-# import them from here too. Do not re-implement them in a verifier.
+# The raw-dict verifiers import them from here too; never re-implement them.
 # --------------------------------------------------------------------------- #
 
 
@@ -231,9 +179,9 @@ def _names_tuple(raw: Any) -> tuple[str, ...]:
 def view_from_camilla_dict(config: Any) -> GraphView:
     """Adapter for CamillaDSP's read-back of the *running* graph (its dialect).
 
-    Mirrors ``staging._running_*``: a pipeline ``Filter`` step's channels may be
-    a ``channels: [..]`` list OR the scalar ``channel: N`` single-channel sugar;
-    bools are not channels. Fails closed if ``config`` is not a dict.
+    A pipeline ``Filter`` step's channels may be a ``channels: [..]`` list OR the
+    scalar ``channel: N`` sugar; bools are not channels. Fails closed if
+    ``config`` is not a dict.
     """
     if not isinstance(config, dict):
         return GraphView(parsed_ok=False)
@@ -266,26 +214,12 @@ def _running_step_channels(step: dict[str, Any]) -> frozenset[int]:
 def view_from_yaml_dict(config: Any) -> GraphView:
     """Adapter for ``runtime_contract``'s candidate/unknown graph (already parsed).
 
-    The dialect ``runtime_contract`` verifies: a JTS-emitted active-speaker
-    candidate config, ``yaml.safe_load``ed (so inline ``parameters: {..}`` /
-    ``channels: [..]`` arrive as real typed values, unlike the line/indent
-    ``view_from_emitted_text`` parser). It accepts ONLY the ``channels: [..]``
-    list form — NOT CamillaDSP's scalar ``channel: N`` single-channel sugar that
-    ``view_from_camilla_dict`` reads. The sugar is a read-back artifact never
-    present in a candidate graph, so a list-only reader keeps candidate
-    verification from silently accepting it (and matches the deleted
-    ``runtime_contract._pipeline_contains``, which was list-only too).
-
-    Dict-taking like ``view_from_camilla_dict`` — the caller owns the
-    ``yaml.safe_load``. ``runtime_contract`` already parses the candidate text
-    once (it needs the raw dict for its two distinct parse-error codes,
-    ``camilla_yaml_unparseable`` vs ``camilla_yaml_not_object``, and for the
-    baseline path's raw-dict filter accessors) and hands that dict here rather
-    than re-parsing.
-
-    Fails closed: a non-mapping object yields ``parsed_ok=False``. ``bool``
-    channels and ``None`` names are dropped, uniform with the other adapters (the
-    protective direction — a wiring check only gets stricter).
+    Accepts ONLY the ``channels: [..]`` list form — never CamillaDSP's scalar
+    ``channel: N`` sugar, which is a read-back artifact no candidate graph
+    carries, so a list-only reader keeps candidate verification from accepting
+    one. Dict-taking: the caller owns the ``yaml.safe_load``, so the candidate
+    text is parsed once. Fails closed on a non-mapping; ``bool`` channels and
+    ``None`` names are dropped, which only makes a wiring check stricter.
     """
     if not isinstance(config, dict):
         return GraphView(parsed_ok=False)
@@ -308,13 +242,10 @@ def view_from_yaml_dict(config: Any) -> GraphView:
 def view_from_emitted_text(text: str) -> GraphView:
     """Adapter for the *JTS-emitted* config text (the emitter-drift guard).
 
-    Mirrors ``staging._parse_generated_filters`` /
-    ``_parse_generated_pipeline_filters``: a line/indent parser that reads inline
-    ``type:`` / ``parameters: {..}`` filter defs and inline ``channels: [..]`` /
-    ``names: [..]`` pipeline steps exactly as the JTS emitter writes them. It
-    intentionally does NOT accept CamillaDSP's own re-serialised dialect — that
-    is what catches emitter drift. Always ``parsed_ok=True`` (an empty/garbled
-    graph yields no filters/steps, so predicates still fail closed).
+    A line/indent parser that reads the inline shapes the JTS emitter writes and
+    intentionally does NOT accept CamillaDSP's re-serialised dialect — that is
+    what catches emitter drift. Always ``parsed_ok=True``: an empty or garbled
+    graph yields no filters/steps, so predicates still fail closed.
     """
     sections = _top_level_sections(text)
 
@@ -349,11 +280,8 @@ def view_from_emitted_text(text: str) -> GraphView:
     for name, spec in pending.items():
         filters[name] = GraphFilter(type=spec["type"], params=spec["parameters"])
 
-    # _emitted_step returns None for non-Filter pipeline steps (e.g. the
-    # master_gain Mixer); skip those at the append sites so `steps` only ever
-    # holds real Filter steps. Filtering at append is narrowing-independent —
-    # a trailing `tuple(s for s in steps if s is not None)` over an Optional
-    # list is narrowed inconsistently by mypy across Python versions.
+    # _emitted_step returns None for non-Filter steps; filtering at the append
+    # sites rather than at the end keeps mypy's narrowing version-independent.
     steps: list[GraphPipelineStep] = []
     current: dict[str, Any] | None = None
     for line in sections.get("pipeline", []):
@@ -388,9 +316,7 @@ def _emitted_step(item: dict[str, Any]) -> GraphPipelineStep | None:
     if item.get("type") != "Filter":
         return None
     # `bool` is a subclass of `int`; a `true`/`false` in a channel list is
-    # malformed, so exclude it (matching `view_from_camilla_dict`). Excluding is
-    # the protective choice — it can only make a wiring check stricter, never
-    # let an unintended channel satisfy one.
+    # malformed, so exclude it. Excluding only makes a wiring check stricter.
     channels = frozenset(
         int(channel)
         for channel in item.get("channels", [])
@@ -414,7 +340,6 @@ def filter_param_matches(
     """True iff filter ``name`` is of ``filter_type`` and every param matches.
 
     Float params compare with :func:`float_matches`; others compare ``==``.
-    Identical to the prior ``_filter_param_matches`` / ``_running_filter_matches``.
     """
     fdef = view.filters.get(name)
     if fdef is None or fdef.type != filter_type:
@@ -453,12 +378,9 @@ def protection_requirement_present(
 ) -> bool:
     """Whether one output proves a confirmed driver band-limit requirement.
 
-    Driver and summed excitation share this exact fail-closed interpretation of
-    the safety profile: a high-pass must be at or above its confirmed corner, a
-    low-pass at or below it, and either must meet the confirmed minimum slope.
-    A covering pipeline step may group outputs only inside the caller-supplied
-    same-role channel set. Isolated-driver admission supplies a singleton; summed
-    stereo admission supplies every physical output for that one driver role.
+    A high-pass must be at or above its confirmed corner, a low-pass at or below
+    it, and either must meet the confirmed minimum slope. A covering pipeline
+    step may group outputs only inside the caller-supplied same-role channel set.
     """
 
     if not isinstance(requirement, dict):
@@ -505,27 +427,17 @@ def protection_requirement_present(
     return False
 
 
-# Absolute lower bound (Hz) on a tweeter-role protective high-pass corner. A
-# compression driver is ~25 dB more sensitive than the woofer, so the L0 gate
-# proves not just that a high-pass EXISTS on the tweeter output but that its
-# corner is high enough to keep the low-frequency excursion hazard band (roughly
-# 100 Hz–1 kHz) off the driver. 400 Hz is deliberately conservative: it sits far
-# BELOW any realistic tweeter/compression crossover (the shipped presets cross at
-# 1600 Hz; real compression crossovers are typically >=~800 Hz), so it can never
-# over-block a genuine preset — while still catching the egregious cases (a
-# tweeter "high-pass" left at 30 / 80 / 100 Hz that leaves full-range energy on a
-# hot driver). Precedent: :func:`sub_audible_guard_present` grew a corner CEILING
-# for the mirror-image "loose corner in the unprotective direction" reason.
+# Absolute lower bound (Hz) on a tweeter-role protective high-pass corner: the
+# corner must keep the low-frequency excursion hazard band (roughly 100 Hz–1 kHz)
+# off a driver ~25 dB more sensitive than the woofer. 400 Hz is deliberately
+# conservative — far below any realistic tweeter crossover (the shipped presets
+# cross at 1600 Hz), so it can never over-block a genuine preset while still
+# catching a "high-pass" left at 30 / 80 / 100 Hz.
 #
-# SCOPE: L0 proves high-pass PRESENCE + a safe corner FLOOR only. It does NOT
-# validate that a preset's *designed* crossover Fc is appropriate for its
-# specific driver (a DE250 vs a soft-dome tweeter want different corners) — that
-# is not built here. The per-driver half of it now lives on the protected
-# startup-load gate instead: ``path_safety``'s ``tweeter_protection_floor_honoured``
-# check refuses a staged crossover below the tweeter's own declared
-# ``required_protection_filters`` high-pass (issue #2491). This absolute 400 Hz
-# corner stays as the graph-level backstop that applies even to a driver that
-# declared no floor.
+# SCOPE: presence + this corner FLOOR only. Whether a preset's *designed* Fc
+# suits its specific driver is ``path_safety``'s
+# ``tweeter_protection_floor_honoured``, against the driver's own declared
+# floor; this absolute corner is the backstop for a driver that declared none.
 TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ = 400.0
 
 
@@ -539,35 +451,18 @@ def output_highpass_protected(
     """True iff ``channel`` is high-pass protected in the pipeline (fail-closed).
 
     The L0 emit-gate primitive: a compression-driver / tweeter output MUST carry
-    a protective high-pass (its crossover high-pass and/or a dedicated protective
-    high-pass) so full-range program can never reach a ~25 dB-hotter driver. True
-    iff SOME pipeline ``Filter`` step whose channel set is a **subset of
-    ``allowed_channels`` and contains ``channel``** lists a ``BiquadCombo`` filter
-    of ``type: LinkwitzRileyHighpass`` with a ``freq`` at or above
-    ``min_corner_hz``.
-
-    Two guards, both load-bearing and both fail-closed:
+    a protective high-pass so full-range program can never reach a ~25 dB-hotter
+    driver. Two guards, both load-bearing:
 
     * **Channel-set boundary (subset-of-role).** ``GraphView`` drops ``Mixer``
-      steps, so a pre-split high-pass on the stereo *program* bus ``[0, 1]`` could
-      numerically "cover" a post-split tweeter output and false-PASS it. Requiring
-      the covering step's channels to be a **subset of the tweeter-role output
-      set** accepts the emitter's folded per-role step (e.g. both stereo tweeters
-      ``[1, 3]``) and per-output splits (``[1]``), but rejects the ``[0, 1]``
-      program bus and any cross-role fold. This is not reachable with today's
-      emitter (preference EQ emits a plain ``Biquad``, not ``BiquadCombo``), but
-      it is exactly the drift class this gate exists to catch.
-    * **Corner floor.** A tweeter high-pass at a too-low corner (30 / 80 / 100 Hz)
-      leaves the excursion hazard band on the driver, so the corner must be
-      ``>= min_corner_hz`` (see :data:`TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`).
+      steps, so a pre-split high-pass on the stereo program bus ``[0, 1]`` could
+      numerically "cover" a post-split tweeter output and false-PASS it. The
+      covering step's channels must be a subset of the tweeter-role output set.
+    * **Corner floor** — see :data:`TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`.
 
-    Any qualifying LR high-pass counts — the 2-way woofer/tweeter crossover
-    high-pass at 1600 Hz is exactly the band-limit that protects the driver; this
-    is deliberately looser than :func:`tweeter_guard_present` (which additionally
-    pins a named protective HP + limiter for the commissioning re-prove). Fails
-    closed: a missing filter, a non-``BiquadCombo`` type, the wrong LR variant
-    (a low-pass), a below-floor / non-positive ``freq``, or a covering step that
-    reaches outside the tweeter-role channel set all yield ``False``.
+    Any qualifying LR high-pass counts, including the crossover's own; this is
+    deliberately looser than :func:`tweeter_guard_present`, which also pins a
+    named protective HP + limiter for the commissioning re-prove.
     """
     allowed = frozenset(int(c) for c in allowed_channels)
     for step in view.pipeline_steps:
@@ -593,23 +488,11 @@ def unprotected_tweeter_outputs(
 ) -> tuple[int, ...]:
     """The tweeter output channels that are NOT high-pass protected (fail-closed).
 
-    The reusable L0 gate over a normalised view: given the set of physical output
-    channels the topology/preset assigns a tweeter (compression-driver) role,
-    return the sorted subset lacking a protective high-pass per
-    :func:`output_highpass_protected`. An empty result means every tweeter output
-    is protected. A non-empty result is the fail-closed block signal: such a graph
-    would send full-range program to a compression driver.
-
-    ``tweeter_channels`` doubles as the ``allowed_channels`` boundary passed to
-    :func:`output_highpass_protected`, so a high-pass only counts when it is wired
-    within the tweeter-role output set (rejecting a pre-split program-bus HP that
-    would otherwise false-PASS a tweeter output — see that function's channel-set
-    guard).
-
-    Fail-closed by construction: an empty ``tweeter_channels`` returns ``()`` (no
-    tweeter role → nothing to protect → not over-blocked, so passive full-range
-    graphs pass), while every listed channel must PROVE its in-band, above-floor
-    high-pass or it lands in the returned tuple.
+    A non-empty result is the block signal: such a graph would send full-range
+    program to a compression driver. ``tweeter_channels`` doubles as the
+    ``allowed_channels`` boundary, so a high-pass counts only when wired within
+    the tweeter-role set. An empty ``tweeter_channels`` returns ``()`` — no
+    tweeter role means nothing to protect, so passive full-range graphs pass.
     """
     channels = {int(c) for c in tweeter_channels}
     return tuple(
@@ -661,45 +544,22 @@ def output_terminally_muted(
     Three facts, all read off the parsed graph — never off a filename or a
     source marker:
 
-    1. The channel carries the repo's one mute idiom — a ``Gain`` at
-       ``mute_gain_db`` with ``mute: true``, wired to that channel — proved by
-       :func:`output_hard_muted_and_wired`, the primitive the parked and
-       staged-startup graphs already rest on.
-    2. That mute is TERMINAL for the channel: it is the last name in its own
-       ``Filter`` step, no later ``Filter`` step touches the channel, and no
-       step of any other type follows it at all.
-    3. **No pipeline step is ``bypassed``.** CamillaDSP skips a bypassed step
-       entirely, so ``bypassed: true`` on the mute's own step leaves the channel
-       fully live while fact 1 still reads as satisfied — :class:`GraphView`
-       models filters and channels, not the per-step bypass flag, so the
-       primitive in fact 1 cannot see it. This is checked here, on the raw
-       pipeline, where the flag actually lives.
+    1. The channel carries the repo's one mute idiom
+       (:func:`output_hard_muted_and_wired`).
+    2. That mute is TERMINAL: last name in its own ``Filter`` step, no later
+       ``Filter`` step touches the channel, no step of any other type follows.
+       CamillaDSP applies a step's filters in order, so a ``Gain`` after the mute
+       re-amplifies and a later ``Mixer`` can re-inject another channel's signal;
+       a mute that merely appears somewhere is not a mute. A ``Filter`` step with
+       no ``channels`` key applies to every channel, so it counts as touching it.
+    3. **No pipeline step is ``bypassed``** — CamillaDSP skips such a step
+       entirely, leaving the channel live while fact 1 still reads as satisfied,
+       and :class:`GraphView` does not model the flag. Checked here on the raw
+       pipeline, and deliberately WHOLESALE: no JTS emitter writes ``bypassed``,
+       so its presence means the graph was hand-edited.
 
-    Fact 2 exists because of the lesson ``runtime_contract._parked_graph_allowed``
-    learned the hard way: CamillaDSP applies a step's filters in order, so a
-    ``Gain`` appended after the mute re-amplifies, and a later ``Mixer`` can
-    re-inject another channel's signal into a "muted" one. A mute that merely
-    *appears somewhere* in the chain is not a mute. A ``Filter`` step with no
-    ``channels`` key applies to every channel, so it counts as touching this one.
-
-    Fact 3 is deliberately WHOLESALE — any bypassed step anywhere refuses the
-    proof for every channel, not just a bypassed mute. No JTS emitter ever
-    writes ``bypassed``, so its presence means the graph was hand-edited, and
-    reasoning about which bypassed step is harmless is exactly the "generous
-    shape" fact 2 was written to reject. Both bench derivation checkers
-    (``jasper.active_speaker.bench.derivation``,
-    ``jasper.bass_extension.bench.derivation``) refuse bypassed steps outright
-    for the same reason; this matches them. Fails closed on any shape it cannot
-    read.
-
-    PROMOTED HERE from ``runtime_contract._flat_output_terminally_muted``, which
-    now delegates, when a second caller appeared: the ring arm's anchor
-    acceptance (``jasper.fanin.coupling_reconcile._anchor_is_all_muted``) needs
-    the same three facts about the same shape of graph, and a mirrored copy is a
-    drift site on a hearing-safety path. ``mute_name`` / ``mute_gain_db`` are
-    parameters rather than derived here, matching
-    :func:`output_hard_muted_and_wired` and keeping this module free of the
-    emitter's naming module.
+    Fails closed on any shape it cannot read. ``mute_name``/``mute_gain_db`` are
+    parameters, keeping this module free of the emitter's naming module.
     """
     if not output_hard_muted_and_wired(
         view, index, mute_name=mute_name, mute_gain_db=mute_gain_db
@@ -714,8 +574,8 @@ def output_terminally_muted(
         if truthy_bool(step.get("bypassed")):
             return False
         if step.get("type") != "Filter":
-            # Mixer / Processor / Dither / anything else after the mute can
-            # re-inject or generate signal on the channel.
+            # Mixer / Processor / Dither after the mute can re-inject or
+            # generate signal on the channel.
             if muted:
                 return False
             continue
@@ -755,21 +615,14 @@ def tweeter_guard_present(
     """True iff a protective high-pass + soft-clip limiter wrap ``channels`` (LOOSE).
 
     The loose policy ``runtime_contract`` uses when re-proving a candidate
-    commissioning graph — deliberately wider than ``staging``'s exact-match guard,
-    which pins the emitter's exact Fc/order/clip via ``filter_param_matches`` and
-    composes inline. Here ``runtime_contract`` only needs to prove the tweeter is
-    *protected enough to be audible*, not that the graph is bit-identical to the
-    emitter, so the bounds are tolerances rather than equalities:
+    commissioning graph: it only needs the tweeter *protected enough to be
+    audible*, not bit-identical to the emitter, so the bounds are tolerances —
+    any positive LR high-pass ``freq`` with ``order`` absent or ``>= 2``, and a
+    ``clip_limit <= limiter_clip_ceiling_db`` (a CEILING, not equality) with a
+    truthy ``soft_clip``, both wired to exactly ``channels`` in one step.
 
-    - high-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyHighpass`` with **any
-      positive** ``freq`` and ``order`` absent or ``>= 2``;
-    - limiter: a ``Limiter`` with ``clip_limit <= limiter_clip_ceiling_db`` (a
-      *ceiling*, not equality) and a truthy ``soft_clip``;
-    - both filters wired to exactly ``channels`` in one pipeline step.
-
-    Fails closed (missing filter / wrong type / unwired -> ``False``). This is a
-    separate predicate, NOT a relaxation of the strict mute/HP primitives above,
-    so it cannot change ``staging``'s behaviour.
+    Fails closed. A separate predicate, NOT a relaxation of the strict mute/HP
+    primitives above.
     """
     hp = view.filters.get(hp_name)
     limiter = view.filters.get(limiter_name)
@@ -809,19 +662,11 @@ def sub_guard_present(
     """True iff the local-subwoofer output is band-limited AND excursion-limited
     AND non-positive gain — all wired to ``channels`` (LOOSE, fail-closed).
 
-    Mirrors :func:`tweeter_guard_present` for the sub lane. A sub output must
-    NEVER carry a full-range / low-pass-absent feed, so all three are required:
-
-    - low-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyLowpass`` with **any
-      positive** ``freq`` and ``order`` absent or ``>= 2`` (the band-limit);
-    - gain: a ``Gain`` whose ``gain`` is present and ``<= 0`` (never a boost);
-    - limiter: a ``Limiter`` with ``clip_limit <= limiter_clip_ceiling_db`` (a
-      *ceiling*, not equality) and a truthy ``soft_clip`` (excursion);
-    - all three wired to exactly ``channels`` in one pipeline step.
-
-    The loose tolerances match ``tweeter_guard_present`` — ``runtime_contract``
-    only needs to prove the sub is protected enough, not bit-identical to the
-    emitter. Fails closed (missing filter / wrong type / unwired -> ``False``)."""
+    The sub-lane mirror of :func:`tweeter_guard_present`. A sub output must NEVER
+    carry a full-range / low-pass-absent feed, so all three are required: a
+    positive-``freq`` LR low-pass with ``order`` absent or ``>= 2``, a ``Gain``
+    that is present and ``<= 0`` (never a boost), and a soft-clip ``Limiter`` at
+    or under ``limiter_clip_ceiling_db``, wired together in one step."""
     lowpass = view.filters.get(lowpass_name)
     gain = view.filters.get(gain_name)
     limiter = view.filters.get(limiter_name)
@@ -871,30 +716,14 @@ def sub_audible_guard_present(
     (LOOSE, fail-closed) — the commissioning/startup analogue of
     :func:`sub_guard_present`.
 
-    The durable-baseline sub lane carries a non-positive ``Gain`` filter, so
-    :func:`sub_guard_present` also proves ``gain <= 0``. The commissioning/startup
-    sub lane has NO gain filter (the hard mute / startup limiter own the level),
-    so this predicate proves only the two that MUST hold for an *unmuted* sub:
+    The commissioning/startup sub lane carries no ``Gain`` filter (the hard mute
+    and startup limiter own the level), so only the band-limit and the excursion
+    limiter are proved here.
 
-    - low-pass: a ``BiquadCombo`` of ``type: LinkwitzRileyLowpass`` with a
-      positive ``freq`` **at or below** ``lowpass_freq_ceiling_hz`` and ``order``
-      absent or ``>= 2`` (the band-limit);
-    - limiter: a ``Limiter`` with ``clip_limit <= limiter_clip_ceiling_db`` (a
-      *ceiling*, not equality) and a truthy ``soft_clip`` (excursion);
-    - both wired to exactly ``channels`` in one pipeline step.
-
-    NOTE — the low-pass corner ceiling is load-bearing, NOT cosmetic, and is why
-    this is **not** a verbatim mirror of :func:`tweeter_guard_present`. For a
-    tweeter HIGH-pass, a looser (higher) corner is MORE protective; for a sub
-    LOW-pass it is LESS protective — a 20 kHz "low-pass" passes full-range energy
-    to a bass driver. So an *upper* bound on the corner (the legal sub-crossover
-    ceiling, e.g. 200 Hz) is required; without it a degenerate high-corner LP
-    would slip past while the baseline class catches the same shape via
-    :func:`bass_management_corner_matched`.
-
-    A sub output must NEVER carry a full-range / low-pass-absent / corner-too-high
-    feed while audible; fails closed (missing filter / wrong type / over-ceiling /
-    unwired -> ``False``)."""
+    The low-pass corner CEILING is load-bearing, not cosmetic: for a tweeter
+    high-pass a higher corner is MORE protective, but for a sub low-pass it is
+    LESS — a 20 kHz "low-pass" passes full-range energy to a bass driver — so an
+    upper bound on the corner is required."""
     lowpass = view.filters.get(lowpass_name)
     limiter = view.filters.get(limiter_name)
     lp_params = lowpass.params if lowpass else {}
@@ -932,11 +761,9 @@ def mains_highpass_present(
     the sub crossover — an LR4 high-pass with any positive ``freq`` wired to the
     mains' lowest-driver ``channels`` (fail-closed).
 
-    The sub low-pass without the mains high-pass is half a crossover: the mains
-    would still carry full bass, defeating bass management and over-driving a
-    woofer below the sub corner. This predicate proves the upper half EXISTS and
-    is wired to the mains; that the two halves share ONE corner Fc is the separate
-    :func:`bass_management_corner_matched` proof."""
+    Without it the mains still carry full bass, defeating bass management and
+    over-driving a woofer below the sub corner. That the two halves share ONE
+    corner Fc is the separate :func:`bass_management_corner_matched` proof."""
     hp = view.filters.get(highpass_name)
     hp_params = hp.params if hp else {}
     hp_freq = float_value(hp_params.get("freq"))
@@ -963,14 +790,11 @@ def bass_management_corner_matched(
     """True iff the sub low-pass and the mains high-pass share ONE corner Fc —
     the "two halves of one crossover" invariant (fail-closed).
 
-    :func:`sub_guard_present` and :func:`mains_highpass_present` prove each half
-    EXISTS and is wired; this proves they are complementary at the SAME corner.
-    The emitter drives both halves from one ``sub.crossover_fc_hz`` so a freshly
-    emitted graph always matches — but the re-proof exists to catch a graph the
-    emitter did NOT write (a corrupted/tampered statefile that splits the
-    crossover into, e.g., an 80 Hz HP under a 1000 Hz LP, leaving the sub
-    reproducing midrange or a mid-band hole). Both freqs must be present, positive,
-    and equal within the shared float tolerance; anything else fails closed."""
+    The emitter drives both halves from one ``sub.crossover_fc_hz``, so this
+    re-proof exists to catch a graph the emitter did NOT write — a tampered
+    statefile splitting the crossover into an 80 Hz HP under a 1000 Hz LP leaves
+    the sub reproducing midrange. Both freqs must be present, positive, and equal
+    within the shared float tolerance."""
     lp = view.filters.get(lowpass_name)
     hp = view.filters.get(highpass_name)
     lp_freq = float_value(lp.params.get("freq")) if lp else None
@@ -1135,24 +959,12 @@ def bass_extension_block_valid(
 # --------------------------------------------------------------------------- #
 # Pipeline reference closure — a structural check, independent of GraphView.
 #
-# W6 hardware run 4 finding I: ``emit_active_speaker_program_config`` emitted a
-# pipeline ``Mixer`` step naming ``split_active_2way`` (reused verbatim from
-# ``_emit_commissioning_pipeline``) while its own ``mixers:`` section defined
-# only ``program_route_2way`` — CamillaDSP's ``SetConfig`` rejected the graph at
-# LOAD time ("Use of missing mixer 'split_active_2way'"), and nothing upstream
-# had proven the two sides of the graph agreed at BUILD time. Every existing L0
-# proof in this module (``tweeter_guard_present``, `output_highpass_protected``,
-# …) runs on ``GraphView``, which by design DROPS ``Mixer`` steps entirely
-# (``_emitted_step`` returns ``None`` for anything but ``type: Filter`` — see
-# its comment) and never tracks the ``mixers:`` section at all, so none of them
-# could have caught this class of bug regardless of how thorough the tweeter
-# proofs were. This is a deliberately separate, narrower primitive: it does not
-# reason about channels, filter parameters, or protection — only whether every
-# name the pipeline points at actually exists.
-#
-# Dict-taking like ``view_from_yaml_dict``/``view_from_camilla_dict``: this
-# module stays a stdlib-only leaf (see the module docstring), so the caller
-# owns ``yaml.safe_load`` and hands the parsed mapping in.
+# ``GraphView`` DROPS ``Mixer`` steps and never tracks the ``mixers:`` section,
+# so no predicate above can catch a pipeline naming a mixer or filter the config
+# does not define (CamillaDSP rejects such a graph at LOAD time). This is a
+# deliberately narrower primitive: it does not reason about channels, filter
+# parameters, or protection — only whether every name the pipeline points at
+# exists. Dict-taking, so the caller keeps owning ``yaml.safe_load``.
 # --------------------------------------------------------------------------- #
 
 
