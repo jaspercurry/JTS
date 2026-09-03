@@ -1,0 +1,14 @@
+file                                               lines  prose   pct tests  asrt raises
+tests/test_spatial_combine.py                       4832   2098  43.4    91   540     13
+tests/test_active_speaker_seat_level.py             5174   1674  32.4   120   541      8
+tests/test_crossover_v2_driver_prescription.py      4654   1532  32.9   161   516     33
+tests/test_active_speaker_linearization_fit.py      3959   1447  36.5   132   447      3
+tests/test_crossover_v2_round_wiring.py             3287   1186  36.1    72   319      1
+tests/test_active_speaker_driver_safety.py          4004    923  23.1    76   407     24
+tests/test_crossover_v2_blend_prescription.py       3152    884  28.0   128   371     31
+tests/test_active_speaker_delta_probe.py            2542    874  34.4   110   392      0
+tests/test_crossover_v2_prescription_spool.py       2568    852  33.2    75   213     12
+tests/test_active_speaker_baseline_profile.py       6953    789  11.3   121   647      3
+tests/test_active_speaker_runtime_contract.py       5483    650  11.9   171   531      4
+tests/test_audio_measurement_anchor_resolution.py   1516    629  41.5    32   117      0
+TOTAL 48124 13538 1289 5041

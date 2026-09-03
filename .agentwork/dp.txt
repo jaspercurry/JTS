@@ -1,0 +1,2740 @@
+@@ 1-3 COM n=3 
+1| # SPDX-FileCopyrightText: 2026 Jasper Curry
+2| #
+3| # SPDX-License-Identifier: Apache-2.0
+>> 5| """The per-driver prescription class: full-band, both signs, classify first.
+>> 7| Four things are pinned here and they fail in different ways:
+
+@@ 5-32 DOC n=28 MODULE
+5| """The per-driver prescription class: full-band, both signs, classify first.
+6| 
+7| Four things are pinned here and they fail in different ways:
+8| 
+9| * **the bounds are the fit engine's own** — every CUT ceiling this gate applies
+10|   is numerically the constant ``linearization_fit`` already emits up to, so a
+11|   prescriber can never be granted a move the deterministic path could not make,
+12|   and re-deriving one of them moves both. The two BOOST ceilings are the
+13|   sibling prescription class's instead, and pinned as such;
+14| * **the classification reading DISCLOSES and never refuses** (owner ruling,
+15|   2026-08-23) — a filter with no verdict of its own sign for its target is
+16|   COUNTED onto ``unvouched_filters``, and the mutation that re-adds the refusal
+17|   kills a document the gate now admits;
+18| * **a boost is bounded by what it COSTS, not by what vouches for it** — the
+19|   per-filter and composed caps and the crossover knee, which together hold the
+20|   maximum-SPL spend at 13.0 dB; the depth a verdict reports rides the receipt
+21|   for a reader to weigh;
+22| * **a document may carry any filter the EMITTER can build** — ``Peaking``,
+23|   ``Highshelf``, ``Lowshelf`` — in the only placements the emitter can name
+24|   them, so a shelf accepted here cannot raise at emission;
+25| * **an accepted prescription reaches the emitted graph through the SAME
+26|   per-branch seam the fit uses**, and survives the emitter's own independent
+27|   re-validation there.
+28| 
+29| Synthetic bundle on ``tmp_path``, for the reason the blend suite states:
+30| ``captures/`` is gitignored and a suite that needed it would only run on one
+31| laptop.
+32| """
+>> 34| from __future__ import annotations
+>> 36| import json
+
+@@ 116-117 COM n=2 
+116| #: The CLI tests here build a packet from a live session bundle with no
+117| #: --drivers/--applied-profile, so none may read this machine's own.
+>> 118| pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
+>> 120| #: The synthetic speaker: a woofer declared 40 Hz-4 kHz with a protective
+
+@@ 120-122 COM n=3 
+120| #: The synthetic speaker: a woofer declared 40 Hz-4 kHz with a protective
+121| #: low-pass at 3 kHz, and a tweeter declared 1 kHz-20 kHz with a protective
+122| #: high-pass at 1.6 kHz — the B&C DE250 figure the shipped JTS3 preset carries.
+>> 123| WOOFER_BAND = (40.0, 3000.0)
+>> 124| TWEETER_BAND = (1600.0, 20000.0)
+
+@@ 126-126 COM n=1 
+126| #: One classified feature per driver, both `defect-cuttable`.
+>> 127| WOOFER_FEATURE_HZ = 900.0
+>> 128| TWEETER_FEATURE_HZ = 5000.0
+
+@@ 132-132 DOC n=1 _draft
+132|     """A design draft carrying a confirmed driver-safety profile."""
+>> 133|     return {
+>> 134|         "kind": "jts_active_speaker_design_draft",
+
+@@ 174-176 COM n=3 
+174|         # A lab row carries every column in ``LAB_ROW_FIELDS``; the typed reader
+175|         # takes the seven it needs and the rest ride along, which is what this
+176|         # pair proves.
+>> 177|         "z_local": 4.2,
+>> 178|         "frac_of_nmp": 0.11,
+
+@@ 197-203 DOC n=7 applied_profile
+197|     """One applied-profile SSOT file, in the shape its own loader accepts.
+198| 
+199|     The schema stamp and ``status`` are not decoration:
+200|     ``load_applied_baseline_profile_state`` returns ``None`` for a file missing
+201|     either, so a fixture that dropped them would exercise the absent path while
+202|     claiming to exercise the present one.
+203|     """
+>> 204|     return {
+>> 205|         "artifact_schema_version": BASELINE_SCHEMA_VERSION,
+
+@@ 220-223 COM n=4 
+220| #: The tweeter linearization the 2026-08-22 round was already playing, banked
+221| #: verbatim from ``captures/tuning-hw-validation-2026-08/e-boost-measure/
+222| #: state.json``'s legacy pre-apply stash (#2863). The Lowshelf is the filter
+223| #: that document deleted without saying so.
+>> 224| INCUMBENT_TWEETER = [
+>> 225|     {"biquad_type": "Lowshelf", "freq": 5844.665822142265,
+
+@@ 244-249 DOC n=6 _speaker
+244|     """A bundle plus the two per-driver evidence sources, as a packet.
+245| 
+246|     ``incumbent`` is what the speaker is PLAYING (the applied-profile SSOT);
+247|     ``stash`` lands in a legacy flow-state pre-apply record this packet must
+248|     never mistake for the first.
+249|     """
+>> 250|     session, _ = _bundle(tmp_path)
+>> 251|     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+
+@@ 287-287 DOC n=1 _gate
+287|     """The gate, called the one way its four inputs are meant to be derived."""
+>> 288|     return read_driver_prescription(
+>> 289|         document,
+
+@@ 308-311 COM n=4 
+308| #: The boost fixture's own feature: a tweeter dip, banked with a depth the
+309| #: default boost (+3.0 dB) exactly fits. Distinct from ``TWEETER_FEATURE_HZ``
+310| #: so a document can carry a cut and a boost at once without either borrowing
+311| #: the other's verdict.
+>> 312| TWEETER_DIP_HZ = 6245.0
+>> 313| TWEETER_DIP_DEPTH_DB = 3.0
+
+@@ 332-332 DOC n=1 _dip
+332|     """One banked ``defect-boostable`` row that clears every boost bar."""
+>> 333|     return _verdict(hz, DEFECT_BOOSTABLE, depth_db=depth_db, **over)
+>> 336| def _boostable(rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+
+@@ 337-337 DOC n=1 _boostable
+337|     """The default classification plus a boostable, depth-carrying dip."""
+>> 338|     return _classification(
+>> 339|         [_verdict(WOOFER_FEATURE_HZ), _verdict(TWEETER_FEATURE_HZ), *(rows or [_dip()])]
+
+@@ 356-358 COM n=3 
+356| # --------------------------------------------------------------------------- #
+357| # the band — the driver's OWN declaration, not the crossover's
+358| # --------------------------------------------------------------------------- #
+>> 361| def test_the_band_is_the_published_range_narrowed_by_declared_protection():
+>> 362|     """Published range in, protective corners applied, one band per role.
+
+@@ 362-368 DOC n=7 test_the_band_is_the_published_range_narrowed_by_declared_protection
+362|     """Published range in, protective corners applied, one band per role.
+363| 
+364|     The tweeter's published 1 kHz floor is raised to its declared 1.6 kHz
+365|     protective high-pass (#2736's floor, read through its one owner); the
+366|     woofer's published 4 kHz ceiling is lowered to its declared 3 kHz
+367|     protective low-pass. Neither edge is invented where none is declared.
+368|     """
+>> 369|     bands = driver_passbands_from_safety_profile(
+>> 370|         _draft()["driver_safety_profile"]
+
+@@ 377-382 DOC n=6 test_an_undeclared_protection_corner_leaves_the_published_edge_standing
+377|     """Never-nanny: no declaration means no substituted class default.
+378| 
+379|     ``driver_protection``'s own rule, applied here. Substituting the style's
+380|     5 kHz policy corner for an undeclared tweeter floor would refuse honest
+381|     proposals on a number the operator never declared.
+382|     """
+>> 383|     profile = _draft()["driver_safety_profile"]
+>> 384|     for target in profile["targets"]:
+
+@@ 399-399 COM n=1 
+399|     # A declared protection pair narrower than the published range admits.
+>> 400|     {"required_protection_filters": [
+>> 401|         {"kind": "highpass", "cutoff_hz": 9000.0},
+
+@@ 406-406 DOC n=1 test_an_unreadable_declaration_omits_the_role_rather_than_guessing
+406|     """A role with no honest band is left out, and the gate refuses it by name."""
+>> 407|     profile = _draft()["driver_safety_profile"]
+>> 408|     profile["targets"][0].update(broken)
+
+@@ 414-421 DOC n=8 test_a_declared_band_past_nyquist_is_clamped_not_dropped
+414|     """The one edge that is not a declaration.
+415| 
+416|     A supertweeter published to 40 kHz is an honest datasheet fact, and a
+417|     composed-cut bound evaluated past half the sample rate is an aliased number
+418|     wearing a safety bound's name. The role keeps its band; the top of it is
+419|     the evaluator's own limit, and the packet publishes the clamped value so a
+420|     prescriber is shown the band it will actually be judged against.
+421|     """
+>> 422|     from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
+>> 424|     profile = _draft()["driver_safety_profile"]
+
+@@ 434-440 DOC n=7 test_the_band_is_not_the_crossover_region
+434|     """The class's whole point: a driver is correctable outside the handoff.
+435| 
+436|     The packet's own crossover region is 824-3297 Hz. The tweeter's declared
+437|     band reaches 20 kHz, and a cut at 5 kHz — six times the region's own
+438|     centre — is accepted here and would be refused ``filter_outside_region`` by
+439|     the blend gate at any Q.
+440|     """
+>> 441|     region = packet["crossover_region"]["band_hz"]
+>> 442|     assert TWEETER_FEATURE_HZ > region[1]
+
+@@ 449-451 COM n=3 
+449| # --------------------------------------------------------------------------- #
+450| # the packet
+451| # --------------------------------------------------------------------------- #
+>> 454| def test_the_packet_carries_the_bands_and_the_verdicts(packet):
+>> 455|     assert packet["drivers"]["available"] is True
+
+@@ 485-490 DOC n=6 test_the_not_built_disclosure_stops_being_printed_once_one_is_banked
+485|     """"We did not look" must not be printed beside the thing we looked at.
+486| 
+487|     The ``per_bin_minimum_phase_class`` entry was unconditional before a round
+488|     could carry banked verdicts. Left unconditional it would be the packet's own
+489|     honesty block telling a reader to disregard a block two keys above it.
+490|     """
+>> 491|     without = _speaker(tmp_path / "b", classification=False)
+>> 493|     fields = {entry["field"] for entry in packet["not_evaluated"]}
+
+@@ 501-505 DOC n=5 test_an_unreadable_verdict_row_is_dropped_not_admitted_as_ambiguous
+501|     """Fail-closed: a row that cannot be typed can never vouch for anything.
+502| 
+503|     Both counts are published so the drop is visible rather than a denominator
+504|     that moved silently.
+505|     """
+>> 506|     packet = _speaker(tmp_path, classification=_classification([
+>> 507|         _verdict(TWEETER_FEATURE_HZ),
+
+@@ 519-526 DOC n=8 _lab_row
+519|     """A banked row carrying EVERY column the register enumerates.
+520| 
+521|     Built FROM :data:`LAB_ROW_FIELDS` rather than spelled out, so it cannot
+522|     become a second, staler list of the row's shape. The values are
+523|     placeholders: what these tests are about is whether the whole row reaches
+524|     the packet intact, not what any one number means. The two the typed reader
+525|     needs to accept a row at all are real.
+526|     """
+>> 527|     row: dict[str, Any] = dict.fromkeys(LAB_ROW_FIELDS, "<placeholder>")
+>> 528|     row["hz"] = hz
+
+@@ 535-542 DOC n=8 test_the_packet_carries_the_whole_lab_row_beside_the_gate_view
+535|     """Both views, neither one standing in for the other.
+536| 
+537|     ``verdicts[]`` stays exactly the seven keys the register types — that is
+538|     what a gate acts on and widening it would put the classifier's working in
+539|     front of a decision the classifier already made. ``lab_rows[]`` carries the
+540|     artifact's own row, column for column, for a READER auditing how the
+541|     verdict was reached.
+542|     """
+>> 543|     row = _lab_row(WOOFER_FEATURE_HZ)
+>> 544|     packet = _speaker(tmp_path, classification=_classification([row]))
+
+@@ 547-547 COM n=1 
+547|     # Imported, not restated: the gate view is whatever the register types.
+>> 548|     assert block["verdicts"] == [read_feature_verdicts([row])[0].to_dict()]
+>> 549|     assert len(block["verdicts"][0]) == 7
+
+@@ 550-550 COM n=1 
+550|     # …and every column of the artifact's own row, unchanged.
+>> 551|     assert block["lab_rows"] == [row]
+>> 552|     assert block["redacted_fields"] == []
+
+@@ 556-562 DOC n=7 test_a_lab_column_outside_the_allowlist_is_withheld_and_named
+556|     """The packet's allowlist rule reaches the lab rows too.
+557| 
+558|     A classification artifact can be an operator's own banked lab result rather
+559|     than this product's output, so an unknown column is copied nowhere and its
+560|     NAME is published — the same posture ``positions[]`` already keeps, and the
+561|     reason ``wav_path`` never reaches a reader from anywhere else in this packet.
+562|     """
+>> 563|     row = _lab_row(WOOFER_FEATURE_HZ)
+>> 564|     path = "/var/lib/jasper/captures/verify-0001.wav"
+
+@@ 571-572 COM n=2 
+571|     # The NAME is published — that is the point of an allowlist that reports
+572|     # what it dropped — and the VALUE reaches nowhere in the document.
+>> 573|     assert block["redacted_fields"] == ["wav_path"]
+>> 574|     assert path not in json.dumps(packet)
+
+@@ 580-586 DOC n=7 test_a_row_the_typed_reader_dropped_keeps_its_working_and_reaches_no_gate
+580|     """Why a row was dropped is readable; the dropped row still vouches for nothing.
+581| 
+582|     ``lab_rows`` is the artifact's record and carries a row the typed reader
+583|     refused, which is how a reader sees WHAT was wrong with it. It reaches no
+584|     gate because no gate reads that key — ``packet_feature_classifications`` is
+585|     the one door, and it goes through ``verdicts``.
+586|     """
+>> 587|     packet = _speaker(tmp_path, classification=_classification([
+>> 588|         _lab_row(TWEETER_FEATURE_HZ),
+
+@@ 597-597 COM n=1 
+597|     # Two row OBJECTS were banked; the string is not a row and carries none.
+>> 598|     assert [row["hz"] for row in block["lab_rows"]] == [
+>> 599|         TWEETER_FEATURE_HZ, WOOFER_FEATURE_HZ,
+
+@@ 609-616 DOC n=8 test_every_published_uncertainty_labels_itself_random_or_systematic
+609|     """The Wave-1 rule, on the block that publishes the numbers it governs.
+610| 
+611|     Each spread the rows carry says which KIND it is and what it is a spread
+612|     of, and the columns that merely look like one say why they are not. The two
+613|     kinds are never pooled into a single published figure, which is why
+614|     ``gate_slack`` — the fixed dB bar a corrected depth change is TESTED
+615|     against — is on the second list rather than labelled as either.
+616|     """
+>> 617|     uncertainty = packet["feature_classification"]["uncertainty"]
+>> 618|     fields = uncertainty["fields"]
+
+@@ 626-627 COM n=2 
+626|     # Both kinds are live. A vocabulary with one unused half is a vocabulary
+627|     # whose distinction nothing has had to make yet.
+>> 628|     assert {entry["kind"] for entry in fields.values()} == set(UNCERTAINTY_KINDS)
+>> 630|     for name, why in not_uncertainties.items():
+
+@@ 636-637 COM n=2 
+636|     # The packet publishes the register's answer, and cannot be a route to
+637|     # editing it: a caller holding the packet holds a copy.
+>> 638|     fields["excursion_sd_us"]["kind"] = "mutated"
+>> 639|     not_uncertainties["gate_slack"] = "mutated"
+
+@@ 645-658 DOC n=14 test_a_non_finite_lab_column_becomes_null_and_is_named
+645|     """A NaN the instrument really writes must not cost the round its packet.
+646| 
+647|     ``_compose`` emits ``float("nan")`` for ``z_local`` when a feature's
+648|     neighbourhood scatter is zero and for ``frac_of_nmp`` when the control scale
+649|     is, and ``json.dumps`` banks both verbatim. The packet's fingerprint refuses
+650|     a non-finite number, so a row copied straight through would raise
+651|     ``CrossoverEvidencePacketError`` — no packet at all for a round that
+652|     classified fine. It becomes ``null``, its column is named, and the nested
+653|     per-gate tables are reached too.
+654| 
+655|     ``clean`` rides along to pin the claim that a BOOLEAN column needs no guard
+656|     of its own: ``bool`` subclasses ``int``, never ``float``, so it is passed
+657|     through rather than mistaken for a number.
+658|     """
+>> 659|     packet = _speaker(tmp_path, classification=_classification([
+>> 660|         _lab_row(
+
+@@ 679-679 COM n=1 
+679|     # …and the document is still exact JSON, which is the whole point.
+>> 680|     assert packet["packet_fingerprint"]
+>> 683| def test_the_two_contracts_sit_side_by_side_and_neither_reads_the_round(tmp_path):
+
+@@ 684-689 DOC n=6 test_the_two_contracts_sit_side_by_side_and_neither_reads_the_round
+684|     """Both response formats are pure constants, on the packet's own rule.
+685| 
+686|     A packet's instructions are the same bytes whatever the round measured,
+687|     which is what makes injection through the packet structurally impossible
+688|     rather than merely filtered.
+689|     """
+>> 690|     one = _speaker(tmp_path / "a")
+>> 691|     two = _speaker(tmp_path / "b", classification=_classification([
+
+@@ 701-701 DOC n=1 test_the_response_format_states_every_bound_the_gate_applies
+701|     """A contract that omitted a bound would send a prescriber into a refusal."""
+>> 702|     bounds = driver_prescription_response_format()["bounds"]
+>> 704|     assert bounds["q_max_boost"] == DRIVER_MAX_BOOST_Q
+
+@@ 706-707 COM n=2 
+706|     # The retired cut bounds are gone from the contract entirely, and the
+707|     # freedom is stated in their place (ADR-0207).
+>> 708|     for retired_key in ("max_filter_cut_db", "max_composed_cut_db", "q_min",
+>> 709|                         "q_max_cut"):
+
+@@ 712-715 COM n=4 
+712|     # The audibility floor is published as the DISCLOSURE threshold it now is —
+713|     # one key for both signs, because it is one constant under two names — and
+714|     # the two bound-shaped keys it used to wear are gone, so a prescriber cannot
+715|     # read a floor that refuses nothing as a bound it must satisfy.
+>> 716|     assert bounds["subaudible_below_db"] == DRIVER_MIN_CUT_DB == DRIVER_MIN_BOOST_DB
+>> 717|     assert "min_cut_db" not in bounds
+
+@@ 723-724 COM n=2 
+723|     # The EMITTER's set, not a second literal: the contract a prescriber reads
+724|     # and the graph its filters will be built into name the same filters.
+>> 725|     assert set(bounds["biquad_types"]) == set(
+>> 726|         camilla_yaml.LINEARIZATION_BIQUAD_TYPES
+
+@@ 730-731 COM n=2 
+730|     # Per SIGN and as a PAIR: a reader walking the keys must find a bar for
+731|     # each sign, not one key that structurally only covers cuts.
+>> 732|     bar = fmt["classification_bar"]
+>> 733|     assert bar["eligible_classification_for_a_cut"] == DEFECT_CUTTABLE
+
+@@ 738-741 COM n=4 
+738|     # NOTHING, since 2026-08-23: the depth bar that was a boost's one extra
+739|     # debt is a disclosure now, so what differs between the signs is the COST
+740|     # and not a bar. A contract still claiming an asymmetric bar would send a
+741|     # prescriber to satisfy one that no longer exists.
+>> 742|     owed = fmt["boosts"]["a_boost_owes_nothing_a_cut_does_not"]
+>> 743|     assert "maximum SPL" in owed
+
+@@ 747-748 COM n=2 
+747|     # Every boost refusal the gate can raise is named in the block a prescriber
+748|     # reads, so a bar it can walk into is a bar it was told about.
+>> 749|     assert set(fmt["boosts"]["refusals"]) <= DRIVER_PRESCRIPTION_REFUSAL_REASONS
+>> 750|     # `filter_q_out_of_range` joined this set on 2026-08-29: the Q CEILING is a
+
+@@ 750-752 COM n=3 
+750|     # `filter_q_out_of_range` joined this set on 2026-08-29: the Q CEILING is a
+751|     # boost-only bar now, so the block a boost's author reads is where it has to
+752|     # be named. The floor refusal left the same day and must not be here.
+>> 753|     assert set(fmt["boosts"]["refusals"]) == {
+>> 754|         dp.FILTER_BOOST_TOO_HIGH,
+
+@@ 758-763 COM n=6 
+758|     # …and all ELEVEN retired slugs are gone from the module entirely, not
+759|     # merely from this block: a prescriber that could still read
+760|     # `driver_feature_not_boostable` in `refusal_reasons` would satisfy a bar
+761|     # nothing applies. Six went on 2026-08-23; the knee bar went with the nanny
+762|     # burn-down; the two audibility-floor slugs went on 2026-08-29; the two
+763|     # cut-depth ceilings went with ADR-0207.
+>> 764|     for retired in (
+>> 765|         "driver_feature_not_classified", "driver_feature_not_cuttable",
+
+@@ 774-775 COM n=2 
+774|     # The knee is still NAMED to the prescriber, as a disclosure rather than a
+775|     # bar — a finding it can walk into is one it was told about.
+>> 776|     assert "OVERLAP" in fmt["boosts"]["at_the_crossover_knee_it_discloses"].upper()
+>> 779| def test_a_cut_only_document_names_no_role_as_having_spent(tmp_path):
+
+@@ 780-785 DOC n=6 test_a_cut_only_document_names_no_role_as_having_spent
+780|     """`composed_boost_role` is None when nothing rose above unity.
+781| 
+782|     0.0 dB attributed to a role reads as "the tweeter spent nothing", which is
+783|     a claim; "no role spent" is the fact. Same distinction this record already
+784|     draws between a measured 0.0 and an uncomputed None.
+785|     """
+>> 786|     packet = _speaker(tmp_path, classification=_boostable())
+>> 787|     prescription = _gate(packet, _document([_cut()], packet))
+
+@@ 794-796 COM n=3 
+794| # --------------------------------------------------------------------------- #
+795| # the gate — acceptance, then every bound, by name, both sides
+796| # --------------------------------------------------------------------------- #
+>> 799| def test_a_well_formed_per_driver_cut_is_accepted_and_classified(packet):
+>> 800|     prescription = _gate(packet, _document([_cut()], packet))
+
+@@ 821-825 DOC n=5 test_the_passband_edges_are_inclusive_and_refuse_by_name
+821|     """Exactness is legal; one step past is `driver_filter_outside_passband`.
+822| 
+823|     Both sides, because a bound tested on one side only is a bound whose
+824|     direction nothing pins.
+825|     """
+>> 826|     rows = [_verdict(freq)]
+>> 827|     document = _document([_cut(freq=freq)], packet)
+
+@@ 842-844 COM n=3 
+842|     # The retired floor's neighbourhood, admitted now (ADR-0207): a broad cut
+843|     # is a legitimate reversible experiment, and broadband bookkeeping is not
+844|     # a hazard.
+>> 845|     (0.49, True, None),
+>> 846|     (0.1, True, None),
+
+@@ 851-852 COM n=2 
+851|     # Below the evaluator's floor: silently clamped by _biquad_coeffs and
+852|     # spelled "q: 0.0000" by the emitter, whatever the gain's sign.
+>> 853|     (5e-5, False, "driver_filter_malformed"),
+>> 854|     (0.0, False, "driver_filter_malformed"),
+
+@@ 856-857 COM n=2 
+856|     # Past the instrument-fidelity ceiling: the f64 cascade stops evaluating
+857|     # the filter that was actually asked for.
+>> 858|     (2e6, False, "driver_filter_q_out_of_range"),
+>> 859| ])
+
+@@ 861-866 DOC n=6 test_a_cut_q_is_bounded_by_the_evaluable_range
+861|     """A cut's Q is free within [1e-4, 1e6] (ADR-0207) — the range this
+862|     system's evaluator and emitter realize faithfully, not a policy choice —
+863|     and refused outside it: malformed below the floor (not a shape this
+864|     system can realize), out-of-range past the ceiling (not the filter the
+865|     f64 arithmetic can still evaluate).
+866|     """
+>> 867|     document = _document([_cut(q=q)], packet)
+>> 868|     if ok:
+
+@@ 878-885 DOC n=8 test_the_same_q_a_cut_may_use_refuses_a_boost
+878|     """THE sign split, at one width: Q-14 cuts, Q-14 boosts do not.
+879| 
+880|     A boost is the sign that spends the household's maximum SPL, and the caps
+881|     that bound that spend are read on a SAMPLED grid whose between-bin error
+882|     ``branch_chain._evaluation_grid`` states at Q 8. So the ceiling survives on
+883|     the arm whose cost it protects and dies on the arm that has no cost — which
+884|     is the whole of what :func:`driver_max_q_for_gain` decides.
+885|     """
+>> 886|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+>> 888|     assert _gate(packet, _document([_cut(q=q)], packet)).filters[0]["q"] == q
+
+@@ 894-895 COM n=2 
+894|     # The split has ONE owner, so the validator, its message and the contract
+895|     # cannot disagree about which arm a filter got.
+>> 896|     assert driver_max_q_for_gain(1.0) == DRIVER_MAX_BOOST_Q
+>> 897|     assert driver_max_q_for_gain(-1.0) == driver_max_q_for_gain(0.0) == 1e6
+
+@@ 904-905 COM n=2 
+904|     # Depths past the retired 12 dB per-filter ceiling (ADR-0207): a cut
+905|     # spends no headroom at any depth, and the measured verify is the net.
+>> 906|     -12.0,
+>> 907|     -12.01,
+
+@@ 917-920 DOC n=4 test_a_gain_that_underflows_f64_is_refused_as_malformed
+917|     """The evaluability floor, not a depth policy: 10**(-13000/40) is exactly
+918|     0.0, and _biquad_coeffs divides by it — an uncaught ZeroDivisionError the
+919|     gate must fail closed on rather than let an unevaluable filter through to
+920|     ``_check_composed``."""
+>> 921|     with pytest.raises(BlendPrescriptionRefused) as excinfo:
+>> 922|         _gate(packet, _document([_cut(gain=-13000.0)], packet))
+
+@@ 930-937 DOC n=8 test_a_subaudible_filter_is_admitted_and_counted_onto_the_receipt
+930|     """THE floor demotion, both signs: admitted, and the count says so.
+931| 
+932|     A 0.3 dB probe is a reversible experiment — it spends no maximum SPL and
+933|     cannot clip, so ``docs/measurement-loop-doctrine.md`` §4's closed list has
+934|     no mechanism to name and §5's nanny test fails a refusal on it. What the
+935|     old refusal really guarded is the SLOT, and ``max_filters_per_role``
+936|     guards that directly (pinned below).
+937|     """
+>> 938|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+>> 939|     filters = [{**_cut(gain=gain), "freq": TWEETER_DIP_HZ}]
+
+@@ 949-954 DOC n=6 test_the_subaudible_count_is_a_measurement_and_not_a_default
+949|     """Without this, ``subaudible_filters == 1`` above would pass on a stub.
+950| 
+951|     Same shape as the crossover-knee counter's own control: a document whose
+952|     filters all clear the floor reads 0, and the durable read-back — which
+953|     rebuilds no disclosure — reads ``None``.
+954|     """
+>> 955|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+>> 956|     document = _document([_cut(gain=-3.0), _boost(gain=3.0)], packet)
+
+@@ 961-964 COM n=4 
+961|     # The boundary is the one the refusals drew, exactly: a filter AT the floor
+962|     # was admitted then and is not counted now, on either sign. A disclosure
+963|     # that counted more than the bar refused would rewrite the number's meaning
+964|     # while claiming to have only demoted it.
+>> 965|     at_floor = _gate(packet, _document(
+>> 966|         [_cut(gain=-DRIVER_MIN_CUT_DB), _boost(gain=DRIVER_MIN_BOOST_DB)], packet
+
+@@ 981-986 DOC n=6 test_the_slot_cap_is_what_a_shallow_filter_actually_spends
+981|     """The scarce resource the demoted floor was standing in for, still bound.
+982| 
+983|     Eight sub-audible filters on one role are admitted and counted; the ninth
+984|     is refused — by the COUNT cap, in its own vocabulary. Demoting the floor
+985|     must not have widened the thing the floor was a proxy for.
+986|     """
+>> 987|     packet = _speaker(tmp_path)
+>> 988|     shallow = [
+
+@@ 1017-1018 COM n=2 
+1017|     # F-7: this refusal used to read like a speaker-data problem when the
+1018|     # ordinary cause is a missing/unreadable --drivers evidence source.
+>> 1019|     assert "--drivers" in excinfo.value.detail
+>> 1022| def test_the_per_role_filter_count_is_the_branchs_own_ceiling(packet, tmp_path):
+
+@@ 1023-1027 DOC n=5 test_the_per_role_filter_count_is_the_branchs_own_ceiling
+1023|     """Eight per role, and the ninth refuses — the emitter's own number.
+1024| 
+1025|     A prescription past it would be accepted here and refused at emission, which
+1026|     is the one failure shape a gate exists to prevent.
+1027|     """
+>> 1028|     rows = [_verdict(2000.0 + 400.0 * i) for i in range(9)]
+>> 1029|     packet = _speaker(tmp_path / "many", classification=_classification(rows))
+
+@@ 1037-1037 COM n=1 
+1037|     # Eight is legal, and two roles do not share the ceiling.
+>> 1038|     assert len(_gate(packet, _document(filters[:8], packet)).filters) == 8
+>> 1041| def test_a_composed_cut_past_the_retired_ceiling_is_admitted(packet, tmp_path):
+
+@@ 1042-1044 DOC n=3 test_a_composed_cut_past_the_retired_ceiling_is_admitted
+1042|     """Two stacked deep cuts compose past the retired 18 dB ceiling and are
+1043|     admitted (ADR-0207): a composed cut spends no headroom, and no downstream
+1044|     check re-imposes one."""
+>> 1045|     packet = _speaker(tmp_path / "deep", classification=_classification([
+>> 1046|         _verdict(TWEETER_FEATURE_HZ),
+
+@@ 1055-1055 DOC n=1 test_one_roles_composed_spend_is_not_charged_to_the_other
+1055|     """Per role, because the quantity is one branch's own ledger."""
+>> 1056|     packet = _speaker(tmp_path / "split", classification=_classification([
+>> 1057|         _verdict(TWEETER_FEATURE_HZ), _verdict(WOOFER_FEATURE_HZ),
+
+@@ 1076-1078 COM n=3 
+1076|     # A rationale that is not TEXT still refuses: the document was built by
+1077|     # something that does not speak this contract. Its LENGTH no longer does —
+1078|     # see the truncation pin below.
+>> 1079|     ({"rationale": 7}, dp.DRIVER_PRESCRIPTION_MALFORMED),
+>> 1080| ])
+
+@@ 1089-1093 DOC n=5 test_a_packet_mismatch_discloses_which_evidence_this_side_had
+1089|     """F-7: a laptop-built and a Pi-built packet of the same round can
+1090|     disagree on fingerprint because the evidence INPUTS differed, not
+1091|     because either build is wrong. The refusal says so, in structured
+1092|     fields a caller can act on rather than a bare pair of hashes.
+1093|     """
+>> 1094|     with pytest.raises(BlendPrescriptionRefused) as excinfo:
+>> 1095|         _gate(packet, _document([_cut()], packet, packet_fingerprint="not-this-round"))
+
+@@ 1105-1115 DOC n=11 test_a_long_rationale_is_truncated_and_disclosed_never_refused
+1105|     """THE prose demotion: the words are banked to the ceiling, and the receipt
+1106|     says how many were dropped.
+1107| 
+1108|     Nothing reads the text — no branch here or downstream — so a refusal cost a
+1109|     prescriber its whole round to re-author prose no gate consults, which is
+1110|     ``docs/measurement-loop-doctrine.md`` §5's nanny shape. Truncating rather
+1111|     than raising the ceiling is what keeps
+1112|     ``DRIVER_PRESCRIPTION_MAX_BYTES``'s measured largest-honest-document
+1113|     derivation (and its five-times margin) true unchanged — the banked document
+1114|     is exactly as big as it always was.
+1115|     """
+>> 1116|     text = "z" * (dp.RATIONALE_MAX_CHARS + over_by)
+>> 1118|     prescription = _gate(packet, _document([_cut()], packet, rationale=text))
+
+@@ 1123-1126 COM n=4 
+1123|     # …and a rationale that fits is banked whole, with a measured 0 dropped, so
+1124|     # the number above is a measurement rather than a stub. `None` is reserved
+1125|     # for the durable read-back, which holds only the truncated text and so
+1126|     # genuinely cannot know what was cut.
+>> 1127|     short = _gate(packet, _document([_cut()], packet, rationale="the 5 kHz mode"))
+>> 1128|     assert short.rationale == "the 5 kHz mode"
+
+@@ 1137-1140 COM n=4 
+1137|     # The emitter's set is the whole set: a type outside it is what the graph
+1138|     # cannot be built out of. `Notch` is a real CamillaDSP biquad and still
+1139|     # refused, so this pins the emitter's vocabulary rather than merely
+1140|     # "unknown strings are refused".
+>> 1141|     [{"role": "tweeter", "biquad_type": "Notch", "freq": 5000.0, "q": 2.0,
+>> 1142|       "gain": -3.0}],
+
+@@ 1145-1146 COM n=2 
+1145|     # A Peaking still owes its own Q; only a shelf is excused, because only a
+1146|     # shelf's Q is a number the emitter drops.
+>> 1147|     [{"role": "tweeter", "biquad_type": "Peaking", "freq": 5000.0,
+>> 1148|       "gain": -3.0}],
+
+@@ 1164-1170 DOC n=7 test_the_gate_refuses_every_malformed_filter
+1164|     """The emitter's own filter set, role required, no coercion, no unknown field.
+1165| 
+1166|     A type outside ``camilla_yaml.LINEARIZATION_BIQUAD_TYPES`` is refused
+1167|     because the graph cannot be built out of it — the one bound on the filter
+1168|     vocabulary that survived the 2026-08-23 ruling, since it names a real
+1169|     failure at emission rather than a prediction about the outcome.
+1170|     """
+>> 1171|     with pytest.raises(BlendPrescriptionRefused) as excinfo:
+>> 1172|         _gate(packet, _document(filters, packet))
+
+@@ 1178-1180 COM n=3 
+1178|     # Every one is a real CamillaDSP biquad the emitter's linearization stage
+1179|     # does not accept, plus the two shapes a hand-written document produces:
+1180|     # wrong case, and no type at all.
+>> 1181|     "Notch", "Highpass", "Lowpass", "Bandpass", "peaking", "LowShelf", None, 3,
+>> 1182| ])
+
+@@ 1186-1195 DOC n=10 test_a_type_outside_the_emitters_set_is_refused_by_the_vocabulary_bound
+1186|     """The vocabulary bound, pinned by the sentence only IT writes.
+1187| 
+1188|     The reason alone does not discriminate: ``_check_shelf_placement`` refuses
+1189|     an unknown type too, because ``linearization_slot`` calls anything that is
+1190|     not a leading shelf a "peak" slot. A tree with the vocabulary bound deleted
+1191|     therefore still refuses every case here — with the shelf sentence. Asserting
+1192|     the DETAIL is what makes this test die when the bound goes, which a
+1193|     mutation run confirmed it did not do before (a half-guarded site reading as
+1194|     covered).
+1195|     """
+>> 1196|     document = _document(
+>> 1197|         [{"role": "tweeter", "biquad_type": biquad_type, "freq": 5000.0,
+
+@@ 1219-1224 DOC n=6 test_a_prescription_may_not_reach_past_numbers_into_a_fixed_shape
+1219|     """The blocklist is the family's one set, walked by the family's one walk.
+1220| 
+1221|     ``role_attenuations_db`` stays prohibited even though this class may now PIN
+1222|     a level: the pin has its own field with its own bound, and the solver's
+1223|     output map is not a thing a document writes into.
+1224|     """
+>> 1225|     with pytest.raises(BlendPrescriptionRefused) as excinfo:
+>> 1226|         _gate(packet, _document([_cut()], packet, **payload))
+
+@@ 1231-1233 COM n=3 
+1231| # --------------------------------------------------------------------------- #
+1232| # the trim pin — a trim you name is not re-solved
+1233| # --------------------------------------------------------------------------- #
+>> 1236| def test_a_named_trim_is_carried_onto_the_prescription_and_survives_the_bank(packet):
+>> 1237|     """The door's whole job: accept the pin, and read it back unchanged.
+
+@@ 1237-1242 DOC n=6 test_a_named_trim_is_carried_onto_the_prescription_and_survives_the_bank
+1237|     """The door's whole job: accept the pin, and read it back unchanged.
+1238| 
+1239|     The read-back matters because the durable path re-parses the receipt through
+1240|     the same shape checks — a field the reader dropped would leave a banked
+1241|     prescription silently un-pinned.
+1242|     """
+>> 1243|     document = _document([_cut()], packet, pinned_trim_db={"tweeter": -6.5})
+>> 1245|     prescription = _gate(packet, document)
+
+@@ 1267-1270 COM n=4 
+1267|     # A legal JSON number, a legal Python int, and `float()` RAISES on it — so
+1268|     # it escapes an isinstance-then-float check as an OverflowError rather than
+1269|     # a refusal, which is the shape `_finite_number`'s own docstring records
+1270|     # having already escaped this family once.
+>> 1271|     {"tweeter": 10 ** 400},
+>> 1272|     # Positive is the hearing-relevant one: the emitted graph refuses a positive
+
+@@ 1272-1273 COM n=2 
+1272|     # Positive is the hearing-relevant one: the emitted graph refuses a positive
+1273|     # per-driver Gain, and a pin is not a way past it.
+>> 1274|     {"tweeter": 0.5},
+>> 1275|     {"tweeter": dp.MAX_ATTENUATION_DB - 0.001},
+
+@@ 1276-1277 COM n=2 
+1276|     # A role this document prescribes nothing for. A pin travels with the chain
+1277|     # it protects; on its own it is the bare level command the blocklist refuses.
+>> 1278|     {"woofer": -3.0},
+>> 1279|     {"": -3.0},
+
+@@ 1281-1282 COM n=2 
+1281|     # Two keys that strip to one role: a silent last-wins would let a document
+1282|     # name two trims for a driver and ship whichever iterated last.
+>> 1283|     {"tweeter": -3.0, " tweeter": -6.5},
+>> 1284| ])
+
+@@ 1295-1300 DOC n=6 test_the_pin_s_range_is_the_solver_s_own_and_its_edges_are_inclusive
+1295|     """One bound, consumed rather than restated.
+1296| 
+1297|     ``MeasuredCrossoverCandidate`` re-proves this same range on every candidate,
+1298|     so a value this door admits is one the candidate can carry — which is what
+1299|     keeps a pin inside the clamp rather than a way around it.
+1300|     """
+>> 1301|     prescription = _gate(
+>> 1302|         packet, _document([_cut()], packet, pinned_trim_db={"tweeter": db})
+
+@@ 1309-1315 DOC n=7 test_the_pin_is_accepted_by_exactly_one_prescription_door
+1309|     """The scoping mechanism is that ONE door's allowlist names it.
+1310| 
+1311|     Every prescription class in this package gates its request on a
+1312|     ``_PRESCRIPTION_FIELDS`` allowlist, so a second door growing the same key —
+1313|     and with it a second judgment of one number — fails here rather than at the
+1314|     round that discovers the two disagree.
+1315|     """
+>> 1316|     import importlib
+>> 1317|     import pkgutil
+
+@@ 1345-1347 COM n=3 
+1345| # --------------------------------------------------------------------------- #
+1346| # the classification bar — stage P3 rule 1, and the mutation that proves it
+1347| # --------------------------------------------------------------------------- #
+>> 1350| @pytest.mark.parametrize("classification", [
+>> 1351|     INTERFERENCE_BARRED, ROOM, DEFECT_BOOSTABLE, UNRESOLVED, "something-new",
+
+@@ 1354-1361 DOC n=8 test_only_a_defect_cuttable_verdict_vouches_for_a_cut
+1354|     """Every other verdict leaves the cut UNVOUCHED — disclosed, not refused.
+1355| 
+1356|     A cancellation is lowered along with the direct sound; a room arrival is not
+1357|     the speaker's to correct; a minimum-phase DIP would be deepened by a cut,
+1358|     not filled. Every one of those is a prediction about the OUTCOME, and the
+1359|     owner's 2026-08-23 ruling gives a prediction no power to refuse: the
+1360|     document is admitted with the count on it, and the round measures.
+1361|     """
+>> 1362|     packet = _speaker(tmp_path, classification=_classification([
+>> 1363|         _verdict(TWEETER_FEATURE_HZ, classification),
+
+@@ 1374-1381 DOC n=8 test_an_unclassified_frequency_is_unvouched_and_still_admitted
+1374|     """Nothing banked at 5 kHz: the filter is counted, not refused.
+1375| 
+1376|     It used to be `driver_feature_not_classified`, an instruction to go and run
+1377|     the classifier. Classifying is still the better move and the contract still
+1378|     says so — what changed is that it is no longer a precondition, because
+1379|     "we have not measured this feature yet" names no component-damage
+1380|     mechanism.
+1381|     """
+>> 1382|     packet = _speaker(tmp_path, classification=_classification([
+>> 1383|         _verdict(WOOFER_FEATURE_HZ),
+
+@@ 1393-1397 DOC n=5 test_a_packet_with_no_banked_classification_vouches_for_nothing
+1393|     """No classification at all reads as "all of them", not as "nobody knows".
+1394| 
+1395|     ``None`` is what a durable read-back reports, and the two are different
+1396|     facts a receipt may not spell the same way.
+1397|     """
+>> 1398|     packet = _speaker(tmp_path, classification=False)
+>> 1400|     prescription = _gate(packet, _document([_cut(), _cut(freq=6000.0)], packet))
+
+@@ 1407-1412 DOC n=6 test_a_prescription_that_cuts_nothing_needs_no_classification
+1407|     """Ordering, not leniency: the bar's whole content is per-filter.
+1408| 
+1409|     Refusing an empty document for want of a classification would report a
+1410|     missing-evidence problem to an author who did not ask to correct anything.
+1411|     It names no role, so it contributes no per-branch field and changes nothing.
+1412|     """
+>> 1413|     packet = _speaker(tmp_path, classification=False)
+>> 1415|     accepted = _gate(packet, _document([], packet))
+
+@@ 1426-1438 DOC n=13 test_a_filter_may_not_borrow_a_distant_features_verdict
+1426|     """The match radius is the resolution the verdict was located at.
+1427| 
+1428|     Inside it the verdict decides; outside it nothing was classified there.
+1429| 
+1430|     **It is NOT what keeps a filter off its neighbour's verdict**, and the first
+1431|     version of this docstring said it was — on the strength of three of the
+1432|     2026-08-19 record's nine features and its two widest gaps. All eight gaps
+1433|     are 0.439 / 0.549 / 1.012 / **0.143** / 0.236 / 0.211 / 0.450 / **0.157**
+1434|     octaves, and the two in bold are narrower than this tolerance. Both are
+1435|     peak/dip pairs. Borrowing is prevented by the NEAREST-verdict rule instead,
+1436|     which needs no minimum separation at all; this radius only bounds how far a
+1437|     filter may sit from the feature it is judged against.
+1438|     """
+>> 1439|     packet = _speaker(tmp_path, classification=_classification([
+>> 1440|         _verdict(TWEETER_FEATURE_HZ),
+
+@@ 1456-1462 DOC n=7 test_the_classification_disclosure_is_measured_not_asserted
+1456|     """The mutation: blind the disclosure and the count stops telling the truth.
+1457| 
+1458|     A number a caller could have hardcoded discloses nothing. The control is
+1459|     that the SAME document reads differently against two records — barred at
+1460|     5 kHz, cuttable at 5 kHz — so the count is being computed from the evidence
+1461|     rather than from the document's own shape.
+1462|     """
+>> 1463|     barred = _speaker(tmp_path / "barred", classification=_classification([
+>> 1464|         _verdict(TWEETER_FEATURE_HZ, INTERFERENCE_BARRED),
+
+@@ 1475-1476 COM n=2 
+1475|     # The pre-fix shape lives here as the mutation, so a reviewer can see the
+1476|     # refusal that used to stand: re-add it and the barred document dies.
+>> 1477|     real = dp._check_classification
+>> 1479|     def refusing(filters, verdicts):
+
+@@ 1493-1498 DOC n=6 test_a_defect_verdict_is_necessary_and_the_contract_says_not_sufficient
+1493|     """Run-log §9.2, carried into the document a prescriber reads.
+1494| 
+1495|     Every EQ candidate played on 2026-08-19 measured worse. A contract that offered
+1496|     the verdict as a recommendation would be inviting the mistake the campaign
+1497|     had already made.
+1498|     """
+>> 1499|     bar = driver_prescription_response_format()["classification_bar"]
+>> 1501|     assert "does not say EQ will help" in bar["necessary_not_sufficient"]
+
+@@ 1505-1511 DOC n=7 test_the_contract_names_the_row_list_a_bar_actually_reads
+1505|     """"the classification block reports…" stopped being unambiguous.
+1506| 
+1507|     The block carries two row lists since the packet widened, and BOTH report a
+1508|     ``measured_q`` — so an instruction that named only the block left a model to
+1509|     guess which one a bar reads. It reads ``verdicts[]``, never the ``lab_rows[]``
+1510|     working beside it, and both instruction points say so by name.
+1511|     """
+>> 1512|     contract = driver_prescription_response_format()
+>> 1514|     reads = contract["classification_bar"]["it_discloses_and_never_refuses"]
+
+@@ 1518-1519 COM n=2 
+1518|     # …and it says, in the block a prescriber reads, that it is evidence rather
+1519|     # than a gate — the fact the whole 2026-08-23 ruling turns on.
+>> 1520|     assert "Nothing about it refuses" in reads
+>> 1521|     assert "unvouched_filters" in reads
+
+@@ 1525-1536 DOC n=12 test_the_nearest_verdict_decides_and_a_further_cuttable_one_cannot_vouch
+1525|     """Two features inside the radius: the CLOSEST claim owns the frequency.
+1526| 
+1527|     **This test asserted the opposite shape when it was written**, and pinning
+1528|     that shape is what let the bug ship: a cuttable verdict standing further
+1529|     away used to vouch while the nearer, barred one only wrote the refusal
+1530|     message it never got to raise. On the real record that made three of the
+1531|     four minimum-phase dips cuttable — see the regression below.
+1532| 
+1533|     The reader still returns both values, because a refusal has to tell "nothing
+1534|     was classified here" from "the thing here is barred". What changed is which
+1535|     one decides.
+1536|     """
+>> 1537|     verdicts = read_feature_verdicts([
+>> 1538|         _verdict(5000.0, INTERFERENCE_BARRED),
+
+@@ 1547-1547 COM n=1 
+1547|     # And aiming at the cuttable one instead is how a prescriber gets it.
+>> 1548|     vouching, nearest = defect_cuttable_at(verdicts, 5190.0)
+>> 1549|     assert nearest.classification == DEFECT_CUTTABLE
+
+@@ 1554-1558 DOC n=5 test_an_equidistant_tie_falls_closed
+1554|     """Pathological rather than impossible, and it must not depend on row order.
+1555| 
+1556|     A rule whose answer came from the artifact's ordering would be a rule the
+1557|     record could silently change. The non-cuttable verdict wins either way.
+1558|     """
+>> 1559|     # Powers of two, so "equidistant" is exact in binary rather than nearly so:
+>> 1560|     # log2(2000/1000) and log2(4000/2000) are both exactly 1.0.
+
+@@ 1559-1560 COM n=2 
+1559|     # Powers of two, so "equidistant" is exact in binary rather than nearly so:
+1560|     # log2(2000/1000) and log2(4000/2000) are both exactly 1.0.
+>> 1561|     rows = [_verdict(1000.0, DEFECT_CUTTABLE), _verdict(4000.0, DEFECT_BOOSTABLE)]
+>> 1563|     for ordered in (rows, list(reversed(rows))):
+
+@@ 1571-1583 COM n=13 
+1571| #: The 2026-08-19 banked record — nine classified features, four of them
+1572| #: minimum-phase DIPS, and not one of them carrying a depth. Reproduced as a
+1573| #: literal rather than read from ``captures/`` (gitignored: a suite that needed
+1574| #: it would run on one laptop).
+1575| #:
+1576| #: **Every column a BAR reads is here, and that completeness is the point.** An
+1577| #: earlier version of this fixture silently dropped one while its comment still
+1578| #: said "verbatim", and the omission was not inert: a re-derivation run against
+1579| #: it reported the wrong refusal for 1037 Hz, confidently. Columns the reader
+1580| #: ignores may be dropped; a column a bar reads may not. The dropped column then
+1581| #: was ``vertical_blind``, which no longer exists — the register stopped
+1582| #: carrying it when the boost door opened (2026-08-21) — so the record is now
+1583| #: complete in four columns rather than five, and the lesson outlives the field.
+>> 1584| _BANKED_RECORD = (
+>> 1585|     # hz, classification, confidence, measured_q
+
+@@ 1585-1585 COM n=1 
+1585|     # hz, classification, confidence, measured_q
+>> 1586|     (1037.0, DEFECT_BOOSTABLE, "med", 6.596),
+>> 1587|     (1406.0, DEFECT_CUTTABLE, "med", 5.132),
+
+@@ 1599-1599 DOC n=1 _banked_rows
+1599|     """The real record's nine rows, every column the gate reads included."""
+>> 1600|     return [
+>> 1601|         _verdict(hz, cls, confidence=conf, measured_q=q, **over)
+
+@@ 1611-1617 DOC n=7 test_two_real_gaps_sit_inside_the_match_tolerance_and_both_are_peak_dip
+1611|     """The fixture's own control: the hazard this rule exists for is present.
+1612| 
+1613|     A regression suite whose record no longer contained a sub-tolerance peak/dip
+1614|     pair would pass for the wrong reason — every row would be decided by its own
+1615|     verdict because nothing else was near enough to borrow. Naming the two gaps
+1616|     keeps the test honest about what it is exercising.
+1617|     """
+>> 1618|     hz = [row[0] for row in _BANKED_RECORD]
+>> 1619|     gaps = [math.log2(b / a) for a, b in zip(hz, hz[1:], strict=False)]
+
+@@ 1638-1639 COM n=2 
+1638|     # The four dips. Not one of them is vouched, and 4582 / 8530 are the two
+1639|     # the old any-cuttable-vouches rule VOUCHED for by borrowing 4149 / 9509.
+>> 1640|     (1037.0, "woofer", False),
+>> 1641|     (4582.0, "tweeter", False),
+
+@@ 1644-1644 COM n=1 
+1644|     # The peaks, including both halves of the two sub-tolerance pairs.
+>> 1645|     (4149.0, "tweeter", True),
+>> 1646|     (5396.0, "tweeter", True),
+
+@@ 1652-1659 DOC n=8 test_the_banked_record_vouches_for_every_peak_and_no_dip
+1652|     """The regression, on the real record, at the frequencies that mattered.
+1653| 
+1654|     The nearest-verdict rule is what stops a neighbouring peak vouching for a
+1655|     cut sitting on a dip — 4582 and 8530 are the two the old any-cuttable rule
+1656|     accepted by borrowing 4149 / 9509. Every one of these documents is now
+1657|     ADMITTED; what the rule decides is the count on it, and that is still the
+1658|     number an operator reads before staging.
+1659|     """
+>> 1660|     packet = _speaker(tmp_path, classification=_classification(_banked_rows()))
+>> 1661|     # The role is whichever driver's declared band holds the frequency — 1037 Hz
+
+@@ 1661-1662 COM n=2 
+1661|     # The role is whichever driver's declared band holds the frequency — 1037 Hz
+1662|     # is under the tweeter's 1.6 kHz protective floor, so it is the woofer's.
+>> 1663|     document = _document([_cut(role=role, freq=freq_hz)], packet)
+>> 1665|     prescription = _gate(packet, document)
+
+@@ 1670-1670 COM n=1 
+1670|         # The basis quotes the feature the filter is ON, never the neighbour.
+>> 1671|         assert prescription.classification_basis[0].verdict.freq_hz == freq_hz
+>> 1672|     else:
+
+@@ 1677-1685 DOC n=9 test_the_old_any_cuttable_rule_would_have_accepted_the_dips
+1677|     """The mutation, spelled out: restore the old rule and the probe stops biting.
+1678| 
+1679|     Written as a re-implementation rather than a monkeypatch because the defect
+1680|     was a CHOICE of which verdict decides, not a missing guard — there is
+1681|     nothing to delete, so "does the test still pass with the check removed" has
+1682|     no meaning here. This reproduces the shipped-then-fixed rule exactly and
+1683|     shows it disagreeing with the current one on the two frequencies the review
+1684|     found.
+1685|     """
+>> 1686|     verdicts = _banked_verdicts()
+>> 1688|     def any_cuttable_vouches(freq_hz):  # the pre-fix rule, verbatim in effect
+
+@@ 1688-1688 COM n=1 
+1688|     def any_cuttable_vouches(freq_hz):  # the pre-fix rule, verbatim in effect
+>> 1689|         best = None
+>> 1690|         best_distance = math.inf
+
+@@ 1705-1705 COM n=1 
+1705|     # The control: the two rules still agree everywhere the record is not a trap.
+>> 1706|     for peak_hz in (5396.0, 1406.0, 2057.0):
+>> 1707|         assert any_cuttable_vouches(peak_hz) is defect_cuttable_at(verdicts, peak_hz)[0]
+
+@@ 1711-1717 DOC n=7 test_the_response_format_tells_a_prescriber_the_sign_rule_exists
+1711|     """A bar a prescriber cannot read is a bar it will keep walking into.
+1712| 
+1713|     The contract has to say four things: which verdict admits a cut, which
+1714|     admits a boost, what each wrong-sign filter does to its feature, and that
+1715|     the nearest verdict decides — otherwise a model that correctly identifies a
+1716|     minimum-phase defect still cannot tell which half of the pair it may aim at.
+1717|     """
+>> 1718|     bar = driver_prescription_response_format()["classification_bar"]
+>> 1719|     rule = bar["the_sign_must_match_the_feature"]
+
+@@ 1728-1730 COM n=3 
+1728| # --------------------------------------------------------------------------- #
+1729| # the boost class — every admission rule, each with the mutation that flips it
+1730| # --------------------------------------------------------------------------- #
+>> 1733| def test_a_boost_is_admitted_against_a_banked_boostable_dip(tmp_path):
+>> 1734|     """The happy path, and the receipt records what admitted it.
+
+@@ 1734-1740 DOC n=7 test_a_boost_is_admitted_against_a_banked_boostable_dip
+1734|     """The happy path, and the receipt records what admitted it.
+1735| 
+1736|     A boost is the one filter this seam carries that spends the household's
+1737|     maximum SPL, so the accepted record has to name the verdict, the evaluated
+1738|     composed boost, and the ceiling it was measured against — the three numbers
+1739|     a reader six weeks later needs to re-derive the decision.
+1740|     """
+>> 1741|     packet = _speaker(tmp_path, classification=_boostable())
+>> 1743|     prescription = _gate(packet, _document([_boost()], packet))
+
+@@ 1751-1751 COM n=1 
+1751|     # The gate's own evaluation of the cascade, banked rather than recomputed.
+>> 1752|     assert prescription.composed_boost_db == pytest.approx(3.0, abs=0.01)
+>> 1753|     record = prescription.to_dict()
+
+@@ 1759-1764 DOC n=6 test_a_document_may_carry_a_cut_and_a_boost_and_each_pays_its_own_bar
+1759|     """The class names what a document CAN do; each filter is judged by its sign.
+1760| 
+1761|     A prescriber that found a peak and a dip on the same driver should not have
+1762|     to split them across two rounds, and neither filter may borrow the other's
+1763|     verdict to clear its own bar.
+1764|     """
+>> 1765|     packet = _speaker(tmp_path, classification=_boostable())
+>> 1767|     prescription = _gate(
+
+@@ 1777-1777 COM n=1 
+1777| # --- the classification bar, boost half ------------------------------------- #
+>> 1780| def test_a_boost_aimed_at_a_peak_is_unvouched_by_the_peaks_own_verdict(tmp_path):
+>> 1781|     """9509 Hz on the real record is a cuttable PEAK. Boosting one grows it.
+
+@@ 1781-1786 DOC n=6 test_a_boost_aimed_at_a_peak_is_unvouched_by_the_peaks_own_verdict
+1781|     """9509 Hz on the real record is a cuttable PEAK. Boosting one grows it.
+1782| 
+1783|     Which is a prediction about the outcome, so since 2026-08-23 it is counted
+1784|     rather than refused: the boost still pays every CAP, and the round measures
+1785|     whether growing the peak is what happened.
+1786|     """
+>> 1787|     packet = _speaker(tmp_path, classification=_classification(_banked_rows(depth_db=6.0)))
+>> 1789|     prescription = _gate(packet, _document([_boost(freq=9509.0)], packet))
+
+@@ 1797-1806 DOC n=10 test_a_boost_may_not_borrow_a_neighbouring_dips_verdict
+1797|     """The mirror of the cut class's borrowed-neighbour bug, on the real record.
+1798| 
+1799|     4149 Hz is a cuttable PEAK with the 4582 Hz boostable DIP 0.143 octaves
+1800|     away — inside the match tolerance. A rule that let any boostable verdict in
+1801|     radius vouch would REPORT a boost sitting squarely on the peak as backed by
+1802|     evidence, which is the precise claim ``defect_boostable_at``'s
+1803|     nearest-decides rule exists to prevent. Same shape at 9509 (peak) beside
+1804|     8530 (dip). The document is admitted either way; what borrowing would
+1805|     corrupt is the number an operator reads.
+1806|     """
+>> 1807|     packet = _speaker(tmp_path, classification=_classification(_banked_rows(depth_db=6.0)))
+>> 1809|     for peak_hz, borrowable_dip_hz in ((4149.0, 4582.0), (9509.0, 8530.0)):
+
+@@ 1818-1826 DOC n=9 test_the_take_reads_the_same_vouch_the_staging_step_disclosed
+1818|     """#2752's whole-row banking is load-bearing for BOOSTS too, not only cuts.
+1819| 
+1820|     The take re-runs the gate against the verdicts the staging step banked. If
+1821|     that set dropped the PEAKS, a boost edited onto 4149 Hz would find only the
+1822|     4582 Hz dip, nothing to outrank it, and would come back VOUCHED a round
+1823|     after it was disclosed as unvouched. Banking the whole row set is what makes
+1824|     the two counts equal — which is the property the anchor buys now that the
+1825|     vouch discloses rather than refuses.
+1826|     """
+>> 1827|     _stage_driver(
+>> 1828|         tmp_path,
+
+@@ 1833-1833 COM n=1 
+1833|     # The edit: move the boost off its dip and onto the peak beside it.
+>> 1834|     envelope = json.loads(spool.prescription_spool_path().read_text())
+>> 1835|     tampered = json.loads(envelope["document"])
+
+@@ 1852-1856 DOC n=5 test_a_boost_at_an_unclassified_frequency_is_unvouched_and_admitted
+1852|     """12 kHz is past every banked feature: counted, not refused.
+1853| 
+1854|     The spend is what still binds — this boost pays the per-filter and composed
+1855|     caps exactly as a vouched one does.
+1856|     """
+>> 1857|     packet = _speaker(tmp_path, classification=_boostable())
+>> 1859|     prescription = _gate(packet, _document([_boost(freq=12000.0)], packet))
+
+@@ 1866-1880 DOC n=15 test_a_boost_is_admitted_on_the_horizontal_records_own_evidence
+1866|     """The open boost door. Owner ruling, 2026-08-21.
+1867| 
+1868|     1037 Hz's real row, from a turntable walk — the capture geometry that used
+1869|     to refuse every boost by name (``driver_boost_vertically_blind``). No
+1870|     horizontal capture can vouch that a boost generalises off its plane, and
+1871|     that is a QUALITY risk: reversible, and measured by the round that follows.
+1872|     Component safety is somewhere else entirely and is untouched — the branch
+1873|     chain charges this boost its realized peak before the split, and the
+1874|     emitted graph is re-proved against that charge
+1875|     (``tests/test_active_speaker_linearization_emission.py``).
+1876| 
+1877|     So what a boost still owes is MEASUREMENT, and only measurement: a nearest
+1878|     boostable dip, and a depth to be bounded by. Give the real row the depth
+1879|     the record never carried and the door is open.
+1880|     """
+>> 1881|     hz, classification, confidence, measured_q = _BANKED_RECORD[0]
+>> 1882|     packet = _speaker(tmp_path, classification=_classification([
+
+@@ 1897-1905 DOC n=9 test_the_depthless_record_still_vouches_for_a_boost_on_its_own_dip
+1897|     """The disposition that was reported wrong twice, re-derived at HEAD.
+1898| 
+1899|     1037.0 Hz refused ``driver_boost_vertically_blind`` (closed #2805), then
+1900|     ``driver_feature_depth_unavailable`` (closed 2026-08-23). NOT ONE row of the
+1901|     real 2026-08-19 record carries a depth, so under the depth bar that record
+1902|     could not produce a single boost. It now vouches on the classification
+1903|     alone, and the depth — when a round banks one — rides the receipt for a
+1904|     reader to weigh rather than deciding for them.
+1905|     """
+>> 1906|     packet = _speaker(tmp_path, classification=_classification(_banked_rows()))
+>> 1907|     assert all(v.depth_db is None for v in packet_feature_classifications(packet))
+
+@@ 1921-1928 DOC n=8 test_a_boost_deeper_than_its_dip_is_admitted_and_the_depth_is_on_the_receipt
+1921|     """The feature is EVIDENCE, not the bound. 1.46 dB dip, +1.6 dB boost.
+1922| 
+1923|     Both numbers are far inside every policy ceiling this gate applies, which is
+1924|     the point: overshooting a dip is a prediction that the correction misses,
+1925|     not a mechanism that damages anything, so the caps are what bind and the
+1926|     measured depth is what the receipt reports. A reader can still re-derive the
+1927|     old bar from the banked row, which is why the number has to be there.
+1928|     """
+>> 1929|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=1.46)]))
+>> 1931|     prescription = _gate(packet, _document([_boost(gain=1.6)], packet))
+
+@@ 1940-1945 COM n=6 
+1940|     # A depth that could bound nothing, and the values
+1941|     # `feature_classification.finite_number` — the reader that fills
+1942|     # `FeatureVerdict.depth_db` — rejects: bool (an int in Python), strings, and
+1943|     # non-finite values, each of which arrives as "no depth reported". Named in
+1944|     # full because the tree holds a dozen `_finite*` helpers and a bare name
+1945|     # greps to the wrong one.
+>> 1946|     0.0, -2.0, True, float("inf"), "3.0", None,
+>> 1947| ])
+
+@@ 1949-1954 DOC n=6 test_an_unusable_depth_no_longer_decides_anything
+1949|     """Every one of these refused a boost before 2026-08-23. None does now.
+1950| 
+1951|     The vouch reads the CLASSIFICATION; the depth is a column beside it. A
+1952|     document whose fate turned on a field the classifier often does not bank was
+1953|     the shape that kept the real record from producing any boost at all.
+1954|     """
+>> 1955|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=depth)]))
+>> 1957|     prescription = _gate(packet, _document([_boost(gain=1.0)], packet))
+
+@@ 1964-1966 DOC n=3 test_a_nonsense_depth_is_still_capped_by_the_policy_ceilings
+1964|     """A banked row claiming a 500 dB dip does not widen what may be
+1965|     prescribed: the per-filter ceiling and the composed budget are the bounds,
+1966|     and no number a prescriber or a classifier supplies can move them."""
+>> 1967|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=500.0)]))
+>> 1969|     assert _gate(
+
+@@ 1980-1980 COM n=1 
+1980| # --- the shape bounds, boost half ------------------------------------------- #
+>> 1983| @pytest.mark.parametrize(("gain", "accepted"), [
+>> 1984|     (0.49, True), (0.5, True), (3.0, True), (12.0, True), (12.01, False),
+
+@@ 1987-1999 DOC n=13 test_the_per_filter_boost_ceiling_is_inclusive
+1987|     """12.0 dB is this class's ceiling since R8, and the only bound left here.
+1988| 
+1989|     3.0 stays in the table as an ordinary mid-range case — it was the ceiling
+1990|     itself until 2026-08-22, and the row that used to assert 12.0 is REFUSED now
+1991|     asserts it is admitted, which is the whole of what R8 changed here. 0.49
+1992|     turned over the same way on 2026-08-29: the cosmetic floor discloses.
+1993| 
+1994|     12.0 being ACCEPTED is the load-bearing row: it is the rail the emitter
+1995|     re-validates against, so a document at the ceiling has to survive emission
+1996|     rather than be accepted here and refused downstream. It reaches the composed
+1997|     cap at the same time (the two caps are equal), which is why that comparison
+1998|     carries ``_COMPOSED_BOOST_EVAL_TOL_DB``.
+1999|     """
+>> 2000|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+>> 2001|     document = _document([_boost(gain=gain)], packet)
+
+@@ 2019-2022 DOC n=4 test_a_boost_keeps_the_q_envelope_a_cut_no_longer_carries
+2019|     """The width a boost may use is bounded by what a narrow boost COSTS.
+2020| 
+2021|     The same widths on a cut are free — pinned beside the floor bounds above.
+2022|     """
+>> 2023|     packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
+>> 2024|     document = _document([_boost(q=q)], packet)
+
+@@ 2035-2045 DOC n=11 test_two_admissible_boosts_may_still_compose_past_the_budget
+2035|     """The composed cap, on the EVALUATED cascade, and it is not a sum of gains.
+2036| 
+2037|     Two +10.0 dB filters 0.2 octaves apart are each inside the per-filter
+2038|     ceiling. At Q 8 they barely interact (11.54 dB composed, admitted); at Q 4
+2039|     their skirts overlap enough to reach 14.24 dB and the budget refuses. The
+2040|     same document, the same gains, a different width — which is exactly why
+2041|     this bound is measured rather than added up.
+2042| 
+2043|     Re-scaled from +3.0 dB (3.41 / 4.30 against the old 4.0 dB cap) when R8
+2044|     widened the caps; the property under test is unchanged.
+2045|     """
+>> 2046|     apart = TWEETER_DIP_HZ * 2 ** 0.2
+>> 2047|     packet = _speaker(tmp_path, classification=_boostable(
+
+@@ 2064-2064 COM n=1 
+2064|     # The refusal states the household-facing consequence, not only the bound.
+>> 2065|     assert excinfo.value.evidence["max_spl_spend_bound_db"] == MAX_SPL_SPEND_BOUND_DB
+>> 2068| def test_the_composed_boost_cap_is_load_bearing_not_decorative(tmp_path, monkeypatch):
+
+@@ 2069-2069 DOC n=1 test_the_composed_boost_cap_is_load_bearing_not_decorative
+2069|     """The mutation: raise the ceiling and the refused document is ADMITTED."""
+>> 2070|     apart = TWEETER_DIP_HZ * 2 ** 0.2
+>> 2071|     packet = _speaker(tmp_path, classification=_boostable(
+
+@@ 2086-2099 DOC n=14 test_the_composed_grid_sees_a_narrow_boost_at_a_wide_bands_edge
+2086|     """SF-GRID. A fixed log grid under-reads a high-Q filter near a wide band's
+2087|     top edge, and the bound then reads low because the DECLARATION was wide.
+2088| 
+2089|     Two ``+7.0 dB`` Q-8 boosts stacked at 23800 Hz on a driver declared to
+2090|     24 kHz compose to a true 14.00 dB — stacking identical filters doubles the
+2091|     dB exactly. A fixed log grid under-reads that badly at the band's top edge
+2092|     and would ADMIT them; unioning the filter centres reads 14.00 and refuses.
+2093|     The emitter always charged the true peak, so the defect was a false
+2094|     published spend bound rather than an under-absorption — which is exactly
+2095|     why only a test can catch it.
+2096| 
+2097|     Re-scaled from ``+3.0 dB`` (a true 6.00 against the old 4.0 dB cap) when R8
+2098|     widened the caps; the grid property under test is unchanged.
+2099|     """
+>> 2100|     wide = _draft()
+>> 2101|     wide["driver_safety_profile"]["targets"][1]["measurement_band_hz"] = [
+
+@@ 2123-2130 COM n=8 
+2123| #: A MIXED-SIGN cascade whose extremum sits BELOW its own declared band.
+2124| #: Six broad boosts at the woofer's 40 Hz floor and two narrow cuts just above
+2125| #: it: every filter is in-band and inside every per-filter bound, and the
+2126| #: composed extremum lands at ~30.7 Hz, where the woofer branch has no
+2127| #: protective high-pass. Eight filters — exactly the per-role ceiling.
+2128| #:
+2129| #: The boosts were +3.0 dB (composing to 9.75) until R8 widened the composed cap
+2130| #: past that; +4.0 dB restores a refusal without touching the shape being tested.
+>> 2131| _DOMAIN_ATTACK = [
+>> 2132|     {"role": "woofer", "biquad_type": "Peaking", "freq": 40.0, "q": 0.7, "gain": 4.0},
+
+@@ 2137-2139 COM n=3 
+2137| #: The same shape moved into the middle of the band. The ONLY variable is where
+2138| #: the extremum lands, which is what makes this a control rather than a second
+2139| #: case: it was refused before the domain fix and is refused after it.
+>> 2140| _DOMAIN_CONTROL = [
+>> 2141|     {"role": "woofer", "biquad_type": "Peaking", "freq": 400.0, "q": 0.7, "gain": 4.0},
+
+@@ 2160-2174 DOC n=15 test_a_cascade_peaking_outside_its_band_is_still_refused
+2160|     """SF-DOMAIN. The gate reads the cascade on the span the CHARGE is taken on.
+2161| 
+2162|     The emitter charges ``branch_chain_peak_db`` over the whole spectrum, so a
+2163|     band-limited reading was measuring a different interval from the one it
+2164|     claimed to bound. This attack put every filter inside the woofer's declared
+2165|     40-3000 Hz band and inside every per-filter bound, and drove the composed
+2166|     extremum to ~30.7 Hz — BELOW the band, where that branch has no protective
+2167|     high-pass. The old reading passed it at 3.58 dB against a real 10.75 dB
+2168|     charge; both arms now refuse at ~14.88.
+2169| 
+2170|     The two arms differ in the fourth significant figure because the extremum
+2171|     lands at a different frequency in each, which is the ONE thing this pair
+2172|     varies; they are pinned separately rather than to a shared number so that
+2173|     difference stays visible.
+2174|     """
+>> 2175|     packet = _speaker(tmp_path, classification=_woofer_dips(freqs))
+>> 2177|     with pytest.raises(BlendPrescriptionRefused) as excinfo:
+
+@@ 2187-2219 DOC n=33 test_the_terms_the_composed_cap_ignores_are_non_positive
+2187|     """The premise the spend bound rests on, MEASURED rather than assumed.
+2188| 
+2189|     `_check_composed` reads the cascade alone. That is an upper bound on the
+2190|     emitter's charge only if every term it drops can just subtract — so the
+2191|     crossover response is checked across every supported LR order and a range
+2192|     of corners, and the trim's own non-positive clamp is pinned by
+2193|     `tests/test_crossover_v2_single_datum_owner.py`.
+2194| 
+2195|     **The bar is ``<= 1e-8``, not ``<= 0``, and that is deliberate**: a section's
+2196|     true maximum is a small POSITIVE number rather than an exact zero — the
+2197|     floating-point residue of evaluating a cascade of up to eight biquads — and
+2198|     it GROWS sharply as the corner drops toward ~20 Hz. On THIS test's grid the
+2199|     worst over the corners below is **+1.1654e-09 dB at LR8 / 20 Hz lowpass**,
+2200|     and a 200-corner sweep over 10 Hz-20 kHz peaks at +1.0790e-09 near 18.4 Hz.
+2201|     Below that the LR8 lowpass curve turns negative again (-1.94e-09 at 15 Hz);
+2202|     that is a fact about THAT curve, not the family — at 15 Hz the family
+2203|     maximum is still positive (+9.37e-13, LR8 highpass).
+2204| 
+2205|     **The bar moved 1e-9 -> 1e-8, and the reason is worth stating rather than
+2206|     burying.** 20 Hz and 40 Hz corners were added because this pin's lowest was
+2207|     80 Hz — it had never sampled the region that maximises the term it exists to
+2208|     bound, and each sweep floor found its worst at or near the floor itself. The
+2209|     added corner then exceeded the old bar. So the old 1e-9 was calibrated
+2210|     against an under-sampled measurement, not violated by a regression: nothing
+2211|     about the crossover changed. The new bar sits an order above the measured
+2212|     residue on the densest domain tried.
+2213| 
+2214|     That is still an extraordinarily tight guard for its actual job, which is
+2215|     catching a real SIGN error — a crossover term that genuinely adds level
+2216|     would be ~0.001 dB at the very least, five orders above this bar. And it
+2217|     remains a search minimum: a denser grid may find slightly more, which is
+2218|     exactly how the previous bar was found to be too low.
+2219|     """
+>> 2220|     import numpy as np
+>> 2222|     from jasper.active_speaker.branch_chain import (
+
+@@ 2240-2242 DOC n=3 test_the_composed_grid_change_moved_no_pinned_number
+2240|     """The control for the grid fix: it sharpens a blind spot, it does not
+2241|     re-tune the class. Every figure this PR publishes is read off the new grid
+2242|     and is the same figure the old grid read."""
+>> 2243|     apart = TWEETER_DIP_HZ * 2 ** 0.2
+>> 2244|     packet = _speaker(tmp_path, classification=_boostable(
+
+@@ 2256-2263 DOC n=8 test_the_worst_role_is_the_documents_composed_boost_not_the_last_role
+2256|     """SF-UNPINNED-GUARDS (b). `_check_composed` folds by MAX across roles.
+2257| 
+2258|     A last-role-wins fold would report the woofer's smaller boost as the
+2259|     document's, under-reporting the spend into the receipt and the round's
+2260|     event — a wrong number in the one place a reader goes to see what was
+2261|     spent. Roles are walked in sorted order, so the woofer is evaluated LAST
+2262|     and a broken fold would report its number.
+2263|     """
+>> 2264|     # 1200 Hz: inside the woofer's band, below the 1600 Hz overlap floor, and
+>> 2265|     # far enough from the fixture's 900 Hz cuttable peak that the nearest-decides
+
+@@ 2264-2266 COM n=3 
+2264|     # 1200 Hz: inside the woofer's band, below the 1600 Hz overlap floor, and
+2265|     # far enough from the fixture's 900 Hz cuttable peak that the nearest-decides
+2266|     # rule gives the dip its own frequency.
+>> 2267|     packet = _speaker(tmp_path, classification=_boostable([
+>> 2268|         _dip(depth_db=20.0), _dip(hz=1200.0, depth_db=20.0),
+
+@@ 2281-2281 COM n=1 
+2281| # --- the crossover knee: a boost may not move the summed response ----------- #
+>> 2284| def test_a_boost_in_the_declared_band_overlap_is_counted_not_refused(tmp_path):
+>> 2285|     """The knee bar, burnt down. Both drivers radiate in the overlap, so a
+
+@@ 2285-2290 DOC n=6 test_a_boost_in_the_declared_band_overlap_is_counted_not_refused
+2285|     """The knee bar, burnt down. Both drivers radiate in the overlap, so a
+2286|     per-driver boost there moves the SUMMED response the crossover stage owns —
+2287|     worth telling a reader, and not worth stopping a round for.
+2288| 
+2289|     Transformed rather than deleted: the overlap it detects is the same one,
+2290|     and only the consequence of sitting in it changed."""
+>> 2291|     packet = _speaker(tmp_path, classification=_boostable([
+>> 2292|         _dip(hz=2000.0, depth_db=20.0),
+
+@@ 2297-2297 COM n=1 
+2297|     # Admitted, and the finding rides the receipt instead of the exception.
+>> 2298|     assert prescription.prescription_class == "boost"
+>> 2299|     assert prescription.boosts_in_crossover_overlap == 1
+
+@@ 2304-2307 DOC n=4 test_a_boost_outside_the_overlap_counts_zero
+2304|     """The discriminator: the count is about the overlap, not about boosting.
+2305| 
+2306|     Without this, ``boosts_in_crossover_overlap == 1`` above would pass just as
+2307|     well if the field counted every boost."""
+>> 2308|     packet = _speaker(tmp_path, classification=_boostable([
+>> 2309|         _dip(hz=8000.0, depth_db=20.0),
+
+@@ 2319-2329 DOC n=11 test_the_knee_finding_reads_a_bells_centre_and_not_the_overlap_as_a_band
+2319|     """What the knee finding reaches, and what it deliberately does not.
+2320| 
+2321|     Its subject is a BELL: a Peaking's ``freq`` IS its placement, so reading the
+2322|     centre reads where the lift lives. Only the centre — a bell centred just
+2323|     OUTSIDE still reaches in on its skirt, and the deciding-frame measurement is
+2324|     what adjudicates the summed response there.
+2325| 
+2326|     The measured skirt number is the incoherence the demotion rests on: a bar
+2327|     that admitted +11.93 dB into the overlap through a skirt while refusing a
+2328|     centre was a coherence gap, not a bound.
+2329|     """
+>> 2330|     packet = _speaker(tmp_path, classification=_boostable([
+>> 2331|         _dip(hz=3200.0, depth_db=20.0),
+
+@@ 2333-2334 COM n=2 
+2333|     # Centred just above the woofer's 3 kHz ceiling, and WIDE, so its skirt
+2334|     # covers the overlap it is not centred in.
+>> 2335|     outside = {"role": "tweeter", "biquad_type": "Peaking", "freq": 3200.0,
+>> 2336|                "q": 0.5, "gain": DRIVER_MAX_FILTER_BOOST_DB}
+
+@@ 2341-2342 COM n=2 
+2341|     # …and it really does reach in: the skirt puts nearly its full gain across
+2342|     # the overlap the bar used to refuse a CENTRE in.
+>> 2343|     overlap = np.geomspace(1600.0, 3000.0, 2000)
+>> 2344|     reach = float(np.max(20.0 * np.log10(np.abs(chain_response(
+
+@@ 2348-2350 COM n=3 
+2348|     # …and the count agrees it is outside: the finding reads centres, so this
+2349|     # +11.93 dB of real reach is invisible to it. That asymmetry is why a bar
+2350|     # here was incoherent and a count is honest.
+>> 2351|     assert prescription.boosts_in_crossover_overlap == 0
+>> 2354| def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):
+
+@@ 2355-2378 DOC n=24 test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it
+2355|     """The shelf half of the knee bar's scope, measured (SF1).
+2356| 
+2357|     A shelf's ``freq`` is a CORNER, not a placement — ``linearization_fit.
+2358|     _blind_zone_placements`` skips shelves by type for exactly this reason — so
+2359|     a Lowshelf cornered ABOVE the overlap covers the overlap at its FULL gain,
+2360|     however far away the corner sits. The knee bar cannot see that and no
+2361|     shelf-side bar was added, because the consequence is bounded by arithmetic
+2362|     the emitter already performs.
+2363| 
+2364|     The chain, end to end: the composed cap holds the covered side to
+2365|     :data:`~.driver_prescription.DRIVER_MAX_COMPOSED_BOOST_DB`, the emitter
+2366|     charges ``peak + HEADROOM_MARGIN_DB`` before the split, and the charge
+2367|     exceeds the lift — so the overlap lands BELOW unity. That is the argument
+2368|     the docstring makes; this is the measurement it rests on.
+2369| 
+2370|     **Two numbers, and they are different on purpose.** The gate's arithmetic
+2371|     gives the cap-implied BOUND (12.0 + 1.0 = 13.0 =
+2372|     :data:`~.driver_prescription.MAX_SPL_SPEND_BOUND_DB`), which is what one
+2373|     accepted document can cost at worst. What the emitter actually returns is
+2374|     lower — ``linearization_headroom_db`` reads the branch the graph emits, and
+2375|     the tweeter's own LR4 high-pass takes the realized peak below the gate's —
+2376|     so this calls the emitter rather than restating a decimal. A prose number
+2377|     nobody computes is this repo's known drift class.
+2378|     """
+>> 2379|     from jasper.active_speaker.profile import ActiveSpeakerPreset
+>> 2381|     from tests.test_active_speaker_profile import _two_way_preset
+
+@@ 2384-2385 COM n=2 
+2384|     # Cornered at the top of the tweeter's declared band: everything below is
+2385|     # covered, the whole overlap included.
+>> 2386|     shelf = {"role": "tweeter", "biquad_type": "Lowshelf", "freq": 20000.0,
+>> 2387|              "gain": DRIVER_MAX_FILTER_BOOST_DB}
+
+@@ 2391-2391 COM n=1 
+2391|     # Admitted — the knee bar is a centre check and does not reach this.
+>> 2392|     assert prescription.filters[0]["biquad_type"] == "Lowshelf"
+>> 2393|     # Flat at its full gain right across the overlap.
+
+@@ 2393-2393 COM n=1 
+2393|     # Flat at its full gain right across the overlap.
+>> 2394|     overlap = np.geomspace(1600.0, 3000.0, 2000)
+>> 2395|     covered = 20.0 * np.log10(np.abs(chain_response(
+
+@@ 2401-2401 COM n=1 
+2401|     # …and the spend it is charged is the full published bound, no more.
+>> 2402|     assert prescription.composed_boost_db == pytest.approx(
+>> 2403|         DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
+
+@@ 2405-2405 COM n=1 
+2405|     # (a) the cap-implied BOUND, from this gate's own arithmetic.
+>> 2406|     bound = prescription.composed_boost_db + HEADROOM_MARGIN_DB
+>> 2407|     assert bound == pytest.approx(MAX_SPL_SPEND_BOUND_DB, abs=1e-6)
+
+@@ 2408-2410 COM n=3 
+2408|     # (b) what the EMITTER returns for the same filter on the shipped two-way,
+2409|     # computed rather than quoted. Lower than (a), because the branch carries
+2410|     # its own LR4 high-pass at 1600 Hz.
+>> 2411|     realized = camilla_yaml.linearization_headroom_db(
+>> 2412|         {"tweeter": [
+
+@@ 2422-2424 COM n=3 
+2422|     # The bound that matters, on BOTH numbers: after the pre-split charge the
+2423|     # overlap sits BELOW unity, so admitting the shelf raised nothing the
+2424|     # household can hear.
+>> 2425|     assert float(np.max(covered - bound)) == pytest.approx(-1.0, abs=0.001)
+>> 2426|     assert float(np.max(covered - realized)) == pytest.approx(-0.9812, abs=0.0001)
+
+@@ 2431-2432 DOC n=2 test_a_cut_in_the_overlap_is_untouched_by_the_knee_ruling
+2431|     """Shipped behaviour, deliberately unchanged: a cut past the handoff is
+2432|     ordinary useful work, and no round has observed it failing."""
+>> 2433|     packet = _speaker(tmp_path, classification=_classification([
+>> 2434|         _verdict(2000.0, DEFECT_CUTTABLE),
+
+@@ 2444-2444 DOC n=1 test_the_knee_ruling_does_not_reach_tonights_targets
+2444|     """The three live 2026-08-19 dips all sit above the 3 kHz overlap ceiling."""
+>> 2445|     packet = _speaker(tmp_path, classification=_boostable([
+>> 2446|         _dip(hz=freq, depth_db=20.0),
+
+@@ 2454-2454 COM n=1 
+2454| # --- the route: one field, and no condition on reaching it ------------------ #
+>> 2457| def test_the_route_carries_a_boost_however_the_value_object_was_built(tmp_path):
+>> 2458|     """A prescription built directly has no classification basis and routes anyway.
+
+@@ 2458-2466 DOC n=9 test_the_route_carries_a_boost_however_the_value_object_was_built
+2458|     """A prescription built directly has no classification basis and routes anyway.
+2459| 
+2460|     ``driver_prescription_route`` used to restate ``_check_classification``'s bar
+2461|     as a property of the SEAM, so an unvouched boost could not populate the
+2462|     candidate field however the object was constructed. The 2026-08-23 ruling
+2463|     made that bar a disclosure, and a seam-level restatement of a removed
+2464|     refusal would be the same refusal wearing a second name. What still bounds a
+2465|     boost built this way is the emitter, which re-validates every entry.
+2466|     """
+>> 2467|     packet = _speaker(tmp_path, classification=_boostable())
+>> 2468|     accepted = _gate(packet, _document([_cut()], packet))
+
+@@ 2471-2471 COM n=1 
+2471|         prescription_class="cut",  # laundered
+>> 2472|         packet_fingerprint=accepted.packet_fingerprint,
+>> 2473|         prescriber_model="m",
+
+@@ 2486-2493 DOC n=8 test_a_rehydrated_boost_carries_no_basis_and_still_routes
+2486|     """The durable read-back applies no bound and reconstructs no verdict.
+2487| 
+2488|     That is deliberate — the bounds have one owner and it is the boundary. What
+2489|     it costs is the disclosure, not the route: ``unvouched_filters`` comes back
+2490|     ``None`` (nobody computed it) rather than ``0`` (computed, all vouched), so
+2491|     a receipt read back out of durable state cannot claim evidence it never
+2492|     re-derived.
+2493|     """
+>> 2494|     packet = _speaker(tmp_path, classification=_boostable())
+>> 2495|     accepted = _gate(packet, _document([_boost()], packet))
+
+@@ 2496-2496 COM n=1 
+2496|     assert accepted.classification_basis  # the gate DID vouch for it
+>> 2497|     assert accepted.unvouched_filters == 0
+>> 2499|     read_back = driver_prescription_from_mapping(accepted.to_dict())
+
+@@ 2509-2515 DOC n=7 test_the_basis_names_the_filter_it_vouched_for_by_role_and_frequency
+2509|     """Matching is by ``(role, freq)``, never by position in the list.
+2510| 
+2511|     Nothing refuses on it any more, but the receipt's basis is still keyed that
+2512|     way and the CLI's own disclosure re-derives the unvouched NAMES from it — a
+2513|     basis matched by position would name the wrong filters on a document whose
+2514|     vouched and unvouched filters interleave.
+2515|     """
+>> 2516|     packet = _speaker(tmp_path, classification=_boostable())
+>> 2518|     prescription = _gate(
+
+@@ 2536-2540 DOC n=5 test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class
+2536|     """The regression that matters most: the cut path is byte-identical.
+2537| 
+2538|     A boost route that changed what a cut does would be a hearing-safety change
+2539|     smuggled in as a feature addition.
+2540|     """
+>> 2541|     packet = _speaker(tmp_path, classification=_boostable())
+>> 2542|     prescription = _gate(packet, _document([_cut()], packet))
+
+@@ 2563-2563 COM n=1 
+2563| # --- the numbers, pinned against the constants they were restored from ------- #
+>> 2566| def test_the_boost_ceilings_are_the_emitters_rail_not_the_sibling_classs():
+>> 2567|     """LOCKSTEP pin. Ruling **R8**, as an assertion — and the overturn it carries.
+
+@@ 2567-2580 DOC n=14 test_the_boost_ceilings_are_the_emitters_rail_not_the_sibling_classs
+2567|     """LOCKSTEP pin. Ruling **R8**, as an assertion — and the overturn it carries.
+2568| 
+2569|     Until 2026-08-22 this test asserted the OPPOSITE, on the owner's 2026-08-18
+2570|     ruling that "a new permission should not open at the ceiling of an old one":
+2571|     both boost ceilings equalled the blend class's (3.0 / 4.0) and both sat
+2572|     strictly under the fit engine's 12 dB rail. R8 overturns that on its own
+2573|     terms — the tournament banks a pre-registered expected delta per candidate,
+2574|     which is the closed-loop prediction whose absence was the reason to open low.
+2575| 
+2576|     So the per-filter ceiling is now the emitter's own rail, which is what makes
+2577|     a prescription at the ceiling emittable instead of accepted here and refused
+2578|     downstream; and both ceilings have LEFT the blend class, which keeps its own
+2579|     3.0 / 4.0 because R8 moved only this class.
+2580|     """
+>> 2581|     from jasper.active_speaker.crossover_v2.blend_prescription import (
+>> 2582|         PRESCRIPTION_MAX_FILTER_BOOST_DB,
+
+@@ 2589-2590 COM n=2 
+2589|     # The per-filter ceiling IS the emitter's rail, in lockstep with both owners
+2590|     # of that number, so a document at the ceiling survives emission.
+>> 2591|     assert DRIVER_MAX_FILTER_BOOST_DB == camilla_yaml.MAX_LINEARIZATION_BOOST_DB
+>> 2592|     assert DRIVER_MAX_FILTER_BOOST_DB == PER_FILTER_BOOST_CAP_DB
+
+@@ 2593-2593 COM n=1 
+2593|     # ...and the blend class did NOT move with it.
+>> 2594|     assert PRESCRIPTION_MAX_FILTER_BOOST_DB == 3.0
+>> 2595|     assert PRESCRIPTION_MAX_TOTAL_BOOST_DB == 4.0
+
+@@ 2601-2610 DOC n=10 test_the_max_spl_spend_bound_is_derived_from_the_charge_formula
+2601|     """It is a CONSEQUENCE of ``headroom_charge_db``, not a number chosen here.
+2602| 
+2603|     ``charge(peak) = peak + HEADROOM_MARGIN_DB`` above the epsilon, and the
+2604|     composed cap bounds the peak — so a margin that moved must move this too,
+2605|     which is why it is imported rather than restated.
+2606| 
+2607|     **Re-proved at 13.0 dB for R8's widened caps.** Each step of the derivation
+2608|     the constant's own comment states gets an assertion here, so the published
+2609|     number cannot drift from the arithmetic that produced it.
+2610|     """
+>> 2611|     from jasper.active_speaker.branch_chain import (
+>> 2612|         HEADROOM_MARGIN_DB, headroom_charge_db,
+
+@@ 2615-2615 COM n=1 
+2615|     # Step 1: the charge formula is one addition, and nothing else.
+>> 2616|     assert HEADROOM_MARGIN_DB == 1.0
+>> 2617|     assert headroom_charge_db(7.5) == 7.5 + HEADROOM_MARGIN_DB
+
+@@ 2618-2618 COM n=1 
+2618|     # Step 2: the composed cap bounds an accepted document's peak.
+>> 2619|     assert DRIVER_MAX_COMPOSED_BOOST_DB == 12.0
+>> 2620|     # Steps 1+2 compose to the published bound, and it lands at 13.0.
+
+@@ 2620-2620 COM n=1 
+2620|     # Steps 1+2 compose to the published bound, and it lands at 13.0.
+>> 2621|     assert MAX_SPL_SPEND_BOUND_DB == DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
+>> 2622|     assert MAX_SPL_SPEND_BOUND_DB == 13.0
+
+@@ 2627-2639 DOC n=13 test_the_span_clause_is_what_makes_the_bound_sound
+2627|     """Step 3 of the derivation, the one the whole proof rests on.
+2628| 
+2629|     The gate's composed reading is taken on the CHARGE's own span —
+2630|     ``branch_chain._evaluation_grid`` IMPORTED, not mirrored — unioned with a
+2631|     dense sweep of the role's band. If the gate ever read a NARROWER domain than
+2632|     the charge, "peak <= 12" would stop bounding the charge's input and the
+2633|     13.0 dB number would be unsound rather than merely loose. That is not
+2634|     hypothetical: a band-limited gate once passed a cascade at 3.58 dB that the
+2635|     emitter charged 10.75 dB for.
+2636| 
+2637|     Pinned two ways: the grid is a superset of the charge's own span, and a
+2638|     cascade whose extremum sits OUTSIDE the declared band is still seen.
+2639|     """
+>> 2640|     from jasper.active_speaker.branch_chain import CHAIN_GRID_HZ, _evaluation_grid
+>> 2641|     from jasper.active_speaker.crossover_v2 import driver_prescription as dp
+
+@@ 2649-2649 COM n=1 
+2649|     # The charge's whole span is inside the gate's grid — every point of it.
+>> 2650|     charge_span = _evaluation_grid(role_filters, CHAIN_GRID_HZ)
+>> 2651|     assert np.isin(charge_span, grid).all(), (
+
+@@ 2654-2654 COM n=1 
+2654|     # And the grid reaches outside the declared band, which is the domain half.
+>> 2655|     assert grid.min() < 40.0
+>> 2656|     assert grid.max() > 3000.0
+
+@@ 2660-2666 DOC n=7 test_the_bound_is_attained_by_one_filter_at_the_per_filter_rail
+2660|     """13.0 dB is a tight maximum, not a ceiling nothing reaches.
+2661| 
+2662|     One filter at ``DRIVER_MAX_FILTER_BOOST_DB``, at any Q, composes to exactly
+2663|     the composed cap and charges exactly the bound. This is what R8 means by the
+2664|     worst-case max-SPL spend moving 5 -> 13 dB, and it is only expressible
+2665|     because R8 set the two caps equal.
+2666|     """
+>> 2667|     from jasper.active_speaker.branch_chain import chain_response, headroom_charge_db
+>> 2668|     from jasper.active_speaker.crossover_v2 import driver_prescription as dp
+
+@@ 2684-2696 DOC n=13 test_no_admissible_cascade_charges_more_than_the_published_bound
+2684|     """The safety claim itself, swept rather than argued.
+2685| 
+2686|     The four-step derivation says an admitted document cannot be charged past
+2687|     ``MAX_SPL_SPEND_BOUND_DB``. This walks random filter sets over the gate's
+2688|     OWN rails — 1-4 Peaking filters, gains 0.5 to the per-filter ceiling, Q
+2689|     across the whole envelope, centres anywhere in a tweeter's band — keeps the
+2690|     ones ``_check_composed`` would admit, and charges each through
+2691|     ``headroom_charge_db``.
+2692| 
+2693|     Evidence over a sample, not a proof over the space (the derivation is the
+2694|     proof); this is what would catch the derivation being wrong. The seed is
+2695|     pinned so the two numbers in the constant's own comment are reproducible.
+2696|     """
+>> 2697|     from jasper.active_speaker.branch_chain import chain_response, headroom_charge_db
+>> 2699|     rng = np.random.default_rng(20260822)
+
+@@ 2720-2720 COM n=1 
+2720|             continue  # the gate refuses it, so it is not this bound's problem
+>> 2721|         admitted += 1
+>> 2722|         worst = max(worst, headroom_charge_db(peak))
+
+@@ 2730-2741 DOC n=12 test_the_composed_tolerance_absorbs_only_the_evaluators_own_noise
+2730|     """The tolerance R8's equal caps made necessary, bounded at both ends.
+2731| 
+2732|     Untolerated, a filter AT the per-filter rail is admitted or refused by the
+2733|     biquad's low bits — sign depending on centre and Q — so the published
+2734|     ceiling would refuse at its own value. The tolerance must be big enough to
+2735|     cover that and far too small to hide a real cascade.
+2736| 
+2737|     The residue is a SWEPT figure: worst |residue| 2.416e-13 dB at 2015.4 Hz /
+2738|     Q 6.89 over 4 000 random draws at the rail, ~3x the largest value a
+2739|     hand-picked grid finds (7.8e-14) and 4 139x under the tolerance. The lower
+2740|     bound below is set against the swept number, not the hand-picked one.
+2741|     """
+>> 2742|     from jasper.active_speaker.crossover_v2 import driver_prescription as dp
+>> 2744|     assert dp._COMPOSED_BOOST_EVAL_TOL_DB == 1e-9
+
+@@ 2745-2747 COM n=3 
+2745|     # Covers the SWEPT evaluator residue (2.416e-13) with ~4 orders to spare.
+2746|     # The bar sits above that measurement rather than at it, because a search
+2747|     # reports a minimum of the worst case, never a maximum.
+>> 2748|     assert dp._COMPOSED_BOOST_EVAL_TOL_DB > 1e-11
+>> 2749|     # ...and is orders below the 4-decimal precision every charge is published
+
+@@ 2749-2750 COM n=2 
+2749|     # ...and is orders below the 4-decimal precision every charge is published
+2750|     # at, so the 13.0 dB bound is unmoved at every digit anyone reads.
+>> 2751|     assert dp._COMPOSED_BOOST_EVAL_TOL_DB < 0.5e-4
+>> 2752|     assert round(MAX_SPL_SPEND_BOUND_DB + dp._COMPOSED_BOOST_EVAL_TOL_DB, 4) == 13.0
+
+@@ 2756-2763 DOC n=8 test_the_boost_floor_is_the_cut_floor_because_it_is_the_same_argument
+2756|     """One literal, two names, asserted AT SOURCE.
+2757| 
+2758|     ``_MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter slot" does not depend
+2759|     on the sign, so the pair is DEFINED together rather than restated beside
+2760|     each other. An `is` check cannot prove that — CPython interns equal float
+2761|     constants, so two independent `= 0.5` literals would also pass it — so the
+2762|     source line is what gets read.
+2763|     """
+>> 2764|     import inspect
+>> 2766|     from jasper.active_speaker.linearization_fit import _MIN_FILTER_GAIN_DB
+
+@@ 2777-2777 DOC n=1 test_defect_boostable_at_is_the_cut_readers_mirror
+2777|     """Same nearest-decides rule, same fail-closed tie, opposite eligible class."""
+>> 2778|     verdicts = _banked_verdicts()
+>> 2780|     # Nearest decides: the dip owns its own frequency, the peak owns its own.
+
+@@ 2780-2780 COM n=1 
+2780|     # Nearest decides: the dip owns its own frequency, the peak owns its own.
+>> 2781|     assert defect_boostable_at(verdicts, 4582.0)[0].freq_hz == 4582.0
+>> 2782|     assert defect_boostable_at(verdicts, 4149.0)[0] is None
+
+@@ 2785-2785 COM n=1 
+2785|     # Nothing classified, and a degenerate frequency: a finding, not a raise.
+>> 2786|     assert defect_boostable_at(verdicts, 12000.0) == (None, None)
+>> 2787|     assert defect_boostable_at(verdicts, -1.0) == (None, None)
+
+@@ 2791-2792 DOC n=2 test_an_equidistant_tie_falls_closed_away_from_boostable
+2791|     """Powers of two, so "equidistant" is exact in binary. Row order must not
+2792|     decide, and the non-boostable verdict wins the tie either way."""
+>> 2793|     rows = [_verdict(1000.0, DEFECT_BOOSTABLE), _verdict(4000.0, DEFECT_CUTTABLE)]
+>> 2795|     for ordered in (rows, list(reversed(rows))):
+
+@@ 2804-2811 DOC n=8 test_the_staged_event_reports_what_the_document_will_spend
+2804|     """The journal line carries the numbers that decided, not just that a
+2805|     document was banked.
+2806| 
+2807|     ``boost_filters`` is pinned at a NON-ZERO count on purpose: a hardcoded 0
+2808|     satisfies every cut-only staging in the suite, so only a boosting document
+2809|     can tell a real count from a constant. Same for the role — a document that
+2810|     boosts one branch and cuts another must name the branch that spent.
+2811|     """
+>> 2812|     apart = TWEETER_DIP_HZ * 2 ** 0.2
+>> 2813|     with caplog.at_level(
+
+@@ 2833-2833 DOC n=1 test_a_cut_only_staging_reports_no_spend_at_all
+2833|     """The control: the same line on a cut-only document says zero, not blank."""
+>> 2834|     with caplog.at_level(
+>> 2835|         logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
+
+@@ 2842-2843 COM n=2 
+2842|     # A document that spent nothing has no role that spent. Naming one would
+2843|     # attribute 0.0 dB to whichever role happened to sort first.
+>> 2844|     assert "composed_boost_role=null" in caplog.text
+>> 2847| def test_depth_rides_the_banked_rows_end_to_end_with_no_schema_bump(tmp_path):
+
+@@ 2848-2853 DOC n=6 test_depth_rides_the_banked_rows_end_to_end_with_no_schema_bump
+2848|     """``depth_db`` round-trips artifact → packet → gate → spool → take.
+2849| 
+2850|     It is an ordinary optional field on an artifact identified by filename and
+2851|     row shape, so nothing versions on it: a row without one reads as ``None``
+2852|     and an older reader handed one ignores it.
+2853|     """
+>> 2854|     packet, _ = _stage_driver(
+>> 2855|         tmp_path, ordinal=3, filters=[_boost()], classification=_boostable(),
+
+@@ 2878-2886 DOC n=9 test_no_bar_reads_a_vertical_blindness_flag_off_a_row
+2878|     """#2783, closed by deletion rather than by a stricter reader.
+2879| 
+2880|     The defect was one field name with two producers behind it: this register
+2881|     meant the PLANE, and the 2026-08-19 lab tool computed "fewer than two gates
+2882|     resolved" — so a horizontal walk banked rows the honest semantic called
+2883|     blind, and the boost bar honoured them. With the bar gone the field is gone
+2884|     with it, and a row that still carries one is an ignored lab column like the
+2885|     thirty others beside it. A boost's admission does not move when it flips.
+2886|     """
+>> 2887|     sighted, blind = (
+>> 2888|         _speaker(
+
+@@ 2897-2897 COM n=1 
+2897|         # The submitted gain, unchanged by the flag — which is the whole claim.
+>> 2898|         assert gated.filters[0]["gain"] == TWEETER_DIP_DEPTH_DB
+>> 2899|     assert not any(
+
+@@ 2906-2910 DOC n=5 test_an_older_reader_tolerates_the_new_field_and_a_row_without_it
+2906|     """Unknown-field tolerance, both directions: the reader takes what it needs.
+2907| 
+2908|     A row carrying lab columns it has never heard of reads fine, and so does one
+2909|     predating ``depth_db`` — which is every row on disk today.
+2910|     """
+>> 2911|     rows = read_feature_verdicts([
+>> 2912|         {"hz": 900.0, "classification": DEFECT_CUTTABLE, "z_local": 4.2},
+
+@@ 2919-2921 COM n=3 
+2919| # --------------------------------------------------------------------------- #
+2920| # emission — the SAME per-branch seam, and the emitter's own re-validation
+2921| # --------------------------------------------------------------------------- #
+>> 2924| def test_the_candidate_field_is_the_per_branch_one_not_the_shared_stage(packet):
+>> 2925|     """Stage P3 rule 3: a per-driver defect gets a per-driver filter.
+
+@@ 2925-2929 DOC n=5 test_the_candidate_field_is_the_per_branch_one_not_the_shared_stage
+2925|     """Stage P3 rule 3: a per-driver defect gets a per-driver filter.
+2926| 
+2927|     A shared filter is the wrong instrument for a one-driver problem and charges
+2928|     both branches for it, so this class can land in exactly one field.
+2929|     """
+>> 2930|     prescription = _gate(packet, _document([_cut()], packet))
+>> 2932|     fields = driver_prescription_to_candidate_fields(prescription, fitted=None)
+
+@@ 2939-2944 DOC n=6 test_the_candidate_field_reduces_to_exactly_the_prescribed_filters
+2939|     """Through the shipped reducer, so the shape cannot be right only here.
+2940| 
+2941|     ``linearization_filters_by_role`` is what every rich-candidate call site
+2942|     uses to hand the emitter its input; a prescription that did not reduce
+2943|     through it would silently emit nothing.
+2944|     """
+>> 2945|     prescription = _gate(
+>> 2946|         packet,
+
+@@ 2964-2970 DOC n=7 test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters
+2964|     """The emitter never trusts a caller, and this proves it does not have to.
+2965| 
+2966|     ``_validated_linearization`` is an independent fail-closed re-validation of
+2967|     whatever a persisted candidate claims. A prescription that cleared this
+2968|     gate and then failed that one would be a bound stated in only one of the two
+2969|     places it has to hold.
+2970|     """
+>> 2971|     from jasper.active_speaker.profile import ActiveSpeakerPreset
+>> 2973|     from tests.test_active_speaker_profile import _two_way_preset
+
+@@ 2976-2979 COM n=4 
+2976|     # At the cut's deepest and NARROWER than the boost arm's ceiling, which is
+2977|     # the case the 2026-08-29 widening created: the emitter asks a biquad's `q`
+2978|     # only to be positive and finite, so an unbounded cut Q is emittable rather
+2979|     # than accepted here and refused downstream.
+>> 2980|     prescription = _gate(
+>> 2981|         packet, _document([_cut(gain=-12.0, q=14.0)], packet),
+
+@@ 2998-3022 DOC n=25 test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph
+2998|     """The open door does not reach past the level bound. It cannot.
+2999| 
+3000|     Owner ruling, 2026-08-21: a boost is refused no longer for the capture
+3001|     geometry it was measured on. That bar was about whether a correction
+3002|     GENERALISES off the horizontal plane — quality, reversible, graded by the
+3003|     round that follows. What bounds a driver is a different machine entirely,
+3004|     and this walks it end to end on the same document the gate just admitted:
+3005| 
+3006|       gate → ``driver_prescription_to_candidate_fields`` → the ``linearization``
+3007|       candidate field → the emitter → ``active_baseline_headroom`` → the
+3008|       runtime contract's re-derivation off the graph TEXT.
+3009| 
+3010|     6245 Hz is one of the three real boosts #2783 named as admitted off the
+3011|     banked 2026-08-19 rows. +3.0 dB at Q 8 realizes 2.9699 dB there (it sits
+3012|     0.0301 dB down the tweeter's 1600 Hz LR4 high-pass), so the graph
+3013|     attenuates the program by that plus ``HEADROOM_MARGIN_DB`` BEFORE the split
+3014|     — the boosted graph is never louder at any frequency than the flat one at
+3015|     full scale, it reaches full scale at a lower volume setting. The charge is
+3016|     computed from the FILTERS, so it cannot be bypassed by how they arrived,
+3017|     and the last reader never sees the prescription at all.
+3018| 
+3019|     (The excitation ledger is a different subsystem again: it bounds the sweep
+3020|     a MEASUREMENT plays, not the EQ an accepted round applies. Neither this
+3021|     change nor this test touches it.)
+3022|     """
+>> 3023|     from jasper.active_speaker import (
+>> 3024|         ActiveSpeakerPreset,
+
+@@ 3039-3042 COM n=4 
+3039|     # Bounded here by the VOUCHED DEPTH, not by the per-filter ceiling: the
+3040|     # default banked dip measures 3.0 dB and a boost may not exceed the dip it
+3041|     # is aimed at. Those two bounds were the same number until R8 widened the
+3042|     # ceiling to 12.0, so this asserts the one that actually binds.
+>> 3043|     assert prescription.filters[0]["gain"] == TWEETER_DIP_DEPTH_DB
+>> 3044|     assert TWEETER_DIP_DEPTH_DB < DRIVER_MAX_FILTER_BOOST_DB
+
+@@ 3057-3057 COM n=1 
+3057|     # The boost is PAID for, in maximum SPL, before the split.
+>> 3058|     assert _headroom_gain_db(flat) == 0.0
+>> 3059|     assert _headroom_gain_db(emitted) == pytest.approx(-3.9699, abs=1e-3)
+
+@@ 3060-3060 COM n=1 
+3060|     # And what it may cost is still the published bound, not the open door.
+>> 3061|     assert -_headroom_gain_db(emitted) < MAX_SPL_SPEND_BOUND_DB
+>> 3063|     # The re-proof reads the emitted graph and nothing else.
+
+@@ 3063-3063 COM n=1 
+3063|     # The re-proof reads the emitted graph and nothing else.
+>> 3064|     graph = classify_camilla_graph(
+>> 3065|         topology=_active_topology("mono", "active_2_way"), text=emitted,
+
+@@ 3072-3079 DOC n=8 test_a_one_role_document_leaves_the_other_roles_fitted_filters_alone
+3072|     """MERGE BY ROLE — the ruling, pinned at the layer that implements it.
+3073| 
+3074|     The response format promises "a role you do not name is not changed", and
+3075|     the blend precedent's wholesale replace would have broken that promise
+3076|     silently: a prescriber correcting the tweeter would un-linearize the woofer
+3077|     without either of them saying so. The named role's filters are the
+3078|     document's; every other role's are the fit's, byte for byte.
+3079|     """
+>> 3080|     fitted = {
+>> 3081|         "woofer": {
+
+@@ 3100-3100 COM n=1 
+3100|     # The unnamed role is the fit's own record, untouched — residuals and all.
+>> 3101|     assert merged["woofer"] == fitted["woofer"]
+>> 3102|     # The named role is the document's, and carries no fit-quality claim.
+
+@@ 3102-3102 COM n=1 
+3102|     # The named role is the document's, and carries no fit-quality claim.
+>> 3103|     assert set(merged["tweeter"]) == {"filters", "prescribed_by"}
+>> 3104|     assert merged["tweeter"]["filters"][0]["freq"] == TWEETER_FEATURE_HZ
+
+@@ 3105-3105 COM n=1 
+3105|     # Both roles still reduce for the emitter.
+>> 3106|     assert set(linearization_filters_by_role(merged)) == {"woofer", "tweeter"}
+>> 3107|     assert linearization_filters_by_role(merged)["woofer"][0]["freq"] == 95.0
+
+@@ 3111-3117 DOC n=7 test_a_prescription_never_invents_a_role_the_fit_did_not_produce
+3111|     """Merge, not union-with-defaults: a named role the fit skipped still lands.
+3112| 
+3113|     The complement of the test above, and the reason the merge is written as
+3114|     "fit first, document over the top" rather than as a per-role lookup: a
+3115|     document may name a driver the fit declined to correct, and that is an
+3116|     ordinary prescription rather than an error.
+3117|     """
+>> 3118|     prescription = _gate(packet, _document([_cut()], packet))
+>> 3120|     merged = driver_prescription_to_candidate_fields(prescription, fitted={})[
+
+@@ 3130-3137 DOC n=8 test_the_prescribed_field_enters_at_candidate_build_and_is_tamper_protected
+3130|     """The reason the seam returns FIELDS rather than stamping a candidate.
+3131| 
+3132|     ``MeasuredCrossoverCandidate.fingerprint`` is ``field(init=False)`` — a
+3133|     content hash the caller cannot set, re-derived on read and refused as
+3134|     ``candidate_tampered``. A prescription applied after construction would
+3135|     either be invisible to that hash or would break it; entering at build time
+3136|     makes a prescribed branch tamper-protected exactly like a fitted one.
+3137|     """
+>> 3138|     from jasper.active_speaker.measured_crossover_candidate import (
+>> 3139|         MeasuredCrossoverCandidateError,
+
+@@ 3165-3170 DOC n=6 test_the_prescribed_branch_names_its_author_without_claiming_to_be_a_fit
+3165|     """No zeroed residual, no invented fit band — and a marker that says so.
+3166| 
+3167|     A record that carried ``fit_band_hz`` and a 0.0 residual would bank a
+3168|     fit-quality claim nothing measured, which is the one thing this harness
+3169|     exists not to do.
+3170|     """
+>> 3171|     prescription = _gate(packet, _document([_cut()], packet))
+>> 3173|     branch = driver_prescription_to_candidate_fields(prescription, fitted=None)[
+
+@@ 3182-3184 COM n=3 
+3182| # --------------------------------------------------------------------------- #
+3183| # the bounds are the fit engine's own — a pinned lockstep, not a coincidence
+3184| # --------------------------------------------------------------------------- #
+>> 3187| @pytest.mark.parametrize("freq_hz", [40.0, 60.0, 100.0, 1000.0, 5000.0, 20000.0])
+>> 3188| @pytest.mark.parametrize(("q", "gain_db"), [
+
+@@ 3192-3196 COM n=5 
+3192|     # Above the boost arm's ceiling, which a cut may now sit at. A SAMPLE and
+3193|     # not a corner: since 2026-08-29 the cut arm has no upper Q bound, so
+3194|     # nothing here is the widest admissible filter and this row must not be read
+3195|     # as claiming otherwise. What holds at every Q is the direction — a cut's
+3196|     # |H| never exceeds unity — and the margin's scaling is the test below.
+>> 3197|     (14.0, -12.0),
+>> 3198| ])
+
+@@ 3202-3223 DOC n=22 test_a_cut_at_every_corner_of_the_envelope_is_a_stable_biquad_at_48_khz
+3202|     """The low-frequency extreme is NEW here, so the stability claim is too.
+3203| 
+3204|     The blend class's region is a few hundred to a few thousand Hz; this class
+3205|     reaches a woofer's declared band, where a narrow biquad's poles crowd the
+3206|     unit circle — the pole radius of an RBJ peaking section rises toward 1 as
+3207|     the centre falls.
+3208| 
+3209|     **40 Hz is this sweep's FLOOR, not a bound the class enforces.** Nothing
+3210|     here stops a driver declaring lower: the band comes from the driver's own
+3211|     ``measurement_band_hz``, and a subwoofer would legitimately declare 20 Hz or
+3212|     less. So the number that matters is not the margin at 40 Hz but how it
+3213|     SCALES — ``1 - r`` falls roughly in proportion to the centre frequency (the
+3214|     section's ``alpha`` is ``sin(w0)/2Q``, and ``sin(w0) ~= w0`` down here), which
+3215|     :func:`test_the_pole_radius_margin_scales_with_the_centre_frequency` pins.
+3216|     At the worst corner measured — 40 Hz, Q 8, -12 dB — the margin is
+3217|     ``1 - r ~= 6.5e-4``, and the proportionality says a 10 Hz declaration would
+3218|     still hold ``~1.6e-4``, three orders of magnitude above float64 epsilon.
+3219|     The realized magnitude at the centre matches the design exactly throughout.
+3220| 
+3221|     Checked on the RBJ coefficients CamillaDSP actually realizes rather than on
+3222|     the evaluator alone, because the question is about the filter that runs.
+3223|     """
+>> 3224|     import math
+>> 3226|     import numpy as np
+
+@@ 3248-3259 DOC n=12 test_the_pole_radius_margin_scales_with_the_centre_frequency
+3248|     """The SCALING, because the sweep's 40 Hz floor is not a bound anything enforces.
+3249| 
+3250|     A driver declares its own band, so "we measured 40 Hz and it was fine" says
+3251|     nothing about the subwoofer somebody declares at 15 Hz. What does carry is
+3252|     the proportionality: down here ``sin(w0) ~= w0``, so the section's ``alpha``
+3253|     — and with it the margin ``1 - r`` — falls in proportion to the centre.
+3254|     Halving the frequency roughly halves the margin, and never collapses it.
+3255| 
+3256|     Pinned as a ratio rather than as a table of radii so the claim survives a
+3257|     change of sample rate, and so a future edit that inverted the relationship
+3258|     fails here rather than in a comment nobody re-derived.
+3259|     """
+>> 3260|     import math
+>> 3262|     def margin(freq_hz: float) -> float:
+
+@@ 3270-3270 COM n=1 
+3270|     # Proportional to within a few percent across the decade that matters.
+>> 3271|     for lower in (10.0, 20.0, 40.0, 80.0):
+>> 3272|         assert margin(2 * lower) / margin(lower) == pytest.approx(2.0, rel=0.02)
+
+@@ 3273-3273 COM n=1 
+3273|     # And even an implausible 10 Hz declaration keeps a workable margin.
+>> 3274|     assert margin(10.0) > 1e-4
+>> 3277| def test_the_class_size_cap_is_reachable_and_clears_the_largest_honest_document():
+
+@@ 3278-3289 DOC n=12 test_the_class_size_cap_is_reachable_and_clears_the_largest_honest_document
+3278|     """The two caps do two jobs, and this one has to be able to fire.
+3279| 
+3280|     The family's 64 KiB ceiling stops a pathological input being PARSED — it
+3281|     must run before the document names its class, so its refusal cannot belong
+3282|     to a class vocabulary. This one is a content bound applied once the class is
+3283|     known, which is what makes ``driver_prescription_too_large`` a slug the class
+3284|     can raise rather than one it only advertises.
+3285| 
+3286|     Both directions: the largest document this schema admits must clear it by a
+3287|     wide margin, and a document past it must refuse in THIS class's vocabulary
+3288|     rather than the blend one.
+3289|     """
+>> 3290|     largest = json.dumps({
+>> 3291|         "artifact_schema_version": DRIVER_PRESCRIPTION_SCHEMA_VERSION,
+
+@@ 3303-3306 COM n=4 
+3303|     # The measured figure the constant's own comment quotes, and the margin it
+3304|     # claims. Derived here from the schema's constants rather than copied, so a
+3305|     # future ceiling that made documents larger fails here rather than silently
+3306|     # eating the headroom.
+>> 3307|     assert 6_000 <= len(largest) <= 6_100, f"largest honest document: {len(largest)}"
+>> 3308|     assert len(largest) * 5 <= dp.DRIVER_PRESCRIPTION_MAX_BYTES, (
+
+@@ 3318-3318 COM n=1 
+3318|     # Exactly at the cap is legal, on the family's inclusive-bounds rule.
+>> 3319|     dp.check_driver_document_size(b"x" * dp.DRIVER_PRESCRIPTION_MAX_BYTES)
+>> 3322| def test_an_oversized_driver_document_refuses_in_its_own_vocabulary(
+
+@@ 3325-3330 DOC n=6 test_an_oversized_driver_document_refuses_in_its_own_vocabulary
+3325|     """End to end through the CLI, because the wiring is the point.
+3326| 
+3327|     A slug published to a prescriber in ``refusal_reasons`` and raised by
+3328|     nothing is the two-vocabularies failure this module argues against, wearing
+3329|     the module's own name.
+3330|     """
+>> 3331|     session, _ = _bundle(tmp_path / "bundle")
+>> 3332|     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+
+@@ 3338-3338 COM n=1 
+3338|     document["rationale"] = "x" * 900  # legal
+>> 3339|     blob = json.dumps(document)
+>> 3340|     # Pad with whitespace: still valid JSON, still this class, just too big.
+
+@@ 3340-3340 COM n=1 
+3340|     # Pad with whitespace: still valid JSON, still this class, just too big.
+>> 3341|     padded = blob[:-1] + " " * (dp.DRIVER_PRESCRIPTION_MAX_BYTES - len(blob) + 8) + "}"
+>> 3342|     prescription_path = tmp_path / "p.json"
+
+@@ 3357-3363 DOC n=7 test_every_bound_is_the_constant_the_fit_engine_already_emits_up_to
+3357|     """Restated rather than imported, so drift is PINNED rather than inherited.
+3358| 
+3359|     This gate is an independent re-validation of a document the fit engine did
+3360|     not write, so it must not inherit that engine's policy constant and take a
+3361|     future change to it silently. The duplication is the design; this test is
+3362|     what stops it becoming a divergence.
+3363|     """
+>> 3364|     from jasper.active_speaker.linearization_fit import (
+>> 3365|         _MIN_FILTER_GAIN_DB,
+
+@@ 3377-3379 COM n=3 
+3377| # --------------------------------------------------------------------------- #
+3378| # the schema-version decision, pinned against the rules that decide it
+3379| # --------------------------------------------------------------------------- #
+>> 3382| def test_a_new_class_does_not_bump_the_blend_classs_schema_version(tmp_path):
+>> 3383|     """The rule: bump when an OLDER PRESCRIBER's output would no longer satisfy.
+
+@@ 3383-3390 DOC n=8 test_a_new_class_does_not_bump_the_blend_classs_schema_version
+3383|     """The rule: bump when an OLDER PRESCRIBER's output would no longer satisfy.
+3384| 
+3385|     A blend document written before this class existed is parsed by the same
+3386|     reader, against the same bounds, to the same answer. Nothing about its shape
+3387|     changed, so nothing about its version does — and versioning the two together
+3388|     would force every future change to either class to invalidate the other's
+3389|     in-flight documents.
+3390|     """
+>> 3391|     from tests.test_crossover_v2_blend_prescription import (
+>> 3392|         _cut as _blend_cut,
+
+@@ 3407-3461 DOC n=55 test_added_packet_blocks_do_not_bump_the_packet_schema_version
+3407|     """The rule: bump when a reader that understood v1 would MISREAD v2.
+3408| 
+3409|     Two blocks and one contract were ADDED, ``feature_classification`` was
+3410|     later WIDENED with the classifier's own lab rows beside the gate view it
+3411|     already published, ``lateral_poses``/``capture_snr`` were added after that,
+3412|     and ``positions`` was then widened with ``cross_seat_sigma``. Every v1 field
+3413|     is unchanged in all of those cases and a v1 reader ignores what it does not
+3414|     know, so nothing is misread — the version stays where it is rather than
+3415|     invalidating every banked packet.
+3416| 
+3417|     The widening is the case worth naming, because "the block a v1 reader
+3418|     already read grew" sounds like the misreading case and is not one: the seven
+3419|     keys of ``verdicts[]`` still say exactly what they said, and a reader that
+3420|     never looks at ``lab_rows`` reaches every conclusion it reached before.
+3421|     ``positions.cross_seat_sigma`` is the same shape of change — every position
+3422|     row, the grid and the flat reference are byte-identical beside it, and
+3423|     ``packet_positional_evidence`` reads exactly the three it always read.
+3424| 
+3425|     ``positions.angle_deg`` is the OTHER case worth naming, and it is the
+3426|     closest call here. Its ``reason`` prose changed once already, from a false
+3427|     corpus-wide claim to a true statement about the cloud record's own shape.
+3428|     The 2026-08-24 geometry ruling then falsified THAT too — a cloud position
+3429|     now stamps its own ``position_deg`` — so the block became CONDITIONAL, and
+3430|     the whole entry changes shape on a round that banks bearings.
+3431| 
+3432|     That is still not a misreading, and the reason is the ``harmonics``
+3433|     precedent one paragraph down — VERBATIM, not by analogy. Keeping the old
+3434|     spelling on a round that HAS bearings would assert "no seat in this round
+3435|     states one", which is exactly what a reader would act on; a field whose
+3436|     claim became false is the one case where keeping the spelling is the
+3437|     MISLEADING choice. The shape it changes into is also not new to this
+3438|     document: ``lateral_poses`` beside it has always been ``available`` plus
+3439|     the answer, or ``available`` plus ``status``/``reason``, so a v1 reader of
+3440|     this packet already meets it in the block next door.
+3441| 
+3442|     **What this does NOT rest on is byte-identity.** An earlier draft of this
+3443|     paragraph claimed the refusing form was byte-identical for a pre-writer
+3444|     round. It is not: v1 emitted ``{status, reason}`` and this emits
+3445|     ``{available, status, reason}``, with a reason that names different causes
+3446|     — the ``available`` assertion below would fail against v1. The no-bump
+3447|     decision never needed that claim, and a justification resting on a false
+3448|     one is worse than the change it justifies.
+3449| 
+3450|     ``harmonics`` (ticket 1.4) is a new top-level block, which is the plain
+3451|     additive case again — but it also RENAMED a ``not_evaluated`` entry, from
+3452|     ``harmonic_distortion`` to ``harmonics``, and that is the one change here
+3453|     a v1 reader could notice. It still does not mislead one: the old entry
+3454|     asserted that NO round writes a distortion reading, and a reader acting on
+3455|     it would have concluded the question was unanswerable. It is now answerable,
+3456|     the entry appears only for a round nobody answered it for, and a reader
+3457|     looking for the old name finds no entry — which is the true state of a round
+3458|     that HAS a reading, and for a round without one the new name carries the
+3459|     honest reason. A field whose claim became false is the one case where
+3460|     keeping the spelling would be the misleading choice.
+3461|     """
+>> 3462|     assert PACKET_SCHEMA_VERSION == 1
+>> 3463|     assert packet["artifact_schema_version"] == 1
+
+@@ 3471-3472 COM n=2 
+3471|     # This fixture's rows predate the geometry writer, so the block takes its
+3472|     # refusing form — and the refusing form is unchanged from v1.
+>> 3473|     assert packet["positions"]["angle_deg"]["status"] == "not_evaluated"
+>> 3474|     assert packet["positions"]["angle_deg"]["available"] is False
+
+@@ 3480-3485 DOC n=6 test_an_older_reader_refuses_a_newer_envelope_rather_than_misreading_it
+3480|     """The spool rule, tested as the failure it would be rather than asserted.
+3481| 
+3482|     An envelope carrying a per-driver document, handed to a taker that speaks
+3483|     only the blend class, must refuse by name. That refusal — not the version
+3484|     number — is what makes the shared slot safe, so it is what gets pinned.
+3485|     """
+>> 3486|     _stage_driver(tmp_path, ordinal=4)
+>> 3488|     with pytest.raises(BlendPrescriptionRefused) as excinfo:
+
+@@ 3495-3497 COM n=3 
+3495| # --------------------------------------------------------------------------- #
+3496| # the lifecycle — stage, take, refuse, undo, digest, ordinal
+3497| # --------------------------------------------------------------------------- #
+>> 3500| def _stage_driver(
+>> 3501|     tmp_path: Path,
+
+@@ 3508-3508 DOC n=1 _stage_driver
+3508|     """One accepted per-driver prescription, banked in a temporary spool."""
+>> 3509|     spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
+>> 3510|     packet = _speaker(
+
+@@ 3548-3552 DOC n=5 test_the_staged_event_names_the_class_rather_than_twinning_the_event
+3548|     """One event for "a prescription was staged", extended with the class.
+3549| 
+3550|     A second event name would make an operator grepping the journal for staging
+3551|     see half of them.
+3552|     """
+>> 3553|     with caplog.at_level("INFO"):
+>> 3554|         _stage_driver(tmp_path)
+
+@@ 3592-3592 DOC n=1 test_a_document_edited_past_a_bound_is_refused_even_with_a_fresh_digest
+3592|     """The re-run gate, with the anchors the staging step banked."""
+>> 3593|     _stage_driver(tmp_path, ordinal=4)
+>> 3594|     path = spool.prescription_spool_path()
+
+@@ 3611-3614 COM n=4 
+3611| #: A minimum-phase DIP 0.143 octaves above the tweeter's cuttable peak — the
+3612| #: 2026-08-19 record's own 4149/4582 gap, rebuilt around this fixture's feature.
+3613| #: Inside :data:`VERDICT_MATCH_TOLERANCE_OCTAVES`, so the peak is a verdict the
+3614| #: dip can be mistaken for whenever the dip is not in front of the gate.
+>> 3615| TWEETER_NEARBY_DIP_HZ = TWEETER_FEATURE_HZ * (2.0 ** 0.143)
+>> 3618| def _move_staged_filter(freq_hz: float) -> None:
+
+@@ 3619-3624 DOC n=6 _move_staged_filter
+3619|     """Aim the staged document's first filter somewhere else, digest and all.
+3620| 
+3621|     The digest is recomputed because catching this edit is not its job — a
+3622|     hand-edit that forgot to is already refused as malformed, and an edit that
+3623|     stops at the digest never reaches the bar under test.
+3624|     """
+>> 3625|     path = spool.prescription_spool_path()
+>> 3626|     envelope = json.loads(path.read_text())
+
+@@ 3638-3643 DOC n=6 test_the_take_is_offered_the_whole_classification_not_the_vouching_subset
+3638|     """What is banked is what the staging gate READ, dips included.
+3639| 
+3640|     ``classification_basis`` holds only the verdicts that passed the bar, so
+3641|     every verdict in it is cuttable by construction — banking that subset would
+3642|     drop exactly the dips the nearest-verdict-decides rule needs to say no.
+3643|     """
+>> 3644|     rows = [
+>> 3645|         _verdict(WOOFER_FEATURE_HZ),
+
+@@ 3659-3666 DOC n=8 test_a_filter_moved_onto_a_nearby_dip_reads_unvouched_at_take
+3659|     """The STRONG claim: the take's reading is the staging step's, not a weaker one.
+3660| 
+3661|     A cut honestly aimed at the tweeter's classified peak, moved a seventh of an
+3662|     octave onto the minimum-phase dip beside it, still has a cuttable verdict
+3663|     inside the match radius to borrow. The nearest-verdict rule is what stops it
+3664|     borrowing, and the take can only apply that rule if the DIP was banked —
+3665|     which is what the whole-row anchor buys.
+3666|     """
+>> 3667|     _stage_driver(
+>> 3668|         tmp_path,
+
+@@ 3687-3695 DOC n=9 test_a_filter_moved_onto_a_peak_no_filter_targeted_is_admitted_at_take
+3687|     """The other half of the equality claim, and the subset got it wrong too.
+3688| 
+3689|     ``classification_basis`` drops every cuttable feature no filter happened to
+3690|     aim at, so banking that subset would refuse this one as UNCLASSIFIED — a
+3691|     refusal the staging gate, holding the whole artifact, would never have
+3692|     given. The take re-runs the bar rather than diffing the document; a document
+3693|     that clears the bar clears it, and that is what makes the two answers the
+3694|     same answer.
+3695|     """
+>> 3696|     unclaimed_hz = 6000.0
+>> 3697|     assert abs(math.log2(unclaimed_hz / TWEETER_FEATURE_HZ)) > (
+
+@@ 3720-3726 DOC n=7 test_a_filter_moved_off_every_verdict_reads_unvouched_at_take
+3720|     """The far move: 12 kHz is outside every banked verdict's match radius.
+3721| 
+3722|     Nothing was classified there at all, so nothing vouches — the same answer
+3723|     the staging step would have given, which is the equality the anchor exists
+3724|     for. It is a count, not a refusal: what the take still refuses is a document
+3725|     whose digest does not match the one that was banked.
+3726|     """
+>> 3727|     _stage_driver(tmp_path, ordinal=4)
+>> 3728|     _move_staged_filter(12_000.0)
+
+@@ 3739-3744 DOC n=6 _cli_stage
+3739|     """Drive the real ``stage`` verb end to end, the way an operator does.
+3740| 
+3741|     Not ``_stage_driver``: that calls :func:`stage_prescription` directly, so it
+3742|     cannot see whether the CLI hands the spool the verdicts its own gate read.
+3743|     Everything here is a path on disk and the only entry point is ``cli.main``.
+3744|     """
+>> 3745|     spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
+>> 3746|     session, _ = _bundle(tmp_path / "bundle")
+
+@@ 3755-3757 COM n=3 
+3755|     # The packet the CLI itself will build, from the same inputs — a document
+3756|     # written against any other one refuses on the fingerprint. No explicit
+3757|     # --applied-profile below, so this matches the CLI's own true default.
+>> 3758|     packet = build_crossover_evidence_packet(
+>> 3759|         session, state_path=state, driver_draft_path=draft,
+
+@@ 3775-3786 DOC n=12 test_the_stage_verb_banks_the_verdicts_its_own_gate_read_dips_included
+3775|     """The CLI's half of the anchor, against the 2026-08-19 record itself.
+3776| 
+3777|     ``_gate`` reads the classification out of the packet and hands the SAME
+3778|     tuple to the spool rather than letting ``stage`` re-read the packet, so what
+3779|     is banked cannot be a set the gate never saw. Driven through ``cli.main``
+3780|     because that wiring is the subject: a unit test calling
+3781|     :func:`stage_prescription` directly passes whatever it passes.
+3782| 
+3783|     The four minimum-phase DIPS are the assertion that matters — they are what
+3784|     the pre-fix vouching subset dropped, and the cut here (5,396 Hz's peak
+3785|     vouches for it) would have banked none of them.
+3786|     """
+>> 3787|     rows = _banked_rows()
+>> 3789|     with caplog.at_level("INFO"):
+
+@@ 3801-3801 COM n=1 
+3801|     # And the newly-unbounded dimension is visible without opening the file.
+>> 3802|     line = next(
+>> 3803|         r.getMessage() for r in caplog.records
+
+@@ 3810-3817 DOC n=8 test_the_banked_classification_stays_far_inside_the_envelope_cap
+3810|     """``SPOOL_MAX_BYTES``' derivation, re-derived rather than trusted.
+3811| 
+3812|     The comment on that constant quotes a per-row cost, and a row's cost is the
+3813|     length of its own strings rather than a constant — so the number is measured
+3814|     HERE, by the route the comment names (stage twice through the real writer,
+3815|     diff the bytes on disk), and what is asserted is the conclusion that has to
+3816|     hold: the room left over is orders of magnitude past any real artifact.
+3817|     """
+>> 3818|     record = _banked_rows()
+>> 3819|     # The anchor row is in BOTH envelopes, so it cancels exactly and the delta
+
+@@ 3819-3821 COM n=3 
+3819|     # The anchor row is in BOTH envelopes, so it cancels exactly and the delta
+3820|     # is the record's nine rows and nothing else. It is here because the staged
+3821|     # document has to clear the bar in both runs to be staged at all.
+>> 3822|     anchor = [_verdict(TWEETER_FEATURE_HZ)]
+>> 3823|     _stage_driver(tmp_path / "with", classification=_classification(record + anchor))
+
+@@ 3829-3830 COM n=2 
+3829|     # The escaping bound `SPOOL_MAX_BYTES`' own comment derives, so this test
+3830|     # moves with that constant instead of restating a byte count.
+>> 3831|     headroom = spool.SPOOL_MAX_BYTES - 6 * PRESCRIPTION_MAX_BYTES
+>> 3832|     assert 200 <= per_row <= 320, f"per verdict row: {per_row:.1f} bytes"
+
+@@ 3841-3841 DOC n=1 test_a_refused_document_is_consumed_too
+3841|     """It has had its round; left pending it would refuse every round after it."""
+>> 3842|     _stage_driver(tmp_path, ordinal=4)
+>> 3844|     with pytest.raises(BlendPrescriptionRefused):
+
+@@ 3862-3866 DOC n=5 test_the_blend_class_still_stages_and_takes_unchanged
+3862|     """The one door carries both, and the older class's default is unchanged.
+3863| 
+3864|     A caller that has not learned the per-driver class passes no ``accepts`` and
+3865|     keeps working byte-identically.
+3866|     """
+>> 3867|     from tests.test_crossover_v2_blend_prescription import (
+>> 3868|         _cut as _blend_cut,
+
+@@ 3892-3895 DOC n=4 test_an_envelope_written_before_the_class_existed_reads_as_the_blend_one
+3892|     """Absence is the blend class: every envelope predating this change holds one.
+3893| 
+3894|     Reading absence as anything else would misdate the corpus.
+3895|     """
+>> 3896|     from tests.test_crossover_v2_blend_prescription import (
+>> 3897|         _cut as _blend_cut,
+
+@@ 3923-3925 COM n=3 
+3923| # --------------------------------------------------------------------------- #
+3924| # the durable read-back
+3925| # --------------------------------------------------------------------------- #
+>> 3928| def test_an_accepted_prescription_round_trips_through_the_durable_reader(packet):
+>> 3929|     prescription = _gate(packet, _document([_cut()], packet))
+
+@@ 3939-3950 DOC n=12 test_a_pre_change_receipt_reads_back_without_a_tolerant_path
+3939|     """The 2026-08-23 no-legacy-config ruling, checked rather than assumed.
+3940| 
+3941|     A receipt banked before this change carries no ``unvouched_filters``. That
+3942|     needs no tolerance and gets none: ``_PRESCRIPTION_FIELDS`` is an ALLOWLIST,
+3943|     so a missing key simply takes its dataclass default — ``None``, the honest
+3944|     "nobody computed this", never a substituted zero.
+3945| 
+3946|     The floor this checks is the one shape that actually changed. A stored
+3947|     document this contract genuinely could not parse would refuse loudly with
+3948|     "re-author against the current contract"; nothing in this change creates
+3949|     one, which is why there is no such refusal to pin.
+3950|     """
+>> 3951|     banked = _gate(packet, _document([_cut()], packet)).to_dict()
+>> 3952|     pre_change = {k: v for k, v in banked.items() if k != "unvouched_filters"}
+
+@@ 3969-3976 DOC n=8 test_a_gate_written_class_cannot_launder_a_boost_into_a_cut
+3969|     """The class is re-derived from the gains, never trusted from the document.
+3970| 
+3971|     It is the receipt's own attribution key, so an edited record that kept
+3972|     ``"cut"`` would file a boost under the wrong heading. The read-back applies
+3973|     no BOUND — the bounds have one owner and it is the boundary — so what stops
+3974|     an over-deep edit reaching CamillaDSP is the emitter's own re-validation,
+3975|     never this reader.
+3976|     """
+>> 3977|     prescription = _gate(packet, _document([_cut()], packet))
+>> 3978|     record = prescription.to_dict()
+
+@@ 3987-3989 COM n=3 
+3987| # --------------------------------------------------------------------------- #
+3988| # the CLI's one door
+3989| # --------------------------------------------------------------------------- #
+>> 3992| def test_the_document_names_which_gate_reads_it(tmp_path, capsys, monkeypatch):
+>> 3993|     """One door, and the kind is what routes — no flag, no shape inference."""
+
+@@ 3993-3993 DOC n=1 test_the_document_names_which_gate_reads_it
+3993|     """One door, and the kind is what routes — no flag, no shape inference."""
+>> 3994|     spool.set_prescription_spool_path_for_tests(tmp_path / "spool.json")
+>> 3995|     session, _ = _bundle(tmp_path / "bundle")
+
+@@ 4002-4002 COM n=1 
+4002|     # No explicit --applied-profile below, so this matches the CLI's default.
+>> 4003|     packet = build_crossover_evidence_packet(
+>> 4004|         session, driver_draft_path=draft_path,
+
+@@ 4024-4031 DOC n=8 test_the_cli_refuses_a_per_driver_document_without_the_drivers_flag
+4024|     """The packet's honesty rule reaching the operator: no band, named refusal.
+4025| 
+4026|     ``--drivers``/``--applied-profile`` are real argparse defaults now (F-7),
+4027|     so this speaker's own on-disk state at those paths — not just "the flag
+4028|     was typed" — decides whether evidence is read. The module's
+4029|     ``no_real_pi_paths`` points both at files that are never written, so the
+4030|     refusal is deterministic on any machine.
+4031|     """
+>> 4032|     session, _ = _bundle(tmp_path / "bundle")
+>> 4033|     packet = build_crossover_evidence_packet(
+
+@@ 4050-4052 COM n=3 
+4050| # --------------------------------------------------------------------------- #
+4051| # what a document DISPLACES (#2863)
+4052| # --------------------------------------------------------------------------- #
+>> 4055| def test_the_packet_enumerates_the_incumbent_linearization_a_document_replaces(
+>> 4056|     tmp_path,
+
+@@ 4058-4063 DOC n=6 test_the_packet_enumerates_the_incumbent_linearization_a_document_replaces
+4058|     """The evidence the 2026-08-22 round did not have.
+4059| 
+4060|     A per-driver document is a total for every role it names, so the filters a
+4061|     prescriber does not repeat are deleted. It cannot repeat what it was never
+4062|     shown — and before this block the packet showed it nothing.
+4063|     """
+>> 4064|     packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+>> 4066|     block = packet["incumbent"]["linearization"]
+
+@@ 4070-4070 COM n=1 
+4070|     # The reader the door is handed, over the block the packet published.
+>> 4071|     assert packet_incumbent_linearization(packet) == {
+>> 4072|         "tweeter": tuple(INCUMBENT_TWEETER),
+
+@@ 4076-4077 COM n=2 
+4076| #: A stash that is NOT what the speaker is playing: one filter where the live
+4077| #: graph carries four, so a count alone says which record answered.
+>> 4078| STASH_TWEETER = [
+>> 4079|     {"biquad_type": "Peaking", "freq": 9000.0, "gain": -9.0, "q": 3.0},
+
+@@ 4087-4099 DOC n=13 test_the_incumbent_is_the_applied_profile_never_the_undo_stash
+4087|     """The packet describes the GRAPH, and a flow-state stash is not the graph.
+4088| 
+4089|     A legacy state file's pre-apply record names the profile live BEFORE some
+4090|     earlier apply, so it is one apply behind after any v2 apply and
+4091|     arbitrarily behind after an apply through a door that never touches v2
+4092|     state. Both directions were measured on jts3 on 2026-08-29: a
+4093|     15-hour-old chain reported over a freshly applied baseline, and an empty
+4094|     one reported over a graph carrying a full per-driver correction.
+4095| 
+4096|     Parametrized on the one axis that matters — is the SSOT there — because the
+4097|     silent fallback is the defect: with no applied profile the block must say
+4098|     so, never quietly answer from the stash sitting right beside it.
+4099|     """
+>> 4100|     packet = _speaker(
+>> 4101|         tmp_path,
+
+@@ 4127-4133 DOC n=7 test_a_document_displaces_the_filters_the_graph_is_actually_carrying
+4127|     """The door's number, over the same divergence — the #2863 consequence.
+4128| 
+4129|     A per-driver document is a TOTAL for every role it names, so the count this
+4130|     reports is how many filters staging deletes. Reading it off the stash would
+4131|     have told the 2026-08-29 operator that a fully corrected tweeter carried
+4132|     one filter, or none at all.
+4133|     """
+>> 4134|     packet = _speaker(
+>> 4135|         tmp_path,
+
+@@ 4147-4152 DOC n=6 test_the_incumbent_reader_keeps_unanswered_apart_from_empty
+4147|     """``None`` is "nobody knows"; ``{}`` is "the branches carry nothing".
+4148| 
+4149|     A round banked without its applied profile cannot say what the graph holds,
+4150|     and a document staged against it displaces an unknown. A profile that IS
+4151|     there and linearizes nothing is a different, answered fact.
+4152|     """
+>> 4153|     assert packet_incumbent_linearization(_speaker(tmp_path / "none")) is None
+>> 4154|     assert packet_incumbent_linearization(
+
+@@ 4163-4163 DOC n=1 test_the_incumbent_reader_refuses_a_record_this_system_did_not_write
+4163|     """Strict, and it fails the WHOLE map — a partial read would under-report."""
+>> 4164|     for index, bad in enumerate((
+>> 4165|         {"biquad_type": "Bandpass", "freq": 5000.0, "gain": -3.0, "q": 2.0},
+
+@@ 4174-4180 DOC n=7 test_dropping_an_incumbent_lowshelf_is_charged_as_the_boost_it_is
+4174|     """The 2026-08-22 shape: cuts that silently delete a −6 dB shelf.
+4175| 
+4176|     The document's own cascade never rises above unity, so ``_check_composed``
+4177|     reads ``0.0`` — correctly, because that is what the emitter charges. What
+4178|     the round actually did to the sound is the DELTA against what it replaced,
+4179|     and only this number carries it.
+4180|     """
+>> 4181|     packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+>> 4182|     document = _document([_cut(freq=TWEETER_FEATURE_HZ, gain=-1.0, q=8.0)], packet)
+
+@@ 4189-4192 COM n=4 
+4189|     # The incumbent cascade bottoms out at −8.015 dB near 3217 Hz — its
+4190|     # Lowshelf's −6.074 dB floor plus the −2.059 dB bell at 3249 Hz — and the
+4191|     # document's Q-8 bell at 5 kHz is ~0 dB that far away. Deleting the one and
+4192|     # keeping the other is +8.0 dB of output the composed cap never sees.
+>> 4193|     assert prescription.displaced_boost_db == pytest.approx(7.998, abs=0.01)
+>> 4194|     assert prescription.to_dict()["displaced_boost_db"] == (
+
+@@ 4200-4206 DOC n=7 test_repeating_the_incumbent_leaves_the_true_small_delta
+4200|     """The same document, authored as the total it is, reads as what it is.
+4201| 
+4202|     No filter needs a verdict any more — ``_check_classification`` counts
+4203|     instead of refusing — and these four are exactly the case that makes the
+4204|     difference: the fit engine placed them, so nothing vouches for any of them.
+4205|     The count says so and the document is admitted.
+4206|     """
+>> 4207|     peaking = [
+>> 4208|         entry for entry in INCUMBENT_TWEETER if entry["biquad_type"] == "Peaking"
+
+@@ 4222-4223 COM n=2 
+4222|     # Three repeats with no verdict of their own; only the new bell at 5 kHz
+4223|     # sits on the one banked feature.
+>> 4224|     assert prescription.unvouched_filters == 3
+>> 4225|     # Only the document's own added bell separates the two cascades, and a
+
+@@ 4225-4227 COM n=3 
+4225|     # Only the document's own added bell separates the two cascades, and a
+4226|     # −1.0 dB cut can only make the prescribed side QUIETER — so nothing rises
+4227|     # above the incumbent anywhere.
+>> 4228|     assert prescription.displaced_boost_db == 0.0
+>> 4229|     assert prescription.displaced_boost_role is None
+
+@@ 4233-4245 DOC n=13 test_the_real_incumbent_shelf_can_be_repeated_and_the_role_keeps_it
+4233|     """The 2026-08-23 ruling on the exact document that motivated it (#2863).
+4234| 
+4235|     The whole four-filter tweeter chain the round was playing, repeated as the
+4236|     TOTAL it is, with one bell moved from −2.863 dB to −1.0 dB. Before the
+4237|     ruling this document did not exist: ``_parse_filters`` refused the Lowshelf
+4238|     outright and ``_check_classification`` refused every filter the fit engine
+4239|     placed, so naming the role always deleted the shelf and always cost the
+4240|     6.074 dB step nobody chose.
+4241| 
+4242|     The delta is +1.863 dB and it is exactly the gain change: the other three
+4243|     filters are identical, so the two cascades differ only at 7309.7 Hz, where
+4244|     one carries −1.0 dB and the other −2.863 dB.
+4245|     """
+>> 4246|     packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+>> 4247|     kept = [{"role": "tweeter", **entry} for entry in INCUMBENT_TWEETER]
+
+@@ 4258-4259 COM n=2 
+4258|     # Every one of the four is a fit-engine filter, so nothing vouches for any
+4259|     # of them — disclosed, and admitted.
+>> 4260|     assert prescription.unvouched_filters == 4
+>> 4261|     # …and the packet says the shelf may be repeated, where the shelf is
+
+@@ 4261-4265 COM n=5 
+4261|     # …and the packet says the shelf may be repeated, where the shelf is
+4262|     # listed, so a prescriber meets the rule beside the filter it applies to.
+4263|     # The claim and the gate that makes it true are pinned together — the note
+4264|     # promises only what the door guarantees (a placement rule and a named
+4265|     # refusal), never that any particular listed record already satisfies it.
+>> 4266|     note = packet["incumbent"]["linearization"]["note"]
+>> 4267|     assert "shelves included" in note
+
+@@ 4273-4280 DOC n=8 test_the_report_names_each_filters_own_type
+4273|     """The operator's line spells what the graph will carry, not a literal.
+4274| 
+4275|     It printed ``Peaking`` for every entry while that was the only type either
+4276|     prescription class admitted. With the emitter's whole set open, a Lowshelf
+4277|     printed as a Peaking — at a Q the emitter drops — would be a report
+4278|     disagreeing with the graph it describes, which is how an operator stages a
+4279|     document believing it is something else.
+4280|     """
+>> 4281|     packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+>> 4282|     kept = [{"role": "tweeter", **entry} for entry in INCUMBENT_TWEETER]
+
+@@ 4289-4290 COM n=2 
+4289|     # The shelf's Q is absent rather than printed: the emitter drops it, so
+4290|     # showing one would advertise a steepness nothing honours.
+>> 4291|     assert "Q" not in lines[1]
+>> 4294| def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
+
+@@ 4295-4302 DOC n=8 test_a_prescribed_shelf_carries_the_emitters_own_steepness
+4295|     """A shelf's ``q`` is not the prescriber's to choose, and is not ignored.
+4296| 
+4297|     ``camilla_yaml._emit_driver_linearization_definitions`` builds a shelf's
+4298|     ``FilterSpec`` with no ``q`` at all, and ``profile._biquad_coeffs`` forces
+4299|     ``SHELF_Q`` for both shelf types whatever the record says — so a banked
+4300|     number that was not that one would be a number nothing in the loop reads.
+4301|     The gate writes the emitter's, whether the document states one or not.
+4302|     """
+>> 4303|     packet = _speaker(tmp_path, incumbent={"tweeter": INCUMBENT_TWEETER})
+>> 4304|     stated = {"role": "tweeter", **INCUMBENT_TWEETER[0], "q": 8.0}
+
+@@ 4310-4310 COM n=1 
+4310|         # …and it survives the emitter's own independent re-validation.
+>> 4311|         assert linearization_filters_by_role(
+>> 4312|             driver_prescription_to_candidate_fields(prescription, fitted=None)[
+
+@@ 4319-4320 COM n=2 
+4319|     # Leading shelf, with and without bells behind it — the fit engine's own
+4320|     # two shapes.
+>> 4321|     ((("Lowshelf", 5844.0), ("Peaking", 3249.0)), True),
+>> 4322|     ((("Highshelf", 5844.0),), True),
+
+@@ 4323-4323 COM n=1 
+4323|     # A Highshelf TAPER, last, after a Lowshelf lead (#1668).
+>> 4324|     ((("Lowshelf", 5000.0), ("Peaking", 3249.0), ("Highshelf", 9000.0)), True),
+>> 4325|     # …and every placement the emitter raises on.
+
+@@ 4325-4325 COM n=1 
+4325|     # …and every placement the emitter raises on.
+>> 4326|     ((("Peaking", 3249.0), ("Lowshelf", 5844.0)), False),
+>> 4327|     ((("Lowshelf", 5000.0), ("Highshelf", 9000.0), ("Peaking", 3249.0)), False),
+
+@@ 4332-4340 DOC n=9 test_a_shelf_may_only_sit_where_the_emitter_can_name_it
+4332|     """The emitter's structural rule, applied at intake instead of at emission.
+4333| 
+4334|     ``camilla_yaml._validate_linearization_shelf_structure`` raises on any other
+4335|     placement, because position is what names the emitted filter and two
+4336|     shelves in "peak" slots would collide. A document accepted here and refused
+4337|     there is the one failure shape a gate exists to prevent, so the door
+4338|     consumes that module's own ``linearization_slot`` classifier rather than
+4339|     restating the rule.
+4340|     """
+>> 4341|     packet = _speaker(tmp_path)
+>> 4342|     document = _document(
+
+@@ 4351-4351 COM n=1 
+4351|         # The emitter agrees, which is the claim this test is really making.
+>> 4352|         assert linearization_filters_by_role(
+>> 4353|             driver_prescription_to_candidate_fields(prescription, fitted=None)[
+
+@@ 4365-4371 DOC n=7 test_a_shelf_pays_the_same_caps_as_a_bell
+4365|     """The widened vocabulary widened no bound. Both signs, both caps.
+4366| 
+4367|     A shelf reaches its full gain across a whole half-band, so it is exactly the
+4368|     filter that could have slipped past a cap written for a bell. It does not:
+4369|     ``_check_composed`` reads the evaluated cascade, and a Highshelf reads its
+4370|     own gain over the top of the band.
+4371|     """
+>> 4372|     packet = _speaker(tmp_path, classification=_boostable())
+>> 4373|     shelf = {"role": "tweeter", "biquad_type": "Highshelf", "freq": 8000.0,
+
+@@ 4389-4390 COM n=2 
+4389|     # The cut arm has no ceiling to pay (ADR-0207): the same shelf cutting
+4390|     # past the retired 12 dB rail is admitted.
+>> 4391|     deep = _gate(packet, _document([dict(shelf, gain=-12.01)], packet))
+>> 4392|     assert deep.filters[0]["gain"] == -12.01
+
+@@ 4396-4401 DOC n=6 _shelf_pair
+4396|     """The one shelf shape the emitter can name: Lowshelf lead, Highshelf taper.
+4397| 
+4398|     Placement is by INDEX, never by frequency — ``linearization_slot`` reads
+4399|     position — so ``taper_hz`` below ``lead_hz`` is a legal document, and that
+4400|     is the case the composed cap has to catch.
+4401|     """
+>> 4402|     return [
+>> 4403|         {"role": "tweeter", "biquad_type": "Lowshelf", "freq": lead_hz,
+
+@@ 4411-4413 COM n=3 
+4411|     # All above the tweeter/woofer overlap ceiling: a BELL pays the crossover
+4412|     # knee bar on its centre, so a +12 dB filter centred at 2 kHz refuses
+4413|     # `driver_boost_in_crossover_overlap` before it ever reaches the cap.
+>> 4414|     (3500.0, 5000.0), (4000.0, 5000.0), (5000.0, 12000.0), (8000.0, 16000.0),
+>> 4415| ])
+
+@@ 4419-4430 DOC n=12 test_a_shelf_pair_whose_corners_do_not_overlap_composes_to_the_rail
+4419|     """Both shelves at +12 dB, cornered so their covered sides do not meet.
+4420| 
+4421|     A Lowshelf is at its gain BELOW its corner and a Highshelf ABOVE its, so
+4422|     with ``lead_hz < taper_hz`` the two authorities are disjoint: where one is
+4423|     at +12 the other is at unity, and the cascade reads exactly the rail.
+4424| 
+4425|     The number matters as much as the verdict. It composes AT 12.0, not under
+4426|     it, so this pair is admitted and charged the full
+4427|     :data:`MAX_SPL_SPEND_BOUND_DB` — the same worst case one Peaking at the rail
+4428|     already attains. This ORDERING reaches the designed maximum without moving
+4429|     it; the reversed one below is what the cap is actually for.
+4430|     """
+>> 4431|     packet = _speaker(tmp_path, classification=_boostable())
+>> 4432|     pair = _shelf_pair(lead_hz, taper_hz, DRIVER_MAX_FILTER_BOOST_DB)
+
+@@ 4440-4441 COM n=2 
+4440|     # One dB past the rail on either shelf and the per-filter cap takes it
+4441|     # first, so the pair can never be authored deeper than this.
+>> 4442|     with pytest.raises(BlendPrescriptionRefused) as excinfo:
+>> 4443|         _gate(packet, _document(
+
+@@ 4450-4450 COM n=1 
+4450|     # Measured on this gate's own reading, not predicted.
+>> 4451|     (5000.0, 3500.0, 15.7900),
+>> 4452|     (12000.0, 5000.0, 20.9683),
+
+@@ 4459-4472 DOC n=14 test_a_shelf_pair_whose_corners_cross_is_refused_by_the_composed_cap
+4459|     """The reversed ordering, where the disjoint-authority argument is FALSE.
+4460| 
+4461|     Corner the Lowshelf ABOVE the Highshelf and both cover the band between
+4462|     them, so their gains ADD there — up to **+23.75 dB** on the pairs swept
+4463|     here, nearly twice the rail. Placement is by INDEX and not by frequency, so
+4464|     this is a perfectly legal document that ``_check_shelf_placement`` admits.
+4465| 
+4466|     **What holds the rail is therefore the COMPOSED CAP, not the geometry.**
+4467|     The sibling test above reads exactly 12.0 because its corners are disjoint,
+4468|     and quoting that mechanism as the reason two shelves cannot stack would be
+4469|     a narrow fact with a universal tail — true of one ordering, false of this
+4470|     one. ``_check_composed`` evaluates the cascade rather than trusting either
+4471|     argument, which is why it catches the case the argument misses.
+4472|     """
+>> 4473|     packet = _speaker(tmp_path, classification=_boostable())
+>> 4474|     pair = _shelf_pair(lead_hz, taper_hz, DRIVER_MAX_FILTER_BOOST_DB)
+
+@@ 4487-4495 DOC n=9 test_a_negative_gain_shelf_never_puts_the_branch_above_unity
+4487|     """``branch_chain_peak_db``'s cut-only short-circuit, re-proved for shelves.
+4488| 
+4489|     That short-circuit answers ``min(0, trim_db)`` without evaluating anything
+4490|     when no filter gain is positive, on the premise that a cascade of cuts is
+4491|     ``<= 0 dB`` everywhere. Admitting shelves put a new filter shape inside that
+4492|     premise, so it is measured here rather than assumed: at the fixed
+4493|     Butterworth ``SHELF_Q`` a negative-gain shelf is maximally flat and never
+4494|     overshoots, worst 7.7e-15 dB over the emitter's own charge grid.
+4495|     """
+>> 4496|     worst = 0.0
+>> 4497|     for kind in ("Lowshelf", "Highshelf"):
+
+@@ 4513-4519 DOC n=7 test_a_displaced_incumbent_is_disclosed_and_never_refused
+4513|     """``docs/measurement-loop-doctrine.md`` §4/§5, pinned.
+4514| 
+4515|     Deleting a deep incumbent cut is a reversible experiment with no
+4516|     component-damage mechanism behind it: the emitted cascade is what spends
+4517|     headroom, and a driver's protective corners are not in this map at all. So
+4518|     the gate reports the number and accepts the document.
+4519|     """
+>> 4520|     deep = [{"biquad_type": "Peaking", "freq": 5000.0, "gain": -11.0, "q": 2.0}]
+>> 4521|     packet = _speaker(tmp_path, incumbent={"tweeter": deep})
+
+@@ 4530-4530 DOC n=1 test_without_an_incumbent_record_the_displacement_is_unknown_not_zero
+4530|     """A packet with no flow state says nothing, and the receipt says so too."""
+>> 4531|     packet = _speaker(tmp_path)
+>> 4533|     prescription = _gate(packet, _document([_cut()], packet))
+
+@@ 4541-4541 DOC n=1 test_the_cli_tells_the_operator_what_staging_this_would_delete
+4541|     """The disclosure's operator-facing reader: one line, before staging."""
+>> 4542|     session, _ = _bundle(tmp_path / "bundle")
+>> 4543|     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+
+@@ 4574-4579 DOC n=6 test_the_cli_tells_the_operator_a_trim_will_not_be_re_solved
+4574|     """A pin moves a LEVEL, so it cannot be invisible at the decision point.
+4575| 
+4576|     The control matters as much as the pin: an ordinary document says nothing
+4577|     about trims, and an operator who never sees the line must be able to read
+4578|     its absence as "this round solves them all".
+4579|     """
+>> 4580|     session, _ = _bundle(tmp_path / "bundle")
+>> 4581|     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+
+@@ 4587-4587 COM n=1 
+4587|     # No explicit --applied-profile below, so this matches the CLI's default.
+>> 4588|     packet = build_crossover_evidence_packet(
+>> 4589|         session, driver_draft_path=draft_path,
+
+@@ 4612-4618 DOC n=7 test_the_staged_event_reports_what_the_document_will_delete
+4612|     """The disclosures' durable reader: the journal line that banks the stage.
+4613| 
+4614|     BOTH of them, on one line, because an operator greps one event for what a
+4615|     staged document is about to do: what it deletes (#2863) and how much of it
+4616|     the round's own evidence backs (2026-08-23). A field written with no reader
+4617|     is a field that rots.
+4618|     """
+>> 4619|     with caplog.at_level(
+>> 4620|         logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
+
+@@ 4630-4632 COM n=3 
+4630|     # The document's one filter sits on the banked 5 kHz feature, so it IS
+4631|     # vouched — a zero that was measured, which is the answer this line has to
+4632|     # be able to give as clearly as a non-zero one.
+>> 4633|     assert "unvouched_filters=0" in caplog.text
+>> 4636| def test_the_staged_event_counts_a_document_the_evidence_does_not_back(
+
+@@ 4639-4644 DOC n=6 test_the_staged_event_counts_a_document_the_evidence_does_not_back
+4639|     """The non-zero arm. With the zero above it, both driver spellings are pinned.
+4640| 
+4641|     The third — ``null``, which the blend class writes because it has no such
+4642|     evidence — is the sibling of ``composed_boost_role=null`` two tests up and
+4643|     is not asserted here; this file stages only the driver class.
+4644|     """
+>> 4645|     with caplog.at_level(
+>> 4646|         logging.INFO, logger="jasper.active_speaker.crossover_v2.prescription_spool"
+

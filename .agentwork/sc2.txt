@@ -1,0 +1,2019 @@
+@@ 1-3 COM n=3 
+1| # SPDX-FileCopyrightText: 2026 Jasper Curry
+2| #
+3| # SPDX-License-Identifier: Apache-2.0
+>> 5| """Contract tests for the spatial combiner + interference honesty screen.
+>> 7| Layers: synthetic ground truth, power-domain arithmetic, the echo detector,
+
+@@ 5-12 DOC n=8 MODULE
+5| """Contract tests for the spatial combiner + interference honesty screen.
+6| 
+7| Layers: synthetic ground truth, power-domain arithmetic, the echo detector,
+8| analysis-grid bounding, then two real-data layers that skip unless their
+9| gitignored corpus roots are exported — ``JTS_FLAT_LIN_CORPUS`` (the
+10| 2026-07-24/25 JTS3 corpus) and ``JTS_FLAT_LIN_S0`` (the 2026-07-25 S0
+11| session, a different capture protocol).
+12| """
+>> 13| from __future__ import annotations
+>> 15| import dataclasses
+
+@@ 79-79 COM n=1 
+79| ECHO_R = 0.36  # the corpus's measured reflection coefficient (-8.8 dB)
+>> 82| # --- Synthetic corpus construction ---
+>> 85| def _grid() -> np.ndarray:
+
+@@ 82-82 COM n=1 
+82| # --- Synthetic corpus construction ---
+>> 85| def _grid() -> np.ndarray:
+>> 86|     return np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE)
+
+@@ 90-90 DOC n=1 _true_response_db
+90|     """A smooth synthetic "true" response, rolled off above 8 kHz."""
+>> 91|     octaves = np.log2(np.maximum(freqs, 20.0) / 1000.0)
+>> 92|     shape = 1.5 * np.sin(octaves * 1.1) - 0.8 * np.cos(octaves * 2.3)
+
+@@ 108-112 DOC n=5 _position
+108|     """One synthetic capture: truth + seeded noise, combed by one echo.
+109| 
+110|     Magnitude and IR are built from one complex spectrum, so the IR the
+111|     detector sees is the cause of the comb the combiner sees.
+112|     """
+>> 113|     level = true_db + rng.normal(0.0, noise_db, freqs.size)
+>> 114|     comb = 1.0 + reflection * np.exp(-2j * np.pi * freqs * tau_s)
+
+@@ 139-141 DOC n=3 _dispersed_taus
+139|     """Stratified delays spanning 150-490 us (~5-17 cm of path delta) with
+140|     seeded jitter.
+141|     """
+>> 142|     rng = np.random.default_rng(seed)
+>> 143|     return np.linspace(150e-6, 490e-6, n) + rng.uniform(-15e-6, 15e-6, n)
+
+@@ 149-151 DOC n=3 _level_offset_db
+149|     """Mean (estimate - truth) over ``keep`` — the offset
+150|     :func:`_relative_rms_error` removes.
+151|     """
+>> 152|     return float((estimate - truth)[keep].mean())
+>> 155| def _relative_rms_error(
+
+@@ 158-158 DOC n=1 _relative_rms_error
+158|     """RMS of (estimate - truth) over ``keep``, common offset removed."""
+>> 159|     delta = (estimate - truth)[keep]
+>> 160|     return float(np.sqrt(np.mean((delta - delta.mean()) ** 2)))
+
+@@ 163-163 COM n=1 
+163| # --- B. Power-domain arithmetic, pinned to hand-computed literals ---
+>> 166| def test_power_mean_is_the_energy_mean_not_the_db_mean():
+>> 167|     """The combiner averages in linear power, never in dB.
+
+@@ 167-171 DOC n=5 test_power_mean_is_the_energy_mean_not_the_db_mean
+167|     """The combiner averages in linear power, never in dB.
+168| 
+169|     Literals hand-computed as 10*log10((10**(a/10) + 10**(b/10)) / 2) per
+170|     bin, which differs from the naive dB mean by up to 17 dB here.
+171|     """
+>> 172|     freqs = np.array([1000.0, 2000.0, 3000.0, 4000.0])
+>> 173|     quiet = np.array([-20.0, -6.0, 0.0, -40.0])
+
+@@ 191-191 COM n=1 
+191|     # With two positions the median IS the dB mean.
+>> 192|     np.testing.assert_allclose(result.median_db, naive_db_mean, atol=1e-12)
+>> 193|     assert bool(result.excluded[0]), "7.03 dB disagreement must be flagged"
+
+@@ 199-199 DOC n=1 test_power_mean_matches_an_independent_scalar_computation
+199|     """The vectorised power mean matches plain-Python math on a random set."""
+>> 200|     rng = np.random.default_rng(11)
+>> 201|     freqs = np.linspace(1000.0, 5000.0, 32)
+
+@@ 217-217 COM n=1 
+217| # --- A. Synthetic ground truth ---
+>> 220| def test_power_mean_recovers_truth_from_a_dispersed_cloud():
+>> 221|     """A1 — averaging a decorrelated cloud recovers truth, rolloff included."""
+
+@@ 221-221 DOC n=1 test_power_mean_recovers_truth_from_a_dispersed_cloud
+221|     """A1 — averaging a decorrelated cloud recovers truth, rolloff included."""
+>> 222|     freqs, true_db, captures = _cloud(_dispersed_taus())
+>> 223|     result = combine_positions(captures)
+
+@@ 236-237 COM n=2 
+236|     # Measured on this construction: raw 0.588 dB, 1/3-oct 0.464 dB; across
+237|     # 25 seeds the worst were 0.673 and 0.482.
+>> 238|     assert raw_rms < 1.0, f"raw power-mean recovery {raw_rms:.3f} dB"
+>> 239|     assert spec_rms < 0.75, f"1/3-oct spec recovery {spec_rms:.3f} dB"
+
+@@ 248-254 DOC n=7 test_absolute_level_discriminates_the_power_mean_from_max_hold
+248|     """A1b — absolute level, which the offset-removed RMS metric cannot score.
+249| 
+250|     The power mean carries the echo's own energy, +10*log10(1 + r**2) =
+251|     +0.529 dB at r=0.36 (measured +0.437 dB here; partial coherence over ten
+252|     stratified delays pulls it under the analytic value). Max-hold, which the
+253|     plan rejects as positively biased, lands +2.55 dB on the same cloud.
+254|     """
+>> 255|     freqs, true_db, captures = _cloud(_dispersed_taus())
+>> 256|     result = combine_positions(captures)
+
+@@ 284-284 DOC n=1 test_geometry_lock_is_false_when_delays_are_dispersed
+284|     """A2a — dispersed delays mean moving nulls, which averaging can fill."""
+>> 285|     _freqs, _true_db, captures = _cloud(_dispersed_taus())
+>> 286|     result = combine_positions(captures)
+
+@@ 290-291 COM n=2 
+290|     # 8 of the 10 stratified delays clear the resolution floor (3 * ~71.4 us);
+291|     # the 150 and 185 us members are unresolvable, not undetected.
+>> 292|     assert result.geometry.n_confident == 8
+>> 293|     assert result.geometry.n_positions == 10
+
+@@ 298-298 DOC n=1 test_geometry_lock_is_true_when_every_delay_is_identical
+298|     """A2b — a cloud that did not move has position-stable nulls."""
+>> 299|     _freqs, _true_db, captures = _cloud(np.full(10, 300e-6))
+>> 300|     result = combine_positions(captures)
+
+@@ 309-311 DOC n=3 test_aligned_nulls_survive_the_average_which_is_why_the_flag_exists
+309|     """A3 — aligned nulls survive the average and the mean-vs-median screen
+310|     is blind to them, so ``geometry.locked`` is the only warning.
+311|     """
+>> 312|     freqs, true_db, captures = _cloud(np.full(10, 300e-6))
+>> 313|     result = combine_positions(captures)
+
+@@ 315-315 COM n=1 
+315|     # tau = 300 us puts interference nulls at (n + 0.5) / tau.
+>> 316|     tau = 300e-6
+>> 317|     nulls = [(n + 0.5) / tau for n in range(5)]
+
+@@ 341-341 DOC n=1 test_exclusion_mask_and_merged_intervals_agree
+341|     """The exclusion mask and the reported (f_lo, f_hi) intervals are one fact."""
+>> 342|     _freqs, _true_db, captures = _cloud(_dispersed_taus())
+>> 343|     # A partially-aligned cloud is what trips the screen: half the positions
+
+@@ 343-344 COM n=2 
+343|     # A partially-aligned cloud is what trips the screen: half the positions
+344|     # nulled at a bin, so the power mean and the median part company.
+>> 345|     partial = list(captures[:5])
+>> 346|     freqs = _grid()
+
+@@ 362-369 DOC n=8 test_band_spread_separates_a_tight_cloud_from_a_dispersed_one
+362|     """The two spread statistics answer two questions; only one discriminates.
+363| 
+364|     ``max_sigma_db`` (worst single bin) separates a moved cloud from a
+365|     stationary one. ``sigma_db`` (per-position band level) collapses in the
+366|     top octaves, where an octave spans many comb periods and every position
+367|     lands near ``1 + r**2``, but not at 1-2 kHz, where tau of 150-490 us puts
+368|     the comb period (2-6.7 kHz) wider than the band.
+369|     """
+>> 370|     _f1, _t1, dispersed = _cloud(_dispersed_taus())
+>> 371|     _f2, _t2, tight = _cloud(np.full(10, 300e-6))
+
+@@ 377-377 COM n=1 
+377|     # A cloud that never moved disagrees with itself only by seeded noise.
+>> 378|     for band in bands_tight.values():
+>> 379|         assert band.sigma_db < 0.1, band
+
+@@ 394-394 COM n=1 
+394|     # ...but not at 1-2 kHz, where one octave is narrower than one period.
+>> 395|     for center in (1000.0, 2000.0):
+>> 396|         assert bands_dispersed[center].sigma_db > 1.0, center
+
+@@ 405-410 DOC n=6 test_band_spread_numerics_are_pinned_on_a_hand_checkable_case
+405|     """Both spread statistics on a hand-checkable case.
+406| 
+407|     Two positions, one -10 dB notch, grid 700-1400 Hz in 100 Hz steps: only
+408|     the 1 kHz octave band has the ``MIN_BAND_BINS`` = 4 bins it needs, so
+409|     exactly one :class:`BandSpread` is reported over seven bins.
+410|     """
+>> 411|     freqs = np.arange(700.0, 1401.0, 100.0)
+>> 412|     quiet = np.zeros(freqs.size)
+
+@@ 413-413 COM n=1 
+413|     quiet[3] = -10.0  # 1000 Hz
+>> 415|     result = combine_positions(
+>> 416|         [
+
+@@ 435-435 DOC n=1 test_single_capture_combines_to_itself_and_reports_no_spread
+435|     """N=1 is legal; spread is undefined, not zero."""
+>> 436|     freqs = _grid()
+>> 437|     true_db = _true_response_db(freqs)
+
+@@ 450-450 COM n=1 
+450| # --- A2. Retained per-position curves ---
+>> 453| def test_per_position_curves_are_retained_index_aligned_and_immutable():
+>> 454|     """Retained rows are index-aligned with ``position_ids``, on the result's
+
+@@ 454-456 DOC n=3 test_per_position_curves_are_retained_index_aligned_and_immutable
+454|     """Retained rows are index-aligned with ``position_ids``, on the result's
+455|     own grid, and read-only.
+456|     """
+>> 457|     _freqs, _true, captures = _cloud(_dispersed_taus(4))
+>> 458|     result = combine_positions(captures)
+
+@@ 466-466 COM n=1 
+466|     # These captures share one grid, so the resample is the identity.
+>> 467|     for row, capture in zip(result.per_position_db, captures, strict=True):
+>> 468|         np.testing.assert_allclose(row, capture.magnitude_db, atol=1e-9)
+
+@@ 472-472 DOC n=1 test_the_retained_curves_are_what_the_combined_ones_are_made_of
+472|     """The combined curves are recomputable from ``per_position_db``."""
+>> 473|     _freqs, _true, captures = _cloud(_dispersed_taus(5))
+>> 474|     result = combine_positions(captures)
+
+@@ 497-497 DOC n=1 test_the_combiner_makes_exactly_three_plus_n_smoothing_passes
+497|     """Smoothing costs three combined passes plus one per position."""
+>> 498|     calls: list[int] = []
+>> 499|     real = spatial_combine.smooth_fractional_octave
+
+@@ 515-515 DOC n=1 test_the_retained_curves_follow_the_decimated_grid
+515|     """Retained rows follow the decimated grid, not the captures' own."""
+>> 516|     captures = _large_grid_cloud()
+>> 517|     result = combine_positions(captures)
+
+@@ 526-526 DOC n=1 test_the_per_position_fields_are_additive
+526|     """``CombinedResponse`` still constructs without the per-position fields."""
+>> 527|     from dataclasses import fields
+>> 529|     names = [field.name for field in fields(CombinedResponse)]
+
+@@ 561-563 DOC n=3 test_usable_echo_estimates_is_exactly_the_set_assess_geometry_clusters
+561|     """``usable_echo_estimates``'s result size is ``GeometryLock.n_confident``,
+562|     on every population this suite can build.
+563|     """
+>> 564|     good = detect_echo(_impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE)
+>> 565|     refused = detect_echo(_impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE, search_us=(650.0, 1000.0))
+
+@@ 584-584 COM n=1 
+584|     # A refused record is not evidence, however confident its raw fields.
+>> 585|     assert refused.refusal != ""
+>> 586|     assert usable_echo_estimates([refused]) == ()
+
+@@ 589-589 COM n=1 
+589| # --- Canonical grid contract ---
+>> 592| def test_canonical_grid_is_the_identity_for_captures_sharing_one_grid():
+>> 593|     """The ordinary case — one program, one rfftfreq — must not resample."""
+
+@@ 593-593 DOC n=1 test_canonical_grid_is_the_identity_for_captures_sharing_one_grid
+593|     """The ordinary case — one program, one rfftfreq — must not resample."""
+>> 594|     freqs, _true_db, captures = _cloud(_dispersed_taus(4))
+>> 595|     result = combine_positions(captures)
+
+@@ 600-600 DOC n=1 test_canonical_grid_takes_the_coarsest_spacing_over_common_support
+600|     """The canonical grid takes the coarsest spacing over common support."""
+>> 601|     fine = np.arange(0.0, 20_001.0, 5.0)
+>> 602|     coarse = np.arange(100.0, 18_001.0, 20.0)
+
+@@ 613-613 COM n=1 
+613|     # Flat inputs -> the hand-checked two-position power mean everywhere.
+>> 614|     np.testing.assert_allclose(result.power_mean_db, -2.0370720196, atol=1e-9)
+>> 617| def test_log_spaced_grid_is_rejected():
+
+@@ 618-618 DOC n=1 test_log_spaced_grid_is_rejected
+618|     """A log grid is rejected: the smoother binary-searches linear bins."""
+>> 619|     log_grid = np.geomspace(20.0, 20_000.0, 256)
+>> 620|     with pytest.raises(ValueError, match="linear-spaced"):
+
+@@ 656-656 COM n=1 
+656|         # Malformed by VALUE — the pair is well-shaped but wrong.
+>> 657|         ({"echo_band_hz": (19_000.0, 5000.0)}, "echo_band_hz"),
+>> 658|         ({"echo_band_hz": (0.0, 19_000.0)}, "echo_band_hz"),
+
+@@ 663-663 COM n=1 
+663|         # Malformed by SHAPE — not a pair at all.
+>> 664|         ({"echo_search_us": (120.0,)}, "echo_search_us"),
+>> 665|         ({"echo_search_us": None}, "echo_search_us"),
+
+@@ 670-670 COM n=1 
+670|         # Not a sequence, and not numeric.
+>> 671|         ({"echo_search_us": 120.0}, "echo_search_us"),
+>> 672|         ({"echo_search_us": ("lo", "hi")}, "echo_search_us"),
+
+@@ 678-683 DOC n=6 test_malformed_echo_config_raises_rather_than_refusing_every_position
+678|     """N6 — malformed *config* raises; malformed *data* refuses one position.
+679| 
+680|     Shape is checked before value, and ``pytest.raises(ValueError)`` catches
+681|     neither ``IndexError`` nor ``TypeError``, so the shape rows discriminate
+682|     rather than passing incidentally.
+683|     """
+>> 684|     _freqs, _true_db, captures = _cloud(_dispersed_taus(3))
+>> 685|     with pytest.raises(ValueError, match=match):
+
+@@ 690-692 DOC n=3 test_a_band_above_one_captures_nyquist_refuses_only_that_position
+690|     """N6's exception: a band above one capture's Nyquist refuses that
+691|     position rather than failing the combine.
+692|     """
+>> 693|     freqs, _true_db, captures = _cloud(_dispersed_taus(3))
+>> 694|     narrow_rate = PositionCapture(
+
+@@ 698-698 COM n=1 
+698|         sample_rate=8000,  # Nyquist 4 kHz, below the 5 kHz band floor
+>> 699|         ir=_impulse_with_echo(300e-6, ECHO_R),
+>> 700|     )
+
+@@ 724-724 COM n=1 
+724| # --- C. Echo detector ---
+>> 727| def _impulse_with_echo(tau_s: float, reflection: float, seed: int = 0) -> np.ndarray:
+>> 728|     rng = np.random.default_rng(seed)
+
+@@ 742-744 DOC n=3 _impulse_with_two_echoes
+742|     """``_impulse_with_echo`` with a second, later reflection — two
+743|     independent bounces, not a comb and its rahmonic.
+744|     """
+>> 745|     rng = np.random.default_rng(seed)
+>> 746|     ir = np.zeros(65_536)
+
+@@ 756-761 DOC n=6 test_detect_echo_recovers_synthetic_delay_and_strength
+756|     """C — a known echo is found to within 10% in delay and 2 dB in level.
+757| 
+758|     The low anchor is 240 us: the window's bottom ``WINDOW_EDGE_MARGIN_STEPS``
+759|     is refused, and the estimators' near-floor under-read stretches that dead
+760|     zone to ~1.3 steps for the weakest echoes.
+761|     """
+>> 762|     result = detect_echo(_impulse_with_echo(tau_us * 1e-6, reflection), SAMPLE_RATE)
+>> 764|     assert result.confidence > ECHO_CONFIDENCE_FLOOR, result
+
+@@ 771-771 DOC n=1 test_detect_echo_on_a_band_limited_impulse_response
+771|     """The echo rides a shaped, rolled-off response rather than a delta pair."""
+>> 772|     freqs = _grid()
+>> 773|     true_db = _true_response_db(freqs)
+
+@@ 786-786 DOC n=1 test_detect_echo_rejects_white_noise
+786|     """No direct arrival at all -> no confidence, and no tau claimed."""
+>> 787|     noise = np.random.default_rng(seed).normal(0.0, 1.0, 65_536)
+>> 788|     result = detect_echo(noise, SAMPLE_RATE)
+
+@@ 798-800 DOC n=3 test_detect_echo_rejects_an_impulse_with_no_echo
+798|     """A real arrival with no secondary one is refused by concentration x
+799|     corroboration, since the crest gate passes.
+800|     """
+>> 801|     rng = np.random.default_rng(seed)
+>> 802|     ir = np.zeros(65_536)
+
+@@ 812-815 DOC n=4 test_detect_echo_resolution_floor_is_where_the_docstring_says_it_is
+812|     """The documented accuracy floor, both directions: tau within 3% over
+813|     240-500 us, and the bottom ``WINDOW_EDGE_MARGIN_STEPS`` refused rather
+814|     than under-read.
+815|     """
+>> 816|     freqs = _grid()
+>> 817|     true_db = _true_response_db(freqs)
+
+@@ 837-839 COM n=3 
+837|     # The refusal is evidenced: both raw estimates landed within one quefrency
+838|     # step of the 120 us edge (measured 145.2 us and 135.4 us) and the ripple
+839|     # was concentrated — confidence alone could not have caught it.
+>> 840|     edge_margin_us = WINDOW_EDGE_MARGIN_STEPS * floored.resolution_us
+>> 841|     lower_edge = DEFAULT_ECHO_SEARCH_US[0]
+
+@@ 869-876 DOC n=8 test_detect_echo_never_reports_a_delay_outside_the_search_window
+869|     """The search window is a rejection contract, swept so a clamp fails.
+870| 
+871|     Eight true delays crossed with eight windows. Four properties: a reported
+872|     tau is inside the requested window; it is never pinned exactly to an edge
+873|     (the anti-clamp assertion); a delay above the window reports 0.0; a delay
+874|     below it is never usable evidence — it aliases up rather than vanishing,
+875|     and a window excluding tau can still contain a rahmonic at 2*tau, 3*tau.
+876|     """
+>> 877|     lo, hi = search_us
+>> 878|     found = detect_echo(
+
+@@ 909-911 DOC n=3 test_detect_echo_refuses_rather_than_railing_on_an_echo_past_the_window
+909|     """B1(a) — a true 830 us echo searched to 800 us refuses rather than
+910|     railing: both raw estimates stay unclamped outside the window.
+911|     """
+>> 912|     for search_us in ((120.0, 800.0), (400.0, 800.0)):
+>> 913|         found = detect_echo(
+
+@@ 920-921 COM n=2 
+920|         # Both raw estimates are outside the window, and neither was pulled
+921|         # back to the 800.0 us edge.
+>> 922|         assert found.tau_cepstral_us > search_us[1]
+>> 923|         assert found.tau_envelope_us > search_us[1]
+
+@@ 929-935 DOC n=7 test_detect_echo_refuses_a_candidate_hugging_the_window_lower_edge
+929|     """SF1 — the window's lower edge is refused and the dead zone is one step.
+930| 
+931|     A below-window echo aliases onto the bottom of the window with both
+932|     estimators agreeing, so refusing is the only honest answer; a genuine echo
+933|     1.5 steps above the edge is still reported. Parametrised over four lower
+934|     edges, so the rule is relative to the requested window.
+935|     """
+>> 936|     resolution_us = 1e6 / 14_000.0  # the 5-19 kHz default band's step
+>> 937|     search_us = (search_lo_us, search_lo_us + 500.0)
+
+@@ 936-936 COM n=1 
+936|     resolution_us = 1e6 / 14_000.0  # the 5-19 kHz default band's step
+>> 937|     search_us = (search_lo_us, search_lo_us + 500.0)
+>> 939|     # Below the window entirely — half its lower edge, far enough down that
+
+@@ 939-940 COM n=2 
+939|     # Below the window entirely — half its lower edge, far enough down that
+940|     # the aliasing is unambiguous.
+>> 941|     below = detect_echo(
+>> 942|         _impulse_with_echo((search_lo_us / 2.0) * 1e-6, ECHO_R),
+
+@@ 950-950 COM n=1 
+950|     # The refusal is evidenced: a surviving candidate was inside the margin.
+>> 951|     margin_us = WINDOW_EDGE_MARGIN_STEPS * below.resolution_us
+>> 952|     assert margin_us == pytest.approx(resolution_us, rel=1e-9)
+
+@@ 961-961 COM n=1 
+961|     # 1.5 steps above the edge: a real, resolvable delay, reported normally.
+>> 962|     clear_us = search_lo_us + 1.5 * resolution_us
+>> 963|     clear = detect_echo(
+
+@@ 973-977 DOC n=5 _impulse_with_sample_spikes
+973|     """An impulse at 1000 plus reflections at exact **sample** offsets.
+974| 
+975|     ``_impulse_with_echo`` rounds a delay in seconds to a sample, which would
+976|     hide the quantity under test; here the caller names the sample.
+977|     """
+>> 978|     rng = np.random.default_rng(seed)
+>> 979|     ir = np.zeros(65_536)
+
+@@ 987-992 DOC n=6 test_the_envelope_never_searches_below_the_requested_window
+987|     """``search_us[0]`` is the floor of the envelope's candidate range.
+988| 
+989|     Under ``ceil`` the envelope cannot select the sample below the window: at
+990|     (150, 1000) us and 48 kHz it answers from sample 8 (156.25 us after the
+991|     parabola's half-sample clamp), never sample 7 (145.833 us).
+992|     """
+>> 993|     ir = _impulse_with_sample_spikes((7, 0.9))
+>> 994|     search_us = (150.0, 1000.0)
+
+@@ 1002-1003 COM n=2 
+1002|     # The floor is sample 8 less the parabola's clamp; below it means the
+1003|     # search reached outside the window.
+>> 1004|     spike_us = 7.0 / SAMPLE_RATE * 1e6
+>> 1005|     floor_us = 7.5 / SAMPLE_RATE * 1e6
+
+@@ 1009-1009 COM n=1 
+1009|     # ...and the excluded sample is reported as a below-window arrival.
+>> 1010|     assert found.earlier_arrival_us == pytest.approx(spike_us, abs=1e-9), found
+>> 1013| def test_the_below_window_scan_and_the_envelope_bound_share_one_definition():
+
+@@ 1014-1021 DOC n=8 test_the_below_window_scan_and_the_envelope_bound_share_one_definition
+1014|     """No sample is both the first in-window candidate and a below-window
+1015|     arrival.
+1016| 
+1017|     Swept over every alignment of the lower edge within a sample, driven from
+1018|     a reflection on the boundary sample itself. The sweep sits around sample
+1019|     15 (~312 us) because the 5-19 kHz band resolves ~71 us, so a reflection
+1020|     one or two samples off the direct arrival raises no local maximum.
+1021|     """
+>> 1022|     for numerator in range(0, 10):
+>> 1023|         # Lower edges at 15.0, 15.1, ... 15.9 samples: every alignment, with
+
+@@ 1023-1024 COM n=2 
+1023|         # Lower edges at 15.0, 15.1, ... 15.9 samples: every alignment, with
+1024|         # 15.0 the sample-aligned control where ``round`` and ``ceil`` agree.
+>> 1025|         search_lo_us = (15.0 + numerator / 10.0) / SAMPLE_RATE * 1e6
+>> 1026|         first_index = spatial_combine._ceil_samples(search_lo_us * 1e-6, SAMPLE_RATE)
+
+@@ 1029-1029 COM n=1 
+1029|         # A lone dominant reflection on the last sample BELOW the window.
+>> 1030|         below = detect_echo(
+>> 1031|             _impulse_with_sample_spikes((first_index - 1, 0.9)),
+
+@@ 1038-1041 COM n=4 
+1038|         # The envelope's answer and the below-window arrival are not the same
+1039|         # sample: the arrival sits on whole sample ``first - 1`` and the
+1040|         # envelope's lowest reachable answer is ``first`` less the parabola's
+1041|         # clamp, so half a sample is the assertion rather than "one is bigger".
+>> 1042|         half_sample_us = 0.5 / SAMPLE_RATE * 1e6
+>> 1043|         assert below.tau_envelope_us - below.earlier_arrival_us >= (
+
+@@ 1047-1047 COM n=1 
+1047|         # ...and the first sample INSIDE the window is searched.
+>> 1048|         inside = detect_echo(
+>> 1049|             _impulse_with_sample_spikes((first_index, 0.9)),
+
+@@ 1060-1066 DOC n=7 test_window_edges_snap_to_a_sample_aligned_request
+1060|     """``WINDOW_EDGE_SNAP_SAMPLES``: a sample-aligned edge written as a
+1061|     decimal still means that sample.
+1062| 
+1063|     Eight samples at 48 kHz is 166.6666...us, so a caller writes 166.6667 —
+1064|     8.0000016 samples, which a bare ``ceil`` would read as 9 and charge a
+1065|     whole sample of window for. The tolerance must stay far below a sample.
+1066|     """
+>> 1067|     exact_lo = 8.0 / SAMPLE_RATE  # 166.6666...us
+>> 1068|     exact_hi = 48.0 / SAMPLE_RATE  # 1000 us
+
+@@ 1067-1068 COM n=2 
+1067|     exact_lo = 8.0 / SAMPLE_RATE  # 166.6666...us
+1068|     exact_hi = 48.0 / SAMPLE_RATE  # 1000 us
+>> 1070|     # Written to four decimals, high side, as a caller would: still sample 8.
+>> 1071|     assert spatial_combine._ceil_samples(166.6667e-6, SAMPLE_RATE) == 8
+
+@@ 1070-1070 COM n=1 
+1070|     # Written to four decimals, high side, as a caller would: still sample 8.
+>> 1071|     assert spatial_combine._ceil_samples(166.6667e-6, SAMPLE_RATE) == 8
+>> 1072|     # ...and to four decimals, low side, at the upper edge: still sample 8.
+
+@@ 1072-1072 COM n=1 
+1072|     # ...and to four decimals, low side, at the upper edge: still sample 8.
+>> 1073|     assert spatial_combine._floor_samples(166.6666e-6, SAMPLE_RATE) == 8
+>> 1074|     # Exact values are unambiguous in both directions.
+
+@@ 1074-1074 COM n=1 
+1074|     # Exact values are unambiguous in both directions.
+>> 1075|     assert spatial_combine._ceil_samples(exact_lo, SAMPLE_RATE) == 8
+>> 1076|     assert spatial_combine._floor_samples(exact_hi, SAMPLE_RATE) == 48
+
+@@ 1078-1079 COM n=2 
+1078|     # A genuinely fractional edge is NOT snapped: the snap is not a rounding
+1079|     # rule.
+>> 1080|     assert spatial_combine._ceil_samples(150e-6, SAMPLE_RATE) == 8
+>> 1081|     assert spatial_combine._ceil_samples(7.9 / SAMPLE_RATE, SAMPLE_RATE) == 8
+
+@@ 1084-1085 COM n=2 
+1084|     # The tolerance is a thousandth of a sample, so a hundredth away from an
+1085|     # integer is still honoured as fractional.
+>> 1086|     assert spatial_combine.WINDOW_EDGE_SNAP_SAMPLES == 1e-3
+>> 1087|     assert spatial_combine._ceil_samples((8.0 + 0.01) / SAMPLE_RATE, SAMPLE_RATE) == 9
+
+@@ 1092-1096 DOC n=5 test_the_envelope_upper_bound_is_the_last_in_window_sample
+1092|     """The envelope's upper bound is the last sample at or below ``search_hi``.
+1093| 
+1094|     (150, 850) us at 48 kHz is 40.8 samples, so a ``round`` bound searched
+1095|     sample 41 at 854.2 us, 4.2 us past the window the caller asked for.
+1096|     """
+>> 1097|     # A lone reflection at sample 41 — outside a window that ends at 850 us.
+>> 1098|     ir = _impulse_with_sample_spikes((41, 0.5))
+
+@@ 1097-1097 COM n=1 
+1097|     # A lone reflection at sample 41 — outside a window that ends at 850 us.
+>> 1098|     ir = _impulse_with_sample_spikes((41, 0.5))
+>> 1099|     assert 850.0 * 1e-6 * SAMPLE_RATE == pytest.approx(40.8)
+
+@@ 1104-1105 COM n=2 
+1104|     # The ceiling is sample 40 plus the parabola's clamp, not "below sample
+1105|     # 41" — the old bound refined sample 41 to 854.15 us.
+>> 1106|     assert found.tau_envelope_us <= 40.5 / SAMPLE_RATE * 1e6 + 1e-9, found
+>> 1108|     # ...and it is found when the window is widened by one sample.
+
+@@ 1108-1108 COM n=1 
+1108|     # ...and it is found when the window is widened by one sample.
+>> 1109|     widened = detect_echo(
+>> 1110|         ir, SAMPLE_RATE, search_us=(150.0, 41.0 / SAMPLE_RATE * 1e6)
+
+@@ 1119-1126 COM n=8 
+1119| # The measured verdict for a 10-position cloud whose true delays span
+1120| # _BELOW_WINDOW_CLOUD_US, searched in windows at or above it. Rows are
+1121| # (search window, locked, reason, n_confident, rahmonic refusals).
+1122| #
+1123| # The first three rows are the edge rule; the last three are the regime it
+1124| # cannot reach — a cepstral rahmonic of the excluded echo landing mid-window.
+1125| # The last column pins WHICH rule declined, so a row asserts the screen
+1126| # rather than emptiness.
+>> 1127| _RAISED_WINDOW_SWEEP = [
+>> 1128|     ((300.0, 800.0), False, GEOMETRY_UNKNOWN, 1, 0),
+
+@@ 1144-1147 DOC n=4 test_below_window_cloud_verdict_by_raised_search_window
+1144|     """One below-window cloud swept across six raised windows: no row reaches
+1145|     a cluster, and rows 4-6 are the rahmonic regime the edge rule cannot
+1146|     reach.
+1147|     """
+>> 1148|     taus_s = np.linspace(
+>> 1149|         _BELOW_WINDOW_CLOUD_US[0] * 1e-6, _BELOW_WINDOW_CLOUD_US[1] * 1e-6, 10
+
+@@ 1161-1161 COM n=1 
+1161|     # GEOMETRY_UNKNOWN is only honest while the usable set cannot cluster.
+>> 1162|     assert result.geometry.n_confident < GEOMETRY_MIN_CONFIDENT, (
+>> 1163|         search_us,
+
+@@ 1176-1176 COM n=1 
+1176|     # Each refusal is recomputable from the two fields the record carries.
+>> 1177|     for echo in rahmonic:
+>> 1178|         assert echo.lower_peak_ratio > RAHMONIC_MARGIN, echo
+
+@@ 1183-1189 DOC n=7 test_a_below_window_cloud_is_edge_refused_rather_than_clustered
+1183|     """SF1 — a below-window cloud at (300, 800) is edge-refused, not clustered.
+1184| 
+1185|     A below-window echo is aliased rather than rejected, arriving as a
+1186|     plausible in-window estimate: 150 us and 178 us echoes were reported as
+1187|     318 us and 302 us. A resolution floor cannot catch that (318 us clears a
+1188|     214 us floor); only the distance to the edge distinguishes the two cases.
+1189|     """
+>> 1190|     taus_s = np.linspace(150e-6, 400e-6, 10)
+>> 1191|     # At (300, 800) exactly one position survives — the 400 us member, the
+
+@@ 1191-1193 COM n=3 
+1191|     # At (300, 800) exactly one position survives — the 400 us member, the
+1192|     # only one whose both estimates cleared the margin — and one estimate is
+1193|     # not a cluster.
+>> 1194|     _freqs, _true_db, captures = _cloud(taus_s)
+>> 1195|     result = combine_positions(captures, echo_search_us=(300.0, 800.0))
+
+@@ 1205-1205 COM n=1 
+1205|     # Every refusal is a rescued false positive.
+>> 1206|     for echo in edge_refused:
+>> 1207|         assert 300.0 <= echo.tau_envelope_us <= 800.0 or (
+
+@@ 1211-1211 COM n=1 
+1211|     # The same cloud in the window it belongs in reads correctly.
+>> 1212|     _freqs, _true_db, captures = _cloud(taus_s)
+>> 1213|     honest = combine_positions(captures)
+
+@@ 1220-1228 DOC n=9 test_rahmonic_false_lock_under_a_raised_window_is_screened
+1220|     """A rahmonic false lock under a raised window is screened.
+1221| 
+1222|     A comb's cepstrum repeats at 2*tau, 3*tau..., so a window excluding the
+1223|     true delay can contain a rahmonic of it. Unlike aliasing it lands
+1224|     anywhere in the window, so ``WINDOW_EDGE_MARGIN_STEPS`` cannot catch it:
+1225|     the 150-400 us cloud searched at (700, 1000) used to lock at ~857 us.
+1226|     The mechanism is asserted alongside the verdict, since a verdict-only
+1227|     test would also pass if the detector had simply stopped working.
+1228|     """
+>> 1229|     true_taus_us = np.linspace(150.0, 400.0, 10)
+>> 1230|     _freqs, _true_db, captures = _cloud(true_taus_us * 1e-6)
+
+@@ 1242-1242 COM n=1 
+1242|     # --- The mechanism, so a regression is diagnosable rather than red. ---
+>> 1243|     rahmonic = [
+>> 1244|         (true_us, echo)
+
+@@ 1248-1249 COM n=2 
+1248|     # The two positions that used to be admitted are the two whose cepstral
+1249|     # candidate is the third rahmonic.
+>> 1250|     third = [
+>> 1251|         (true_us, echo)
+
+@@ 1257-1258 COM n=2 
+1257|         # The envelope still corroborates the rahmonic: the screen works by
+1258|         # noticing the fundamental, not by breaking corroboration.
+>> 1259|         assert echo.corroboration < CORROBORATION_LOOSE, echo
+>> 1260|         # The refusing peak is the excluded echo: within half a quefrency step
+
+@@ 1260-1261 COM n=2 
+1260|         # The refusing peak is the excluded echo: within half a quefrency step
+1261|         # of this position's true delay.
+>> 1262|         assert abs(echo.lower_peak_us - true_us) < 0.5 * echo.resolution_us, (
+>> 1263|             true_us,
+
+@@ 1272-1279 DOC n=8 test_rahmonic_screen_refuses_a_below_window_echo_and_names_its_fundamental
+1272|     """The rahmonic screen on one IR, both directions.
+1273| 
+1274|     Fires: a 300 us echo searched in (700, 1000) — before the screen the
+1275|     detector reported 876.1 us at confidence 1.000 — and the refusal names the
+1276|     fundamental at 285.6 us. Does not fire: the same echo in the default
+1277|     window, and a lone 850 us echo inside a raised (750, 1100) window, so the
+1278|     screen keys on "is something below stronger", not on "is the window high".
+1279|     """
+>> 1280|     fired = detect_echo(
+>> 1281|         _impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE, search_us=(700.0, 1000.0)
+
+@@ 1288-1288 COM n=1 
+1288|     # The candidate was the third rahmonic and the two estimators agreed.
+>> 1289|     assert fired.tau_cepstral_us / 300.0 == pytest.approx(3.0, abs=0.15), fired
+>> 1290|     assert fired.corroboration < CORROBORATION_LOOSE, fired
+
+@@ 1291-1291 COM n=1 
+1291|     # The evidence the refusal carries, so the verdict is recomputable.
+>> 1292|     assert abs(fired.lower_peak_us - 300.0) < 0.5 * fired.resolution_us, fired
+>> 1293|     assert fired.lower_peak_ratio > RAHMONIC_MARGIN, fired
+
+@@ 1296-1296 COM n=1 
+1296|     # Same echo, honest window: measured, and nowhere near the screen.
+>> 1297|     honest = detect_echo(_impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE)
+>> 1298|     assert honest.refusal == "", honest
+
+@@ 1301-1303 COM n=3 
+1301|     # ...and the screen was awake while not firing: a raised
+1302|     # ``RAHMONIC_FLOOR_STEPS`` would leave no analyzable region below a
+1303|     # default-window candidate and degrade the rule to "no region, no opinion".
+>> 1304|     assert honest.lower_peak_us > 0.0, honest
+>> 1305|     assert honest.lower_peak_ratio > 0.0, honest
+
+@@ 1307-1307 COM n=1 
+1307|     # A genuinely late echo inside a raised window is still measured.
+>> 1308|     late = detect_echo(
+>> 1309|         _impulse_with_echo(850e-6, ECHO_R), SAMPLE_RATE, search_us=(750.0, 1100.0)
+
+@@ 1318-1327 DOC n=10 test_rahmonic_screen_refuses_an_honest_late_echo_under_a_stronger_earlier_one
+1318|     """KNOWN LIMITATION — an honest late echo under a stronger earlier
+1319|     reflection is refused as if it were a rahmonic.
+1320| 
+1321|     "A much stronger peak sits below" is necessary for a rahmonic and not
+1322|     sufficient, and the two populations' ``lower_peak_ratio`` interleave —
+1323|     this honest case refuses at 2.448, a true rahmonic at 2.337 — so no
+1324|     threshold on it separates them from one record. The failure direction is
+1325|     a refusal rather than a wrong number, and the default window, which
+1326|     contains the earlier reflection, measures the same IR cleanly.
+1327|     """
+>> 1328|     ir = _impulse_with_two_echoes(300e-6, 0.5, 850e-6, 0.2)
+>> 1329|     refused = detect_echo(ir, SAMPLE_RATE, search_us=(750.0, 1100.0))
+
+@@ 1336-1336 COM n=1 
+1336|     # The refused measurement was honest: both estimators found the real echo.
+>> 1337|     assert refused.tau_cepstral_us == pytest.approx(850.0, rel=0.02), refused
+>> 1338|     assert refused.tau_envelope_us == pytest.approx(850.0, rel=0.02), refused
+
+@@ 1341-1341 COM n=1 
+1341|     # The refusing peak is the earlier real reflection, within half a step.
+>> 1342|     assert abs(refused.lower_peak_us - 300.0) < 0.5 * refused.resolution_us, refused
+>> 1343|     assert refused.lower_peak_ratio > RAHMONIC_MARGIN, refused
+
+@@ 1345-1346 COM n=2 
+1345|     # The interleaving that makes this unfixable per-record: a genuine
+1346|     # rahmonic lands BELOW this honest one on the statistic the screen uses.
+>> 1347|     genuine = detect_echo(
+>> 1348|         _impulse_with_echo(400e-6, 0.75), SAMPLE_RATE, search_us=(650.0, 1000.0)
+
+@@ 1362-1363 COM n=2 
+1362|     # The remedy, on the same IR: the default window contains the earlier
+1363|     # reflection, so no stronger peak sits below the candidate.
+>> 1364|     measured = detect_echo(ir, SAMPLE_RATE)
+>> 1365|     assert measured.refusal == "", measured
+
+@@ 1372-1378 DOC n=7 test_rahmonic_screen_catches_the_non_integer_ratio_the_submultiple_test_missed
+1372|     """The rule is "anything stronger below", not "an exact submultiple".
+1373| 
+1374|     The worst measured case is the 205.6 us cloud member searched in
+1375|     (650, 1000): its cepstral candidate lands at 749.8 us, 3.648x the truth,
+1376|     which a submultiple test could only catch by accepting a whole quefrency
+1377|     step of slop. The screen locates the fundamental at 214.2 us instead.
+1378|     """
+>> 1379|     true_taus_us = np.linspace(150.0, 400.0, 10)
+>> 1380|     _freqs, _true_db, captures = _cloud(true_taus_us * 1e-6)
+
+@@ 1389-1389 COM n=1 
+1389|     # The ratio is genuinely off-integer — that is the whole point.
+>> 1390|     ratio = outlier.tau_cepstral_us / true_us
+>> 1391|     assert ratio == pytest.approx(3.648, abs=0.02), outlier
+
+@@ 1398-1398 COM n=1 
+1398|     # The screen localises the fundamental better than either submultiple.
+>> 1399|     screen_err = abs(outlier.lower_peak_us - true_us)
+>> 1400|     assert screen_err < 0.2 * outlier.resolution_us, outlier
+
+@@ 1406-1406 COM n=1 
+1406|     # And it is the module's widest measured rejection margin.
+>> 1407|     assert outlier.lower_peak_ratio > 70.0, outlier
+>> 1410| def test_rahmonic_margin_is_load_bearing_in_both_directions():
+
+@@ 1411-1417 DOC n=7 test_rahmonic_margin_is_load_bearing_in_both_directions
+1411|     """``RAHMONIC_MARGIN`` is load-bearing in both directions.
+1412| 
+1413|     Mutated to 0.0 the screen eats an ordinary 300 us reading; mutated to 1e9
+1414|     the 150-400 us cloud locks again at ~857 us through (700, 1000). The
+1415|     populations either side are measured by
+1416|     :func:`test_rahmonic_margin_calibration_populations_bracket_the_constant`.
+1417|     """
+>> 1418|     clean_ir = _impulse_with_echo(300e-6, ECHO_R)
+>> 1419|     taus_s = np.linspace(150e-6, 400e-6, 10)
+
+@@ 1425-1425 COM n=1 
+1425|     # --- The shipped value: honest read measured, false lock refused. ---
+>> 1426|     honest = detect_echo(clean_ir, SAMPLE_RATE)
+>> 1427|     assert honest.refusal == ""
+
+@@ 1431-1431 COM n=1 
+1431|     # --- Mutated too low: the honest read is eaten. ---
+>> 1432|     with pytest.MonkeyPatch.context() as patch:
+>> 1433|         patch.setattr(spatial_combine, "RAHMONIC_MARGIN", 0.0)
+
+@@ 1442-1442 COM n=1 
+1442|     # --- Mutated too high: the false lock comes back. ---
+>> 1443|     with pytest.MonkeyPatch.context() as patch:
+>> 1444|         patch.setattr(spatial_combine, "RAHMONIC_MARGIN", 1e9)
+
+@@ 1456-1457 COM n=2 
+1456| # The two grids ``RAHMONIC_MARGIN``'s calibration is measured over, as
+1457| # literals: windows that contain the echo, and windows that exclude it.
+>> 1458| _CALIBRATION_REFLECTIONS = (
+>> 1459|     0.10, 0.15, 0.20, 0.25, 0.30, 0.36, 0.42, 0.50, 0.60, 0.68, 0.75,
+
+@@ 1475-1476 COM n=2 
+1475| # Guards both reproducible sweeps below — the RAHMONIC_MARGIN calibration
+1476| # (~9 400 detector calls) and the raised-window two-echo hazard (~1 500).
+>> 1477| requires_calibration_sweep = pytest.mark.skipif(
+>> 1478|     os.environ.get("JTS_RAHMONIC_CALIBRATION", "").strip() != "1",
+
+@@ 1489-1500 DOC n=12 test_rahmonic_margin_calibration_populations_bracket_the_constant
+1489|     """The two populations ``RAHMONIC_MARGIN`` sits between, re-derived.
+1490| 
+1491|     Each IR is measured by the shipped detector with the screen disabled
+1492|     (``RAHMONIC_MARGIN`` patched to infinity) and classified by what the
+1493|     pre-screen detector did: true positives (unrefused, confident, within 15%
+1494|     of truth) whose ratio ceiling is the wall below the margin, and wrong
+1495|     readings (unrefused, confident, >15% off) whose floor is the wall above.
+1496| 
+1497|     Measured 2026-08-02: 2908 true positives, ceiling 0.9955; 439 wrong
+1498|     readings, floor 2.7899. The assertions are the bracket and its width, not
+1499|     those four figures — a grid this large samples both populations.
+1500|     """
+>> 1501|     freqs = _grid()
+>> 1502|     true_db = _true_response_db(freqs)
+
+@@ 1505-1505 DOC n=1 irs_for
+1505|         """One bare impulse+echo IR and one shaped-response IR, same echo."""
+>> 1506|         shaped = _position(
+>> 1507|             "calibration",
+
+@@ 1545-1546 COM n=2 
+1545|     # Non-vacuity first: a sweep that stopped producing readings would pass
+1546|     # every bracket assertion below by having nothing to contradict it.
+>> 1547|     assert len(true_positive) > 2000, len(true_positive)
+>> 1548|     assert len(wrong_reading) > 250, len(wrong_reading)
+
+@@ 1556-1560 COM n=5 
+1556|     # The four figures ``RAHMONIC_MARGIN``'s comment quotes, on stdout as
+1557|     # well as in the assertion messages below: the assertions are brackets,
+1558|     # so a *passing* run would otherwise hand back no way to re-derive the
+1559|     # prose. Captured by pytest unless ``-s``, so this costs nothing in a
+1560|     # normal run and makes re-deriving the comment one command.
+>> 1561|     print(
+>> 1562|         f"RAHMONIC_MARGIN calibration: true positives n={len(true_positive)} "
+
+@@ 1567-1567 COM n=1 
+1567|     # The gap exists, and the constant is inside it...
+>> 1568|     assert ceiling < RAHMONIC_MARGIN < floor, measured
+>> 1569|     # ...with room on both walls rather than grazing either. 1.5x is the
+
+@@ 1569-1573 COM n=5 
+1569|     # ...with room on both walls rather than grazing either. 1.5x is the
+1570|     # weakest bracket the measured gap comfortably supports (1.66x / 1.69x
+1571|     # since #1750, and the gap's own geometric centre is 1.667), so failing
+1572|     # this means the populations have genuinely closed in — which is exactly
+1573|     # what it did on #1750's first run, at the old 2.0.
+>> 1574|     assert ceiling * 1.5 <= RAHMONIC_MARGIN, measured
+>> 1575|     assert floor >= 1.5 * RAHMONIC_MARGIN, measured
+
+@@ 1578-1583 COM n=6 
+1578| # The two-echo hazard grid behind ``DEFAULT_ECHO_SEARCH_US``'s raised-window
+1579| # cost, as literals. Every figure that comment quotes is an attribute of
+1580| # :func:`_two_echo_hazard_sweep`'s return value, so a reader re-derives them by
+1581| # running this file rather than by reconstructing a grid from prose — a prose
+1582| # description of a grid is not a grid, and reconstructing one from an earlier
+1583| # revision of that comment landed three cases away from the real answer.
+>> 1584| _HAZARD_EARLY_ECHOES = tuple(
+>> 1585|     (tau_us, reflection)
+
+@@ 1598-1600 COM n=3 
+1598| # Three noise seeds for the default-window leg: the hazard is a property of
+1599| # the geometry, so the leg that must show *nothing* is the one worth
+1600| # re-running against different noise.
+>> 1601| _HAZARD_DEFAULT_WINDOW_SEEDS = (0, 1, 2)
+>> 1602| _HAZARD_SINGLE_ECHO_REFLECTIONS = (0.15, 0.25, 0.36, 0.5, 0.6)
+
+@@ 1607-1611 DOC n=5 _HazardLeg
+1607|     """One leg of the two-echo hazard sweep, in aggregate.
+1608| 
+1609|     ``ratio_lo``/``ratio_hi`` span every record; ``refused_ratio_*`` span only
+1610|     the ``rahmonic_of_lower_delay`` refusals (0.0 when there are none).
+1611|     """
+>> 1613|     total: int
+>> 1614|     rahmonic_refusals: int
+
+@@ 1624-1624 DOC n=1 _HazardSweep
+1624|     """The three legs, plus the accuracy figures the prose quotes."""
+>> 1626|     raised: _HazardLeg
+>> 1627|     default_window: _HazardLeg
+
+@@ 1629-1630 COM n=2 
+1629|     # Worst |tau_envelope - true late echo| over the raised leg's refusals,
+1630|     # as a percent: how good the measurements the screen threw away were.
+>> 1631|     raised_refused_envelope_error_pct: float
+>> 1632|     # Worst corroboration over those same refusals: they were not refused for
+
+@@ 1632-1633 COM n=2 
+1632|     # Worst corroboration over those same refusals: they were not refused for
+1633|     # disagreeing.
+>> 1634|     raised_refused_corroboration_max: float
+>> 1635|     # Worst |tau - true early echo| over the default-window leg, as a percent:
+
+@@ 1635-1636 COM n=2 
+1635|     # Worst |tau - true early echo| over the default-window leg, as a percent:
+1636|     # what the caller gets instead by not raising the window.
+>> 1637|     default_window_early_echo_error_pct: float
+>> 1640| def _summarise_leg(records: list[tuple[float, EchoDiagnostic]]) -> _HazardLeg:
+
+@@ 1663-1670 DOC n=8 _two_echo_hazard_sweep
+1663|     """Sweep the raised-window two-echo hazard and its two boundaries.
+1664| 
+1665|     Three legs off one grid of an earlier, stronger reflection plus a later,
+1666|     weaker one: **raised** (windows excluding the earlier reflection, where an
+1667|     honest late echo is refused), **default_window** (the remedy, which must
+1668|     refuse nothing) and **single_echo** (nothing below the candidate, which
+1669|     isolates the raised window itself as not the cause).
+1670|     """
+>> 1671|     raised: list[tuple[float, EchoDiagnostic]] = []
+>> 1672|     for window in _HAZARD_RAISED_WINDOWS:
+
+@@ 1729-1737 DOC n=9 test_raised_window_two_echo_hazard_is_bounded_by_the_default_window
+1729|     """The raised-window hazard's shape: it needs the stronger-earlier-echo
+1730|     geometry, the default window does not have it, and what it discards were
+1731|     good measurements.
+1732| 
+1733|     Measured 2026-08-02: the raised leg refuses 605 of 720 at ratios
+1734|     1.678-4.513, discarded envelope estimates within 0.894% of the true late
+1735|     echo; the default-window leg refuses 0 of 432 and the single-echo leg 0 of
+1736|     370. The assertions are those walls, not the counts.
+1737|     """
+>> 1738|     sweep = _two_echo_hazard_sweep()
+>> 1739|     # The assertions below are walls, so print the figures a reader would
+
+@@ 1739-1740 COM n=2 
+1739|     # The assertions below are walls, so print the figures a reader would
+1740|     # otherwise have to re-derive. Captured by pytest unless ``-s``.
+>> 1741|     print(f"two-echo hazard sweep: {sweep}")
+>> 1743|     # Grid sizes, so "of 720 / of 432 / of 370" in the prose is executable.
+
+@@ 1743-1743 COM n=1 
+1743|     # Grid sizes, so "of 720 / of 432 / of 370" in the prose is executable.
+>> 1744|     assert sweep.raised.total == 720, sweep.raised
+>> 1745|     assert sweep.default_window.total == 432, sweep.default_window
+
+@@ 1748-1749 COM n=2 
+1748|     # Wall 1 — the remedy holds: the window that contains the earlier
+1749|     # reflection refuses none of these geometries, and measures all of them.
+>> 1750|     assert sweep.default_window.rahmonic_refusals == 0, sweep.default_window
+>> 1751|     assert sweep.default_window.measured_confident == 432, sweep.default_window
+
+@@ 1754-1755 COM n=2 
+1754|     # Wall 2 — a raised window alone is not the cause: with nothing below the
+1755|     # candidate, the same windows refuse nothing.
+>> 1756|     assert sweep.single_echo.rahmonic_refusals == 0, sweep.single_echo
+>> 1757|     assert sweep.single_echo.measured_confident == 370, sweep.single_echo
+
+@@ 1760-1760 COM n=1 
+1760|     # Wall 3 — the hazard is real and reachable, not a one-IR curiosity.
+>> 1761|     assert sweep.raised.rahmonic_refusals > 0, sweep.raised
+>> 1762|     assert sweep.raised.refused_ratio_lo > RAHMONIC_MARGIN, sweep.raised
+
+@@ 1764-1765 COM n=2 
+1764|     # Wall 4 — what was refused were good measurements. If this fails, the
+1765|     # refusals have started landing on records that were wrong anyway.
+>> 1766|     assert sweep.raised_refused_envelope_error_pct < 1.0, sweep
+>> 1767|     assert sweep.raised_refused_corroboration_max < CORROBORATION_LOOSE, sweep
+
+@@ 1771-1778 DOC n=8 test_an_edge_refusal_reports_the_corroboration_it_measured
+1771|     """An edge refusal reports the corroboration it measured, not the 1.0
+1772|     "could not be compared" marker.
+1773| 
+1774|     ``tau_at_window_lower_edge`` fires only after both candidates were found
+1775|     in-window and compared, so a real reading exists. Readings on this path
+1776|     run from near-perfect agreement to gross disagreement; the refusal turns
+1777|     on distance to the edge, not on agreement.
+1778|     """
+>> 1779|     # A clean synthetic echo well below the default window's lower edge:
+>> 1780|     # both estimators alias up onto the edge, agree closely, and are refused.
+
+@@ 1779-1780 COM n=2 
+1779|     # A clean synthetic echo well below the default window's lower edge:
+1780|     # both estimators alias up onto the edge, agree closely, and are refused.
+>> 1781|     refused = detect_echo(_impulse_with_echo(60e-6, ECHO_R), SAMPLE_RATE)
+>> 1782|     assert refused.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, refused
+
+@@ 1785-1785 COM n=1 
+1785|     # Exactly the value recomputable from the raw fields the record carries.
+>> 1786|     both_in_window = [
+>> 1787|         tau
+
+@@ 1798-1799 COM n=2 
+1798|     # The contrast: an 830 us echo puts BOTH estimates above an 800 us
+1799|     # ceiling, so neither corroborates anything and the 1.0 marker is honest.
+>> 1800|     incomparable = detect_echo(
+>> 1801|         _impulse_with_echo(830e-6, ECHO_R), SAMPLE_RATE, search_us=(120.0, 800.0)
+
+@@ 1806-1806 COM n=1 
+1806|     # A refusal taken before either estimate exists is the same marker.
+>> 1807|     no_arrival = detect_echo(
+>> 1808|         np.random.default_rng(0).normal(0.0, 1.0, 65_536), SAMPLE_RATE
+
+@@ 1816-1822 DOC n=7 test_reported_tau_is_always_the_envelope_estimate
+1816|     """The reported tau is always the envelope estimate; the cepstrum only
+1817|     corroborates.
+1818| 
+1819|     A cepstral fallback is unreachable: reporting needs ``confidence > 0``,
+1820|     which needs ``corroboration < CORROBORATION_LOOSE``, which only the
+1821|     both-estimators-in-window path produces.
+1822|     """
+>> 1823|     seen = 0
+>> 1824|     for tau_us in (240.0, 300.0, 450.0, 700.0):
+
+@@ 1841-1847 DOC n=7 test_detect_echo_does_not_dress_up_a_sub_window_echo_as_an_in_window_one
+1841|     """B1(b) — a delay below the window's lower edge is refused, not dressed
+1842|     up as an in-window one.
+1843| 
+1844|     An echo at 95-110 us is under the 120 us search floor and below the ~71 us
+1845|     quefrency step. The downstream resolution rule is anchored at zero delay,
+1846|     so it screens only a low window; the edge rule generalises.
+1847|     """
+>> 1848|     for true_tau_us in (95.0, 100.0, 104.0, 110.0):
+>> 1849|         found = detect_echo(_impulse_with_echo(true_tau_us * 1e-6, ECHO_R), SAMPLE_RATE)
+
+@@ 1855-1856 COM n=2 
+1855|         # Both guards are load bearing: the resolution floor binds on a low
+1856|         # window, the edge rule on any.
+>> 1857|         usable = (
+>> 1858|             found.refusal == ""
+
+@@ 1867-1872 DOC n=6 test_a_cloud_of_unresolvable_delays_does_not_read_as_geometry_locked
+1867|     """B1(c) — a cloud of unresolvable delays does not read as geometry-locked.
+1868| 
+1869|     Ten positions spanning 60-150 us, all below the resolution floor: the
+1870|     estimates collapse onto ~115-152 us and used to cluster at a fraction of
+1871|     1.0. Both the edge refusal and the evidence rule now stop it.
+1872|     """
+>> 1873|     freqs = _grid()
+>> 1874|     true_db = _true_response_db(freqs)
+
+@@ 1891-1893 COM n=3 
+1891|     # The pathology, reconstructed from the refusals' own raw fields: the
+1892|     # estimates pile up (measured 114-152 us, median 135.4) and would have
+1893|     # satisfied the +-15% clustering test at a fraction of 0.9.
+>> 1894|     railed = np.array([e.tau_envelope_us for e in result.per_position_echo])
+>> 1895|     median = float(np.median(railed))
+
+@@ 1908-1914 DOC n=7 test_echo_confidence_floor_sits_in_the_measured_gap
+1908|     """``ECHO_CONFIDENCE_FLOOR`` sits in the gap between the two measured
+1909|     populations.
+1910| 
+1911|     The negative controls are the impulse-with-no-echo families: they clear
+1912|     the arrival-crest gate, so they exercise concentration x corroboration
+1913|     rather than the early return.
+1914|     """
+>> 1915|     negatives = []
+>> 1916|     for noise_sigma in (0.02, 0.001):
+
+@@ 1937-1937 COM n=1 
+1937|     # The gap the floor sits in is real, and the floor is inside it.
+>> 1938|     assert max(negatives) < ECHO_CONFIDENCE_FLOOR < min(positives)
+>> 1941| def test_detect_echo_validates_its_inputs():
+
+@@ 1956-1958 DOC n=3 test_detect_echo_input_errors_carry_a_machine_readable_slug
+1956|     """Detector input errors carry a machine-readable slug, so the combiner
+1957|     need not match on message text.
+1958|     """
+>> 1959|     with pytest.raises(EchoInputError) as excinfo:
+>> 1960|         detect_echo(np.zeros(4096), SAMPLE_RATE)
+
+@@ 1966-1968 DOC n=3 test_geometry_unknown_slug_is_pinned_to_its_literal_value
+1966|     """The reason slug is a wire value, so one assertion pins the literal a
+1967|     consumer matches on rather than the imported symbol.
+1968|     """
+>> 1969|     assert GEOMETRY_UNKNOWN == "geometry_insufficient_usable_estimates"
+>> 1972| def test_geometry_verdict_needs_at_least_two_confident_estimates():
+
+@@ 1973-1973 DOC n=1 test_geometry_verdict_needs_at_least_two_confident_estimates
+1973|     """One estimate clusters with itself; that must not read as a lock."""
+>> 1974|     only_one = detect_echo(_impulse_with_echo(300e-6, ECHO_R), SAMPLE_RATE)
+>> 1975|     verdict = assess_geometry([only_one, None, None])
+
+@@ 1983-1989 DOC n=7 test_geometry_admission_rejects_a_zero_resolution_diagnostic
+1983|     """N5 — a zero-resolution, zero-delay diagnostic is inadmissible evidence.
+1984| 
+1985|     With ``resolution_us == 0`` rule 3's threshold collapses to zero and a
+1986|     ``tau_us`` of zero clears it. :func:`detect_echo` never emits that, so
+1987|     this is a contract about what :func:`assess_geometry` accepts from any
+1988|     source — a hand-built record, a deserialised one, a future detector.
+1989|     """
+>> 1990|     degenerate = EchoDiagnostic(
+>> 1991|         tau_us=0.0,
+
+@@ 2010-2010 COM n=1 
+2010|     # Not a ban on resolution_us == 0: it is the zero delay that is refused.
+>> 2011|     with_delay = replace(degenerate, tau_us=300.0, tau_envelope_us=300.0)
+>> 2012|     admitted = assess_geometry([with_delay, with_delay, with_delay])
+
+@@ 2018-2020 DOC n=3 test_captures_without_an_ir_report_no_echo_diagnostic
+2018|     """``None`` (not measured) stays distinct from a zero-confidence
+2019|     diagnostic (measured, found nothing).
+2020|     """
+>> 2021|     freqs = _grid()
+>> 2022|     true_db = _true_response_db(freqs)
+
+@@ 2034-2038 DOC n=5 test_one_malformed_ir_refuses_that_position_and_nothing_else
+2034|     """S2 — one malformed IR refuses that position and nothing else.
+2035| 
+2036|     The curves, the screen and the geometry verdict are computed from the
+2037|     rest, and ``None`` keeps meaning strictly "no IR was supplied".
+2038|     """
+>> 2039|     freqs, _true_db, captures = _cloud(_dispersed_taus())
+>> 2040|     good = combine_positions(captures)
+
+@@ 2059-2061 COM n=3 
+2059|     # Two other positions carry a refusal of their own — the 157 and 185 us
+2060|     # members sit inside the default window's lower-edge margin — which is a
+2061|     # fact about those captures, present with or without the eleventh.
+>> 2062|     assert all(
+>> 2063|         e is not None and e.refusal != REFUSAL_ALL_ZERO_IR
+
+@@ 2070-2070 COM n=1 
+2070|     # The refusal contributes nothing: same numbers as the ten-position run.
+>> 2071|     assert result.geometry.n_confident == good.geometry.n_confident
+>> 2072|     assert result.geometry.reason == good.geometry.reason
+
+@@ 2078-2080 DOC n=3 test_echo_detector_settings_are_plumbed_and_recorded
+2078|     """N6 — the echo window travels with the result, since a per-position tau
+2079|     is only interpretable against the window it was searched in.
+2080|     """
+>> 2081|     freqs, _true_db, captures = _cloud(_dispersed_taus(4))
+>> 2083|     default = combine_positions(captures)
+
+@@ 2091-2092 COM n=2 
+2091|     # Plumbed, not merely recorded: this cloud sits at ~150-500 us, so a
+2092|     # 400-800 us window changes what the detector reports.
+>> 2093|     assert [e.tau_us for e in narrow.per_position_echo] != [
+>> 2094|         e.tau_us for e in default.per_position_echo
+
+@@ 2099-2099 COM n=1 
+2099|     # A wider band is a finer quefrency step — the whole point of widening.
+>> 2100|     assert all(
+>> 2101|         e is not None and e.resolution_us < 1e6 / 14_000.0
+
+@@ 2106-2106 COM n=1 
+2106| # --- C2. The three S0 hardenings, on synthetic ground truth ---
+>> 2109| def _lowpassed(ir: np.ndarray, fc_hz: float, order: int) -> np.ndarray:
+>> 2110|     """Magnitude-only Butterworth-shaped lowpass, steep enough to turn the
+
+@@ 2110-2115 DOC n=6 _lowpassed
+2110|     """Magnitude-only Butterworth-shaped lowpass, steep enough to turn the
+2111|     detector's 5-19 kHz default band into stopband.
+2112| 
+2113|     Magnitude-only because the screen is a level comparison, and leaving phase
+2114|     alone keeps the direct arrival where the rest of the fixture put it.
+2115|     """
+>> 2116|     n_fft = 1 << (ir.size - 1).bit_length()
+>> 2117|     spectrum = np.fft.rfft(ir, n_fft)
+
+@@ 2124-2128 DOC n=5 test_band_below_passband_refuses_a_stopband_residue_signal
+2124|     """S0-1 — a stopband residue signal is refused before either estimator runs.
+2125| 
+2126|     A 320 us echo IR lowpassed at 2 kHz: the declared 200-2000 Hz passband
+2127|     measures 48.6 dB above the analysis band, past the 25.0 dB margin.
+2128|     """
+>> 2129|     residue = _lowpassed(_impulse_with_echo(320e-6, ECHO_R), 2000.0, 10)
+>> 2131|     screened = detect_echo(residue, SAMPLE_RATE, signal_band_hz=(200.0, 2000.0))
+
+@@ 2136-2137 COM n=2 
+2136|     # The refusal carries the number it turned on, so it is recomputable
+2137|     # from the record rather than asserted by the slug.
+>> 2138|     assert screened.band_deficit_db > BAND_BELOW_PASSBAND_MARGIN_DB, screened
+>> 2139|     assert screened.band_deficit_db == pytest.approx(48.6, abs=1.0), screened
+
+@@ 2140-2140 COM n=1 
+2140|     # The estimators never ran: the screen returns before either exists.
+>> 2141|     assert screened.tau_cepstral_us == 0.0
+>> 2142|     assert screened.tau_envelope_us == 0.0
+
+@@ 2144-2145 COM n=2 
+2144|     # Declaring no passband leaves the detector as it was: the screen is
+2145|     # opt-in, not a new floor.
+>> 2146|     unscreened = detect_echo(residue, SAMPLE_RATE)
+>> 2147|     assert unscreened.refusal != REFUSAL_BAND_BELOW_PASSBAND, unscreened
+
+@@ 2154-2156 DOC n=3 test_band_below_passband_stays_quiet_on_an_in_band_signal
+2154|     """S0-1 — the screen stays quiet on an in-band signal, at two passbands a
+2155|     caller might plausibly declare.
+2156|     """
+>> 2157|     clean = _impulse_with_echo(320e-6, ECHO_R)
+>> 2158|     reference = detect_echo(clean, SAMPLE_RATE)
+
+@@ 2169-2171 DOC n=3 test_signal_band_is_validated_like_the_analysis_band
+2169|     """S0-1 — a malformed ``signal_band_hz`` raises with a machine-readable
+2170|     slug, like ``band_hz``: it is wrong for every capture at once.
+2171|     """
+>> 2172|     ir = _impulse_with_echo(300e-6, ECHO_R)
+>> 2173|     for bad in ((0.0, 2000.0), (2000.0, 200.0), (2000.0, 2000.0)):
+
+@@ 2178-2179 COM n=2 
+2178|     # Nyquist clipping matches band_hz's: an upper edge above Nyquist is
+2179|     # clipped rather than rejected.
+>> 2180|     clipped = detect_echo(ir, SAMPLE_RATE, signal_band_hz=(150.0, 96_000.0))
+>> 2181|     assert clipped.refusal == "", clipped
+
+@@ 2185-2194 DOC n=10 test_earlier_dominant_arrival_names_an_arrival_below_the_window
+2185|     """S0-2 — an arrival below the window is named rather than collapsing to
+2186|     "ran, found nothing credible".
+2187| 
+2188|     The S0 ground plane's geometry: a dominant arrival just below the window
+2189|     (145 us at r=0.8) plus the real echo inside it (320 us at r=0.3). The
+2190|     window is the sample-aligned (166.6667, 1000) us — the refusal needs the
+2191|     envelope's own answer below ``search_us[0]``, which under ``ceil`` bounds
+2192|     is reachable only within half a sample of the edge; at S0's own
+2193|     (150, 1000) the edge rule names the same record instead.
+2194|     """
+>> 2195|     ir = _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3)
+>> 2196|     found = detect_echo(ir, SAMPLE_RATE, search_us=(166.6667, 1000.0))
+
+@@ 2203-2203 COM n=1 
+2203|     # The mechanism: the envelope's answer is below the window it was given.
+>> 2204|     assert 0.0 < found.tau_envelope_us < 166.6667, found
+>> 2205|     assert found.corroboration == 1.0, found
+
+@@ 2207-2209 COM n=3 
+2207|     # The same IR through S0's (150, 1000) protocol window, a 7.2-sample lower
+2208|     # edge: still a refusal, still disclosing the interloper, under the other
+2209|     # of the two correct reasons.
+>> 2210|     unaligned = detect_echo(ir, SAMPLE_RATE, search_us=(150.0, 1000.0))
+>> 2211|     assert unaligned.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, unaligned
+
+@@ 2221-2222 COM n=2 
+2221|     # And the refusal names the interloper — delay and level, in the same
+2222|     # units strength_db uses.
+>> 2223|     assert found.earlier_arrival_us == pytest.approx(145.0, abs=2.0), found
+>> 2224|     assert found.earlier_arrival_db == pytest.approx(-1.9, abs=1.5), found
+
+@@ 2226-2227 COM n=2 
+2226|     # The same IR through the default window, which contains the interloper:
+2227|     # nothing below to name. That is the remedy the refusal implies.
+>> 2228|     contained = detect_echo(ir, SAMPLE_RATE)
+>> 2229|     assert contained.earlier_arrival_us == 0.0, contained
+
+@@ 2235-2241 DOC n=7 test_found_nothing_credible_survives_the_earlier_arrival_refusal
+2235|     """S0-2 — "refused" and "ran, found nothing" stay different outcomes.
+2236| 
+2237|     The rule needs the envelope's answer below the window AND a genuine
+2238|     arrival down there to name. Swept over the whole 60-member negative
+2239|     control family at the default window, where the family has no
+2240|     below-window local maximum at all.
+2241|     """
+>> 2242|     empty_refusals = 0
+>> 2243|     for noise_sigma in (0.02, 0.001):
+
+@@ 2256-2258 COM n=3 
+2256|                 # Not exactly zero: this family's ceiling is 0.091 (see
+2257|                 # ``ECHO_CONFIDENCE_FLOOR``), and a low-but-nonzero score with
+2258|                 # an empty refusal is the same "found nothing credible".
+>> 2259|                 assert found.confidence < ECHO_CONFIDENCE_FLOOR, (where, found)
+>> 2260|                 empty_refusals += 1
+
+@@ 2262-2262 COM n=1 
+2262|     # The state this test protects is actually reached.
+>> 2263|     assert empty_refusals > 0
+>> 2266| def test_earlier_arrival_dominance_floor_sits_in_the_measured_gap():
+
+@@ 2267-2274 DOC n=8 test_earlier_arrival_dominance_floor_sits_in_the_measured_gap
+2267|     """``EARLIER_ARRIVAL_DOMINANCE_DB`` sits above the band-limited envelope's
+2268|     own ringing, re-derived from one committed ladder.
+2269| 
+2270|     ``_CALIBRATION_WRONG_READING_WINDOWS`` crossed with the 60-member negative
+2271|     control family, 660 readings, plus the mutation that shows the floor is
+2272|     load-bearing. The other population — S0's proud-capsule interlopers — is
+2273|     real data and lives in section F.
+2274|     """
+>> 2275|     controls = [
+>> 2276|         (noise_sigma, seed)
+
+@@ 2311-2311 COM n=1 
+2311|     # The ringing population the constant is calibrated against.
+>> 2312|     assert len(levels) == 658, len(levels)
+>> 2313|     assert min(levels) == pytest.approx(-32.1297, abs=0.01), min(levels)
+
+@@ 2315-2315 COM n=1 
+2315|     # ...and with the shipped floor, none of it is ever named as an arrival.
+>> 2316|     assert flips == 0
+>> 2318|     # Mutating the floor away must re-open the defect, or the constant is
+
+@@ 2318-2319 COM n=2 
+2318|     # Mutating the floor away must re-open the defect, or the constant is
+2319|     # decoration. These counts are the ones the comment quotes.
+>> 2320|     with pytest.MonkeyPatch.context() as patch:
+>> 2321|         patch.setattr(spatial_combine, "EARLIER_ARRIVAL_DOMINANCE_DB", -120.0)
+
+@@ 2327-2328 COM n=2 
+2327|     # Re-derived 2026-08-02: 6 flips. The mutation still re-opens the defect
+2328|     # on a population the shipped floor refuses 0 of.
+>> 2329|     assert unguarded_flips == 6, unguarded_flips
+>> 2330|     worst_window, worst_count = max(
+
+@@ 2335-2336 COM n=2 
+2335|     # The gap in both directions: the ground-plane floor (-2.57 dB) is real
+2336|     # data in section F; the ringing ceiling is measured here.
+>> 2337|     assert max(levels) < EARLIER_ARRIVAL_DOMINANCE_DB
+>> 2338|     assert EARLIER_ARRIVAL_DOMINANCE_DB - max(levels) == pytest.approx(7.14, abs=0.05)
+
+@@ 2340-2343 COM n=4 
+2340|     # A synthetic interloper at the ground plane's own level still refuses, so
+2341|     # the floor is not merely "quiet enough to never fire". The window is the
+2342|     # sample-aligned (166.6667, 1000) us, where the dominance rule is
+2343|     # reachable; at a 7.2-sample edge the edge rule names the record instead.
+>> 2344|     loud = _impulse_with_two_echoes(145e-6, 0.8, 320e-6, 0.3)
+>> 2345|     found = detect_echo(loud, SAMPLE_RATE, search_us=(166.6667, 1000.0))
+
+@@ 2351-2358 DOC n=8 test_a_below_dominance_interloper_falls_back_to_the_honest_zero
+2351|     """An interloper that takes the envelope's answer but is too quiet to be
+2352|     called dominant falls back to the honest empty refusal.
+2353| 
+2354|     One geometry: a 145 us interloper of varying strength against a real
+2355|     320 us echo at r=0.3, searched (166.6667, 1000) us — the sample-aligned
+2356|     window, where the refusal is reachable. Read the band's width as an order
+2357|     of magnitude, not a boundary.
+2358|     """
+>> 2359|     def probe(early_r: float):
+>> 2360|         return detect_echo(
+
+@@ 2370-2370 COM n=1 
+2370|     # Inside the band: disclosed on the record, but not named.
+>> 2371|     fallen_back = probe(0.32)
+>> 2372|     assert fallen_back.earlier_arrival_db == pytest.approx(-10.11, abs=0.2), fallen_back
+
+@@ 2374-2374 COM n=1 
+2374|     # It really did take the answer — that is what makes this a band.
+>> 2375|     assert 0.0 < fallen_back.tau_envelope_us < 166.6667, fallen_back
+>> 2376|     assert fallen_back.refusal == "", fallen_back
+
+@@ 2378-2378 COM n=1 
+2378|     # ...and the interloper is still disclosed on the fallen-back record.
+>> 2379|     assert fallen_back.earlier_arrival_us == pytest.approx(145.8, abs=0.5)
+>> 2381|     # Below the band: the interloper no longer wins the envelope at all.
+
+@@ 2381-2381 COM n=1 
+2381|     # Below the band: the interloper no longer wins the envelope at all.
+>> 2382|     weak = probe(0.30)
+>> 2383|     assert weak.earlier_arrival_db == pytest.approx(-10.69, abs=0.2), weak
+
+@@ 2389-2395 DOC n=7 test_effective_floor_is_reported_on_every_record
+2389|     """``effective_floor_us`` is reported on every record, including refusals.
+2390| 
+2391|     ``search_us[0]`` understates what a window can see — the bottom
+2392|     ``WINDOW_EDGE_MARGIN_STEPS`` is refused outright, so the default window's
+2393|     real floor is ~191.4 us, not 120 us — and a consumer needs it most when
+2394|     the window found nothing.
+2395|     """
+>> 2396|     def floor_for(search_us, band_hz=DEFAULT_ECHO_BAND_HZ):
+>> 2397|         return search_us[0] + WINDOW_EDGE_MARGIN_STEPS * (
+
+@@ 2408-2409 COM n=2 
+2408|     # Every refusal ``detect_echo`` can be driven to from a constructed input,
+2409|     # including the three taken before the estimators run.
+>> 2410|     noise = np.random.default_rng(0)
+>> 2411|     zero_confidence = np.zeros(65_536)
+
+@@ 2415-2415 COM n=1 
+2415|         # (slug, ir, kwargs, expected search window for the floor)
+>> 2416|         (
+>> 2417|             REFUSAL_LOW_ARRIVAL_CREST,
+
+@@ 2453-2453 COM n=1 
+2453|         # ...and the non-refusal zero: "ran, found nothing credible".
+>> 2454|         ("", zero_confidence, {}, DEFAULT_ECHO_SEARCH_US),
+>> 2455|     ]
+
+@@ 2460-2461 COM n=2 
+2460|     # The band-too-narrow refusal has its own coarser resolution: the field
+2461|     # tracks the window AND the band.
+>> 2462|     narrow = detect_echo(
+>> 2463|         _impulse_with_echo(320e-6, ECHO_R), SAMPLE_RATE, band_hz=(5000.0, 5100.0)
+
+@@ 2470-2471 COM n=2 
+2470|     # A wider band buys a finer quefrency step, which lowers the floor —
+2471|     # the same lever the docstring points at for measuring below it.
+>> 2472|     wide = detect_echo(
+>> 2473|         _impulse_with_echo(320e-6, ECHO_R), SAMPLE_RATE, band_hz=(2000.0, 19_000.0)
+
+@@ 2478-2480 COM n=3 
+2478|     # The one path that cannot compute it: combine_positions turning a
+2479|     # detector raise into a refused record. The band is unknown there, so
+2480|     # resolution_us and the floor are both 0.0.
+>> 2481|     grid = _grid()
+>> 2482|     capture = PositionCapture(
+
+@@ 2497-2502 DOC n=6 test_disclosed_floor_is_the_boundary_the_edge_check_applies
+2497|     """The disclosed floor and the applied edge rule are one boundary.
+2498| 
+2499|     For any record that reached the edge check (at least one estimator landed
+2500|     in the window), ``tau_at_window_lower_edge`` fires iff the lowest
+2501|     in-window candidate is at or below that record's ``effective_floor_us``.
+2502|     """
+>> 2503|     reached = refused = accepted = 0
+>> 2504|     for band_hz in ((5000.0, 19_000.0), (2000.0, 19_000.0), (6000.0, 18_000.0)):
+
+@@ 2534-2534 COM n=1 
+2534|     # Both sides of the boundary are exercised, so the "iff" is not vacuous.
+>> 2535|     assert reached > 300, reached
+>> 2536|     assert refused > 50 and accepted > 50, (refused, accepted)
+
+@@ 2540-2545 DOC n=6 test_band_deficit_sentinel_covers_all_three_documented_causes
+2540|     """``band_deficit_db == STRENGTH_FLOOR_DB`` means "not measured", from all
+2541|     three documented causes.
+2542| 
+2543|     Cause 3 matters most downstream: a sub-bin passband must fail OPEN, or a
+2544|     declared passband narrower than one FFT bin would refuse every position.
+2545|     """
+>> 2546|     ir = _impulse_with_echo(320e-6, ECHO_R)
+>> 2547|     passband = (150.0, 20_000.0)
+
+@@ 2549-2550 COM n=2 
+2549|     # Cause 1 — no passband declared. (Also pinned by the combiner test;
+2550|     # repeated here so all three causes are visible in one place.)
+>> 2551|     assert detect_echo(ir, SAMPLE_RATE).band_deficit_db == STRENGTH_FLOOR_DB
+>> 2553|     # Cause 2 — the detector returned before the screen ran. All three
+
+@@ 2553-2554 COM n=2 
+2553|     # Cause 2 — the detector returned before the screen ran. All three
+2554|     # pre-screen refusals, each with a passband declared.
+>> 2555|     pre_screen = {
+>> 2556|         REFUSAL_LOW_ARRIVAL_CREST: (
+
+@@ 2570-2572 COM n=3 
+2570|     # Cause 3 — the screen ran but the passband covers no bin: at n_fft >=
+2571|     # 4096 and 48 kHz the bins are ~11.7 Hz apart, so these are sub-bin
+2572|     # passbands. Fail-open, and the deficit reads not-measured.
+>> 2573|     ungated = detect_echo(ir, SAMPLE_RATE)
+>> 2574|     for narrow in ((100.0, 105.0), (5.0, 8.0), (100.0, 103.0)):
+
+@@ 2583-2585 DOC n=3 test_signal_band_is_plumbed_through_the_combiner_and_recorded
+2583|     """S0-1 — the combiner passes the declared passband down and echoes back
+2584|     the one actually applied.
+2585|     """
+>> 2586|     freqs, _true_db, captures = _cloud(_dispersed_taus())
+>> 2588|     default = combine_positions(captures)
+
+@@ 2596-2596 COM n=1 
+2596|     # Coerced to a plain tuple of floats, like echo_band_hz / echo_search_us.
+>> 2597|     assert declared.signal_band_hz == (150.0, 20_000.0)
+>> 2598|     assert all(
+
+@@ 2602-2602 COM n=1 
+2602|     # A passband that contains the analysis band changes no verdict.
+>> 2603|     assert declared.geometry == default.geometry
+>> 2605|     # Malformed config raises rather than refusing every position.
+
+@@ 2605-2605 COM n=1 
+2605|     # Malformed config raises rather than refusing every position.
+>> 2606|     for bad in ((0.0, 2000.0), (2000.0, 200.0), (1000.0,), 500.0):
+>> 2607|         with pytest.raises(ValueError, match="signal_band_hz"):
+
+@@ 2612-2618 DOC n=7 test_thin_evidence_qualifies_a_verdict_without_withholding_it
+2612|     """S0-3 — a verdict resting on the bare minimum of usable estimates is
+2613|     qualified, not withheld.
+2614| 
+2615|     The rule is ``n_confident == GEOMETRY_MIN_CONFIDENT and n_positions >=
+2616|     2 * GEOMETRY_MIN_CONFIDENT``, and it is disclosure: the verdict, its
+2617|     reason and every supporting number are unchanged.
+2618|     """
+>> 2619|     usable = EchoDiagnostic(
+>> 2620|         tau_us=320.0,
+
+@@ 2637-2637 COM n=1 
+2637|     # Disclosure only: the verdict is the same one the two estimates earn.
+>> 2638|     assert thin.locked is True
+>> 2639|     assert thin.reason == GEOMETRY_LOCKED
+
+@@ 2642-2642 COM n=1 
+2642|     # One more usable estimate and it is no longer the bare minimum.
+>> 2643|     assert assess_geometry([usable] * 3 + [unusable] * 7).thin_evidence is False
+>> 2644|     # Two of three is the evidence that cloud had, not a shortfall.
+
+@@ 2644-2644 COM n=1 
+2644|     # Two of three is the evidence that cloud had, not a shortfall.
+>> 2645|     assert assess_geometry([usable, usable, unusable]).thin_evidence is False
+>> 2646|     # Structurally unreachable on GEOMETRY_UNKNOWN, which fires exactly when
+
+@@ 2646-2647 COM n=2 
+2646|     # Structurally unreachable on GEOMETRY_UNKNOWN, which fires exactly when
+2647|     # n_confident < GEOMETRY_MIN_CONFIDENT.
+>> 2648|     unknown = assess_geometry([usable] + [unusable] * 9)
+>> 2649|     assert unknown.reason == GEOMETRY_UNKNOWN
+
+@@ 2651-2651 COM n=1 
+2651|     # ...and it does qualify a dispersed verdict, not only a locked one.
+>> 2652|     far = replace(usable, tau_us=900.0, tau_envelope_us=900.0)
+>> 2653|     dispersed = assess_geometry([usable, far] + [unusable] * 8)
+
+@@ 2658-2658 COM n=1 
+2658| # --- D. Analysis-grid bounding ---
+>> 2661| def _large_grid_cloud() -> list[PositionCapture]:
+>> 2662|     """Three combed captures on a 2**18-point rFFT grid — 131073 bins, 8x
+
+@@ 2662-2664 DOC n=3 _large_grid_cloud
+2662|     """Three combed captures on a 2**18-point rFFT grid — 131073 bins, 8x
+2663|     over ``MAX_ANALYSIS_BINS``.
+2664|     """
+>> 2665|     freqs = np.fft.rfftfreq(2**18, 1.0 / SAMPLE_RATE)
+>> 2666|     true_db = _true_response_db(freqs)
+
+@@ 2684-2698 DOC n=15 test_decimated_and_undecimated_curves_agree
+2684|     """The analysis-grid cap must not change the curves consumers read.
+2685| 
+2686|     The same cloud combined twice, once through the cap and once with it
+2687|     lifted. Measured worst-bin agreement: the three smoothed curves 0.074,
+2688|     0.075 and 0.085 dB; the raw pair ``power_mean_db`` 0.224 dB and
+2689|     ``median_db`` 0.383 dB, both deliberately outside the 0.1 dB bound
+2690|     because a raw per-bin curve cannot reproduce fine comb structure at 8x
+2691|     coarser spacing; the retained per-position stack 0.404-0.429 dB and its
+2692|     smoothed sibling 0.096-0.135 dB.
+2693| 
+2694|     ``interference_nulls`` reads ``power_mean_db`` unsmoothed at each located
+2695|     minimum, so the loose bound is asserted rather than merely disclosed; the
+2696|     end-to-end cost of the cap on that statistic (0.033 dB on rung depths,
+2697|     re-derived 2026-08-22) is asserted in tests/test_interference_nulls.py.
+2698|     """
+>> 2699|     captures = _large_grid_cloud()
+>> 2700|     assert captures[0].freqs_hz.size > 8 * MAX_ANALYSIS_BINS / 2
+
+@@ 2720-2721 COM n=2 
+2720|     # The raw pair: bounded loosely, and asserted to be the ones that exceed
+2721|     # 0.1 dB, so the docstring cannot rot in either direction.
+>> 2722|     raw_worst = {name: worst_bin_db(name) for name in ("power_mean_db", "median_db")}
+>> 2723|     for name, worst in raw_worst.items():
+
+@@ 2730-2731 COM n=2 
+2730|     # The retained per-position stack is raw in the same sense and is held to
+2731|     # the same bound, row by row; the null gate reads it per position.
+>> 2732|     per_position_worst = 0.0
+>> 2733|     for row, (decimated_row, undecimated_row) in enumerate(
+
+@@ 2742-2743 COM n=2 
+2742|     # A per-position curve cannot be quieter than the power mean of those
+2743|     # same positions: averaging is what buys the mean its stability.
+>> 2744|     assert per_position_worst > raw_worst["power_mean_db"]
+>> 2745|     # The figure the docstring quotes, pinned so it cannot rot into prose.
+
+@@ 2745-2745 COM n=1 
+2745|     # The figure the docstring quotes, pinned so it cannot rot into prose.
+>> 2746|     assert per_position_worst == pytest.approx(0.429, abs=0.01)
+>> 2748|     # The smoothed per-position curves sit between the two bounds: smoothing
+
+@@ 2748-2750 COM n=3 
+2748|     # The smoothed per-position curves sit between the two bounds: smoothing
+2749|     # one position is not smoothing an average of three, so holding these to
+2750|     # the combined curves' 0.1 dB would assert something untrue.
+>> 2751|     diag_worst = 0.0
+>> 2752|     for row, (decimated_row, undecimated_row) in enumerate(
+
+@@ 2766-2766 COM n=1 
+2766|     # ...and still far less than the raw stack they came from.
+>> 2767|     assert diag_worst < per_position_worst / 2.0
+>> 2770| def test_decimation_preserves_the_linear_grid_contract_and_band_energy():
+
+@@ 2771-2777 DOC n=7 test_decimation_preserves_the_linear_grid_contract_and_band_energy
+2771|     """Decimation is block averaging, not subsampling, and the result is still
+2772|     a legal linear grid.
+2773| 
+2774|     Checked on a flat-plus-notch construction where the answer is computable:
+2775|     one -20 dB bin among 2**17 zeros must survive as a shallow dip rather than
+2776|     vanishing or staying full-depth.
+2777|     """
+>> 2778|     captures = _large_grid_cloud()
+>> 2779|     result = combine_positions(captures)
+
+@@ 2783-2783 COM n=1 
+2783|     block = 8  # ceil(131073 / 16385)
+>> 2785|     grid = result.freqs_hz
+>> 2786|     steps = np.diff(grid)
+
+@@ 2789-2790 COM n=2 
+2789|     # Each decimated bin sits at its block's CENTRE, which is what the block's
+2790|     # averaged power is the level of — not at the block's first bin.
+>> 2791|     assert grid[0] == pytest.approx(fine_step * (block - 1) / 2.0)
+>> 2792|     assert grid[0] != pytest.approx(float(fine[0]), abs=1e-6)
+
+@@ 2793-2793 COM n=1 
+2793|     # A trailing partial block is dropped.
+>> 2794|     assert grid[-1] < fine[-1]
+>> 2795|     assert float(fine[-1] - grid[-1]) < 2.0 * float(steps[0])
+
+@@ 2797-2797 COM n=1 
+2797|     # Energy, not samples: one deep notch on an otherwise flat curve.
+>> 2798|     fine = np.linspace(0.0, 24_000.0, 4 * MAX_ANALYSIS_BINS)
+>> 2799|     flat = np.zeros(fine.size)
+
+@@ 2810-2810 COM n=1 
+2810|     # Neither lost (a subsample could have skipped it) nor still -20 dB.
+>> 2811|     assert -2.0 < decimated.power_mean_db[dip_index] < -0.5
+>> 2812|     neighbours = np.delete(np.asarray(decimated.power_mean_db), dip_index)
+
+@@ 2816-2816 COM n=1 
+2816| # --- E. Real-data smoke — 2026-07-24/25 JTS3 corpus ---
+>> 2818| # The corpus is gitignored and laptop-durable, and simply absent in CI. Its
+>> 2819| # root and skip gate live in tests/_flat_lin_corpus.py; the loader below stays
+
+@@ 2818-2820 COM n=3 
+2818| # The corpus is gitignored and laptop-durable, and simply absent in CI. Its
+2819| # root and skip gate live in tests/_flat_lin_corpus.py; the loader below stays
+2820| # here because the two readers want different phases and program parameters.
+>> 2821| CORPUS = CDHORN_ROOT
+>> 2822| requires_corpus = requires_cdhorn
+
+@@ 2827-2837 DOC n=11 corpus_irs
+2827|     """Era-exact reconstruction of the run 5 / run 7 impulse responses.
+2828| 
+2829|     Program parameters are reused verbatim from the session's own forensics
+2830|     script (``captures/flat-linearization-20260725/comb_forensics2.py``),
+2831|     which is the authority on the DSP state those captures were taken under.
+2832|     Registration is :func:`~tests._flat_lin_corpus.sweep_anchor`, which
+2833|     locates the sweep by its own waveform, so where a composer puts it cannot
+2834|     matter (#1879). MEASURE ships three repeats of each sweep, agreeing to
+2835|     0.4%; the later repeats sit +16 and +32 samples off their scheduled
+2836|     positions (~31 ppm of clock drift over the 43.8 s capture).
+2837|     """
+>> 2838|     import glob
+>> 2839|     import wave
+
+@@ 2892-2894 COM n=3 
+2892| # Deliberately NOT ``@requires_corpus``: every corpus reading above rests on
+2893| # ``sweep_anchor`` finding the sweep by its own waveform, and pinning that on
+2894| # a synthetic capture is what makes it visible to CI.
+>> 2895| def test_sweep_anchor_owes_nothing_to_the_composers_schedule():
+>> 2896|     """``sweep_anchor`` locates the stimulus by cross-correlating the stimulus
+
+@@ 2896-2898 DOC n=3 test_sweep_anchor_owes_nothing_to_the_composers_schedule
+2896|     """``sweep_anchor`` locates the stimulus by cross-correlating the stimulus
+2897|     itself, so a declared schedule position cannot move the answer (#1879).
+2898|     """
+>> 2899|     import dataclasses
+>> 2901|     from jasper.audio_measurement.program import build_verify_program, segment_stimulus
+
+@@ 2909-2909 COM n=1 
+2909|     # A capture that knows nothing about the schedule, as an archived WAV is.
+>> 2910|     planted_at = 12_345
+>> 2911|     capture = np.zeros(planted_at + stimulus.size + 8_000)
+
+@@ 2916-2916 COM n=1 
+2916|     # Now claim the composer moved it, in both directions.
+>> 2917|     for delta in (48_000, -7_777):
+>> 2918|         moved = dataclasses.replace(segment, start_sample=segment.start_sample + delta)
+
+@@ 2924-2926 DOC n=3 test_detect_echo_finds_the_corpus_bounce
+2924|     """D — the detector reproduces the offline forensics finding: a discrete
+2925|     echo at ~0.31 ms, ~-8.8 dB (r ~= 0.36), in both run 5 and run 7.
+2926|     """
+>> 2927|     for name, ir in corpus_irs.items():
+>> 2928|         result = detect_echo(ir, SAMPLE_RATE)
+
+@@ 2931-2931 COM n=1 
+2931|         # The plan records -8.8 dB / r ~= 0.36 for this bounce.
+>> 2932|         assert result.strength_db == pytest.approx(-8.8, abs=1.5), name
+>> 2933|         # The rahmonic screen's headroom on real data, which is where the
+
+@@ 2933-2936 COM n=4 
+2933|         # The rahmonic screen's headroom on real data, which is where the
+2934|         # "low-quefrency leakage cannot auto-refuse an honest reading" claim
+2935|         # can be tested: measured 0.329-0.387. The bound is 0.45 rather than
+2936|         # 0.5 so it is a tripwire on that 0.387 worst case.
+>> 2937|         assert result.lower_peak_ratio < 0.45, f"{name}: {result}"
+>> 2938|         assert result.lower_peak_ratio < RAHMONIC_MARGIN, name
+
+@@ 2943-2945 DOC n=3 test_corpus_frames_read_as_geometry_locked
+2943|     """D — corpus frames read as geometry-locked, which is the detector
+2944|     working: this corpus cannot be spatially averaged bounce-free.
+2945|     """
+>> 2946|     echoes = [detect_echo(ir, SAMPLE_RATE) for ir in corpus_irs.values()]
+>> 2947|     verdict = assess_geometry(echoes)
+
+@@ 2958-2960 DOC n=3 test_combining_the_corpus_frames_flags_the_locked_geometry
+2958|     """End-to-end on real data: the combiner surfaces the lock and the screen
+2959|     stays quiet.
+2960|     """
+>> 2961|     freqs = np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE)
+>> 2962|     captures = []
+
+@@ 2982-2985 COM n=4 
+2982| # --- F. Real-data acceptance — the 2026-07-25 S0 session ---
+2983| #
+2984| # Gated on a second laptop-durable root and absent in CI, so a corpus
+2985| # acceptance PR is not done until these have been seen to PASS.
+>> 2987| # Roots, skip gates, declared passbands and the era-exact deconvolution live
+>> 2988| # in tests/_flat_lin_corpus.py.
+
+@@ 2987-2988 COM n=2 
+2987| # Roots, skip gates, declared passbands and the era-exact deconvolution live
+2988| # in tests/_flat_lin_corpus.py.
+>> 2991| @pytest.fixture(scope="module")
+>> 2992| def ground_plane_irs() -> dict[str, np.ndarray]:
+
+@@ 2998-3000 DOC n=3 main_leg_irs
+2998|     """The ten-position desk cloud — leg A, the control every leg-B claim is a
+2999|     contrast against (~5 s, module-scoped).
+3000|     """
+>> 3001|     return s0_position_irs(S0_MAIN)
+>> 3004| @pytest.fixture(scope="module")
+
+@@ 3006-3006 DOC n=1 loopback_irs
+3006|     """The electrical loopback's per-branch IRs, as the run left them."""
+>> 3007|     return _loopback_irs()
+>> 3010| @requires_s0
+
+@@ 3012-3018 DOC n=7 test_loopback_woofer_branch_is_refused_as_stopband_residue
+3012|     """S0-1 acceptance — the loopback's woofer branch is refused as stopband
+3013|     residue.
+3014| 
+3015|     Behind a 2 kHz LR4 lowpass the 5-19 kHz band holds only residue, and the
+3016|     branch returned ``tau = 323.3 us`` at confidence 0.275 with an empty
+3017|     refusal on the sweep stimulus (2026-07-25, s0-analysis/loopback).
+3018|     """
+>> 3019|     for stimulus in ("impulse", "sweep", "mls"):
+>> 3020|         ir = loopback_irs[f"{stimulus}_woofer"]
+
+@@ 3027-3029 COM n=3 
+3027|     # The defect itself, at the leg-B protocol window the loopback used:
+3028|     # Without a declared passband the sweep still reports its confident-
+3029|     # looking number, so this is a gate the caller supplies.
+>> 3030|     unscreened = detect_echo(
+>> 3031|         loopback_irs["sweep_woofer"], SAMPLE_RATE, search_us=S0_PROTOCOL_SEARCH_US
+
+@@ 3040-3042 DOC n=3 test_loopback_tweeter_branch_is_measured_in_its_own_passband
+3040|     """S0-1 — the tweeter branch, whose passband overlaps the analysis band,
+3041|     is measured on all three stimuli.
+3042|     """
+>> 3043|     for stimulus in ("impulse", "sweep", "mls"):
+>> 3044|         ir = loopback_irs[f"{stimulus}_tweeter"]
+
+@@ 3048-3048 COM n=1 
+3048|         # Unchanged by declaring the passband — same verdict as without it.
+>> 3049|         assert screened.refusal == detect_echo(ir, SAMPLE_RATE).refusal, stimulus
+>> 3052| @requires_s0
+
+@@ 3056-3065 DOC n=10 test_band_deficit_separation_depends_on_the_analysis_band
+3056|     """S0-1 — the deficit's separation depends on ``band_hz``, including where
+3057|     it stops working.
+3058| 
+3059|     Swept over six bands on the 13 S0 acoustic records and the 3 electrical
+3060|     loopback woofer records. At a band whose lower edge sits on this speaker's
+3061|     2 kHz crossover the woofer's own passband is inside the analysed band, the
+3062|     deficit collapses to ~18 dB and the screen misses the case it exists for —
+3063|     which is why the analysis band must stay clear of the crossover. All 13
+3064|     acoustic records are the same JTS3 cdhorn.
+3065|     """
+>> 3066|     acoustic = [
+>> 3067|         (ir, S0_SUMMED_PASSBAND_HZ)
+
+@@ 3084-3084 COM n=1 
+3084|     # (band, does the screen still catch stopband residue)
+>> 3085|     expected_catches = {
+>> 3086|         DEFAULT_ECHO_BAND_HZ: True,
+
+@@ 3099-3099 COM n=1 
+3099|         # The honest side never fires, at any band tried.
+>> 3100|         assert max(honest) < BAND_BELOW_PASSBAND_MARGIN_DB, (band_hz, max(honest))
+>> 3101|         # The residue side is the one that moves.
+
+@@ 3101-3101 COM n=1 
+3101|         # The residue side is the one that moves.
+>> 3102|         assert (min(stopband) > BAND_BELOW_PASSBAND_MARGIN_DB) is catches, (
+>> 3103|             band_hz,
+
+@@ 3107-3107 COM n=1 
+3107|     # The two rows the comment turns on.
+>> 3108|     default_residue = deficits(residue, DEFAULT_ECHO_BAND_HZ)
+>> 3109|     assert (min(default_residue), max(default_residue)) == pytest.approx(
+
+@@ 3116-3116 COM n=1 
+3116|     # One octave up the margin is already thin.
+>> 3117|     thin_residue = deficits(residue, (3000.0, 19_000.0))
+>> 3118|     assert min(thin_residue) - BAND_BELOW_PASSBAND_MARGIN_DB == pytest.approx(
+
+@@ 3122-3122 COM n=1 
+3122|     # The honest population's spread across all six bands.
+>> 3123|     assert max(honest_ceilings) == pytest.approx(17.50, abs=0.3), honest_ceilings
+>> 3124|     assert BAND_BELOW_PASSBAND_MARGIN_DB - max(honest_ceilings) > 7.0
+
+@@ 3129-3136 DOC n=8 test_main_leg_is_unchanged_and_is_the_ground_plane_s_control
+3129|     """S0-2 / S0-4 — the main leg is unchanged and is the ground plane's
+3130|     control.
+3131| 
+3132|     Same speaker, program and window: four of these ten carry a below-window
+3133|     arrival at 145.8 us, all 14.7-15.7 dB down, against the ground plane's
+3134|     125-146 us at 0.6-2.6 dB down. One changed mic mounting is the whole
+3135|     difference between a reading and a refusal.
+3136|     """
+>> 3137|     # Per-position (tau, confidence) as s0-analysis/REPORT.md Q1, re-pinned
+>> 3138|     # 2026-07-27 when the reader moved onto ``_flat_lin_corpus.sweep_anchor``:
+
+@@ 3137-3139 COM n=3 
+3137|     # Per-position (tau, confidence) as s0-analysis/REPORT.md Q1, re-pinned
+3138|     # 2026-07-27 when the reader moved onto ``_flat_lin_corpus.sweep_anchor``:
+3139|     # that moved exactly two of the ten, both toward a stronger detection.
+>> 3140|     expected = {
+>> 3141|         "cloud_01": (310.4, 0.919), "cloud_02": (327.1, 0.893),
+
+@@ 3161-3162 COM n=2 
+3161|     # Three of these ten, not four: cloud_04's sweep-aligned read no longer
+3162|     # carries a below-window arrival at all.
+>> 3163|     assert len(with_earlier) == 3, with_earlier
+>> 3164|     assert all(us == pytest.approx(145.8, abs=0.5) for us, _db in with_earlier.values())
+
+@@ 3168-3168 COM n=1 
+3168|     # A desk-cloud interloper is ~12 dB quieter than a proud-capsule one.
+>> 3169|     assert max(levels) < -10.0, with_earlier
+>> 3172| @requires_s0
+
+@@ 3174-3176 DOC n=3 test_the_report_s_deficit_decomposes_into_the_shipped_statistic
+3174|     """S0-1 — the loopback report's 49.7 dB and the shipped statistic's
+3175|     40.4 dB are the same signal, three metric changes apart.
+3176|     """
+>> 3177|     ir = loopback_irs["sweep_woofer"]
+>> 3179|     def level_db(spectrum, freqs, lo, hi, *, power):
+
+@@ 3185-3185 COM n=1 
+3185|     # The report's frame: whole-IR spectrum, amplitude mean, 200-1500 Hz.
+>> 3186|     n_fft = 1 << 16
+>> 3187|     whole = np.abs(np.fft.rfft(ir, n_fft))
+
+@@ 3196-3196 COM n=1 
+3196|     # 1. amplitude mean -> power mean.
+>> 3197|     assert whole_ir_deficit(200.0, 1500.0, power=True) == pytest.approx(42.97, abs=0.05)
+>> 3199|     # 2. whole IR -> the early-arrival windowed segment the gate reads.
+
+@@ 3199-3199 COM n=1 
+3199|     # 2. whole IR -> the early-arrival windowed segment the gate reads.
+>> 3200|     peak = int(np.argmax(np.abs(ir)))
+>> 3201|     pre = int(round(spatial_combine.ECHO_WINDOW_PRE_S * SAMPLE_RATE))
+
+@@ 3221-3221 COM n=1 
+3221|     # 3. the report's 200-1500 Hz passband -> the one the gate is given.
+>> 3222|     assert segment_deficit(*LOOPBACK_WOOFER_PASSBAND_HZ) == pytest.approx(40.43, abs=0.05)
+>> 3224|     # ...which is exactly what the shipped statistic reports.
+
+@@ 3224-3224 COM n=1 
+3224|     # ...which is exactly what the shipped statistic reports.
+>> 3225|     shipped = detect_echo(ir, SAMPLE_RATE, signal_band_hz=LOOPBACK_WOOFER_PASSBAND_HZ)
+>> 3226|     assert shipped.band_deficit_db == pytest.approx(
+
+@@ 3236-3249 DOC n=14 test_band_deficit_separates_honest_captures_from_stopband_residue
+3236|     """S0-1 — the gap ``BAND_BELOW_PASSBAND_MARGIN_DB`` claims, re-derived.
+3237| 
+3238|     Three populations at the shipped defaults (5-19 kHz band, (120, 800) us
+3239|     window), each against its own declared passband. The ground-plane leg is
+3240|     the honest ceiling: tipping the cabinet at the floor cost top-octave
+3241|     level, and it is still 13 dB clear of the threshold.
+3242| 
+3243|     Every number here is a reading off a fixed archived corpus, so a moved pin
+3244|     is classified before it is edited: a detector change moves all three
+3245|     independently-captured populations coherently, while a reading change (the
+3246|     loader, the composer, the calibration parse, the deconvolution) moves only
+3247|     the populations sharing the broken input and is a bug in that input, not
+3248|     in the pin. Never widen a tolerance to admit an unexplained number.
+3249|     """
+>> 3250|     honest = {
+>> 3251|         **{f"gp_{k}": (ir, S0_SUMMED_PASSBAND_HZ) for k, ir in ground_plane_irs.items()},
+
+@@ 3283-3284 COM n=2 
+3283|     # Asserting 10 dB of clearance either side makes this a tripwire on the
+3284|     # gap closing rather than a restatement of it.
+>> 3285|     assert BAND_BELOW_PASSBAND_MARGIN_DB - ceiling > 10.0, honest_db
+>> 3286|     assert floor - BAND_BELOW_PASSBAND_MARGIN_DB > 10.0, residue_db
+
+@@ 3289-3290 COM n=2 
+3289|     # The ground-plane leg really is the honest worst case, which is why it
+3290|     # is the population's ceiling rather than a bystander in it.
+>> 3291|     assert max(honest_db, key=honest_db.get).startswith("gp_"), honest_db
+>> 3292|     # The per-population figures, so each is re-derived, not just the gap.
+
+@@ 3292-3292 COM n=1 
+3292|     # The per-population figures, so each is re-derived, not just the gap.
+>> 3293|     main_db = [v for k, v in honest_db.items() if k.startswith("main_")]
+>> 3294|     assert (min(main_db), max(main_db)) == pytest.approx((1.04, 6.56), abs=0.3), main_db
+
+@@ 3303-3305 COM n=3 
+3303|     # The acoustic subset is the 16 records ``band_deficit_db`` quotes a range
+3304|     # for; the electrical in-band controls read either side of zero and are
+3305|     # asserted separately below.
+>> 3306|     acoustic_db = {
+>> 3307|         name: value
+
+@@ 3323-3336 DOC n=14 test_ground_plane_positions_report_the_proud_capsule_arrival
+3323|     """S0-2 acceptance — the three ground-plane records refuse by name and
+3324|     carry the interloper.
+3325| 
+3326|     Leg B left the capsule centimetres proud of a hard floor, manufacturing a
+3327|     dominant arrival at 125-146 us (4.3-5.0 cm of path, r = 0.74-0.93). All
+3328|     three used to report ``confidence = 0.000`` with an empty refusal. Which
+3329|     refusal names them depends on the window's sample alignment: through the
+3330|     leg-B protocol window (150, 1000) us — a 7.2-sample lower edge — the
+3331|     envelope answers 156.25 us inside the edge margin and
+3332|     ``tau_at_window_lower_edge`` returns first; through the sample-aligned
+3333|     (166.6667, 1000) us it is ``earlier_dominant_arrival``. Both windows are
+3334|     asserted: no delay, no confidence, and the interloper at the delay and
+3335|     level the S0 report tabulated.
+3336|     """
+>> 3337|     expected = {
+>> 3338|         # position -> (cepstral tau, interloper tau, its level)
+
+@@ 3338-3338 COM n=1 
+3338|         # position -> (cepstral tau, interloper tau, its level)
+>> 3339|         "ground_plane_01": (327.2, 145.8, -2.57),
+>> 3340|         "ground_plane_02": (270.2, 145.8, -2.01),
+
+@@ 3345-3347 COM n=3 
+3345|     # 8 samples at 48 kHz written as the four decimals a caller would use —
+3346|     # 8.0000016 samples. Deriving it as ``8.0 / SAMPLE_RATE * 1e6`` gives a
+3347|     # value that round-trips to exactly 8.0 and makes the snap a no-op here.
+>> 3348|     aligned_search_us = (166.6667, S0_PROTOCOL_SEARCH_US[1])
+>> 3350|     for position, (ceps, early_us, early_db) in expected.items():
+
+@@ 3360-3360 COM n=1 
+3360|         # Both windows: a refusal, no delay, no confidence.
+>> 3361|         assert protocol.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE, (position, protocol)
+>> 3362|         assert aligned.refusal == REFUSAL_EARLIER_DOMINANT_ARRIVAL, (position, aligned)
+
+@@ 3367-3367 COM n=1 
+3367|             # The S0 report's own numbers, unchanged.
+>> 3368|             assert found.tau_cepstral_us == pytest.approx(ceps, abs=0.5), position
+>> 3369|             # The envelope rails one sample up, at the first in-window sample
+
+@@ 3369-3370 COM n=2 
+3369|             # The envelope rails one sample up, at the first in-window sample
+3370|             # less the parabola's clamp, on both windows.
+>> 3371|             assert found.tau_envelope_us == pytest.approx(156.25, abs=0.5), position
+>> 3373|             # ...and the interloper the refusal is named for.
+
+@@ 3373-3373 COM n=1 
+3373|             # ...and the interloper the refusal is named for.
+>> 3374|             assert found.earlier_arrival_us == pytest.approx(early_us, abs=0.5), position
+>> 3375|             assert found.earlier_arrival_db == pytest.approx(early_db, abs=0.2), position
+
+@@ 3376-3377 COM n=2 
+3376|             # Louder than anything the window contained, which is why it took
+3377|             # the answer.
+>> 3378|             assert found.earlier_arrival_db > -3.0, position
+>> 3380|         # The dominance rule is reached at the aligned window and pre-empted at
+
+@@ 3380-3381 COM n=2 
+3380|         # The dominance rule is reached at the aligned window and pre-empted at
+3381|         # the protocol one: the documented refusal precedence.
+>> 3382|         assert aligned.corroboration == 1.0, position
+>> 3383|         assert protocol.corroboration < 1.0, position
+
+@@ 3388-3394 DOC n=7 test_ground_plane_arrivals_sit_under_the_default_window_floor
+3388|     """S0-4 acceptance — the ground-plane arrivals sit under the default
+3389|     window's ~191.4 us effective floor, so that window structurally cannot
+3390|     report them.
+3391| 
+3392|     The arrivals' delays are measured through the protocol window that can see
+3393|     them rather than asserted against literals.
+3394|     """
+>> 3395|     for position, ir in sorted(ground_plane_irs.items()):
+>> 3396|         found = detect_echo(ir, SAMPLE_RATE)
+
+@@ 3399-3399 COM n=1 
+3399|         # Inside the default window there is nothing below to name.
+>> 3400|         assert found.earlier_arrival_us == 0.0, position
+>> 3402|         # The claim the field lets a consumer make, against this capture's own
+
+@@ 3402-3403 COM n=2 
+3402|         # The claim the field lets a consumer make, against this capture's own
+3403|         # measured arrival.
+>> 3404|         through_protocol_window = detect_echo(
+>> 3405|             ir, SAMPLE_RATE, search_us=S0_PROTOCOL_SEARCH_US
+
+@@ 3414-3416 DOC n=3 test_ground_plane_cloud_reads_as_thin_evidence_free
+3414|     """S0-3 — the three-position leg is not thin evidence: zero usable
+3415|     estimates is a shortfall, not the disproportion the flag reports.
+3416|     """
+>> 3417|     captures = []
+>> 3418|     freqs = np.fft.rfftfreq(N_FFT, 1.0 / SAMPLE_RATE)
+
+@@ 3437-3439 COM n=3 
+3437|     # Every position refused by name, never a silent confidence collapse.
+3438|     # Which of the two refusals it is belongs to
+3439|     # :func:`test_ground_plane_positions_report_the_proud_capsule_arrival`.
+>> 3440|     assert all(
+>> 3441|         e is not None and e.refusal == REFUSAL_TAU_AT_WINDOW_LOWER_EDGE
+
+@@ 3446-3446 COM n=1 
+3446| # --- Per-position residual — the design brief's §4.2 trend surface ---
+>> 3449| def _roled(captures, roles):
+>> 3450|     """The same captures, each carrying a role. One line, like the flow's."""
+
+@@ 3450-3450 DOC n=1 _roled
+3450|     """The same captures, each carrying a role. One line, like the flow's."""
+>> 3451|     return [
+>> 3452|         dataclasses.replace(capture, role=role)
+
+@@ 3458-3460 DOC n=3 test_the_role_rides_through_the_combination_without_touching_it
+3458|     """The role is carried, never read: the reduction is byte-identical
+3459|     either way, so the combiner never becomes a weighted one.
+3460|     """
+>> 3461|     _freqs, _true, captures = _cloud(_dispersed_taus(4))
+>> 3463|     plain = combine_positions(captures)
+
+@@ 3474-3478 DOC n=5 test_a_position_that_sat_off_the_mean_reports_a_bigger_residual
+3474|     """A position that sat off the mean reports a bigger residual.
+3475| 
+3476|     An absolute dB target would pin the synthetic fixture; the discrimination
+3477|     and the role travelling with it are what must hold.
+3478|     """
+>> 3479|     freqs, _true, captures = _cloud(_dispersed_taus(4))
+>> 3480|     captures = _roled(captures, ["onax", "offax", "offax", "xovr"])
+
+@@ 3481-3482 COM n=2 
+3481|     # One position 4 dB hot across the whole band — the anchor-outlier
+3482|     # signature this surface exists to see.
+>> 3483|     captures[1] = dataclasses.replace(
+>> 3484|         captures[1], magnitude_db=captures[1].magnitude_db + 4.0,
+
+@@ 3502-3502 DOC n=1 test_the_residual_band_is_the_callers_and_narrows_what_is_counted
+3502|     """The trusted band is the caller's, and a narrower one grades fewer bins."""
+>> 3503|     _freqs, _true, captures = _cloud(_dispersed_taus(3))
+>> 3504|     combined = combine_positions(captures)
+
+@@ 3516-3517 DOC n=2 test_a_band_that_selects_nothing_reports_absence_not_zero
+3516|     """``0.0 dB`` would read as "this position agreed perfectly" — the exact
+3517|     over-claim every other honesty instrument in this module refuses."""
+>> 3518|     _freqs, _true, captures = _cloud(_dispersed_taus(2))
+>> 3520|     rows = position_residuals(
+
+@@ 3529-3530 DOC n=2 test_a_record_with_no_retained_curves_reports_nothing
+3529|     """A hand-built or deserialised ``CombinedResponse`` has no per-position
+3530|     array, and inventing residuals from the mean alone would be fabrication."""
+>> 3531|     _freqs, _true, captures = _cloud(_dispersed_taus(3))
+>> 3532|     result = combine_positions(captures)
+
+@@ 3541-3546 DOC n=6 test_the_raw_curves_could_not_have_answered_this
+3541|     """The estimator reads the SMOOTHED pair, kept as a measurement.
+3542| 
+3543|     Run on the raw curves, a broadband +4 dB offset on one position of four
+3544|     does NOT make it the worst position: each position's own comb contributes
+3545|     ~2.5 dB and swamps the level term.
+3546|     """
+>> 3547|     freqs, _true, captures = _cloud(_dispersed_taus(4))
+>> 3548|     captures = _roled(captures, ["onax", "offax", "offax", "xovr"])
+
