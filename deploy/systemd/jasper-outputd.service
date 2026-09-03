@@ -106,9 +106,9 @@ EnvironmentFile=-/var/lib/jasper/grouping-outputd.env
 ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${JASPER_AUDIO_DAC_CARD:-}"; id="$${JASPER_AUDIO_DAC_ID:-unknown}"; if [ "$$backend" = "fake" ] || [ -z "$$card" ] || [ -e "/proc/asound/$$card" ]; then exit 0; fi; echo "event=outputd.output_device_gate.park reason=missing_dac output_dac_id=$$id output_dac_card=$$card outputd_backend=$$backend" >&2; exit 1'
 # On an outputd crash, refresh the output-hardware env before systemd's
 # built-in Restart=on-failure retry. The helper skips normal stops and
-# ExecCondition parks. For EX_CONFIG=78 it performs one bounded reconcile
-# plus no-block outputd retry, then parks on a repeated config exit. It uses
-# --no-restart for the reconcile itself so that reconciler never controls
+# ExecCondition parks, and reconciles at most once per short window across
+# every failure class so a crash loop cannot spawn a reconciler pass per
+# restart. Its --no-restart keeps that reconciler from controlling
 # jasper-outputd from inside this unit's stop transaction.
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
