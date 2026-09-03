@@ -64,13 +64,14 @@
   gap: 1rem;
 }
 
+.page > .section + .section { margin-top: 1.5rem; }
+
 /* Live device list. Each row is a flex line inside a bordered card. */
 .device-list {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  margin: 0.5rem 0;
 }
 .device-list .empty {
   color: var(--muted);
@@ -83,6 +84,9 @@
   padding: 0.8rem 1.2rem;
   border-bottom: 1px solid var(--border);
   gap: 1rem;
+  /* Name-only and name+MAC rows must match: padding + the name line +
+     the 0.85rem meta line, present or not. */
+  min-height: calc(1.6rem + 1.3em + 0.85rem * 1.3);
 }
 .device:last-child {
   border-bottom: 0;
@@ -130,17 +134,14 @@
 .device .badge.linked     { --tone: var(--status-warn); }
 .device .badge.paired     { --tone: var(--status-idle); }
 
-/* RSSI + battery readouts on the right of a paired row. */
-.device .rssi {
-  color: var(--muted);
-  font-size: 0.8rem;
-  min-width: 3em;
-  text-align: right;
-}
+/* RSSI + battery readouts, right-aligned so the actions column lines up
+   across rows whether or not a row has any metrics. */
 .device .metrics {
   display: flex;
   gap: 0.9rem;
   align-items: flex-start;
+  justify-content: flex-end;
+  min-width: 4.5em;
   margin-right: 0.4rem;
 }
 .device .metric {

@@ -343,44 +343,60 @@ function applyDeviceEvent(data, target = devices) {
   return true;
 }
 
+// A device object's uppercased MAC, or a mac string uppercased directly.
+function macKey(x) {
+  return typeof x === 'string' ? x.toUpperCase() : String(x.address || '').toUpperCase();
+}
+
 function visibleDeviceRows(live = devices, mutations = deviceMutations) {
   const rows = Array.from(live.values());
-  const present = new Set(
-    rows.map(device => String(device.address || '').toUpperCase()),
-  );
+  const present = new Set(rows.map(macKey));
   for (const [mac, mutation] of mutations) {
     if (mutation.device && !present.has(mac)) rows.push(mutation.device);
   }
   return rows;
 }
 
+// BlueZ keeps a Device1 object for any device that ever paired or connected
+// (non-temporary) and invalidates RSSI on every device once discovery stops
+// — so unpaired + no RSSI + not connected + no pending action means BlueZ
+// still remembers it, not that it's actually present.
+function deviceSection(d, pending = false) {
+  if (d.paired) return 'mine';
+  if (pending || d.connected || d.trusted || (d.rssi !== null && d.rssi !== undefined)) return 'nearby';
+  return null;
+}
+
 function renderDevices() {
   const paired = [];
   const other = [];
   for (const d of visibleDeviceRows()) {
-    (d.paired ? paired : other).push(d);
+    const key = macKey(d);
+    const mutation = deviceMutations.get(key);
+    const section = deviceSection(d, !!mutation || pairStreams.has(key));
+    if (section === 'mine') paired.push({d, pending: mutation});
+    else if (section === 'nearby') other.push({d, pending: mutation});
   }
   // Paired: connected first, then by name.
-  paired.sort((a, b) => (b.connected - a.connected)
-    || (a.name || a.address).localeCompare(b.name || b.address));
+  paired.sort((a, b) => (b.d.connected - a.d.connected)
+    || (a.d.name || a.d.address).localeCompare(b.d.name || b.d.address));
   // Other: by RSSI desc (nulls last), then name.
   other.sort((a, b) => {
-    const ar = a.rssi ?? -200, br = b.rssi ?? -200;
+    const ar = a.d.rssi ?? -200, br = b.d.rssi ?? -200;
     if (ar !== br) return br - ar;
-    return (a.name || a.address).localeCompare(b.name || b.address);
+    return (a.d.name || a.d.address).localeCompare(b.d.name || b.d.address);
   });
 
   document.getElementById('paired-list').innerHTML = paired.length
-    ? paired.map(d => deviceRow(d)).join('')
+    ? paired.map(({d, pending}) => deviceRow(d, pending)).join('')
     : '<div class="empty">No paired devices yet.</div>';
   document.getElementById('other-list').innerHTML = other.length
-    ? other.map(d => deviceRow(d)).join('')
+    ? other.map(({d, pending}) => deviceRow(d, pending)).join('')
     : '<div class="empty">Nothing nearby. Try scanning.</div>';
 }
 
-function deviceRow(d) {
+function deviceRow(d, pending) {
   const isPaired = !!d.paired;
-  const pending = deviceMutations.get(String(d.address || '').toUpperCase());
   const disabled = action => deviceActionDisabled(
     action, state, mutationInFlight || deviceMutations.size > 0,
   ) ? ' disabled' : '';
@@ -411,7 +427,7 @@ function deviceRow(d) {
   } else if (d.connected) {
     badges += '<span class="badge connected">Connected</span>';
   }
-  else if (d.paired) badges += '<span class="badge paired">Paired</span>';
+  else if (d.paired) badges += '<span class="badge paired">Not connected</span>';
   let actions = '';
   if (pending) {
     actions = `<button class="btn btn--default" disabled>${deviceMutationLabel(pending.action, true)}</button>`;
@@ -426,41 +442,6 @@ function deviceRow(d) {
       actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Remove</button>`;
     }
   }
-  // Metrics. Render each label only when bluez actually has a value
-  // for it — surfacing a "—" placeholder suggests we're polling for
-  // the value and coming up empty, but in fact bluez doesn't expose
-  // RSSI for connected BLE devices at all (they stop advertising
-  // once linked, and HCI Read-RSSI is a BT-Classic-only command).
-  // Showing nothing is more honest than a perpetual dash.
-  let metrics = '';
-  if (isPaired) {
-    const parts = [];
-    if (d.battery !== null && d.battery !== undefined) {
-      parts.push(`
-        <div class="metric">
-          <div class="label">Battery</div>
-          <div class="value">${d.battery}%</div>
-        </div>`);
-    } else if (d.connected && d.batteryCapable) {
-      parts.push(`
-        <div class="metric">
-          <div class="label">Battery</div>
-          <div class="value">No reading</div>
-        </div>`);
-    }
-    if (d.rssi !== null && d.rssi !== undefined) {
-      parts.push(`
-        <div class="metric">
-          <div class="label">Signal</div>
-          <div class="value"><span class="bars">${rssiBars(d.rssi)}</span></div>
-        </div>`);
-    }
-    if (parts.length) {
-      metrics = `<div class="metrics">${parts.join('')}</div>`;
-    }
-  } else if (d.rssi !== null && d.rssi !== undefined) {
-    metrics = `<div class="rssi">${rssiBars(d.rssi)}</div>`;
-  }
   return `
     <div class="device" id="d-${cssIdSafe(d.address)}">
       <div class="icon icon-${iconSlug(d.icon)}"></div>
@@ -469,10 +450,38 @@ function deviceRow(d) {
         ${metaLine}
         <div id="pair-${cssIdSafe(d.address)}"></div>
       </div>
-      ${metrics}
+      ${metricsHtml(d)}
       <div class="actions">${actions}</div>
     </div>
   `;
+}
+
+// bluez doesn't expose RSSI for connected BLE devices (they stop
+// advertising once linked, and HCI Read-RSSI is BT-Classic-only) — a
+// missing metric is omitted rather than shown as a placeholder dash.
+function metricsHtml(d) {
+  const parts = [];
+  if (d.battery !== null && d.battery !== undefined) {
+    parts.push(`
+      <div class="metric">
+        <div class="label">Battery</div>
+        <div class="value">${d.battery}%</div>
+      </div>`);
+  } else if (d.connected && d.batteryCapable) {
+    parts.push(`
+      <div class="metric">
+        <div class="label">Battery</div>
+        <div class="value">No reading</div>
+      </div>`);
+  }
+  if (d.rssi !== null && d.rssi !== undefined) {
+    parts.push(`
+      <div class="metric">
+        <div class="label">Signal</div>
+        <div class="value"><span class="bars">${rssiBars(d.rssi)}</span></div>
+      </div>`);
+  }
+  return `<div class="metrics">${parts.join('')}</div>`;
 }
 
 function deviceActionDisabled(action, currentState, mutationPending) {
@@ -605,7 +614,8 @@ function rssiBars(rssi) {
 // -------- pair flow --------
 
 async function startPair(mac) {
-  if (pairStreams.has(mac)) return; // already pairing this device
+  const key = macKey(mac);
+  if (pairStreams.has(key)) return; // already pairing this device
   const slot = document.getElementById(`pair-${cssIdSafe(mac)}`);
   if (!slot) return;
   if (!beginMutation()) return;
@@ -640,7 +650,7 @@ async function startPair(mac) {
     await jtsAlert('Could not open the pairing progress stream.');
     return;
   }
-  pairStreams.set(mac, es);
+  pairStreams.set(key, es);
   const card = document.getElementById(`pc-${cssIdSafe(mac)}`);
 
   es.onmessage = async ev => {
@@ -649,7 +659,7 @@ async function startPair(mac) {
     renderPairStage(mac, data, card);
     if (data.stage === 'ready' || data.stage === 'error') {
       es.close();
-      pairStreams.delete(mac);
+      pairStreams.delete(key);
       await finishMutation();
       // Hide card after a short delay so user can read the final state.
       setTimeout(() => {
@@ -660,7 +670,7 @@ async function startPair(mac) {
   };
   es.onerror = async () => {
     es.close();
-    pairStreams.delete(mac);
+    pairStreams.delete(key);
     await finishMutation();
   };
 }
@@ -724,10 +734,8 @@ function renderPairStage(mac, data, card) {
 // -------- connect / disconnect / forget --------
 
 function deviceByAddress(mac) {
-  const wanted = mac.toUpperCase();
-  return Array.from(devices.values()).find(
-    device => String(device.address || '').toUpperCase() === wanted,
-  ) || null;
+  const wanted = macKey(mac);
+  return Array.from(devices.values()).find(device => macKey(device) === wanted) || null;
 }
 
 function watchDeviceMutation(mutation) {
@@ -767,7 +775,7 @@ async function rejectDeviceMutation(mutation, message) {
 }
 
 function requestDeviceMutation(action, mac) {
-  const normalizedMac = mac.toUpperCase();
+  const normalizedMac = macKey(mac);
   if (deviceMutations.has(normalizedMac)) return;
   const mutation = {
     action,

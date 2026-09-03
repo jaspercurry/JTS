@@ -13,8 +13,13 @@ from dbus_next.errors import DBusError
 
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.bluetooth import engine as engine_module
-from jasper.bluetooth.engine import BluetoothEngine, _format_dbus_error
+from jasper.bluetooth.engine import (
+    BluetoothEngine,
+    _classify_dbus_error,
+    _device_action_error,
+)
 from jasper.bluetooth.models import (
+    ADAPTER_NOT_READY_CODE,
     BluetoothActionResult,
     BluetoothDevice,
     UUID_HOGP,
@@ -1214,59 +1219,71 @@ async def test_scan_manual_stop_propagates_permission_and_unexpected_failures(
 
 
 @pytest.mark.parametrize(
-    ("error_type", "detail", "expected"),
+    ("err", "code"),
     [
         (
-            "org.bluez.Error.AuthenticationTimeout",
-            "timed out",
-            "Pairing took too long. Make sure the device is in range and in pair mode, then try again.",
+            DBusError("org.bluez.Error.AuthenticationTimeout", "timed out"),
+            "AuthenticationTimeout",
         ),
         (
-            "org.bluez.Error.Failed",
-            "org.bluez.Error.AuthenticationTimeout",
-            "Pairing took too long. Make sure the device is in range and in pair mode, then try again.",
+            DBusError("org.bluez.Error.Failed", "org.bluez.Error.AuthenticationTimeout"),
+            "AuthenticationTimeout",
         ),
         (
-            "org.bluez.Error.AuthenticationCanceled",
-            "cancelled",
-            "Pairing was cancelled.",
+            DBusError("org.bluez.Error.AuthenticationCanceled", "cancelled"),
+            "AuthenticationCanceled",
         ),
         (
-            "org.bluez.Error.AuthenticationRejected",
-            "rejected",
-            "Pairing was rejected by the device.",
+            DBusError("org.bluez.Error.AuthenticationRejected", "rejected"),
+            "AuthenticationRejected",
         ),
         (
-            "org.bluez.Error.AuthenticationFailed",
-            "failed",
-            "Pairing failed. The link key didn't match.",
+            DBusError("org.bluez.Error.AuthenticationFailed", "failed"),
+            "AuthenticationFailed",
         ),
         (
-            "org.bluez.Error.ConnectionAttemptFailed",
-            "failed",
-            "Could not connect. Try moving the device closer and retrying.",
+            DBusError("org.bluez.Error.ConnectionAttemptFailed", "failed"),
+            "ConnectionAttemptFailed",
         ),
+        (DBusError("org.bluez.Error.AlreadyExists", "exists"), "AlreadyExists"),
+        (DBusError("org.bluez.Error.InProgress", "busy"), "InProgress"),
         (
-            "org.bluez.Error.AlreadyExists",
-            "exists",
-            "This device is already paired.",
+            DBusError("org.bluez.Error.Failed", "br-connection-aborted-by-remote"),
+            "br-connection-aborted-by-remote",
         ),
-        (
-            "org.bluez.Error.InProgress",
-            "busy",
-            "Bluetooth is busy. Try again in a moment.",
-        ),
-        ("org.bluez.Error.Failed", "BlueZ detail", "BlueZ detail"),
-        ("org.bluez.Error.Failed", "", "Unknown bluetooth error."),
+        (DBusError("org.bluez.Error.Failed", "BlueZ detail"), None),
+        (DBusError("org.bluez.Error.Failed", ""), None),
+        (RuntimeError("plain failure"), None),
     ],
 )
-def test_format_dbus_error_maps_known_errors_and_fallbacks(
-    error_type: str,
-    detail: str,
-    expected: str,
-):
-    assert _format_dbus_error(DBusError(error_type, detail)) == expected
+def test_classify_dbus_error_codes(err: BaseException, code: str | None):
+    assert _classify_dbus_error(err)[1] == code
 
 
-def test_format_dbus_error_preserves_non_dbus_message():
-    assert _format_dbus_error(RuntimeError("plain failure")) == "plain failure"
+@pytest.mark.parametrize(
+    ("error_type", "detail"),
+    [
+        ("org.bluez.Error.NotReady", "Resource Not Ready"),
+        ("org.bluez.Error.Failed", "br-connection-adapter-not-powered"),
+    ],
+)
+def test_device_action_error_codes(error_type: str, detail: str):
+    result = _device_action_error(DBusError(error_type, detail))
+    assert (result.ok, result.code) == (False, ADAPTER_NOT_READY_CODE)
+
+
+async def test_connect_returns_connect_timeout_code_on_bluez_hang(monkeypatch):
+    hang = asyncio.Event()
+    engine = _engine([])
+
+    async def call_connect() -> None:
+        await hang.wait()
+
+    bus = engine._bus
+    assert isinstance(bus, _FakeBus)
+    bus.proxy.device.call_connect = call_connect
+    monkeypatch.setattr(engine_module, "CONNECT_TIMEOUT_S", 0.01)
+
+    result = await engine.connect("CA:AC:04:04:09:D7")
+
+    assert (result.ok, result.code) == (False, "connect-timeout")
