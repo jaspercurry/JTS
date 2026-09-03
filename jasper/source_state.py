@@ -20,7 +20,6 @@ when daemons change.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import os
@@ -81,10 +80,9 @@ def _airplay_nonzero_observation(stderr: bytes) -> bool | None:
 async def spotify_playing(
     librespot_state_path: str = librespot_state.DEFAULT_PATH,
 ) -> bool:
-    """librespot writes /run/librespot/state.json on every player
-    event via its --onevent hook. Reading on every probe is cheap
-    (file is a few hundred bytes); is_playing returns False on
-    missing/malformed file."""
+    """librespot rewrites its state file on every player event via the
+    --onevent hook. Reading on every probe is cheap (file is a few
+    hundred bytes); returns False on a missing/malformed file."""
     return await spotify_playing_observed(librespot_state_path) is True
 
 
@@ -100,19 +98,18 @@ async def spotify_playing_observed(
     """
     path = Path(librespot_state_path)
     try:
-        state = json.loads(path.read_text())
+        text = path.read_text()
     except FileNotFoundError:
         return False
-    except (json.JSONDecodeError, OSError) as exc:
+    except OSError as exc:
         logger.debug("librespot state observation failed (%s): %s", path, exc)
         return None
-    if not isinstance(state, dict):
+    state = librespot_state.parse(text)
+    if not state:
         return None
-    if state.get("playing") is True:
-        return True
-    if state.get("paused") is True or state.get("stopped") is True:
-        return False
-    return False
+    # The hook writes the playing/paused/stopped triple together, so the
+    # one flag is authoritative.
+    return state.get("playing") is True
 
 
 def _airplay_metadata_gate_disabled() -> bool:

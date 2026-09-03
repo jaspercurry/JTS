@@ -2785,6 +2785,7 @@ def install_env_canonical_target_provider() -> None:
     from .volume_owner import install_volume_owner
 
     async def canonical_target_db() -> float:
+        from jasper import librespot_state
         from jasper.renderer import RendererClient
 
         coord = VolumeCoordinator(
@@ -2796,10 +2797,7 @@ def install_env_canonical_target_provider() -> None:
                 )
             ),
             backend=RendererClient(
-                librespot_state_path=os.environ.get(
-                    "JASPER_LIBRESPOT_STATE",
-                    "/run/librespot/state.json",
-                ),
+                librespot_state_path=librespot_state.configured_path(),
             ),
         )
         try:

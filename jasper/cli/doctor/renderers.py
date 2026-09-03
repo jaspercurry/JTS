@@ -180,8 +180,7 @@ def check_librespot_running(cfg: Config) -> CheckResult:
     # Best-effort version line (librespot prints to stderr at startup)
     return CheckResult(
         "librespot.service", "ok",
-        f"{bin_path} active (state file: "
-        f"/run/librespot/state.json)",
+        f"{bin_path} active (state file: {cfg.librespot_state_path})",
     )
 
 @doctor_check(order=10, group="renderers")

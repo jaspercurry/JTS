@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from . import home_assistant as _ha_env
+from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
@@ -793,7 +794,7 @@ class Config:
             ),
             usage_db=_env("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
             librespot_state_path=_env(
-                "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
+                "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
             ),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
             # The redirect URI is the URL Spotify bounces the OAuth

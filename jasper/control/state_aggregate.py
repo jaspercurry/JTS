@@ -1132,9 +1132,7 @@ async def _get_state(
         )
         raise
 
-    spotify_blob = librespot_state.read(
-        os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),
-    )
+    spotify_blob = librespot_state.read(librespot_state.configured_path())
     if sound_profile is not None:
         runtime = _sound_runtime_status(
             sound_profile,
