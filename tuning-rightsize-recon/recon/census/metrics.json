@@ -1,0 +1,3162 @@
+[
+ {
+  "file": "experiments/usb-turntable/jts_turntable.py",
+  "total": 821,
+  "code": 565,
+  "docstring": 94,
+  "comment": 65,
+  "blank": 97,
+  "prose_pct": 19.37,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/__init__.py",
+  "total": 33,
+  "code": 27,
+  "docstring": 1,
+  "comment": 1,
+  "blank": 4,
+  "prose_pct": 6.06,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/__main__.py",
+  "total": 5,
+  "code": 2,
+  "docstring": 0,
+  "comment": 1,
+  "blank": 2,
+  "prose_pct": 20.0,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/cli.py",
+  "total": 105,
+  "code": 91,
+  "docstring": 1,
+  "comment": 1,
+  "blank": 12,
+  "prose_pct": 1.9,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/commands.py",
+  "total": 55,
+  "code": 40,
+  "docstring": 1,
+  "comment": 1,
+  "blank": 13,
+  "prose_pct": 3.64,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/controller.py",
+  "total": 231,
+  "code": 195,
+  "docstring": 1,
+  "comment": 2,
+  "blank": 33,
+  "prose_pct": 1.3,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/discovery.py",
+  "total": 140,
+  "code": 113,
+  "docstring": 3,
+  "comment": 1,
+  "blank": 23,
+  "prose_pct": 2.86,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/errors.py",
+  "total": 65,
+  "code": 36,
+  "docstring": 8,
+  "comment": 1,
+  "blank": 20,
+  "prose_pct": 13.85,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/protocol.py",
+  "total": 640,
+  "code": 571,
+  "docstring": 7,
+  "comment": 8,
+  "blank": 54,
+  "prose_pct": 2.34,
+  "parse_error": null
+ },
+ {
+  "file": "experiments/usb-turntable/vendor/usb_turntable/transport.py",
+  "total": 124,
+  "code": 107,
+  "docstring": 1,
+  "comment": 1,
+  "blank": 15,
+  "prose_pct": 1.61,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/__init__.py",
+  "total": 480,
+  "code": 465,
+  "docstring": 8,
+  "comment": 3,
+  "blank": 4,
+  "prose_pct": 2.29,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/_common.py",
+  "total": 215,
+  "code": 67,
+  "docstring": 51,
+  "comment": 55,
+  "blank": 42,
+  "prose_pct": 49.3,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/alignment_walk.py",
+  "total": 49,
+  "code": 24,
+  "docstring": 12,
+  "comment": 3,
+  "blank": 10,
+  "prose_pct": 30.61,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/angle_capture.py",
+  "total": 1027,
+  "code": 423,
+  "docstring": 295,
+  "comment": 165,
+  "blank": 144,
+  "prose_pct": 44.79,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/angle_capture_spool.py",
+  "total": 604,
+  "code": 244,
+  "docstring": 183,
+  "comment": 89,
+  "blank": 88,
+  "prose_pct": 45.03,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/arm_walk.py",
+  "total": 1036,
+  "code": 574,
+  "docstring": 204,
+  "comment": 117,
+  "blank": 141,
+  "prose_pct": 30.98,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/attempts_loop.py",
+  "total": 923,
+  "code": 445,
+  "docstring": 269,
+  "comment": 78,
+  "blank": 131,
+  "prose_pct": 37.59,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/audible_policy.py",
+  "total": 80,
+  "code": 56,
+  "docstring": 5,
+  "comment": 5,
+  "blank": 14,
+  "prose_pct": 12.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/audition.py",
+  "total": 654,
+  "code": 410,
+  "docstring": 115,
+  "comment": 32,
+  "blank": 97,
+  "prose_pct": 22.48,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/baseline_profile.py",
+  "total": 4192,
+  "code": 2711,
+  "docstring": 598,
+  "comment": 607,
+  "blank": 276,
+  "prose_pct": 28.75,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/bench/__init__.py",
+  "total": 63,
+  "code": 1,
+  "docstring": 52,
+  "comment": 3,
+  "blank": 7,
+  "prose_pct": 87.3,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/bench/compare.py",
+  "total": 675,
+  "code": 286,
+  "docstring": 223,
+  "comment": 72,
+  "blank": 94,
+  "prose_pct": 43.7,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/bench/derivation.py",
+  "total": 605,
+  "code": 351,
+  "docstring": 152,
+  "comment": 16,
+  "blank": 86,
+  "prose_pct": 27.77,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/bench/loop.py",
+  "total": 923,
+  "code": 558,
+  "docstring": 170,
+  "comment": 88,
+  "blank": 107,
+  "prose_pct": 27.95,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/branch_chain.py",
+  "total": 859,
+  "code": 285,
+  "docstring": 267,
+  "comment": 215,
+  "blank": 92,
+  "prose_pct": 56.11,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/branch_peak.py",
+  "total": 692,
+  "code": 400,
+  "docstring": 141,
+  "comment": 84,
+  "blank": 67,
+  "prose_pct": 32.51,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/branch_target.py",
+  "total": 312,
+  "code": 73,
+  "docstring": 136,
+  "comment": 65,
+  "blank": 38,
+  "prose_pct": 64.42,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/bringup.py",
+  "total": 454,
+  "code": 413,
+  "docstring": 7,
+  "comment": 3,
+  "blank": 31,
+  "prose_pct": 2.2,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/bundles.py",
+  "total": 1150,
+  "code": 744,
+  "docstring": 194,
+  "comment": 53,
+  "blank": 159,
+  "prose_pct": 21.48,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/calibration_level.py",
+  "total": 337,
+  "code": 259,
+  "docstring": 39,
+  "comment": 3,
+  "blank": 36,
+  "prose_pct": 12.46,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/camilla_yaml.py",
+  "total": 4551,
+  "code": 2767,
+  "docstring": 813,
+  "comment": 559,
+  "blank": 412,
+  "prose_pct": 30.15,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/candidate_bank.py",
+  "total": 268,
+  "code": 104,
+  "docstring": 100,
+  "comment": 22,
+  "blank": 42,
+  "prose_pct": 45.52,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/capture_entry_anchor.py",
+  "total": 143,
+  "code": 76,
+  "docstring": 43,
+  "comment": 3,
+  "blank": 21,
+  "prose_pct": 32.17,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/capture_geometry.py",
+  "total": 706,
+  "code": 460,
+  "docstring": 79,
+  "comment": 71,
+  "blank": 96,
+  "prose_pct": 21.25,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/capture_provenance.py",
+  "total": 409,
+  "code": 172,
+  "docstring": 136,
+  "comment": 46,
+  "blank": 55,
+  "prose_pct": 44.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commission_ramp.py",
+  "total": 1366,
+  "code": 1021,
+  "docstring": 113,
+  "comment": 102,
+  "blank": 130,
+  "prose_pct": 15.74,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commission_wiring.py",
+  "total": 236,
+  "code": 122,
+  "docstring": 61,
+  "comment": 3,
+  "blank": 50,
+  "prose_pct": 27.12,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_admission.py",
+  "total": 1238,
+  "code": 1054,
+  "docstring": 49,
+  "comment": 67,
+  "blank": 68,
+  "prose_pct": 9.37,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_apply.py",
+  "total": 1460,
+  "code": 1343,
+  "docstring": 12,
+  "comment": 23,
+  "blank": 82,
+  "prose_pct": 2.4,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_capture.py",
+  "total": 1520,
+  "code": 1052,
+  "docstring": 283,
+  "comment": 76,
+  "blank": 109,
+  "prose_pct": 23.62,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_coordinator.py",
+  "total": 1218,
+  "code": 842,
+  "docstring": 81,
+  "comment": 216,
+  "blank": 79,
+  "prose_pct": 24.38,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_evidence.py",
+  "total": 3501,
+  "code": 3226,
+  "docstring": 37,
+  "comment": 10,
+  "blank": 228,
+  "prose_pct": 1.34,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_evidence_store.py",
+  "total": 1433,
+  "code": 1245,
+  "docstring": 36,
+  "comment": 19,
+  "blank": 133,
+  "prose_pct": 3.84,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_host.py",
+  "total": 405,
+  "code": 345,
+  "docstring": 14,
+  "comment": 3,
+  "blank": 43,
+  "prose_pct": 4.2,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_isolated_producer.py",
+  "total": 925,
+  "code": 870,
+  "docstring": 13,
+  "comment": 3,
+  "blank": 39,
+  "prose_pct": 1.73,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_lifecycle.py",
+  "total": 332,
+  "code": 293,
+  "docstring": 3,
+  "comment": 5,
+  "blank": 31,
+  "prose_pct": 2.41,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_receipt.py",
+  "total": 1831,
+  "code": 1616,
+  "docstring": 70,
+  "comment": 19,
+  "blank": 126,
+  "prose_pct": 4.86,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_run.py",
+  "total": 2141,
+  "code": 1882,
+  "docstring": 87,
+  "comment": 18,
+  "blank": 154,
+  "prose_pct": 4.9,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_runtime.py",
+  "total": 1145,
+  "code": 967,
+  "docstring": 27,
+  "comment": 34,
+  "blank": 117,
+  "prose_pct": 5.33,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_service.py",
+  "total": 1317,
+  "code": 1222,
+  "docstring": 16,
+  "comment": 15,
+  "blank": 64,
+  "prose_pct": 2.35,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/commissioning_verification.py",
+  "total": 845,
+  "code": 724,
+  "docstring": 34,
+  "comment": 25,
+  "blank": 62,
+  "prose_pct": 6.98,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/controllability_ledger.py",
+  "total": 113,
+  "code": 45,
+  "docstring": 31,
+  "comment": 15,
+  "blank": 22,
+  "prose_pct": 40.71,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_alignment.py",
+  "total": 422,
+  "code": 245,
+  "docstring": 97,
+  "comment": 34,
+  "blank": 46,
+  "prose_pct": 31.04,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_contract.py",
+  "total": 640,
+  "code": 538,
+  "docstring": 40,
+  "comment": 10,
+  "blank": 52,
+  "prose_pct": 7.81,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_declaration.py",
+  "total": 448,
+  "code": 223,
+  "docstring": 133,
+  "comment": 25,
+  "blank": 67,
+  "prose_pct": 35.27,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_eligibility.py",
+  "total": 371,
+  "code": 256,
+  "docstring": 26,
+  "comment": 48,
+  "blank": 41,
+  "prose_pct": 19.95,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_envelope.py",
+  "total": 52,
+  "code": 20,
+  "docstring": 17,
+  "comment": 3,
+  "blank": 12,
+  "prose_pct": 38.46,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_envelope_v2.py",
+  "total": 4417,
+  "code": 1840,
+  "docstring": 1119,
+  "comment": 1080,
+  "blank": 378,
+  "prose_pct": 49.78,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_level_run.py",
+  "total": 1038,
+  "code": 876,
+  "docstring": 45,
+  "comment": 25,
+  "blank": 92,
+  "prose_pct": 6.74,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_preview.py",
+  "total": 879,
+  "code": 714,
+  "docstring": 23,
+  "comment": 66,
+  "blank": 76,
+  "prose_pct": 10.13,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/__init__.py",
+  "total": 222,
+  "code": 37,
+  "docstring": 171,
+  "comment": 3,
+  "blank": 11,
+  "prose_pct": 78.38,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/accountability.py",
+  "total": 493,
+  "code": 240,
+  "docstring": 73,
+  "comment": 140,
+  "blank": 40,
+  "prose_pct": 43.2,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/admission.py",
+  "total": 617,
+  "code": 203,
+  "docstring": 213,
+  "comment": 126,
+  "blank": 75,
+  "prose_pct": 54.94,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/alignment_prescription.py",
+  "total": 751,
+  "code": 329,
+  "docstring": 266,
+  "comment": 83,
+  "blank": 73,
+  "prose_pct": 46.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/attempt_grading.py",
+  "total": 88,
+  "code": 9,
+  "docstring": 11,
+  "comment": 60,
+  "blank": 8,
+  "prose_pct": 80.68,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/blend_correction.py",
+  "total": 763,
+  "code": 255,
+  "docstring": 235,
+  "comment": 173,
+  "blank": 100,
+  "prose_pct": 53.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/blend_prescription.py",
+  "total": 1688,
+  "code": 799,
+  "docstring": 399,
+  "comment": 329,
+  "blank": 161,
+  "prose_pct": 43.13,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/candidates.py",
+  "total": 237,
+  "code": 72,
+  "docstring": 122,
+  "comment": 3,
+  "blank": 40,
+  "prose_pct": 52.74,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/capture_dispatch.py",
+  "total": 936,
+  "code": 295,
+  "docstring": 403,
+  "comment": 100,
+  "blank": 138,
+  "prose_pct": 53.74,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/capture_plan.py",
+  "total": 3050,
+  "code": 1186,
+  "docstring": 787,
+  "comment": 773,
+  "blank": 304,
+  "prose_pct": 51.15,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/capture_source.py",
+  "total": 196,
+  "code": 34,
+  "docstring": 96,
+  "comment": 33,
+  "blank": 33,
+  "prose_pct": 65.82,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/close_reference.py",
+  "total": 673,
+  "code": 463,
+  "docstring": 79,
+  "comment": 67,
+  "blank": 64,
+  "prose_pct": 21.69,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/commanded.py",
+  "total": 481,
+  "code": 206,
+  "docstring": 199,
+  "comment": 17,
+  "blank": 59,
+  "prose_pct": 44.91,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/composition.py",
+  "total": 255,
+  "code": 126,
+  "docstring": 86,
+  "comment": 7,
+  "blank": 36,
+  "prose_pct": 36.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/contracts.py",
+  "total": 1617,
+  "code": 814,
+  "docstring": 307,
+  "comment": 264,
+  "blank": 232,
+  "prose_pct": 35.31,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/coordinator.py",
+  "total": 1410,
+  "code": 517,
+  "docstring": 350,
+  "comment": 401,
+  "blank": 142,
+  "prose_pct": 53.26,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/delay_landscape.py",
+  "total": 603,
+  "code": 354,
+  "docstring": 118,
+  "comment": 53,
+  "blank": 78,
+  "prose_pct": 28.36,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/delta_probe_run.py",
+  "total": 489,
+  "code": 268,
+  "docstring": 98,
+  "comment": 95,
+  "blank": 28,
+  "prose_pct": 39.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/diagnostics.py",
+  "total": 700,
+  "code": 456,
+  "docstring": 79,
+  "comment": 116,
+  "blank": 49,
+  "prose_pct": 27.86,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/door.py",
+  "total": 387,
+  "code": 194,
+  "docstring": 95,
+  "comment": 48,
+  "blank": 50,
+  "prose_pct": 36.95,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/driver_prescription.py",
+  "total": 2508,
+  "code": 1078,
+  "docstring": 648,
+  "comment": 581,
+  "blank": 201,
+  "prose_pct": 49.0,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/durable_state.py",
+  "total": 2198,
+  "code": 794,
+  "docstring": 481,
+  "comment": 756,
+  "blank": 167,
+  "prose_pct": 56.28,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/evidence_packet.py",
+  "total": 3753,
+  "code": 2097,
+  "docstring": 847,
+  "comment": 512,
+  "blank": 297,
+  "prose_pct": 36.21,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/fc_sweep.py",
+  "total": 138,
+  "code": 35,
+  "docstring": 70,
+  "comment": 14,
+  "blank": 19,
+  "prose_pct": 60.87,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/feature_classification.py",
+  "total": 602,
+  "code": 229,
+  "docstring": 132,
+  "comment": 179,
+  "blank": 62,
+  "prose_pct": 51.66,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/feature_classifier.py",
+  "total": 2599,
+  "code": 1516,
+  "docstring": 403,
+  "comment": 382,
+  "blank": 298,
+  "prose_pct": 30.2,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/feature_optics.py",
+  "total": 143,
+  "code": 60,
+  "docstring": 33,
+  "comment": 27,
+  "blank": 23,
+  "prose_pct": 41.96,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/forward_model.py",
+  "total": 405,
+  "code": 201,
+  "docstring": 137,
+  "comment": 10,
+  "blank": 57,
+  "prose_pct": 36.3,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/frequency_view.py",
+  "total": 234,
+  "code": 189,
+  "docstring": 8,
+  "comment": 9,
+  "blank": 28,
+  "prose_pct": 7.26,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/gate_sweep.py",
+  "total": 1140,
+  "code": 695,
+  "docstring": 176,
+  "comment": 133,
+  "blank": 136,
+  "prose_pct": 27.11,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/handoff_doors.py",
+  "total": 45,
+  "code": 30,
+  "docstring": 4,
+  "comment": 3,
+  "blank": 8,
+  "prose_pct": 15.56,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/harmonic_evidence.py",
+  "total": 1264,
+  "code": 673,
+  "docstring": 337,
+  "comment": 132,
+  "blank": 122,
+  "prose_pct": 37.1,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/intervention.py",
+  "total": 1718,
+  "code": 909,
+  "docstring": 186,
+  "comment": 485,
+  "blank": 138,
+  "prose_pct": 39.06,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/journey.py",
+  "total": 606,
+  "code": 203,
+  "docstring": 163,
+  "comment": 156,
+  "blank": 84,
+  "prose_pct": 52.64,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/measure_spec.py",
+  "total": 443,
+  "code": 181,
+  "docstring": 150,
+  "comment": 52,
+  "blank": 60,
+  "prose_pct": 45.6,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/measurement_phase.py",
+  "total": 111,
+  "code": 31,
+  "docstring": 43,
+  "comment": 19,
+  "blank": 18,
+  "prose_pct": 55.86,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/operator_notes.py",
+  "total": 436,
+  "code": 197,
+  "docstring": 112,
+  "comment": 80,
+  "blank": 47,
+  "prose_pct": 44.04,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/plan_assembly.py",
+  "total": 425,
+  "code": 254,
+  "docstring": 77,
+  "comment": 28,
+  "blank": 66,
+  "prose_pct": 24.71,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/planning.py",
+  "total": 996,
+  "code": 374,
+  "docstring": 295,
+  "comment": 254,
+  "blank": 73,
+  "prose_pct": 55.12,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/playback_transaction.py",
+  "total": 220,
+  "code": 61,
+  "docstring": 96,
+  "comment": 29,
+  "blank": 34,
+  "prose_pct": 56.82,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/position_cycle.py",
+  "total": 587,
+  "code": 235,
+  "docstring": 233,
+  "comment": 36,
+  "blank": 83,
+  "prose_pct": 45.83,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/prescription_spool.py",
+  "total": 953,
+  "code": 339,
+  "docstring": 275,
+  "comment": 239,
+  "blank": 100,
+  "prose_pct": 53.93,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/priors.py",
+  "total": 471,
+  "code": 158,
+  "docstring": 236,
+  "comment": 12,
+  "blank": 65,
+  "prose_pct": 52.65,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/program_transaction.py",
+  "total": 388,
+  "code": 144,
+  "docstring": 127,
+  "comment": 69,
+  "blank": 48,
+  "prose_pct": 50.52,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/programs.py",
+  "total": 501,
+  "code": 151,
+  "docstring": 199,
+  "comment": 87,
+  "blank": 64,
+  "prose_pct": 57.09,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/proposal.py",
+  "total": 321,
+  "code": 152,
+  "docstring": 112,
+  "comment": 15,
+  "blank": 42,
+  "prose_pct": 39.56,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/record_index.py",
+  "total": 200,
+  "code": 87,
+  "docstring": 70,
+  "comment": 7,
+  "blank": 36,
+  "prose_pct": 38.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/record_store.py",
+  "total": 330,
+  "code": 164,
+  "docstring": 91,
+  "comment": 24,
+  "blank": 51,
+  "prose_pct": 34.85,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/refusal_copy.py",
+  "total": 1578,
+  "code": 596,
+  "docstring": 273,
+  "comment": 618,
+  "blank": 91,
+  "prose_pct": 56.46,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/ring_projection.py",
+  "total": 385,
+  "code": 203,
+  "docstring": 103,
+  "comment": 22,
+  "blank": 57,
+  "prose_pct": 32.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/round_captures.py",
+  "total": 383,
+  "code": 242,
+  "docstring": 72,
+  "comment": 17,
+  "blank": 52,
+  "prose_pct": 23.24,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/round_evidence.py",
+  "total": 1001,
+  "code": 436,
+  "docstring": 274,
+  "comment": 194,
+  "blank": 97,
+  "prose_pct": 46.75,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/round_inputs.py",
+  "total": 200,
+  "code": 112,
+  "docstring": 50,
+  "comment": 11,
+  "blank": 27,
+  "prose_pct": 30.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/round_views.py",
+  "total": 1810,
+  "code": 882,
+  "docstring": 565,
+  "comment": 148,
+  "blank": 215,
+  "prose_pct": 39.39,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/session.py",
+  "total": 733,
+  "code": 249,
+  "docstring": 333,
+  "comment": 44,
+  "blank": 107,
+  "prose_pct": 51.43,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/session_graph.py",
+  "total": 486,
+  "code": 222,
+  "docstring": 166,
+  "comment": 36,
+  "blank": 62,
+  "prose_pct": 41.56,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/session_seams.py",
+  "total": 274,
+  "code": 38,
+  "docstring": 181,
+  "comment": 3,
+  "blank": 52,
+  "prose_pct": 67.15,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/spatial.py",
+  "total": 3148,
+  "code": 1101,
+  "docstring": 1308,
+  "comment": 395,
+  "blank": 344,
+  "prose_pct": 54.1,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/sweep_spec.py",
+  "total": 1576,
+  "code": 1030,
+  "docstring": 195,
+  "comment": 212,
+  "blank": 139,
+  "prose_pct": 25.82,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/topology_prescription.py",
+  "total": 964,
+  "code": 398,
+  "docstring": 366,
+  "comment": 109,
+  "blank": 91,
+  "prose_pct": 49.27,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/tuning_scope.py",
+  "total": 158,
+  "code": 37,
+  "docstring": 83,
+  "comment": 8,
+  "blank": 30,
+  "prose_pct": 57.59,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/verification.py",
+  "total": 2186,
+  "code": 1087,
+  "docstring": 578,
+  "comment": 259,
+  "blank": 262,
+  "prose_pct": 38.29,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2/volume_claim.py",
+  "total": 280,
+  "code": 85,
+  "docstring": 144,
+  "comment": 12,
+  "blank": 39,
+  "prose_pct": 55.71,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/crossover_v2_flow.py",
+  "total": 7839,
+  "code": 3188,
+  "docstring": 1883,
+  "comment": 2170,
+  "blank": 598,
+  "prose_pct": 51.7,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/delay_sweep.py",
+  "total": 75,
+  "code": 34,
+  "docstring": 17,
+  "comment": 12,
+  "blank": 12,
+  "prose_pct": 38.67,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/delta_probe.py",
+  "total": 2494,
+  "code": 777,
+  "docstring": 633,
+  "comment": 903,
+  "blank": 181,
+  "prose_pct": 61.59,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/design_draft.py",
+  "total": 1570,
+  "code": 1284,
+  "docstring": 105,
+  "comment": 62,
+  "blank": 119,
+  "prose_pct": 10.64,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/driver_acoustics.py",
+  "total": 1207,
+  "code": 722,
+  "docstring": 251,
+  "comment": 124,
+  "blank": 110,
+  "prose_pct": 31.07,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/driver_base_trim.py",
+  "total": 463,
+  "code": 220,
+  "docstring": 128,
+  "comment": 66,
+  "blank": 49,
+  "prose_pct": 41.9,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/driver_pad.py",
+  "total": 209,
+  "code": 105,
+  "docstring": 58,
+  "comment": 17,
+  "blank": 29,
+  "prose_pct": 35.89,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/driver_protection.py",
+  "total": 1061,
+  "code": 456,
+  "docstring": 236,
+  "comment": 248,
+  "blank": 121,
+  "prose_pct": 45.62,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/driver_safety.py",
+  "total": 3258,
+  "code": 2383,
+  "docstring": 345,
+  "comment": 320,
+  "blank": 210,
+  "prose_pct": 20.41,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/environment.py",
+  "total": 780,
+  "code": 646,
+  "docstring": 25,
+  "comment": 35,
+  "blank": 74,
+  "prose_pct": 7.69,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/excitation_safety_plan.py",
+  "total": 1001,
+  "code": 608,
+  "docstring": 248,
+  "comment": 54,
+  "blank": 91,
+  "prose_pct": 30.17,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/flat_spec.py",
+  "total": 1288,
+  "code": 507,
+  "docstring": 575,
+  "comment": 86,
+  "blank": 120,
+  "prose_pct": 51.32,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/flat_spec_views.py",
+  "total": 1169,
+  "code": 529,
+  "docstring": 508,
+  "comment": 18,
+  "blank": 114,
+  "prose_pct": 45.0,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/frequency_view.py",
+  "total": 173,
+  "code": 138,
+  "docstring": 10,
+  "comment": 3,
+  "blank": 22,
+  "prose_pct": 7.51,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/graph_evidence.py",
+  "total": 598,
+  "code": 376,
+  "docstring": 119,
+  "comment": 46,
+  "blank": 57,
+  "prose_pct": 27.59,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/graph_safety.py",
+  "total": 1201,
+  "code": 698,
+  "docstring": 289,
+  "comment": 78,
+  "blank": 136,
+  "prose_pct": 30.56,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/level_trim.py",
+  "total": 67,
+  "code": 45,
+  "docstring": 3,
+  "comment": 9,
+  "blank": 10,
+  "prose_pct": 17.91,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/linearization_envelope.py",
+  "total": 860,
+  "code": 308,
+  "docstring": 358,
+  "comment": 76,
+  "blank": 118,
+  "prose_pct": 50.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/linearization_fit.py",
+  "total": 3567,
+  "code": 1165,
+  "docstring": 1036,
+  "comment": 1055,
+  "blank": 311,
+  "prose_pct": 58.62,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/measured_candidate.py",
+  "total": 840,
+  "code": 762,
+  "docstring": 16,
+  "comment": 3,
+  "blank": 59,
+  "prose_pct": 2.26,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/measured_crossover_candidate.py",
+  "total": 892,
+  "code": 469,
+  "docstring": 294,
+  "comment": 49,
+  "blank": 80,
+  "prose_pct": 38.45,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/measurement.py",
+  "total": 1792,
+  "code": 1396,
+  "docstring": 171,
+  "comment": 64,
+  "blank": 161,
+  "prose_pct": 13.11,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/measurement_archive.py",
+  "total": 204,
+  "code": 164,
+  "docstring": 8,
+  "comment": 5,
+  "blank": 27,
+  "prose_pct": 6.37,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/measurement_document.py",
+  "total": 277,
+  "code": 233,
+  "docstring": 6,
+  "comment": 3,
+  "blank": 35,
+  "prose_pct": 3.25,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/measurement_emit.py",
+  "total": 132,
+  "code": 41,
+  "docstring": 68,
+  "comment": 3,
+  "blank": 20,
+  "prose_pct": 53.79,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/measurement_programs.py",
+  "total": 160,
+  "code": 82,
+  "docstring": 30,
+  "comment": 10,
+  "blank": 38,
+  "prose_pct": 25.0,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/model_error_store.py",
+  "total": 380,
+  "code": 235,
+  "docstring": 64,
+  "comment": 21,
+  "blank": 60,
+  "prose_pct": 22.37,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/passive_profile.py",
+  "total": 62,
+  "code": 28,
+  "docstring": 18,
+  "comment": 3,
+  "blank": 13,
+  "prose_pct": 33.87,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/path_safety.py",
+  "total": 1092,
+  "code": 915,
+  "docstring": 47,
+  "comment": 39,
+  "blank": 91,
+  "prose_pct": 7.88,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/playback.py",
+  "total": 1245,
+  "code": 1026,
+  "docstring": 50,
+  "comment": 61,
+  "blank": 108,
+  "prose_pct": 8.92,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/playback_route.py",
+  "total": 395,
+  "code": 203,
+  "docstring": 105,
+  "comment": 27,
+  "blank": 60,
+  "prose_pct": 33.42,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/profile.py",
+  "total": 893,
+  "code": 703,
+  "docstring": 39,
+  "comment": 57,
+  "blank": 94,
+  "prose_pct": 10.75,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/program_admission.py",
+  "total": 723,
+  "code": 479,
+  "docstring": 94,
+  "comment": 72,
+  "blank": 78,
+  "prose_pct": 22.96,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/program_playback.py",
+  "total": 179,
+  "code": 83,
+  "docstring": 56,
+  "comment": 8,
+  "blank": 32,
+  "prose_pct": 35.75,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/repeat_admission.py",
+  "total": 604,
+  "code": 445,
+  "docstring": 52,
+  "comment": 47,
+  "blank": 60,
+  "prose_pct": 16.39,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/repeat_floor.py",
+  "total": 195,
+  "code": 110,
+  "docstring": 49,
+  "comment": 6,
+  "blank": 30,
+  "prose_pct": 28.21,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/reset.py",
+  "total": 270,
+  "code": 132,
+  "docstring": 43,
+  "comment": 54,
+  "blank": 41,
+  "prose_pct": 35.93,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/restore_wait.py",
+  "total": 58,
+  "code": 24,
+  "docstring": 15,
+  "comment": 8,
+  "blank": 11,
+  "prose_pct": 39.66,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/revalidation.py",
+  "total": 52,
+  "code": 32,
+  "docstring": 9,
+  "comment": 3,
+  "blank": 8,
+  "prose_pct": 23.08,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/round_bank.py",
+  "total": 277,
+  "code": 152,
+  "docstring": 72,
+  "comment": 14,
+  "blank": 39,
+  "prose_pct": 31.05,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/runtime_contract.py",
+  "total": 5529,
+  "code": 3902,
+  "docstring": 708,
+  "comment": 473,
+  "blank": 446,
+  "prose_pct": 21.36,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/runtime_convergence.py",
+  "total": 352,
+  "code": 268,
+  "docstring": 27,
+  "comment": 20,
+  "blank": 37,
+  "prose_pct": 13.35,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/safe_playback.py",
+  "total": 577,
+  "code": 479,
+  "docstring": 22,
+  "comment": 3,
+  "blank": 73,
+  "prose_pct": 4.33,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/seat_level_ramp.py",
+  "total": 2245,
+  "code": 1240,
+  "docstring": 436,
+  "comment": 365,
+  "blank": 204,
+  "prose_pct": 35.68,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/seat_level_reference.py",
+  "total": 394,
+  "code": 222,
+  "docstring": 83,
+  "comment": 23,
+  "blank": 66,
+  "prose_pct": 26.9,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/session_volume_plan.py",
+  "total": 1291,
+  "code": 604,
+  "docstring": 451,
+  "comment": 84,
+  "blank": 152,
+  "prose_pct": 41.44,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/setup_status.py",
+  "total": 1346,
+  "code": 960,
+  "docstring": 144,
+  "comment": 146,
+  "blank": 96,
+  "prose_pct": 21.55,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/speech_stimulus.py",
+  "total": 232,
+  "code": 192,
+  "docstring": 3,
+  "comment": 3,
+  "blank": 34,
+  "prose_pct": 2.59,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/staging.py",
+  "total": 2498,
+  "code": 1906,
+  "docstring": 182,
+  "comment": 218,
+  "blank": 192,
+  "prose_pct": 16.01,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/startup_hold.py",
+  "total": 193,
+  "code": 62,
+  "docstring": 87,
+  "comment": 12,
+  "blank": 32,
+  "prose_pct": 51.3,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/startup_load.py",
+  "total": 2352,
+  "code": 1951,
+  "docstring": 85,
+  "comment": 177,
+  "blank": 139,
+  "prose_pct": 11.14,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/test_signal_plan.py",
+  "total": 523,
+  "code": 362,
+  "docstring": 66,
+  "comment": 36,
+  "blank": 59,
+  "prose_pct": 19.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/tone_plan.py",
+  "total": 42,
+  "code": 28,
+  "docstring": 2,
+  "comment": 3,
+  "blank": 9,
+  "prose_pct": 11.9,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/topology_tone.py",
+  "total": 244,
+  "code": 211,
+  "docstring": 6,
+  "comment": 3,
+  "blank": 24,
+  "prose_pct": 3.69,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/tuning_handoff.py",
+  "total": 145,
+  "code": 92,
+  "docstring": 26,
+  "comment": 10,
+  "blank": 17,
+  "prose_pct": 24.83,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/volume_latch.py",
+  "total": 317,
+  "code": 125,
+  "docstring": 114,
+  "comment": 38,
+  "blank": 40,
+  "prose_pct": 47.95,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/web_commissioning.py",
+  "total": 2916,
+  "code": 2371,
+  "docstring": 154,
+  "comment": 159,
+  "blank": 232,
+  "prose_pct": 10.73,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/web_measurement.py",
+  "total": 1382,
+  "code": 1159,
+  "docstring": 74,
+  "comment": 45,
+  "blank": 104,
+  "prose_pct": 8.61,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/active_speaker/wizard_client.py",
+  "total": 408,
+  "code": 211,
+  "docstring": 104,
+  "comment": 41,
+  "blank": 52,
+  "prose_pct": 35.54,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/__init__.py",
+  "total": 128,
+  "code": 83,
+  "docstring": 33,
+  "comment": 3,
+  "blank": 9,
+  "prose_pct": 28.12,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/closed_sets.py",
+  "total": 136,
+  "code": 65,
+  "docstring": 18,
+  "comment": 44,
+  "blank": 9,
+  "prose_pct": 45.59,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/findings.py",
+  "total": 554,
+  "code": 388,
+  "docstring": 66,
+  "comment": 44,
+  "blank": 56,
+  "prose_pct": 19.86,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/mechanisms.py",
+  "total": 287,
+  "code": 113,
+  "docstring": 84,
+  "comment": 63,
+  "blank": 27,
+  "prose_pct": 51.22,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/position_evidence.py",
+  "total": 466,
+  "code": 309,
+  "docstring": 78,
+  "comment": 39,
+  "blank": 40,
+  "prose_pct": 25.11,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/promotion.py",
+  "total": 597,
+  "code": 198,
+  "docstring": 164,
+  "comment": 185,
+  "blank": 50,
+  "prose_pct": 58.46,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/session_identity.py",
+  "total": 259,
+  "code": 109,
+  "docstring": 88,
+  "comment": 19,
+  "blank": 43,
+  "prose_pct": 41.31,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/attribution/storage.py",
+  "total": 261,
+  "code": 101,
+  "docstring": 104,
+  "comment": 9,
+  "blank": 47,
+  "prose_pct": 43.3,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/__init__.py",
+  "total": 136,
+  "code": 0,
+  "docstring": 128,
+  "comment": 3,
+  "blank": 5,
+  "prose_pct": 96.32,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/admitted_playback.py",
+  "total": 654,
+  "code": 512,
+  "docstring": 52,
+  "comment": 9,
+  "blank": 81,
+  "prose_pct": 9.33,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/alignment.py",
+  "total": 453,
+  "code": 252,
+  "docstring": 112,
+  "comment": 32,
+  "blank": 57,
+  "prose_pct": 31.79,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/analysis.py",
+  "total": 798,
+  "code": 442,
+  "docstring": 226,
+  "comment": 25,
+  "blank": 105,
+  "prose_pct": 31.45,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/bundles.py",
+  "total": 443,
+  "code": 303,
+  "docstring": 63,
+  "comment": 10,
+  "blank": 67,
+  "prose_pct": 16.48,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/calibration.py",
+  "total": 1223,
+  "code": 795,
+  "docstring": 202,
+  "comment": 85,
+  "blank": 141,
+  "prose_pct": 23.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/comparison_bands.py",
+  "total": 183,
+  "code": 67,
+  "docstring": 86,
+  "comment": 4,
+  "blank": 26,
+  "prose_pct": 49.18,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/correction_lane.py",
+  "total": 369,
+  "code": 53,
+  "docstring": 228,
+  "comment": 46,
+  "blank": 42,
+  "prose_pct": 74.25,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/deconv.py",
+  "total": 403,
+  "code": 236,
+  "docstring": 89,
+  "comment": 25,
+  "blank": 53,
+  "prose_pct": 28.29,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/delay_graph.py",
+  "total": 734,
+  "code": 594,
+  "docstring": 62,
+  "comment": 7,
+  "blank": 71,
+  "prose_pct": 9.4,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/distortion.py",
+  "total": 828,
+  "code": 397,
+  "docstring": 267,
+  "comment": 65,
+  "blank": 99,
+  "prose_pct": 40.1,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/evidence_identity.py",
+  "total": 530,
+  "code": 448,
+  "docstring": 22,
+  "comment": 3,
+  "blank": 57,
+  "prose_pct": 4.72,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/excitation.py",
+  "total": 13,
+  "code": 1,
+  "docstring": 6,
+  "comment": 3,
+  "blank": 3,
+  "prose_pct": 69.23,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/excitation_admission.py",
+  "total": 820,
+  "code": 652,
+  "docstring": 63,
+  "comment": 5,
+  "blank": 100,
+  "prose_pct": 8.29,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/excitation_artifacts.py",
+  "total": 988,
+  "code": 844,
+  "docstring": 30,
+  "comment": 3,
+  "blank": 111,
+  "prose_pct": 3.34,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/frame_fit.py",
+  "total": 361,
+  "code": 93,
+  "docstring": 203,
+  "comment": 14,
+  "blank": 51,
+  "prose_pct": 60.11,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/frame_ledger.py",
+  "total": 312,
+  "code": 88,
+  "docstring": 147,
+  "comment": 39,
+  "blank": 38,
+  "prose_pct": 59.62,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/gate_disclosure.py",
+  "total": 585,
+  "code": 273,
+  "docstring": 197,
+  "comment": 38,
+  "blank": 77,
+  "prose_pct": 40.17,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/gating.py",
+  "total": 1128,
+  "code": 432,
+  "docstring": 372,
+  "comment": 196,
+  "blank": 128,
+  "prose_pct": 50.35,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/interference_nulls.py",
+  "total": 1900,
+  "code": 702,
+  "docstring": 486,
+  "comment": 538,
+  "blank": 174,
+  "prose_pct": 53.89,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/level_solver.py",
+  "total": 48,
+  "code": 9,
+  "docstring": 13,
+  "comment": 17,
+  "blank": 9,
+  "prose_pct": 62.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/measurement_geometry.py",
+  "total": 248,
+  "code": 113,
+  "docstring": 87,
+  "comment": 8,
+  "blank": 40,
+  "prose_pct": 38.31,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/mic_identity.py",
+  "total": 206,
+  "code": 54,
+  "docstring": 48,
+  "comment": 91,
+  "blank": 13,
+  "prose_pct": 67.48,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/null_walk.py",
+  "total": 860,
+  "code": 668,
+  "docstring": 84,
+  "comment": 7,
+  "blank": 101,
+  "prose_pct": 10.58,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/olive_metrics.py",
+  "total": 387,
+  "code": 205,
+  "docstring": 110,
+  "comment": 19,
+  "blank": 53,
+  "prose_pct": 33.33,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/playback.py",
+  "total": 1611,
+  "code": 1398,
+  "docstring": 41,
+  "comment": 30,
+  "blank": 142,
+  "prose_pct": 4.41,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/program.py",
+  "total": 2159,
+  "code": 1092,
+  "docstring": 576,
+  "comment": 271,
+  "blank": 220,
+  "prose_pct": 39.23,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/program_analysis.py",
+  "total": 6572,
+  "code": 3010,
+  "docstring": 1519,
+  "comment": 1485,
+  "blank": 558,
+  "prose_pct": 45.71,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/quality.py",
+  "total": 282,
+  "code": 213,
+  "docstring": 27,
+  "comment": 8,
+  "blank": 34,
+  "prose_pct": 12.41,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/quality_model.py",
+  "total": 202,
+  "code": 28,
+  "docstring": 80,
+  "comment": 63,
+  "blank": 31,
+  "prose_pct": 70.79,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/ramp.py",
+  "total": 1752,
+  "code": 1045,
+  "docstring": 316,
+  "comment": 255,
+  "blank": 136,
+  "prose_pct": 32.59,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/room_boundary.py",
+  "total": 148,
+  "code": 13,
+  "docstring": 100,
+  "comment": 17,
+  "blank": 18,
+  "prose_pct": 79.05,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/snr_policy.py",
+  "total": 840,
+  "code": 371,
+  "docstring": 332,
+  "comment": 45,
+  "blank": 92,
+  "prose_pct": 44.88,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/spatial_combine.py",
+  "total": 2228,
+  "code": 843,
+  "docstring": 653,
+  "comment": 524,
+  "blank": 208,
+  "prose_pct": 52.83,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/sweep.py",
+  "total": 350,
+  "code": 206,
+  "docstring": 80,
+  "comment": 23,
+  "blank": 41,
+  "prose_pct": 29.43,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/timeline_slip.py",
+  "total": 285,
+  "code": 69,
+  "docstring": 111,
+  "comment": 74,
+  "blank": 31,
+  "prose_pct": 64.91,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/wired_capture.py",
+  "total": 674,
+  "code": 339,
+  "docstring": 182,
+  "comment": 69,
+  "blank": 84,
+  "prose_pct": 37.24,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/audio_measurement/wired_level_meter.py",
+  "total": 230,
+  "code": 150,
+  "docstring": 33,
+  "comment": 19,
+  "blank": 28,
+  "prose_pct": 22.61,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/__init__.py",
+  "total": 15,
+  "code": 0,
+  "docstring": 10,
+  "comment": 3,
+  "blank": 2,
+  "prose_pct": 86.67,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/actions.py",
+  "total": 450,
+  "code": 389,
+  "docstring": 15,
+  "comment": 8,
+  "blank": 38,
+  "prose_pct": 5.11,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/advisor_context.py",
+  "total": 483,
+  "code": 408,
+  "docstring": 27,
+  "comment": 13,
+  "blank": 35,
+  "prose_pct": 8.28,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/cli.py",
+  "total": 523,
+  "code": 490,
+  "docstring": 1,
+  "comment": 3,
+  "blank": 29,
+  "prose_pct": 0.76,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/correction_advisor.py",
+  "total": 702,
+  "code": 467,
+  "docstring": 119,
+  "comment": 27,
+  "blank": 89,
+  "prose_pct": 20.8,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/curves.py",
+  "total": 23,
+  "code": 13,
+  "docstring": 2,
+  "comment": 3,
+  "blank": 5,
+  "prose_pct": 21.74,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/key_provisioning.py",
+  "total": 172,
+  "code": 75,
+  "docstring": 53,
+  "comment": 13,
+  "blank": 31,
+  "prose_pct": 38.37,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/model_client.py",
+  "total": 503,
+  "code": 397,
+  "docstring": 28,
+  "comment": 30,
+  "blank": 48,
+  "prose_pct": 11.53,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/prompt.py",
+  "total": 82,
+  "code": 60,
+  "docstring": 7,
+  "comment": 3,
+  "blank": 12,
+  "prose_pct": 12.2,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/proposal_sim.py",
+  "total": 283,
+  "code": 187,
+  "docstring": 41,
+  "comment": 16,
+  "blank": 39,
+  "prose_pct": 20.14,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/response.py",
+  "total": 964,
+  "code": 797,
+  "docstring": 41,
+  "comment": 44,
+  "blank": 82,
+  "prose_pct": 8.82,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/sound_actions.py",
+  "total": 93,
+  "code": 67,
+  "docstring": 7,
+  "comment": 3,
+  "blank": 16,
+  "prose_pct": 10.75,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/calibration_agent/tools.py",
+  "total": 340,
+  "code": 283,
+  "docstring": 6,
+  "comment": 9,
+  "blank": 42,
+  "prose_pct": 4.41,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/active_speaker.py",
+  "total": 1797,
+  "code": 1390,
+  "docstring": 144,
+  "comment": 132,
+  "blank": 131,
+  "prose_pct": 15.36,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/active_speaker_attempts_replay.py",
+  "total": 1079,
+  "code": 777,
+  "docstring": 127,
+  "comment": 57,
+  "blank": 118,
+  "prose_pct": 17.05,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/active_speaker_emit_bench.py",
+  "total": 285,
+  "code": 209,
+  "docstring": 37,
+  "comment": 9,
+  "blank": 30,
+  "prose_pct": 16.14,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/angle_capture.py",
+  "total": 766,
+  "code": 531,
+  "docstring": 105,
+  "comment": 57,
+  "blank": 73,
+  "prose_pct": 21.15,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/arm_walk.py",
+  "total": 283,
+  "code": 202,
+  "docstring": 46,
+  "comment": 8,
+  "blank": 27,
+  "prose_pct": 19.08,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/audition.py",
+  "total": 291,
+  "code": 195,
+  "docstring": 32,
+  "comment": 15,
+  "blank": 49,
+  "prose_pct": 16.15,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/basic_profile.py",
+  "total": 465,
+  "code": 316,
+  "docstring": 57,
+  "comment": 35,
+  "blank": 57,
+  "prose_pct": 19.78,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/bass_extension_bench.py",
+  "total": 194,
+  "code": 122,
+  "docstring": 37,
+  "comment": 3,
+  "blank": 32,
+  "prose_pct": 20.62,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/classify_features.py",
+  "total": 300,
+  "code": 221,
+  "docstring": 38,
+  "comment": 20,
+  "blank": 21,
+  "prose_pct": 19.33,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/close_reference.py",
+  "total": 280,
+  "code": 198,
+  "docstring": 35,
+  "comment": 13,
+  "blank": 34,
+  "prose_pct": 17.14,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/correction_bundle.py",
+  "total": 273,
+  "code": 246,
+  "docstring": 1,
+  "comment": 3,
+  "blank": 23,
+  "prose_pct": 1.47,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/crossover_prescriber.py",
+  "total": 1628,
+  "code": 950,
+  "docstring": 336,
+  "comment": 176,
+  "blank": 166,
+  "prose_pct": 31.45,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/declare_geometry.py",
+  "total": 165,
+  "code": 110,
+  "docstring": 14,
+  "comment": 12,
+  "blank": 29,
+  "prose_pct": 15.76,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/delay_sweep.py",
+  "total": 286,
+  "code": 200,
+  "docstring": 39,
+  "comment": 7,
+  "blank": 40,
+  "prose_pct": 16.08,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/forward_model.py",
+  "total": 327,
+  "code": 248,
+  "docstring": 27,
+  "comment": 10,
+  "blank": 42,
+  "prose_pct": 11.31,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/gate_sweep.py",
+  "total": 223,
+  "code": 165,
+  "docstring": 25,
+  "comment": 8,
+  "blank": 25,
+  "prose_pct": 14.8,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/measure.py",
+  "total": 1321,
+  "code": 841,
+  "docstring": 213,
+  "comment": 124,
+  "blank": 143,
+  "prose_pct": 25.51,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/measurement_mic.py",
+  "total": 45,
+  "code": 10,
+  "docstring": 21,
+  "comment": 3,
+  "blank": 11,
+  "prose_pct": 53.33,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/null_door.py",
+  "total": 1023,
+  "code": 625,
+  "docstring": 148,
+  "comment": 127,
+  "blank": 123,
+  "prose_pct": 26.88,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/project_ring.py",
+  "total": 167,
+  "code": 116,
+  "docstring": 23,
+  "comment": 10,
+  "blank": 18,
+  "prose_pct": 19.76,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/read_distortion.py",
+  "total": 353,
+  "code": 269,
+  "docstring": 37,
+  "comment": 19,
+  "blank": 28,
+  "prose_pct": 15.86,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/round.py",
+  "total": 324,
+  "code": 241,
+  "docstring": 32,
+  "comment": 17,
+  "blank": 34,
+  "prose_pct": 15.12,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/round_bank.py",
+  "total": 131,
+  "code": 97,
+  "docstring": 12,
+  "comment": 6,
+  "blank": 16,
+  "prose_pct": 13.74,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/round_views.py",
+  "total": 681,
+  "code": 452,
+  "docstring": 102,
+  "comment": 49,
+  "blank": 78,
+  "prose_pct": 22.17,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/cli/seat_level.py",
+  "total": 738,
+  "code": 452,
+  "docstring": 150,
+  "comment": 52,
+  "blank": 84,
+  "prose_pct": 27.37,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/__init__.py",
+  "total": 31,
+  "code": 0,
+  "docstring": 25,
+  "comment": 3,
+  "blank": 3,
+  "prose_pct": 90.32,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/_numbers.py",
+  "total": 21,
+  "code": 11,
+  "docstring": 2,
+  "comment": 3,
+  "blank": 5,
+  "prose_pct": 23.81,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/acceptance.py",
+  "total": 565,
+  "code": 292,
+  "docstring": 157,
+  "comment": 55,
+  "blank": 61,
+  "prose_pct": 37.52,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/acoustic_quality.py",
+  "total": 633,
+  "code": 474,
+  "docstring": 51,
+  "comment": 67,
+  "blank": 41,
+  "prose_pct": 18.64,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/applied_speaker_evidence.py",
+  "total": 326,
+  "code": 155,
+  "docstring": 78,
+  "comment": 42,
+  "blank": 51,
+  "prose_pct": 36.81,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/artifacts.py",
+  "total": 646,
+  "code": 584,
+  "docstring": 16,
+  "comment": 10,
+  "blank": 36,
+  "prose_pct": 4.02,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/autolevel.py",
+  "total": 463,
+  "code": 357,
+  "docstring": 47,
+  "comment": 16,
+  "blank": 43,
+  "prose_pct": 13.61,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/browser_audio.py",
+  "total": 212,
+  "code": 165,
+  "docstring": 11,
+  "comment": 9,
+  "blank": 27,
+  "prose_pct": 9.43,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/bundle_tools.py",
+  "total": 521,
+  "code": 401,
+  "docstring": 43,
+  "comment": 20,
+  "blank": 57,
+  "prose_pct": 12.09,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/bundles.py",
+  "total": 790,
+  "code": 672,
+  "docstring": 37,
+  "comment": 21,
+  "blank": 60,
+  "prose_pct": 7.34,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/confidence.py",
+  "total": 750,
+  "code": 647,
+  "docstring": 16,
+  "comment": 17,
+  "blank": 70,
+  "prose_pct": 4.4,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/coordinator.py",
+  "total": 987,
+  "code": 590,
+  "docstring": 166,
+  "comment": 154,
+  "blank": 77,
+  "prose_pct": 32.42,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/envelope.py",
+  "total": 1567,
+  "code": 1104,
+  "docstring": 203,
+  "comment": 131,
+  "blank": 129,
+  "prose_pct": 21.31,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/evidence.py",
+  "total": 652,
+  "code": 563,
+  "docstring": 23,
+  "comment": 11,
+  "blank": 55,
+  "prose_pct": 5.21,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/failures.py",
+  "total": 214,
+  "code": 179,
+  "docstring": 14,
+  "comment": 9,
+  "blank": 12,
+  "prose_pct": 10.75,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/fir_runtime.py",
+  "total": 301,
+  "code": 253,
+  "docstring": 13,
+  "comment": 3,
+  "blank": 32,
+  "prose_pct": 5.32,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/household_mic.py",
+  "total": 310,
+  "code": 160,
+  "docstring": 105,
+  "comment": 9,
+  "blank": 36,
+  "prose_pct": 36.77,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/interop.py",
+  "total": 166,
+  "code": 121,
+  "docstring": 20,
+  "comment": 3,
+  "blank": 22,
+  "prose_pct": 13.86,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/level_match.py",
+  "total": 1082,
+  "code": 664,
+  "docstring": 214,
+  "comment": 84,
+  "blank": 120,
+  "prose_pct": 27.54,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/peq.py",
+  "total": 308,
+  "code": 136,
+  "docstring": 96,
+  "comment": 30,
+  "blank": 46,
+  "prose_pct": 40.91,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/playback.py",
+  "total": 154,
+  "code": 95,
+  "docstring": 19,
+  "comment": 13,
+  "blank": 27,
+  "prose_pct": 20.78,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/replay_artifacts.py",
+  "total": 157,
+  "code": 125,
+  "docstring": 9,
+  "comment": 3,
+  "blank": 20,
+  "prose_pct": 7.64,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/runtime_integrity.py",
+  "total": 718,
+  "code": 605,
+  "docstring": 30,
+  "comment": 23,
+  "blank": 60,
+  "prose_pct": 7.38,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/runtime_safety.py",
+  "total": 133,
+  "code": 94,
+  "docstring": 8,
+  "comment": 11,
+  "blank": 20,
+  "prose_pct": 14.29,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/session.py",
+  "total": 2881,
+  "code": 1964,
+  "docstring": 371,
+  "comment": 306,
+  "blank": 240,
+  "prose_pct": 23.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/spatial.py",
+  "total": 189,
+  "code": 131,
+  "docstring": 14,
+  "comment": 17,
+  "blank": 27,
+  "prose_pct": 16.4,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/state_guard.py",
+  "total": 101,
+  "code": 79,
+  "docstring": 3,
+  "comment": 7,
+  "blank": 12,
+  "prose_pct": 9.9,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/status.py",
+  "total": 462,
+  "code": 395,
+  "docstring": 12,
+  "comment": 14,
+  "blank": 41,
+  "prose_pct": 5.63,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/strategy.py",
+  "total": 924,
+  "code": 599,
+  "docstring": 117,
+  "comment": 130,
+  "blank": 78,
+  "prose_pct": 26.73,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/target.py",
+  "total": 82,
+  "code": 19,
+  "docstring": 35,
+  "comment": 7,
+  "blank": 21,
+  "prose_pct": 51.22,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/correction/variance_cap.py",
+  "total": 537,
+  "code": 158,
+  "docstring": 291,
+  "comment": 18,
+  "blank": 70,
+  "prose_pct": 57.54,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/active_speaker_flow.py",
+  "total": 90,
+  "code": 22,
+  "docstring": 49,
+  "comment": 3,
+  "blank": 16,
+  "prose_pct": 57.78,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/balance_flow.py",
+  "total": 831,
+  "code": 626,
+  "docstring": 97,
+  "comment": 28,
+  "blank": 80,
+  "prose_pct": 15.04,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/balance_level.py",
+  "total": 131,
+  "code": 100,
+  "docstring": 8,
+  "comment": 4,
+  "blank": 19,
+  "prose_pct": 9.16,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/balance_volume_guard.py",
+  "total": 331,
+  "code": 271,
+  "docstring": 15,
+  "comment": 8,
+  "blank": 37,
+  "prose_pct": 6.95,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_bass_flow.py",
+  "total": 137,
+  "code": 85,
+  "docstring": 16,
+  "comment": 14,
+  "blank": 22,
+  "prose_pct": 21.9,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_backend.py",
+  "total": 1748,
+  "code": 1443,
+  "docstring": 76,
+  "comment": 81,
+  "blank": 148,
+  "prose_pct": 8.98,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_context.py",
+  "total": 63,
+  "code": 25,
+  "docstring": 4,
+  "comment": 26,
+  "blank": 8,
+  "prose_pct": 47.62,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_flow.py",
+  "total": 521,
+  "code": 356,
+  "docstring": 67,
+  "comment": 45,
+  "blank": 53,
+  "prose_pct": 21.5,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_v2.py",
+  "total": 7831,
+  "code": 3865,
+  "docstring": 1875,
+  "comment": 1403,
+  "blank": 688,
+  "prose_pct": 41.86,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_v2_relay.py",
+  "total": 1099,
+  "code": 494,
+  "docstring": 272,
+  "comment": 247,
+  "blank": 86,
+  "prose_pct": 47.22,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_v2_republish.py",
+  "total": 374,
+  "code": 158,
+  "docstring": 107,
+  "comment": 77,
+  "blank": 32,
+  "prose_pct": 49.2,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_v2_status.py",
+  "total": 858,
+  "code": 297,
+  "docstring": 311,
+  "comment": 181,
+  "blank": 69,
+  "prose_pct": 57.34,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_crossover_v2_wired.py",
+  "total": 1186,
+  "code": 618,
+  "docstring": 283,
+  "comment": 178,
+  "blank": 107,
+  "prose_pct": 38.87,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_hub.py",
+  "total": 36,
+  "code": 22,
+  "docstring": 1,
+  "comment": 7,
+  "blank": 6,
+  "prose_pct": 22.22,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_measurements.py",
+  "total": 99,
+  "code": 74,
+  "docstring": 3,
+  "comment": 3,
+  "blank": 19,
+  "prose_pct": 6.06,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_report.py",
+  "total": 100,
+  "code": 73,
+  "docstring": 9,
+  "comment": 3,
+  "blank": 15,
+  "prose_pct": 12.0,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_room_flow.py",
+  "total": 436,
+  "code": 369,
+  "docstring": 1,
+  "comment": 28,
+  "blank": 38,
+  "prose_pct": 6.65,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_setup.py",
+  "total": 7480,
+  "code": 5219,
+  "docstring": 876,
+  "comment": 666,
+  "blank": 719,
+  "prose_pct": 20.61,
+  "parse_error": null
+ },
+ {
+  "file": "jasper/web/correction_tuning.py",
+  "total": 335,
+  "code": 221,
+  "docstring": 34,
+  "comment": 24,
+  "blank": 56,
+  "prose_pct": 17.31,
+  "parse_error": null
+ }
+]

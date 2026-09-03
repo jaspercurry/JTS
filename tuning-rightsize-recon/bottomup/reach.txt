@@ -1,0 +1,170 @@
+scope: 310 modules, 261279 lines
+
+== per entry point: scope modules reached / scope lines reached ==
+MENU           jasper-null                                    254 mods  230161 lines
+MENU           jasper-measure                                 252 mods  229781 lines
+BINARY         jasper-calibration-agent                       253 mods  229460 lines
+BINARY         jasper-correction-web                          249 mods  228054 lines
+SYSTEMD        jasper-doctor                                  249 mods  228054 lines
+BINARY         jasper-sound-web                               249 mods  228054 lines
+MENU           jasper-round-views                             162 mods  161372 lines
+MENU           jasper-forward-model                           156 mods  159870 lines
+MENU           jasper-close-reference                         154 mods  156609 lines
+MENU           jasper-classify-features                       153 mods  156132 lines
+MENU           jasper-crossover-prescriber                    148 mods  154011 lines
+MENU           jasper-read-distortion                         148 mods  153733 lines
+MENU           jasper-delay-sweep                             150 mods  152320 lines
+BINARY         jasper-project-ring                            147 mods  151840 lines
+MENU           jasper-round-bank                              147 mods  151819 lines
+LAPTOP-SCRIPT  scripts/run-crossover-round.py                 149 mods  151518 lines
+MENU           jasper-arm-walk                                146 mods  149980 lines
+MENU           jasper-angle-capture                           145 mods  149287 lines
+BINARY         jasper-active-speaker-attempts-replay          140 mods  147454 lines
+LAPTOP-SCRIPT  scripts/render-metric-views.py                 139 mods  147164 lines
+LAPTOP-SCRIPT  scripts/harmonic-distortion-replay.py          139 mods  146823 lines
+LAPTOP-SCRIPT  scripts/severed-twin-replay.py                 138 mods  145995 lines
+SYSTEMD        jasper-control                                 128 mods  124312 lines
+MENU           jasper-audition                                128 mods  122431 lines
+MENU           jasper-seat-level                              106 mods  106977 lines
+LAPTOP-SCRIPT  scripts/tuning-llm-live-check.py               107 mods  101233 lines
+BINARY         jasper-active-speaker-emit-bench                99 mods  100529 lines
+MENU           jasper-gate-sweep                              101 mods   98794 lines
+SYSTEMD        jasper-aec-bridge                               95 mods   97255 lines
+BINARY         jasper-wake-corpus-web                          95 mods   97255 lines
+SYSTEMD        jasper-aec-commission                           94 mods   97236 lines
+SYSTEMD        jasper-aec-init                                 94 mods   97236 lines
+MENU           jasper-basic-profile                            95 mods   96357 lines
+MENU           jasper-round                                    95 mods   96216 lines
+BINARY         jasper-bass-extension-bench                     94 mods   95678 lines
+BINARY         jasper-noise-capture                            94 mods   95503 lines
+BINARY         jasper-wake-enroll                              94 mods   95503 lines
+SYSTEMD        jasper-accessory-reconcile                      93 mods   95484 lines
+BINARY         jasper-active-speaker                           93 mods   95484 lines
+BINARY         jasper-aec-tune                                 93 mods   95484 lines
+BINARY         jasper-airplay-mode                             93 mods   95484 lines
+BINARY         jasper-audio-config                             93 mods   95484 lines
+BINARY         jasper-audio-hw-validate                        93 mods   95484 lines
+BINARY         jasper-audio-validate                           93 mods   95484 lines
+BINARY         jasper-bluetooth-web                            93 mods   95484 lines
+BINARY         jasper-chat-web                                 93 mods   95484 lines
+BINARY         jasper-cues                                     93 mods   95484 lines
+SYSTEMD        jasper-fanin-coupling-reconcile                 93 mods   95484 lines
+BINARY         jasper-google-auth                              93 mods   95484 lines
+SYSTEMD        jasper-mux                                      93 mods   95484 lines
+BINARY         jasper-output-topology-reset                    93 mods   95484 lines
+BINARY         jasper-sound                                    93 mods   95484 lines
+SYSTEMD        jasper-source-intent-reconcile                  93 mods   95484 lines
+BINARY         jasper-spotify-auth                             93 mods   95484 lines
+BINARY         jasper-system-web                               93 mods   95484 lines
+SYSTEMD        jasper-usbmic                                   93 mods   95484 lines
+SYSTEMD        jasper-voice                                    93 mods   95484 lines
+BINARY         jasper-web                                      93 mods   95484 lines
+SYSTEMD        jasper-wiim-remote-ce                           93 mods   95484 lines
+LAPTOP-SCRIPT  scripts/_make_wake_test_track.py                93 mods   95484 lines
+BINARY         jasper-correction-bundle                        15 mods    5802 lines
+MENU           jasper-declare-geometry                          7 mods    2661 lines
+BINARY         jasper-wake-review                               1 mods      19 lines
+BINARY         jasper-wake-score                                1 mods      19 lines
+
+== GHOST: scope modules reached by NO entry point: 3 modules, 419 lines ==
+     326 jasper.correction.applied_speaker_evidence
+      48 jasper.audio_measurement.level_solver
+      45 jasper.cli.measurement_mic
+
+== union of MENU tools: 291 mods, 253983 scope lines
+== union of web (correction-web + sound-web): 249 mods, 228054 scope lines
+== union MENU+web: 253983 scope lines; reached ONLY by other entry points (doctor/voice/control/etc): 6877
+
+== scope modules reached ONLY by non-menu, non-web entry points ==
+    1079 jasper.cli.active_speaker_attempts_replay                    <- jasper-active-speaker-attempts-replay
+     923 jasper.active_speaker.bench.loop                             <- jasper-active-speaker-emit-bench
+     675 jasper.active_speaker.bench.compare                          <- jasper-active-speaker-emit-bench
+     605 jasper.active_speaker.bench.derivation                       <- jasper-active-speaker-emit-bench
+     523 jasper.calibration_agent.cli                                 <- jasper-calibration-agent
+     521 jasper.correction.bundle_tools                               <- jasper-correction-bundle
+     450 jasper.calibration_agent.actions                             <- jasper-calibration-agent
+     385 jasper.active_speaker.crossover_v2.ring_projection           <- jasper-project-ring
+     340 jasper.calibration_agent.tools                               <- jasper-calibration-agent
+     301 jasper.correction.fir_runtime                                <- jasper-correction-bundle
+     285 jasper.cli.active_speaker_emit_bench                         <- jasper-active-speaker-emit-bench
+     273 jasper.cli.correction_bundle                                 <- jasper-correction-bundle
+     194 jasper.cli.bass_extension_bench                              <- jasper-bass-extension-bench
+     167 jasper.cli.project_ring                                      <- jasper-project-ring
+      93 jasper.calibration_agent.sound_actions                       <- jasper-calibration-agent
+      63 jasper.active_speaker.bench                                  <- jasper-active-speaker-emit-bench
+
+ROSTER: 18 ['jasper.cli.basic_profile', 'jasper.cli.seat_level', 'jasper.cli.angle_capture']
+
+== L0 substrate pulled in by jasper-voice: 93 scope mods, 95484 lines ==
+    6572 jasper.audio_measurement.program_analysis
+    5529 jasper.active_speaker.runtime_contract
+    4551 jasper.active_speaker.camilla_yaml
+    4192 jasper.active_speaker.baseline_profile
+    3567 jasper.active_speaker.linearization_fit
+    3501 jasper.active_speaker.commissioning_evidence
+    3258 jasper.active_speaker.driver_safety
+    2498 jasper.active_speaker.staging
+    2352 jasper.active_speaker.startup_load
+    2228 jasper.audio_measurement.spatial_combine
+    2159 jasper.audio_measurement.program
+    2141 jasper.active_speaker.commissioning_run
+    1831 jasper.active_speaker.commissioning_receipt
+    1797 jasper.cli.active_speaker
+    1792 jasper.active_speaker.measurement
+    1718 jasper.active_speaker.crossover_v2.intervention
+    1617 jasper.active_speaker.crossover_v2.contracts
+    1611 jasper.audio_measurement.playback
+    1570 jasper.active_speaker.design_draft
+    1520 jasper.active_speaker.commissioning_capture
+    1433 jasper.active_speaker.commissioning_evidence_store
+    1366 jasper.active_speaker.commission_ramp
+    1245 jasper.active_speaker.playback
+    1223 jasper.audio_measurement.calibration
+    1207 jasper.active_speaker.driver_acoustics
+    1201 jasper.active_speaker.graph_safety
+    1150 jasper.active_speaker.bundles
+    1128 jasper.audio_measurement.gating
+    1092 jasper.active_speaker.path_safety
+    1061 jasper.active_speaker.driver_protection
+     988 jasper.audio_measurement.excitation_artifacts
+     893 jasper.active_speaker.profile
+     892 jasper.active_speaker.measured_crossover_candidate
+     879 jasper.active_speaker.crossover_preview
+     860 jasper.audio_measurement.null_walk
+     860 jasper.active_speaker.linearization_envelope
+     859 jasper.active_speaker.branch_chain
+     840 jasper.audio_measurement.snr_policy
+     840 jasper.active_speaker.measured_candidate
+     820 jasper.audio_measurement.excitation_admission
+
+== how jasper-voice reaches the tuning scope (shortest import paths) ==
+  jasper.voice_daemon -> jasper.audio_io -> jasper.fanin_coupling -> jasper.active_speaker.runtime_contract -> jasper.active_speaker.baseline_profile -> jasper.active_speaker.crossover_v2.intervention -> jasper.audio_measurement.program_analysis
+  jasper.voice_daemon -> jasper.audio_io -> jasper.fanin_coupling -> jasper.active_speaker.runtime_contract
+  jasper.voice_daemon -> jasper.audio_io -> jasper.fanin_coupling -> jasper.active_speaker.runtime_contract -> jasper.active_speaker.camilla_yaml
+  jasper.voice_daemon -> jasper.audio_io -> jasper.fanin_coupling -> jasper.active_speaker.runtime_contract -> jasper.active_speaker.baseline_profile
+  jasper.voice_daemon -> jasper.audio_io -> jasper.fanin_coupling -> jasper.active_speaker.runtime_contract -> jasper.active_speaker.baseline_profile -> jasper.active_speaker.linearization_fit
+  jasper.voice_daemon -> jasper.audio_io -> jasper.fanin_coupling -> jasper.active_speaker.runtime_contract -> jasper.active_speaker.baseline_profile -> jasper.active_speaker.measured_candidate -> jasper.active_speaker.commissioning_evidence
+
+== L1 menu tools beyond L0: 198 mods 158499 lines
+== L2 web beyond L0+L1: 0 mods 0 lines
+== L3 reached only by other entries: 16 mods 6877 lines
+
+== L2 web-only modules (top 40) ==
+
+== L3 modules ==
+    1079 jasper.cli.active_speaker_attempts_replay               <- jasper-active-speaker-attempts-replay
+     923 jasper.active_speaker.bench.loop                        <- jasper-active-speaker-emit-bench
+     675 jasper.active_speaker.bench.compare                     <- jasper-active-speaker-emit-bench
+     605 jasper.active_speaker.bench.derivation                  <- jasper-active-speaker-emit-bench
+     523 jasper.calibration_agent.cli                            <- jasper-calibration-agent
+     521 jasper.correction.bundle_tools                          <- jasper-correction-bundle
+     450 jasper.calibration_agent.actions                        <- jasper-calibration-agent
+     385 jasper.active_speaker.crossover_v2.ring_projection      <- jasper-project-ring
+     340 jasper.calibration_agent.tools                          <- jasper-calibration-agent
+     301 jasper.correction.fir_runtime                           <- jasper-correction-bundle
+     285 jasper.cli.active_speaker_emit_bench                    <- jasper-active-speaker-emit-bench
+     273 jasper.cli.correction_bundle                            <- jasper-correction-bundle
+     194 jasper.cli.bass_extension_bench                         <- jasper-bass-extension-bench
+     167 jasper.cli.project_ring                                 <- jasper-project-ring
+      93 jasper.calibration_agent.sound_actions                  <- jasper-calibration-agent
+      63 jasper.active_speaker.bench                             <- jasper-active-speaker-emit-bench
