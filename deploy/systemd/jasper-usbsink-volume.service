@@ -1,8 +1,8 @@
 [Unit]
 Description=Jasper USB sink host-volume observer
 # Non-real-time helper for USB Audio Input. jasper-fanin owns the audio data
-# plane; this Python process only polls the UAC2 gadget mixer and reports host
-# slider changes to jasper-control.
+# plane; this Python process only watches the UAC2 gadget mixer's control FDs
+# and reports host slider changes to jasper-control.
 #
 # It tracks the process-free readiness marker's lifecycle: the UAC2 mixer exists
 # only while the uac2 function is composed. The composite gadget outlives audio

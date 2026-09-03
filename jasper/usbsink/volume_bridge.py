@@ -187,10 +187,13 @@ class VolumeBridge:
         # transport success alone is insufficient because the controller
         # deliberately declines observations from an inactive source.
         self._last_published_pct: Optional[int] = None
-        # First mixer snapshot after bridge startup is state discovery, not
-        # proof of a new host action. Keep its identity so a restarted bridge
-        # cannot erase a mute asserted by another surface.
-        self._initial_observed_pct: Optional[int] = None
+        # Last value the mixer reported, and whether the host has moved the
+        # slider since startup. Until it has, what we read is state discovery
+        # rather than a host action — a restarted bridge must not erase a mute
+        # asserted by another surface. The latch stays set once armed, so a
+        # move back to the startup value is still intent.
+        self._last_observed_pct: Optional[int] = None
+        self._host_moved: bool = False
         # Re-presents one declined host slider move; see the retry constants.
         self._retry_task: Optional[asyncio.Task[None]] = None
 
@@ -244,7 +247,8 @@ class VolumeBridge:
                     db=f"{self._db_min:.1f}..{self._db_max:.1f}",
                     db_source=self._db_source,
                 )
-                await self._watch_mixer()
+                if await self._watch_mixer():
+                    await asyncio.sleep(self._discovery_retry_interval)
         except asyncio.CancelledError:
             log_event(logger, "usbsink.volume_bridge_stopping")
             raise
@@ -258,9 +262,9 @@ class VolumeBridge:
 
     def _open_mixer(self) -> None:
         """Open the card's simple-mixer element, or raise Unavailable."""
-        if self._alsa is None:
-            self._alsa = _load_alsaaudio()
         try:
+            if self._alsa is None:
+                self._alsa = _load_alsaaudio()
             indexes = dict(
                 zip(self._alsa.cards(), self._alsa.card_indexes()),
             )
@@ -286,11 +290,11 @@ class VolumeBridge:
             with contextlib.suppress(Exception):
                 mixer.close()
 
-    async def _watch_mixer(self) -> None:
+    async def _watch_mixer(self) -> bool:
         """Publish the current value, then one more on every mixer event.
 
-        Returns (rather than raising) when the control FDs stop working, so
-        run() can rediscover the card.
+        Returns True (rather than raising) when the control FDs stop working,
+        so run() can back off and rediscover the card.
         """
         mixer = self._mixer
         assert mixer is not None
@@ -324,7 +328,7 @@ class VolumeBridge:
                         error=broken[0],
                         level=logging.WARNING,
                     )
-                    return
+                    return True
                 await woken.wait()
                 woken.clear()
         finally:
@@ -420,23 +424,26 @@ class VolumeBridge:
         values = mixer.getvolume(units=self._alsa.VOLUME_UNITS_RAW)
         if not values:
             return
-        # getrec() reports the capture switch: 0 on a muted channel. Mute
-        # overrides to 0% — better to underrepresent volume than to let a
-        # channel through when the user expected silence.
-        muted = any(int(v) == 0 for v in mixer.getrec())
+        muted = False
+        if self._switch_numid is not None:
+            # getrec() reports the capture switch: 0 on a muted channel, and
+            # raises on an element that has none. Mute overrides to 0% —
+            # better to underrepresent volume than to let a channel through
+            # when the user expected silence.
+            muted = any(int(v) == 0 for v in mixer.getrec())
         pct = 0 if muted else self._raw_to_pct(int(values[0]))
-        if self._initial_observed_pct is None:
-            self._initial_observed_pct = pct
+        if pct == self._last_observed_pct:
+            return
+        if self._last_observed_pct is not None:
+            self._host_moved = True
+        self._last_observed_pct = pct
         await self._publish(pct)
 
     async def _publish(self, pct: int) -> None:
         await self._cancel_retry_and_wait()
         if pct == self._last_published_pct:
             return
-        initial = (
-            self._last_published_pct is None
-            and pct == self._initial_observed_pct
-        )
+        initial = self._last_published_pct is None and not self._host_moved
         if await self._post(pct, initial=initial):
             self._last_published_pct = pct
         elif not initial:

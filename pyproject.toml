@@ -34,6 +34,7 @@ streambox = [
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.150",
     "evdev>=2.0; sys_platform == 'linux'",
+    "pyalsaaudio>=0.11; sys_platform == 'linux'",
     "pyudev>=0.24",
     "dbus-next>=0.2.3",
     "zeroconf>=0.151.3,<1.0",

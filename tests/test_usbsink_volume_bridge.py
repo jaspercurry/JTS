@@ -315,6 +315,57 @@ async def test_run_retries_discovery_after_transient_mixer_miss(monkeypatch):
                 await task
 
 
+def test_missing_alsa_binding_degrades_to_discovery_retry():
+    """A tier whose venv lacks the Linux-only binding must idle on the
+    discovery retry loop, not crash-loop the unit under Restart=on-failure."""
+    bridge = VolumeBridge(card_name="UAC2Gadget")
+    with patch(
+        "jasper.usbsink.volume_bridge._load_alsaaudio",
+        side_effect=ImportError("alsaaudio"),
+    ):
+        with pytest.raises(VolumeBridgeUnavailable):
+            bridge._open_mixer()
+
+
+async def test_mixer_reset_backs_off_before_rediscovery(monkeypatch):
+    """A card that enumerates but whose reads always fail must not spin
+    discovery: the reset pays the discovery retry interval, like any other
+    failure. Without it each turn costs two `amixer` subprocesses and two log
+    lines, as fast as the CPU allows."""
+    broken, healthy = _FakeMixer(), _FakeMixer()
+    broken.fail = OSError(5, "EIO")
+    bridge = _ready_bridge(broken, healthy, discovery_retry_interval_sec=7.0)
+    monkeypatch.setattr(bridge, "_discover", lambda: None)
+
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
+        return True
+
+    monkeypatch.setattr(bridge, "_post", _accept)
+
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _record_sleep(delay):
+        delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _record_sleep)
+    task = asyncio.create_task(bridge.run())
+    try:
+        for _ in range(200):
+            if bridge._mixer is healthy:
+                break
+            await real_sleep(0)
+        assert bridge._mixer is healthy
+        # The ONLY sleep between the broken mixer and its replacement.
+        assert delays == [7.0]
+        assert broken.closed
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 async def test_run_reopens_mixer_after_it_breaks(monkeypatch):
     """The gadget function re-enumerating under the process invalidates the
     control FDs. The bridge closes them and falls back into discovery instead
@@ -723,7 +774,10 @@ async def test_new_move_replaces_the_value_being_retried(monkeypatch):
 
 async def test_marks_only_unchanged_startup_snapshot_as_initial(monkeypatch):
     """A bridge restart labels discovery state, but a later host move is
-    intent — and only intent may clear a mute latched by another surface."""
+    intent — and only intent may clear a mute latched by another surface.
+    A move BACK to the startup value is still intent: once the host has been
+    seen moving the slider, nothing it does is discovery any more, and the
+    value must be retried rather than silently dropped."""
     mixer = _FakeMixer(raw=40)
     bridge = _ready_bridge(mixer)
     bridge._mixer = mixer
@@ -736,10 +790,65 @@ async def test_marks_only_unchanged_startup_snapshot_as_initial(monkeypatch):
     monkeypatch.setattr(bridge, "_post", _decline)
 
     await bridge._observe()
+    assert bridge._retry_task is None  # snapshot: one attempt, no retry
     mixer.raw = 25
     await bridge._observe()
+    mixer.raw = 40  # back to the startup value
+    await bridge._observe()
 
-    assert posted == [(64, True), (25, False)]
+    assert posted == [(64, True), (25, False), (64, False)]
+    assert bridge._retry_task is not None
+
+
+async def test_unchanged_mixer_event_does_not_disturb_a_pending_retry(
+    monkeypatch,
+):
+    """A wake that carries no percent change must not cancel the in-flight
+    retry and restart its backoff at the base interval."""
+    mixer = _FakeMixer(raw=40)
+    bridge = _ready_bridge(mixer)
+    bridge._mixer = mixer
+    bridge._last_observed_pct = 25
+    bridge._host_moved = True
+    posted: list[int] = []
+
+    async def _decline(pct: int, *, initial: bool = False) -> bool:
+        posted.append(pct)
+        return False
+
+    monkeypatch.setattr(bridge, "_post", _decline)
+
+    await bridge._observe()  # 25 -> 64, declined, retry armed
+    armed = bridge._retry_task
+    assert armed is not None
+    await bridge._observe()  # same value: nothing to say
+    assert posted == [64]
+    assert bridge._retry_task is armed
+
+
+async def test_observe_skips_capture_switch_when_the_card_has_none(monkeypatch):
+    """`_discover` only requires the volume control. On a gadget descriptor
+    without `c_mute_present` the simple-mixer element has no capture switch
+    and `getrec()` raises, so it must not be called."""
+    mixer = _FakeMixer(raw=40)
+
+    def _no_switch():
+        raise AssertionError("getrec() called on a card with no capture switch")
+
+    mixer.getrec = _no_switch  # type: ignore[method-assign]
+    bridge = _ready_bridge(mixer)
+    bridge._switch_numid = None
+    bridge._mixer = mixer
+    posted: list[int] = []
+
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
+        posted.append(pct)
+        return True
+
+    monkeypatch.setattr(bridge, "_post", _accept)
+
+    await bridge._observe()
+    assert posted == [64]
 
 
 @pytest.mark.parametrize(
