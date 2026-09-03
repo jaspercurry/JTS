@@ -12,7 +12,6 @@ import os
 import sys
 from pathlib import Path
 
-from jasper.active_speaker.runtime_contract import outputd_active_lane_decision
 from jasper.audio_hardware.dac import (
     active_outputd_lane_channels_for,
     latency_floor_for,
@@ -479,6 +478,8 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
         active_cap = active_outputd_lane_channels_for(
             str(base.values.get("JASPER_AUDIO_DAC_ID") or "")
         )
+        from jasper.active_speaker.runtime_contract import outputd_active_lane_decision
+
         decision = (
             outputd_active_lane_decision(
                 active_cap,
