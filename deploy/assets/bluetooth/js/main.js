@@ -354,11 +354,24 @@ function visibleDeviceRows(live = devices, mutations = deviceMutations) {
   return rows;
 }
 
+// BlueZ keeps a Device1 object for any device that ever paired or connected
+// (non-temporary) and invalidates RSSI on every device once discovery stops
+// — so unpaired + no RSSI + not connected + no pending action means BlueZ
+// still remembers it, not that it's actually present.
+function deviceSection(d, pending = false) {
+  if (d.paired) return 'mine';
+  if (pending || d.connected || (d.rssi !== null && d.rssi !== undefined)) return 'nearby';
+  return null;
+}
+
 function renderDevices() {
   const paired = [];
   const other = [];
   for (const d of visibleDeviceRows()) {
-    (d.paired ? paired : other).push(d);
+    const pending = !!deviceMutations.get(String(d.address || '').toUpperCase());
+    const section = deviceSection(d, pending);
+    if (section === 'mine') paired.push(d);
+    else if (section === 'nearby') other.push(d);
   }
   // Paired: connected first, then by name.
   paired.sort((a, b) => (b.connected - a.connected)
@@ -411,7 +424,7 @@ function deviceRow(d) {
   } else if (d.connected) {
     badges += '<span class="badge connected">Connected</span>';
   }
-  else if (d.paired) badges += '<span class="badge paired">Paired</span>';
+  else if (d.paired) badges += '<span class="badge paired">Not connected</span>';
   let actions = '';
   if (pending) {
     actions = `<button class="btn btn--default" disabled>${deviceMutationLabel(pending.action, true)}</button>`;
@@ -426,41 +439,6 @@ function deviceRow(d) {
       actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Remove</button>`;
     }
   }
-  // Metrics. Render each label only when bluez actually has a value
-  // for it — surfacing a "—" placeholder suggests we're polling for
-  // the value and coming up empty, but in fact bluez doesn't expose
-  // RSSI for connected BLE devices at all (they stop advertising
-  // once linked, and HCI Read-RSSI is a BT-Classic-only command).
-  // Showing nothing is more honest than a perpetual dash.
-  let metrics = '';
-  if (isPaired) {
-    const parts = [];
-    if (d.battery !== null && d.battery !== undefined) {
-      parts.push(`
-        <div class="metric">
-          <div class="label">Battery</div>
-          <div class="value">${d.battery}%</div>
-        </div>`);
-    } else if (d.connected && d.batteryCapable) {
-      parts.push(`
-        <div class="metric">
-          <div class="label">Battery</div>
-          <div class="value">No reading</div>
-        </div>`);
-    }
-    if (d.rssi !== null && d.rssi !== undefined) {
-      parts.push(`
-        <div class="metric">
-          <div class="label">Signal</div>
-          <div class="value"><span class="bars">${rssiBars(d.rssi)}</span></div>
-        </div>`);
-    }
-    if (parts.length) {
-      metrics = `<div class="metrics">${parts.join('')}</div>`;
-    }
-  } else if (d.rssi !== null && d.rssi !== undefined) {
-    metrics = `<div class="rssi">${rssiBars(d.rssi)}</div>`;
-  }
   return `
     <div class="device" id="d-${cssIdSafe(d.address)}">
       <div class="icon icon-${iconSlug(d.icon)}"></div>
@@ -469,10 +447,38 @@ function deviceRow(d) {
         ${metaLine}
         <div id="pair-${cssIdSafe(d.address)}"></div>
       </div>
-      ${metrics}
+      ${metricsHtml(d)}
       <div class="actions">${actions}</div>
     </div>
   `;
+}
+
+// bluez doesn't expose RSSI for connected BLE devices (they stop
+// advertising once linked, and HCI Read-RSSI is BT-Classic-only) — a
+// missing metric is omitted rather than shown as a placeholder dash.
+function metricsHtml(d) {
+  const parts = [];
+  if (d.battery !== null && d.battery !== undefined) {
+    parts.push(`
+      <div class="metric">
+        <div class="label">Battery</div>
+        <div class="value">${d.battery}%</div>
+      </div>`);
+  } else if (d.connected && d.batteryCapable) {
+    parts.push(`
+      <div class="metric">
+        <div class="label">Battery</div>
+        <div class="value">No reading</div>
+      </div>`);
+  }
+  if (d.rssi !== null && d.rssi !== undefined) {
+    parts.push(`
+      <div class="metric">
+        <div class="label">Signal</div>
+        <div class="value"><span class="bars">${rssiBars(d.rssi)}</span></div>
+      </div>`);
+  }
+  return `<div class="metrics">${parts.join('')}</div>`;
 }
 
 function deviceActionDisabled(action, currentState, mutationPending) {
