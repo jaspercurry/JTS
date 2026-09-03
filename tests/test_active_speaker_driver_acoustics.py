@@ -54,7 +54,7 @@ def _write_capture(tmp_path, name, signal):
     return path
 
 
-def _write_relay_capture(
+def _write_capture_slot(
     tmp_path,
     name,
     reference,
@@ -100,7 +100,7 @@ def test_summed_capture_curve_returns_a_readable_curve(tmp_path):
         f1=200.0, f2=8000.0, duration_approx_s=1.0, sample_rate=SR,
         amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
     )
-    path = _write_relay_capture(tmp_path, "null-curve.wav", reference, gain=0.2)
+    path = _write_capture_slot(tmp_path, "null-curve.wav", reference, gain=0.2)
 
     curve = da.summed_capture_curve(
         path, sweep_meta.to_dict(), crossover_fc_hz=2000.0,
@@ -132,7 +132,7 @@ def test_summed_capture_curve_refuses_a_capture_below_its_validity_floor(
         f1=200.0, f2=8000.0, duration_approx_s=1.0, sample_rate=SR,
         amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
     )
-    path = _write_relay_capture(tmp_path, "null-floor.wav", reference, gain=0.2)
+    path = _write_capture_slot(tmp_path, "null-floor.wav", reference, gain=0.2)
 
     def _gate_with_high_floor(ir, sample_rate, **_kwargs):
         return ir, {
@@ -477,13 +477,13 @@ def test_stored_ambient_uses_real_signal_bounded_window_and_calibration_cancels(
     )
     meta = sweep_meta.to_dict()
     ambient_duration_s = 13.0
-    refuse_path = _write_relay_capture(
+    refuse_path = _write_capture_slot(
         tmp_path, "ambient-refuse.wav", reference, gain=0.05
     )
-    reduced_path = _write_relay_capture(
+    reduced_path = _write_capture_slot(
         tmp_path, "ambient-reduced.wav", reference, gain=0.09
     )
-    accept_path = _write_relay_capture(
+    accept_path = _write_capture_slot(
         tmp_path, "ambient-accept.wav", reference, gain=0.13
     )
 
@@ -602,7 +602,7 @@ def test_paired_ambient_reuses_exact_signal_owned_reflection_gate(
         sample_rate=SR,
         amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
     )
-    path = _write_relay_capture(
+    path = _write_capture_slot(
         tmp_path,
         "paired-signal-gate.wav",
         reference,
@@ -707,7 +707,7 @@ def test_stored_ambient_tracks_late_signal_and_excludes_pre_pause_music(
         amplitude_dbfs=da.DEFAULT_AMPLITUDE_DBFS,
     )
     music = 0.2 * np.sin(2 * np.pi * 997.0 * np.arange(max(1, int(relay_delay_s * SR))) / SR)
-    path = _write_relay_capture(
+    path = _write_capture_slot(
         tmp_path,
         f"delayed-{relay_delay_s}.wav",
         reference,
@@ -741,7 +741,7 @@ def test_random_noise_processing_gain_improves_with_real_sweep_duration(tmp_path
     observed = []
     for index, duration_s in enumerate((1.0, 4.0, 8.0, 12.0)):
         reference, meta = _reference_sweep(duration_s)
-        path = _write_relay_capture(
+        path = _write_capture_slot(
             tmp_path,
             f"processing-{duration_s}.wav",
             reference,
@@ -797,7 +797,7 @@ def test_worst_legal_late_lf_sweep_keeps_locator_and_deconvolution_bounded(
     from jasper.audio_measurement import alignment as kernel_alignment
 
     reference, meta = _reference_sweep(12.0)
-    path = _write_relay_capture(
+    path = _write_capture_slot(
         tmp_path,
         "late-lf.wav",
         reference,

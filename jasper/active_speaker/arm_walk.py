@@ -130,7 +130,7 @@ DEFAULT_STUCK_ALARM_S = 300.0
 DEFAULT_UNREADABLE_CEILING_S = 60.0
 
 #: The ``relay.status`` values that mean the session is OVER — the wizard's own
-#: three terminal arms (``_run_relay_capture``'s ``_run``). Every other value,
+#: three terminal arms (``_run_capture``'s ``_run``). Every other value,
 #: INCLUDING one this module does not recognise, reads as in flight: ending a
 #: walk early strands a round, while waiting one more poll costs one poll, so
 #: the unknown case fails toward waiting. Pinned against the wizard's own
@@ -925,7 +925,7 @@ class ArmWalk:
         )
 
 
-def pending_from_relay(relay: Mapping[str, Any]) -> Pending | None:
+def pending_from_capture(relay: Mapping[str, Any]) -> Pending | None:
     """``relay.position_pending`` -> :class:`Pending`, or ``None``.
 
     Absent, malformed, or missing its index all read the same way: nothing to
@@ -973,7 +973,7 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     if state == "failed":
         failed = str(relay.get("error") or "(the session supplied no error)")
     ended = state if state in SESSION_ENDED_STATUSES else ""
-    return Poll(pending_from_relay(relay), not ended, failed, ended=ended)
+    return Poll(pending_from_capture(relay), not ended, failed, ended=ended)
 
 
 def staged_walk_pending() -> bool:
@@ -1030,7 +1030,7 @@ __all__: Sequence[str] = (
     "TurntableMover",
     "WalkConfig",
     "parse_power",
-    "pending_from_relay",
+    "pending_from_capture",
     "poll_from_status",
     "staged_walk_pending",
 )

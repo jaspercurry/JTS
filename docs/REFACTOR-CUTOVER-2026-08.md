@@ -705,7 +705,7 @@ with a cancel-and-drain path on timeout (`:1311-1320`).
 
 So there are **two caller populations, on two thread kinds**:
 
-- **The walk runs ON the loop.** `_run_relay_capture` (`web/correction_setup.py:1037`)
+- **The walk runs ON the loop.** `_run_capture` (`web/correction_setup.py:1037`)
   fires the whole session as one long-lived coroutine —
   `asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())` at `:1153`,
   fire-and-forget — and the POST returns the tap link immediately. `measure()`'s
@@ -836,13 +836,13 @@ The chain, end to end:
 | one `ThreadingHTTPServer` | `web/correction_setup.py:61`, started per location by `web/__main__.py` |
 | `/crossover/*` funnel | `correction_setup.py:8014` → `_dispatch_crossover` `:7366`, a linear `if path == …` chain |
 | the loop bridge | `_ensure_loop` `:1275`, `_run_async` `:1292` |
-| the walk | `_run_relay_capture` `:1037`, fired at `:1153` |
+| the walk | `_run_capture` `:1037`, fired at `:1153` |
 | the host module | `web/correction_crossover_v2.py` |
 
 The session registry is **in the caller, not the host**:
-`correction_setup.py` holds `_session_lock` `:133`, `_relay_position_gate`
-`:149`, `_relay_complete_request` `:154`, `_relay_retake_request` `:160`, written
-by `_set_relay_capture` `:719-731` and cleared at `:615-623`. The three signal
+`correction_setup.py` holds `_session_lock` `:133`, `_capture_position_gate`
+`:149`, `_capture_complete_request` `:154`, `_capture_retake_request` `:160`, written
+by `_set_capture_slot` `:719-731` and cleared at `:615-623`. The three signal
 routes (`position-ready`, `complete`, `retake`) look up through that lock.
 
 ### The session lifecycle, and where `TuningSession` slots in
@@ -865,7 +865,7 @@ Two entry points into the host, both `def`, both near-duplicate twins:
 - **Teardown** — none for the conductor; it is collected when the runner closure
   returns. What is explicitly torn down is the ambient global state: the
   `_volume_hooks` close/abandon arms (`:5443`, `:5450`),
-  `_release_pause_best_effort` (`:1309`), and `_set_relay_capture(None)`. (The
+  `_release_pause_best_effort` (`:1309`), and `_set_capture_slot(None)`. (The
   fourth item this bullet once named, `release_session_measurement_graph`, is
   gone — deleted by #3240.)
 - **The human's entry point** is `GET /correction/crossover` →

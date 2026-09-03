@@ -647,7 +647,7 @@ def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
         raise CrossoverV2FlowError(raw_text)
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _raise_flow_error
+        correction_setup, "_handle_crossover_v2_capture", _raise_flow_error
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
@@ -670,7 +670,7 @@ def test_the_500_arm_still_reports_unmapped_failures_verbatim(monkeypatch):
         raise OSError("relay socket vanished")
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _raise_oserror
+        correction_setup, "_handle_crossover_v2_capture", _raise_oserror
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
@@ -713,7 +713,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
         )
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _refuse_coded
+        correction_setup, "_handle_crossover_v2_capture", _refuse_coded
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
@@ -735,7 +735,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
         )
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _refuse_uncoded
+        correction_setup, "_handle_crossover_v2_capture", _refuse_uncoded
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
     plain = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
@@ -756,7 +756,7 @@ def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
     )
-    monkeypatch.setattr(correction_setup, "_handle_crossover_v2_relay", _refuse)
+    monkeypatch.setattr(correction_setup, "_handle_crossover_v2_capture", _refuse)
     caplog.set_level(logging.WARNING, logger=correction_setup.logger.name)
 
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
@@ -1529,7 +1529,7 @@ def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
     from jasper.web import correction_crossover_v2 as v2host
 
     v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
-    correction_setup._set_relay_capture({
+    correction_setup._set_capture_slot({
         "tap_link": "https://capture.test/#s=cap_x",
         "status": "waiting",
         "kind": v2host.V2_RELAY_KIND_SESSION,
@@ -1542,7 +1542,7 @@ def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
         assert body["relay"]["tap_link"] == "https://capture.test/#s=cap_x"
         assert body["relay"]["kind"] == "crossover_v2:session"
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
         v2host.set_volume_plan_for_tests(None)
 
 

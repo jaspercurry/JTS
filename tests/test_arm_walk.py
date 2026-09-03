@@ -1068,7 +1068,7 @@ def test_a_pending_is_read_off_the_relay_block():
     "not-a-mapping",
 ])
 def test_a_hold_that_cannot_be_parsed_is_never_moved_for(pending):
-    assert aw.pending_from_relay({"position_pending": pending}) is None
+    assert aw.pending_from_capture({"position_pending": pending}) is None
 
 
 def test_a_failed_relay_carries_its_own_error():
@@ -1114,9 +1114,9 @@ def test_anything_not_terminal_reads_as_in_flight(status):
 def test_the_walks_terminal_statuses_are_the_wizards_own_three():
     """One vocabulary, two modules -- pinned rather than trusted.
 
-    ``jasper.web.correction_setup`` owns the relay slot: ``_run_relay_capture``
+    ``jasper.web.correction_setup`` owns the relay slot: ``_run_capture``
     writes every terminal status a session can end on, and
-    ``_RELAY_IN_FLIGHT_STATUSES`` names the rest. A fourth terminal arm added
+    ``_CAPTURE_IN_FLIGHT_STATUSES`` names the rest. A fourth terminal arm added
     there without a matching name here would leave the walk reading a finished
     session as live again -- which is exactly the defect this pins.
     """
@@ -1124,11 +1124,11 @@ def test_the_walks_terminal_statuses_are_the_wizards_own_three():
 
     terminal = set(re.findall(
         r'"status": "([a-z_]+)"',
-        inspect.getsource(correction_setup._run_relay_capture),
+        inspect.getsource(correction_setup._run_capture),
     ))
     assert terminal == set(aw.SESSION_ENDED_STATUSES)
     assert aw.SESSION_ENDED_STATUSES.isdisjoint(
-        correction_setup._RELAY_IN_FLIGHT_STATUSES
+        correction_setup._CAPTURE_IN_FLIGHT_STATUSES
     )
 
 

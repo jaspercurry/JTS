@@ -908,7 +908,7 @@ were deleted with the closed-loop level solver, which never reached
 production: the sweep-volume lease that alone invoked it had no production
 caller. The rule the pair established survives and still binds
 `jasper.correction.level_match.LevelMatchRefused`: a refusal type reaching
-`correction_setup._relay_failure_message` owes household copy at its RAISE
+`correction_setup._capture_failure_message` owes household copy at its RAISE
 site, or `str(exc)` leaks a raw `code=... band=...` diagnostic onto the
 phone's `sweep_failed` host event and the wizard's relay status line —
 both surfaces showed exactly that string, in red, before hardware run 20's
@@ -1477,7 +1477,7 @@ not part of Active's Wave 2 changes. Its exact integration is:
    `CrossoverLevelLease.claim_level_match_run`; bind Room's process-local relay
    holder to both kind `level_ramp:crossover` and `claim.run_id`; if
    `should_dispatch` is false, return the existing run/status plus a tap link
-   only when **both** those values match, without calling `_run_relay_capture`
+   only when **both** those values match, without calling `_run_capture`
    (the existing kind-prefix-only lookup is insufficient and must not return a
    prior same-kind run's link);
 2. pass `claim.run_id` to `build_level_ramp_spec` as `run_token` and

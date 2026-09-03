@@ -485,7 +485,7 @@ def test_level_match_refused_str_is_the_homeowner_message():
     """Hardware run 20: a measurement refusal's ``str(exc)`` is what reaches
     the household when a caller falls back to the generic ``str(exc)`` path --
     the phone's ``sweep_failed`` host event and the wizard's relay status line
-    (``jasper.web.correction_setup._relay_failure_message``) both do. So the
+    (``jasper.web.correction_setup._capture_failure_message``) both do. So the
     mapping from code to household copy must happen AT THE RAISE SITE: the
     exception's own ``str`` is the mapped sentence, never a raw diagnostic.
     """

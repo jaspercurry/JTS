@@ -143,7 +143,7 @@ def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
     exc = _refused(ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
     assert str(exc) == "program re-admission refused: program_profile_not_confirmed"
 
-    message = correction_setup._relay_failure_message(exc)
+    message = correction_setup._capture_failure_message(exc)
     assert message == REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     assert "program_profile_not_confirmed" not in message
     assert "re-admission" not in message
@@ -174,7 +174,7 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
     runner classifies must also be mapped here, or the next one to fire leaks
     its own programmer string."""
 
-    assert correction_setup._relay_failure_message(exc) == (
+    assert correction_setup._capture_failure_message(exc) == (
         REASON_REGISTRY[expected_code].message
     )
 
@@ -182,7 +182,7 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
 def test_non_program_exceptions_still_fall_through_unchanged():
     """Scope guard: this fix must not swallow every other exception's message."""
 
-    assert correction_setup._relay_failure_message(
+    assert correction_setup._capture_failure_message(
         ValueError("device mismatch")
     ) == "device mismatch"
 

@@ -1382,7 +1382,7 @@ def _fake_handler(body: bytes = b"{}"):
 def test_complete_endpoint_conflicts_when_nothing_is_waiting():
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     with pytest.raises(ValueError, match="no wired measurement"):
         correction_setup._handle_crossover_v2_complete(_fake_handler())
 
@@ -1391,15 +1391,15 @@ def test_complete_endpoint_fires_the_wired_sessions_signal():
     from jasper.web import correction_setup
 
     fired = []
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session",
         request_complete=lambda: fired.append(True),
     )
     try:
         result = correction_setup._handle_crossover_v2_complete(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
     assert result == {"ok": True}
     assert fired == [True]
 
@@ -1407,24 +1407,24 @@ def test_complete_endpoint_fires_the_wired_sessions_signal():
 def test_the_completion_signal_drops_with_the_slot():
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session", request_complete=lambda: None,
     )
-    correction_setup._set_relay_capture(
+    correction_setup._set_capture_slot(
         {"status": "complete", "kind": "crossover_v2:session"}
     )
     try:
         with pytest.raises(ValueError, match="no wired measurement"):
             correction_setup._handle_crossover_v2_complete(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
 
 def test_retake_endpoint_conflicts_when_nothing_is_waiting():
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     with pytest.raises(ValueError, match="no wired measurement"):
         correction_setup._handle_crossover_v2_retake(_fake_handler())
 
@@ -1433,15 +1433,15 @@ def test_retake_endpoint_fires_the_wired_sessions_signal():
     from jasper.web import correction_setup
 
     fired = []
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session",
         request_retake=lambda: fired.append(True),
     )
     try:
         result = correction_setup._handle_crossover_v2_retake(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
     assert result == {"ok": True}
     assert fired == [True]
 
@@ -1450,18 +1450,18 @@ def test_the_retake_signal_drops_with_the_slot():
     """A POST arriving after the walk must not re-open a slot nothing holds."""
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session", request_retake=lambda: None,
     )
-    correction_setup._set_relay_capture(
+    correction_setup._set_capture_slot(
         {"status": "complete", "kind": "crossover_v2:session"}
     )
     try:
         with pytest.raises(ValueError, match="no wired measurement"):
             correction_setup._handle_crossover_v2_retake(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
 
 def test_the_wired_provider_reaches_the_host_only_at_call_time():

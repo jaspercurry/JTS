@@ -227,7 +227,7 @@ def classify_program_failure(
     and logged) instead of being erased.
 
     This is the ONE classifier. ``build_v2_run_and_consume``'s cleanup arm and
-    ``jasper.web.correction_setup._relay_failure_message`` both call it, so the
+    ``jasper.web.correction_setup._capture_failure_message`` both call it, so the
     phone's failure screen and the operator wizard's relay status line can
     never disagree about which refusal happened — the drift that let a raw
     ``"program re-admission refused: program_profile_not_confirmed"`` reach the
@@ -294,7 +294,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     :func:`classify_program_failure` exists to close, defeated by the rewrap
     happening BEFORE any classification: once it is a ``ValueError`` the
     classifier no longer claims it, and
-    ``correction_setup._relay_failure_message`` never sees it either.
+    ``correction_setup._capture_failure_message`` never sees it either.
 
     So classify FIRST and carry the code out. The message comes from the same
     :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY` entry the
@@ -2643,7 +2643,7 @@ def bind_production_analyze(
 
     Design §5.6.4 applies the mic cal to every gated response, so this binding
     resolves the calibration from the capture's phone-reported setup (the same
-    ``_relay_calibration_from_setup`` machinery the legacy relay flows use)
+    ``_capture_calibration_from_setup`` machinery the legacy relay flows use)
     and threads BOTH the resolved curve and the conductor's declared geometry
     into ``analyze_program_capture``. When no calibration resolves, the
     analysis still runs — relative timing/level stay valid per the design —
@@ -5924,7 +5924,7 @@ def prepare_v2_session(
     ``POST /crossover/v2/session`` (S1a) when false, ``POST
     /crossover/v2/verify`` when true. The flag is the dispatch's own
     discriminator handed one frame down, never re-derived here
-    (``correction_setup._handle_crossover_v2_relay``).
+    (``correction_setup._handle_crossover_v2_capture``).
 
     **One sequence, and the nine steps along it that fork.** From the
     capture-source resolution onward both stages run the same steps in the same

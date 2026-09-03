@@ -535,7 +535,7 @@ def test_the_arc_removes_the_inverse_square_confound() -> None:
 # same document is fine against a differently-shaped session.
 
 
-def _relay_ceiling() -> int:
+def _capture_ceiling() -> int:
     from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     return MAX_CAPTURE_PLAN_ATTEMPTS
@@ -716,7 +716,7 @@ def test_a_legal_staged_walk_is_never_refused_for_capacity() -> None:
     # The arithmetic rides in the message: the operator's only lever is to stage
     # fewer stops, and they need the numbers to pick a count.
     detail = excinfo.value.detail
-    for number in (base_entries, MAX_STOPS + 1, _relay_ceiling()):
+    for number in (base_entries, MAX_STOPS + 1, _capture_ceiling()):
         assert str(number) in detail
 
 

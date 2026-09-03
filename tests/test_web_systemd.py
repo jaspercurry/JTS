@@ -418,8 +418,8 @@ def test_two_holds_under_one_label_survive_until_the_last_release(
 ) -> None:
     """Sessions can overlap under one label, so the label is refcounted.
 
-    Production-reachable: ``_run_relay_capture``'s runner frees the relay slot
-    (`_set_relay_capture({"status": "complete"})`) BEFORE its ``finally``
+    Production-reachable: ``_run_capture``'s runner frees the relay slot
+    (`_set_capture_slot({"status": "complete"})`) BEFORE its ``finally``
     releases the hold, so the next session's POST can claim the slot and take a
     second hold under the same ``relay:<kind>`` label while the first is still
     unwinding. If release popped the label outright, the deferred-exit line
