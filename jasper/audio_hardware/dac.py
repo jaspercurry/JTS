@@ -911,13 +911,6 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
-def _hat_product_accepted(profile: DacProfile, hat: HatEeprom | None) -> bool:
-    if hat is None:
-        return False
-    product = hat.product.strip().casefold()
-    return any(product == declared.casefold() for declared in profile.hat_products)
-
-
 def profile_for_card_label(
     label: str,
     *,
@@ -941,8 +934,13 @@ def profile_for_card_label(
             continue
         if _matches_any(profile.supported_card_matches, text):
             return profile
+    if hat is None:
+        return None
+    product = hat.product.strip().casefold()
     for profile in REGISTRY:
-        if profile.kind != "single" or not _hat_product_accepted(profile, hat):
+        if profile.kind != "single":
+            continue
+        if not any(product == declared.casefold() for declared in profile.hat_products):
             continue
         if _matches_any(profile.eeprom_gated_card_matches, text):
             return profile

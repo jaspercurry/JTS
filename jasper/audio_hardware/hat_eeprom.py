@@ -18,9 +18,6 @@ from typing import Any, Mapping
 
 
 DEFAULT_HAT_DIR = "/proc/device-tree/hat"
-# Devicetree property files carry NUL-terminated strings, and the HAT ID
-# EEPROM format caps each of these fields well under this bound.
-_MAX_FIELD_BYTES = 512
 
 
 @dataclass(frozen=True)
@@ -48,9 +45,10 @@ class HatEeprom:
 
 def _read_property(path: Path) -> str | None:
     try:
-        raw = path.read_bytes()[:_MAX_FIELD_BYTES]
+        raw = path.read_bytes()
     except OSError:
         return None
+    # Devicetree property files carry NUL-terminated strings.
     return raw.decode("utf-8", "replace").replace("\x00", "").strip()
 
 
