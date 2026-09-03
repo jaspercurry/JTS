@@ -10,7 +10,6 @@ for busctl / bluealsa-cli.
 """
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +19,8 @@ from jasper.renderer import (
     _parse_mpris_metadata,
 )
 
+from tests._librespot_state import write_librespot_state
+
 
 # ----------------------------------------------------------------------
 # RendererClient.active_renderers — mocks each underlying source
@@ -27,7 +28,7 @@ from jasper.renderer import (
 
 @pytest.fixture
 def renderer(tmp_path, monkeypatch):
-    # Per-test state file path. Tests write fixture JSON into it
+    # Per-test state file path. Tests write fixture state into it
     # (or leave it absent) to control what source_state.spotify_playing
     # observes via active_renderers.
     monkeypatch.setattr(
@@ -35,14 +36,8 @@ def renderer(tmp_path, monkeypatch):
         AsyncMock(return_value=False),
     )
     return RendererClient(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
     )
-
-
-def _write_librespot_state(renderer, payload):
-    """Helper to write a librespot state file the renderer will read."""
-    from pathlib import Path
-    Path(renderer._librespot_state_path).write_text(json.dumps(payload))
 
 
 def _mock_subprocess(stdout: bytes = b"", returncode: int = 0):
@@ -121,10 +116,10 @@ async def test_selected_source_reads_auto_winner(renderer):
 
 
 async def test_active_renderers_spotify_playing(renderer):
-    _write_librespot_state(renderer, {
-        "playing": True, "paused": False, "stopped": False,
-        "uri": "spotify:track:X",
-    })
+    write_librespot_state(
+        renderer._librespot_state_path,
+        playing=True, paused=False, stopped=False, uri="spotify:track:X",
+    )
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
@@ -152,7 +147,6 @@ async def test_active_renderers_resilient_to_missing_state_file(renderer):
     than raising — same fail-soft contract as the busctl/bluealsa
     probes. (Direct probe-level coverage lives in test_source_state.py;
     here we just pin the integration behaviour through active_renderers.)"""
-    # No state file written → librespot_state.is_playing returns False
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
@@ -170,10 +164,11 @@ async def test_currentsong_spotify_returns_uri(renderer):
     file — title/artist resolution requires a Spotify Web API call,
     which voice tools handle via spotify_router. The renderer just
     surfaces the URI so transport routing knows the source identity."""
-    _write_librespot_state(renderer, {
-        "playing": True, "paused": False, "stopped": False,
-        "uri": "spotify:track:6IiSsjuKiOIbOCSv10SqPn",
-    })
+    write_librespot_state(
+        renderer._librespot_state_path,
+        playing=True, paused=False, stopped=False,
+        uri="spotify:track:6IiSsjuKiOIbOCSv10SqPn",
+    )
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),

@@ -53,10 +53,10 @@ def test_bluetooth_transport_changes_wake_bluetooth_reconcile():
 
 
 def test_inotify_parser_handles_atomic_rename_record():
-    name = b"state.json\0"
+    name = b"state.env\0"
     padded = name + b"\0" * ((4 - len(name) % 4) % 4)
     record = struct.pack("iIII", 1, 0x80, 7, len(padded)) + padded
-    assert inotify_changed_names(record) == ("state.json",)
+    assert inotify_changed_names(record) == ("state.env",)
 
 
 async def test_spotify_adapter_retries_until_state_directory_returns(
@@ -78,7 +78,7 @@ async def test_spotify_adapter_retries_until_state_directory_returns(
     monkeypatch.setattr(source_events, "_watch_spotify_state_once", watch_once)
     monkeypatch.setattr(source_events, "_RETRY_INITIAL_SEC", 0.001)
     task = asyncio.create_task(source_events.watch_spotify_state(
-        str(tmp_path / "state.json"),
+        str(tmp_path / "state.env"),
         lambda source, via: notifications.append((source, via)),
     ))
     try:
@@ -176,7 +176,7 @@ async def test_unexpected_adapter_exit_is_observable(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR, logger="jasper.source_events"):
         tasks = source_events.start_source_event_tasks(
             lambda source, via: None,
-            spotify_state_path="/run/librespot/state.json",
+            spotify_state_path="/run/librespot/state.env",
         )
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.sleep(0)

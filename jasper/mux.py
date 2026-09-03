@@ -13,7 +13,7 @@ because none exists.
 
 Renderer support:
   Spotify (librespot):
-    detect: read /run/librespot/state.json (written by
+    detect: read /run/librespot/state.env (written by
             --onevent hook on every player event)
     pause:  Two-tier escalation. Tier 1 is Spotify Web API via
             spotipy — librespot 0.8.0 has no local control HTTP.
@@ -2014,9 +2014,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Jasper renderer source-arbiter")
     parser.add_argument(
         "--librespot-state",
-        default=os.environ.get(
-            "JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH,
-        ),
+        default=librespot_state.configured_path(),
         help="path to librespot state file written by the --onevent "
              "hook (default from JASPER_LIBRESPOT_STATE env or "
              f"{librespot_state.DEFAULT_PATH})",

@@ -47,7 +47,7 @@ install_renderers() {
         systemctl disable --now raspotify.service 2>/dev/null || true
         echo "  Installed /usr/bin/librespot ($(librespot --version 2>&1 | head -1 || echo unknown))"
     fi
-    # The --onevent hook script that writes /run/librespot/state.json
+    # The --onevent hook script that writes /run/librespot/state.env
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-librespot-event" \
         /usr/local/bin/jasper-librespot-event

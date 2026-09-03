@@ -25,6 +25,7 @@ import pytest
 from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
+from tests._librespot_state import write_librespot_state
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
     _get,
@@ -878,7 +879,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     )
     # Point librespot state at a missing file → empty dict.
     monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"),
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.env"),
     )
 
     status, body = _get(f"{base}/state")
@@ -1297,7 +1298,7 @@ def test_state_audio_metrics_sanitize_non_finite_values(
     )
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
     monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"),
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.env"),
     )
     monkeypatch.setattr(camilla_mod, "CamillaController", FakeCamilla)
 
@@ -1340,7 +1341,7 @@ def test_state_audio_metrics_publish_every_playback_channel(
 
     base, _ = server_with_coordinator
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "speaker_volume.json"))
-    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.env"))
     monkeypatch.setattr(camilla_mod, "CamillaController", FakeCamilla)
 
     status, body = _get(f"{base}/state")
@@ -1358,12 +1359,10 @@ def test_state_prefers_mux_winner_over_raw_renderer_probe(
     import jasper.control.server as srv_mod
 
     base, _ = server_with_coordinator
-    spotify_state = tmp_path / "spotify.json"
-    spotify_state.write_text(json.dumps({
-        "playing": True,
-        "session_active": True,
-        "uri": "spotify:track:test",
-    }))
+    spotify_state = write_librespot_state(
+        tmp_path / "spotify.env",
+        playing=True, session_active=True, uri="spotify:track:test",
+    )
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
     monkeypatch.setenv(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
@@ -1400,12 +1399,10 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
     from jasper import volume_diagnostics
     from jasper.control import server as srv_mod
 
-    spotify_state = tmp_path / "spotify.json"
-    spotify_state.write_text(json.dumps({
-        "playing": True,
-        "session_active": True,
-        "uri": "spotify:track:test",
-    }))
+    spotify_state = write_librespot_state(
+        tmp_path / "spotify.env",
+        playing=True, session_active=True, uri="spotify:track:test",
+    )
     volume_state = tmp_path / "speaker_volume.json"
     volume_state.write_text(json.dumps({
         "listening_level": 100,
@@ -1458,7 +1455,7 @@ def test_state_usbsink_section_null_when_disabled(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
     monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
     )
 
     status, body = _get(f"{base}/state")
@@ -1495,7 +1492,7 @@ def test_state_usbsink_section_populated_when_enabled(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
     monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
     )
 
     status, body = _get(f"{base}/state")
@@ -1537,7 +1534,7 @@ def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
     monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
     )
 
     status, body = _get(f"{base}/state")
@@ -1565,7 +1562,7 @@ def test_state_combo_active_source_still_driven_by_mux_selection(
         "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
     )
     monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
     )
 
     status, body = _get(f"{base}/state")
@@ -1723,7 +1720,7 @@ def test_state_camilla_probe_times_out_fail_soft(
     monkeypatch.delenv("JASPER_HA_TOKEN", raising=False)
     base, _ = server_with_coordinator
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
-    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
 
     with caplog.at_level("DEBUG", logger="jasper.control.state_aggregate"):
         status, body = _get(f"{base}/state")

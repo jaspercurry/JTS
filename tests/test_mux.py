@@ -104,7 +104,7 @@ def mux(tmp_path):
     # touch /run/librespot or the real /var/lib/jasper/mux_mode.json if a
     # test forgets to stub the probes.
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=_FakeVolumeCoordinator(),
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
@@ -1178,7 +1178,7 @@ def _make_mux_mute_stubbed(tmp_path):
     """Real Mux with the fan-in lane-mute transport stubbed so
     `_usbsink_set_preempt` / the reassertion run for real but touch no socket.
     Returns (mux, fanin_lane_mute_mock)."""
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
     fanin_mute = AsyncMock(return_value={})
     m._fanin_lane_mute = fanin_mute
     return m, fanin_mute
@@ -1190,7 +1190,7 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
     command = AsyncMock(return_value={})
     monkeypatch.setattr(mux_module, "fanin_command", command)
     monkeypatch.setattr(mux_module, "FANIN_CONTROL_SOCKET", "/tmp/override.sock")
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
 
     await m._fanin_select_label("correction")
     await m._fanin_auto()
@@ -1840,7 +1840,7 @@ async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
     )
     coordinator.load_persisted_level()
     real_mux = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=coordinator,
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
@@ -2216,7 +2216,7 @@ def _fresh_mux_after_restart(tmp_path):
     librespot + mode-state paths the `mux` fixture uses — i.e. what a
     deploy/restart produces (a brand-new process, on-disk state intact)."""
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=_FakeVolumeCoordinator(),
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
@@ -2276,7 +2276,7 @@ async def test_auto_select_persists_auto_so_restart_stays_auto(
 def test_fresh_mux_with_no_state_file_is_auto(tmp_path):
     """First boot / no prior pin → Auto."""
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         mode_state_path=str(tmp_path / "missing.json"),
     )
     assert m._manual_source is None
@@ -2288,7 +2288,7 @@ def test_fresh_mux_with_corrupt_state_file_is_auto(tmp_path):
     state = tmp_path / "mux_mode.json"
     state.write_text("{half-written", encoding="utf-8")
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         mode_state_path=str(state),
     )
     assert m._manual_source is None
@@ -2307,7 +2307,7 @@ def test_mux_mode_state_path_defaults_from_env(monkeypatch, tmp_path):
     custom = tmp_path / "custom_mode.json"
     p.write_mode(custom, Source.SPOTIFY)
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         mode_state_path=str(custom),
     )
     assert m._manual_source is Source.SPOTIFY

@@ -1184,6 +1184,7 @@ async def _reconcile_volume_curve_after_settings(
     (idle/AirPlay/USB), so changing the floor cannot unguard a
     Spotify/Bluetooth push-mode handoff.
     """
+    from jasper import librespot_state
     from jasper.renderer import RendererClient
     from jasper.volume_coordinator import VolumeCoordinator
     from jasper.volume_persistence import VolumePersistence
@@ -1197,10 +1198,7 @@ async def _reconcile_volume_curve_after_settings(
             )
         ),
         backend=RendererClient(
-            librespot_state_path=os.environ.get(
-                "JASPER_LIBRESPOT_STATE",
-                "/run/librespot/state.json",
-            ),
+            librespot_state_path=librespot_state.configured_path(),
         ),
     )
     try:
