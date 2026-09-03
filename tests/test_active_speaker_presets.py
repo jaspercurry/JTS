@@ -13,7 +13,13 @@ from jasper.cli.active_speaker import main as active_speaker_main
 
 
 def _worked_example_path() -> Path:
-    return Path(__file__).resolve().parent / "fixtures" / "bc_de250_dayton_e150he44_v1.json"
+    return Path(
+        str(
+            files("jasper.active_speaker").joinpath(
+                "presets/bc_de250_dayton_e150he44_v1.json"
+            )
+        )
+    )
 
 
 def _epique_f110m_path() -> Path:
