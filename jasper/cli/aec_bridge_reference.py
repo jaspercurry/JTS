@@ -17,7 +17,6 @@ endpoint arrive from the caller that owns them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 import os
 from queue import Full, Queue
 import socket
@@ -28,11 +27,11 @@ import numpy as np
 
 from jasper.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
 from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
-from jasper.cli.aec_bridge_telemetry import DropLogDebouncer, _BridgeStats
-
-# The bridge's own logger name: these lines reach journald beside the rest of
-# jasper-aec-bridge's output, where log tooling already looks for them.
-logger = logging.getLogger("jasper.aec_bridge")
+from jasper.cli.aec_bridge_telemetry import (
+    DropLogDebouncer,
+    _BridgeStats,
+    logger,
+)
 
 # Wire geometry of the far-end reference. outputd sends its final speaker
 # monitor at this rate/channel count; `ReferenceFrameConverter` folds it to

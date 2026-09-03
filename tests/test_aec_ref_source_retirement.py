@@ -23,11 +23,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jasper.cli import aec_bridge
+from jasper.cli import aec_bridge, aec_bridge_reference
 from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
+# The reference reader the retirement removed spanned the bridge entry point
+# and the transport module cut out of it, so both are in scope for the guards.
+BRIDGE_SOURCES = (
+    BRIDGE_SOURCE,
+    REPO / "jasper" / "cli" / "aec_bridge_reference.py",
+)
+BRIDGE_MODULES = (aec_bridge, aec_bridge_reference)
 RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 
 RETIRED = "alsa"
@@ -71,26 +78,29 @@ def test_the_bridge_module_has_no_alsa_reference_reader():
     the fd-leak row in docs/testing-tooling.md). Only a string the code
     actually uses can be a device name.
     """
-    tree = ast.parse(BRIDGE_SOURCE.read_text())
-    docstrings = _docstring_node_ids(tree)
-    offenders = sorted(
-        f"{BRIDGE_SOURCE.name}:{node.lineno}: {node.value!r}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "jasper_ref" in node.value
-        and id(node) not in docstrings
-    )
+    offenders = []
+    for source in BRIDGE_SOURCES:
+        tree = ast.parse(source.read_text())
+        docstrings = _docstring_node_ids(tree)
+        offenders += sorted(
+            f"{source.name}:{node.lineno}: {node.value!r}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "jasper_ref" in node.value
+            and id(node) not in docstrings
+        )
     assert not offenders, (
         "the AEC bridge must not name the retired pcm.jasper_ref tap:\n"
         + "\n".join(offenders)
     )
-    assert not hasattr(aec_bridge, "REF_DEVICE"), (
-        "REF_DEVICE named the retired ALSA reference PCM"
-    )
-    assert not hasattr(aec_bridge, "_ref_thread"), (
-        "_ref_thread was the retired ALSA reference capture loop"
-    )
+    for module in BRIDGE_MODULES:
+        assert not hasattr(module, "REF_DEVICE"), (
+            f"{module.__name__}.REF_DEVICE named the retired ALSA reference PCM"
+        )
+        assert not hasattr(module, "_ref_thread"), (
+            f"{module.__name__}._ref_thread was the retired ALSA capture loop"
+        )
 
 
 def test_the_bridge_never_imports_alsaaudio():
@@ -99,14 +109,16 @@ def test_the_bridge_never_imports_alsaaudio():
     AST-walked, not grepped, so the docstring above (which names the module)
     cannot satisfy the guard.
     """
-    tree = ast.parse(BRIDGE_SOURCE.read_text())
+    trees = [ast.parse(source.read_text()) for source in BRIDGE_SOURCES]
     imported = {
         alias.name.split(".")[0]
+        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.Import)
         for alias in node.names
     } | {
         node.module.split(".")[0]
+        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module
     }
@@ -208,6 +220,34 @@ def test_main_resolves_the_reference_source_before_publishing_provenance():
     assert resolve_line < reset_line, (
         "main() must resolve ref_source before _bridge_stats.reset publishes it"
     )
+
+
+def test_main_wires_the_ref_thread_to_the_process_stats_and_shutdown():
+    """The one surviving transport reads its endpoint from the resolved
+    config and shares the process's stats and shutdown Event. A throwaway
+    pair leaves the reference running, unreportable and unstoppable — no
+    unit test opens the real socket, so nothing else would notice.
+    """
+    tree = ast.parse(BRIDGE_SOURCE.read_text())
+    thread = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and any(
+            kw.arg == "target"
+            and ast.unparse(kw.value) == "outputd_ref_udp_thread"
+            for kw in node.keywords
+        )
+    )
+    kwargs = next(kw.value for kw in thread.keywords if kw.arg == "kwargs")
+    assert {
+        key.value: ast.unparse(value)
+        for key, value in zip(kwargs.keys, kwargs.values)
+    } == {
+        "host": "config.outputd_ref_udp_host",
+        "port": "config.outputd_ref_udp_port",
+        "stats": "_bridge_stats",
+        "shutdown": "_shutdown",
+    }
 
 
 # ---------------------------------------------------------------------------

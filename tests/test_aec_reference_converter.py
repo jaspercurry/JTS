@@ -109,10 +109,10 @@ def test_reference_frames_are_continuous_across_delivery_boundaries(kind):
     """
     interleaved = _interleaved(kind)
 
-    whole = _frames(
-        ReferenceFrameConverter(ref_gain_db=0.0, ref_hpf_hz=HPF_HZ)
-        .feed(interleaved)
-    )
+    whole_batch = ReferenceFrameConverter(
+        ref_gain_db=0.0, ref_hpf_hz=HPF_HZ,
+    ).feed(interleaved)
+    whole = _frames(whole_batch)
     split = ReferenceFrameConverter(ref_gain_db=0.0, ref_hpf_hz=HPF_HZ)
     pieces = []
     step = 2 * REF_CHANNELS * 137
@@ -122,6 +122,8 @@ def test_reference_frames_are_continuous_across_delivery_boundaries(kind):
             pieces.append(_frames(batch))
 
     assert np.array_equal(np.concatenate(pieces), whole)
+    # AEC3 rejects a reference block that is not the mic's own length.
+    assert all(len(f) == FRAME_SAMPLES * 2 for f in whole_batch.frames)
 
 
 def test_reference_frames_report_clipping_without_wrapping():
