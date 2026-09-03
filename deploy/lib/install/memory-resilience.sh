@@ -300,8 +300,8 @@ migrate_memory_resilience() {
 # CONFIG_PSI_DEFAULT_DISABLED=y; the boot param turns PSI on. No-op
 # on kernels that don't support PSI. Enables `/proc/pressure/`
 # observability; not required for Stage 2 audio (which uses
-# MemorySwapMax=0, not PSI), but useful for future Stage 3 work +
-# `/system/` dashboard surface.
+# MemorySwapMax=0, not PSI). The `/system/` dashboard's memory-pressure
+# tile reads /proc/pressure/memory when this is in effect.
 #
 # IDEMPOTENT: existing non-conflicting cmdline.txt values are preserved
 # unchanged. Operator-added tokens (custom kernel flags, etc.) survive.

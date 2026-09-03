@@ -24,7 +24,9 @@ const root = {
   setAttribute(name, value) { this.attrs[name] = value; },
 };
 const bodyClasses = new Set();
+const documentListeners = {};
 const document = {
+  visibilityState: "visible",
   body: {
     classList: {
       add(name) { bodyClasses.add(name); },
@@ -32,6 +34,7 @@ const document = {
     },
   },
   getElementById(id) { return id === "app" ? root : null; },
+  addEventListener(type, fn) { documentListeners[type] = fn; },
 };
 
 const location = { pathname: "/system/" };
@@ -84,20 +87,32 @@ let resolveSnapshot;
 let fetchCalls = 0;
 const snapshotPromise = new Promise((resolve) => { resolveSnapshot = resolve; });
 function getJSON() { fetchCalls += 1; return snapshotPromise; }
+// A real timer registry (stable ids, honours clearTimeout) so both the
+// cadence and the "never two pollers" invariant are observable.
 const timers = [];
-function setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; }
+let nextTimerId = 1;
+function setTimeout(fn, ms) {
+  const id = nextTimerId++;
+  timers.push({ id, fn, ms });
+  return id;
+}
+function clearTimeout(id) {
+  const idx = timers.findIndex((t) => t.id === id);
+  if (idx !== -1) timers.splice(idx, 1);
+}
 const noop = () => {};
 const quietConsole = { error: noop };
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const run = new AsyncFunction(
-  "document", "window", "location", "history", "setTimeout", "console",
+  "document", "window", "location", "history", "setTimeout", "clearTimeout",
+  "console",
   "buildSystemPanel", "update", "buildAudioPanel", "updateAudio", "header",
   "getJSON", "postAction", "setQuality", "setLatencyMode", "runDiagnostics",
   source,
 );
 await run(
-  document, window, location, history, setTimeout, quietConsole,
+  document, window, location, history, setTimeout, clearTimeout, quietConsole,
   buildSystemPanel, update, buildAudioPanel, updateAudio, header,
   getJSON, noop, noop, noop, noop,
 );
@@ -169,5 +184,32 @@ assert.equal(panels.system.hidden, true);
 assert.equal(activeLog.at(-1).view, "audio");
 assert.equal(fetchCalls, 1, "view switching never starts another poller");
 assert.equal(scrollCalls.length, 2, "explicit view clicks reset scroll; popstate does not");
+
+// A hidden tab must slow the poll, not stop it and not stack a second one;
+// coming back must bring the page current instead of waiting out the long
+// delay. Each poll is a full /system/data.json render on the Pi, so a
+// forgotten background tab is a permanent cost.
+assert.equal(timers.length, 1, "exactly one pending poll timer");
+assert.ok(documentListeners.visibilitychange, "visibilitychange listener registered");
+
+document.visibilityState = "hidden";
+documentListeners.visibilitychange();
+assert.equal(timers.length, 1, "hidden slows the poll, never stacks another");
+assert.ok(
+  timers[0].ms >= 30000,
+  `hidden tab should poll far less often than 5000ms, got ${timers[0].ms}`,
+);
+
+document.visibilityState = "visible";
+documentListeners.visibilitychange();
+assert.equal(timers.length, 1, "returning visible replaces the slow timer");
+assert.equal(timers[0].ms, 0, "returning visible brings the page current at once");
+
+const fetchesBeforeWake = fetchCalls;
+timers.shift().fn();
+for (let i = 0; i < 5; i += 1) await Promise.resolve();
+assert.equal(fetchCalls, fetchesBeforeWake + 1, "the woken timer actually polls");
+assert.equal(timers.length, 1, "the resumed loop keeps one successor only");
+assert.equal(timers[0].ms, 5000, "normal cadence resumes while visible");
 
 process.stdout.write(JSON.stringify({ ok: true }));

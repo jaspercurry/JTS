@@ -120,6 +120,31 @@ export function toneForMemoryHeadroom(availableMb, totalMb) {
   return "ok";
 }
 
+// Kernel pressure-stall information (`psi=1` on the cmdline). "some avg60" is
+// the share of the last 60 seconds in which at least one task stalled waiting
+// on memory — reclaim, swap-in, or page-cache thrash that MemAvailable alone
+// does not show. Sustained double digits is real thrash on a 1 GB board; past
+// 20% the box waits more than it works. An OOM kill outranks both tones: the
+// kernel already took a process away from us.
+//
+// Either input may be null — the sampler omits the field entirely on a kernel
+// that publishes no PSI / no oom_kill counter, and "no reading" must not
+// render as a calm zero.
+export function memoryPressureInfo(psiAvg60, oomKills) {
+  const psi = psiAvg60 == null ? null : Number(psiAvg60);
+  const kills = oomKills == null ? null : Number(oomKills);
+  const killed = kills != null && kills > 0;
+  return {
+    tone: killed ? "danger"
+      : (psi == null ? "ok" : toneForPercent(psi, 10, 20)),
+    value: psi == null ? "no PSI" : psi.toFixed(1) + "%",
+    sub: kills == null
+      ? "stalled on memory, last 60 s"
+      : kills + (kills === 1 ? " OOM kill" : " OOM kills") + " this boot",
+    killed,
+  };
+}
+
 // /proc/loadavg counts jobs running/runnable or waiting in uninterruptible
 // I/O. Above the core count means real queueing; 75% is a calmer "busy soon"
 // warning point for the 1-minute average.

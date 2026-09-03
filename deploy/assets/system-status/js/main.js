@@ -19,6 +19,11 @@ import { getJSON } from "./api.js";
 import { postAction, setQuality, setLatencyMode, runDiagnostics } from "./actions.js";
 
 const POLL_MS = 5000;
+// A hidden tab (background window, phone in a pocket) still costs a full
+// snapshot every 5 s — ~125 KB and ~80 ms of Pi CPU per poll, forever. Slow
+// right down instead of stopping outright, and come current the moment the
+// tab is looked at again. Same idiom as the crossover wizard's schedulePoll.
+const HIDDEN_POLL_MS = 60000;
 const root = document.getElementById("app");
 const initialView = root.dataset.view === "audio" ? "audio" : "system";
 
@@ -130,26 +135,51 @@ window.addEventListener("popstate", () => {
   activateView(viewFromPath(), { announce: true });
 });
 
+let pollTimer = null;
+let pollInFlight = false;
+
+function schedulePoll(delayMs = POLL_MS) {
+  if (pollTimer !== null) clearTimeout(pollTimer);
+  const hidden = document.visibilityState === "hidden";
+  pollTimer = setTimeout(() => {
+    pollTimer = null;
+    poll();
+  }, hidden ? Math.max(delayMs, HIDDEN_POLL_MS) : delayMs);
+}
+
 async function poll() {
-  let snap;
+  // One chain only: a visibilitychange arriving mid-fetch must not start a
+  // second poller alongside the one already running.
+  if (pollInFlight) return;
+  pollInFlight = true;
   try {
-    snap = await getJSON("/system/data.json");
-  } catch (e) {
-    disconnectMessage = "Disconnected (" + e.message + "). Retrying…";
-    applyCurrentState();
-    setTimeout(poll, POLL_MS);
-    return;
-  }
-  // Fetch succeeded: a render failure is isolated + logged per-section inside
-  // update(), so it can't masquerade as a disconnect here.
-  latestSnapshot = snap;
-  disconnectMessage = null;
-  document.body.classList.remove("stale");
-  try {
+    let snap;
+    try {
+      snap = await getJSON("/system/data.json");
+    } catch (e) {
+      disconnectMessage = "Disconnected (" + e.message + "). Retrying…";
+      applyCurrentState();
+      return;
+    }
+    // Fetch succeeded: a render failure is isolated + logged per-section
+    // inside update(), so it can't masquerade as a disconnect here.
+    latestSnapshot = snap;
+    disconnectMessage = null;
+    document.body.classList.remove("stale");
     updateEntry(activeEntry, snap);
   } finally {
-    setTimeout(poll, POLL_MS);
+    pollInFlight = false;
+    schedulePoll();
   }
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    // Re-apply the standing cadence — schedulePoll stretches it itself.
+    schedulePoll();
+    return;
+  }
+  schedulePoll(0);
+});
 
 poll();

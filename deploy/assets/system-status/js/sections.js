@@ -12,8 +12,8 @@ import { h } from "/assets/shared/js/dom.js";
 import { sparkline, cpuBars } from "./charts.js";
 import {
   fmtBytes, fmtAgo, fmtDur, capacityPercent, fanStepInfo, FAN_STEPS,
-  toneForMemoryHeadroom, loadPressureInfo, cpuUsageInfo, temperatureDisplay,
-  toneForDiskUse,
+  toneForMemoryHeadroom, memoryPressureInfo, loadPressureInfo, cpuUsageInfo,
+  temperatureDisplay, toneForDiskUse,
 } from "./format.js";
 import { statCard, defList, badge } from "./components.js";
 
@@ -139,6 +139,20 @@ export function vitalsCards(cur, hist, cores) {
     tone: memTone,
     chart: sparkline(hist.mem_used_mb, { min: 0, max: memTotal, tone: memTone, fill: true }),
   }));
+
+  // Memory pressure — kernel PSI + the boot's OOM-kill count. Both fields are
+  // omitted by the sampler on a kernel that publishes neither, so the tile
+  // only appears where at least one number is real.
+  if (cur.mem_psi_some_avg60 != null || cur.oom_kill != null) {
+    const psiInfo = memoryPressureInfo(cur.mem_psi_some_avg60, cur.oom_kill);
+    cards.push(statCard({
+      label: "Memory pressure",
+      value: psiInfo.value,
+      sub: psiInfo.sub,
+      tone: psiInfo.tone,
+      chart: psiInfo.killed ? badge("OOM killed", "danger") : null,
+    }));
+  }
 
   // Load pressure
   const loadHist = hist.load_1m || [];

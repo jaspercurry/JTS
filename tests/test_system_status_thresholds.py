@@ -93,6 +93,11 @@ def test_system_threshold_helpers_scale_by_capacity_with_low_ram_floors() -> Non
         tempDanger: mod.temperatureInfo(80, 0, 0).tone,
         tempMissing: mod.temperatureDisplay(null, 0, 0),
         tempZero: mod.temperatureDisplay(0, 0, 0),
+        psiOk: mod.memoryPressureInfo(9.9, 0).tone,
+        psiWarn: mod.memoryPressureInfo(10, 0).tone,
+        psiDanger: mod.memoryPressureInfo(20, 0).tone,
+        psiOomOutranksCalmStall: mod.memoryPressureInfo(0, 1).tone,
+        psiAbsent: mod.memoryPressureInfo(null, null),
       }};
       console.log(JSON.stringify(out));
     """
@@ -182,6 +187,15 @@ def test_system_threshold_helpers_scale_by_capacity_with_low_ram_floors() -> Non
         "tone": "ok",
         "chartable": True,
     }
+    assert out["psiOk"] == "ok"
+    assert out["psiWarn"] == "warn"
+    assert out["psiDanger"] == "danger"
+    # An OOM kill outranks any stall reading — the kernel already took a
+    # process away from us.
+    assert out["psiOomOutranksCalmStall"] == "danger"
+    # No PSI on this kernel must read as "no reading", never as a calm zero.
+    assert out["psiAbsent"]["tone"] == "ok"
+    assert out["psiAbsent"]["killed"] is False
 
 
 def test_dashboard_memory_disk_thresholds_match_jasper_doctor() -> None:
