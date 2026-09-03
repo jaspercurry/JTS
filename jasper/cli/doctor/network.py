@@ -16,6 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from jasper.identity import resolve_hostname
 from jasper.output_hardware import current_usb_data_role
 from jasper.usb_network import (
     DEFAULT_DNSMASQ_PATH,
@@ -913,7 +914,7 @@ def check_usbnet_management_probe() -> CheckResult:
     Mirrors ``check_management_surface`` (jasper/cli/doctor/web.py) but
     probes the interface's observed IPv4 address (the same endpoint the
     deploy-time management-surface verification hits) with
-    ``Host: <JASPER_HOSTNAME>`` instead of nginx's loopback IPv4 — this is
+    the resolved speaker hostname as ``Host``, not nginx's loopback IPv4 —
     the exact path a plugged-in laptop with no WiFi exercises when it falls
     back from ``http://<hostname>.local/`` to the raw fallback IP. Pins both the
     guard's acceptance of a private-IP Host/source (see
@@ -952,7 +953,7 @@ def check_usbnet_management_probe() -> CheckResult:
     assert observed_cidr is not None
     address = observed_cidr.split("/", 1)[0]
     probe_url = f"http://{address}/system/data.json"
-    host = (os.environ.get("JASPER_HOSTNAME") or "jts.local").strip()
+    host = resolve_hostname()
     req = urllib.request.Request(probe_url, headers={"Host": host})
     try:
         with urllib.request.urlopen(req, timeout=6.0) as resp:

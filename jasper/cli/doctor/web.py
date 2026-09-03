@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from ...control import control_token
+from ...identity import resolve_hostname
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -110,8 +111,8 @@ def check_management_surface() -> CheckResult:
     """The management UI must answer through nginx under the speaker's
     real hostname.
 
-    Probes /system/data.json on loopback nginx with `Host:
-    <JASPER_HOSTNAME>` — the exact path a browser takes (nginx →
+    Probes /system/data.json on loopback nginx with the resolved
+    speaker hostname as `Host` — the exact path a browser takes (nginx →
     socket-activated system wizard → jasper-control behind its
     management-host guard). Pins the 2026-06-11 regression class
     closed: the wizard's control client carried `Host: 0.0.0.0:8780`
@@ -131,7 +132,7 @@ def check_management_surface() -> CheckResult:
     label = "management surface (/system/)"
     if not NGINX_SITE.exists():
         return CheckResult(label, "ok", "nginx site not installed (skipped)")
-    host = (os.environ.get("JASPER_HOSTNAME") or "jts.local").strip()
+    host = resolve_hostname()
     req = urllib.request.Request(MANAGEMENT_PROBE_URL, headers={"Host": host})
     try:
         with urllib.request.urlopen(req, timeout=6.0) as resp:

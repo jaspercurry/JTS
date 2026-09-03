@@ -51,6 +51,7 @@ from types import SimpleNamespace
 from typing import Awaitable, Callable, Optional
 from ...config import Config
 from ...env_load import load_env_files as _load_env_files
+from ...identity import resolve_hostname
 from ...install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     install_role_for_profile,
@@ -855,7 +856,7 @@ def _local_audio_config_from_env() -> SimpleNamespace:
     renderer, correction, memory, network, and web health without pulling
     the full voice Config into small-device profiles.
     """
-    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local") or "jts.local"
+    hostname = resolve_hostname()
     spotify_redirect_default = default_spotify_redirect_uri(hostname)
     spotify_client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
     return SimpleNamespace(
