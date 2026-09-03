@@ -89,14 +89,23 @@ class Aec3SweepConfigError(ValueError):
     """Raised when a runtime sweep config is malformed or unsafe."""
 
 
+# Top-level Aec3V2Engine processing-toggle keys, also read directly by
+# jasper.cli.aec_bridge_engines (the engines that apply them) and
+# jasper.voice_daemon (status reporting).
+NS_ENABLED_ENV = "JASPER_AEC_NS_ENABLED"
+NS_LEVEL_ENV = "JASPER_AEC_NS_LEVEL"
+AGC1_ENABLED_ENV = "JASPER_AEC_AGC1_ENABLED"
+AGC1_TARGET_DBFS_ENV = "JASPER_AEC_AGC1_TARGET_DBFS"
+AGC1_MAX_GAIN_DB_ENV = "JASPER_AEC_AGC1_MAX_GAIN_DB"
+
 _BOOL_SPEC = _KnobSpec("bool")
 _ALLOWED_AEC3_SWEEP_ENV_VARS: dict[str, _KnobSpec] = {
     # Top-level processing toggles exposed by Aec3V2Engine.
-    "JASPER_AEC_NS_ENABLED": _BOOL_SPEC,
-    "JASPER_AEC_NS_LEVEL": _KnobSpec("enum", choices=("low", "moderate", "high")),
-    "JASPER_AEC_AGC1_ENABLED": _BOOL_SPEC,
-    "JASPER_AEC_AGC1_TARGET_DBFS": _KnobSpec("int", 0, 31),
-    "JASPER_AEC_AGC1_MAX_GAIN_DB": _KnobSpec("int", 0, 60),
+    NS_ENABLED_ENV: _BOOL_SPEC,
+    NS_LEVEL_ENV: _KnobSpec("enum", choices=("low", "moderate", "high")),
+    AGC1_ENABLED_ENV: _BOOL_SPEC,
+    AGC1_TARGET_DBFS_ENV: _KnobSpec("int", 0, 31),
+    AGC1_MAX_GAIN_DB_ENV: _KnobSpec("int", 0, 60),
     "JASPER_AEC_AGC2": _BOOL_SPEC,
     "JASPER_AEC_STREAM_DELAY_MS": _KnobSpec("int", 0, 500),
     # BEST_A / EchoCanceller3Config knobs.

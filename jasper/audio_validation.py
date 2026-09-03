@@ -29,6 +29,8 @@ from typing import Any, Mapping
 
 from .atomic_io import atomic_write_text
 from .audio_profile_state import (
+    AEC_MODE_ENV,
+    AEC_MODE_FILE_ENV,
     DEFAULT_AEC_MODE_PATH,
     AecIntent,
     MicProbe,
@@ -37,6 +39,7 @@ from .audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
+from .cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from .chip_aec.policy import (
     APPROVED_DAC_IDS,
     HIFIBERRY_DAC8X_DAC_ID,
@@ -456,7 +459,7 @@ def artifact_directory() -> Path:
 
 
 def _read_mode_env(path: Path | None = None) -> dict[str, str]:
-    return parse_env_file(str(path or _env_path("JASPER_AEC_MODE_FILE", DEFAULT_AEC_MODE_PATH)))
+    return parse_env_file(str(path or _env_path(AEC_MODE_FILE_ENV, DEFAULT_AEC_MODE_PATH)))
 
 
 def _read_system_env(path: Path | None = None) -> dict[str, str]:
@@ -464,7 +467,7 @@ def _read_system_env(path: Path | None = None) -> dict[str, str]:
 
 
 def _intent_from_env(env: Mapping[str, str]) -> AecIntent:
-    mode = (env.get("JASPER_AEC_MODE") or "auto").strip().strip("'\"").lower()
+    mode = (env.get(AEC_MODE_ENV) or "auto").strip().strip("'\"").lower()
     if mode in ("", "on", "true", "1"):
         mode = "auto"
     elif mode in ("off", "false", "0", "disabled", "disable", "no"):
@@ -597,7 +600,7 @@ def _service_state(unit: str) -> str:
 
 
 def _read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
-    stats_path = path or _env_path("JASPER_AEC_BRIDGE_STATS_PATH", DEFAULT_BRIDGE_STATS_PATH)
+    stats_path = path or _env_path(BRIDGE_STATS_PATH_ENV, DEFAULT_BRIDGE_STATS_PATH)
     try:
         data = json.loads(stats_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:

@@ -84,6 +84,7 @@ from jasper.watchdog import Heartbeat
 from jasper.log_event import log_event
 from jasper.cli.aec_bridge_engines import (
     Aec3Engine,
+    CORPUS_USB_DTLN_ENABLED_ENV,
     FRAME_SAMPLES,
     SAMPLE_RATE,
     # `_aec_loop` and `main` resolve the engine selector through this alias,
@@ -1086,11 +1087,11 @@ def main() -> int:
     corpus_ref_enabled = env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
     corpus_usb_enabled = env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
     corpus_usb_dtln_enabled = env_bool(
-        "JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0",
+        CORPUS_USB_DTLN_ENABLED_ENV, "0",
     )
     corpus_aec3_sweep_enabled = env_bool(AEC3_SWEEP_ENV_FLAG, "0")
     corpus_chip_aec_enabled = env_bool(
-        "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
+        _mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV, "0",
     )
     production_chip_aec_enabled = env_bool(_mic_profile.CHIP_AEC_ENABLED_ENV, "0")
     chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled

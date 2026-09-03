@@ -49,12 +49,15 @@ ALSA_CARD_NAMES = (
 )
 
 # The reconciler-owned env keys that name this mic: which ALSA card the AEC
-# bridge captures, and whether its on-chip AEC runs. Single-sourced here so
-# every Python reader spells them the way `deploy/bin/jasper-aec-reconcile`
-# writes them (bash stays literal — that script is the cross-language edge;
+# bridge captures, whether its on-chip AEC runs (production and corpus), and
+# which chip-AEC leg is primary. Single-sourced here so every Python reader
+# spells them the way `deploy/bin/jasper-aec-reconcile` writes them (bash
+# stays literal — that script is the cross-language edge;
 # tests/test_xvf3800_profile.py pins the two sides together).
 AEC_MIC_DEVICE_ENV = "JASPER_AEC_MIC_DEVICE"
 CHIP_AEC_ENABLED_ENV = "JASPER_AEC_CHIP_AEC_ENABLED"
+CORPUS_CHIP_AEC_ENABLED_ENV = "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"
+CHIP_AEC_PRIMARY_LEG_ENV = "JASPER_AEC_CHIP_AEC_PRIMARY_LEG"
 
 
 # ---------------------------------------------------------------------
@@ -781,7 +784,7 @@ def chip_beam_plan_from_env(env: Mapping[str, str]) -> ChipBeamPlan | None:
     truthy = {"1", "true", "yes", "on"}
     if (
         str(env.get(CHIP_AEC_ENABLED_ENV, "")).strip().lower() in truthy
-        or str(env.get("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "")).strip().lower()
+        or str(env.get(CORPUS_CHIP_AEC_ENABLED_ENV, "")).strip().lower()
         in truthy
     ):
         return SQUARE_FIXED_150_210_PLAN

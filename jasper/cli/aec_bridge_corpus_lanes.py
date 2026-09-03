@@ -40,7 +40,12 @@ from jasper.cli.aec_bridge import (
     env_bool,
     logger,
 )
-from jasper.cli.aec_bridge_engines import Aec3Engine, EngineSelector
+from jasper.cli.aec_bridge_engines import (
+    Aec3Engine,
+    CORPUS_USB_DTLN_ENABLED_ENV,
+    DTLN_ENABLED_ENV,
+    EngineSelector,
+)
 from jasper.cli.aec_bridge_telemetry import LegEmitter
 
 
@@ -261,7 +266,7 @@ def _build_usb_optional_paths(
             config.out_port_usb_webrtc,
             usb_webrtc_display_label,
         )
-        if env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
+        if env_bool(CORPUS_USB_DTLN_ENABLED_ENV, "0"):
             try:
                 from jasper.aec_engines import dtln_models
                 from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
@@ -391,7 +396,7 @@ def _build_dtln_optional_path(
     dtln_emitter = None
     dtln_wanted = (
         not production_chip_aec_enabled
-    ) and env_bool("JASPER_AEC_DTLN_ENABLED", "0")
+    ) and env_bool(DTLN_ENABLED_ENV, "0")
     _bridge_stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
     if dtln_wanted:
         try:

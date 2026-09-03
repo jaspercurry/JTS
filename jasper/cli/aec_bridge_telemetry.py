@@ -40,6 +40,7 @@ logger = logging.getLogger("jasper.aec_bridge")
 OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
+BRIDGE_STATS_PATH_ENV = "JASPER_AEC_BRIDGE_STATS_PATH"
 BRIDGE_STATS_SCHEMA_VERSION = 4
 
 

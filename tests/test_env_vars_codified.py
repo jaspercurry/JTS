@@ -93,7 +93,6 @@ _UNCODIFIED = {
     "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_RETENTION",
-    "JASPER_AEC_BRIDGE_STATS_PATH",
     "JASPER_AUDIO_VALIDATION_ARTIFACT",
     "JASPER_AUDIO_VALIDATION_DIR",
     "JASPER_BUILD_MANIFEST",
@@ -134,7 +133,6 @@ _UNCODIFIED = {
     #    env by jasper/wake_corpus/bridge_session.py at session start,
     #    the UDP port numbers are loopback wiring with paired defaults
     #    on both ends.
-    "JASPER_AEC_CHIP_AEC_PRIMARY_LEG",
     # Read at exactly one site — voice_daemon stamps it onto the wake-event
     # bridge-config row — and applied by nothing: the managed-XVF profile
     # fixes AEC_HPFONOFF=2 as product policy (`chip_aec_profile_commands` in
@@ -145,12 +143,10 @@ _UNCODIFIED = {
     # experiment teardown script (U4/P7-3), which is why it surfaces here now.
     "JASPER_AEC_CHIP_HPF_HZ",
     "JASPER_AEC_CHIP_SYS_DELAY",
-    "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
     # Explicit wake-corpus lab seam; production commissioning never reads it
     # and tunes only its foreground SYS_DELAY result.
     "JASPER_AEC_CORPUS_CHIP_SYS_DELAY",
     "JASPER_AEC_CORPUS_REF_ENABLED",
-    "JASPER_AEC_CORPUS_USB_DTLN_ENABLED",
     "JASPER_AEC_CORPUS_USB_ENABLED",
     "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED",
     "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
