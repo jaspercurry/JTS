@@ -84,7 +84,6 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/active_speaker/crossover_envelope.py",
     "jasper/active_speaker/baseline_profile.py",
     # Cluster 2 — failure / refusal copy.
-    "jasper/capture_relay/session.py",
     "jasper/correction/failures.py",
     "jasper/correction/level_match.py",
     "jasper/web/correction_setup.py",
@@ -101,9 +100,7 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",
     "deploy/assets/sound-profile/js/active-speaker-ui.js",
-    # Cluster 4 — the capture page's setup screens (its Pi-side spec, and the
-    # page module that renders them).
-    "jasper/capture_relay/spec.py",
+    # Cluster 4 — the capture page's setup screens.
     "jasper/active_speaker/crossover_v2/sweep_spec.py",
     # The placement and acknowledgement sentences the spec above renders INTO
     # those screens are composed here, so the copy leaves the swept set the
@@ -127,7 +124,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     "phone_never_armed": "canonical snake_case refusal code",
     "cancelled_before_phone_armed": "canonical snake_case refusal code",
     "phone_aborted": "capture-page abort reason posted to the relay",
-    "capture_relay.phone_event_integrity_failed": "stable event= log name",
     # --- Raw ramp error strings: the KEYS of the refusal tables, i.e. the
     # verbatim `error` the audio-measurement ramp emits, pinned by
     # tests/test_audio_measurement_ramp.py. Only their VALUES are household copy.
@@ -359,14 +355,12 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
         REASON_SNR_FLOOR,
         REASON_VERIFY_LEVEL_SHIFT,
     )
-    from jasper.capture_relay.session import CAPTURE_INCOMPATIBLE_USER_MESSAGE
 
     assert "microphone" in REASON_REGISTRY[REASON_SNR_FLOOR].message
     # R4 owns the noun here; #1924's routing half (the remedy clause) landed
     # separately and is pinned in tests/test_crossover_v2_conductor.py. Both
     # halves of the sentence have to survive, so this keeps asserting the noun.
     assert "microphone" in REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
-    assert "measurement page" in CAPTURE_INCOMPATIBLE_USER_MESSAGE
 
 
 def test_the_fixed_axis_placement_copy_keeps_the_conditional_aim():
