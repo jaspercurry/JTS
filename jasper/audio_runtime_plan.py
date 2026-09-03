@@ -108,17 +108,12 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
 # test_packaged_outputd_defaults_match_the_rust_daemon).
 PACKAGED_OUTPUTD_DEFAULT_SOURCE = "packaged outputd default"
 OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
-# The width outputd REQUESTS on its content upstream. Reconciler-owned
-# (jasper-audio-hardware-reconcile is the single writer, from
-# jasper.fanin_coupling.content_lane_format_for_coupling). Absent or empty is
-# outputd's own documented default — the pre-flip S16 lane every box ran before
-# the wide-output-path program — so this pair reads a live box honestly whether
-# or not the key has been emitted yet.
-OUTPUTD_CONTENT_FORMAT_KEY = "JASPER_OUTPUTD_CONTENT_FORMAT"
+# The width outputd assumes on its content upstream when
+# JASPER_OUTPUTD_CONTENT_FORMAT is absent or empty: outputd's own documented
+# default, the pre-flip S16 lane, NOT whatever the resolver would pick for this
+# box. A reader that follows the resolver here would refuse an arm for a wire
+# the daemon has in fact declared.
 OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
-# outputd's Ring-B/active-ring file path key. Named here for the coherence
-# message; the resolver itself lives in jasper.fanin_coupling.
-OUTPUTD_RING_PATH_KEY = "JASPER_OUTPUTD_SHM_RING_PATH"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 DEFAULT_FANIN_INPUT_BUFFER_FRAMES = 4096

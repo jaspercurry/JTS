@@ -12,8 +12,6 @@ from typing import Any, Mapping
 
 from jasper.audio_runtime_plan import (
     OUTPUTD_CONTENT_BRIDGE_KEY,
-    OUTPUTD_CONTENT_FORMAT_KEY,
-    OUTPUTD_RING_PATH_KEY,
     TRANSPORT_DAC_CONTENT_RING,
     TRANSPORT_OFF_RING,
     TRANSPORT_SHM_RING,
@@ -24,14 +22,29 @@ from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_SAMPLE_RATE,
 )
+from jasper.fanin.ring_health import load_topology_for_wire, resolve_wire_for_gate
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
+    DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
+    OUTPUTD_RING_PATH_ENV_VAR,
+    RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_CAPTURE_DEVICE,
+    RING_PATH_ENV_VAR,
+    RING_PLAYBACK_DEVICE,
     coupling_value_removed,
     dac_content_marker_contradicted,
     dac_content_ring_served,
     outputd_content_is_central_ring,
     resolve_coupling,
+    resolve_outputd_ring_path,
+    resolve_ring_path,
     ring_active_endpoint_armed,
+)
+from jasper.multiroom.dac_content_ring import (
+    DAC_CONTENT_RING_CHANNELS,
+    DAC_CONTENT_RING_FILE,
+    DAC_CONTENT_RING_FORMAT,
+    DAC_CONTENT_RING_PCM,
 )
 
 # Every shape whose post-DSP hop is an SHM ring. Membership, never a `==` on one
@@ -41,31 +54,29 @@ from jasper.fanin_coupling import (
 # does not drive it, so every camilla-endpoint comparison in this set is
 # meaningless there.
 _RING_TRANSPORT_SHAPES = frozenset((TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE))
-
-
-def _unpaired_post_dsp_playback_devices() -> frozenset[str]:
-    """Post-DSP Camilla playback endpoints with NO outputd ALSA capture pairing.
-
-    The active ALSA lane belongs here because #2534 deleted its PCM definitions;
-    both RING devices belong here structurally, because outputd reads a ring
-    FILE and a ring PCM therefore never has an outputd capture PCM.
-
-    This set answers PAIRING only — "is there a registered outputd capture for
-    this playback device" — never disposition. The two rings get opposite
-    dispositions from the same absent pairing: under an off-ring plan the ACTIVE
-    ring is the documented arm waypoint (a note) while the STEREO ring is a
-    half-flipped box (an error), and :func:`transport_coherence_report` owns that
-    split. Do not encode disposition here by removing a member.
-    """
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_PLAYBACK_DEVICE
-
-    return frozenset(
-        (
-            ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-            RING_PLAYBACK_DEVICE,
-            RING_ACTIVE_PLAYBACK_DEVICE,
-        )
+# The width outputd REQUESTS on its content upstream. Reconciler-owned
+# (jasper-audio-hardware-reconcile is the single writer, from
+# jasper.fanin_coupling.content_lane_format_for_coupling). Absent or empty is
+# outputd's own default — see
+# jasper.audio_runtime_plan.OUTPUTD_DEFAULT_CONTENT_FORMAT — so this pair reads
+# a live box honestly whether or not the key has been emitted yet.
+OUTPUTD_CONTENT_FORMAT_KEY = "JASPER_OUTPUTD_CONTENT_FORMAT"
+# Post-DSP Camilla playback endpoints with NO outputd ALSA capture pairing. The
+# active ALSA lane belongs here because its PCM definitions no longer exist
+# (#2534); both RING devices belong here structurally, because outputd reads a
+# ring FILE and a ring PCM therefore never has an outputd capture PCM.
+#
+# PAIRING only — "is there a registered outputd capture for this playback
+# device" — never disposition. The two rings get opposite dispositions from the
+# same absent pairing, and `transport_coherence_report` owns that split. Do not
+# encode disposition here by removing a member.
+_UNPAIRED_POST_DSP_PLAYBACK_DEVICES = frozenset(
+    (
+        ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+        RING_PLAYBACK_DEVICE,
+        RING_ACTIVE_PLAYBACK_DEVICE,
     )
+)
 
 
 def transport_topology_for_coupling(
@@ -91,17 +102,6 @@ def transport_topology_for_coupling(
     the reconciler has not written yet resolves the ring rather than a route
     this repo deleted.
     """
-
-    from jasper.fanin.ring_health import load_topology_for_wire, resolve_wire_for_gate
-    from jasper.fanin_coupling import (
-        OUTPUTD_RING_PATH_ENV_VAR,
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        RING_CAPTURE_DEVICE,
-        RING_PATH_ENV_VAR,
-        RING_PLAYBACK_DEVICE,
-        resolve_outputd_ring_path,
-        resolve_ring_path,
-    )
 
     fanin_values = dict(fanin_env or {})
     outputd_values = dict(outputd_env or {})
@@ -153,13 +153,6 @@ def transport_topology_for_coupling(
         "sample_rate": DEFAULT_SAMPLE_RATE,
     }
     if dac_content_lane:
-        from jasper.multiroom.dac_content_ring import (
-            DAC_CONTENT_RING_CHANNELS,
-            DAC_CONTENT_RING_FILE,
-            DAC_CONTENT_RING_FORMAT,
-            DAC_CONTENT_RING_PCM,
-        )
-
         return TransportTopology(
             name=TRANSPORT_DAC_CONTENT_RING,
             fanin_to_camilla=fanin_to_camilla,
@@ -240,10 +233,9 @@ class TransportCoherenceReport:
     fails. ``notes`` are states that are coherent but not steady — the two rungs
     of the ACTIVE-ring arm ladder — so a caller PROCEEDS while still saying what
     the box is sitting in. The split exists because those two need opposite
-    dispositions from the same comparison, and two boxes proved that collapsing
-    them into ``errors`` deadlocks the documented arm ladder: jts3 2026-08-11
-    (the graph rung, on a loopback plan) and jts.local 2026-08-21 (the endpoint
-    rung, on a plan already ``shm_ring``).
+    dispositions from the same comparison: collapsing them into ``errors``
+    deadlocks the documented arm ladder at either rung — the graph rung on a
+    loopback plan, and the endpoint rung on a plan already ``shm_ring``.
 
     Notes are not "soft errors". A note means the state is safe-by-construction
     at this instant and has a documented next step, not that a contradiction was
@@ -304,8 +296,6 @@ def transport_coherence_report(
     coherent-but-transient states in ``notes``. :func:`transport_coherence_errors`
     is the thin ``errors`` accessor for callers that only refuse-or-proceed.
     """
-
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     outputd_values = dict(outputd_env or {})
     devices = dict(camilla_devices or {})
@@ -397,8 +387,8 @@ def transport_coherence_report(
             # always a projection that is one pass behind its source, never a
             # disagreement between two independent observations.
             #
-            # Refusing on that lag was a DEADLOCK, and this is the second box
-            # class to hit it. The marker's writer validates its own candidate
+            # Refusing on that lag was a DEADLOCK. The marker's writer
+            # validates its own candidate
             # here, before the path's writer has run: on a box whose persisted
             # coupling is ALREADY `shm_ring` (a previously-passive composite that
             # ran the stereo ring), arming the marker resolves this shape
@@ -417,14 +407,12 @@ def transport_coherence_report(
             # comparisons in this same branch still return ERRORS for a graph
             # that is not actually on the active ring, and the caller refuses on
             # those.
-            from jasper.fanin_coupling import DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-
             observed_ring_path = str(
                 topology.camilla_to_outputd.get("path") or ""
             )
             if observed_ring_path != DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
                 notes.append(
-                    f"{OUTPUTD_RING_PATH_KEY}={observed_ring_path!r} under an "
+                    f"{OUTPUTD_RING_PATH_ENV_VAR}={observed_ring_path!r} under an "
                     f"armed active endpoint is the FIRST-ARM waypoint: the "
                     f"endpoint marker has moved and its ring-path projection has "
                     f"not. An armed active endpoint may read only "
@@ -500,8 +488,7 @@ def transport_coherence_report(
         # (`baseline-reemit --endpoint ring`) creates on purpose and steps 2
         # and 3 consume. Reported as an error it was a DEADLOCK — step 2
         # refused the state step 1 had to create, and step 3 refuses without
-        # step 2's marker, so no ordering completed (observed on jts3
-        # 2026-08-11, exit 78; captures/r7b-jts3-arm-20260811T111338Z).
+        # step 2's marker, so no ordering completed.
         #
         # Safe by construction rather than by permission: once the graph is
         # loaded CamillaDSP writes the ACTIVE ring while outputd is still
@@ -540,7 +527,7 @@ def transport_coherence_report(
             "direction: the ring is the one legal ACTIVE endpoint, and an "
             "off-ring roleful box has no content transport at all."
         )
-    elif playback_device in _unpaired_post_dsp_playback_devices():
+    elif playback_device in _UNPAIRED_POST_DSP_PLAYBACK_DEVICES:
         # MEMBERSHIP, not one `==`. Two distinct contradictions land here and
         # both must be reported:
         #
