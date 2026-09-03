@@ -20,7 +20,12 @@
 # idempotent and safe on fresh installs.
 
 ensure_state_dir() {
-    install -d -m 0750 "${STATE_DIR}"
+    # `install -d -m` re-chmods an EXISTING dir, so every call (10+ per
+    # install) drops an already-widened 0770 dir to 0750 for the moment
+    # between this line and the chmod 0770 below, EACCES-ing any concurrent
+    # jasper-group writer (atomic_write_text's mkstemp/rename). Only create,
+    # never re-chmod, an existing dir here.
+    [[ -d "${STATE_DIR}" ]] || install -d -m 0750 "${STATE_DIR}"
     # WS1 Phase 3b: once the shared `jasper` group exists (created by
     # create_jasper_service_users earlier in install), widen the state dir to
     # root:jasper 0770 so the now-non-root jasper-voice/-mux (group jasper) can

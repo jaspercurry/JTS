@@ -473,6 +473,51 @@ def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o750
 
 
+def test_ensure_state_dir_does_not_rechmod_an_existing_dir(tmp_path):
+    """`install -d -m` re-chmods an EXISTING dir, briefly narrowing an
+    already-widened 0770 STATE_DIR back to 0750 on every call. Pin that an
+    existing STATE_DIR never reaches `install` at all, via a fake `install`
+    on PATH that records its invocations."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o770)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "install.calls"
+    fake_install = bin_dir / "install"
+    fake_install.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> "
+        + shlex.quote(str(calls))
+        + "\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_install.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && "
+            + "STATE_DIR="
+            + shlex.quote(str(state_dir))
+            + " && ensure_state_dir",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not calls.exists(), (
+        "ensure_state_dir called `install -d` on an existing STATE_DIR: "
+        f"{calls.read_text(encoding='utf-8') if calls.exists() else ''}"
+    )
+
+
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
     install_root = tmp_path / "opt/jasper"
     pip = install_root / ".venv/bin/pip"
