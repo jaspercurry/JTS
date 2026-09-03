@@ -10,6 +10,8 @@ import hashlib
 import inspect
 import logging
 import os
+import subprocess
+import sys
 import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -1017,9 +1019,16 @@ async def test_continuous_tone_unconfirmed_cancel_cleanup_is_bounded(
 
 
 def test_shared_playback_holds_no_powerful_host_reference() -> None:
-    source = inspect.getsource(playback)
-    assert "jasper.camilla" not in source
-    assert "CamillaController" not in source
+    # The import graph, in a fresh interpreter: this module must never be the
+    # thing that drags the DSP controller into a measurement process.
+    probe = (
+        "import sys, jasper.audio_measurement.playback;"
+        "print('jasper.camilla' in sys.modules)"
+    )
+    out = subprocess.check_output(
+        [sys.executable, "-c", probe], text=True, stderr=subprocess.STDOUT
+    )
+    assert out.strip() == "False"
 
 
 # --- #2626: both aplay spawns carry the correction-lane umask ----------------

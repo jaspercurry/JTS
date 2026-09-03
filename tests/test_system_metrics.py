@@ -115,6 +115,68 @@ def test_read_meminfo_returns_sensible_values() -> None:
     assert out["swap_used_mb"] >= 0
 
 
+def test_memory_pressure_readers_parse_and_tolerate_absence(tmp_path) -> None:
+    """PSI + the OOM counter parse out of their real file shapes, and a
+    kernel that publishes neither yields None rather than a calm zero."""
+    pressure = tmp_path / "memory"
+    pressure.write_text(
+        "some avg10=0.00 avg60=12.34 avg300=1.20 total=987654\n"
+        "full avg10=0.00 avg60=3.21 avg300=0.40 total=123456\n",
+    )
+    vmstat = tmp_path / "vmstat"
+    vmstat.write_text("nr_free_pages 12345\noom_kill 3\npgmajfault 42\n")
+
+    assert SystemSampler._read_mem_psi_some_avg60(str(pressure)) == 12.34
+    assert SystemSampler._read_oom_kill(str(vmstat)) == 3
+
+    missing = str(tmp_path / "nope")
+    assert SystemSampler._read_mem_psi_some_avg60(missing) is None
+    assert SystemSampler._read_oom_kill(missing) is None
+    # Present but without the counter (older kernel) is also "no reading".
+    no_counter = tmp_path / "vmstat-old"
+    no_counter.write_text("nr_free_pages 12345\n")
+    assert SystemSampler._read_oom_kill(str(no_counter)) is None
+
+
+@pytest.mark.parametrize("psi,oom,expected", [
+    (12.34, 3, {"mem_psi_some_avg60": 12.34, "oom_kill": 3}),
+    (0.0, 0, {"mem_psi_some_avg60": 0.0, "oom_kill": 0}),
+    (None, None, {}),
+])
+def test_snapshot_omits_memory_pressure_fields_when_unreadable(
+    psi, oom, expected,
+) -> None:
+    """Omitted, not zeroed: the dashboard must be able to tell "this kernel
+    has no PSI" from "there is no pressure"."""
+    s = SystemSampler(history_points=5)
+    with patch.object(
+        SystemSampler, "_read_mem_psi_some_avg60", return_value=psi,
+    ), patch.object(
+        SystemSampler, "_read_oom_kill", return_value=oom,
+    ), patch.object(
+        SystemSampler, "_read_meminfo",
+        return_value={"total_mb": 2048, "available_mb": 1024,
+                      "used_mb": 1024, "swap_used_mb": 0},
+    ), patch.object(
+        SystemSampler, "_read_loadavg_1m", return_value=0.5,
+    ), patch.object(
+        SystemSampler, "_read_net_dev",
+        return_value={"rx_bytes": 0, "tx_bytes": 0},
+    ), patch.object(
+        SystemSampler, "_read_disk", return_value=(50.0, 30.0),
+    ), patch.object(
+        SystemSampler, "_read_uptime", return_value=3600.0,
+    ), patch.object(SystemSampler, "_read_fan", return_value=None):
+        s._tick()
+    current = s.snapshot()["current"]
+    present = {
+        key: current[key]
+        for key in ("mem_psi_some_avg60", "oom_kill")
+        if key in current
+    }
+    assert present == expected
+
+
 @pytest.mark.skipif(
     platform.system() != "Linux",
     reason="/proc is Linux-only",
@@ -406,7 +468,7 @@ def test_list_service_cgroups_finds_nested_jts_and_audio_units(tmp_path) -> None
         audio_slice / "jasper-outputd.service",
         mic_slice / "jasper-aec-bridge.service",
         system_slice / "jasper-accessory-reconcile.service",
-        system_slice / "jasper-wiim-remote-mic.service",
+        system_slice / "jasper-input.service",
         system_slice / "not-tracked.service",
     ):
         unit_dir.mkdir(parents=True)
@@ -424,7 +486,7 @@ def test_list_service_cgroups_finds_nested_jts_and_audio_units(tmp_path) -> None
     assert by_unit["shairport-sync.service"]["group"] == "Audio"
     assert by_unit["jasper-control.service"]["group"] == "Control"
     assert by_unit["jasper-accessory-reconcile.service"]["group"] == "Hardware"
-    assert by_unit["jasper-wiim-remote-mic.service"]["group"] == "Hardware"
+    assert by_unit["jasper-input.service"]["group"] == "Hardware"
     assert "not-tracked.service" not in by_unit
     assert "dbus.service" not in by_unit
 
@@ -576,6 +638,92 @@ def test_tick_services_handles_negative_delta(tmp_path, monkeypatch) -> None:
 def test_tick_services_handles_missing_slice_dir(tmp_path) -> None:
     s = SystemSampler()
     assert s._tick_services(str(tmp_path / "no-such-dir")) == []
+
+
+def test_service_cgroup_walk_is_cached_until_the_unit_set_changes(
+    tmp_path, monkeypatch,
+) -> None:
+    """The walk is the sampler's dominant cost, so a steady unit set must
+    not re-walk every tick — but a stop (cgroup gone) and a start (caught
+    by the periodic rescan) both have to reach the table."""
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {"cpu.stat": "usage_usec 1000000\n"},
+        "jasper-control.service": {"cpu.stat": "usage_usec 2000000\n"},
+    })
+    walks = []
+    real_list = SystemSampler._list_service_cgroups
+
+    def counting_list(root_dir):
+        walks.append(root_dir)
+        return real_list(root_dir)
+
+    monkeypatch.setattr(
+        SystemSampler, "_list_service_cgroups", staticmethod(counting_list),
+    )
+    s = SystemSampler()
+
+    for _ in range(3):
+        assert sorted(
+            row["name"] for row in s._tick_services(slice_dir)
+        ) == ["jasper-control", "jasper-voice"]
+    assert len(walks) == 1
+
+    # A stopped unit takes its cgroup with it — visible on the next tick.
+    import shutil
+    shutil.rmtree(os.path.join(slice_dir, "jasper-voice.service"))
+    assert [row["name"] for row in s._tick_services(slice_dir)] == [
+        "jasper-control",
+    ]
+    assert len(walks) == 2
+
+    # A started unit keeps every cached path valid, so only the periodic
+    # rescan can pick it up.
+    started = os.path.join(slice_dir, "jasper-outputd.service")
+    os.makedirs(started)
+    with open(os.path.join(started, "cpu.stat"), "w") as f:
+        f.write("usage_usec 3000000\n")
+    for _ in range(system_metrics.SERVICE_CGROUP_RESCAN_TICKS - 1):
+        assert [row["name"] for row in s._tick_services(slice_dir)] == [
+            "jasper-control",
+        ]
+    assert sorted(
+        row["name"] for row in s._tick_services(slice_dir)
+    ) == ["jasper-control", "jasper-outputd"]
+    assert len(walks) == 3
+
+
+def test_service_cgroup_walk_result_is_not_cached_when_empty(
+    tmp_path, monkeypatch,
+) -> None:
+    """os.walk swallows its own errors, so an empty walk is indistinguishable
+    from a failed one — it must not blank the table for a whole rescan
+    window."""
+    walks = []
+    monkeypatch.setattr(
+        SystemSampler, "_list_service_cgroups",
+        staticmethod(lambda root_dir: walks.append(root_dir) or []),
+    )
+    s = SystemSampler()
+    missing = str(tmp_path / "no-cgroups")
+    s._tick_services(missing)
+    s._tick_services(missing)
+    assert len(walks) == 2
+
+
+@pytest.mark.parametrize("interval,elapsed,expected", [
+    (5.0, 0.0, 5.0),
+    (5.0, 2.5, 2.5),
+    (5.0, 4.5, 1.0),
+    (5.0, 30.0, 1.0),
+    # The floor never overrides a shorter configured cadence.
+    (0.5, 10.0, 0.5),
+])
+def test_sampler_sleep_never_drops_below_the_floor(
+    interval, elapsed, expected,
+) -> None:
+    """A tick slower than the interval must not turn the loop into a spin."""
+    s = SystemSampler(sample_interval_sec=interval)
+    assert s._next_sleep_sec(elapsed) == pytest.approx(expected)
 
 
 def test_tick_services_partial_read_skipped(tmp_path) -> None:

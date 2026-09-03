@@ -60,99 +60,83 @@ estimator tolerates bounded drift; nothing here resamples to compensate, and
 from __future__ import annotations
 
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
 import logging
 import math
 import os
 import socket
 import signal
-import struct
 import sys
 import threading
 import time
-from queue import Queue, Empty, Full
+from queue import Queue, Empty
 from pathlib import Path
-from typing import Any, Callable, Optional
-import json
+from typing import Any, Optional
 
 import numpy as np
-import sounddevice as sd
-from scipy.signal import butter, resample_poly, sosfilt
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
     DEFAULT_AEC3_SWEEP_VARIANTS,
-    Aec3SweepConfig,
-    Aec3SweepConfigError,
-    Aec3SweepVariant,
-    USB_AEC3_CORPUS_LABEL,
-    USB_AEC3_CORPUS_OVERRIDES,
-    USB_AEC3_SWEEP_BASELINE_LABEL,
-    USB_AEC3_SWEEP_BASELINE_OVERRIDES,
-    current_aec3_sweep_source,
-    load_aec3_sweep_config,
 )
 from jasper.watchdog import Heartbeat
-from jasper import wake_legs
-from jasper.wake_corpus.capture_plan import (
-    DAC_FINGERPRINT_ENV,
-    EXPECTED_LEGS_ENV,
-    MIC_FINGERPRINT_ENV,
-    PLAN_ID_ENV,
-)
 from jasper.log_event import log_event
-from jasper.usb_mic import (
-    INTENT_PATH as USB_MIC_INTENT_PATH,
-    USB_HOST_MIC_UDP_PORT,
-    USB_MIC_HEADER_STRUCT,
-    USB_MIC_LEG_KEY,
-    USB_MIC_PACKET_MAGIC,
-    USB_MIC_PACKET_VERSION,
-    USB_MIC_PRIMARY_LEG,
-    USB_MIC_RAW_XVF_LEG,
-    usb_mic_enabled,
+from jasper.cli.aec_bridge_engines import (
+    Aec3Engine,
+    FRAME_SAMPLES,
+    SAMPLE_RATE,
+    # `_aec_loop` and `main` resolve the engine selector through this alias,
+    # so it — not `aec_bridge_engines.select_engine` — is what a test patches
+    # to reach the loop.
+    select_engine as _select_engine,
 )
+from jasper.cli.aec_bridge_capture import (
+    MIC_CHANNEL_INDEX,
+    MIC_CHANNELS,
+    mic_thread,
+    usb_mic_thread,
+)
+from jasper.cli.aec_bridge_config import (
+    BridgeConfig,
+    MicDeviceUnavailable,
+    OUTPUTD_REF_UDP_HOST,
+    OUTPUTD_REF_UDP_PORT,
+    REF_SOURCE,
+    UnsupportedReferenceSource,
+    UsbMicUnavailable,
+    _chip_aec_primary_leg,
+    _chip_beam_plan,
+    env_bool,
+    leg_default_port,
+    resolve_usb_mic_source,
+    resolved_reference_source,
+    validate_mic_device,
+    validate_usb_mic_device,
+)
+from jasper.cli.aec_bridge_reference import (
+    REF_RATE,
+    outputd_ref_udp_thread,
+    ref_clip_percent,
+    reset_ref_clip_counters,
+)
+from jasper.cli.aec_bridge_telemetry import (
+    BRIDGE_STATS_PATH,
+    DropLogDebouncer,
+    LegEmitter,
+    OUT_FRAME_BYTES,
+    OUT_FRAME_SAMPLES,
+    StatsIdentity,
+    TimestampedLegEmitter,
+    _BridgeStats,
+    logger,
+)
+from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
 
-logger = logging.getLogger("jasper.aec_bridge")
 AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
-AEC3_SWEEP_INPUT_SOURCE = AEC3_SWEEP_SOURCE_XVF
 
-# 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
-# requirement (160 samples); the binding splits 320 → 2×160 internally per
-# the AEC3 API contract.
-FRAME_SAMPLES = 320
-SAMPLE_RATE = 16000
-
-# Wire geometry of the far-end reference. outputd sends its final speaker
-# monitor at this rate/channel count; `_ReferenceFrameConverter` folds it to
-# the 16 kHz mono frames AEC3 consumes. The bridge has no other reference
-# transport — see REF_SOURCE below.
-REF_RATE = 48000
-REF_CHANNELS = 2
-
-# Capture geometry for the mic; the profile pins the near-end lane for the
-# default WebRTC AEC3 path (channels 2-5 are raw mics 0-3, no chip DSP).
-# The device name is a PortAudio substring match — NOT an ALSA pcm string:
-# PortAudio enumerates ALSA cards by card description, not `hw:CARD=` syntax.
-# The default matches "Array: USB Audio (hw:N,0)" on the legacy square
-# firmware and "L16K6Ch: USB Audio (hw:N,0)" on the Flex linear firmware.
-MIC_CHANNELS = _mic_profile.RECOMMENDED_FIRMWARE.capture_channels
-MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
-
-# Output transport: UDP localhost. The bridge sends AEC'd mono int16 frames
-# to `127.0.0.1:JASPER_AEC_UDP_PORT`; jasper-voice's `UdpMicCapture` binds
-# the same port and receives.
-OUT_HOST = "127.0.0.1"
-
-
-def _leg_default_port(token: str) -> int:
-    return wake_legs.by_token(token).udp_port
-
-
-OUT_PORT = _leg_default_port("on")
+OUT_PORT = leg_default_port("on")
 OUT_RATE = 16000
 
 # Chip-direct mic stream, pre-AEC3 — exactly the near-end input AEC3
@@ -162,19 +146,14 @@ OUT_RATE = 16000
 # post-AEC (OUT_PORT) and chip-direct legs, which catch mostly-disjoint sets
 # of utterances. It consumes this leg only when the reconciler configures
 # `JASPER_MIC_DEVICE_RAW`; otherwise the extra packets are ignored.
-OUT_PORT_RAW = _leg_default_port("off")
-# Optional 3rd UDP stream: DTLN-aec output, off unless
-# JASPER_AEC_DTLN_ENABLED=1. Shares the mic + ref capture with the AEC3
-# engine — each input chunk is fed to BOTH engines. Adds ~95 MB RAM and
-# ~12% of one Pi 5 core.
-OUT_PORT_DTLN = _leg_default_port("dtln")
+OUT_PORT_RAW = leg_default_port("off")
 # 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the chip-direct
 # stream on OUT_PORT_RAW (chip channel 1 = ASR beam, with chip BF+NS+AGC+HPF
 # applied), channel 2 is the raw mic 0 ADC output with NO chip DSP whatsoever
 # — not even MIC_GAIN, i.e. what a mic without an XMOS chip would deliver.
 # Read by the wake-corpus recorder as the mic-agnostic baseline. Same packet
 # shape as the other legs; always emitted, at ~0.25% of one core.
-OUT_PORT_RAW0 = _leg_default_port("raw0")
+OUT_PORT_RAW0 = leg_default_port("raw0")
 # Corpus-only experiment streams, off by default so production bridge cost
 # does not move. When enabled for wake-corpus recording, the bridge emits:
 #   - ref: the 16 kHz mono reference frame AEC3 actually consumed
@@ -183,41 +162,16 @@ OUT_PORT_RAW0 = _leg_default_port("raw0")
 #   - usb_dtln: the cheap USB mic through a second DTLN-aec chain
 #
 # jasper-voice never consumes these.
-OUT_PORT_REF = _leg_default_port("ref")
-OUT_PORT_USB_RAW = _leg_default_port("usb_raw")
-OUT_PORT_USB_WEBRTC = _leg_default_port("usb_webrtc")
-OUT_PORT_USB_DTLN = _leg_default_port("usb_dtln")
-OUT_PORT_CHIP_AEC_150 = _leg_default_port("chip_aec_150")
-OUT_PORT_CHIP_AEC_210 = _leg_default_port("chip_aec_210")
-OUT_PORT_XVF_RAW0_WEBRTC_AEC3 = _leg_default_port("xvf_raw0_webrtc_aec3")
-OUT_PORT_XVF_RAW0_DTLN = _leg_default_port("xvf_raw0_dtln")
-OUTPUTD_REF_UDP_HOST = "127.0.0.1"
-OUTPUTD_REF_UDP_PORT = 9891
-# The bridge's only reference source. Software AEC3, chip-AEC, corpus,
-# and diagnostics all consume outputd's final speaker monitor, so they
-# all see the same reference contract.
-REF_SOURCE = "outputd_udp"
-# Retired reference source: the summed snd-aloop tap, whose path and tap are
-# both deleted. A box whose /etc/jasper/jasper.env still carries this value
-# converges on the next `jasper-aec-reconcile` run, so the bridge warns and
-# uses REF_SOURCE rather than refusing to start: a hard failure here would
-# leave jasper-voice with an unfed UDP mic and no wake detection.
-RETIRED_REF_SOURCE_ALSA = "alsa"
+OUT_PORT_REF = leg_default_port("ref")
+OUT_PORT_USB_RAW = leg_default_port("usb_raw")
+OUT_PORT_USB_WEBRTC = leg_default_port("usb_webrtc")
+OUT_PORT_USB_DTLN = leg_default_port("usb_dtln")
+OUT_PORT_CHIP_AEC_150 = leg_default_port("chip_aec_150")
+OUT_PORT_CHIP_AEC_210 = leg_default_port("chip_aec_210")
 OUT_PORT_AEC3_SWEEP = {
     variant.leg: variant.default_port
     for variant in AEC3_SWEEP_VARIANTS
 }
-USB_MIC_DEVICE = "USB PnP Sound Device"
-USB_MIC_RATE = 0
-# Voice consumes 1280-sample (80 ms) chunks. Aggregating four 320-sample AEC
-# frames into one UDP packet keeps the bridge↔voice contract symmetric with
-# MicCapture's frame size and holds the packet rate at ~12.5 pps. The AEC
-# engine still works on 320-sample windows internally.
-OUT_FRAME_SAMPLES = 1280
-OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
-BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
-BRIDGE_STATS_SCHEMA_VERSION = 4
-CAPTURE_LATENCY_MAX_SECONDS = 0.25
 
 # Drop-frame threshold: if queues fill faster than they drain (CPU
 # starvation, clock drift past the margin), log and drop rather than block.
@@ -226,601 +180,19 @@ QUEUE_MAXSIZE = 32
 _shutdown = threading.Event()
 
 
-@dataclass(frozen=True)
-class BridgeConfig:
-    mic_device: str
-    capture_latency: str
-    out_host: str
-    out_port: int
-    out_port_raw: int
-    out_port_dtln: int
-    out_port_raw0: int
-    out_port_ref: int
-    out_port_usb_raw: int
-    out_port_usb_webrtc: int
-    out_port_usb_dtln: int
-    out_port_chip_aec_150: int
-    out_port_chip_aec_210: int
-    emit_chip_aec_150: bool
-    emit_chip_aec_210: bool
-    out_port_xvf_raw0_webrtc_aec3: int
-    out_port_xvf_raw0_dtln: int
-    out_port_usb_host_mic: int
-    emit_usb_host_mic: bool
-    usb_mic_leg: str
-    outputd_ref_udp_host: str
-    outputd_ref_udp_port: int
-    ref_source: str
-    out_port_aec3_sweep: dict[str, int]
-    usb_mic_device: str
-    usb_mic_rate: int
-    bridge_stats_path: Path
-    aec3_sweep_config: Aec3SweepConfig
-    aec3_sweep_variants: tuple[Aec3SweepVariant, ...]
-    aec3_sweep_input_source: str
-    wake_corpus_plan_id: str
-    wake_corpus_expected_legs: tuple[str, ...]
-    wake_corpus_mic_fingerprint: str
-    wake_corpus_dac_fingerprint: str
-
-    @classmethod
-    def from_env(
-        cls,
-        *,
-        log_sweep: bool = False,
-        logger_: logging.Logger | None = None,
-    ) -> "BridgeConfig":
-        log = logger_ or logger
-        sweep_config = load_aec3_sweep_config(logger=log if log_sweep else None)
-        try:
-            sweep_input_source = current_aec3_sweep_source()
-        except Aec3SweepConfigError as e:
-            if log_sweep:
-                log_event(
-                    log,
-                    "aec3_sweep_source_invalid",
-                    error=str(e),
-                    fallback=AEC3_SWEEP_SOURCE_XVF,
-                    level=logging.WARNING,
-                )
-            sweep_input_source = AEC3_SWEEP_SOURCE_XVF
-
-        if log_sweep:
-            log_event(
-                log,
-                "aec3_sweep_config_loaded",
-                source=sweep_config.source,
-                path=sweep_config.path,
-                hash=sweep_config.config_hash,
-                input_source=sweep_input_source,
-                variants=",".join(variant.leg for variant in sweep_config.variants),
-            )
-
-        def _env_leg_port(env_var: str, token: str) -> int:
-            return int(os.environ.get(env_var, str(_leg_default_port(token))))
-
-        corpus_chip_aec_enabled = _env_bool(
-            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
-        )
-        capture_latency = os.environ.get("JASPER_AEC_CAPTURE_LATENCY", "").strip()
-        if capture_latency and capture_latency.lower() != "low":
-            try:
-                capture_latency_seconds = float(capture_latency)
-            except ValueError:
-                capture_latency_seconds = 0.0
-            if (
-                not math.isfinite(capture_latency_seconds)
-                or capture_latency_seconds <= 0
-                or capture_latency_seconds > CAPTURE_LATENCY_MAX_SECONDS
-            ):
-                log_event(
-                    log,
-                    "aec.capture_latency_invalid",
-                    value=capture_latency,
-                    fallback="default",
-                    level=logging.WARNING,
-                )
-                capture_latency = ""
-
-        return cls(
-            mic_device=os.environ.get(
-                "JASPER_AEC_MIC_DEVICE",
-                _mic_profile.alsa_card_name(),
-            ),
-            capture_latency=capture_latency.lower(),
-            out_host=os.environ.get("JASPER_AEC_UDP_HOST", OUT_HOST),
-            out_port=_env_leg_port("JASPER_AEC_UDP_PORT", "on"),
-            out_port_raw=_env_leg_port("JASPER_AEC_UDP_PORT_RAW", "off"),
-            out_port_dtln=_env_leg_port("JASPER_AEC_UDP_PORT_DTLN", "dtln"),
-            out_port_raw0=_env_leg_port("JASPER_AEC_UDP_PORT_RAW0", "raw0"),
-            out_port_ref=_env_leg_port("JASPER_AEC_UDP_PORT_REF", "ref"),
-            out_port_usb_raw=_env_leg_port("JASPER_AEC_UDP_PORT_USB_RAW", "usb_raw"),
-            out_port_usb_webrtc=_env_leg_port(
-                "JASPER_AEC_UDP_PORT_USB_WEBRTC",
-                "usb_webrtc",
-            ),
-            out_port_usb_dtln=_env_leg_port(
-                "JASPER_AEC_UDP_PORT_USB_DTLN",
-                "usb_dtln",
-            ),
-            out_port_chip_aec_150=_env_leg_port(
-                "JASPER_AEC_UDP_PORT_CHIP_AEC_150",
-                "chip_aec_150",
-            ),
-            out_port_chip_aec_210=_env_leg_port(
-                "JASPER_AEC_UDP_PORT_CHIP_AEC_210",
-                "chip_aec_210",
-            ),
-            emit_chip_aec_150=(
-                corpus_chip_aec_enabled
-                or bool(
-                    os.environ.get(
-                        "JASPER_MIC_DEVICE_CHIP_AEC_150", "",
-                    ).strip()
-                )
-            ),
-            emit_chip_aec_210=(
-                corpus_chip_aec_enabled
-                or bool(
-                    os.environ.get(
-                        "JASPER_MIC_DEVICE_CHIP_AEC_210", "",
-                    ).strip()
-                )
-            ),
-            out_port_xvf_raw0_webrtc_aec3=_env_leg_port(
-                "JASPER_AEC_UDP_PORT_XVF_RAW0_WEBRTC_AEC3",
-                "xvf_raw0_webrtc_aec3",
-            ),
-            out_port_xvf_raw0_dtln=_env_leg_port(
-                "JASPER_AEC_UDP_PORT_XVF_RAW0_DTLN",
-                "xvf_raw0_dtln",
-            ),
-            # Product wiring, not an operator knob: the relay owns the paired
-            # listener constant and accessories are regression-guarded from it.
-            out_port_usb_host_mic=USB_HOST_MIC_UDP_PORT,
-            emit_usb_host_mic=usb_mic_enabled(
-                os.environ.get("JASPER_USB_MIC_INTENT_PATH", USB_MIC_INTENT_PATH)
-            ),
-            usb_mic_leg=(
-                os.environ.get(USB_MIC_LEG_KEY, USB_MIC_PRIMARY_LEG).strip()
-                or USB_MIC_PRIMARY_LEG
-            ),
-            outputd_ref_udp_host=os.environ.get(
-                "JASPER_AEC_OUTPUTD_REF_UDP_HOST",
-                OUTPUTD_REF_UDP_HOST,
-            ),
-            outputd_ref_udp_port=int(
-                os.environ.get(
-                    "JASPER_AEC_OUTPUTD_REF_UDP_PORT",
-                    str(OUTPUTD_REF_UDP_PORT),
-                )
-            ),
-            ref_source=os.environ.get(
-                "JASPER_AEC_REF_SOURCE",
-                REF_SOURCE,
-            ).strip().lower(),
-            out_port_aec3_sweep={
-                variant.leg: variant.default_port
-                for variant in sweep_config.variants
-            },
-            usb_mic_device=os.environ.get(
-                "JASPER_AEC_USB_MIC_DEVICE",
-                USB_MIC_DEVICE,
-            ),
-            usb_mic_rate=int(float(os.environ.get(
-                "JASPER_AEC_USB_MIC_RATE",
-                str(USB_MIC_RATE),
-            ))),
-            bridge_stats_path=Path(os.environ.get(
-                "JASPER_AEC_BRIDGE_STATS_PATH",
-                str(BRIDGE_STATS_PATH),
-            )),
-            aec3_sweep_config=sweep_config,
-            aec3_sweep_variants=sweep_config.variants,
-            aec3_sweep_input_source=sweep_input_source,
-            wake_corpus_plan_id=os.environ.get(PLAN_ID_ENV, "").strip(),
-            wake_corpus_expected_legs=tuple(
-                leg.strip()
-                for leg in os.environ.get(EXPECTED_LEGS_ENV, "").split(",")
-                if leg.strip()
-            ),
-            wake_corpus_mic_fingerprint=os.environ.get(
-                MIC_FINGERPRINT_ENV, "",
-            ).strip(),
-            wake_corpus_dac_fingerprint=os.environ.get(
-                DAC_FINGERPRINT_ENV, "",
-            ).strip(),
-        )
-
-
-@dataclass
-class _DropLogDebouncer:
-    interval_sec: float = 1.0
-    drops_in_window: int = 0
-    last_log: float = 0.0
-
-    def record(self, now: float) -> tuple[int, float] | None:
-        return self.record_many(now, 1)
-
-    def record_many(self, now: float, drops: int) -> tuple[int, float] | None:
-        self.drops_in_window += max(0, drops)
-        return self.flush(now)
-
-    def flush(self, now: float) -> tuple[int, float] | None:
-        if self.drops_in_window <= 0:
-            return None
-        if self.last_log and now - self.last_log < self.interval_sec:
-            return None
-        window_sec = now - self.last_log if self.last_log else self.interval_sec
-        drops = self.drops_in_window
-        self.drops_in_window = 0
-        self.last_log = now
-        return drops, window_sec
-
-
-def _zero_leg_counters(
-    aec3_sweep_variants: tuple[Aec3SweepVariant, ...] = AEC3_SWEEP_VARIANTS,
-) -> dict[str, int]:
-    """A fresh per-leg counter dict zeroed for every emit leg: each
-    jasper.wake_legs token plus the dynamic AEC3-sweep variant legs.
-
-    Keyed off the registry so the bridge's UDP emit tokens and the wake-event
-    corpus columns stay in lockstep.
-    """
-    counters = {spec.token: 0 for spec in wake_legs.REGISTRY}
-    counters.update({variant.leg: 0 for variant in aec3_sweep_variants})
-    return counters
-
-
-class _BridgeStats:
-    """Low-cost monotonic counters for capture provenance.
-
-    The wake-corpus recorder snapshots this JSON file at clip start/stop and
-    stores counter deltas in clip metadata. Counters are monotonic for the
-    lifetime of one bridge process; the PID + start epoch let consumers
-    reject deltas that span a restart.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._started_epoch_sec = time.time()
-        self._counters: dict[str, object] = {}
-        self.reset()
-
-    def reset(
-        self,
-        aec3_sweep_variants: tuple[Aec3SweepVariant, ...] = AEC3_SWEEP_VARIANTS,
-        *,
-        reference_source: str = REF_SOURCE,
-        reference_endpoint: str = (
-            f"{OUTPUTD_REF_UDP_HOST}:{OUTPUTD_REF_UDP_PORT}"
-        ),
-    ) -> None:
-        with self._lock:
-            self._started_epoch_sec = time.time()
-            self._started_monotonic = time.monotonic()
-            self._leg_engines = {}
-            self._active_capture_plan: dict[str, object] = {}
-            self._capture_stream: dict[str, object] = {}
-            self._reference_source = reference_source
-            self._reference_endpoint = reference_endpoint
-            self._reference_frames_enqueued = 0
-            self._reference_last_frame_monotonic: float | None = None
-            self._counters = {
-                "frames_processed": 0,
-                "ref_starved_frames": 0,
-                "usb_mic_source_fallback_frames": 0,
-                "queue_drops": {
-                    "mic": 0,
-                    "chip": 0,
-                    "raw0": 0,
-                    "usb": 0,
-                    "ref": 0,
-                },
-                "udp_send_drops_by_leg": _zero_leg_counters(aec3_sweep_variants),
-                "packets_sent_by_leg": _zero_leg_counters(aec3_sweep_variants),
-            }
-
-    def record_reference_frames(self, count: int) -> None:
-        """Record complete 20 ms reference frames accepted by ``ref_q``.
-
-        Conversion alone is not receiver progress: a full bounded queue means
-        the AEC loop cannot consume the new frame, so callers report only
-        successful ``put_nowait`` operations here. The AEC loop's reuse of
-        ``last_ref_bytes`` deliberately never reaches this method — a
-        carried-forward frame must not refresh receiver health.
-        """
-
-        if count <= 0:
-            return
-        now = time.monotonic()
-        with self._lock:
-            self._reference_frames_enqueued += count
-            self._reference_last_frame_monotonic = now
-
-    def set_capture_stream(
-        self,
-        *,
-        sample_rate_hz: int,
-        block_frames: int,
-        input_latency_seconds: float,
-    ) -> None:
-        """Publish the PortAudio geometry negotiated by the live XVF stream."""
-
-        with self._lock:
-            self._capture_stream = {
-                "sample_rate_hz": sample_rate_hz,
-                "block_frames": block_frames,
-                "input_latency_seconds": input_latency_seconds,
-                "input_latency_frames": round(
-                    input_latency_seconds * sample_rate_hz
-                ),
-            }
-
-    def set_leg_engine(
-        self,
-        leg: str,
-        *,
-        enabled: bool,
-        loaded: bool,
-        error: str | None = None,
-    ) -> None:
-        """Record an optional engine leg's current runtime availability.
-
-        Gives the bridge-stats file a journal-independent answer to "is this
-        leg actually running?" across both initialization and later inference
-        failures; jasper-doctor's `check_aec_bridge_dtln_engine` reads it.
-        """
-        with self._lock:
-            self._leg_engines[leg] = {
-                "enabled": enabled,
-                "loaded": loaded,
-                "error": error,
-            }
-
-    def set_active_capture_plan(
-        self,
-        *,
-        wake_corpus_plan_id: str,
-        expected_legs: tuple[str, ...],
-        emitted_legs: list[str],
-        corpus_flags: dict[str, object],
-        beam_plan: dict[str, object],
-        ports: dict[str, int],
-        mic_reference_identity: dict[str, object],
-        usb_mic_source: dict[str, object] | None = None,
-        mic_fingerprint: str = "",
-        dac_reference_fingerprint: str = "",
-    ) -> None:
-        with self._lock:
-            self._active_capture_plan = {
-                "wake_corpus_plan_id": wake_corpus_plan_id,
-                "expected_legs": list(expected_legs),
-                "emitted_legs": list(emitted_legs),
-                "enabled_corpus_flags": dict(corpus_flags),
-                "beam_plan": dict(beam_plan),
-                "ports": dict(ports),
-                "mic_reference_identity": dict(mic_reference_identity),
-                "usb_mic_source": dict(usb_mic_source or {}),
-                "mic_fingerprint": mic_fingerprint,
-                "dac_reference_fingerprint": dac_reference_fingerprint,
-            }
-
-    def set_usb_mic_effective_source(
-        self,
-        *,
-        mode: str,
-        leg: str,
-        fallback_active: bool,
-    ) -> None:
-        """Publish the source actually exported, not just configured intent."""
-
-        with self._lock:
-            source = self._active_capture_plan.get("usb_mic_source")
-            if not isinstance(source, dict):
-                return
-            source["mode"] = mode
-            source["leg"] = leg
-            source["fallback_active"] = fallback_active
-
-    def mark_leg_unavailable(self, leg: str, *, error: str) -> None:
-        """Atomically withdraw a failed runtime leg from live bridge truth.
-
-        Keep ``expected_legs`` intact so capture-plan validation reports the
-        promised leg as missing, while ``emitted_legs`` and ``ports`` describe
-        only outputs the bridge can still feed.
-        """
-        with self._lock:
-            self._leg_engines[leg] = {
-                "enabled": True,
-                "loaded": False,
-                "error": error,
-            }
-            emitted = self._active_capture_plan.get("emitted_legs")
-            if isinstance(emitted, list):
-                self._active_capture_plan["emitted_legs"] = [
-                    emitted_leg for emitted_leg in emitted
-                    if emitted_leg != leg
-                ]
-            ports = self._active_capture_plan.get("ports")
-            if isinstance(ports, dict):
-                ports.pop(leg, None)
-
-    def inc(self, key: str, amount: int = 1) -> None:
-        with self._lock:
-            self._counters[key] = int(self._counters.get(key, 0)) + amount
-
-    def inc_nested(self, group: str, key: str, amount: int = 1) -> None:
-        with self._lock:
-            values = self._counters.get(group)
-            if not isinstance(values, dict):
-                return
-            values[key] = int(values.get(key, 0)) + amount
-
-    def snapshot(self) -> dict[str, object]:
-        with self._lock:
-            counters = json.loads(json.dumps(self._counters))
-            leg_engines = json.loads(json.dumps(self._leg_engines))
-            active_capture_plan = json.loads(json.dumps(self._active_capture_plan))
-            capture_stream = json.loads(json.dumps(self._capture_stream))
-            reference_source = self._reference_source
-            reference_endpoint = self._reference_endpoint
-            reference_frames_enqueued = self._reference_frames_enqueued
-            reference_last_frame_monotonic = self._reference_last_frame_monotonic
-            started = self._started_epoch_sec
-            started_monotonic = self._started_monotonic
-            now_monotonic = time.monotonic()
-        last_frame_age_ms = (
-            None
-            if reference_last_frame_monotonic is None
-            else max(
-                0,
-                int(
-                    (now_monotonic - reference_last_frame_monotonic) * 1000
-                ),
-            )
-        )
-        return {
-            "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
-            "pid": os.getpid(),
-            "started_epoch_sec": started,
-            "updated_epoch_sec": time.time(),
-            "sample_rate_hz": SAMPLE_RATE,
-            "frame_samples": FRAME_SAMPLES,
-            "out_frame_samples": OUT_FRAME_SAMPLES,
-            "counters": counters,
-            "leg_engines": leg_engines,
-            "capture_stream": capture_stream,
-            "reference_input": {
-                "source": reference_source,
-                "endpoint": reference_endpoint,
-                "frames_enqueued": reference_frames_enqueued,
-                "last_frame_age_ms": last_frame_age_ms,
-                "snapshot_monotonic_ms": max(0, int(now_monotonic * 1000)),
-                "process_age_ms": max(
-                    0,
-                    int((now_monotonic - started_monotonic) * 1000),
-                ),
-            },
-            "active_capture_plan": active_capture_plan,
-            "wake_corpus_plan_id": active_capture_plan.get(
-                "wake_corpus_plan_id", "",
-            ),
-            "emitted_legs": active_capture_plan.get("emitted_legs", []),
-        }
-
-    def write_snapshot(self, path: Path = BRIDGE_STATS_PATH) -> None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(self.snapshot(), sort_keys=True))
-            tmp.replace(path)
-        except OSError as e:
-            logger.debug("bridge stats snapshot write failed: %s", e)
-
-
-_bridge_stats = _BridgeStats()
+_STATS_IDENTITY = StatsIdentity(
+    sample_rate_hz=SAMPLE_RATE,
+    frame_samples=FRAME_SAMPLES,
+    reference_source=REF_SOURCE,
+    reference_endpoint=f"{OUTPUTD_REF_UDP_HOST}:{OUTPUTD_REF_UDP_PORT}",
+)
+_bridge_stats = _BridgeStats(_STATS_IDENTITY)
 
 
 def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:
     while not _shutdown.wait(0.5):
         _bridge_stats.write_snapshot(path)
     _bridge_stats.write_snapshot(path)
-
-
-def _send_packet(
-    *,
-    sock: socket.socket,
-    dest: tuple[str, int],
-    packet: bytes,
-    leg: str,
-) -> None:
-    """Send one non-blocking leg packet and preserve drop-newest stats."""
-
-    try:
-        sock.sendto(packet, dest)
-        _bridge_stats.inc_nested("packets_sent_by_leg", leg)
-    except BlockingIOError:
-        _bridge_stats.inc_nested("udp_send_drops_by_leg", leg)
-        logger.warning("udp %s sendto would block, dropping frame", leg)
-
-
-def emit_packet(
-    *,
-    sock: socket.socket,
-    dest: tuple[str, int],
-    batch: bytearray,
-    pcm: bytes,
-    leg: str,
-    frame_bytes: int = OUT_FRAME_BYTES,
-) -> None:
-    batch.extend(pcm)
-    if len(batch) < frame_bytes:
-        return
-    _send_packet(
-        sock=sock,
-        dest=dest,
-        packet=bytes(batch[:frame_bytes]),
-        leg=leg,
-    )
-    del batch[:frame_bytes]
-
-
-@dataclass
-class LegEmitter:
-    sock: socket.socket
-    dest: tuple[str, int]
-    batch: bytearray
-    stats_key: str
-    frame_samples: int = OUT_FRAME_SAMPLES
-
-    def emit(self, pcm: bytes) -> None:
-        emit_packet(
-            sock=self.sock,
-            dest=self.dest,
-            batch=self.batch,
-            pcm=pcm,
-            leg=self.stats_key,
-            frame_bytes=self.frame_samples * 2,
-        )
-
-    def close(self) -> None:
-        self.sock.close()
-
-
-@dataclass
-class TimestampedLegEmitter(LegEmitter):
-    """Packetize the isolated USB-host mic leg with emit-time metadata.
-
-    The wire header's ``t_capture_mono_ns`` is deliberately a bridge-emit
-    timestamp: it measures bridge emit -> relay sink. PortAudio's input
-    latency is observed separately, when the capture stream opens.
-    """
-
-    _seq: int = field(default=0, init=False, repr=False)
-
-    def emit(self, pcm: bytes) -> None:
-        frame_bytes = self.frame_samples * 2
-        self.batch.extend(pcm)
-        if len(self.batch) < frame_bytes:
-            return
-        seq = self._seq
-        self._seq = (self._seq + 1) & 0xFFFFFFFF
-        header = struct.pack(
-            USB_MIC_HEADER_STRUCT,
-            USB_MIC_PACKET_MAGIC,
-            USB_MIC_PACKET_VERSION,
-            0,
-            seq,
-            time.clock_gettime_ns(time.CLOCK_MONOTONIC),
-        )
-        _send_packet(
-            sock=self.sock,
-            dest=self.dest,
-            packet=header + bytes(self.batch[:frame_bytes]),
-            leg=self.stats_key,
-        )
-        del self.batch[:frame_bytes]
 
 
 class BridgeStalled(RuntimeError):
@@ -838,25 +210,10 @@ class BridgeStalled(RuntimeError):
     """
 
 
-class MicDeviceUnavailable(RuntimeError):
-    """The configured PortAudio mic device is not currently present."""
-
-
-class UsbMicUnavailable(RuntimeError):
-    """The configured corpus USB mic device is not currently present."""
-
-
-class UnsupportedReferenceSource(RuntimeError):
-    """JASPER_AEC_REF_SOURCE names a source this bridge cannot read."""
-
-
-# Clipping counters, module-level for cheap cross-thread access: a race
-# between increment and reset costs at most one frame in one log window's
-# percentage. Tracked separately for the ref pre-clip stage (after
-# JASPER_AEC_REF_GAIN_DB) and the post-AEC mic stage (after
-# JASPER_AEC_MIC_GAIN_DB).
-_ref_clipped_samples = 0
-_ref_total_samples = 0
+# Clipping counters for the post-AEC mic stage (after JASPER_AEC_MIC_GAIN_DB),
+# module-level for cheap cross-thread access: a race between increment and
+# reset costs at most one frame in one log window's percentage. The reference
+# pre-clip stage keeps its own pair in `aec_bridge_reference`.
 _out_clipped_samples = 0
 _out_total_samples = 0
 
@@ -880,818 +237,6 @@ def _apply_mic_output_gain(
     # tanh soft-clip: smoothly asymptotic to ±32767 instead of hard-clipping.
     arr = 32767.0 * np.tanh(arr / 32767.0)
     return arr.astype(np.int16).tobytes(), clipped, len(arr)
-
-
-def _env_bool(name: str, default: str) -> bool:
-    return os.environ.get(name, default).strip().lower() in (
-        "1", "true", "yes", "on",
-    )
-
-
-def _chip_beam_plan() -> _mic_profile.ChipBeamPlan | None:
-    return _mic_profile.chip_beam_plan_from_env(os.environ)
-
-
-def _chip_aec_primary_leg(
-    plan: _mic_profile.ChipBeamPlan | None,
-) -> str:
-    allowed = set(plan.leg_tokens if plan else ("chip_aec_150", "chip_aec_210"))
-    fallback = next(iter(plan.leg_tokens), "chip_aec_150") if plan else "chip_aec_150"
-    value = os.environ.get(
-        "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", fallback,
-    ).strip()
-    if value in allowed:
-        return value
-    log_event(
-        logger,
-        "chip_aec_primary_invalid",
-        value=repr(value),
-        fallback=fallback,
-        level=logging.WARNING,
-    )
-    return fallback
-
-
-def _resolve_usb_mic_source(
-    requested: str,
-    *,
-    plan: _mic_profile.ChipBeamPlan | None,
-    production_chip_aec_enabled: bool,
-    chip_aec_primary_leg: str,
-) -> dict[str, object]:
-    """Resolve the configured selector to the physical stream being emitted."""
-
-    allowed = {USB_MIC_PRIMARY_LEG, *(plan.leg_tokens if plan else ())}
-    if plan is not None:
-        allowed.add(USB_MIC_RAW_XVF_LEG)
-    selection = requested if requested in allowed else USB_MIC_PRIMARY_LEG
-    if selection != requested:
-        log_event(
-            logger,
-            "usb_mic.leg_invalid",
-            value=repr(requested),
-            fallback=USB_MIC_PRIMARY_LEG,
-            beam_plan=plan.plan_id if plan else "none",
-            level=logging.WARNING,
-        )
-    if selection == USB_MIC_RAW_XVF_LEG:
-        return {
-            "selection": selection,
-            "mode": "raw",
-            "leg": USB_MIC_RAW_XVF_LEG,
-            "fallback_active": False,
-        }
-    if not production_chip_aec_enabled:
-        fallback_active = selection != USB_MIC_PRIMARY_LEG
-        if fallback_active:
-            log_event(
-                logger,
-                "usb_mic.leg_unavailable",
-                leg=selection,
-                fallback="clean",
-                mode="software_aec3",
-                level=logging.WARNING,
-            )
-        return {
-            "selection": selection,
-            "mode": "software_aec3",
-            "leg": "clean",
-            "fallback_active": fallback_active,
-        }
-    return {
-        "selection": selection,
-        "mode": "chip_aec",
-        "leg": (
-            chip_aec_primary_leg
-            if selection == USB_MIC_PRIMARY_LEG
-            else selection
-        ),
-        "fallback_active": False,
-    }
-
-
-def _cfg_value(
-    name: str,
-    default: str,
-    overrides: dict[str, str] | None = None,
-) -> str:
-    if overrides is not None and name in overrides:
-        return overrides[name]
-    return os.environ.get(name, default)
-
-
-def _cfg_bool(
-    name: str,
-    default: str,
-    overrides: dict[str, str] | None = None,
-) -> bool:
-    return _cfg_value(name, default, overrides).strip().lower() in (
-        "1", "true", "yes", "on",
-    )
-
-
-class _Aec3Engine:
-    """WebRTC AEC3 via the jasper_aec3 v1.3-3 (legacy) pybind11 binding.
-
-    Splits each FRAME_SAMPLES (20 ms) buffer into 2× 10 ms windows, calls
-    ProcessReverseStream + ProcessStream per window, and returns the joined
-    AEC'd capture. Top-level AudioProcessing::Config knobs only — no deep
-    EchoCanceller3Config access. The mandatory fallback engine when the v2
-    binding is unavailable or unverified.
-    """
-
-    def __init__(
-        self,
-        overrides: dict[str, str] | None = None,
-        label: str = "aec3_v1",
-    ) -> None:
-        from jasper_aec3 import Aec3
-
-        ns_enabled = _cfg_bool("JASPER_AEC_NS_ENABLED", "1", overrides)
-        ns_level = _cfg_value("JASPER_AEC_NS_LEVEL", "low", overrides).strip().lower()
-        agc1_enabled = _cfg_bool("JASPER_AEC_AGC1_ENABLED", "0", overrides)
-        agc1_target_dbfs = int(_cfg_value(
-            "JASPER_AEC_AGC1_TARGET_DBFS", "9", overrides,
-        ))
-        agc1_max_gain_db = int(_cfg_value(
-            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18", overrides,
-        ))
-        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
-        stream_delay_ms = int(_cfg_value(
-            "JASPER_AEC_STREAM_DELAY_MS", "40", overrides,
-        ))
-        self._aec = Aec3(
-            stream_delay_ms=stream_delay_ms,
-            enable_agc2=enable_agc2,
-            ns_enabled=ns_enabled,
-            ns_level=ns_level,
-            agc1_enabled=agc1_enabled,
-            agc1_target_dbfs=agc1_target_dbfs,
-            agc1_max_gain_db=agc1_max_gain_db,
-        )
-        logger.info(
-            "engine=%s ns=%s/%s agc1=%s(target=%d,max=%ddB) "
-            "agc2=%s stream_delay_ms=%d frame=%d rate=%d",
-            label,
-            "on" if ns_enabled else "off", ns_level,
-            "on" if agc1_enabled else "off",
-            agc1_target_dbfs, agc1_max_gain_db,
-            "on" if enable_agc2 else "off", stream_delay_ms,
-            FRAME_SAMPLES, SAMPLE_RATE,
-        )
-
-    def process(self, mic: bytes, ref: bytes) -> bytes:
-        return self._aec.process(mic, ref)
-
-    def close(self) -> None:
-        # The pybind11 wrapper's std::unique_ptr<AudioProcessing> is freed
-        # when the Python Aec3 instance is GC'd — no explicit teardown.
-        pass
-
-
-class _Aec3V2Engine:
-    """WebRTC AEC3 via the jasper_aec3 v2.1 vendored-static binding.
-
-    Exposes the deep EchoCanceller3Config knobs the v1 binding cannot reach.
-    Every default below is the BEST_A canonical config, which is also what
-    the Aec3V2 constructor's own defaults carry (see jasper_aec3 for
-    per-knob rationale); each is individually overridable by the
-    `JASPER_AEC_*` env var named at its call site.
-    """
-
-    def __init__(
-        self,
-        overrides: dict[str, str] | None = None,
-        label: str = "aec3_v2(BEST_A)",
-    ) -> None:
-        from jasper_aec3 import Aec3V2
-
-        # Top-level, shared with v1
-        ns_enabled = _cfg_bool("JASPER_AEC_NS_ENABLED", "1", overrides)
-        ns_level = _cfg_value("JASPER_AEC_NS_LEVEL", "low", overrides).strip().lower()
-        agc1_enabled = _cfg_bool("JASPER_AEC_AGC1_ENABLED", "1", overrides)
-        agc1_target_dbfs = int(_cfg_value(
-            "JASPER_AEC_AGC1_TARGET_DBFS", "9", overrides,
-        ))
-        agc1_max_gain_db = int(_cfg_value(
-            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18", overrides,
-        ))
-        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
-
-        # Deep EchoCanceller3Config — defaults from BEST_A
-        filter_length = int(_cfg_value("JASPER_AEC_FILTER_LENGTH", "30", overrides))
-        bounded_erl = _cfg_bool("JASPER_AEC_BOUNDED_ERL", "0", overrides)
-        default_gain = float(_cfg_value("JASPER_AEC_DEFAULT_GAIN", "0.3", overrides))
-        erle_max_l = float(_cfg_value("JASPER_AEC_ERLE_MAX_L", "1.5", overrides))
-        erle_max_h = float(_cfg_value("JASPER_AEC_ERLE_MAX_H", "1.0", overrides))
-        erle_onset = _cfg_bool("JASPER_AEC_ERLE_ONSET", "0", overrides)
-        use_stationarity = _cfg_bool("JASPER_AEC_USE_STATIONARITY", "1", overrides)
-        conservative_hf = _cfg_bool("JASPER_AEC_CONSERVATIVE_HF", "1", overrides)
-        mask_hf_enr_t = float(_cfg_value(
-            "JASPER_AEC_MASK_HF_ENR_T", "0.3", overrides,
-        ))
-        mask_hf_enr_s = float(_cfg_value(
-            "JASPER_AEC_MASK_HF_ENR_S", "0.4", overrides,
-        ))
-        mask_hf_emr_t = float(_cfg_value(
-            "JASPER_AEC_MASK_HF_EMR_T", "0.3", overrides,
-        ))
-        max_dec_lf = float(_cfg_value("JASPER_AEC_MAX_DEC_LF", "0.05", overrides))
-        nearend_avg_blocks = int(_cfg_value(
-            "JASPER_AEC_NEAREND_AVERAGE_BLOCKS", "4", overrides,
-        ))
-        nearend_mask_hf_enr_t = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MASK_HF_ENR_T", "0.1", overrides,
-        ))
-        nearend_mask_hf_enr_s = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MASK_HF_ENR_S", "0.3", overrides,
-        ))
-        nearend_mask_hf_emr_t = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MASK_HF_EMR_T", "0.3", overrides,
-        ))
-        nearend_max_dec_lf = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MAX_DEC_LF", "0.25", overrides,
-        ))
-        nearend_max_inc = float(_cfg_value(
-            "JASPER_AEC_NEAREND_MAX_INC", "2.0", overrides,
-        ))
-        dnd_snr_threshold = float(_cfg_value(
-            "JASPER_AEC_DND_SNR_THRESHOLD", "30", overrides,
-        ))
-        dnd_hold_duration = int(_cfg_value(
-            "JASPER_AEC_DND_HOLD_DURATION", "50", overrides,
-        ))
-        dnd_enr_threshold = float(_cfg_value(
-            "JASPER_AEC_DND_ENR_THRESHOLD", "0.25", overrides,
-        ))
-        dnd_trigger_threshold = int(_cfg_value(
-            "JASPER_AEC_DND_TRIGGER_THRESHOLD", "12", overrides,
-        ))
-        stream_delay_ms = int(_cfg_value(
-            "JASPER_AEC_STREAM_DELAY_MS", "40", overrides,
-        ))
-
-        self._aec = Aec3V2(
-            stream_delay_ms=stream_delay_ms,
-            enable_agc2=enable_agc2,
-            ns_enabled=ns_enabled,
-            ns_level=ns_level,
-            agc1_enabled=agc1_enabled,
-            agc1_target_dbfs=agc1_target_dbfs,
-            agc1_max_gain_db=agc1_max_gain_db,
-            filter_refined_length_blocks=filter_length,
-            ep_strength_bounded_erl=bounded_erl,
-            ep_strength_default_gain=default_gain,
-            erle_max_l=erle_max_l,
-            erle_max_h=erle_max_h,
-            erle_onset_detection=erle_onset,
-            use_stationarity_properties=use_stationarity,
-            conservative_hf_suppression=conservative_hf,
-            normal_mask_hf_enr_transparent=mask_hf_enr_t,
-            normal_mask_hf_enr_suppress=mask_hf_enr_s,
-            normal_mask_hf_emr_transparent=mask_hf_emr_t,
-            normal_max_dec_factor_lf=max_dec_lf,
-            nearend_average_blocks=nearend_avg_blocks,
-            nearend_mask_hf_enr_transparent=nearend_mask_hf_enr_t,
-            nearend_mask_hf_enr_suppress=nearend_mask_hf_enr_s,
-            nearend_mask_hf_emr_transparent=nearend_mask_hf_emr_t,
-            nearend_max_dec_factor_lf=nearend_max_dec_lf,
-            nearend_max_inc_factor=nearend_max_inc,
-            dominant_nearend_snr_threshold=dnd_snr_threshold,
-            dominant_nearend_hold_duration=dnd_hold_duration,
-            dominant_nearend_enr_threshold=dnd_enr_threshold,
-            dominant_nearend_trigger_threshold=dnd_trigger_threshold,
-        )
-        logger.info(
-            "engine=%s ns=%s/%s agc1=%s(target=%d,max=%ddB) "
-            "agc2=%s stream_delay_ms=%d filter_len=%d bounded_erl=%s "
-            "default_gain=%.2f "
-            "erle=%.2f/%.2f onset=%s stationarity=%s conservative_hf=%s "
-            "mask_hf=%.2f/%.2f/%.2f max_dec_lf=%.3f "
-            "nearend_avg=%d nearend_mask_hf=%.2f/%.2f/%.2f "
-            "nearend_max_dec_lf=%.3f nearend_max_inc=%.2f "
-            "dnd=snr%.1f/enr%.2f/hold%d/trigger%d",
-            label,
-            "on" if ns_enabled else "off", ns_level,
-            "on" if agc1_enabled else "off",
-            agc1_target_dbfs, agc1_max_gain_db,
-            "on" if enable_agc2 else "off", stream_delay_ms,
-            filter_length, bounded_erl, default_gain,
-            erle_max_l, erle_max_h,
-            "on" if erle_onset else "off",
-            "on" if use_stationarity else "off",
-            "on" if conservative_hf else "off",
-            mask_hf_enr_t, mask_hf_enr_s, mask_hf_emr_t,
-            max_dec_lf,
-            nearend_avg_blocks,
-            nearend_mask_hf_enr_t, nearend_mask_hf_enr_s,
-            nearend_mask_hf_emr_t,
-            nearend_max_dec_lf, nearend_max_inc,
-            dnd_snr_threshold, dnd_enr_threshold,
-            dnd_hold_duration, dnd_trigger_threshold,
-        )
-
-    def process(self, mic: bytes, ref: bytes) -> bytes:
-        return self._aec.process(mic, ref)
-
-    def close(self) -> None:
-        pass
-
-
-def _select_engine(
-    overrides: dict[str, str] | None = None,
-    label: str | None = None,
-):
-    """Pick the AEC engine and return it ready to `.process()`.
-
-    JASPER_AEC_BINDING=v2 prefers v2; =v1 forces v1; default (=auto) tries v2
-    first. Both v2 modes require the activation marker, source fingerprint,
-    and extension digest to agree — an orphan or stale native module is never
-    imported. Any unavailable or unverified v2 path falls back to the
-    mandatory v1 binding.
-    """
-    pref = os.environ.get("JASPER_AEC_BINDING", "auto").strip().lower()
-    if pref == "v1":
-        return _Aec3Engine(overrides=overrides, label=label or "aec3_v1")
-    v2_verified = False
-    if pref in {"auto", "v2"}:
-        try:
-            from jasper.enhanced_aec import runtime_v2_verified
-
-            v2_verified = runtime_v2_verified()
-        except (ImportError, OSError):
-            v2_verified = False
-    if v2_verified:
-        try:
-            import jasper_aec3
-            if jasper_aec3.HAS_V2:
-                return _Aec3V2Engine(
-                    overrides=overrides,
-                    label=label or "aec3_v2(BEST_A)",
-                )
-        except ImportError:
-            pass
-    if pref == "v2":
-        logger.warning(
-            "JASPER_AEC_BINDING=v2 requested but no verified enhanced "
-            "AEC activation is available — falling back to v1 binding"
-        )
-    else:
-        logger.info(
-            "verified jasper_aec3._aec3_v2 not available — falling back "
-            "to v1 binding"
-        )
-    return _Aec3Engine(overrides=overrides, label=label or "aec3_v1")
-
-
-class _SimpleAGC:
-    """Frame-rate peak-tracking AGC for the raw mic UDP leg.
-    EXPERIMENTAL — gated off by default.
-
-    Tracks per-frame peak with asymmetric attack/release smoothing and
-    computes the gain that brings the envelope toward `target_dbfs`, capped
-    at `max_gain_db`. Mirrors WebRTC AGC1 (kAdaptiveDigital) without a second
-    AudioProcessing instance — vectorised numpy, ~tens of microseconds per
-    80 ms frame on a Pi 5. Defaults match the AGC1 settings the AEC pipeline
-    already uses so both legs land at a similar output level.
-
-    Keep `JASPER_AEC_RAW_AGC_ENABLED` OFF in production: the release
-    coefficient raises gain during quiet periods, so a sudden loud syllable
-    pushes the output past int16 max where `np.clip` hard-clips it — audible
-    distortion that has cost whole transcripts. Making it production-ready
-    needs a soft limit or one-frame look-ahead in place of that clip.
-    """
-
-    def __init__(
-        self,
-        target_dbfs: float,
-        max_gain_db: float,
-        attack_sec: float = 0.010,
-        release_sec: float = 0.500,
-        frame_sec: float = 0.080,
-    ) -> None:
-        import math
-        self._target = 10.0 ** (-abs(target_dbfs) / 20.0)
-        self._max_gain = 10.0 ** (max_gain_db / 20.0)
-        self._attack_c = math.exp(-frame_sec / max(attack_sec, 1e-4))
-        self._release_c = math.exp(-frame_sec / max(release_sec, 1e-4))
-        self._envelope = 1e-6
-        self._gain = 1.0
-        # Gain glide: smooths gain transitions over ~3 frames (~240 ms) so
-        # adapt steps don't introduce audible pumping.
-        self._gain_smooth_c = 0.5
-
-    def process(self, pcm_int16: bytes) -> bytes:
-        arr = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
-        frame_peak = float(np.abs(arr).max())
-        if frame_peak > self._envelope:
-            self._envelope = (
-                self._attack_c * self._envelope
-                + (1.0 - self._attack_c) * frame_peak
-            )
-        else:
-            self._envelope = (
-                self._release_c * self._envelope
-                + (1.0 - self._release_c) * frame_peak
-            )
-        desired = self._target / max(self._envelope, 1e-6)
-        target_gain = min(desired, self._max_gain)
-        self._gain = (
-            self._gain_smooth_c * self._gain
-            + (1.0 - self._gain_smooth_c) * target_gain
-        )
-        out = arr * self._gain
-        np.clip(out, -1.0, 1.0, out=out)
-        return (out * 32767.0).astype(np.int16).tobytes()
-
-
-def _resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
-    """Return `config` with a supported `ref_source`, or reject it.
-
-    `RETIRED_REF_SOURCE_ALSA` is converged, not rejected: a parked box can
-    still carry it on disk, and refusing to start would leave jasper-voice
-    with an unfed UDP mic. Anything else is a typo or a source this bridge
-    genuinely cannot read, and stays a hard failure.
-
-    Call this before anything reads `config.ref_source` — the bridge-stats
-    snapshot publishes it as runtime provenance that `jasper-doctor` trusts,
-    so the retired spelling must never reach it.
-    """
-    if config.ref_source == REF_SOURCE:
-        return config
-    if config.ref_source == RETIRED_REF_SOURCE_ALSA:
-        log_event(
-            logger,
-            "aec_ref_source_retired",
-            level=logging.WARNING,
-            retired=config.ref_source,
-            using=REF_SOURCE,
-            detail=(
-                "the ALSA reference fallback is gone; run "
-                "`sudo systemctl start jasper-aec-reconcile` to converge "
-                "/etc/jasper/jasper.env"
-            ),
-        )
-        return replace(config, ref_source=REF_SOURCE)
-    raise UnsupportedReferenceSource(
-        f"unsupported JASPER_AEC_REF_SOURCE={config.ref_source!r} "
-        f"(expected {REF_SOURCE!r})"
-    )
-
-
-def _validate_mic_device(config: BridgeConfig | None = None) -> None:
-    """Fail before opening the far-end reference if the mic is absent.
-
-    Ordering matters: missing hardware must fail before the reference thread
-    and its UDP socket start.
-    """
-    config = config or BridgeConfig.from_env()
-    try:
-        sd.query_devices(config.mic_device, "input")
-    except Exception as e:  # noqa: BLE001
-        raise MicDeviceUnavailable(
-            f"mic device {config.mic_device!r} unavailable: {e}"
-        ) from e
-
-
-def _validate_usb_mic_device(config: BridgeConfig | None = None) -> None:
-    """Fail fast when corpus USB capture is explicitly enabled but absent."""
-    config = config or BridgeConfig.from_env()
-    try:
-        sd.query_devices(config.usb_mic_device, "input")
-    except Exception as e:  # noqa: BLE001
-        raise UsbMicUnavailable(
-            f"USB corpus mic device {config.usb_mic_device!r} unavailable: {e}"
-        ) from e
-
-
-def _usb_capture_rate(config: BridgeConfig | None = None) -> int:
-    """Return the USB mic capture rate PortAudio can actually open."""
-    config = config or BridgeConfig.from_env()
-    if config.usb_mic_rate > 0:
-        return config.usb_mic_rate
-    info = sd.query_devices(config.usb_mic_device, "input")
-    rate = int(round(float(info.get("default_samplerate") or SAMPLE_RATE)))
-    return rate if rate > 0 else SAMPLE_RATE
-
-
-@dataclass(frozen=True)
-class _ReferenceFrameBatch:
-    frames: tuple[bytes, ...]
-    clipped_samples: int
-    total_samples: int
-
-
-class _ReferenceFrameConverter:
-    """Stateful 48 kHz stereo -> 16 kHz mono reference conversion.
-
-    Transport adapters own capture and lifecycle. This class owns only the
-    shared DSP contract: stereo folding, exact-size accumulation, resampling,
-    stateful HPF, gain, clipping telemetry, and int16 framing.
-
-    L+R are summed, not left-only: the speakers radiate the sum into a single
-    mic and AEC3 is mono-reference, so an L-only reference would be blind to
-    whatever is panned right. (The XMOS chip's USB-IN AEC requires left-only
-    per datasheet §3.3, but that is the chip's own reference, not this one.)
-
-    Accumulate rather than convert per delivery: a transport can hand over
-    partial or oversized buffers, so frames accumulate at 48 kHz and only
-    complete `capture_block`-sized chunks are emitted. WebRTC AEC3 strictly
-    enforces equal mic and reference lengths.
-
-    `JASPER_AEC_REF_GAIN_DB` boosts the digital reference before the engine
-    sees it. AEC3 is tuned for conferencing, where ref RMS ≈ mic RMS or
-    louder; here the digital reference is typically 25-30 dB *quieter* than
-    what the mic captures, because amp + speakers + room amplify the acoustic
-    path. The boost puts the adaptive filter back near its design point.
-    """
-
-    def __init__(self, *, ref_gain_db: float, ref_hpf_hz: float) -> None:
-        self.ref_gain_db = float(ref_gain_db)
-        self.ref_hpf_hz = float(ref_hpf_hz)
-        self.capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
-        self._ref_gain_lin = 10.0 ** (self.ref_gain_db / 20.0)
-        self._hpf_sos = butter(
-            2,
-            self.ref_hpf_hz,
-            btype="highpass",
-            fs=SAMPLE_RATE,
-            output="sos",
-        )
-        self._hpf_zi = np.zeros((self._hpf_sos.shape[0], 2), dtype=np.float64)
-        self._accum_48 = np.empty(0, dtype=np.float32)
-
-    @classmethod
-    def from_env(cls) -> _ReferenceFrameConverter:
-        return cls(
-            ref_gain_db=float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0")),
-            ref_hpf_hz=float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "125")),
-        )
-
-    def feed(self, interleaved: np.ndarray) -> _ReferenceFrameBatch:
-        arr = np.asarray(interleaved, dtype=np.int16).reshape(-1)
-        usable = arr.size - (arr.size % REF_CHANNELS)
-        if usable < REF_CHANNELS:
-            return _ReferenceFrameBatch((), 0, 0)
-        arr = arr[:usable]
-
-        left48 = arr[0::REF_CHANNELS].astype(np.float32)
-        right48 = arr[1::REF_CHANNELS].astype(np.float32)
-        mono48 = (left48 + right48) * 0.5
-        self._accum_48 = np.concatenate((self._accum_48, mono48))
-
-        frames: list[bytes] = []
-        clipped_samples = 0
-        total_samples = 0
-        while self._accum_48.size >= self.capture_block:
-            chunk = self._accum_48[:self.capture_block]
-            self._accum_48 = self._accum_48[self.capture_block:]
-            mono16 = resample_poly(chunk, up=1, down=3)
-            mono16, self._hpf_zi = sosfilt(
-                self._hpf_sos,
-                mono16,
-                zi=self._hpf_zi,
-            )
-            if self._ref_gain_lin != 1.0:
-                mono16 = mono16 * self._ref_gain_lin
-            clipped_samples += int(np.sum(np.abs(mono16) > 32767))
-            total_samples += int(mono16.size)
-            frames.append(
-                np.clip(mono16, -32768, 32767).astype(np.int16).tobytes()
-            )
-        return _ReferenceFrameBatch(
-            frames=tuple(frames),
-            clipped_samples=clipped_samples,
-            total_samples=total_samples,
-        )
-
-
-def _enqueue_reference_frames(
-    ref_q: Queue,
-    batch: _ReferenceFrameBatch,
-    *,
-    drop_log: _DropLogDebouncer,
-    drop_message: str,
-) -> None:
-    """Publish converted frames without letting reference capture block."""
-    global _ref_clipped_samples, _ref_total_samples
-
-    _ref_clipped_samples += batch.clipped_samples
-    _ref_total_samples += batch.total_samples
-    dropped = 0
-    enqueued = 0
-    for frame in batch.frames:
-        try:
-            ref_q.put_nowait(frame)
-            enqueued += 1
-        except Full:
-            dropped += 1
-    _bridge_stats.record_reference_frames(enqueued)
-    if dropped:
-        _bridge_stats.inc_nested("queue_drops", "ref", dropped)
-
-    now = time.monotonic()
-    report = (
-        drop_log.record_many(now, dropped)
-        if dropped
-        else drop_log.flush(now)
-    )
-    if report is not None:
-        logger.warning(drop_message, *report)
-
-
-def _outputd_ref_udp_thread(
-    ref_q: Queue,
-    config: BridgeConfig | None = None,
-) -> None:
-    """Receive outputd's final speaker-reference UDP tap and convert it
-    to the 16 kHz mono frames AEC3 consumes.
-
-    The bridge's only reference transport, and not a clocked ALSA capture
-    loop: outputd sends the exact post-mix buffer it writes to the DAC.
-    Software AEC, chip-AEC, corpus, and diagnostics all read it, so they all
-    see the same final speaker reference.
-    """
-    config = config or BridgeConfig.from_env()
-    converter = _ReferenceFrameConverter.from_env()
-    drop_log = _DropLogDebouncer()
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((config.outputd_ref_udp_host, config.outputd_ref_udp_port))
-    sock.settimeout(0.5)
-    logger.info(
-        "outputd ref UDP opened: %s:%d @ %d Hz stereo -> %d Hz mono "
-        "(pre-AEC gain=%+.1f dB, HPF=%.0f Hz 2nd Butter)",
-        config.outputd_ref_udp_host, config.outputd_ref_udp_port,
-        REF_RATE,
-        SAMPLE_RATE,
-        converter.ref_gain_db,
-        converter.ref_hpf_hz,
-    )
-    try:
-        while not _shutdown.is_set():
-            try:
-                data, _addr = sock.recvfrom(65536)
-            except socket.timeout:
-                continue
-            if not data:
-                continue
-            arr = np.frombuffer(data, dtype=np.int16)
-            _enqueue_reference_frames(
-                ref_q,
-                converter.feed(arr),
-                drop_log=drop_log,
-                drop_message=(
-                    "outputd ref queue full, dropped %d frames in last %.1fs"
-                ),
-            )
-    finally:
-        sock.close()
-
-
-def _mic_thread(
-    mic_q: Queue,
-    raw0_q: Optional[Queue] = None,
-    chip_aec_qs: Optional[dict[str, Queue]] = None,
-    chip_beam_plan: _mic_profile.ChipBeamPlan | None = None,
-    config: BridgeConfig | None = None,
-) -> None:
-    """Capture 16 kHz 6-ch from the XVF chip, pluck channel
-    MIC_CHANNEL_INDEX and push mono int16 frames into `mic_q`.
-
-    In chip-AEC mode `SHF_BYPASS=0` with `OP_L/R=[7,0]/[7,1]` makes channels
-    0/1 the fixed 150°/210° ASR beams; in default production `SHF_BYPASS=1`
-    makes them raw-ish.
-
-    When `raw0_q` is provided, channel 2 (raw mic 0, no chip DSP) is ALSO
-    extracted onto that queue for the OUT_PORT_RAW0 leg. Independent queue
-    and extraction so a backlog on one cannot stall the other.
-    """
-    config = config or BridgeConfig.from_env()
-    mic_drop_log = _DropLogDebouncer()
-
-    def cb(indata, frames, time_info, status):
-        if status:
-            logger.debug("mic status: %s", status)
-        if _shutdown.is_set():
-            return
-        mono = indata[:, MIC_CHANNEL_INDEX].astype(np.int16, copy=True)
-        try:
-            mic_q.put_nowait(mono.tobytes())
-        except Full:
-            _bridge_stats.inc_nested("queue_drops", "mic")
-            if outcome := mic_drop_log.record(time.monotonic()):
-                drops, window_sec = outcome
-                logger.warning(
-                    "mic queue full, dropped %d frames in last %.1fs",
-                    drops, window_sec,
-                )
-        if raw0_q is not None:
-            # Channel 2 = raw mic 0 ADC output, bypassing the chip's
-            # BF/NS/AGC/HPF. `copy=True` so the slice does not share backing
-            # storage with `indata`, which sounddevice reuses.
-            raw0 = indata[:, 2].astype(np.int16, copy=True)
-            try:
-                raw0_q.put_nowait(raw0.tobytes())
-            except Full:
-                # Observational leg: drop quietly rather than flood the
-                # journal during a stall the mic_q path already reports.
-                _bridge_stats.inc_nested("queue_drops", "raw0")
-                pass
-        if chip_aec_qs and chip_beam_plan:
-            for beam in chip_beam_plan.legs:
-                q = chip_aec_qs.get(beam.token)
-                if q is None:
-                    continue
-                pcm = indata[:, beam.channel_index].astype(np.int16, copy=True)
-                try:
-                    q.put_nowait(pcm.tobytes())
-                except Full:
-                    _bridge_stats.inc_nested("queue_drops", "chip")
-                    pass
-
-    input_stream_kwargs = dict(
-        device=config.mic_device, samplerate=SAMPLE_RATE, channels=MIC_CHANNELS,
-        dtype="int16", blocksize=FRAME_SAMPLES, callback=cb,
-    )
-    if config.capture_latency:
-        input_stream_kwargs["latency"] = (
-            "low"
-            if config.capture_latency == "low"
-            else float(config.capture_latency)
-        )
-    with sd.InputStream(**input_stream_kwargs) as stream:
-        log_event(
-            logger,
-            "aec.mic_stream_latency",
-            latency_s=stream.latency,
-            requested_latency=config.capture_latency or "default",
-            samplerate=int(stream.samplerate),
-            blocksize=int(stream.blocksize),
-        )
-        _bridge_stats.set_capture_stream(
-            sample_rate_hz=int(stream.samplerate),
-            block_frames=int(stream.blocksize),
-            input_latency_seconds=float(stream.latency),
-        )
-        _shutdown.wait()
-
-
-def _usb_mic_thread(
-    usb_q: Queue,
-    config: BridgeConfig | None = None,
-) -> None:
-    """Capture optional cheap-USB-mic audio for corpus-only legs.
-
-    Deliberately independent of the XVF mic stream so unplugging or starving
-    the cheap mic cannot stall production AEC. Started only when
-    JASPER_AEC_CORPUS_USB_ENABLED=1.
-    """
-
-    import math
-
-    config = config or BridgeConfig.from_env()
-    usb_rate = _usb_capture_rate(config)
-    capture_block = max(1, round(FRAME_SAMPLES * usb_rate / SAMPLE_RATE))
-    gcd = math.gcd(usb_rate, SAMPLE_RATE)
-    up = SAMPLE_RATE // gcd
-    down = usb_rate // gcd
-    accum_16 = np.empty(0, dtype=np.float32)
-
-    def cb(indata, frames, time_info, status):
-        nonlocal accum_16
-        if status:
-            logger.debug("usb mic status: %s", status)
-        if _shutdown.is_set():
-            return
-        mono = indata[:, 0].astype(np.float32, copy=True)
-        if usb_rate != SAMPLE_RATE:
-            mono = resample_poly(mono, up=up, down=down)
-        accum_16 = np.concatenate([accum_16, mono])
-        while accum_16.size >= FRAME_SAMPLES:
-            chunk = accum_16[:FRAME_SAMPLES]
-            accum_16 = accum_16[FRAME_SAMPLES:]
-            chunk = np.clip(chunk, -32768, 32767).astype(np.int16)
-            try:
-                usb_q.put_nowait(chunk.tobytes())
-            except Full:
-                _bridge_stats.inc_nested("queue_drops", "usb")
-                logger.warning("usb corpus mic queue full, dropping frame")
-
-    with sd.InputStream(
-        device=config.usb_mic_device,
-        samplerate=usb_rate,
-        channels=1,
-        dtype="int16",
-        blocksize=capture_block,
-        callback=cb,
-    ):
-        logger.info(
-            "USB corpus mic capture opened: %s @ %d Hz mono -> %d Hz "
-            "(block=%d)",
-            config.usb_mic_device, usb_rate, SAMPLE_RATE, capture_block,
-        )
-        _shutdown.wait()
 
 
 class _MicStarvationWatchdog:
@@ -1774,6 +319,7 @@ def _add_loop_emitter(
         dest=(config.out_host, port),
         batch=bytearray(),
         stats_key=leg,
+        stats=_bridge_stats,
         frame_samples=frame_samples,
     )
     emitter.sock.setblocking(False)
@@ -1801,312 +347,8 @@ def _process_optional_engine(
         return None, b"", exc
 
 
-def _build_xvf_raw0_optional_paths(
-    emitters: dict[str, LegEmitter],
-    config: BridgeConfig,
-    *,
-    webrtc_enabled: bool,
-    dtln_enabled: bool,
-) -> tuple[Any | None, LegEmitter | None, Any | None, LegEmitter | None]:
-    """Build the two optional XVF raw0 corpus-processing legs."""
-    xvf_raw0_engine = None
-    xvf_raw0_webrtc_emitter = None
-    if webrtc_enabled:
-        xvf_raw0_engine = _select_engine(label="xvf_raw0_webrtc_aec3")
-        xvf_raw0_webrtc_emitter = _add_loop_emitter(
-            emitters,
-            config,
-            "xvf_raw0_webrtc_aec3",
-            config.out_port_xvf_raw0_webrtc_aec3,
-        )
-
-    xvf_raw0_dtln_engine = None
-    xvf_raw0_dtln_emitter = None
-    if dtln_enabled:
-        try:
-            from jasper.aec_engines import dtln_models
-            from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
-            xvf_raw0_dtln_size = int(os.environ.get(
-                "JASPER_AEC_XVF_RAW0_DTLN_SIZE",
-                os.environ.get(
-                    "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
-                ),
-            ))
-            xvf_raw0_dtln_engine = DTLNEngine(
-                model_dir=default_model_dir(), model_size=xvf_raw0_dtln_size,
-            )
-            xvf_raw0_dtln_emitter = _add_loop_emitter(
-                emitters,
-                config,
-                "xvf_raw0_dtln",
-                config.out_port_xvf_raw0_dtln,
-            )
-            logger.info(
-                "XVF raw0 DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
-                xvf_raw0_dtln_size,
-                config.out_host,
-                config.out_port_xvf_raw0_dtln,
-            )
-        except (FileNotFoundError, ImportError) as e:
-            logger.warning(
-                "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED set but XVF raw0 "
-                "DTLN couldn't load: %s. Continuing without xvf_raw0_dtln.",
-                e,
-            )
-    return (
-        xvf_raw0_engine,
-        xvf_raw0_webrtc_emitter,
-        xvf_raw0_dtln_engine,
-        xvf_raw0_dtln_emitter,
-    )
-
-
-
-def _build_usb_optional_paths(
-    emitters: dict[str, LegEmitter],
-    config: BridgeConfig,
-    *,
-    usb_raw_q: Queue | None,
-) -> tuple[
-    LegEmitter | None,
-    LegEmitter | None,
-    Any | None,
-    Any | None,
-    LegEmitter | None,
-]:
-    """Build optional USB raw, WebRTC, and DTLN corpus legs."""
-    usb_raw_emitter = None
-    usb_webrtc_emitter = None
-    usb_engine = None
-    usb_dtln_engine = None
-    usb_dtln_emitter = None
-    if usb_raw_q is not None:
-        usb_raw_emitter = _add_loop_emitter(
-            emitters, config, "usb_raw", config.out_port_usb_raw
-        )
-        usb_webrtc_emitter = _add_loop_emitter(
-            emitters,
-            config,
-            "usb_webrtc",
-            config.out_port_usb_webrtc,
-        )
-        usb_webrtc_overrides = USB_AEC3_CORPUS_OVERRIDES
-        usb_webrtc_label = "usb_webrtc/aec3_edge_combo_80"
-        usb_webrtc_display_label = USB_AEC3_CORPUS_LABEL
-        if (
-            _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
-            and config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
-        ):
-            # In USB AEC3 sweep mode the normal usb_webrtc leg becomes the
-            # 40 ms member of the delay sweep; the three variant slots carry
-            # the same edge-combo tuning at longer stream-delay hints. Four
-            # same-utterance USB AEC3 candidates, no extra sockets.
-            usb_webrtc_overrides = USB_AEC3_SWEEP_BASELINE_OVERRIDES
-            usb_webrtc_label = "usb_webrtc/aec3_sweep_delay_40"
-            usb_webrtc_display_label = USB_AEC3_SWEEP_BASELINE_LABEL
-        usb_engine = _select_engine(
-            overrides=usb_webrtc_overrides,
-            label=usb_webrtc_label,
-        )
-        logger.info(
-            "USB corpus outputs enabled: raw=%s:%d webrtc=%s:%d label=%s",
-            config.out_host,
-            config.out_port_usb_raw,
-            config.out_host,
-            config.out_port_usb_webrtc,
-            usb_webrtc_display_label,
-        )
-        if _env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
-            try:
-                from jasper.aec_engines import dtln_models
-                from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
-                usb_dtln_size = int(os.environ.get(
-                    "JASPER_AEC_USB_DTLN_SIZE",
-                    os.environ.get(
-                        "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE)
-                    ),
-                ))
-                usb_dtln_engine = DTLNEngine(
-                    model_dir=default_model_dir(), model_size=usb_dtln_size,
-                )
-                usb_dtln_emitter = _add_loop_emitter(
-                    emitters,
-                    config,
-                    "usb_dtln",
-                    config.out_port_usb_dtln,
-                )
-                logger.info(
-                    "USB DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
-                    usb_dtln_size, config.out_host, config.out_port_usb_dtln,
-                )
-            except (FileNotFoundError, ImportError) as e:
-                logger.warning(
-                    "JASPER_AEC_CORPUS_USB_DTLN_ENABLED set but USB DTLN "
-                    "couldn't load: %s. Continuing without usb_dtln.",
-                    e,
-                )
-
-    return (
-        usb_raw_emitter,
-        usb_webrtc_emitter,
-        usb_engine,
-        usb_dtln_engine,
-        usb_dtln_emitter,
-    )
-
-
-
-def _build_aec3_sweep_paths(
-    emitters: dict[str, LegEmitter],
-    config: BridgeConfig,
-    *,
-    production_chip_aec_enabled: bool,
-    usb_raw_q: Queue | None,
-) -> tuple[list[dict[str, object]], Callable[[bytes, bytes], None]]:
-    """Build configured sweep variants and their per-frame dispatcher."""
-    aec3_sweep_paths: list[dict[str, object]] = []
-    if (not production_chip_aec_enabled) and _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
-        if (
-            config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
-            and usb_raw_q is None
-        ):
-            logger.warning(
-                "AEC3 sweep requested with input_source=usb but USB corpus "
-                "capture is disabled; continuing without sweep variants",
-            )
-        else:
-            for variant in config.aec3_sweep_variants:
-                try:
-                    variant_engine = _select_engine(
-                        overrides=variant.env_overrides,
-                        label=(
-                            f"aec3_sweep/{config.aec3_sweep_input_source}/"
-                            f"{variant.leg}"
-                        ),
-                    )
-                except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "AEC3 sweep variant %s couldn't load: %s. "
-                        "Continuing without this variant.",
-                        variant.leg, e,
-                    )
-                    continue
-                variant_port = config.out_port_aec3_sweep[variant.leg]
-                variant_emitter = _add_loop_emitter(emitters, config, variant.leg, variant_port)
-                aec3_sweep_paths.append({
-                    "variant": variant,
-                    "engine": variant_engine,
-                    "emitter": variant_emitter,
-                    "input_source": config.aec3_sweep_input_source,
-                })
-                logger.info(
-                    "AEC3 corpus sweep variant enabled: leg=%s label=%s "
-                    "input_source=%s udp out=%s:%d overrides=%s",
-                    variant.leg,
-                    variant.label,
-                    config.aec3_sweep_input_source,
-                    config.out_host,
-                    variant_port,
-                    variant.env_overrides,
-                )
-
-    def emit_aec3_sweep(input_bytes: bytes, ref_bytes: bytes) -> None:
-        for path in list(aec3_sweep_paths):
-            variant = path["variant"]
-            engine_variant = path["engine"]
-            try:
-                variant_clean = engine_variant.process(input_bytes, ref_bytes)
-            except Exception as e:  # noqa: BLE001
-                logger.exception(
-                    "AEC3 sweep variant %s process() crashed; "
-                    "disabling this path: %s",
-                    variant.leg, e,
-                )
-                try:
-                    engine_variant.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                emitter = path["emitter"]
-                emitter.close()
-                emitters.pop(variant.leg, None)
-                aec3_sweep_paths.remove(path)
-                continue
-            path["emitter"].emit(variant_clean)
-
-    return aec3_sweep_paths, emit_aec3_sweep
-
-
-
-def _build_dtln_optional_path(
-    emitters: dict[str, LegEmitter],
-    config: BridgeConfig,
-    *,
-    production_chip_aec_enabled: bool,
-) -> tuple[Any | None, LegEmitter | None]:
-    """Build the optional DTLN observation leg without gating primary AEC3."""
-    dtln_engine = None
-    dtln_emitter = None
-    dtln_wanted = (
-        not production_chip_aec_enabled
-    ) and _env_bool("JASPER_AEC_DTLN_ENABLED", "0")
-    _bridge_stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
-    if dtln_wanted:
-        try:
-            from jasper.aec_engines import dtln_models
-            from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
-            dtln_size = int(os.environ.get(
-                "JASPER_AEC_DTLN_SIZE", str(dtln_models.DEFAULT_SIZE),
-            ))
-            dtln_engine = DTLNEngine(
-                model_dir=default_model_dir(), model_size=dtln_size,
-            )
-            dtln_emitter = _add_loop_emitter(emitters, config, "dtln", config.out_port_dtln)
-            _bridge_stats.set_leg_engine("dtln", enabled=True, loaded=True)
-            logger.info(
-                "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
-                dtln_size, config.out_host, config.out_port_dtln,
-            )
-        except Exception as e:  # noqa: BLE001
-            # DTLN is an optional tertiary leg: bad config, malformed ONNX or
-            # any other initialization failure must not crash-loop the
-            # healthy primary AEC3 bridge into systemd's reboot ladder.
-            if dtln_emitter is not None:
-                with suppress(Exception):
-                    dtln_emitter.close()
-                emitters.pop("dtln", None)
-                dtln_emitter = None
-            if dtln_engine is not None:
-                with suppress(Exception):
-                    dtln_engine.close()
-                dtln_engine = None
-            # Degraded state lands in the stats snapshot so the doctor can
-            # flag it after this line ages out of the journal window: voice
-            # otherwise keeps listening on a permanently unfed leg with no
-            # surface anywhere.
-            _bridge_stats.set_leg_engine(
-                "dtln", enabled=True, loaded=False, error=str(e),
-            )
-            log_event(
-                logger,
-                "aec_bridge.leg_degraded",
-                leg="dtln",
-                phase="initialize",
-                action="continue_aec3",
-                error_type=type(e).__name__,
-                error=str(e),
-                note=(
-                    f"JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: {e}. "
-                    "Continuing with AEC3 only."
-                ),
-                level=logging.WARNING,
-            )
-
-    return dtln_engine, dtln_emitter
-
-
-
 def _aec_loop(  # noqa: PLR0915
-    ref_q: Queue, mic_q: Queue, engine: Optional[_Aec3Engine],
+    ref_q: Queue, mic_q: Queue, engine: Optional[Aec3Engine],
     heartbeat: Optional[Heartbeat] = None,
     raw0_q: Optional[Queue] = None,
     chip_aec_qs: Optional[dict[str, Queue]] = None,
@@ -2137,38 +379,10 @@ def _aec_loop(  # noqa: PLR0915
     # distribution when the chip's mic preamp delivers a quiet AEC output;
     # 0 dB (off) by default, and soft-clipped via tanh on the way out so a
     # high gain cannot push hard-clip distortion into the wake-word input.
-    global _ref_clipped_samples, _ref_total_samples
     global _out_clipped_samples, _out_total_samples
     global _ref_starved_frames
     mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
-    # Raw-leg AGC: optional adaptive level normalization for the chip-direct
-    # UDP stream, off by default, mirroring the AEC pipeline's AGC1 settings
-    # so both legs land at a similar level. Needed when the raw leg goes to
-    # the LLM: without it the chip's mic output sits below the server-VAD
-    # threshold for most of a typical utterance, so the model sees only a
-    # fraction of the phrase.
-    raw_agc_enabled = (
-        _env_bool("JASPER_AEC_RAW_AGC_ENABLED", "0")
-        and not production_chip_aec_enabled
-    )
-    raw_agc_target_dbfs = int(os.environ.get(
-        "JASPER_AEC_RAW_AGC_TARGET_DBFS",
-        os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"),
-    ))
-    raw_agc_max_gain_db = int(os.environ.get(
-        "JASPER_AEC_RAW_AGC_MAX_GAIN_DB",
-        os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"),
-    ))
-    raw_agc = (
-        _SimpleAGC(raw_agc_target_dbfs, raw_agc_max_gain_db)
-        if raw_agc_enabled else None
-    )
-    logger.info(
-        "raw_agc=%s (target=%d max=%ddB)",
-        "on" if raw_agc_enabled else "off",
-        raw_agc_target_dbfs, raw_agc_max_gain_db,
-    )
     # Stall-recovery threshold: consecutive seconds of empty mic_q before
     # bailing for a systemd-driven restart; 0 disables it. See BridgeStalled.
     stall_restart_sec = int(
@@ -2183,15 +397,11 @@ def _aec_loop(  # noqa: PLR0915
             os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
         ),
     )
-    import math
-    import time
     import wave
-    if production_chip_aec_enabled and (not chip_aec_qs or not chip_beam_plan):
-        raise RuntimeError("chip-AEC mode requires a validated chip beam plan")
     usb_mic_choice_plan = chip_beam_plan or _mic_profile.chip_beam_plan_from_env(
         os.environ,
     )
-    usb_mic_source = _resolve_usb_mic_source(
+    usb_mic_source = resolve_usb_mic_source(
         config.usb_mic_leg,
         plan=usb_mic_choice_plan,
         production_chip_aec_enabled=production_chip_aec_enabled,
@@ -2252,44 +462,35 @@ def _aec_loop(  # noqa: PLR0915
         for beam in chip_beam_plan.legs:
             if not chip_aec_enabled.get(beam.token, False):
                 continue
-            port = chip_aec_ports.get(beam.token, _leg_default_port(beam.token))
+            port = chip_aec_ports.get(beam.token, leg_default_port(beam.token))
             chip_aec_emitters[beam.token] = add_emitter(beam.token, port)
 
-    (
-        xvf_raw0_engine,
-        xvf_raw0_webrtc_emitter,
-        xvf_raw0_dtln_engine,
-        xvf_raw0_dtln_emitter,
-    ) = _build_xvf_raw0_optional_paths(
+    # Deferred: aec_bridge_corpus_lanes reads this module at import time.
+    from jasper.cli.aec_bridge_corpus_lanes import build_corpus_lanes
+    lanes = build_corpus_lanes(
         emitters,
         config,
-        webrtc_enabled=xvf_raw0_webrtc_enabled,
-        dtln_enabled=xvf_raw0_dtln_enabled,
-    )
-    ref_emitter = None
-    if emit_ref:
-        ref_emitter = add_emitter("ref", config.out_port_ref)
-
-    (
-        usb_raw_emitter,
-        usb_webrtc_emitter,
-        usb_engine,
-        usb_dtln_engine,
-        usb_dtln_emitter,
-    ) = _build_usb_optional_paths(emitters, config, usb_raw_q=usb_raw_q)
-    aec3_sweep_paths, emit_aec3_sweep = _build_aec3_sweep_paths(
-        emitters,
-        config,
+        select_engine=_select_engine,
+        xvf_raw0_webrtc_enabled=xvf_raw0_webrtc_enabled,
+        xvf_raw0_dtln_enabled=xvf_raw0_dtln_enabled,
+        emit_ref=emit_ref,
         production_chip_aec_enabled=production_chip_aec_enabled,
         usb_raw_q=usb_raw_q,
     )
-    # Optional DTLN-aec parallel engine: constructed once, carrying LSTM
-    # state across calls. See jasper/aec_engines/dtln.py.
-    dtln_engine, dtln_emitter = _build_dtln_optional_path(
-        emitters,
-        config,
-        production_chip_aec_enabled=production_chip_aec_enabled,
-    )
+    xvf_raw0_engine = lanes.xvf_raw0_engine
+    xvf_raw0_webrtc_emitter = lanes.xvf_raw0_webrtc_emitter
+    xvf_raw0_dtln_engine = lanes.xvf_raw0_dtln_engine
+    xvf_raw0_dtln_emitter = lanes.xvf_raw0_dtln_emitter
+    ref_emitter = lanes.ref_emitter
+    usb_raw_emitter = lanes.usb_raw_emitter
+    usb_webrtc_emitter = lanes.usb_webrtc_emitter
+    usb_engine = lanes.usb_engine
+    usb_dtln_engine = lanes.usb_dtln_engine
+    usb_dtln_emitter = lanes.usb_dtln_emitter
+    aec3_sweep_paths = lanes.aec3_sweep_paths
+    emit_aec3_sweep = lanes.emit_aec3_sweep
+    dtln_engine = lanes.dtln_engine
+    dtln_emitter = lanes.dtln_emitter
     output_parts = [f"aec={config.out_host}:{config.out_port}"]
     if usb_host_mic_emitter is not None:
         output_parts.append(
@@ -2309,7 +510,7 @@ def _aec_loop(  # noqa: PLR0915
     if chip_beam_plan:
         for beam in chip_beam_plan.legs:
             if beam.token in chip_aec_emitters:
-                port = _leg_default_port(beam.token)
+                port = leg_default_port(beam.token)
                 output_parts.append(f"{beam.token}={config.out_host}:{port}")
     if xvf_raw0_engine is not None:
         output_parts.append(
@@ -2334,10 +535,9 @@ def _aec_loop(  # noqa: PLR0915
             f"usb_dtln={config.out_host}:{config.out_port_usb_dtln}"
         )
     for path in aec3_sweep_paths:
-        variant = path["variant"]
         output_parts.append(
-            f"{variant.leg}="
-            f"{config.out_host}:{config.out_port_aec3_sweep[variant.leg]}"
+            f"{path.variant.leg}="
+            f"{config.out_host}:{config.out_port_aec3_sweep[path.variant.leg]}"
         )
     _bridge_stats.set_active_capture_plan(
         wake_corpus_plan_id=config.wake_corpus_plan_id,
@@ -2388,9 +588,9 @@ def _aec_loop(  # noqa: PLR0915
     # previously-real reference.
     last_ref_bytes = silence
     frames_processed = 0
-    chip_primary_missing_log = _DropLogDebouncer()
-    usb_mic_leg_missing_log = _DropLogDebouncer()
-    usb_mic_raw0_missing_log = _DropLogDebouncer()
+    chip_primary_missing_log = DropLogDebouncer()
+    usb_mic_leg_missing_log = DropLogDebouncer()
+    usb_mic_raw0_missing_log = DropLogDebouncer()
     usb_mic_effective_leg = str(usb_mic_source["leg"])
     usb_mic_fallback_active = bool(usb_mic_source["fallback_active"])
 
@@ -2430,6 +630,10 @@ def _aec_loop(  # noqa: PLR0915
     sum_mic_sq = 0.0
     sum_ref_sq = 0.0
     sum_aec_sq = 0.0
+    # Counted separately: raw0 is drained opportunistically, so a
+    # window can hold fewer raw0 frames than mic frames.
+    raw0_window_frames = 0
+    sum_raw0_sq = 0.0
 
     try:
         while not _shutdown.is_set():
@@ -2489,15 +693,9 @@ def _aec_loop(  # noqa: PLR0915
 
             # Emit the chip-direct mic BEFORE running the AEC engine, so the
             # "AEC OFF" leg carries the same bytes AEC3 is about to receive
-            # as near-end input. Its optional AGC must not touch that input:
-            # engine.process below still gets ungained `mic_bytes`, so AEC3's
-            # adaptive filter never sees a moving level target.
+            # as near-end input.
             if not production_chip_aec_enabled:
-                raw_emit_bytes = (
-                    raw_agc.process(mic_bytes) if raw_agc is not None
-                    else mic_bytes
-                )
-                raw_emitter.emit(raw_emit_bytes)
+                raw_emitter.emit(mic_bytes)
 
             # Truly-raw mic 0 (chip channel 2, no chip DSP), drained
             # independently of mic_q so a backlog on one cannot stall the
@@ -2573,8 +771,7 @@ def _aec_loop(  # noqa: PLR0915
                         )
                     continue
             else:
-                if engine is None:
-                    raise RuntimeError("AEC3 engine missing outside chip-AEC mode")
+                assert engine is not None  # main() sets it unless chip-AEC
                 clean = engine.process(mic_bytes, ref_bytes)
             # Pre-gain output for the RMS metric: "attenuation" must reflect
             # what the AEC accomplished, not how much the post-gain stage
@@ -2776,6 +973,12 @@ def _aec_loop(  # noqa: PLR0915
             sum_ref_sq += float(np.mean(ref_arr * ref_arr))
             sum_aec_sq += float(np.mean(aec_arr * aec_arr))
             rms_window_frames += 1
+            if raw0_bytes:
+                raw0_arr = np.frombuffer(
+                    raw0_bytes, dtype=np.int16,
+                ).astype(np.float32)
+                sum_raw0_sq += float(np.mean(raw0_arr * raw0_arr))
+                raw0_window_frames += 1
 
             now = time.monotonic()
             if now - last_log > 5.0:
@@ -2783,14 +986,19 @@ def _aec_loop(  # noqa: PLR0915
                     mic_rms = math.sqrt(sum_mic_sq / rms_window_frames)
                     ref_rms = math.sqrt(sum_ref_sq / rms_window_frames)
                     aec_rms = math.sqrt(sum_aec_sq / rms_window_frames)
+                    # Omitted, not zeroed, when the window drained no raw0
+                    # frames: doctor reads a present `raw0` as the near-end
+                    # level, and `raw0=0` would pin its music gate off.
+                    raw0_token = (
+                        " raw0=%.0f"
+                        % math.sqrt(sum_raw0_sq / raw0_window_frames)
+                        if raw0_window_frames else ""
+                    )
                     if mic_rms > 1.0:
                         attn_db = 20.0 * math.log10(max(aec_rms, 1.0) / mic_rms)
                     else:
                         attn_db = 0.0
-                    ref_clip_pct = (
-                        100.0 * _ref_clipped_samples / _ref_total_samples
-                        if _ref_total_samples else 0.0
-                    )
+                    ref_clip_pct = ref_clip_percent()
                     out_clip_pct = (
                         100.0 * _out_clipped_samples / _out_total_samples
                         if _out_total_samples else 0.0
@@ -2798,12 +1006,12 @@ def _aec_loop(  # noqa: PLR0915
                     if production_chip_aec_enabled:
                         logger.info(
                             "chip_aec rms over %.1fs: ref=%.0f near=%s:%.0f "
-                            "primary=%s:%.0f level_delta=%.1f dB "
+                            "primary=%s:%.0f level_delta=%.1f dB%s "
                             "(frames=%d ref_q=%d mic_q=%d ref_starve=%d "
                             "ref_clip=%.2f%% out_clip=%.2f%%)",
                             rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
                             ref_rms, "chip_aec_210", mic_rms,
-                            chip_aec_primary_leg, aec_rms, attn_db,
+                            chip_aec_primary_leg, aec_rms, attn_db, raw0_token,
                             frames_processed, ref_q.qsize(), mic_q.qsize(),
                             _ref_starved_frames,
                             ref_clip_pct, out_clip_pct,
@@ -2822,7 +1030,9 @@ def _aec_loop(  # noqa: PLR0915
                 last_log = now
                 rms_window_frames = 0
                 sum_mic_sq = sum_ref_sq = sum_aec_sq = 0.0
-                _ref_clipped_samples = _ref_total_samples = 0
+                raw0_window_frames = 0
+                sum_raw0_sq = 0.0
+                reset_ref_clip_counters()
                 _out_clipped_samples = _out_total_samples = 0
                 _ref_starved_frames = 0
     finally:
@@ -2838,7 +1048,7 @@ def _aec_loop(  # noqa: PLR0915
             usb_dtln_engine.close()
         for path in aec3_sweep_paths:
             with suppress(Exception):
-                path["engine"].close()
+                path.engine.close()
         for w in (mic_wav, aec_wav, ref_wav):
             if w is not None:
                 try:
@@ -2860,7 +1070,7 @@ def main() -> int:
     # Resolve the reference source before anything reads it: the stats
     # snapshot below publishes it as the runtime provenance doctor trusts.
     try:
-        config = _resolved_reference_source(config)
+        config = resolved_reference_source(config)
     except UnsupportedReferenceSource as e:
         logger.error("%s", e)
         return 1
@@ -2873,16 +1083,16 @@ def main() -> int:
         reference_endpoint=reference_endpoint,
     )
     _bridge_stats.write_snapshot(config.bridge_stats_path)
-    corpus_ref_enabled = _env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
-    corpus_usb_enabled = _env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
-    corpus_usb_dtln_enabled = _env_bool(
+    corpus_ref_enabled = env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
+    corpus_usb_enabled = env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
+    corpus_usb_dtln_enabled = env_bool(
         "JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0",
     )
-    corpus_aec3_sweep_enabled = _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
-    corpus_chip_aec_enabled = _env_bool(
+    corpus_aec3_sweep_enabled = env_bool(AEC3_SWEEP_ENV_FLAG, "0")
+    corpus_chip_aec_enabled = env_bool(
         "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
     )
-    production_chip_aec_enabled = _env_bool("JASPER_AEC_CHIP_AEC_ENABLED", "0")
+    production_chip_aec_enabled = env_bool(_mic_profile.CHIP_AEC_ENABLED_ENV, "0")
     chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
     chip_beam_plan = _chip_beam_plan() if chip_aec_enabled else None
     if chip_aec_enabled and chip_beam_plan is None:
@@ -2894,10 +1104,10 @@ def main() -> int:
         )
         return 1
     chip_aec_primary_leg = _chip_aec_primary_leg(chip_beam_plan)
-    corpus_xvf_raw0_webrtc_enabled = _env_bool(
+    corpus_xvf_raw0_webrtc_enabled = env_bool(
         "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED", "0",
     )
-    corpus_xvf_raw0_dtln_enabled = _env_bool(
+    corpus_xvf_raw0_dtln_enabled = env_bool(
         "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED", "0",
     )
     raw_out_detail = (
@@ -2953,13 +1163,13 @@ def main() -> int:
         )
 
     try:
-        _validate_mic_device(config)
+        validate_mic_device(config)
     except MicDeviceUnavailable as e:
         logger.error("%s", e)
         return 1
     if corpus_usb_enabled:
         try:
-            _validate_usb_mic_device(config)
+            validate_usb_mic_device(config)
         except UsbMicUnavailable as e:
             logger.error("%s", e)
             return 1
@@ -2986,19 +1196,37 @@ def main() -> int:
     )
 
     ref_t = threading.Thread(
-        target=_outputd_ref_udp_thread,
-        args=(ref_q, config),
+        target=outputd_ref_udp_thread,
+        args=(ref_q,),
+        kwargs={
+            "host": config.outputd_ref_udp_host,
+            "port": config.outputd_ref_udp_port,
+            "stats": _bridge_stats,
+            "shutdown": _shutdown,
+        },
         daemon=True,
     )
     mic_t = threading.Thread(
-        target=_mic_thread,
-        args=(mic_q, raw0_q, chip_aec_qs, chip_beam_plan, config),
+        target=mic_thread,
+        args=(mic_q, raw0_q, chip_aec_qs, chip_beam_plan),
+        kwargs={
+            "mic_device": config.mic_device,
+            "capture_latency": config.capture_latency,
+            "stats": _bridge_stats,
+            "shutdown": _shutdown,
+        },
         daemon=True,
     )
     usb_t = (
         threading.Thread(
-            target=_usb_mic_thread,
-            args=(usb_q, config),
+            target=usb_mic_thread,
+            args=(usb_q,),
+            kwargs={
+                "usb_mic_device": config.usb_mic_device,
+                "usb_mic_rate": config.usb_mic_rate,
+                "stats": _bridge_stats,
+                "shutdown": _shutdown,
+            },
             daemon=True,
         )
         if usb_q is not None else None

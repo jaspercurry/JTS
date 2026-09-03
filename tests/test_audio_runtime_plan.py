@@ -552,6 +552,28 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
     )
 
 
+def test_audio_config_import_does_not_load_runtime_contract():
+    """`jasper.cli.audio_config` is spawned six times per boot reconcile pass;
+    `runtime_contract` is only needed on the active-endpoint branch of
+    `validate-outputd-env`, so it must stay a call-site import (ADR-0226).
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, jasper.cli.audio_config as m; "
+            "print('jasper.active_speaker.runtime_contract' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"
+
+
 def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():
     actions = outputd_latency_floor_actions(
         profile_id=APPLE_USB_C_DONGLE_ID,

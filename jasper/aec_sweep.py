@@ -91,7 +91,7 @@ class Aec3SweepConfigError(ValueError):
 
 _BOOL_SPEC = _KnobSpec("bool")
 _ALLOWED_AEC3_SWEEP_ENV_VARS: dict[str, _KnobSpec] = {
-    # Top-level processing toggles exposed by _Aec3V2Engine.
+    # Top-level processing toggles exposed by Aec3V2Engine.
     "JASPER_AEC_NS_ENABLED": _BOOL_SPEC,
     "JASPER_AEC_NS_LEVEL": _KnobSpec("enum", choices=("low", "moderate", "high")),
     "JASPER_AEC_AGC1_ENABLED": _BOOL_SPEC,

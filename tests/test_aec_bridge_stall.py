@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import logging
-from queue import Empty, Full, Queue
+from queue import Empty
 import struct
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -37,19 +37,22 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.cli import aec_bridge
+from jasper.cli import (
+    aec_bridge,
+    aec_bridge_config,
+    aec_bridge_engines,
+    aec_bridge_telemetry,
+)
 from jasper.cli.aec_bridge import (
     BridgeStalled,
-    FRAME_SAMPLES,
-    MicDeviceUnavailable,
-    OUT_FRAME_BYTES,
-    OUT_HOST,
     OUT_PORT,
     OUT_PORT_RAW,
     _aec_loop,
     _shutdown,
-    _validate_mic_device,
 )
+from jasper.cli.aec_bridge_config import OUT_HOST
+from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
+from jasper.cli.aec_bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
 
 
 class _AlwaysEmptyQ:
@@ -64,11 +67,6 @@ class _AlwaysEmptyQ:
 
     def qsize(self):
         return 0
-
-
-class _AlwaysFullQ:
-    def put_nowait(self, _frame):
-        raise Full
 
 
 class _ScriptedMicQ:
@@ -105,18 +103,14 @@ class _ScriptedMicQ:
 
 @pytest.fixture(autouse=True)
 def _reset_shutdown_and_stub_sd(monkeypatch):
-    """Each test gets a clean `_shutdown` and a no-op
-    `sd.RawOutputStream` (the loop opens one on entry).
+    """Each test gets a clean `_shutdown` and a stubbed `sd` module.
 
     Clears both the module Event and the top-of-file import. The loop's
     actual check goes through the module-dict lookup.
     """
     aec_bridge._shutdown.clear()
     _shutdown.clear()
-    out_stream = MagicMock()
-    sd_mod = MagicMock()
-    sd_mod.RawOutputStream = MagicMock(return_value=out_stream)
-    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    monkeypatch.setattr(aec_bridge_config, "sd", MagicMock())
     aec_bridge._bridge_stats.reset()
     yield
     aec_bridge._shutdown.clear()
@@ -124,46 +118,12 @@ def _reset_shutdown_and_stub_sd(monkeypatch):
     aec_bridge._bridge_stats.reset()
 
 
-def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
-    path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats()
-    stats.inc("frames_processed", 3)
-    stats.inc_nested("queue_drops", "mic", 2)
-    stats.inc_nested("packets_sent_by_leg", "on", 1)
-
-    stats.write_snapshot(path)
-
-    import json
-    data = json.loads(path.read_text())
-    assert data["schema_version"] == aec_bridge.BRIDGE_STATS_SCHEMA_VERSION
-    assert data["pid"] > 0
-    assert data["counters"]["frames_processed"] == 3
-    assert data["counters"]["queue_drops"]["mic"] == 2
-    assert data["counters"]["packets_sent_by_leg"]["on"] == 1
-
-
-def test_bridge_stats_snapshot_carries_negotiated_capture_geometry() -> None:
-    stats = aec_bridge._BridgeStats()
-    stats.set_capture_stream(
-        sample_rate_hz=16_000,
-        block_frames=320,
-        input_latency_seconds=0.08,
-    )
-
-    assert stats.snapshot()["capture_stream"] == {
-        "sample_rate_hz": 16_000,
-        "block_frames": 320,
-        "input_latency_seconds": 0.08,
-        "input_latency_frames": 1280,
-    }
-
-
 def test_bridge_stats_reference_input_is_null_before_first_frame(
     monkeypatch,
 ) -> None:
     clock = SimpleNamespace(now=100.0)
     monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
-    stats = aec_bridge._BridgeStats()
+    stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.reset(
         reference_source="outputd_udp",
         reference_endpoint="127.0.0.1:9891",
@@ -179,63 +139,8 @@ def test_bridge_stats_reference_input_is_null_before_first_frame(
     }
 
 
-def test_bridge_stats_reference_input_age_advances_and_new_input_resets(
-    monkeypatch,
-) -> None:
-    clock = SimpleNamespace(now=100.0)
-    monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
-    aec_bridge._bridge_stats.reset(
-        reference_source="outputd_udp",
-        reference_endpoint="127.0.0.1:9891",
-    )
-    frame = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
-    batch = aec_bridge._ReferenceFrameBatch(
-        frames=(frame, frame),
-        clipped_samples=0,
-        total_samples=2 * FRAME_SAMPLES,
-    )
-    ref_q: Queue[bytes] = Queue(maxsize=4)
-
-    aec_bridge._enqueue_reference_frames(
-        ref_q,
-        batch,
-        drop_log=aec_bridge._DropLogDebouncer(),
-        drop_message="unused %d %.1f",
-    )
-    first = aec_bridge._bridge_stats.snapshot()["reference_input"]
-    assert first["frames_enqueued"] == 2
-    assert first["last_frame_age_ms"] == 0
-    assert first["snapshot_monotonic_ms"] == 100_000
-    assert first["process_age_ms"] == 0
-
-    clock.now = 101.25
-    assert (
-        aec_bridge._bridge_stats.snapshot()["reference_input"]
-        ["last_frame_age_ms"]
-        == 1250
-    )
-
-    ref_q.get_nowait()
-    ref_q.get_nowait()
-    aec_bridge._enqueue_reference_frames(
-        ref_q,
-        aec_bridge._ReferenceFrameBatch(
-            frames=(frame,),
-            clipped_samples=0,
-            total_samples=FRAME_SAMPLES,
-        ),
-        drop_log=aec_bridge._DropLogDebouncer(),
-        drop_message="unused %d %.1f",
-    )
-    latest = aec_bridge._bridge_stats.snapshot()["reference_input"]
-    assert latest["frames_enqueued"] == 3
-    assert latest["last_frame_age_ms"] == 0
-    assert latest["snapshot_monotonic_ms"] == 101_250
-    assert latest["process_age_ms"] == 1_250
-
-
 def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
-    stats = aec_bridge._BridgeStats()
+    stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
     snapshot = stats.snapshot()
 
     assert snapshot["schema_version"] == 4
@@ -248,161 +153,6 @@ def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
         "process_age_ms",
     }
     assert isinstance(snapshot["counters"], dict)
-
-
-def test_drop_log_debouncer_aggregates_one_second_windows():
-    debouncer = aec_bridge._DropLogDebouncer()
-
-    assert debouncer.record(10.0) == (1, 1.0)
-    assert debouncer.record(10.25) is None
-    assert debouncer.record(10.50) is None
-
-    drops, window_sec = debouncer.record(11.10)
-    assert drops == 3
-    assert window_sec == pytest.approx(1.1)
-
-
-def _stereo_samples(left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    return np.column_stack((left, right)).reshape(-1).astype(np.int16)
-
-
-def test_reference_converter_is_fragmentation_invariant_and_keeps_remainder():
-    capture_block = FRAME_SAMPLES * (
-        aec_bridge.REF_RATE // aec_bridge.SAMPLE_RATE
-    )
-    sample_count = 2 * capture_block + 137
-    phase = np.arange(sample_count, dtype=np.float64)
-    left = np.rint(12000 * np.sin(2 * np.pi * 1200 * phase / 48000)).astype(
-        np.int16
-    )
-    right = np.rint(8000 * np.cos(2 * np.pi * 700 * phase / 48000)).astype(
-        np.int16
-    )
-    stereo = _stereo_samples(left, right)
-
-    whole = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=0,
-        ref_hpf_hz=125,
-    )
-    whole_batch = whole.feed(stereo)
-
-    fragmented = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=0,
-        ref_hpf_hz=125,
-    )
-    fragments = (
-        stereo[:622],
-        stereo[622:2414],
-        stereo[2414:],
-    )
-    fragmented_frames: list[bytes] = []
-    fragmented_clipped = 0
-    fragmented_total = 0
-    for fragment in fragments:
-        batch = fragmented.feed(fragment)
-        fragmented_frames.extend(batch.frames)
-        fragmented_clipped += batch.clipped_samples
-        fragmented_total += batch.total_samples
-
-    assert tuple(fragmented_frames) == whole_batch.frames
-    assert len(whole_batch.frames) == 2
-    assert all(len(frame) == FRAME_SAMPLES * 2 for frame in whole_batch.frames)
-    assert fragmented_clipped == whole_batch.clipped_samples
-    assert fragmented_total == whole_batch.total_samples == 2 * FRAME_SAMPLES
-
-    fill = np.zeros(2 * (capture_block - 137), dtype=np.int16)
-    whole_tail = whole.feed(fill)
-    fragmented_tail = fragmented.feed(fill)
-    assert whole_tail == fragmented_tail
-    assert len(whole_tail.frames) == 1
-
-
-def test_reference_converter_averages_stereo_before_resampling(monkeypatch):
-    monkeypatch.setattr(
-        aec_bridge,
-        "resample_poly",
-        lambda samples, *, up, down: samples[::down],
-    )
-    monkeypatch.setattr(
-        aec_bridge,
-        "sosfilt",
-        lambda _sos, samples, *, zi: (samples, zi),
-    )
-    capture_block = FRAME_SAMPLES * (
-        aec_bridge.REF_RATE // aec_bridge.SAMPLE_RATE
-    )
-    left = np.full(capture_block, 1000, dtype=np.int16)
-    right = np.full(capture_block, 3000, dtype=np.int16)
-    converter = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=0,
-        ref_hpf_hz=125,
-    )
-
-    batch = converter.feed(_stereo_samples(left, right))
-    output = np.frombuffer(batch.frames[0], dtype=np.int16)
-
-    assert output.shape == (FRAME_SAMPLES,)
-    assert np.all(output == 2000)
-
-
-def test_reference_converter_reports_post_gain_clipping(monkeypatch):
-    monkeypatch.setattr(
-        aec_bridge,
-        "resample_poly",
-        lambda samples, *, up, down: samples[::down],
-    )
-    monkeypatch.setattr(
-        aec_bridge,
-        "sosfilt",
-        lambda _sos, samples, *, zi: (samples, zi),
-    )
-    capture_block = FRAME_SAMPLES * (
-        aec_bridge.REF_RATE // aec_bridge.SAMPLE_RATE
-    )
-    hot = np.full(capture_block, 30000, dtype=np.int16)
-    converter = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=20,
-        ref_hpf_hz=125,
-    )
-
-    batch = converter.feed(_stereo_samples(hot, hot))
-    output = np.frombuffer(batch.frames[0], dtype=np.int16)
-
-    assert batch.clipped_samples == FRAME_SAMPLES
-    assert batch.total_samples == FRAME_SAMPLES
-    assert np.all(output == 32767)
-
-
-def test_reference_enqueue_counts_and_debounces_full_queue(
-    monkeypatch,
-    caplog,
-):
-    monkeypatch.setattr(aec_bridge, "_ref_clipped_samples", 0)
-    monkeypatch.setattr(aec_bridge, "_ref_total_samples", 0)
-    monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: 10.0)
-    caplog.set_level(logging.WARNING, logger="jasper.aec_bridge")
-    frame = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
-    batch = aec_bridge._ReferenceFrameBatch(
-        frames=(frame, frame, frame),
-        clipped_samples=4,
-        total_samples=3 * FRAME_SAMPLES,
-    )
-
-    aec_bridge._enqueue_reference_frames(
-        _AlwaysFullQ(),
-        batch,
-        drop_log=aec_bridge._DropLogDebouncer(),
-        drop_message="ref queue full, dropped %d frames in last %.1fs",
-    )
-
-    counters = aec_bridge._bridge_stats.snapshot()["counters"]
-    reference_input = aec_bridge._bridge_stats.snapshot()["reference_input"]
-    assert counters["queue_drops"]["ref"] == 3
-    assert reference_input["frames_enqueued"] == 0
-    assert reference_input["last_frame_age_ms"] is None
-    assert aec_bridge._ref_clipped_samples == 4
-    assert aec_bridge._ref_total_samples == 3 * FRAME_SAMPLES
-    assert "ref queue full, dropped 3 frames in last 1.0s" in caplog.text
 
 
 def test_raises_bridge_stalled_at_threshold(monkeypatch):
@@ -456,21 +206,6 @@ def test_disabled_when_threshold_is_zero(monkeypatch):
     engine.process.assert_not_called()
 
 
-def test_validate_mic_device_raises_before_bridge_starts(monkeypatch):
-    """A missing XVF/Array device must fail before the bridge opens any
-    audio endpoint at all."""
-    sd_mod = MagicMock()
-    sd_mod.query_devices.side_effect = ValueError(
-        "No input device matching 'Array'"
-    )
-    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
-
-    with pytest.raises(MicDeviceUnavailable):
-        _validate_mic_device()
-
-    sd_mod.query_devices.assert_called_once_with("Array", "input")
-
-
 def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     """If the mic is absent, do not construct the AEC engine or start
     the capture threads behind it."""
@@ -478,9 +213,9 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     sd_mod.query_devices.side_effect = ValueError(
         "No input device matching 'Array'"
     )
-    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
     engine_cls = MagicMock()
-    monkeypatch.setattr(aec_bridge, "_Aec3Engine", engine_cls)
+    monkeypatch.setattr(aec_bridge_engines, "Aec3V1Engine", engine_cls)
 
     assert aec_bridge.main() == 1
     engine_cls.assert_not_called()
@@ -611,121 +346,6 @@ def test_raw_sendto_failure_does_not_affect_aec_stream(monkeypatch):
     )
 
 
-def test_raw_port_overridable_via_env(monkeypatch):
-    """Operators can move the raw stream off the default 9877
-    (e.g. for two-bridge testing) without touching the AEC port."""
-    monkeypatch.setenv("JASPER_AEC_UDP_PORT_RAW", "19877")
-
-    config = aec_bridge.BridgeConfig.from_env()
-
-    assert config.out_port_raw == 19877
-    # Default AEC port unaffected; compatibility constant remains canonical.
-    assert config.out_port == 9876
-    assert aec_bridge.OUT_PORT_RAW == 9877
-
-
-def test_usb_mic_leg_config_defaults_and_parses_env(monkeypatch):
-    monkeypatch.delenv("JASPER_USB_MIC_LEG", raising=False)
-    assert aec_bridge.BridgeConfig.from_env().usb_mic_leg == "primary"
-
-    monkeypatch.setenv("JASPER_USB_MIC_LEG", "raw0")
-    assert aec_bridge.BridgeConfig.from_env().usb_mic_leg == "raw0"
-
-
-def test_usb_mic_source_resolves_primary_stale_and_software_modes() -> None:
-    from jasper.mics import xvf3800
-
-    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
-    assert aec_bridge._resolve_usb_mic_source(
-        "primary",
-        plan=plan,
-        production_chip_aec_enabled=True,
-        chip_aec_primary_leg="chip_aec_150",
-    ) == {
-        "selection": "primary",
-        "mode": "chip_aec",
-        "leg": "chip_aec_150",
-        "fallback_active": False,
-    }
-    assert aec_bridge._resolve_usb_mic_source(
-        "stale_plan_leg",
-        plan=plan,
-        production_chip_aec_enabled=True,
-        chip_aec_primary_leg="chip_aec_150",
-    ) == {
-        "selection": "primary",
-        "mode": "chip_aec",
-        "leg": "chip_aec_150",
-        "fallback_active": False,
-    }
-    assert aec_bridge._resolve_usb_mic_source(
-        "chip_aec_210",
-        plan=plan,
-        production_chip_aec_enabled=False,
-        chip_aec_primary_leg="chip_aec_150",
-    ) == {
-        "selection": "chip_aec_210",
-        "mode": "software_aec3",
-        "leg": "clean",
-        "fallback_active": True,
-    }
-    assert aec_bridge._resolve_usb_mic_source(
-        "raw0",
-        plan=plan,
-        production_chip_aec_enabled=True,
-        chip_aec_primary_leg="chip_aec_150",
-    ) == {
-        "selection": "raw0",
-        "mode": "raw",
-        "leg": "raw0",
-        "fallback_active": False,
-    }
-    assert aec_bridge._resolve_usb_mic_source(
-        "raw0",
-        plan=None,
-        production_chip_aec_enabled=False,
-        chip_aec_primary_leg="chip_aec_150",
-    ) == {
-        "selection": "primary",
-        "mode": "software_aec3",
-        "leg": "clean",
-        "fallback_active": False,
-    }
-
-
-@pytest.mark.parametrize(
-    ("configured", "expected"),
-    [("low", "low"), ("0.04", "0.04"), ("", "")],
-)
-def test_capture_latency_parses_from_env(monkeypatch, configured, expected):
-    monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
-
-    config = aec_bridge.BridgeConfig.from_env()
-
-    assert config.capture_latency == expected
-
-
-@pytest.mark.parametrize(
-    "configured", ["fast", "0", "-0.1", "0.251", "nan", "inf"]
-)
-def test_capture_latency_invalid_values_fall_back_to_default(monkeypatch, configured):
-    monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
-    event = MagicMock()
-    monkeypatch.setattr(aec_bridge, "log_event", event)
-    test_logger = MagicMock()
-
-    config = aec_bridge.BridgeConfig.from_env(logger_=test_logger)
-
-    assert config.capture_latency == ""
-    event.assert_called_once_with(
-        test_logger,
-        "aec.capture_latency_invalid",
-        value=configured,
-        fallback="default",
-        level=aec_bridge.logging.WARNING,
-    )
-
-
 def test_raw0_port_default_9879():
     """Default raw mic 0 UDP port is the canonical 9879. wake-corpus
     recorder + wake_enroll CLI both subscribe to this port; if it
@@ -736,10 +356,23 @@ def test_raw0_port_default_9879():
     assert DEFAULT_AEC_RAW0_PORT == 9879
 
 
-def test_aec_loop_emits_raw0_when_raw0_q_passed(monkeypatch):
-    """When raw0_q is provided, 4 raw0 frames in → one packet out on
-    OUT_PORT_RAW0. Byte-distinct from the mic_q frames so we can
-    verify the right bytes landed on the right port.
+@pytest.mark.parametrize(
+    ("leg_kwarg", "sockets_before_leg", "port_attr", "frames_via_ref_q"),
+    [
+        pytest.param("raw0_q", 2, "OUT_PORT_RAW0", False, id="raw0_q"),
+        pytest.param("emit_ref", 3, "OUT_PORT_REF", True, id="emit_ref"),
+    ],
+)
+def test_aec_loop_emits_single_opt_in_leg(
+    monkeypatch, leg_kwarg, sockets_before_leg, port_attr, frames_via_ref_q,
+):
+    """A single opt-in leg (raw0 / ref) emits exactly its own packet to its
+    own port, byte-distinct from the mic_q and primary-AEC frames so we can
+    verify the right bytes landed on the right socket.
+
+    `raw0_q` takes its frames via a dedicated kwarg queue; `emit_ref` is a
+    bool flag and instead reuses the loop's own `ref_q` positional arg —
+    hence the `frames_via_ref_q` switch.
 
     Uses the top-of-file `_aec_loop` and `_ScriptedMicQ` to share
     the same `_shutdown` Event the autouse fixture manages —
@@ -747,34 +380,36 @@ def test_aec_loop_emits_raw0_when_raw0_q_passed(monkeypatch):
     failure mode.
     """
     import socket as real_socket
-    from jasper.cli.aec_bridge import OUT_PORT_RAW0
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
 
-    aec_sock = _mock_socket()
-    raw_sock = _mock_socket()
-    raw0_sock = _mock_socket()
-    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
+    leading_socks = [_mock_socket() for _ in range(sockets_before_leg)]
+    leg_sock = _mock_socket()
+    socket_factory = MagicMock(side_effect=[*leading_socks, leg_sock])
     monkeypatch.setattr(real_socket, "socket", socket_factory)
 
-    # 4 mic frames + 4 distinct raw0 frames → exactly 1 packet per leg.
+    # 4 mic frames + 4 distinct leg frames → exactly 1 packet per leg.
     mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    raw0_frames = [bytes([i + 200]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    leg_frames = [bytes([i + 50]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
     aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
     engine = MagicMock()
     engine.process.side_effect = aec_frames
 
-    _aec_loop(
-        _AlwaysEmptyQ(), _ScriptedMicQ(mic_frames), engine,
-        raw0_q=_ScriptedMicQ(raw0_frames),
-    )
+    if frames_via_ref_q:
+        ref_q = _ScriptedMicQ(leg_frames)
+        extra_kwargs = {leg_kwarg: True}
+    else:
+        ref_q = _AlwaysEmptyQ()
+        extra_kwargs = {leg_kwarg: _ScriptedMicQ(leg_frames)}
 
-    # raw0 emitted exactly its 1280-sample packet to OUT_PORT_RAW0.
-    raw0_sock.sendto.assert_called_once()
-    call = raw0_sock.sendto.call_args
-    assert call.args[0] == b"".join(raw0_frames)
-    assert call.args[1] == (OUT_HOST, OUT_PORT_RAW0)
-    assert len(call.args[0]) == OUT_FRAME_BYTES
+    _aec_loop(ref_q, _ScriptedMicQ(mic_frames), engine, **extra_kwargs)
+
+    port = getattr(aec_bridge, port_attr)
+    leg_sock.sendto.assert_called_once_with(
+        b"".join(leg_frames), (OUT_HOST, port),
+    )
+    assert len(leg_sock.sendto.call_args.args[0]) == OUT_FRAME_BYTES
+    leg_sock.close.assert_called_once()
 
 
 def test_aec_loop_chip_aec_mode_defaults_to_primary_only(monkeypatch):
@@ -822,6 +457,62 @@ def test_aec_loop_chip_aec_mode_defaults_to_primary_only(monkeypatch):
         b"".join(chip_150_frames), (OUT_HOST, OUT_PORT),
     )
     assert socket_factory.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "raw0_supplied", [True, False],
+    ids=["raw0-drained", "window-drained-no-raw0"],
+)
+def test_chip_rms_window_reports_the_raw_capture_level(
+    monkeypatch, caplog, raw0_supplied,
+):
+    """The chip RMS line's `near`/`primary` legs are both chip-cancelled, so
+    doctor's near-end gate needs the uncancelled capture channel. A window
+    that drained no raw0 frames must omit the token rather than report zero,
+    so the gate falls back to `near` instead of reading a silent mic.
+    Renders the real format string and reads it back through the real
+    doctor parser."""
+    import socket as real_socket
+    from jasper.cli import doctor
+    from jasper.mics import xvf3800
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_150", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_210", raising=False)
+    monkeypatch.setattr(
+        real_socket, "socket", MagicMock(side_effect=lambda *a, **k: _mock_socket()),
+    )
+
+    def _pcm(amplitude):
+        return np.full(FRAME_SAMPLES, amplitude, dtype=np.int16).tobytes()
+
+    # `last_log` starts at 0.0, so the first frame closes a window: each
+    # level below is the RMS of exactly one constant-amplitude frame.
+    near, raw0 = 800, 2_900
+    caplog.set_level(logging.INFO, logger="jasper.aec_bridge")
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ([_pcm(near)] * 4),
+        MagicMock(),
+        raw0_q=_ScriptedMicQ([_pcm(raw0)] * 4) if raw0_supplied else None,
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ([_pcm(300)] * 4),
+            "chip_aec_210": _ScriptedMicQ([_pcm(near)] * 4),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+    )
+
+    rms_lines = [m for m in caplog.messages if m.startswith("chip_aec rms")]
+    windows = [w for w in map(doctor._parse_rms_window, rms_lines) if w]
+
+    assert len(windows) == len(rms_lines) > 0, caplog.messages
+    assert windows[0].chip
+    assert windows[0].mic == (raw0 if raw0_supplied else near)
+    assert raw0_supplied == all("raw0=" in m for m in rms_lines)
 
 
 def test_aec_loop_chip_aec_extra_beams_are_explicit_opt_in(monkeypatch):
@@ -947,43 +638,6 @@ def test_aec_loop_corpus_chip_aec_flag_emits_promised_beams(monkeypatch):
     chip_210_sock.sendto.assert_called_once_with(
         b"".join(chip_210_frames), (OUT_HOST, OUT_PORT_CHIP_AEC_210),
     )
-
-
-def test_aec_loop_emits_ref_when_enabled(monkeypatch):
-    """Corpus ref output is opt-in and emits the exact 16 kHz ref
-    frames the AEC loop consumed."""
-    import socket as real_socket
-    from jasper.cli.aec_bridge import OUT_PORT_REF
-
-    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
-    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
-
-    aec_sock = _mock_socket()
-    raw_sock = _mock_socket()
-    raw0_sock = _mock_socket()
-    ref_sock = _mock_socket()
-    socket_factory = MagicMock(
-        side_effect=[aec_sock, raw_sock, raw0_sock, ref_sock],
-    )
-    monkeypatch.setattr(real_socket, "socket", socket_factory)
-
-    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    ref_frames = [bytes([i + 50]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
-    engine = MagicMock()
-    engine.process.side_effect = aec_frames
-
-    _aec_loop(
-        _ScriptedMicQ(ref_frames),
-        _ScriptedMicQ(mic_frames),
-        engine,
-        emit_ref=True,
-    )
-
-    ref_sock.sendto.assert_called_once_with(
-        b"".join(ref_frames), (OUT_HOST, OUT_PORT_REF),
-    )
-    ref_sock.close.assert_called_once()
 
 
 def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
@@ -1266,6 +920,18 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     usb_engine.close.assert_called_once()
 
 
+def test_loop_emitters_count_into_the_process_bridge_stats() -> None:
+    """The emitters the loop builds feed the singleton the stats writer and
+    the wake-corpus recorder read — the one link the telemetry split moved."""
+    emitters: dict[str, aec_bridge_telemetry.LegEmitter] = {}
+    emitter = aec_bridge._add_loop_emitter(
+        emitters, aec_bridge.BridgeConfig.from_env(), "on", 9876,
+    )
+
+    assert emitter.stats is aec_bridge._bridge_stats
+    emitter.close()
+
+
 def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     """Every configured software/corpus leg uses the shared packet emitter.
 
@@ -1317,7 +983,7 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     monkeypatch.setattr(dtln_mod, "default_model_dir", lambda: "/models")
 
     emitted: list[str] = []
-    real_emit_packet = aec_bridge.emit_packet
+    real_emit_packet = aec_bridge_telemetry.emit_packet
 
     def counting_emit_packet(**kwargs):
         packet_ready = len(kwargs["batch"]) + len(kwargs["pcm"]) >= OUT_FRAME_BYTES
@@ -1325,7 +991,9 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
         if packet_ready:
             emitted.append(kwargs["leg"])
 
-    monkeypatch.setattr(aec_bridge, "emit_packet", counting_emit_packet)
+    monkeypatch.setattr(
+        aec_bridge_telemetry, "emit_packet", counting_emit_packet,
+    )
 
     engine = engine_returning(100)
     _aec_loop(
@@ -1352,142 +1020,6 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
         "usb_dtln",
         "on",
     ]
-
-
-def test_usb_host_mic_emitter_prepends_v2_header(monkeypatch):
-    from jasper.usb_mic import (
-        USB_MIC_HEADER_BYTES,
-        USB_MIC_HEADER_STRUCT,
-        USB_MIC_PACKET_MAGIC,
-        USB_MIC_PACKET_VERSION,
-    )
-
-    usb_sock = MagicMock()
-    usb = aec_bridge.TimestampedLegEmitter(
-        usb_sock,
-        (OUT_HOST, 9894),
-        bytearray(),
-        "usb_host_mic",
-        frame_samples=FRAME_SAMPLES,
-    )
-    timestamps = iter((1_000_000_000, 1_020_000_000))
-    clock_ids = []
-
-    def clock_gettime_ns(clock_id):
-        clock_ids.append(clock_id)
-        return next(timestamps)
-
-    monkeypatch.setattr(
-        aec_bridge.time,
-        "clock_gettime_ns",
-        clock_gettime_ns,
-    )
-    frames = (
-        b"\x11\x22" * FRAME_SAMPLES,
-        b"\x33\x44" * FRAME_SAMPLES,
-    )
-
-    for frame in frames:
-        usb.emit(frame)
-
-    assert usb_sock.sendto.call_count == 2
-    assert USB_MIC_HEADER_BYTES == 16
-    assert clock_ids == [aec_bridge.time.CLOCK_MONOTONIC] * 2
-    for seq, (call, frame, timestamp) in enumerate(zip(
-        usb_sock.sendto.call_args_list,
-        frames,
-        (1_000_000_000, 1_020_000_000),
-        strict=True,
-    )):
-        packet = call.args[0]
-        assert len(packet) == 656
-        assert struct.unpack(
-            USB_MIC_HEADER_STRUCT,
-            packet[:USB_MIC_HEADER_BYTES],
-        ) == (
-            USB_MIC_PACKET_MAGIC,
-            USB_MIC_PACKET_VERSION,
-            0,
-            seq,
-            timestamp,
-        )
-        assert packet[USB_MIC_HEADER_BYTES:] == frame
-        assert call.args[1] == (OUT_HOST, 9894)
-
-
-def test_usb_host_mic_sequence_wraps_u32(monkeypatch):
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
-
-    sock = MagicMock()
-    emitter = aec_bridge.TimestampedLegEmitter(
-        sock,
-        (OUT_HOST, 9894),
-        bytearray(),
-        "usb_host_mic",
-        frame_samples=FRAME_SAMPLES,
-    )
-    emitter._seq = 0xFFFFFFFF
-    monkeypatch.setattr(aec_bridge.time, "clock_gettime_ns", lambda _clock: 1)
-
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-
-    sequences = [
-        struct.unpack(
-            USB_MIC_HEADER_STRUCT,
-            call.args[0][:USB_MIC_HEADER_BYTES],
-        )[3]
-        for call in sock.sendto.call_args_list
-    ]
-    assert sequences == [0xFFFFFFFF, 0]
-
-
-def test_usb_host_mic_sequence_exposes_sender_drop(monkeypatch):
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
-
-    sock = MagicMock()
-    sock.sendto.side_effect = (BlockingIOError("full"), None)
-    emitter = aec_bridge.TimestampedLegEmitter(
-        sock,
-        (OUT_HOST, 9894),
-        bytearray(),
-        "usb_host_mic",
-        frame_samples=FRAME_SAMPLES,
-    )
-    monkeypatch.setattr(
-        aec_bridge.time,
-        "clock_gettime_ns",
-        MagicMock(side_effect=(1, 2)),
-    )
-
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-
-    second_packet = sock.sendto.call_args_list[1].args[0]
-    second_header = struct.unpack(
-        USB_MIC_HEADER_STRUCT,
-        second_packet[:USB_MIC_HEADER_BYTES],
-    )
-    assert second_header[3] == 1
-    counters = aec_bridge._bridge_stats.snapshot()["counters"]
-    assert counters["udp_send_drops_by_leg"]["usb_host_mic"] == 1
-    assert counters["packets_sent_by_leg"]["usb_host_mic"] == 1
-
-
-@pytest.mark.parametrize("leg", ["on", "off", "raw0"])
-def test_wake_legs_wire_format_unchanged(leg: str):
-    sock = MagicMock()
-    emitter = aec_bridge.LegEmitter(
-        sock,
-        (OUT_HOST, OUT_PORT),
-        bytearray(),
-        leg,
-    )
-    pcm = b"\x12\x34" * aec_bridge.OUT_FRAME_SAMPLES
-
-    emitter.emit(pcm)
-
-    sock.sendto.assert_called_once_with(pcm, (OUT_HOST, OUT_PORT))
 
 
 def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
@@ -1845,96 +1377,6 @@ def test_usb_host_mic_missing_selected_beam_falls_back_to_primary(monkeypatch):
     )
 
 
-def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
-    stream = SimpleNamespace(
-        latency=0.025,
-        samplerate=15_990,
-        blocksize=319,
-    )
-
-    class InputStream:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def __enter__(self):
-            return stream
-
-        def __exit__(self, *_args):
-            return False
-
-    input_stream = MagicMock(side_effect=InputStream)
-    monkeypatch.setattr(aec_bridge, "sd", SimpleNamespace(InputStream=input_stream))
-    event = MagicMock()
-    monkeypatch.setattr(aec_bridge, "log_event", event)
-    aec_bridge._shutdown.set()
-    config = replace(aec_bridge.BridgeConfig.from_env(), mic_device="test-mic")
-
-    aec_bridge._mic_thread(MagicMock(), config=config)
-
-    input_stream.assert_called_once()
-    assert input_stream.call_args.kwargs == {
-        "device": "test-mic",
-        "samplerate": aec_bridge.SAMPLE_RATE,
-        "channels": aec_bridge.MIC_CHANNELS,
-        "dtype": "int16",
-        "blocksize": aec_bridge.FRAME_SAMPLES,
-        "callback": input_stream.call_args.kwargs["callback"],
-    }
-    event.assert_called_once_with(
-        aec_bridge.logger,
-        "aec.mic_stream_latency",
-        latency_s=0.025,
-        requested_latency="default",
-        samplerate=15_990,
-        blocksize=319,
-    )
-    assert aec_bridge._bridge_stats.snapshot()["capture_stream"] == {
-        "sample_rate_hz": 15_990,
-        "block_frames": 319,
-        "input_latency_seconds": 0.025,
-        "input_latency_frames": 400,
-    }
-
-
-@pytest.mark.parametrize(
-    ("configured", "expected"),
-    [("low", "low"), ("0.04", 0.04)],
-)
-def test_mic_thread_passes_configured_capture_latency(
-    monkeypatch,
-    configured,
-    expected,
-):
-    stream = SimpleNamespace(
-        latency=0.02,
-        samplerate=aec_bridge.SAMPLE_RATE,
-        blocksize=aec_bridge.FRAME_SAMPLES,
-    )
-
-    class InputStream:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def __enter__(self):
-            return stream
-
-        def __exit__(self, *_args):
-            return False
-
-    input_stream = MagicMock(side_effect=InputStream)
-    monkeypatch.setattr(aec_bridge, "sd", SimpleNamespace(InputStream=input_stream))
-    aec_bridge._shutdown.set()
-    config = replace(
-        aec_bridge.BridgeConfig.from_env(),
-        mic_device="test-mic",
-        capture_latency=configured,
-    )
-
-    aec_bridge._mic_thread(MagicMock(), config=config)
-
-    assert input_stream.call_args.kwargs["latency"] == expected
-
-
 def test_dtln_runtime_failure_degrades_once_and_primary_aec_continues(
     monkeypatch, caplog, tmp_path,
 ):
@@ -2132,83 +1574,3 @@ def test_starvation_watchdog_disabled_when_max_windows_zero():
     wd = aec_bridge._MicStarvationWatchdog(max_starved_windows=0)
     for step in range(1000):
         assert not wd.stalled(step * 1.0)   # no frames ever, still never trips
-
-
-def test_bridge_stats_snapshot_carries_leg_engine_status(tmp_path):
-    """leg_engines is the journal-independent surface jasper-doctor's
-    check_aec_bridge_dtln_engine reads to catch a silent DTLN load
-    failure (bridge degrades to AEC3-only while voice keeps listening
-    on the unfed :9878 leg)."""
-    path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats()
-    stats.set_leg_engine("dtln", enabled=True, loaded=False, error="no onnx")
-
-    stats.write_snapshot(path)
-
-    import json
-    data = json.loads(path.read_text())
-    assert data["leg_engines"]["dtln"] == {
-        "enabled": True,
-        "loaded": False,
-        "error": "no onnx",
-    }
-
-    stats.set_leg_engine("dtln", enabled=True, loaded=True)
-    stats.write_snapshot(path)
-    data = json.loads(path.read_text())
-    assert data["leg_engines"]["dtln"]["loaded"] is True
-    assert data["leg_engines"]["dtln"]["error"] is None
-
-    # reset() (bridge restart) clears the leg status with the counters.
-    stats.reset()
-    stats.write_snapshot(path)
-    assert json.loads(path.read_text())["leg_engines"] == {}
-
-
-def test_bridge_stats_snapshot_carries_active_capture_plan(tmp_path):
-    path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats()
-    stats.set_active_capture_plan(
-        wake_corpus_plan_id="plan-123",
-        expected_legs=("chip_aec_150", "chip_aec_210", "raw0"),
-        emitted_legs=["chip_aec_150", "chip_aec_210", "raw0"],
-        corpus_flags={"chip_aec": True, "ref": True},
-        beam_plan={
-            "plan_id": "xvf_square_fixed_150_210",
-            "primary_leg": "chip_aec_150",
-            "emitted_chip_legs": ["chip_aec_150", "chip_aec_210"],
-        },
-        ports={"chip_aec_150": 9887, "chip_aec_210": 9888, "raw0": 9879},
-        mic_reference_identity={
-            "mic_device": "Array",
-            "ref_source": "outputd_udp",
-        },
-        usb_mic_source={
-            "selection": "primary",
-            "mode": "chip_aec",
-            "leg": "chip_aec_150",
-        },
-        mic_fingerprint="mic-a",
-        dac_reference_fingerprint="dac-a",
-    )
-
-    stats.write_snapshot(path)
-
-    data = json.loads(path.read_text())
-    assert data["schema_version"] == aec_bridge.BRIDGE_STATS_SCHEMA_VERSION
-    assert data["wake_corpus_plan_id"] == "plan-123"
-    assert data["emitted_legs"] == ["chip_aec_150", "chip_aec_210", "raw0"]
-    active = data["active_capture_plan"]
-    assert active["wake_corpus_plan_id"] == "plan-123"
-    assert active["enabled_corpus_flags"]["chip_aec"] is True
-    assert active["beam_plan"]["emitted_chip_legs"] == [
-        "chip_aec_150", "chip_aec_210",
-    ]
-    assert active["usb_mic_source"] == {
-        "selection": "primary",
-        "mode": "chip_aec",
-        "leg": "chip_aec_150",
-    }
-    assert active["ports"]["chip_aec_210"] == 9888
-    assert active["mic_fingerprint"] == "mic-a"
-    assert active["dac_reference_fingerprint"] == "dac-a"

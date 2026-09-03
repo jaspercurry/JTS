@@ -5,7 +5,7 @@
 """Unit tests for jasper.volume_observers.
 
 The observers shell out to busctl/bluealsa-cli for AirPlay/BT, and
-read /run/librespot/state.json (written by librespot's --onevent hook)
+read /run/librespot/state.env (written by librespot's --onevent hook)
 for Spotify. Tests mock the I/O boundary: subprocess for DBus, a
 tmp_path-backed state file for Spotify. Coverage:
 
@@ -31,6 +31,8 @@ from jasper import volume_observers as observer_mod
 from jasper.renderer import RendererClient
 from jasper.volume_observers import VolumeObserver
 from jasper.volume_coordinator import Source
+
+from tests._librespot_state import write_librespot_state
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +74,7 @@ class _FakeCoordinator:
 
 
 async def test_read_airplay_db_parses_variant(monkeypatch):
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
 
     async def fake_busctl(*args, **kwargs):
         return 'v d -10.500000'
@@ -87,7 +89,7 @@ async def test_read_airplay_db_parses_variant(monkeypatch):
 async def test_read_airplay_db_clamps_to_range(monkeypatch):
     """shairport reports -144 when iPhone slider is at 0 — observer
     clamps to AIRPLAY_DB_MIN (the coordinator then maps that to 0%)."""
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
 
     async def fake_busctl(*args, **kwargs):
         return 'v d -144.000000'
@@ -101,7 +103,7 @@ async def test_read_airplay_db_clamps_to_range(monkeypatch):
 
 
 async def test_read_airplay_returns_none_on_busctl_failure(monkeypatch):
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
 
     async def fake_busctl(*args, **kwargs):
         return None
@@ -145,9 +147,9 @@ class _FakeHTTPClient:
 async def test_read_spotify_percent_maps_raw_to_pct(tmp_path):
     """librespot reports volume as raw 0-65535 (16-bit) in the state
     file written by --onevent. Observer maps to 0-100 percent."""
-    import json
-    state = tmp_path / "librespot.state.json"
-    state.write_text(json.dumps({"volume": "32768"}))  # ~50%
+    state = write_librespot_state(
+        tmp_path / "librespot.state.env", volume=32768,  # ~50%
+    )
     obs = VolumeObserver(
         _FakeCoordinator(),
         librespot_state_path=str(state),
@@ -157,21 +159,24 @@ async def test_read_spotify_percent_maps_raw_to_pct(tmp_path):
     assert pct == 50
 
 
-async def test_read_spotify_percent_handles_missing_state_file(tmp_path):
-    """No state file (librespot hasn't fired any event yet) → None."""
+async def test_read_spotify_percent_handles_missing_state_file(tmp_path, caplog):
+    """No state file (librespot hasn't fired any event yet) → None.
+    Expected until first Spotify play, and polled at 1 Hz — must not log."""
     obs = VolumeObserver(
         _FakeCoordinator(),
-        librespot_state_path=str(tmp_path / "missing.json"),
+        librespot_state_path=str(tmp_path / "missing.env"),
     )
-    assert await obs._read_spotify_percent() is None
+    with caplog.at_level("DEBUG", logger="jasper.librespot_state"):
+        assert await obs._read_spotify_percent() is None
+    assert caplog.records == []
 
 
 async def test_read_spotify_percent_handles_missing_volume_key(tmp_path):
     """State file present but no volume key (e.g. only track_id was
     captured) → None."""
-    import json
-    state = tmp_path / "librespot.state.json"
-    state.write_text(json.dumps({"track_id": "spotify:track:X"}))
+    state = write_librespot_state(
+        tmp_path / "librespot.state.env", track_id="spotify:track:X",
+    )
     obs = VolumeObserver(
         _FakeCoordinator(),
         librespot_state_path=str(state),
@@ -183,7 +188,7 @@ async def test_read_spotify_percent_handles_missing_volume_key(tmp_path):
 
 
 async def test_read_bluetooth_returns_none_when_no_transport(monkeypatch):
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
 
     async def fake_path():
         return None
@@ -195,7 +200,7 @@ async def test_read_bluetooth_returns_none_when_no_transport(monkeypatch):
 
 
 async def test_read_bluetooth_parses_uint16(monkeypatch):
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
 
     async def fake_path():
         return "/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source"
@@ -243,14 +248,14 @@ async def test_maybe_observe_first_value_propagates():
     on first contact is what listening_level should reflect (each source
     owns its own remembered volume; we mirror that)."""
     coord = _FakeCoordinator()
-    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
     await obs._maybe_observe(Source.AIRPLAY, -10.0)
     assert coord.observed == [(Source.AIRPLAY, -10.0)]
 
 
 async def test_maybe_observe_skips_micro_drift():
     coord = _FakeCoordinator()
-    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
     await obs._maybe_observe(Source.AIRPLAY, -10.0)
     await obs._maybe_observe(Source.AIRPLAY, -10.2)  # < 0.5 delta
     # only first call propagated
@@ -259,7 +264,7 @@ async def test_maybe_observe_skips_micro_drift():
 
 async def test_maybe_observe_fires_on_real_change():
     coord = _FakeCoordinator()
-    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
     await obs._maybe_observe(Source.AIRPLAY, -10.0)
     await obs._maybe_observe(Source.AIRPLAY, -15.0)
     assert coord.observed == [
@@ -271,7 +276,7 @@ async def test_maybe_observe_fires_on_real_change():
 async def test_maybe_observe_same_zero_again_for_new_mute_revision():
     """A second mute token must cross the observer even if Spotify stayed 0."""
     coord = _FakeCoordinator()
-    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
 
     coord.observation_revision = "mute-a"
     await obs._maybe_observe(Source.SPOTIFY, 0.0)
@@ -289,7 +294,7 @@ async def test_maybe_observe_retries_declined_unchanged_value():
     """Declined policy input is not cached as if it became canonical truth."""
     coord = _FakeCoordinator()
     coord.accept_observations = False
-    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.json")
+    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
 
     await obs._maybe_observe(Source.SPOTIFY, 65.0)
     await obs._maybe_observe(Source.SPOTIFY, 65.0)
@@ -316,10 +321,10 @@ async def test_tick_dispatches_only_active_source(
 ):
     """A single tick reads all sources, but only the active source's
     volume is allowed to update the canonical listening_level."""
-    import json
     coord = _FakeCoordinator(active=active)
-    state = tmp_path / "librespot.state.json"
-    state.write_text(json.dumps({"volume": 65535}))  # 100%
+    state = write_librespot_state(
+        tmp_path / "librespot.state.env", volume=65535,  # 100%
+    )
     obs = VolumeObserver(
         coord,
         librespot_state_path=str(state),
@@ -353,11 +358,10 @@ async def test_tick_forwards_same_value_on_source_activation(
 ):
     """Reactivating Spotify at the same cached percent must still reach
     the coordinator so a degraded push guard can be cleared."""
-    import json
-
     coord = _FakeCoordinator(active=Source.SPOTIFY)
-    state = tmp_path / "librespot.state.json"
-    state.write_text(json.dumps({"volume": 65535}))  # 100%
+    state = write_librespot_state(
+        tmp_path / "librespot.state.env", volume=65535,  # 100%
+    )
     obs = VolumeObserver(coord, librespot_state_path=str(state))
     obs._last_active_source = Source.AIRPLAY
     obs._last_seen[Source.SPOTIFY] = 100.0
@@ -385,7 +389,7 @@ async def test_tick_skips_inactive_sources(monkeypatch, tmp_path):
     coord = _FakeCoordinator(active=Source.IDLE)
     obs = VolumeObserver(
         coord,
-        librespot_state_path=str(tmp_path / "missing.json"),
+        librespot_state_path=str(tmp_path / "missing.env"),
     )
 
     async def fake_busctl(*args, **kwargs):
@@ -413,7 +417,7 @@ async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
     coord = _FakeCoordinator(active=Source.IDLE)
     obs = VolumeObserver(
         coord,
-        librespot_state_path=str(tmp_path / "missing.json"),
+        librespot_state_path=str(tmp_path / "missing.env"),
     )
 
     async def fake_busctl(*args, **kwargs):
@@ -448,7 +452,7 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
     coord = _BrokenCoord(active=Source.IDLE)
     obs = VolumeObserver(
         coord,
-        librespot_state_path=str(tmp_path / "missing.json"),
+        librespot_state_path=str(tmp_path / "missing.env"),
     )
 
     async def fake_busctl(*args, **kwargs):
@@ -594,7 +598,7 @@ async def test_run_answers_cancellation_racing_the_mux_status_reply(
         "jasper.renderer.asyncio.open_unix_connection",
         fake_open_unix_connection,
     )
-    renderer = RendererClient(librespot_state_path=str(tmp_path / "missing.json"))
+    renderer = RendererClient(librespot_state_path=str(tmp_path / "missing.env"))
 
     class _RendererBackedCoordinator(_FakeCoordinator):
         """_active_source that goes through the real renderer call.
@@ -609,7 +613,7 @@ async def test_run_answers_cancellation_racing_the_mux_status_reply(
 
     obs = VolumeObserver(
         _RendererBackedCoordinator(),
-        librespot_state_path=str(tmp_path / "missing.json"),
+        librespot_state_path=str(tmp_path / "missing.env"),
     )
     task = asyncio.create_task(obs._run())
     await _race_cancel_against(

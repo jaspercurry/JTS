@@ -88,6 +88,9 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   (`bash scripts/fetch-pi-logs.sh`, `curl -s http://jts.local:8780/state`)
   and name the failing line/transition before proposing a fix. Verify at the
   user's surface (the URL, the daemon's `/state`), not upstream config.
+- **Constrained hardware:** the Pi Zero 2 W (415 MB) is a supported target.
+  Push, don't pull; no short-lived Python in hot or restart paths; one
+  interpreter per concern. See ADR-0226.
 
 ## Map
 

@@ -5,11 +5,16 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from jasper.mics import xvf3800
+
+RECONCILER = Path(__file__).resolve().parents[1] / "deploy" / "bin" / "jasper-aec-reconcile"
 
 
 def _write_card(root: Path, card: str, channels: int) -> None:
@@ -171,3 +176,22 @@ def test_cli_env_and_state_share_resolved_profile(tmp_path: Path) -> None:
     state = json.loads(state_path.read_text())
     assert state["variant_id"] == "xvf3800_flex_linear_6ch"
     assert state["chip_beam_plan"] is None
+
+
+def _reconciler_written_aec_keys() -> frozenset[str]:
+    return frozenset(
+        re.findall(
+            r'^\s*set_env_var "\$ENV_FILE" (JASPER_AEC_[A-Z0-9_]+)',
+            RECONCILER.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "constant",
+    [xvf3800.AEC_MIC_DEVICE_ENV, xvf3800.CHIP_AEC_ENABLED_ENV],
+)
+def test_env_key_constant_is_a_key_the_reconciler_writes(constant: str) -> None:
+    # A rename on either side of the bash/Python edge fails here.
+    assert constant in _reconciler_written_aec_keys()

@@ -196,9 +196,8 @@ The bench builds ON, and must not collide with:
 - **Active-edit zones (do not propose structural changes):**
   `crossover_v2_flow.py` (PR-U1 landed; PR-L4 and PR-U3 pending),
   `sound/profile.py` + `camilla_yaml.py` + `linearization_fit.py` +
-  `eq-math.js` (PR-L2), `audio_measurement/calibration.py` +
-  `capture_relay/spec.py` (PR-L1), `program_analysis.py` (PR-L3),
-  `capture-page/js/**` (PR-U2), `web/correction_setup.py` tier picker
+  `eq-math.js` (PR-L2), `audio_measurement/calibration.py` (PR-L1),
+  `program_analysis.py` (PR-L3), `web/correction_setup.py` tier picker
   (PR-U3).
 - **PR-L5's delta-probe has no code yet.** It is the single most
   bench-relevant planned primitive — a generic "apply, re-measure,

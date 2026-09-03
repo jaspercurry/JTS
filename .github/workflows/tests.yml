@@ -52,7 +52,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: "3.13"
           enable-cache: true
 
@@ -136,7 +136,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: "3.13"
           enable-cache: true
 
@@ -206,11 +206,11 @@ jobs:
         # anywhere under deploy/ should auto-gate — enumerating deploy
         # subdirs individually is how deploy/usbsink sat uncovered for a
         # month (2026-07-04 review). The filter skips deploy's python3
-        # entry points (deploy/bin's librespot event hook + jasper-deploy-
-        # health, deploy/usbsink's uac2_name_patch.py) and never matches
-        # shebang-less configs/units/assets; it keeps shebang-less .sh
-        # source libraries and scripts/use. shellcheck is preinstalled on
-        # ubuntu-latest runners.
+        # entry points (deploy/bin's jasper-deploy-health, deploy/usbsink's
+        # uac2_name_patch.py) and never matches shebang-less
+        # configs/units/assets; it keeps shebang-less .sh source libraries
+        # and scripts/use. shellcheck is preinstalled on ubuntu-latest
+        # runners.
         run: |
           set -euo pipefail
           shell_files=()
@@ -273,7 +273,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: "3.13"
           enable-cache: true
 
@@ -331,7 +331,7 @@ jobs:
         with:
           # Pin uv itself so dependency installation is reproducible for
           # the same reason `uv sync --locked` is.
-          version: "0.11.14"
+          version: "0.12.9"
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 
@@ -413,7 +413,6 @@ jobs:
           bash scripts/check-js-syntax.sh
           node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
           node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
-          node tests/js/qr_harness.mjs deploy/assets/shared/js/qr.js
           node scripts/check-peq-parity.mjs
           node scripts/check-balance-trim-parity.mjs
           node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js

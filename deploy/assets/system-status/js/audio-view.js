@@ -14,7 +14,7 @@ import { AUDIO_OPTIONS, updateAudioQuality, updateUsbLatency } from "./sections.
 import { fmtEpochAgo } from "./format.js";
 import {
   unavailableBody, currentStreamBody, issuesBody, otherSources, sourcesBody,
-  technicalBody, refreshRelativeTimes,
+  technicalBody, refreshRelativeTimes, usbSourceOff,
 } from "./audio-sections.js";
 
 function buildAudioQuality(handlers) {
@@ -169,6 +169,7 @@ export function updateAudio(refs, snap) {
   refreshRelativeTimes(refs.panel);
 
   try {
+    refs.latency.section.hidden = usbSourceOff(health);
     updateUsbLatency(refs.latency, snap.usb_latency);
   } catch (e) {
     console.error("audio status: updating USB latency failed", e);

@@ -23,13 +23,13 @@ from pathlib import Path
 import pytest
 
 from jasper import atomic_io, enhanced_aec
-from jasper.audio_profile_state import MicProbe
-from jasper.chip_aec_policy import (
+from jasper.chip_aec.policy import (
     ACTION_FIX_MIC_PROFILE,
     BLOCKER_DAC,
     BLOCKER_MIC,
     CHIP_AEC_BLOCKER_CODES,
 )
+from jasper.cli import doctor
 from jasper.control import aec_endpoints
 from jasper.control import server
 from jasper.mics import xvf3800
@@ -532,17 +532,6 @@ def test_aec_full_status_includes_legs_and_threshold(
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
         },
     )
-    validation_filters = []
-
-    def fake_validation_summary(**kwargs):
-        validation_filters.append(kwargs)
-        return {"state": "current", "status": "pass"}
-
-    monkeypatch.setattr(
-        aec_endpoints,
-        "_audio_validation_summary",
-        fake_validation_summary,
-    )
     monkeypatch.setattr(
         enhanced_aec,
         "status",
@@ -578,12 +567,6 @@ def test_aec_full_status_includes_legs_and_threshold(
     assert status["microphone"]["processing_mode"] == "Software AEC3"
     assert status["microphone"]["session_source"] == "WebRTC AEC3 via :9876"
     assert status["microphone"]["wake_legs"] == ["AEC3", "Chip-direct raw", "DTLN"]
-    assert status["validation"] == {"state": "current", "status": "pass"}
-    assert validation_filters == [{
-        "requested_profile": "xvf_software_aec3",
-        "mic_id": "xvf3800",
-        "dac_id": "apple_usb_c_dongle",
-    }]
     assert status["wake_word"]["label"]
     assert status["usb_mic"]["source_selection"]["requested"] == "primary"
     assert status["usb_mic"]["source_selection"]["applied"] is None
@@ -800,6 +783,34 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
     )
 
 
+def test_aec_full_status_surfaces_the_reconciler_bridge_verdict(
+    aec_mode_file, wake_model_file, monkeypatch, tmp_path
+):
+    """A down bridge reads differently depending on whether the reconciler ever
+    admitted it (ADR-0224) — systemd refuses to start the unit at all while the
+    verdict is withheld — so /state carries the marker, not only
+    `bridge_active`."""
+    marker = tmp_path / "aec-bridge-ready"
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
+    _stub_xvf_runtime(monkeypatch, variant=None, present=False, channels=None)
+    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
+
+    assert server._aec_full_status()["bridge_ready"] == {
+        "ready": False,
+        "reason": "",
+        "marker": str(marker),
+    }
+
+    marker.write_text("reason=systemd\n")
+
+    assert server._aec_full_status()["bridge_ready"] == {
+        "ready": True,
+        "reason": "systemd",
+        "marker": str(marker),
+    }
+
+
 def test_aec_full_status_chip_available_tracks_firmware(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
@@ -836,11 +847,10 @@ def test_aec_full_status_chip_available_tracks_firmware(
     assert server._aec_full_status()["legs"]["chip_aec"]["available"] is True
 
 
-def test_aec_full_status_rejects_unvalidated_beam_plan_from_one_probe(
-    aec_mode_file,
-    wake_model_file,
-    monkeypatch,
-):
+def _unvalidated_beam_plan_runtime_profile() -> xvf3800.RuntimeProfile:
+    """One XVF profile whose beam plan is registered but not
+    production_validated — the case the crude `bool(chip_beam_plan)`
+    re-derivations used to mis-flag as available."""
     plan = xvf3800.ChipBeamPlan(
         plan_id="experimental_unvalidated",
         display_name="Experimental unvalidated",
@@ -849,31 +859,23 @@ def test_aec_full_status_rejects_unvalidated_beam_plan_from_one_probe(
         legs=xvf3800.SQUARE_FIXED_150_210_PLAN.legs,
         production_validated=False,
     )
-    monkeypatch.setitem(xvf3800.CHIP_BEAM_PLANS, plan.plan_id, plan)
-    probe_calls = 0
+    return xvf3800.RuntimeProfile(
+        present=True,
+        variant=xvf3800.VARIANT_6CH,
+        alsa_card_name=xvf3800.ALSA_CARD_NAME,
+        capture_channels=6,
+        chip_beam_plan=plan,
+        reason="test profile",
+    )
 
-    def probe() -> MicProbe:
-        nonlocal probe_calls
-        probe_calls += 1
-        return MicProbe(
-            xvf_present=True,
-            capture_channels=6,
-            recommended_channels=6,
-            display_name="Experimental XVF",
-            alsa_card_name=xvf3800.ALSA_CARD_NAME,
-            variant_id="experimental_variant",
-            geometry="square",
-            chip_beam_plan=plan.plan_id,
-            probe_error=None,
-        )
 
+def _aec_endpoints_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
     aec_mode_file.write_text(
         "JASPER_AUDIO_INPUT_PROFILE=auto\n"
         "JASPER_AEC_MODE=auto\n"
         "JASPER_WAKE_LEG_RAW=1\n"
-        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
     )
-    monkeypatch.setattr(aec_endpoints, "_xvf_mic_probe", probe)
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.setattr(
         aec_endpoints,
@@ -882,19 +884,46 @@ def test_aec_full_status_rejects_unvalidated_beam_plan_from_one_probe(
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle",
-            "JASPER_AEC_CHIP_AEC_ENABLED": "0",
+            "JASPER_AEC_CHIP_AEC_ENABLED": "1",
         },
     )
+    return server._aec_full_status()
 
-    status = server._aec_full_status()
 
-    assert probe_calls == 1
-    assert status["microphone"]["detected"] is True
-    assert status["legs"]["chip_aec"]["available"] is False
-    assert status["audio_profile"]["requested"] == "xvf_chip_aec"
-    assert status["audio_profile"]["active"] is None
-    assert status["audio_profile"]["state"] == "unavailable"
-    assert status["bridge_role"] == "pending"
+def _doctor_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(
+        doctor.aec,
+        "_wake_leg_setting",
+        lambda key, default: {"JASPER_WAKE_LEG_CHIP_AEC": True}.get(key, default),
+    )
+    return doctor._audio_profile_status_for_doctor(
+        bridge_active=True,
+        env={"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+    )
+
+
+@pytest.mark.parametrize(
+    "build_status", [_aec_endpoints_chip_aec_status, _doctor_chip_aec_status],
+)
+def test_chip_aec_unavailable_for_unvalidated_beam_plan(
+    aec_mode_file, wake_model_file, monkeypatch, build_status,
+):
+    """A registered-but-unvalidated beam plan reads as chip-AEC NOT
+    available from both /aec and the doctor row. Both consumers now read
+    MicProbe.chip_aec_supported (sourced from RuntimeProfile.chip_aec_supported)
+    rather than re-deriving `bool(xvf_present and chip_beam_plan)`, which
+    ignored production_validated."""
+    monkeypatch.setattr(
+        xvf3800, "detect_runtime_profile",
+        lambda: _unvalidated_beam_plan_runtime_profile(),
+    )
+
+    status = build_status(monkeypatch, aec_mode_file)
+
+    profile = status["audio_profile"]
+    assert profile["active"] is None
+    assert profile["state"] == "unavailable"
 
 
 def test_aec_full_status_commission_carries_last_run_verdict(
@@ -923,7 +952,7 @@ def test_aec_full_status_commission_carries_last_run_verdict(
         '{"state": "failed", "detail": "timing peak ratio 1.02 below 1.10"}'
     )
     monkeypatch.setattr(
-        aec_endpoints, "_AEC_COMMISSION_STATE_FILE", str(outcome),
+        aec_endpoints.commission_record, "OUTCOME_PATH", outcome,
     )
 
     status = server._aec_full_status()

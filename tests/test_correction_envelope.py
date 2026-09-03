@@ -97,7 +97,6 @@ class _FakeSession:
         self.target_choice = "flat"
         self.strategy_choice = "balanced"
         self.repeat_main_position = True
-        self.capture_transport = "local"
         self.autolevel = _FakeAutolevel("idle")
         self.measured_curve: CurveJSON | None = None
         self.target_curve: CurveJSON | None = None
@@ -114,7 +113,7 @@ class _FakeSession:
         ]
 
 
-def _relay_session(
+def _level_matched_session(
     state: SessionState,
     *,
     level_state: str = "locked",
@@ -123,7 +122,6 @@ def _relay_session(
     window_shortfall_db: float | None = None,
 ) -> _FakeSession:
     sess = _FakeSession(state)
-    sess.capture_transport = "relay"
     ramp = {"state": level_state, "restored": restored}
     if lock_kind is not None:
         ramp["lock_kind"] = lock_kind
@@ -244,8 +242,8 @@ def test_schema_version_is_nine():
     # v2 added the P4 `verdict` block; v3 added the P5 crossover-region
     # distinction (REVIEW verdict_text + crossover_region_dip_not_boosted nudge);
     # v4 (P6) added the `tuning_llm` affordance block.
-    # v5 wires the relay-owned level-before-sweep actions; v6 makes the
-    # ordered section list the sole whole-page visibility authority; v7 adds
+    # v5 added the level-before-sweep actions; v6 makes the ordered section
+    # list the sole whole-page visibility authority; v7 adds
     # closed blocker/failure presentation data; v8 adds run defaults; v9 adds
     # the required server-owned progress labels, summary template, and repeat
     # disclosure after v8 had shipped.
@@ -306,11 +304,7 @@ def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
 
     idle = _FakeSession(SessionState.IDLE)
     idle.total_positions = DEFAULT_ROOM_POSITION_COUNT
-    env = envelope.build_envelope(
-        idle,
-        capture_transport="relay",
-        readiness_blocker=None,
-    )
+    env = envelope.build_envelope(idle, readiness_blocker=None)
 
     assert env["run_defaults"] == {
         "summary": "Measuring 6 positions with the flat target",
@@ -323,7 +317,6 @@ def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
             "JTS automatically repeats the main-seat measurement once to check "
             "that the result is trustworthy."
         ),
-        "capture_transport": "relay",
         "change_allowed": True,
     }
 
@@ -331,7 +324,6 @@ def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
     active.total_positions = 3
     active.target_choice = "warm"
     active.strategy_choice = "safe"
-    active.capture_transport = "local"
     active_env = envelope.build_envelope(active)
     assert active_env["run_defaults"]["summary"] == (
         "Measuring 3 positions with the warm target"
@@ -339,30 +331,14 @@ def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
     assert active_env["run_defaults"]["change_allowed"] is False
 
 
-@pytest.mark.parametrize(
-    ("transport", "endpoint"),
-    [("relay", "/relay/capture"), ("local", "/repeat-position")],
-)
-def test_repeat_action_uses_the_current_capture_transport(transport, endpoint):
-    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
-    sess.capture_transport = transport
-
-    env = envelope.build_envelope(sess)
+def test_repeat_capture_offers_the_repeat_position_action():
+    env = envelope.build_envelope(_FakeSession(SessionState.NEEDS_REPEAT_CAPTURE))
 
     assert env["next_action"] == {
         "label": "Repeat the main seat",
-        "endpoint": endpoint,
+        "endpoint": "/repeat-position",
     }
     assert "trustworthy" in env["verdict_text"]
-
-
-def test_pending_relay_capture_withholds_duplicate_repeat_action():
-    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
-    sess.capture_transport = "relay"
-
-    env = envelope.build_envelope(sess, relay_capture_pending=True)
-
-    assert env["next_action"] is None
 
 
 def test_section_vocabulary_is_exact_and_room_owned():
@@ -370,7 +346,6 @@ def test_section_vocabulary_is_exact_and_room_owned():
         "current-correction",
         "run-defaults",
         "readiness-blocker",
-        "capture-handoff",
         "placement",
         "capture-setup",
         "local-certificate-warning",
@@ -393,21 +368,20 @@ def test_section_vocabulary_is_exact_and_room_owned():
             SessionState.NEEDS_NOISE_CAPTURE,
             [
                 "run-defaults",
-                "capture-handoff",
-                "placement",
+                        "placement",
                 "local-certificate-warning",
                 "capture-setup",
             ],
         ),
         (
             SessionState.AWAITING_CAPTURE,
-            ["capture-handoff", "placement", "position-capture"],
+            ["placement", "position-capture"],
         ),
         (SessionState.READY, ["measurement-review", "tuning"]),
         (SessionState.APPLIED, ["apply-status", "tuning"]),
         (
             SessionState.AWAITING_VERIFY_CAPTURE,
-            ["capture-handoff", "placement", "verification", "tuning"],
+            ["placement", "verification", "tuning"],
         ),
         (
             SessionState.VERIFIED,
@@ -423,19 +397,6 @@ def test_sections_are_server_ordered_for_each_screen(state, sections):
     assert env["sections"] == sections
 
 
-def test_relay_handoff_omits_local_only_sections():
-    env = envelope.build_envelope(
-        _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="locked")
-    )
-    assert env["sections"] == [
-        "run-defaults",
-        "capture-handoff",
-        "placement",
-    ]
-    assert "capture-setup" not in env["sections"]
-    assert "local-certificate-warning" not in env["sections"]
-
-
 def test_local_mic_setup_is_the_envelope_owned_primary_action():
     sess = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
     env = envelope.build_envelope(sess)
@@ -447,7 +408,6 @@ def test_local_mic_setup_is_the_envelope_owned_primary_action():
     bound = envelope.build_envelope(sess)
     assert bound["screen"] == "level"
     assert bound["sections"] == [
-        "capture-handoff",
         "placement",
         "level-check",
     ]
@@ -549,28 +509,6 @@ def test_web_handler_never_scans_reports_on_active_poll(monkeypatch):
     assert "reports" not in body["sections"]
 
 
-def test_web_handler_starting_room_repeat_withholds_duplicate_action(monkeypatch):
-    from jasper.web import correction_setup
-
-    sess = _FakeSession(SessionState.NEEDS_REPEAT_CAPTURE)
-    sess.capture_transport = "relay"
-    sess.cfg = SimpleNamespace(sessions_dir="unused")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
-    correction_setup._set_relay_capture({
-        "status": "starting",
-        "kind": "room_repeat",
-    })
-    try:
-        body = correction_setup._handle_envelope(
-            SimpleNamespace(path="/envelope?capture_transport=relay")
-        )
-    finally:
-        correction_setup._set_relay_capture(None)
-
-    assert body["state"] == "needs_repeat_capture"
-    assert body["next_action"] is None
-
-
 def test_web_handler_active_to_idle_race_fails_closed(monkeypatch):
     from jasper.web import correction_setup
 
@@ -596,7 +534,6 @@ def test_web_handler_active_to_idle_race_fails_closed(monkeypatch):
 
 
 def test_web_handler_adds_reports_only_when_static_store_has_one(monkeypatch):
-    from jasper.capture_relay import correction_adapter
     from jasper.correction import bundles
     from jasper.web import correction_setup
 
@@ -608,12 +545,9 @@ def test_web_handler_adds_reports_only_when_static_store_has_one(monkeypatch):
         "_room_correction_readiness",
         lambda: READY_SPEAKER_SETUP,
     )
-    monkeypatch.setattr(correction_adapter, "relay_enabled", lambda: True)
     monkeypatch.setattr(bundles, "list_bundles", lambda *_args, **_kwargs: [{}])
 
-    body = correction_setup._handle_envelope(
-        SimpleNamespace(path="/envelope?capture_transport=local")
-    )
+    body = correction_setup._handle_envelope(SimpleNamespace(path="/envelope"))
     assert body["sections"] == [
         "current-correction",
         "run-defaults",
@@ -706,186 +640,6 @@ def test_blocked_idle_keeps_reports_but_withholds_defaults_and_start():
     assert env["next_action"] is None
     assert env["blocker"] == blocker
     assert env["verdict_text"] == "Room correction is waiting for speaker setup."
-
-
-def test_relay_next_position_has_one_compound_forward_action():
-    env = envelope.build_envelope(
-        _relay_session(SessionState.NEEDS_NEXT_POSITION)
-    )
-    assert env["next_action"] == {
-        "label": "Measure next position",
-        "endpoint": "/next-position",
-    }
-
-
-def test_relay_verified_result_does_not_loop_back_to_level_check():
-    sess = _relay_session(SessionState.VERIFIED, restored=True)
-    env = envelope.build_envelope(sess)
-    assert env["screen"] == "result"
-    assert env["next_action"] == {
-        "label": "Measure again",
-        "endpoint": "/start",
-    }
-
-
-def test_relay_pending_confirmation_reuses_retained_level_for_second_verify():
-    sess = _relay_session(SessionState.VERIFIED, restored=True)
-    sess.acceptance = {"verdict": "revert_pending_confirm"}
-    env = envelope.build_envelope(sess)
-    assert env["screen"] == "result"
-    assert env["next_action"] == {
-        "label": "Measure again to confirm",
-        "endpoint": "/relay/verify",
-    }
-
-
-def test_relay_unlocked_verification_level_check_stays_on_verify_screen():
-    sess = _relay_session(SessionState.APPLIED, level_state="idle")
-    env = envelope.build_envelope(sess)
-
-    assert env["screen"] == "verify"
-    assert env["progress"]["position"] == 5
-    assert env["sections"][:3] == [
-        "capture-handoff",
-        "placement",
-        "verification",
-    ]
-    assert env["next_action"] == {
-        "label": "Check verification level",
-        "endpoint": "/relay/level-match",
-    }
-
-
-def test_relay_unlocked_confirmation_keeps_worse_result_visible():
-    sess = _relay_session(SessionState.VERIFIED, level_state="idle")
-    sess.acceptance = {"verdict": "revert_pending_confirm"}
-
-    env = envelope.build_envelope(sess)
-
-    assert env["screen"] == "result"
-    assert env["progress"]["position"] == 6
-    assert "result-proof" in env["sections"]
-    assert env["next_action"] == {
-        "label": "Measure again to confirm",
-        "endpoint": "/relay/level-match",
-    }
-
-
-@pytest.mark.parametrize("state", [SessionState.APPLIED, SessionState.VERIFIED])
-def test_relay_verification_pending_keeps_phone_handoff_visible(state):
-    sess = _relay_session(state, restored=True)
-    if state is SessionState.VERIFIED:
-        sess.acceptance = {"verdict": "revert_pending_confirm"}
-
-    env = envelope.build_envelope(sess, relay_capture_pending=True)
-
-    assert env["screen"] == "verify"
-    assert env["progress"]["position"] == 5
-    assert "capture-handoff" in env["sections"]
-    assert env["next_action"] is None
-
-
-# ---------- relay level-match refusal (2026-07-16 jts3 finding) -----------
-#
-# A level-match ramp terminal that doesn't lock (agc_suspected, a safety
-# timeout, ...) never advances session.state, so it fell outside every other
-# `failure` branch and the Room envelope served `failure: null` with no
-# explanation. These pin that the envelope now surfaces the same mapped
-# homeowner copy the phone terminal gets.
-
-
-def test_relay_agc_suspected_terminal_surfaces_the_mapped_failure():
-    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="error")
-    sess.level_match_snapshot = lambda: {
-        "running": False,
-        "locks": {},
-        "last": {
-            "ramp": {
-                "state": "error",
-                "restored": False,
-                "error": "agc_suspected",
-                "error_detail": "slopes 0.64, 0.61 over 4 steps",
-            },
-        },
-    }
-
-    env = envelope.build_envelope(sess)
-
-    assert env["failure"] is not None
-    assert env["failure"]["code"] == "agc_suspected"
-    assert "automatic gain" in env["failure"]["text"]
-    assert "slopes 0.64, 0.61 over 4 steps" in env["failure"]["text"]
-    assert env["failure"]["retryable"] is True
-    # verdict_text already prioritizes `failure` ahead of every screen-scoped
-    # fallback, so the same mapped copy is what a homeowner actually reads.
-    assert env["verdict_text"] == env["failure"]["text"]
-    # A refusal is not "no action needed" — withhold any forward action so
-    # the phone/Room flow retries the check rather than silently continuing.
-    assert env["next_action"] is None
-
-
-def test_relay_safety_timeout_terminal_is_distinguished_from_a_plain_cancel():
-    # Both a genuine user cancel and a safety-timeout refusal land in
-    # RampState.CANCELLED; only the timeout sets `error`.
-    cancelled = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="cancelled")
-    assert envelope.build_envelope(cancelled)["failure"] is None
-
-    timed_out = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="cancelled")
-    timed_out.level_match_snapshot = lambda: {
-        "running": False,
-        "locks": {},
-        "last": {
-            "ramp": {
-                "state": "cancelled",
-                "restored": False,
-                "error": "safety timeout after 45s",
-            },
-        },
-    }
-    env = envelope.build_envelope(timed_out)
-    assert env["failure"] is not None
-    assert "took too long" in env["failure"]["text"].lower()
-
-
-def test_relay_locked_level_match_never_shows_a_stale_refusal():
-    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="locked")
-    assert envelope.build_envelope(sess)["failure"] is None
-
-
-def test_relay_running_retry_suppresses_the_prior_attempt_refusal():
-    """Retry-after-error: while a NEW ramp is live (running=True), the PRIOR
-    attempt's terminal is stale news — the Room page must not keep showing
-    "can't be trusted" copy over a check that is currently climbing. Same
-    liveness source _next_action_for reads."""
-    sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state="error")
-    sess.level_match_snapshot = lambda: {
-        "running": True,
-        "locks": {},
-        "last": {
-            "ramp": {
-                "state": "error",
-                "restored": False,
-                "error": "agc_suspected",
-            },
-        },
-    }
-    assert envelope.build_envelope(sess)["failure"] is None
-
-
-def test_relay_in_progress_ramp_is_not_a_refusal():
-    for state in ("climbing", "settling", "confirming"):
-        sess = _relay_session(SessionState.NEEDS_NOISE_CAPTURE, level_state=state)
-        assert envelope.build_envelope(sess)["failure"] is None
-
-
-def test_local_transport_never_consults_the_relay_refusal_mapping():
-    # A local (non-relay) session must not be affected by this branch at all
-    # — it has no `level_match_snapshot` shaped this way.
-    sess = _FakeSession(SessionState.NEEDS_NOISE_CAPTURE)
-    sess.local_capture_setup_bound = True
-    sess.autolevel = _FakeAutolevel("error")
-    env = envelope.build_envelope(sess)
-    assert env["failure"] is None
 
 
 # ---------- level screen (autolevel sub-state) -----------------------------
@@ -1154,7 +908,7 @@ def test_uncalibrated_mic_nudge_present_and_non_blocking():
 
 
 def test_room_bounded_low_level_surfaces_shortfall_without_blocking_sweep():
-    sess = _relay_session(
+    sess = _level_matched_session(
         SessionState.NEEDS_NOISE_CAPTURE,
         restored=True,
         lock_kind="bounded_low_level",
@@ -1163,11 +917,8 @@ def test_room_bounded_low_level_surfaces_shortfall_without_blocking_sweep():
 
     env = envelope.build_envelope(sess)
 
-    assert env["screen"] == "mic"
-    assert env["next_action"] == {
-        "endpoint": "/relay/capture",
-        "label": "Measure this position",
-    }
+    # A nudge NEVER removes the forward action.
+    assert env["next_action"] is not None
     nudge = env["nudges"][0]
     assert nudge["code"] == "bounded_low_measurement_level"
     assert nudge["severity"] == "warn"
@@ -1177,7 +928,7 @@ def test_room_bounded_low_level_surfaces_shortfall_without_blocking_sweep():
 
 @pytest.mark.parametrize("shortfall", [0.0, -1.0, float("nan"), float("inf")])
 def test_room_bounded_low_level_ignores_invalid_shortfall(shortfall):
-    sess = _relay_session(
+    sess = _level_matched_session(
         SessionState.NEEDS_NOISE_CAPTURE,
         restored=True,
         lock_kind="bounded_low_level",

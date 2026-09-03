@@ -11,13 +11,17 @@ edge and config loader are injected.
 """
 from __future__ import annotations
 
+import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from jasper.multiroom import airplay_latency as al
-from jasper.multiroom.config import GroupingConfig
+from jasper.multiroom.config import DEFAULT_BUFFER_MS, GroupingConfig
 from tests.shairport_template_helpers import SHAIRPORT_TEMPLATE, template_value
+
+PROBE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "airplay-latency-probe.sh"
 
 
 def _cfg(**over) -> GroupingConfig:
@@ -54,7 +58,7 @@ def test_default_budget_is_the_free_regime():
     fit = al.assess_fit(buffer_ms=400, notified_frames=None)
     assert fit.budget_source == "default"
     assert fit.negotiated_frames == al.AP2_DEFAULT_NOTIFIED_FRAMES
-    assert fit.budget_sec == pytest.approx(2.0002, abs=1e-3)
+    assert fit.budget_sec == pytest.approx(2.0, abs=1e-9)
     assert fit.need_sec == pytest.approx(0.56, abs=1e-9)
     assert fit.tight is False
     assert fit.residual_lag_sec == 0.0
@@ -62,10 +66,10 @@ def test_default_budget_is_the_free_regime():
 
 def test_high_buffer_is_tight_even_at_the_default_budget():
     """shairport's tight condition is budget < need + the backend buffer, so
-    a large enough buffer_ms is tight EVEN at the default ~2.0002 s budget,
+    a large enough buffer_ms is tight EVEN at the default 2.0 s budget,
     and shairport drops the whole offset => residual lag is the FULL need,
     not a shortfall. Pins the adjacent pair straddling the boundary:
-    need + buffer crosses 2.0002 between buffer_ms 1795 and 1796."""
+    need + buffer crosses 2.0 between buffer_ms 1795 and 1796."""
     tight = al.assess_fit(buffer_ms=1796, notified_frames=None)
     assert tight.need_sec == pytest.approx(1.956, abs=1e-9)
     assert tight.tight is True
@@ -80,8 +84,8 @@ def test_small_negotiated_budget_is_tight_residual_is_full_need():
     uncompensated, so residual_lag_sec == need_sec (not need - budget)."""
     fit = al.assess_fit(buffer_ms=400, notified_frames=5000)
     assert fit.budget_source == "journal"
-    # (5000 + 11035) / 44100 ≈ 0.3636 s budget vs 0.56 s need.
-    assert fit.budget_sec == pytest.approx(0.36361, abs=1e-4)
+    # (5000 + 11025) / 44100 ≈ 0.3634 s budget vs 0.56 s need.
+    assert fit.budget_sec == pytest.approx(0.36338, abs=1e-4)
     assert fit.tight is True
     assert fit.residual_lag_sec == pytest.approx(0.56, abs=1e-9)
 
@@ -91,9 +95,9 @@ def test_backend_buffer_band_is_tight_against_the_production_backend_buffer():
     between need (0.56 s) and need + the backend buffer (0.605 s). shairport
     DOES warn and drop the offset there. Pins the fix against the production
     backend buffer, not just the synthetic 0.1 s classifier string."""
-    # frames=14543 -> budget = 25578/44100 = 0.58 s, inside (0.56, 0.605).
+    # frames=14543 -> budget = 25568/44100 ≈ 0.5798 s, inside (0.56, 0.605).
     fit = al.assess_fit(buffer_ms=400, notified_frames=14543)
-    assert fit.budget_sec == pytest.approx(0.58, abs=1e-4)
+    assert fit.budget_sec == pytest.approx(0.57977, abs=1e-4)
     assert fit.tight is True  # old math: 0.56 > 0.58 -> False (the bug)
     assert fit.residual_lag_sec == pytest.approx(0.56, abs=1e-9)
 
@@ -113,6 +117,35 @@ def test_backend_buffer_constant_tracks_the_shipped_template():
         template_value(text, "audio_backend_buffer_desired_length_in_seconds")
     )
     assert al.SHAIRPORT_BACKEND_BUFFER_SEC == pytest.approx(shipped, abs=1e-12)
+
+
+def test_probe_script_frame_math_tracks_the_python_constants():
+    """scripts/airplay-latency-probe.sh can't import Python, so it re-derives
+    (frames + SHAIRPORT_FIXED_ADD_FRAMES) / AIRPLAY_FRAME_RATE_HZ in awk and
+    restates AP2_DEFAULT_NOTIFIED_FRAMES and the PIPELINE_FIXED_DELAY_SEC-
+    derived need/threshold/spare figures in its summary prose. Pin all of it
+    against this module's constants, computed rather than hardcoded so this
+    guard cannot itself go stale (it already drifted once for real:
+    PIPELINE_FIXED_DELAY_SEC moved 0.150 -> 0.160 without the script's
+    derived figures following)."""
+    text = PROBE_SCRIPT.read_text(encoding="utf-8")
+    m = re.search(r"\(f\+(\d+)\)/(\d+)", text)
+    assert m is not None, "expected the awk (frames + add) / rate formula"
+    assert int(m.group(1)) == al.SHAIRPORT_FIXED_ADD_FRAMES
+    assert int(m.group(2)) == al.AIRPLAY_FRAME_RATE_HZ
+    assert f"{al.AP2_DEFAULT_NOTIFIED_FRAMES} frames" in text
+
+    pipeline_ms = round(al.PIPELINE_FIXED_DELAY_SEC * 1000)
+    need_sec = al.PIPELINE_FIXED_DELAY_SEC + DEFAULT_BUFFER_MS / 1000.0
+    threshold_sec = need_sec + al.SHAIRPORT_BACKEND_BUFFER_SEC
+    budget_sec = (al.AP2_DEFAULT_NOTIFIED_FRAMES + al.SHAIRPORT_FIXED_ADD_FRAMES) / al.AIRPLAY_FRAME_RATE_HZ
+    spare_sec = budget_sec - threshold_sec
+    tight_buffer_ms = round((budget_sec - al.SHAIRPORT_BACKEND_BUFFER_SEC - al.PIPELINE_FIXED_DELAY_SEC) * 1000)
+
+    assert f"{pipeline_ms} ms" in text
+    assert f"need ~{need_sec:.2f} s => threshold ~{threshold_sec:.3f} s" in text
+    assert f"~{threshold_sec:.3f} s threshold with ~{spare_sec:.2f} s" in text
+    assert f"buffer_ms above {tight_buffer_ms}" in text
 
 
 @pytest.mark.parametrize("bad", [0, -1, -77175])
@@ -142,7 +175,10 @@ def _proc(stdout: str) -> subprocess.CompletedProcess:
 
 
 def test_read_notified_frames_takes_the_most_recent_line():
-    out = "Notified latency is 60000 frames.\nNotified latency is 50000 frames.\n"
+    out = (
+        "Stream-specified latency is 60000 frames. Normally it is 77175.\n"
+        "Stream-specified latency is 50000 frames. Normally it is 77175.\n"
+    )
     assert al.read_notified_frames(runner=lambda u, lb: _proc(out)) == 50000
 
 
@@ -160,6 +196,21 @@ def test_read_notified_frames_is_fail_soft(exc):
         raise exc
 
     assert al.read_notified_frames(runner=boom) is None
+
+
+def test_real_journal_line_makes_tight_reachable_at_a_clamped_buffer_ms():
+    """Before the regex fix, _NOTIFIED_RE hunted a string shairport never
+    logs, so read_notified_frames was always None and assess_fit only ever
+    saw the default 2.0 s budget -- which needs buffer_ms > 1795 to go
+    tight, above GroupingConfig's BUFFER_MS_HI clamp of 1500. So `tight`
+    was mathematically unreachable via the real journal -> fit pipeline. A
+    genuine non-default (smaller) negotiated latency now makes it reachable
+    at an in-clamp buffer_ms."""
+    line = "Stream-specified latency is 5000 frames. Normally it is 77175.\n"
+    frames = al.read_notified_frames(runner=lambda u, lb: _proc(line))
+    assert frames == 5000
+    fit = al.assess_fit(buffer_ms=400, notified_frames=frames)
+    assert fit.tight is True
 
 
 # ---------- bonded_airplay_latency_snapshot: the /state gate ----------
@@ -293,13 +344,24 @@ def test_doctor_warns_when_budget_too_short(monkeypatch):
 # ---------- AirPlay-health classification of the ground-truth warning ----------
 
 
-def test_classify_offset_too_short_warning():
+@pytest.mark.parametrize(
+    "line",
+    [
+        # 5.2.3 rtp.c:1717 wording (jts.local).
+        "The stream latency (0.300000 seconds) is too short to accommodate an "
+        "audio backend latency offset of 0.550000 seconds and a backend buffer "
+        "of 0.100000 seconds. The audio_backend_latency_offset has been set to "
+        "zero.",
+        # 4.3.7 rtp.c:1822 wording (jts3, jts4) — the fleet runs both versions,
+        # and this warn()'s wording differs between them.
+        "The stream latency (0.300000 seconds) it too short to accommodate an "
+        "offset of 0.550000 seconds and a backend buffer of 0.100000 seconds.",
+    ],
+    ids=["5.2.3", "4.3.7"],
+)
+def test_classify_offset_too_short_warning(line):
     from jasper.control.airplay_health import SHAIRPORT_UNIT, classify_journal_line
 
-    line = (
-        "The stream latency (0.300000 seconds) it too short to accommodate an "
-        "offset of 0.550000 seconds and a backend buffer of 0.100000 seconds."
-    )
     ev = classify_journal_line(SHAIRPORT_UNIT, line)
     assert ev is not None
     assert ev["type"] == "shairport_offset_too_short"

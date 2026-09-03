@@ -4,35 +4,13 @@
 
 """The P6 tuning-LLM surfaced in the ``/correction/`` flow.
 
-Two jobs, one agent, one target (revision plan §3.4):
-
-* **Interpret** (:func:`interpret`) — a read-only, plain-language
-  "here's what your room is doing" narration of the SERVER-computed
-  result: the target−measured residual, detected modes, the P4
-  acceptance verdict + numbers, the P5 crossover annotation, and the
-  confidence findings. Correction claims cite the measured/verified
-  numbers; the model authors no number a tool computed (enforced by
-  :func:`check_number_provenance`). This is the *correction* loop:
-  claims are VERIFIED by re-measure.
-
-* **Propose** (:func:`propose`) — the confirm-gated proposer. The model
-  proposes a bounded correction filter set and/or a target move; every
-  correction proposal is validated against the strategy caps
-  (:mod:`.response`), then SIMULATED (:mod:`.proposal_sim`) so the
-  household sees what it is predicted to do before confirming the apply.
-  Preference/taste suggestions are phrased as questions. This is the
-  *preference* loop where taste is subjective.
-
-The packet is built from a live :class:`jasper.correction.session.MeasurementSession`
-via :func:`build_correction_advisor_context`, reusing the redaction
-discipline of :mod:`.advisor_context` (derived curves/summaries only,
-NEVER raw audio, quantized numerics, no device identifiers). The paid
-call reuses the household's OpenAI key from the ``jasper-secrets``
-compartment (:mod:`.key_provisioning`).
-
-Deterministic JTS code stays the DSP authority: this module NEVER writes
-CamillaDSP. The endpoint layer routes an approved-and-confirmed proposal
-through the session's existing apply path.
+:func:`interpret` is a read-only narration of the SERVER-computed result;
+:func:`propose` is the confirm-gated proposer, whose every correction proposal
+is validated against the strategy caps (:mod:`.response`) and then simulated
+(:mod:`.proposal_sim`). The model authors no number a tool computed
+(:func:`check_number_provenance`). The packet carries derived curves and
+summaries only — never raw audio or device identifiers. This module NEVER
+writes CamillaDSP.
 """
 from __future__ import annotations
 
@@ -52,8 +30,7 @@ CONTEXT_SCHEMA_VERSION = 1
 INTERPRET_KIND = "jts_correction_interpret"
 PROPOSE_KIND = "jts_correction_proposal_review"
 
-# Bass band the residual + modes are summarized over (matches the
-# correction design band top).
+# Bass band the residual and modes are summarized over (the design band top).
 _RESIDUAL_BAND_HZ = (20.0, 350.0)
 
 _INTERPRET_SYSTEM = """\
@@ -106,19 +83,17 @@ def _residual_summary(
     measured: Any,
     target: Any,
 ) -> dict[str, Any]:
-    """A downsampled, quantized target−measured residual (delta-first).
+    """A downsampled, quantized target minus measured residual (delta-first).
 
-    Reuses the :mod:`.advisor_context` curve downsampler on the residual
-    so the model sees the DEVIATION from target (what correction acts on)
-    rather than two curves it must subtract. Redaction-safe: derived,
-    quantized, ≤9 points, no raw audio.
+    The model sees the DEVIATION from target rather than two curves it must
+    subtract. Derived, quantized, <=9 points, no raw audio.
     """
     m = _pairs(measured)
     t = _pairs(target)
     if not m or not t:
         return {"available": False}
-    # Align target onto the measured grid by nearest index (both are the
-    # analysis log grid in practice, same length).
+    # Align target onto the measured grid by index (both are the analysis log
+    # grid in practice, same length).
     if len(m) != len(t):
         return {"available": False}
     lo, hi = _RESIDUAL_BAND_HZ
@@ -161,10 +136,11 @@ def _curve_as_dict(curve: Any) -> dict[str, Any] | None:
 
 
 def _strategy_bounds(session: Any) -> dict[str, Any]:
-    """The active session's correction-strategy caps, as a plain dict a
-    proposal is bounded by. ``resolve_correction_strategy`` itself falls
-    back to the default strategy for an unknown id (it never raises), so
-    this always returns a real cap set."""
+    """The active session's correction-strategy caps as a plain dict.
+
+    ``resolve_correction_strategy`` falls back to the default strategy for an
+    unknown id and never raises, so this always returns a real cap set.
+    """
     from jasper.correction import strategy as _strategy
 
     strat = _strategy.resolve_correction_strategy(
@@ -177,12 +153,9 @@ def _strategy_bounds(session: Any) -> dict[str, Any]:
 def build_correction_advisor_context(session: Any) -> dict[str, Any]:
     """Build the redacted, server-data-only packet the tuning LLM sees.
 
-    Everything here is already computed by the measurement pipeline — the
-    packet is a curated, quantized VIEW, not a recomputation. It contains
-    NO raw audio, NO device identifiers, NO absolute paths: only derived
-    curves/summaries, the design report's residual + modes, the P4
-    acceptance verdict, the P5 crossover annotation, the cross-position depth
-    cap, and confidence findings.
+    A curated, quantized VIEW of what the measurement pipeline already
+    computed, never a recomputation: no raw audio, no device identifiers, no
+    absolute paths.
     """
     design = getattr(session, "design_report", None) or {}
     confidence = getattr(session, "confidence_report", None) or {}
@@ -215,7 +188,6 @@ def build_correction_advisor_context(session: Any) -> dict[str, Any]:
             "measured_summary": _curve_summary(_curve_as_dict(measured) or {}),
             "target_summary": _curve_summary(_curve_as_dict(target) or {}),
             "predicted_summary": _curve_summary(_curve_as_dict(predicted) or {}),
-            # The delta-first representation the model reasons about.
             "residual_summary": _residual_summary(measured, target),
         },
         "detected_modes": _detected_modes(design),
@@ -281,13 +253,11 @@ def _crossover_summary(crossover: Any) -> dict[str, Any] | None:
 def _variance_cap_summary(cap: Any) -> dict[str, Any] | None:
     """The cross-position depth cap, quantized for the tuning model.
 
-    Load-bearing for the model rather than decorative: without it the packet
-    shows residual error the design did not correct and no reason for it, and
-    the obvious advice — correct harder — is precisely the advice the cap
-    exists to refuse. ``note`` keeps the two registers apart rather than
-    labelling the whole block one way: the bin counts describe the CEILING the
-    designer worked under, while ``filters_depth_trimmed`` and
-    ``max_overshoot_db`` are measured facts about the filters that shipped.
+    Load-bearing rather than decorative: without it the packet shows residual
+    error the design did not correct and no reason for it, and "correct harder"
+    is exactly the advice the cap exists to refuse. ``note`` keeps the two
+    registers apart — bin counts describe the CEILING, while
+    ``filters_depth_trimmed`` and ``max_overshoot_db`` are about shipped filters.
     """
     if not isinstance(cap, dict):
         return None
@@ -344,15 +314,12 @@ def _round_opt(value: Any, digits: int = 2) -> float | None:
         return None
 
 
-# ---------------------------------------------------------------------
-# Number provenance — the LLM never authors a number a tool computed
-# ---------------------------------------------------------------------
 
 def _packet_numbers(context: dict[str, Any]) -> set[float]:
     """Every numeric fact in the packet the model is allowed to cite.
 
-    A user-facing number in the model's prose must round-match one of
-    these (see :func:`check_number_provenance`)."""
+    A user-facing number in the model's prose must round-match one of these.
+    """
     numbers: set[float] = set()
 
     def _walk(value: Any) -> None:
@@ -392,9 +359,8 @@ def _unit_regex():
     if _UNIT_RE is None:
         import re
 
-        # A measurement unit immediately following a number ("25 dB",
-        # "40Hz", "1.2 kHz") — such a number is a claimed measurement
-        # fact, never an exempt count/ordinal.
+        # A measurement unit immediately following a number ("25 dB", "1.2 kHz")
+        # marks it a claimed measurement fact, never an exempt count/ordinal.
         _UNIT_RE = re.compile(r"\s*k?(?:dB|Hz)\b", re.IGNORECASE)
     return _UNIT_RE
 
@@ -407,20 +373,11 @@ def check_number_provenance(
 ) -> dict[str, Any]:
     """Verify user-facing numerics in ``text`` trace to the packet.
 
-    The provenance guard (revision plan §3.4): the LLM narrates
-    correction facts, but it may not author a number a deterministic tool
-    computed. We extract decimals from the model's prose and flag any that
-    do not round-match (within ``tolerance``) a number present in the
-    evidence packet. Small integers (0..~30 — counts / small ordinals like
-    "2 positions") are exempt as ordinary prose, UNLESS the number is
-    immediately followed by a measurement unit (dB / Hz / kHz): "a 25 dB
-    peak" is a claimed measurement fact, not a count, and gets checked.
-
-    Returns ``{ok, unverified: [floats]}``; ``ok`` is True when no
-    unverified measurement-scale number appears. This is advisory
-    surface state for the endpoint to log/annotate — the deterministic
-    apply gate does not depend on it, but a failed provenance check is a
-    strong "don't trust this narration's numbers" signal.
+    Decimals in the model's prose must round-match (within ``tolerance``) a
+    number in the evidence packet. Small integers (0..30) are exempt as
+    ordinary prose UNLESS followed by a unit (dB / Hz / kHz). Returns
+    ``{ok, unverified: [floats]}`` — advisory surface state; the deterministic
+    apply gate does not depend on it.
     """
     allowed = _packet_numbers(context)
     unverified: list[float] = []
@@ -431,8 +388,8 @@ def check_number_provenance(
         except ValueError:
             continue
         rounded = round(value, 1)
-        # Exempt small counts / ordinals that are ordinary prose — but a
-        # unit suffix makes it a measurement claim, never exempt.
+        # Exempt small counts and ordinals, but a unit suffix makes it a
+        # measurement claim and never exempt.
         has_unit = bool(_unit_regex().match(source, match.end()))
         if not has_unit and abs(value) <= 30 and float(value).is_integer():
             continue
@@ -442,9 +399,6 @@ def check_number_provenance(
     return {"ok": not unverified, "unverified": unverified}
 
 
-# ---------------------------------------------------------------------
-# LLM calls — interpret (read-only) + propose (confirm-gated)
-# ---------------------------------------------------------------------
 
 def _model_kwargs(environ: "dict[str, str] | None"):
     """Resolve (api_key, default_model) for the tuning call, or raise
@@ -466,16 +420,9 @@ def interpret(
 ) -> dict[str, Any]:
     """Read-only "explain my room" narration. One paid call.
 
-    Builds the correction packet, asks the model for a plain-language
-    explanation (contracted JSON), validates it against the deterministic
-    response contract, and runs the provenance check on the
-    summary/message text.
-
-    Read-only is a property of THIS function's return, not of the
-    validator: only the narration is surfaced, there is no ``proposals``
-    key and no apply route, so an action the model volunteered here is
-    simply never carried anywhere. :func:`propose` is the route that
-    reviews and offers actions.
+    Read-only is a property of THIS function's return, not of the validator:
+    only the narration is surfaced, there is no ``proposals`` key and no apply
+    route. :func:`propose` is the route that reviews and offers actions.
     """
     context = build_correction_advisor_context(session)
     package = prompt.build_advisor_prompt_package(
@@ -533,11 +480,8 @@ def propose(
 ) -> dict[str, Any]:
     """The confirm-gated proposer. One paid call.
 
-    The model may propose bounded correction / target moves; every
-    correction proposal is validated + deterministically simulated
-    (:mod:`.proposal_sim`). NOTHING is applied here — proposals are
-    returned with what the simulation predicts, for the endpoint to
-    surface for user confirmation.
+    Every correction proposal is validated and deterministically simulated
+    (:mod:`.proposal_sim`). NOTHING is applied here.
     """
     context = build_correction_advisor_context(session)
     packet = _advisor_packet_for_model(context)
@@ -593,13 +537,10 @@ def _review_actions(
 ) -> list[dict[str, Any]]:
     """Turn each validated action into a user-facing proposal card.
 
-    Correction PEQ proposals get deterministically simulated + judged;
-    only a simulate-accepted one is marked ``applicable`` (offer the
-    confirm-apply). Target moves are suggestion-only — there is no apply
-    path for them, so they are honestly marked ``applicable: False`` +
-    ``suggestion_only: True`` and the UI points the household at the
-    flow's own target picker. Preference/explain/remeasure actions pass
-    through as read-only notes.
+    Correction PEQ proposals are simulated and judged; only a simulate-accepted
+    one is marked ``applicable``. Target moves have no apply path and are
+    marked ``suggestion_only``. Preference/explain/remeasure pass through as
+    read-only notes.
     """
     reviewed: list[dict[str, Any]] = []
     for action in validation.get("validated_action_plan") or []:
@@ -609,9 +550,8 @@ def _review_actions(
         elif atype == response.ACTION_PROPOSE_TARGET_MOVE:
             reviewed.append({
                 "type": atype,
-                # No apply/execute path exists for a target move — never
-                # claim confirm-then-execute. The household acts on it in
-                # the flow (the Target curve picker) themselves.
+                # No apply/execute path exists for a target move; the household
+                # acts on it in the flow's own target picker.
                 "applicable": False,
                 "suggestion_only": True,
                 "target_id": action.get("target_id"),
@@ -643,9 +583,8 @@ def _review_correction_peq(session: Any, action: dict[str, Any]) -> dict[str, An
     )
     return {
         "type": response.ACTION_PROPOSE_CORRECTION_PEQ,
-        # Unlike a target move, this kind HAS an apply path: /propose/apply
-        # takes it behind the user's confirm. The simulation below is
-        # disclosure the household reads before confirming, not a veto.
+        # Unlike a target move, this kind HAS an apply path behind the user's
+        # confirm. The simulation below is disclosure, not a veto.
         "applicable": True,
         "requires_user_confirmation": True,
         "correction_peqs": peqs,
@@ -656,15 +595,13 @@ def _review_correction_peq(session: Any, action: dict[str, Any]) -> dict[str, An
 
 
 def _advisor_packet_for_model(context: dict[str, Any]) -> dict[str, Any]:
-    """Fold the correction context into the shape the response validator +
-    prompt builder expect: a ``correction`` block carrying the live
-    strategy bounds every proposed filter set is checked against.
+    """Fold the correction context into the shape the validator and prompt
+    builder expect: a ``correction`` block carrying the live strategy bounds
+    every proposed filter set is checked against.
 
-    It no longer hand-writes an ``advisor_policy`` permission list. That
-    list existed only to satisfy a per-action veto in ``response.py``;
-    with the veto gone (``docs/measurement-loop-doctrine.md`` — a heuristic
-    recommends, the measurement decides) what bounds a proposal is the
-    strategy caps below, then simulate / acceptance / confirm / apply.
+    There is deliberately no hand-written ``advisor_policy`` permission list;
+    what bounds a proposal is the strategy caps, then simulate / acceptance /
+    confirm / apply (``docs/measurement-loop-doctrine.md``).
     """
     packet = dict(context)
     # response._correction_bounds reads advisor_context["correction"]["strategy_bounds"].
@@ -676,15 +613,11 @@ def _advisor_packet_for_model(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _narration_text(advisor: dict[str, Any]) -> str:
-    """The plain-language text the panel renders: the summary plus any
-    explain-action messages, concatenated.
+    """The summary plus any explain-action messages, concatenated.
 
-    Clamped to ``response.TEXT_LIMIT_CHARS`` before it enters the payload:
-    the narration is assembled from the UNvalidated model response (so an
-    interpret whose action plan fails validation still gets its summary
-    surfaced), which means the validator's per-field ``_bounded_text``
-    limit does not apply here — without this clamp a degenerate model
-    response would have no server-side length bound at all.
+    Clamped to ``response.TEXT_LIMIT_CHARS`` here because the narration is
+    assembled from the UNvalidated model response, so the validator's own
+    per-field bound does not apply.
     """
     parts: list[str] = []
     summary = advisor.get("summary")

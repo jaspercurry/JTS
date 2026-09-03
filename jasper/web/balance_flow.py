@@ -51,6 +51,7 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import suppress
 from http import HTTPStatus
 from typing import Any, Callable
 
@@ -58,6 +59,7 @@ from ._common import JsonBodyError, read_json_object
 from .balance_level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
 from jasper.audio_measurement.correction_lane import exec_correction_play
+from jasper.correction.coordinator import HeldWindow
 from jasper.log_event import log_event
 
 logger = logging.getLogger("jasper.web.balance")
@@ -298,28 +300,31 @@ def handle_status() -> dict:
 
 
 async def _session_window(
-    hostname: str, members: dict, entered: threading.Event,
+    hostname: str, members: dict, window: HeldWindow,
 ) -> None:
     """Hold ONE measurement window for the whole walkthrough, releasing
-    it on explicit release OR IDLE_TIMEOUT_S of inactivity. Installs a
-    thread-safe release callable into state. The deadline is re-checked
-    after each bounded wait, so a bump (ramp/lock/unheard) extends the
-    hold without the holder having to be signalled — an active session
-    is never yanked mid-use; an abandoned one releases within one idle
-    window (renderers + the wake loop come back)."""
-    from jasper.correction.coordinator import measurement_window
-    release = asyncio.Event()
-    loop = asyncio.get_running_loop()
+    it on explicit release OR IDLE_TIMEOUT_S of inactivity. The deadline
+    is re-checked after each bounded wait, so a bump (ramp/lock/unheard)
+    extends the hold without the holder having to be signalled — an active
+    session is never yanked mid-use; an abandoned one releases within one
+    idle window (renderers + the wake loop come back)."""
+
+    def failed(e: BaseException) -> None:
+        log_event(logger, "balance.window_failed", level=logging.ERROR,
+                  exc_info=True)
+        with _lock:
+            _state["release_window"] = None
+            _reset_locked(f"measurement window failed: {e}")
+
     with _lock:
-        _state["release_window"] = (
-            lambda: loop.call_soon_threadsafe(release.set))
+        _state["release_window"] = window.release
         _bump_activity_locked()
-    try:
-        async with measurement_window():
+    with suppress(OSError, RuntimeError, TimeoutError, ValueError):
+        async with window.holding(on_failure=failed) as release:
             async with _volume_guard_context(hostname, members) as guard:
                 with _lock:
                     _state["volume_guard"] = guard.public_dict()
-                entered.set()
+                window.entered.set()
                 while True:
                     with _lock:
                         remaining = _state["idle_deadline"] - time.monotonic()
@@ -341,13 +346,6 @@ async def _session_window(
                         break  # explicit release (lock-complete / stop)
                     except asyncio.TimeoutError:
                         continue  # deadline may have been bumped — re-check
-    except (OSError, RuntimeError, TimeoutError, ValueError) as e:
-        log_event(logger, "balance.window_failed", level=logging.ERROR, exc_info=True)
-        with _lock:
-            _state["release_window"] = None
-            _reset_locked(f"measurement window failed: {e}")
-    finally:
-        entered.set()  # never leave /start blocked
 
 
 def handle_start(
@@ -384,9 +382,9 @@ def handle_start(
         _state["phase"] = "measuring"
         _state["members"] = members
 
-    entered = threading.Event()
-    schedule(_session_window(hostname, members, entered))
-    if not entered.wait(WINDOW_OPEN_TIMEOUT_S):
+    window = HeldWindow()
+    schedule(_session_window(hostname, members, window))
+    if not window.entered.wait(WINDOW_OPEN_TIMEOUT_S):
         with _lock:
             _reset_locked("measurement window did not open")
         return ({"ok": False, "error": "could not pause the speaker "

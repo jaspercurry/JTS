@@ -1728,6 +1728,41 @@ async def test_terminal_initial_connect_stays_up_and_heals():
         await conn.stop()
 
 
+@pytest.mark.parametrize(
+    "conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection],
+)
+async def test_setup_rejection_on_initial_connect_stays_up(conn_cls):
+    """A close-1007 setup rejection carries no HTTP status, only a
+    provider code — it must still rule terminal so the daemon stays up,
+    announces the remedy once and reports the outage on `/state`."""
+
+    class _SetupRejected(Exception):
+        code = 1007
+
+    factory = _FakeConnectFactory()
+    factory.next_exceptions = [_SetupRejected("setup rejected")]
+    conn = conn_cls(
+        api_key="fake",
+        connect_factory=factory,
+        backoff_schedule=(0.0,),
+    )
+    cue_calls: list[str] = []
+
+    async def cue_cb(slug: str) -> None:
+        cue_calls.append(slug)
+
+    await conn.start(ToolRegistry(), "")
+    try:
+        assert conn._supervisor_task is not None
+        assert conn.is_paused()
+        assert isinstance(conn.last_failure_detail(), str)
+
+        conn.set_failure_escalation_cb(cue_cb)
+        await _wait_until(lambda: cue_calls == [NEEDS_ATTENTION_CUE_SLUG])
+    finally:
+        await conn.stop()
+
+
 async def test_acquire_turn_blocks_then_raises_when_failed():
     """acquire_turn() while in FAILED raises immediately rather than
     deadlocking on the connected_event."""

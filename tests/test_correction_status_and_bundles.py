@@ -416,7 +416,6 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "acceptance",
         "auto_revert_outcome",
         "autolevel",
-            "capture_transport",
             "local_capture_setup_bound",
             "level_match",
             "events",
@@ -461,7 +460,6 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "position_analysis",
         "current_correction_at_start",
         "autolevel",
-        "capture_transport",
         "level_match",
         "sweep_meta",
         "peqs",
@@ -1928,7 +1926,6 @@ def test_start_rejects_non_household_strategy_before_dsp(
         ({"total_positions": "6"}, "supported count"),
         ({"target_choice": "future"}, "registered Room target"),
         ({"repeat_main_position": False}, "automatic trust check"),
-        ({"capture_transport": "future"}, "relay or local"),
     ],
 )
 def test_start_rejects_values_outside_the_disclosed_run_contract_before_dsp(
@@ -1956,10 +1953,9 @@ def test_start_rejects_values_outside_the_disclosed_run_contract_before_dsp(
     assert correction_setup._start_in_progress is False
 
 
-def test_start_defaults_to_configured_relay_before_session_admission(
+def test_start_passes_the_disclosed_run_contract_to_session_admission(
     monkeypatch,
 ):
-    from jasper.capture_relay import correction_adapter
     from jasper.web import correction_setup
 
     monkeypatch.setattr(
@@ -1968,7 +1964,6 @@ def test_start_defaults_to_configured_relay_before_session_admission(
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
     monkeypatch.setattr(correction_setup, "_start_in_progress", False)
-    monkeypatch.setattr(correction_adapter, "relay_enabled", lambda: True)
 
     async def restore_level_match_volume(_setter):
         return True
@@ -2015,7 +2010,6 @@ def test_start_defaults_to_configured_relay_before_session_admission(
     assert captured["target_choice"] == "flat"
     assert captured["strategy_choice"] == "balanced"
     assert captured["repeat_main_position"] is True
-    assert captured["session"].capture_transport == "relay"
     assert correction_setup._start_in_progress is False
 
 
@@ -2065,31 +2059,6 @@ def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
 
     with pytest.raises(CorrectionRuntimeSafetyError):
         correction_setup._handle_start(_DummyJsonHandler())
-
-    assert correction_setup._start_in_progress is False
-
-
-def test_start_rejects_explicit_relay_when_it_is_not_configured(monkeypatch):
-    from jasper.capture_relay import correction_adapter
-    from jasper.web import correction_setup
-
-    monkeypatch.setattr(
-        correction_setup,
-        "_room_correction_readiness",
-        lambda: _READY_ROOM_CORRECTION_SETUP,
-    )
-    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
-    monkeypatch.setattr(correction_adapter, "relay_enabled", lambda: False)
-    monkeypatch.setattr(
-        correction_setup,
-        "_camilla",
-        lambda: pytest.fail("CamillaDSP should not be touched"),
-    )
-
-    with pytest.raises(ValueError, match="phone capture is not configured"):
-        correction_setup._handle_start(
-            _DummyJsonHandler({"capture_transport": "relay"})
-        )
 
     assert correction_setup._start_in_progress is False
 

@@ -33,7 +33,6 @@ from jasper.audio_measurement.excitation_artifacts import (
     PLAYBACK_PATH_PREFIX,
     AdmissionArtifactError,
     AdmissionArtifactErrorCode,
-    HistoricalExcitationEvidence,
     admission_artifact_relative_path,
     canonical_admission_bytes,
     create_admission_authority,
@@ -44,7 +43,6 @@ from jasper.audio_measurement.excitation_artifacts import (
     read_playback_admission,
     readmit_and_persist_playback_admission,
     readmit_excitation_for_playback,
-    refuse_historical_evidence,
 )
 
 TARGET = "1" * 64
@@ -490,12 +488,6 @@ def test_existing_legacy_directory_cannot_be_upgraded_or_backfilled(
             expected_bundle_id=BUNDLE_ID,
         )
     assert caught.value.code is AdmissionArtifactErrorCode.AUTHORITY_MISSING
-
-    with pytest.raises(AdmissionArtifactError) as caught:
-        refuse_historical_evidence(HistoricalExcitationEvidence("9" * 64))
-    assert (
-        caught.value.code is AdmissionArtifactErrorCode.HISTORICAL_EVIDENCE_NOT_ADMITTED
-    )
 
 
 def test_generation_path_role_is_persisted_and_exclusive(tmp_path: Path) -> None:
@@ -1019,7 +1011,7 @@ def test_post_publish_readback_failure_reports_unknown_outcome(
     assert published.exists()
 
 
-def test_stable_events_cover_persist_refusal_and_historical(
+def test_stable_events_cover_persist_and_refusal(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
@@ -1031,9 +1023,6 @@ def test_stable_events_cover_persist_refusal_and_historical(
         current_limits=tightened,
         current_protection_evidence=_evidence(tightened, PLAYBACK_PROOF),
     )
-    with pytest.raises(AdmissionArtifactError):
-        refuse_historical_evidence(HistoricalExcitationEvidence("9" * 64))
-
     messages = [record.getMessage() for record in caplog.records]
     assert any(
         "event=audio_measurement.excitation_admission boundary=generation "
@@ -1044,9 +1033,6 @@ def test_stable_events_cover_persist_refusal_and_historical(
         "event=audio_measurement.excitation_admission boundary=playback "
         "result=refused" in message
         for message in messages
-    )
-    assert any(
-        "result=historical_evidence_not_admitted" in message for message in messages
     )
 
 

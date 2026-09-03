@@ -65,10 +65,10 @@ import jasper.active_speaker.baseline_profile as baseline_profile_mod
 
 import jasper.capture_protocol as capture_protocol
 from jasper.capture_protocol import MAX_TTL_S
-from jasper.capture_relay.session import CaptureResult
 from jasper.web import correction_crossover_backend
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
+from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
@@ -442,13 +442,13 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
         "glitch_detected": False,
     }
     bank(
-        CaptureResult(wav=b"first-take"),
+        WiredCaptureAnswer(wav=b"first-take"),
         {**base, "attempt": 10, "take_id": f"{position_id}_a10",
          "prompt": "Move the microphone 10 in (25 cm) to the LEFT of the "
                    "mark, at mark height."},
     )
     bank(
-        CaptureResult(wav=b"wider-retake"),
+        WiredCaptureAnswer(wav=b"wider-retake"),
         {**base, "attempt": 11, "take_id": f"{position_id}_a11",
          "wide": True, "role": "offax",
          "prompt": "Same measurement, wider spot: move the microphone "
@@ -526,7 +526,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
 
     oversize = b"\x00" * (MAX_CAPTURE_WAV_BYTES + 1)
     bank_id = bank(
-        CaptureResult(wav=oversize),
+        WiredCaptureAnswer(wav=oversize),
         {"position_id": f"{PHASE_CLOUD_MEASURE}_04",
          "take_id": f"{PHASE_CLOUD_MEASURE}_04_a04", "measure_kind": "",
          "phase": PHASE_CLOUD_MEASURE, "index": 4, "attempt": 4,
@@ -626,7 +626,7 @@ def test_an_entry_baseline_banks_under_the_take_id_its_own_record_names(tmp_path
     )
 
     record = _entry_baseline_take()
-    record_id = bank(CaptureResult(wav=b"entry-bytes"), record)
+    record_id = bank(WiredCaptureAnswer(wav=b"entry-bytes"), record)
 
     banked = sorted(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -739,7 +739,7 @@ def test_the_banked_take_carries_the_provenance_the_analyze_seam_carried(
         phase=PHASE_ENTRY_BASELINE,
     )
     record = _entry_baseline_take()
-    assert seams.bank_take(CaptureResult(wav=b"entry-bytes"), record)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"entry-bytes"), record)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -817,7 +817,7 @@ def test_a_capture_that_observed_nothing_never_inherits_the_last_one_s_graph(
     # 2. The next capture observes nothing at all, and is accepted.
     _analyze_once()
     accepted = _entry_baseline_take(index=11)
-    assert seams.bank_take(CaptureResult(wav=b"accepted-bytes"), accepted)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"accepted-bytes"), accepted)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -868,11 +868,11 @@ def test_a_take_with_no_play_behind_it_names_no_provenance(
         MeasurementGeometry(),
         phase=PHASE_ENTRY_BASELINE,
     )
-    seams.bank_take(CaptureResult(wav=b"first"), _entry_baseline_take(index=9))
+    seams.bank_take(WiredCaptureAnswer(wav=b"first"), _entry_baseline_take(index=9))
 
     # No play and no analyze — so nothing this second take may claim.
     second = _entry_baseline_take(index=10)
-    assert seams.bank_take(CaptureResult(wav=b"second"), second)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"second"), second)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -971,7 +971,7 @@ def _bank_one_analyzed_take(
         phase=PHASE_MEASURE,
     )
     record = _entry_baseline_take(index=index)
-    assert seams.bank_take(CaptureResult(wav=b"analyzed-bytes"), record)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"analyzed-bytes"), record)
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
          / relay / "positions" / f"{record['take_id']}.json").read_text()
@@ -1184,10 +1184,10 @@ def test_a_take_with_no_analyze_behind_it_carries_no_blocks(
         MeasurementGeometry(),
         phase=PHASE_MEASURE,
     )
-    seams.bank_take(CaptureResult(wav=b"first"), _entry_baseline_take(index=9))
+    seams.bank_take(WiredCaptureAnswer(wav=b"first"), _entry_baseline_take(index=9))
 
     second = _entry_baseline_take(index=10)
-    assert seams.bank_take(CaptureResult(wav=b"second"), second)
+    assert seams.bank_take(WiredCaptureAnswer(wav=b"second"), second)
 
     banked = json.loads(
         (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
@@ -1239,7 +1239,7 @@ def test_an_unprompted_phase_take_reaches_the_real_store(tmp_path, phase):
     )
     assert record["measure_kind"] == ""
 
-    banked_id = bank(CaptureResult(wav=b"unprompted-bytes"), record)
+    banked_id = bank(WiredCaptureAnswer(wav=b"unprompted-bytes"), record)
     assert banked_id, "an unresolved measure kind must still route"
 
     landed = (
@@ -1268,11 +1268,11 @@ def test_a_store_that_refuses_costs_a_warning_and_not_the_capture(
     )
 
     record = _entry_baseline_take()
-    assert bank(CaptureResult(wav=b"entry-bytes"), record)
+    assert bank(WiredCaptureAnswer(wav=b"entry-bytes"), record)
 
     with caplog.at_level(logging.WARNING):
         answer = bank(
-            CaptureResult(wav=b"entry-bytes"),
+            WiredCaptureAnswer(wav=b"entry-bytes"),
             {**record, "summed_ripple_db": 9.0},
         )
 
@@ -2658,7 +2658,7 @@ def test_the_envelope_route_actually_runs_the_preflight():
     # ...and BEFORE the envelope is built, or it would stamp a status nobody
     # reads.
     assert source.index("attach_stage2_preflight(status)") < source.index(
-        "build_crossover_envelope_logged(status)"
+        "_build_envelope_logged(status)"
     )
 
 
@@ -4806,12 +4806,12 @@ def test_setup_calibration_observation_is_redacted_safe():
     ) == ("serial", "")
 
 
-def test_production_analyze_default_resolver_is_the_shared_relay_machinery():
-    """The default resolver IS correction_setup._relay_calibration_from_setup
-    (the one point the room + legacy crossover flows resolve phone calibration
-    choices) — a no-choice setup resolves to None."""
-    assert v2host.resolve_relay_calibration(None, None) is None
-    assert v2host.resolve_relay_calibration({"calibration": {"mode": "none"}}, None) is None
+def test_production_analyze_default_resolver_is_the_household_mic_owner():
+    """The default resolver IS household_mic.resolve_setup_calibration (the one
+    point a capture's setup reference becomes a record) — a no-choice setup
+    resolves to None."""
+    assert v2host.resolve_setup_calibration(None, None) is None
+    assert v2host.resolve_setup_calibration({"calibration": {"mode": "none"}}, None) is None
 
 
 # --- W6.12: v2 calibration handoff — the household-mic hint reaches a v2 session --
@@ -4918,7 +4918,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
     """THE handoff pin: once the capture page applies the household-mic hint
     (a v2 capture posting setup.calibration = {mode: "stored", calibration_id,
     model} — the exact shape applyDefaultCalibrationHintSilently now submits),
-    bind_production_analyze's PRODUCTION resolver (resolve_relay_calibration,
+    bind_production_analyze's PRODUCTION resolver (resolve_setup_calibration,
     not a mock) must actually apply the calibration curve and record it in the
     persisted evidence — never silently falling back to uncalibrated."""
     import logging as _logging
@@ -4942,7 +4942,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
     meta: dict[str, Any] = {}
-    # resolve_calibration defaults to resolve_relay_calibration — the REAL
+    # resolve_calibration defaults to resolve_setup_calibration — the REAL
     # production seam — proving the fix through the exact path a live
     # v2 session rides, not a test double.
     analyze = v2host.bind_production_analyze(meta=meta)
@@ -4978,7 +4978,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     """The 2026-07-20 incident, through the full production seam: the
     household's UMIK-2 calibration is the resolvable stored default, but THIS
     capture's phone-reported device is a Dayton iMM-6C. The real
-    ``resolve_relay_calibration`` seam must refuse to apply it — the
+    ``resolve_setup_calibration`` seam must refuse to apply it — the
     analysis still runs (never blocked), annotated uncalibrated, with BOTH
     the existing ``crossover_v2_uncalibrated_capture`` WARN and the NEW
     distinct mismatch event."""
@@ -8025,7 +8025,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     monkeypatch.setattr(reset_flow, "handle_status", lambda *, relay=None: ({}, 200))
     monkeypatch.setattr(reset_flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
-        "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+        "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
     )
 
@@ -8717,7 +8717,6 @@ def _arm_stage_1(monkeypatch) -> None:
     asserts about a decision the preparer takes before any bundle is opened, so
     a bundle opening at all is the failure, not a fixture gap.
     """
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(
         v2host, "reconcile_session_volume_for_new_session", lambda *_a: None,
@@ -9172,13 +9171,13 @@ def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
         topology_prescription as topology_mod,
     )
 
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(
         v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
     )
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store",
@@ -9237,13 +9236,13 @@ def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
         topology_prescription as topology_mod,
     )
 
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     v2host.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(
         v2host, "resolve_conductor_context", lambda _status: _pinnable_context(),
     )
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     # A working stub, not a fail-arm: the bundle opens BEFORE the re-point in
     # the verify-only prepare, so arming it to fail would stop this run short

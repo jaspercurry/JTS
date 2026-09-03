@@ -234,25 +234,6 @@ def test_audio_measurement_imports_neither_consumer_package():
     )
 
 
-def test_audio_measurement_imports_no_capture_transport():
-    """The measurement kernel is above the transport that feeds it.
-
-    ``jasper/capture_relay`` is parked (owner ruling, 2026-08-28): relay code
-    may import live code, never the reverse. The kernel is the half where that
-    is now unconditionally true, so it is pinned rather than claimed —
-    ``alignment`` moved here precisely because a WAV's provenance is not the
-    analyzer's business.
-    """
-    offenders = _upward_imports(
-        "jasper/audio_measurement", (("jasper", "capture_relay"),)
-    )
-    assert not offenders, (
-        "jasper/audio_measurement must not import jasper.capture_relay — the "
-        "relay is a parked transport and the kernel analyses captures whatever "
-        "carried them:\n" + "\n".join(offenders)
-    )
-
-
 def test_crossover_v2_imports_no_web_front_end():
     """The other half of the truth layer's membership.
 
@@ -291,28 +272,6 @@ def test_the_documented_relation_between_the_two_edges_holds():
         <= room_boundary.ROOM_BOUNDARY_DEFAULT_HZ
         <= room_boundary.ROOM_BOUNDARY_MAX_HZ
     )
-
-
-@pytest.mark.parametrize(
-    ("estimate", "expected"),
-    [
-        (None, 350.0),        # no estimate -> the disclosed fallback
-        (300.0, 300.0),       # inside the clamp -> used as-is
-        (100.0, 250.0),       # below -> clamped to the floor
-        (900.0, 500.0),       # above -> clamped to the ceiling
-        (float("nan"), 350.0),  # unknown is not a bound
-        (float("inf"), 350.0),
-        (0.0, 350.0),
-        (-5.0, 350.0),
-    ],
-)
-def test_room_boundary_hz_clamps_or_falls_back(estimate, expected):
-    """A non-finite/non-positive estimate falls back rather than clamping.
-
-    "Unknown" must not silently become a confident 250 or 500 — that would
-    look like a per-room answer the estimator never produced.
-    """
-    assert room_boundary.room_boundary_hz(estimate) == expected
 
 
 def test_every_routed_site_resolves_to_the_ssot_today():

@@ -1049,19 +1049,7 @@ def test_placement_proof_still_accepts_a_page_protocol_2_persisted_proof():
     proof captured against it carries 2 forever. Invalidating those breaks
     repeat admission, crossover readiness, and replay for already-commissioned
     speakers."""
-    import inspect
-
-    from jasper.active_speaker.capture_geometry import (
-        normalized_placement_proof,
-        placement_proof_shape_valid,
-    )
-
-    # The writer copies the PAGE's advertised protocol into the proof — this is
-    # why a page-side value ends up frozen in Pi-side evidence.
-    assert (
-        '"capture_protocol_version": page.get("capture_protocol_version")'
-        in inspect.getsource(normalized_placement_proof)
-    )
+    from jasper.active_speaker.capture_geometry import placement_proof_shape_valid
 
     # A proof exactly as the published 20260712.3 page caused it to be written.
     proof = {

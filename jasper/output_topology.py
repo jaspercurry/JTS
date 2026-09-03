@@ -4,11 +4,10 @@
 
 """Versioned speaker output topology contract.
 
-This module is the product-grade boundary between physical DAC lanes and the
-speaker/driver roles JTS will eventually feed through CamillaDSP. It is not an
-ALSA route renderer and it has no audio side effects: no playback, no CamillaDSP
-reload, and no hardware mutation. This model is where speaker groups,
-active/passive modes, subwoofers, and verified physical output ownership live.
+The boundary between physical DAC lanes and speaker/driver roles: speaker
+groups, active/passive modes, subwoofers, and verified physical output
+ownership. It has NO audio side effects — no playback, no CamillaDSP reload,
+no hardware mutation.
 """
 
 from __future__ import annotations
@@ -63,10 +62,9 @@ OUTPUT_TRANSPORT_PLAN_KIND = "jts_output_transport_plan"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
 
-# Active-output route resolution (the playback PCM + DAC-agnostic transport plan
-# the active-crossover path rides). Owned here, not on the IO-free DAC registry,
+# Active-output route resolution. Owned here, not on the IO-free DAC registry,
 # because resolution reads env + the topology's card identity. Re-exported from
-# jasper.active_speaker.playback_route for backwards compatibility.
+# jasper.active_speaker.playback_route.
 ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
 OUTPUTD_ACTIVE_LANE_SOURCE = "outputd_active_lane"
 EXPLICIT_SOURCE = "explicit"
@@ -78,24 +76,21 @@ TRANSPORT_SINK_SINGLE_ALSA = "single_alsa"
 TRANSPORT_SINK_COMPOSITE = "composite"
 
 # Every physical-DAC PCM the active path resolves MUST be a stable, name-keyed
-# ALSA identifier (``hw:CARD=<name>,DEV=<n>``). JTS has card-index drift history:
-# a USB DAC or the Apple dongles can re-enumerate to a
-# different numeric ALSA index across a reboot/hotplug, so ``hw:<index>`` /
-# ``plughw:`` forms are unsafe on the active path. This regex is the single
-# guard that keeps the unsafe forms out at the type boundary. Anchored with
+# ALSA identifier (``hw:CARD=<name>,DEV=<n>``): a USB DAC or the Apple dongles
+# re-enumerate to a different numeric ALSA index across a reboot/hotplug, so
+# ``hw:<index>`` / ``plughw:`` forms are unsafe on the active path. This regex
+# is the single guard that keeps them out at the type boundary. Anchored with
 # \A...\Z (not ^...$) so a trailing newline cannot sneak past — Python's $
 # matches before a final '\n', which would false-accept "hw:CARD=x,DEV=0\n".
 _STABLE_CARD_PCM_RE = re.compile(r"\Ahw:CARD=[^,\s]+,DEV=\d+\Z")
 
 DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 
-# Bass-management corner bounds for a user-settable subwoofer crossover. BOUND
-# TO the one shared bass-management corner definition (jasper.camilla_emit) — a
-# stdlib-only leaf this import-cheap module CAN depend on (unlike
+# Bass-management corner bounds (Hz) for a user-settable subwoofer crossover.
+# BOUND TO the one shared corner definition (jasper.camilla_emit) — a
+# stdlib-only leaf this import-cheap module CAN depend on, unlike
 # active_speaker, which would be circular: active_speaker imports
-# output_topology). Before P5 these were re-declared here to dodge that circular
-# import; the shared leaf home removes the need. The equality is pinned by
-# test_output_topology.py::test_sub_crossover_bounds_mirror_profile.
+# output_topology.
 SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
 SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
 
@@ -107,11 +102,9 @@ SUPPORTED_GROUP_MODES = {
     "subwoofer",
 }
 # The listening (non-subwoofer) group kinds, and the mode that means "one
-# full-range driver per side, no active crossover". Named here — beside the
-# vocabulary they belong to — so the shape predicates below are the ONE place
-# that spells them out. MAIN_GROUP_KINDS is DERIVED, not re-listed: a fifth
-# supported kind must land on one side of the main/sub line deliberately, not by
-# being forgotten here and silently dropping out of the passive predicates.
+# full-range driver per side, no active crossover". MAIN_GROUP_KINDS is DERIVED,
+# not re-listed: a fifth supported kind must land on one side of the main/sub
+# line deliberately, not by silently dropping out of the passive predicates.
 MAIN_GROUP_KINDS = frozenset(SUPPORTED_GROUP_KINDS) - {"subwoofer"}
 PASSIVE_MAIN_MODE = "full_range_passive"
 REQUIRED_ROLES_BY_MODE = {
@@ -131,20 +124,18 @@ PROTECTION_STATUSES = {
     "unknown",
 }
 OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
-# Pure-data pairing intent recorded at commission time (gap 1). It answers
-# "is this box meant to run
-# solo, become a wireless follower, or host one?" and seeds later reconciler
-# defaults. It carries NO behavior in this layer: nothing here reads it,
+# Pure-data pairing intent recorded at commission time: "is this box meant to
+# run solo, become a wireless follower, or host one?" It seeds later reconciler
+# defaults and carries NO behavior in this layer — nothing here reads it,
 # evaluate_output_topology ignores it, and the emitted CamillaDSP config is
-# unaffected — the multiroom reconciler keeps the final runtime say (mirrors
+# unaffected. The multiroom reconciler keeps the final runtime say (mirrors
 # member_camilla_kwargs). Absent == "solo", so older topology JSON loads
 # unchanged.
 PAIRING_INTENTS = {"solo", "will_be_follower", "has_follower"}
 DEFAULT_PAIRING_INTENT = "solo"
 
 # The stable code for "one speaker's drivers are split across two child DACs of
-# a composite output device". Named here rather than spelled inline where the
-# verdict is built, because it is shared vocabulary: the /sound/ wizard keys its
+# a composite output device". Shared vocabulary: the /sound/ wizard keys its
 # disclosure notice off this exact string. See ``cross_child_group_verdicts``.
 CROSS_CHILD_GROUP_CODE = "speaker_group_spans_child_devices"
 
@@ -180,12 +171,10 @@ def _safe_id_fragment(value: str) -> str:
 def default_clock_domain_id(device_id: str, card_id: str | None = None) -> str:
     """Return the default clock-domain id for an output device.
 
-    One coherent device is keyed on its ALSA card, or on its device id when no
-    card is known. The measured dual-Apple pair is the one composite that gets
-    a profile-keyed id instead, because its two children share no single card.
-    Generic multi-DAC ALSA aggregation remains unsupported:
-    ``clock_domain_report`` reports ``multi_device_aggregate_supported`` false
-    on every path.
+    The measured dual-Apple pair is the one composite that gets a profile-keyed
+    id, because its two children share no single ALSA card. Generic multi-DAC
+    ALSA aggregation stays unsupported: ``clock_domain_report`` reports
+    ``multi_device_aggregate_supported`` false on every path.
     """
 
     device_id = normalize_output_device_id(device_id)
@@ -503,8 +492,8 @@ class SpeakerChannel:
     # Provenance for ``identity_verified``, never serialized and never
     # compared: True only on a channel :func:`set_channel_identity_verified`
     # itself wrote. ``from_mapping`` cannot forge it, which is what lets
-    # :func:`_with_server_owned_identity` tell a real audition apart from a
-    # save payload that merely claims one.
+    # :func:`_with_server_owned_identity` tell a real audition from a save
+    # payload that merely claims one.
     identity_verified_authorized: bool = field(
         default=False, compare=False, repr=False
     )
@@ -536,9 +525,9 @@ class SpeakerChannel:
                 raw.get("physical_output_index"),
                 "speaker_groups[].channels[].physical_output_index",
             ),
-            # Display labels are derived from hardware.outputs after the full
-            # topology is parsed. Treat client-provided labels as stale UI
-            # hints, never as persisted truth about physical wiring.
+            # Derived from hardware.outputs after the full topology is parsed.
+            # A client-provided label is a stale UI hint, never persisted truth
+            # about physical wiring.
             human_output_label=None,
             identity_verified=_bool(raw.get("identity_verified"), False),
             startup_muted=_bool(raw.get("startup_muted"), True),
@@ -818,21 +807,18 @@ def cross_child_group_verdicts(topology: OutputTopology) -> list[dict[str, Any]]
     physically separate DACs driven from one process. Their clocks are NOT
     corrected against each other: the composite clock contract is
     ``measured_sync_required``, and ``PairedCompositeSink`` detects divergence
-    and fails closed rather than resampling it away. So a speaker group whose
-    woofer sits on one child and whose tweeter sits on another puts that
-    uncorrected seam INSIDE a crossover, where inter-driver drift walks the
-    crossover null. The supported shape is one child DAC per speaker, with each
-    speaker's crossover kept inside a single child.
+    and fails closed rather than resampling it away. A speaker group whose
+    woofer sits on one child and whose tweeter on another puts that uncorrected
+    seam INSIDE a crossover, where inter-driver drift walks the crossover null.
+    The supported shape is one child DAC per speaker.
 
     This is a FIDELITY verdict, not a hearing-safety one: every lane still
     drives, nothing is at risk of damage, and the household may have a reason.
     So it is reported at ``warning`` severity — it never joins ``blockers`` and
     therefore never refuses the save or moves the topology to ``blocked``.
 
-    Entries are data, not prose: the group and the children are named as their
-    own fields so a caller can render or re-check them without parsing
-    ``message``. ``child_ids`` is sorted so it is comparable regardless of the
-    order the group happens to list its channels in.
+    ``child_ids`` is sorted so it is comparable regardless of the order the
+    group happens to list its channels in.
     """
 
     children = topology.hardware.child_devices
@@ -853,9 +839,8 @@ def cross_child_group_verdicts(topology: OutputTopology) -> list[dict[str, Any]]
             if index is None:
                 continue
             owner = owner_by_index.get(index)
-            # An index no child claims is a DIFFERENT defect (the composite's
-            # own output-map check owns it). Skipping it here keeps this
-            # verdict about the child boundary and nothing else.
+            # An index no child claims is a DIFFERENT defect, owned by the
+            # composite's own output-map check.
             if owner is not None:
                 owners.add(owner)
         if len(owners) < 2:
@@ -921,9 +906,9 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
             if fc is not None and not (
                 SUB_CROSSOVER_HZ_LO <= fc <= SUB_CROSSOVER_HZ_HI
             ):
-                # Fail LOUD: an out-of-range bass-management corner would emit an
-                # unsafe (or non-band-limiting) crossover. Mirrors the rest of the
-                # topology validation — a blocker, never a silent clamp.
+                # Fail LOUD: an out-of-range bass-management corner would emit
+                # an unsafe (or non-band-limiting) crossover, so it is a
+                # blocker, never a silent clamp.
                 blockers.append(
                     _issue(
                         "blocker",
@@ -1091,10 +1076,8 @@ def subwoofer_speaker_groups(topology: OutputTopology) -> list[SpeakerGroup]:
 def topology_is_passive_mains(topology: OutputTopology) -> bool:
     """True iff mains exist and EVERY main is a full-range passive speaker.
 
-    The one owner of "this speaker's mains carry no inter-driver crossover".
-    ``topology_is_subless_passive_mains`` below and
-    ``active_speaker.passive_profile`` compose it rather than restating the
-    kind/mode vocabulary.
+    The one owner of "this speaker's mains carry no inter-driver crossover";
+    callers compose it rather than restating the kind/mode vocabulary.
     """
 
     mains = main_speaker_groups(topology)
@@ -1107,11 +1090,10 @@ def topology_is_subless_passive_mains(topology: OutputTopology) -> bool:
     """True iff the topology is full-range passive mains with NO subwoofer.
 
     The shape that takes the flat program lane: no inter-driver crossover (the
-    mains are passive) and no bass-management split (no sub). Nothing about it
-    needs active-crossover commissioning, so the setup flow terminates after
-    output identity instead of offering a combined-driver test it can never
-    run. Passive mains PLUS a sub are a DIFFERENT shape: they still ride the
-    roleful multi-output emitter for bass management.
+    mains are passive) and no bass-management split (no sub), so it needs no
+    active-crossover commissioning and the setup flow terminates after output
+    identity. Passive mains PLUS a sub are a DIFFERENT shape: they still ride
+    the roleful multi-output emitter for bass management.
     """
 
     return topology_is_passive_mains(topology) and not subwoofer_speaker_groups(
@@ -1122,10 +1104,10 @@ def topology_is_subless_passive_mains(topology: OutputTopology) -> bool:
 def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
     """Return user-confirmed physical channel identity progress.
 
-    This report is deliberately narrower than ``evaluate_output_topology``:
-    it answers "which assigned DAC lane does the operator still need to
-    physically verify?" It does not authorize playback or infer that tweeter
-    protection is safe merely because identity was confirmed.
+    Deliberately narrower than ``evaluate_output_topology``: it answers "which
+    assigned DAC lane does the operator still need to physically verify?" It
+    does not authorize playback, and confirmed identity never implies tweeter
+    protection is safe.
     """
 
     targets: list[dict[str, Any]] = []
@@ -1330,10 +1312,10 @@ def _observed_dual_apple_hardware_issues(
 def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
     """Return read-only output clocking evidence for the topology.
 
-    This intentionally does not try to implement multi-DAC aggregation. It
-    names the current single-device clock-domain assumption and preserves the
-    product boundary: active-crossover playback should use one coherent
-    multi-output device until a future lab path proves multi-device skew/drift.
+    This does not implement multi-DAC aggregation. It names the single-device
+    clock-domain assumption and holds the boundary: active-crossover playback
+    uses one coherent multi-output device until a lab path proves multi-device
+    skew/drift.
     """
 
     hardware = topology.hardware
@@ -1448,12 +1430,12 @@ def clock_domain_report(topology: OutputTopology) -> dict[str, Any]:
 def stable_card_pcm(card_id: str | None) -> str | None:
     """Return a STABLE, name-keyed ALSA PCM for an output card, or ``None``.
 
-    Every physical-DAC PCM on the active-crossover path goes through this one
-    chokepoint so the path is keyed on the card's stable name (``hw:CARD=<name>``)
-    rather than a drift-prone numeric index. ``card_id`` is the ALSA card *name*
+    The one chokepoint every physical-DAC PCM on the active-crossover path goes
+    through, so the path is keyed on the card's stable name rather than a
+    drift-prone numeric index. ``card_id`` is the ALSA card *name*
     (``/proc/asound/card<N>/id``, e.g. ``DAC8``/``Array``), the same name the
-    DAC profile matches on; the ``CARD=`` form forces name lookup even if the id
-    happens to be numeric. Returns ``None`` for an empty/blank id.
+    DAC profile matches on; the ``CARD=`` form forces name lookup even if that
+    id happens to be numeric.
     """
 
     card = (card_id or "").strip()
@@ -1463,12 +1445,7 @@ def stable_card_pcm(card_id: str | None) -> str | None:
 
 
 def is_stable_card_pcm(pcm: str | None) -> bool:
-    """Return True only for a stable ``hw:CARD=<name>,DEV=<n>`` identifier.
-
-    Rejects the drift-prone forms the active path must never resolve to:
-    numeric ``hw:<index>``, the auto-converting ``plug``/``plughw:`` plugins,
-    and any ``hw:CARD=`` missing the ``,DEV=`` selector.
-    """
+    """Return True only for a stable ``hw:CARD=<name>,DEV=<n>`` identifier."""
 
     return bool(_STABLE_CARD_PCM_RE.match(pcm or ""))
 
@@ -1476,9 +1453,8 @@ def is_stable_card_pcm(pcm: str | None) -> bool:
 def _transport_sink_for_kind(kind: str) -> str:
     """Map a DAC clock-domain shape (``kind``) to its transport sink string.
 
-    This is the whole of the per-shape dispatch: coherent single device ->
-    ``single_alsa``, paired composite -> ``composite``. Width and channel map
-    ride as data, so a new DAC of an established shape adds no code here.
+    The whole of the per-shape dispatch: a new DAC of an established shape adds
+    no code here, because width and channel map ride as data.
     """
 
     return TRANSPORT_SINK_COMPOSITE if kind == "composite" else TRANSPORT_SINK_SINGLE_ALSA
@@ -1490,10 +1466,9 @@ def _resolve_transport_dac_pcms(
 ) -> tuple[str, ...]:
     """Resolve the physical DAC PCM(s) the transport writes to (stable identity).
 
-    Composite shapes write to each serial-pinned child card; a coherent single
-    writes to the one selected card. Child/card identity may be incomplete in a
-    draft topology (observed hardware not yet recorded), so this is best-effort:
-    it returns only the stable PCMs it can resolve and never a numeric form.
+    Child/card identity may be incomplete in a draft topology (observed
+    hardware not yet recorded), so this is best-effort: it returns only the
+    stable PCMs it can resolve, and never a numeric form.
     """
 
     if profile.kind == "composite":
@@ -1511,13 +1486,10 @@ def _resolve_transport_dac_pcms(
 class OutputTransportPlan:
     """DAC-agnostic active-output transport truth for a resolved DAC.
 
-    The transport dispatches on clock-domain SHAPE (``sink`` — coherent single
-    vs paired composite), with channel width and the channel map carried as DATA
-    from the ``DacProfile``/topology, never a per-DAC code branch. This is the
-    single source of truth the reconciler will emit to env (Stage 2) and
-    ``jasper-outputd`` will consume (Stage 1); here it is pure data with no env
-    or ALSA I/O. ``dac_pcms`` are always stable ``hw:CARD=`` identifiers — the
-    invariant that survives card-index drift is enforced at this boundary.
+    The single source of truth the reconciler emits to env and
+    ``jasper-outputd`` consumes; here it is pure data with no env or ALSA I/O.
+    ``dac_pcms`` are always stable ``hw:CARD=`` identifiers — the invariant
+    that survives card-index drift is enforced at this boundary.
     """
 
     sink: str
@@ -1575,13 +1547,12 @@ class OutputTransportPlan:
 class OutputLayout:
     """Resolved active-output route for a saved topology.
 
-    The stable-identity single source of truth that
-    ``ActivePlaybackRouteCapability`` reads. Computed FRESH from the
-    ``OutputTopology`` on every call (never cached against a numeric card index),
-    so a boot/udev topology recompute flows straight through to the resolved
-    route. ``playback_device`` is where the active path hands audio off (the
-    production outputd active lane or an explicit lab PCM); ``transport_plan``
-    is present only when a production outputd active lane exists.
+    Computed FRESH from the ``OutputTopology`` on every call, never cached
+    against a numeric card index, so a boot/udev topology recompute flows
+    straight through to the resolved route. ``playback_device`` is where the
+    active path hands audio off (the production outputd active lane or an
+    explicit lab PCM); ``transport_plan`` is present only when a production
+    outputd active lane exists.
     """
 
     device_id: str
@@ -1625,26 +1596,19 @@ def resolve_output_layout(
        ``OutputTransportPlan``.
     3. Otherwise the route is missing (no width, no subwoofer support).
 
-    **Case 2 has ONE transport, and this is where a FRESH emit names it.** The
-    active lane is reached over the ACTIVE RING, unconditionally. It used to
-    have two — snd-aloop by default, the ring when the reconciler's endpoint
-    marker said so — and this function read that marker to choose. #2285 P2
-    retired the snd-aloop ACTIVE endpoint and deleted the marker read with it,
-    which is what removes the marker ← graph ← marker circle that made the
-    roleful arm manual. The marker itself is untouched; only this chooser
-    stopped consulting it. ``playback_device_source`` stays
-    ``OUTPUTD_ACTIVE_LANE_SOURCE``: it names the lane ROLE, not the transport,
-    so nothing keyed on the SOURCE had to learn about the ring.
+    Case 2 has ONE transport, and this is where a FRESH emit names it: the
+    active lane is reached over the ACTIVE RING, unconditionally. This chooser
+    does not read the reconciler's endpoint marker (see the branch below).
+    ``playback_device_source`` stays ``OUTPUTD_ACTIVE_LANE_SOURCE``: it names
+    the lane ROLE, not the transport, so nothing keyed on the SOURCE knows
+    about the ring.
 
-    A RE-EMIT of a graph the box is already running asks a different question and
-    does not come through here first. It reads
+    A RE-EMIT of a graph the box is already running asks a different question
+    and does not come through here first. It reads
     :func:`jasper.active_speaker.playback_route.resolve_live_active_endpoint`,
     which prefers the statefile-pointed GRAPH — the marker is derived from that
-    graph, so a marker read would be a rung behind mid-ladder — and falls back to
-    this resolution when the graph does not answer. (An earlier version of this
-    note claimed every active graph was emitted through this one resolution;
-    it was not, and the seams that bypassed it silently de-armed a live box —
-    issues #2339 / #2337.)
+    graph, so a marker read would be a rung behind mid-ladder — and falls back
+    to this resolution when the graph does not answer.
     """
 
     env = env if env is not None else os.environ
@@ -1676,16 +1640,15 @@ def resolve_output_layout(
         # The ACTIVE ring, unconditionally — there is no second legal endpoint
         # to choose between (OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member).
         #
-        # Reading `ring_active_endpoint_armed()` here and falling back to the
-        # snd-aloop active lane would make this chooser a FIXED POINT: the
-        # marker derives from the loaded graph and the graph's device would
-        # derive from the marker, so no automated pass could move a box between
-        # transports — only a human passing `--endpoint`. Not reading the marker
-        # is what makes the roleful path convergent rather than manual.
+        # Reading `ring_active_endpoint_armed()` here would make this chooser a
+        # FIXED POINT: the marker derives from the loaded graph and the graph's
+        # device would derive from the marker, so no automated pass could move
+        # a box between transports — only a human passing `--endpoint`. Not
+        # reading the marker is what makes the roleful path convergent.
         #
-        # The marker itself SURVIVES and is unaffected: it is outputd's own
+        # The marker is unaffected: it is outputd's own
         # JASPER_OUTPUTD_ACTIVE_LANE biconditional, read by the Rust daemon and
-        # by `active_ring_endpoint_proof`. Only this chooser stops reading it.
+        # by `active_ring_endpoint_proof`.
         active_device = RING_ACTIVE_PLAYBACK_DEVICE
         return OutputLayout(
             device_id=hardware.device_id,
@@ -1832,14 +1795,7 @@ def set_channel_protection_status(
 
 @dataclass(frozen=True)
 class CompositeRepinPlan:
-    """What a same-shape composite re-pin reuses, and what it re-verifies.
-
-    Data, not prose: a caller renders or re-checks the offer from these fields
-    rather than parsing a sentence. Deliberately the smallest shape the page and
-    the log actually consume — per-child before/after records were carried here
-    once and had no reader, and an unread payload field is a claim nothing keeps
-    true.
-    """
+    """What a same-shape composite re-pin reuses, and what it re-verifies."""
 
     child_count: int
     replaced_child_count: int
@@ -1863,17 +1819,14 @@ def _composite_repin_pairs(
 
     Returns ``None`` unless the attached hardware is the SAME SHAPE as the
     saved declaration — same profile, same physical output count, same child
-    count, one child of the same kind per saved USB port — so that the only
-    thing that can differ is WHICH physical unit is plugged into each port.
-    The classifier
-    (:func:`jasper.output_hardware.classify_output_cards`, projected through
-    ``detected_hardware_adoption_precondition``) is the authority on whether
-    the attached hardware is usable at all; this only compares its verdict
-    against the saved declaration.
+    count, one child of the same kind per saved USB port — so the only thing
+    that can differ is WHICH physical unit is plugged into each port. Whether
+    the attached hardware is usable at all is
+    ``detected_hardware_adoption_precondition``'s verdict, not this one's.
 
     The pairing anchor is ``usb_path`` — the sysfs port topology path, which
     survives a unit swap in the same port and is the first identity token the
-    runtime child-order matcher already tries
+    runtime child-order matcher tries
     (``jasper.output_hardware.dual_apple_runtime_mapping``). Serial cannot be
     the anchor: it is the thing that changed. A DAC moved to a DIFFERENT port
     is therefore not a re-pin — nothing then says which physical unit landed on
@@ -1891,8 +1844,8 @@ def _composite_repin_pairs(
         return None
     hardware = topology.hardware
     # Two or more child DACs is what "composite" means in a saved topology
-    # (mirrors ``active_speaker.runtime_contract.topology_sink_is_composite``).
-    # A single-child DAC has no serial-keyed pairing contract to repair.
+    # (mirrors ``active_speaker.runtime_contract.topology_sink_is_composite``);
+    # a single-child DAC has no serial-keyed pairing contract to repair.
     if len(hardware.child_devices) < 2:
         return None
     if normalize_output_device_id(observed.profile_id) != hardware.device_id:
@@ -1916,7 +1869,7 @@ def _composite_repin_pairs(
         return None
 
     pairs: list[tuple[str, OutputChildDevice, OutputCardFact]] = []
-    # dicts keep insertion order, so this walks the saved child order.
+    # Walks the saved child order (dict insertion order).
     for port, child in saved_by_port.items():
         card = attached_by_port[port]
         if card.device_id != child.device_id or not card.serial:
@@ -1988,41 +1941,29 @@ def declared_hardware_mismatch(
 ) -> dict[str, Any] | None:
     """Compare the topology's DECLARED hardware against what's attached now.
 
-    This is the server-side original of
+    The ONE implementation of this rule.
     ``deploy/assets/sound-profile/js/main.js``'s ``outputHardwareMismatch()``
-    — that function now reads ``payload.hardware_mismatch`` (this result,
-    published by ``jasper.web.sound_setup._output_topology_payload``) instead
-    of recomputing the rule, so there is exactly one implementation of it.
-    ``jasper.control.audio_health``'s #2812 setup hint calls this directly —
-    it runs in a different daemon, so it cannot read the wizard's HTTP
-    response — as the "outer conjunct" alongside
-    ``jasper.output_hardware.detected_hardware_adoption_precondition``'s
-    inner one: adoption being allowed only says the DETECTED hardware is
-    usable, never that it differs from what is already declared. Without this
-    check an already-armed box hitting an ordinary outputd hiccup (a deploy's
-    audio-graph bounce, a crash) was told to "finish setup" for a setup that
-    already happened (#2812 B1).
+    reads this result as ``payload.hardware_mismatch`` (published by
+    ``jasper.web.sound_setup._output_topology_payload``) rather than
+    recomputing it. ``jasper.control.audio_health`` calls this directly — it
+    runs in a different daemon and cannot read the wizard's HTTP response — as
+    the "outer conjunct" alongside
+    ``jasper.output_hardware.detected_hardware_adoption_precondition``'s inner
+    one: adoption being allowed only says the DETECTED hardware is usable,
+    never that it differs from what is already declared, so without this check
+    an already-armed box hitting an ordinary outputd hiccup is told to "finish
+    setup" for a setup that already happened (#2812).
 
-    Returns ``None`` when there's nothing to flag: the hardware has not been
-    observed and no clock-domain blocker is outstanding, or the declared id
-    and output count already match what's attached and no clock blocker is
-    outstanding either.
-
-    This function CANNOT by itself distinguish "genuinely never declared"
-    from "already matches" (#2812 B2). ``topology`` has no ``None`` state for
-    "undeclared" — a caller reading a missing topology file gets one back
-    from ``new_topology_draft`` regardless, and that draft's ``hardware`` is
-    auto-seeded FROM the observed record whenever it has outputs, not from a
-    fixed "unknown" placeholder. So on a truly fresh box whose detected
-    hardware is ready — precisely the case this function's callers care
-    about — the auto-seeded draft and the observed record match by
-    construction, and this function correctly, but unhelpfully, reports no
-    mismatch. Callers that need "was anything ever actually persisted?" must
-    ask ``jasper.output_topology.load_output_topology_snapshot`` for that
-    fact directly (``snapshot.revision == "missing"``) rather than infer it
-    from this function's verdict on the auto-seeded draft; see
-    ``jasper.control.audio_health._undeclared_hardware_signal`` for the
-    worked example.
+    This function CANNOT by itself distinguish "genuinely never declared" from
+    "already matches". ``topology`` has no ``None`` state for "undeclared" — a
+    caller reading a missing topology file gets a ``new_topology_draft`` back
+    regardless, and that draft's ``hardware`` is auto-seeded FROM the observed
+    record whenever it has outputs. So on a fresh box whose detected hardware
+    is ready, the auto-seeded draft and the observed record match by
+    construction and this reports no mismatch. Callers that need "was anything
+    ever actually persisted?" must ask ``load_output_topology_snapshot``
+    (``snapshot.revision == "missing"``); see
+    ``jasper.control.audio_health._undeclared_hardware_signal``.
     """
     clock_blockers = [
         issue
@@ -2081,44 +2022,34 @@ def repin_composite_child_serials(
 ) -> OutputTopology:
     """Return a copy pinned to the units now attached, keeping the design.
 
-    This is the NARROW counterpart to :func:`new_topology_draft`'s wipe. It
-    preserves everything a swapped dongle cannot invalidate — speaker groups,
-    roles, driver styles, physical-output assignment, protection status, the
-    crossover/commissioning design — and rewrites only what belongs to the
-    physical unit: each child's observed identity (serial, ALSA card, sysfs
-    path, controller).
+    The NARROW counterpart to :func:`new_topology_draft`'s wipe: the design a
+    swapped dongle cannot invalidate survives, and only each child's observed
+    physical identity is rewritten.
 
-    One thing it must NOT carry over:
+    ``identity_verified`` is the one thing it must NOT carry over — it is
+    cleared for every channel on a REPLACED child's lanes, and only the
+    per-lane tone check (:func:`channel_identity_report`) re-establishes it.
+    The clear RE-ARMS real refusals: ``startup_load``'s
+    ``physical_identity_verified`` and ``staged_topology_matches_current``
+    gates, and ``path_safety``'s ``route_verified`` / evidence-binding checks
+    all fail until the household re-confirms, so a re-pinned speaker cannot
+    ARM on trust.
 
-    * ``identity_verified`` is cleared for every channel on a REPLACED child's
-      lanes. A household cannot be spared knowing which physical speaker the
-      new unit landed in, and the per-lane tone check
-      (:func:`channel_identity_report`) is what re-establishes it. This clear
-      RE-ARMS real refusals: ``startup_load``'s ``physical_identity_verified``
-      and ``staged_topology_matches_current`` gates, and ``path_safety``'s
-      ``route_verified`` / evidence-binding checks all fail until the
-      household re-confirms, so a re-pinned speaker cannot ARM on trust.
+    Those gates guard the next arm, not the graph a box is ALREADY playing, so
+    an armed box would otherwise keep playing through unconfirmed DACs — on a
+    roleful topology, the full-range-into-a-tweeter hazard class. Silencing
+    that takes TWO halves, neither sufficient alone, and BOTH belong to this
+    function's callers (it is pure — it only clears the evidence):
 
-      Those gates guard the next arm, not the graph a box is ALREADY playing,
-      so an armed box would otherwise keep playing through unconfirmed DACs —
-      on a roleful topology, the full-range-into-a-tweeter hazard class.
-      Silencing it is ONE promise kept in TWO halves, neither sufficient alone:
-
-      1. **Immediate**, same request:
-         ``runtime_convergence.park_and_commit_topology(stay_parked=True)``
-         skips graph selection and makes the park durable, so the effect lands
-         at the click.
-      2. **Durable**, every later pass:
-         ``runtime_contract.roleful_identity_confirmed`` gates the two
-         approved-active-runtime rungs of the graph selector. Without it the
-         park was LIVE-ONLY — the reconcile fired by that same request
-         re-selected the applied baseline, and audio returned at the next
-         ``jasper-camilla`` bounce, which every deploy and reboot performs.
-
-      Audio returns once every assigned lane is confirmed again and the box
-      re-arms — the arm ladder is one route to that, not the only one. This
-      function is pure: it clears the evidence, and both halves above belong to
-      its callers.
+    1. Immediate, same request:
+       ``runtime_convergence.park_and_commit_topology(stay_parked=True)`` skips
+       graph selection and makes the park durable.
+    2. Durable, every later pass:
+       ``runtime_contract.roleful_identity_confirmed`` gates the two
+       approved-active-runtime rungs of the graph selector. Without it the park
+       is LIVE-ONLY: the reconcile fired by the same request re-selects the
+       applied baseline, and audio returns at the next ``jasper-camilla``
+       bounce, which every deploy and reboot performs.
 
     Raises ``OutputTopologyError`` when the attached hardware is not a
     same-shape re-pin — callers offer this only after
@@ -2149,7 +2080,7 @@ def repin_composite_child_serials(
     # Round-trip through the artifact contract before it can be persisted: the
     # rewritten fields are observed strings from the reconciler, and `replace`
     # bypasses every check `from_mapping` owns (id shape, length caps, lane
-    # coverage). The sibling reset validates the hardware it adopts; so does this.
+    # coverage).
     hardware = OutputHardware.from_mapping(composed.to_dict())
     return replace(
         topology,
@@ -2230,11 +2161,10 @@ def _with_server_owned_identity(
     that lane, so a writer that is not :func:`set_channel_identity_verified`
     may only carry the persisted record forward: its ``True`` survives where
     ``recorded`` already holds one for the same group, role, physical output,
-    AND declared hardware device — re-pinning a lane, or swapping the
-    declared device under an unchanged group/role/output key, retires the
-    audition that named it, because the audition named that hardware, not
-    the key. Clearing stays open to every writer, so either kind of change
-    still lands its clear.
+    AND declared hardware device. Re-pinning a lane, or swapping the declared
+    device under an unchanged group/role/output key, retires the audition that
+    named it, because the audition named that hardware, not the key. Clearing
+    stays open to every writer.
     """
 
     verified = {
@@ -2360,14 +2290,11 @@ def load_output_topology_strict(path: str | Path | None = None) -> OutputTopolog
         ) from exc
     except ValueError as exc:
         # `OutputTopologyError` IS a ValueError, so the domain error still lands
-        # here unchanged. Catching the BASE is what makes this function's
-        # documented contract — every malformed artifact leaves as one typed
-        # error — true of the whole parse instead of only the fields that happen
-        # to raise the subclass. A field validated by a helper that predates
-        # `JsonFields` raises the plain base, and before this such a field
-        # escaped the fail-closed handling of every caller that authorizes a
-        # runtime graph. The snapshot loader above carries the same widening for
-        # the same reason.
+        # here unchanged. Catching the BASE is deliberate: not every field
+        # validator raises the subclass, and only the base makes "every
+        # malformed artifact leaves as one typed error" true of the whole parse
+        # — which every caller that authorizes a runtime graph fails closed on.
+        # The snapshot loader above widens for the same reason.
         raise OutputTopologyError(
             f"output topology {target} is invalid: {exc}"
         ) from exc
@@ -2377,11 +2304,10 @@ def load_output_topology_strict(path: str | Path | None = None) -> OutputTopolog
 # event, and `load_output_topology` is called on a steady cadence inside
 # long-lived daemons (jasper-control's audio_health route sampler, every 60 s).
 # Unguarded that is ~1,440 identical WARN lines/day drowning the journal in an
-# already-degraded state (#2140). So log the transitions — into failure, and
+# already-degraded state (#2140). So log the transitions — into failure and
 # back out — plus a reminder slow enough to stay readable and frequent enough
 # that a persistent failure is never silent. A short-lived process (doctor, a
-# wizard request) starts with empty state and therefore always logs its first
-# failure.
+# wizard request) starts with empty state and always logs its first failure.
 LOAD_FAILURE_REMINDER_SEC = 3600.0
 # Bounded because this lives for the process's lifetime. Production resolves
 # one path; the cap only matters for callers that pass explicit paths.
@@ -2393,9 +2319,9 @@ def _now() -> float:
     return time.monotonic()
 
 
-# One shared transition-or-reminder gate (jasper.transition_log), not a
-# hand-rolled dict+lock: the crossover level-run poller consumes the same one.
-# The clock is looked up through this module so a test may monkeypatch `_now`.
+# The shared transition-or-reminder gate (jasper.transition_log), also consumed
+# by the crossover level-run poller. The clock is looked up through this module
+# so a test may monkeypatch `_now`.
 _load_failures = TransitionLog(
     reminder_sec=LOAD_FAILURE_REMINDER_SEC,
     max_keys=_LOAD_FAILURE_STATE_MAX,
@@ -2447,8 +2373,8 @@ def save_output_topology(
     data = json.dumps(topology.to_dict(), indent=2, sort_keys=True) + "\n"
     # /var/lib/jasper is group jasper but NOT setgid, so a root-run recovery
     # write must publish under the directory's group for the non-root management
-    # daemons. Group assignment remains best-effort: losing that metadata is
-    # observable, but must not lose the topology write itself.
+    # daemons. Group assignment is best-effort: losing that metadata must not
+    # lose the topology write itself.
     atomic_write_text(
         target,
         data,

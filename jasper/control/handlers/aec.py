@@ -12,6 +12,14 @@ from .. import server as _server
 from ._base import ControlHandlerMixin
 
 
+def _commission_start_body(*, running: bool) -> dict[str, Any]:
+    """The `commission` object on a start refusal: no run's verdict to report.
+
+    Same keys as GET /aec's, so one client-side reader handles both.
+    """
+    return {"running": running, "state": "", "detail": ""}
+
+
 class AecRoutes(ControlHandlerMixin):
     def _get_aec(self) -> None:
         # AEC bridge state + per-leg config + wake
@@ -33,75 +41,6 @@ class AecRoutes(ControlHandlerMixin):
     def _get_enhanced_aec(self) -> None:
         self._send_json(_server._enhanced_aec_status())
 
-    def _post_aec_toggle(self) -> None:
-        # Flip the software-AEC3/direct-mic mode between auto and disabled,
-        # then kick the reconciler. Chip-AEC profiles bypass WebRTC AEC3
-        # but still need jasper-aec-bridge.service as the chip-beam UDP
-        # carrier, so attempts to disable "software AEC3" while chip-AEC is
-        # active are rejected below. Called by the /wake/ page's software
-        # AEC3 layer toggle (after a current-state read for idempotent
-        # set-state semantics). Non-blocking — the wizard polls /aec to
-        # see when the transition lands (~10-15 s). The kick uses systemctl
-        # restart so rapid toggles cannot be swallowed while the oneshot
-        # reconciler is already active.
-        #
-        # Risk model: LAN-local + browser-origin guard, same
-        # as /system/restart/*. This is still not auth; it is
-        # the small boundary that blocks cross-site browser
-        # POSTs and DNS-rebinding Host headers while keeping
-        # curl, local proxies, and accessories working.
-        current = _server._read_aec_mode()
-        new_mode = "disabled" if current == "auto" else "auto"
-        if new_mode == "disabled":
-            status = _server._aec_full_status()
-            if status.get("software_aec3", {}).get("bypassed"):
-                self._send_json(
-                    {
-                        "error": (
-                            "Software AEC3 is already bypassed by the "
-                            "chip-AEC profile. Choose Direct mic to stop "
-                            "the chip-AEC bridge carrier, or choose XVF "
-                            "software AEC3 to use WebRTC AEC3."
-                        ),
-                        "mode": current,
-                        "bridge_role": status.get("bridge_role"),
-                    },
-                    status=409,
-                )
-                return
-        try:
-            _server._write_aec_mode(new_mode)
-        except (OSError, ValueError) as e:
-            self._send_json(
-                {"error": f"write aec_mode.env failed: {e}"},
-                status=502,
-            )
-            return
-        try:
-            _server._kick_aec_reconciler()
-        except (OSError, _server.subprocess.SubprocessError) as e:
-            self._send_json(
-                {"error": f"reconciler restart failed: {e}"},
-                status=502,
-            )
-            return
-        _server.log_event(
-            _server.logger,
-            "aec.toggle",
-            fields={
-                "from": current,
-                "to": new_mode,
-                "client": self.address_string(),
-            },
-        )
-        self._send_json(
-            {
-                "mode": new_mode,
-                "bridge_active": _server._aec_bridge_active(),
-            }
-        )
-        return
-
     def _post_aec_leg(self) -> None:
         # Toggle one of the additive wake-detection legs
         # (raw chip-direct, DTLN neural, or chip-AEC beams). The
@@ -115,7 +54,7 @@ class AecRoutes(ControlHandlerMixin):
         # leave voice listening on a port nobody talks to.
         #
         # Risk model: LAN-local + browser-origin guard, same
-        # as /aec/toggle.
+        # as /system/restart/*.
         body = self._read_json()
         leg = body.get("leg")
         enabled_val = body.get("enabled")
@@ -164,8 +103,8 @@ class AecRoutes(ControlHandlerMixin):
         # Set the canonical mic/AEC input profile. This is the
         # preferred surface for households and onboarding: it writes
         # one high-level choice plus rollback-safe legacy leg keys.
-        # The older /aec/toggle and /aec/leg routes remain as custom
-        # expert controls and stamp JASPER_AUDIO_INPUT_PROFILE=custom.
+        # The older /aec/leg route remains as a custom expert control
+        # and stamps JASPER_AUDIO_INPUT_PROFILE=custom.
         body = self._read_json()
         profile = body.get("profile")
         if not isinstance(profile, str):
@@ -441,7 +380,7 @@ class AecRoutes(ControlHandlerMixin):
                 self._send_json(
                     {
                         "error": "chip-AEC re-commissioning is already running",
-                        "commission": {"running": True},
+                        "commission": _commission_start_body(running=True),
                     },
                     status=409,
                 )
@@ -452,7 +391,7 @@ class AecRoutes(ControlHandlerMixin):
                 {
                     "error": "the re-commissioning run could not be started",
                     "code": "aec_commission_start_failed",
-                    "commission": {"running": False},
+                    "commission": _commission_start_body(running=False),
                 },
                 status=502,
             )

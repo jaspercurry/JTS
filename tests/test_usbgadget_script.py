@@ -20,9 +20,11 @@ The truth table (JASPER_USB_NETWORK x audio-intent) is exercised row by row.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -96,7 +98,8 @@ def _run(
     configfs: Path | None = None,
     cpuinfo_serial: str = "10000000abcdef01",
     speaker_name_file: Path | None = None,
-    usb_mic: str = FALSE,
+    usb_mic: bool = False,
+    usb_mic_intent_file: Path | None = None,
     env_file: Path | None = None,
     env_extra: dict[str, str] | None = None,
     args: list[str] | None = None,
@@ -105,18 +108,29 @@ def _run(
     udc = _udc_dir(tmp_path, present=udc_present)
     env = os.environ.copy()
     audio_allowed = TRUE if audio_intent == TRUE and audio_gate == TRUE else FALSE
+    if usb_mic_intent_file is None:
+        usb_mic_intent_file = tmp_path / "usb_mic.env"
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        usb_mic_intent_file.write_text(
+            f"JASPER_USB_MIC={'enabled' if usb_mic else 'disabled'}\n",
+            encoding="utf-8",
+        )
     env.update({
         "JASPER_CONFIGFS_ROOT": str(configfs),
         "JASPER_UDC_CLASS_DIR": str(udc),
         "JASPER_USBGADGET_AUDIO_ALLOWED_CMD": audio_allowed,
         "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD": hardware_allowed,
-        "JASPER_USBGADGET_USB_MIC_ENABLED_CMD": usb_mic,
+        "JASPER_USB_MIC_INTENT_FILE": str(usb_mic_intent_file),
         "JASPER_CPUINFO_FILE": str(_cpuinfo(tmp_path, cpuinfo_serial)),
         # Keep the speaker-name source deterministic + absent by default.
         "JASPER_SPEAKER_NAME_FILE": str(
             speaker_name_file or (tmp_path / "no-such-name.env")
         ),
-        "JASPER_SPEAKER_NAME_READER": str(ROOT / ".venv/bin/python"),
+        # Absent by default, so the rows below exercise the resolver seam above
+        # rather than the reconciler's marker short circuit.
+        "JASPER_USBGADGET_MANAGEMENT_TRANSPORT_MARKER": str(
+            tmp_path / "no-such-management-transport.ok"
+        ),
         # Absent by default so a developer box that HAS /etc/jasper/jasper.env
         # cannot leak its kill switch into these rows.
         "JASPER_USBGADGET_ENV_FILE": str(
@@ -383,7 +397,7 @@ def test_up_usb_microphone_adds_only_the_reverse_uac2_direction(tmp_path):
         network="enabled",
         audio_intent=TRUE,
         audio_gate=TRUE,
-        usb_mic=TRUE,
+        usb_mic=True,
     )
     assert proc.returncode == 0, proc.stderr
     assert "audio=1 usb_mic=1" in proc.stderr
@@ -399,7 +413,7 @@ def test_up_usb_microphone_never_creates_uac2_without_usb_audio_input(tmp_path):
         tmp_path,
         network="enabled",
         audio_intent=FALSE,
-        usb_mic=TRUE,
+        usb_mic=True,
     )
     assert proc.returncode == 0, proc.stderr
     assert "audio=0 usb_mic=0" in proc.stderr
@@ -663,13 +677,13 @@ def test_converge_treats_the_microphone_as_part_of_the_composition(tmp_path):
     why re-applying the shape it already carries does not."""
     proc1, cfg = _run(
         UP, tmp_path, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
-        usb_mic=TRUE,
+        usb_mic=True,
     )
     assert proc1.returncode == 0, proc1.stderr
 
     same, same_calls = _converge(
         tmp_path / "same", cfg, network="enabled", audio_intent=TRUE,
-        audio_gate=TRUE, usb_mic=TRUE,
+        audio_gate=TRUE, usb_mic=True,
     )
     assert same.returncode == 0, same.stderr
     assert "state=unchanged" in same.stderr
@@ -677,7 +691,7 @@ def test_converge_treats_the_microphone_as_part_of_the_composition(tmp_path):
 
     off, off_calls = _converge(
         tmp_path / "off", cfg, network="enabled", audio_intent=TRUE,
-        audio_gate=TRUE, usb_mic=FALSE,
+        audio_gate=TRUE, usb_mic=False,
     )
     assert off.returncode == 0, off.stderr
     assert "state=rebuilding" in off.stderr
@@ -909,7 +923,6 @@ def test_name_patch_treats_speaker_state_as_inert_data(tmp_path: Path) -> None:
         env={
             **os.environ,
             "JASPER_SPEAKER_NAME_FILE": str(state),
-            "JASPER_SPEAKER_NAME_READER": str(ROOT / ".venv/bin/python"),
             "JASPER_MODULES_ROOT": str(modules_root),
         },
         text=True,
@@ -920,9 +933,6 @@ def test_name_patch_treats_speaker_state_as_inert_data(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "event=usbsink_name.no_stock_module" in result.stderr
     assert not marker.exists()
-    script = NAME_PATCH.read_text(encoding="utf-8")
-    assert 'source "${SPEAKER_NAME_FILE}"' not in script
-    assert "\neval " not in script
 
 
 def test_root_name_readers_reject_malformed_and_unsafe_paths(tmp_path: Path) -> None:
@@ -978,7 +988,6 @@ def test_root_name_readers_reject_malformed_and_unsafe_paths(tmp_path: Path) -> 
             env={
                 **os.environ,
                 "JASPER_SPEAKER_NAME_FILE": str(state),
-                "JASPER_SPEAKER_NAME_READER": str(ROOT / ".venv/bin/python"),
                 "JASPER_MODULES_ROOT": str(modules_root),
             },
             text=True,
@@ -989,11 +998,152 @@ def test_root_name_readers_reject_malformed_and_unsafe_paths(tmp_path: Path) -> 
         assert patch_result.returncode == 0
         assert "event=usbsink_name.no_stock_module" in patch_result.stderr
 
-    for script in (UP, NAME_PATCH):
-        text = script.read_text(encoding="utf-8")
-        assert '"${SPEAKER_NAME_READER}" -m jasper.speaker_name' in text
-        assert 'source "${SPEAKER_NAME_FILE}"' not in text
-        assert "wc -c" not in text
+
+def _compose_fact(fact: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", f'source "{COMPOSE}"\n{fact}\n'],
+        check=False, cwd=ROOT, env={**os.environ, **env}, text=True,
+        capture_output=True, timeout=30,
+    )
+
+
+@pytest.mark.parametrize("body", [
+    'JASPER_SPEAKER_NAME="Kitchen"\n',
+    "JASPER_SPEAKER_NAME=Kitchen\n",
+    "JASPER_SPEAKER_NAME='Living Room #2'\n",
+    'JASPER_SPEAKER_NAME="A"\nJASPER_SPEAKER_NAME="B"\n',
+    'JASPER_SPEAKER_ROOM="Hall"\nJASPER_SPEAKER_NAME="Kitchen Two"\n',
+    '  JASPER_SPEAKER_NAME="  Kitchen   Two "\n',
+    'JASPER_SPEAKER_NAME=""\n',
+    'JASPER_SPEAKER_NAME="' + "A" * 33 + '"\n',
+    'JASPER_SPEAKER_NAME="Kitchen/Bath"\n',
+    'JASPER_SPEAKER_NAME="-Kitchen-"\n',
+    'JASPER_SPEAKER_NAME="Café"\n',
+    'JASPER_SPEAKER_ROOM="Kitchen"\n',
+    # Hand-edited shapes, where the shell must follow shlex rather than the
+    # looser env_load parse the network key uses.
+    "JASPER_SPEAKER_NAME=Kitchen # home\n",
+    "  JASPER_SPEAKER_NAME = Kitchen \n",
+    "JASPER_SPEAKER_NAME=Living Room\n",
+    "",
+])
+def test_shell_and_python_name_readers_cannot_disagree(tmp_path: Path, body: str):
+    """One answer from both readers: quoting, whitespace, length, character
+    policy and the JTS fallback. A quoted value with trailing text is the one
+    shape left out — it lands on JTS, as an unreadable file does."""
+    from jasper.speaker_name import read_state
+
+    state = tmp_path / "speaker_name.env"
+    state.write_text(body, encoding="utf-8")
+
+    proc = _compose_fact(
+        'printf %s "$(jasper_usbgadget_speaker_name)"',
+        {"JASPER_SPEAKER_NAME_FILE": str(state)},
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == read_state(str(state)).name
+
+
+# jasper.usb_mic.read_intent's own cap, tighter than the identity reader's
+# 64 KiB. The rows either side of it are the shapes a byte count taken after
+# shell mangling (stripped trailing newlines, deleted NULs) would misjudge.
+_INTENT_CAP = 4096
+_INTENT_ON = b"JASPER_USB_MIC=enabled\n"
+
+
+@pytest.mark.parametrize("body", [
+    b"JASPER_USB_MIC=enabled\n",
+    b'JASPER_USB_MIC="enabled"\n',
+    b"  JASPER_USB_MIC = 'enabled'  \n",
+    b"JASPER_USB_MIC=enabled\nJASPER_USB_MIC=disabled\n",
+    b"JASPER_USB_MIC=disabled\nJASPER_USB_MIC=enabled\n",
+    b"JASPER_USB_MIC=disabled\n",
+    b"JASPER_USB_MIC=ENABLED\n",
+    b"JASPER_USB_MIC=\n",
+    b"JASPER_USB_MIC_LEG=primary\n",
+    b"\x00\xff not an env file at all\n",
+    _INTENT_ON + b"#" * (_INTENT_CAP - len(_INTENT_ON) - 1) + b"\n",
+    _INTENT_ON + b"#" * (_INTENT_CAP + 1 - len(_INTENT_ON) - 1) + b"\n",
+    _INTENT_ON + b"#" * (_INTENT_CAP + 2 - len(_INTENT_ON) - 2) + b"\n\n",
+    _INTENT_ON + b"\x00" * (_INTENT_CAP + 1),
+    b"",
+])
+def test_shell_and_python_intent_readers_cannot_disagree(tmp_path: Path, body: bytes):
+    """Only an explicit, valid `enabled` composes p_chmask=1; every other
+    reading, the over-cap file included, is Off. An unbalanced quote
+    (`="enabled`) is the one shape left out — it resolves Off."""
+    from jasper.usb_mic import usb_mic_enabled
+
+    intent = tmp_path / "usb_mic.env"
+    intent.write_bytes(body)
+
+    proc = _compose_fact(
+        "jasper_usbgadget_usb_mic_enabled", {"JASPER_USB_MIC_INTENT_FILE": str(intent)}
+    )
+
+    assert (proc.returncode == 0) is usb_mic_enabled(intent)
+
+
+@pytest.mark.parametrize("readable", [False, True])
+def test_readers_refuse_state_they_cannot_bound(tmp_path: Path, readable: bool):
+    """A symlink, a FIFO, or a file over the reader's cap is refused rather
+    than followed or truncated — the same rejection
+    jasper.atomic_io.read_regular_bytes_nofollow makes."""
+    target = tmp_path / "target.env"
+    target.write_text('JASPER_SPEAKER_NAME="Forged"\n', encoding="utf-8")
+    cases = [tmp_path / "link.env", tmp_path / "fifo.env", tmp_path / "big.env"]
+    cases[0].symlink_to(target)
+    os.mkfifo(cases[1])
+    cases[2].write_bytes(b'JASPER_SPEAKER_NAME="Forged"\n' + b"#" * (64 * 1024))
+    if readable:
+        # The same inode shapes, minus the one property under test, must still
+        # resolve — otherwise "refused" could be an unconditional JTS.
+        cases = [target]
+
+    for state in cases:
+        proc = _compose_fact(
+            'printf %s "$(jasper_usbgadget_speaker_name)"',
+            {"JASPER_SPEAKER_NAME_FILE": str(state)},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == ("Forged" if readable else "JTS")
+
+
+def test_bring_up_stops_probing_the_resolver_once_the_reconciler_has_spoken(
+    tmp_path: Path,
+):
+    """jasper-usbgadget-wanted and jasper-usbgadget-up each answer the same
+    hardware question, once per bring-up. The reconciler's marker answers both
+    without an interpreter; an absent marker still falls back to the resolver,
+    because reading absence as `unavailable` would strand a deploy riding
+    ncm.usb0."""
+    calls = tmp_path / "probe.log"
+    probe = tmp_path / "hardware-probe"
+    _write_python_shim(
+        probe,
+        "import pathlib\n"
+        f"pathlib.Path({str(calls)!r}).open('a').write('probed\\n')\n",
+    )
+    marker = tmp_path / "management-transport.ok"
+
+    def _bring_up(run: Path) -> tuple[int, Path]:
+        before = len(calls.read_text().splitlines()) if calls.exists() else 0
+        for script in (WANTED, UP):
+            proc, cfg = _run(
+                script, run, network="enabled", audio_intent=FALSE,
+                hardware_allowed=str(probe),
+                env_extra={"JASPER_USBGADGET_MANAGEMENT_TRANSPORT_MARKER": str(marker)},
+            )
+            assert proc.returncode == 0, proc.stderr
+        return len(calls.read_text().splitlines()) - before, cfg
+
+    spawned, cfg = _bring_up(tmp_path / "fallback")
+    assert (spawned, _linked(cfg, "ncm.usb0")) == (2, True)
+
+    marker.touch()
+    spawned, cfg = _bring_up(tmp_path / "marker")
+    assert (spawned, _linked(cfg, "ncm.usb0")) == (0, True)
 
 
 # A minimal blob shaped like usb_f_uac2.ko's .rodata: the four AudioStreaming
@@ -1017,8 +1167,12 @@ def _write_python_shim(path: Path, body: str) -> None:
     """A fake PATH executable, in Python to sidestep shell-quoting entirely.
     Used for depmod/lsmod/stat, none of which exist (or behave GNU-style) on
     a macOS dev sandbox, and none of which a hermetic test should invoke for
-    real even on Linux (depmod/lsmod would read the actual running kernel)."""
-    path.write_text(f"#!/usr/bin/env python3\n{body}", encoding="utf-8")
+    real even on Linux (depmod/lsmod would read the actual running kernel).
+
+    The shebang names this interpreter by absolute path, never `env python3`,
+    so a shim dir may also carry a counting `python3` without the shims
+    recursing through it."""
+    path.write_text(f"#!{sys.executable}\n{body}", encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -1066,6 +1220,7 @@ def _fake_modules_tree(
         (updates / "usb_f_uac2.ko").write_bytes(b"\x7fELF stale override")
     return {
         "modules_root": modules_root,
+        "stock": kernel_dir / "usb_f_uac2.ko",
         "override": updates / "usb_f_uac2.ko",
         "marker": updates / ".jasper-usbsink-name.marker",
         "pending": updates / ".jasper-usbsink-name.pending",
@@ -1082,13 +1237,22 @@ def _name_patch_env(
 ) -> dict:
     """PATH shims + env for a hermetic name-patch run.
 
-    Returns the env plus the two sentinels the assertions read: whether the
-    depmod stand-in was ever executed, and what the script asked systemctl
-    to do."""
+    Returns the env plus the sentinels the assertions read: whether the depmod
+    stand-in was ever executed, what the script asked systemctl to do, and how
+    many interpreters it started."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     depmod_ran = tmp_path / "depmod-ran"
     systemctl_log = tmp_path / "systemctl.log"
+    interpreters = tmp_path / "interpreters.log"
+
+    for interpreter in ("python", "python3"):
+        _write_python_shim(
+            bin_dir / interpreter,
+            "import pathlib, sys\n"
+            f"with pathlib.Path({str(interpreters)!r}).open('a') as fh:\n"
+            "    fh.write(' '.join(sys.argv[1:]) + '\\n')\n",
+        )
 
     _write_python_shim(
         bin_dir / "depmod",
@@ -1128,12 +1292,12 @@ def _name_patch_env(
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "JASPER_MODULES_ROOT": str(modules_root),
         "JASPER_SPEAKER_NAME_FILE": str(tmp_path / "no-such-name.env"),
-        "JASPER_SPEAKER_NAME_READER": "/usr/bin/python3",
     }
     return {
         "env": env,
         "depmod_ran": depmod_ran,
         "systemctl_log": systemctl_log,
+        "interpreters": interpreters,
     }
 
 
@@ -1274,6 +1438,45 @@ def test_publish_arms_the_marker_when_the_override_is_already_indexed(
     assert fields[3] == "JTS Mic"
     # Not yet the real marker: only the index phase may promote it.
     assert not tree["marker"].exists()
+
+
+def test_steady_state_publish_reads_the_name_and_then_does_nothing(
+    tmp_path: Path,
+) -> None:
+    """The unchanged boot: an override whose marker already describes the
+    desired kernel/name/stock triple costs no rebuild and no index kick, and
+    the name in that marker is read here, which pins that the shell reader is
+    what fills it in.
+
+    "No interpreter" is asserted the only way this script can prove it: the
+    patcher it would otherwise run is invoked by absolute path, so the counting
+    shim on PATH cannot see it — an untouched override plus an unkicked index
+    unit is what says it never ran."""
+    tree = _fake_modules_tree(tmp_path, indexed=True, preexisting_override=True)
+    shims = _name_patch_env(tmp_path, tree["modules_root"])
+    name_file = tmp_path / "speaker_name.env"
+    name_file.write_text('JASPER_SPEAKER_NAME="Kitchen Two"\n', encoding="utf-8")
+    shims["env"]["JASPER_SPEAKER_NAME_FILE"] = str(name_file)
+    stock_hash = hashlib.sha256(tree["stock"].read_bytes()).hexdigest()
+    tree["marker"].write_text(
+        "\t".join(
+            ("3", os.uname().release, "Kitchen Two", "Kitchen Two Mic", stock_hash)
+        ),
+        encoding="utf-8",
+    )
+    before = tree["override"].read_bytes()
+
+    proc = subprocess.run(
+        [str(NAME_PATCH)], env=shims["env"], capture_output=True, text=True, timeout=60
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=usbsink_name.steady_state" in proc.stderr
+    assert tree["override"].read_bytes() == before
+    assert not tree["pending"].exists()
+    assert not shims["depmod_ran"].exists()
+    assert not shims["systemctl_log"].exists()
+    assert not shims["interpreters"].exists()
 
 
 def test_index_phase_promotes_the_pending_marker_after_depmod_succeeds(

@@ -17,7 +17,6 @@ import io
 import logging
 import threading
 import time
-from contextlib import asynccontextmanager
 from http import HTTPStatus
 from types import SimpleNamespace
 
@@ -28,7 +27,8 @@ import jasper.multiroom.state as mstate
 from jasper.web import rooms_setup as rooms
 from jasper.web import active_speaker_flow, sync_flow
 
-from ._async_wait import wait_until_sync
+from ._async_wait import wait_until, wait_until_sync
+from ._web_test_helpers import patch_measurement_window
 
 
 LEADER_G = {
@@ -122,8 +122,7 @@ def _reset_sync_state():
 @pytest.fixture
 def sync_env(loop_thread, monkeypatch):
     calls = {
-        "window_open": 0,
-        "window_closed": 0,
+        "window_events": [],
         "window_mode": "ok",
         "futures": [],
         "procs": [],
@@ -144,17 +143,7 @@ def sync_env(loop_thread, monkeypatch):
     )
     monkeypatch.setattr(active_speaker_flow, "active_phase", lambda: None)
 
-    @asynccontextmanager
-    async def fake_window():
-        calls["window_open"] += 1
-        if calls["window_mode"] == "fail":
-            raise RuntimeError("window refused")
-        try:
-            yield
-        finally:
-            calls["window_closed"] += 1
-
-    monkeypatch.setattr(coordinator, "measurement_window", fake_window)
+    patch_measurement_window(monkeypatch, calls)
 
     async def fake_spawn(_wav_path: str):
         proc = FakeProc()
@@ -258,7 +247,7 @@ def test_start_rejects_unbonded_follower_ambiguous_and_bad_channels(
     payload, status = sync_flow.handle_start("jts.local", sync_env["schedule"])
     assert status == HTTPStatus.CONFLICT
     assert "one left + one right" in payload["error"]
-    assert sync_env["window_open"] == 0
+    assert sync_env["window_events"] == []
 
 
 def test_start_rejects_active_commissioning(sync_env, monkeypatch):
@@ -268,7 +257,7 @@ def test_start_rejects_active_commissioning(sync_env, monkeypatch):
 
     assert status == HTTPStatus.CONFLICT
     assert "active-speaker commissioning" in payload["error"]
-    assert sync_env["window_open"] == 0
+    assert sync_env["window_events"] == []
 
 
 def test_start_holds_one_window_reports_public_status_and_rejects_double_start(
@@ -296,13 +285,12 @@ def test_start_holds_one_window_reports_public_status_and_rejects_double_start(
         "recommendation": None,
         "playing": False,
     }
-    assert sync_env["window_open"] == 1
-    assert sync_env["window_closed"] == 0
+    assert sync_env["window_events"] == ["open"]
 
     second, status = sync_flow.handle_start("jts.local", sync_env["schedule"])
     assert status == HTTPStatus.CONFLICT
     assert "already running" in second["error"]
-    assert sync_env["window_open"] == 1
+    assert sync_env["window_events"] == ["open"]
 
 
 def test_start_surfaces_window_entry_failure(sync_env):
@@ -356,32 +344,23 @@ def test_start_timeout_cancels_future_and_late_window_cannot_open(
     assert sync_flow.handle_status()["phase"] == "idle"
     assert len(scheduled) == 1
     asyncio.run(scheduled[0])
-    assert sync_env["window_open"] == 0
+    assert sync_env["window_events"] == []
     assert sync_flow.handle_status()["phase"] == "idle"
 
 
 def test_stale_window_exit_failure_cannot_reset_replacement_session(monkeypatch):
-    exit_started = asyncio.Event()
+    calls = {"window_events": [], "window_mode": "fail_exit"}
+    patch_measurement_window(monkeypatch, calls)
     new_releases: list[bool] = []
 
-    @asynccontextmanager
-    async def fail_on_exit():
-        try:
-            yield
-        finally:
-            exit_started.set()
-            raise RuntimeError("old window exit failed")
-
-    monkeypatch.setattr(coordinator, "measurement_window", fail_on_exit)
-
     async def run() -> None:
-        entered = threading.Event()
+        window = coordinator.HeldWindow()
         with sync_flow._lock:
             sync_flow._reset_locked()
             sync_flow._state["phase"] = "measuring"
             session_token = int(sync_flow._state["session_token"])
-        task = asyncio.create_task(sync_flow._session_window(session_token, entered))
-        assert await asyncio.to_thread(entered.wait, 1)
+        task = asyncio.create_task(sync_flow._session_window(session_token, window))
+        assert await asyncio.to_thread(window.entered.wait, 1)
 
         sync_flow.handle_stop()
         with sync_flow._lock:
@@ -390,7 +369,7 @@ def test_stale_window_exit_failure_cannot_reset_replacement_session(monkeypatch)
                 error="",
                 release_window=lambda: new_releases.append(True),
             )
-        await asyncio.wait_for(exit_started.wait(), timeout=1)
+        await wait_until(lambda: calls["window_events"] == ["open", "close"])
         await task
 
     asyncio.run(run())
@@ -401,23 +380,17 @@ def test_stale_window_exit_failure_cannot_reset_replacement_session(monkeypatch)
 
 
 def test_same_session_window_exit_failure_resets_analyzed_session(monkeypatch):
-    @asynccontextmanager
-    async def fail_on_exit():
-        try:
-            yield
-        finally:
-            raise RuntimeError("window restore failed")
-
-    monkeypatch.setattr(coordinator, "measurement_window", fail_on_exit)
+    patch_measurement_window(
+        monkeypatch, {"window_events": [], "window_mode": "fail_exit"})
 
     async def run() -> None:
-        entered = threading.Event()
+        window = coordinator.HeldWindow()
         with sync_flow._lock:
             sync_flow._reset_locked()
             sync_flow._state["phase"] = "measuring"
             session_token = int(sync_flow._state["session_token"])
-        task = asyncio.create_task(sync_flow._session_window(session_token, entered))
-        assert await asyncio.to_thread(entered.wait, 1)
+        task = asyncio.create_task(sync_flow._session_window(session_token, window))
+        assert await asyncio.to_thread(window.entered.wait, 1)
         with sync_flow._lock:
             sync_flow._state["phase"] = "analyzed"
             release = sync_flow._state["release_window"]
@@ -469,7 +442,7 @@ def test_analyze_gates_errors_retry_and_success(sync_env, monkeypatch):
     assert status == HTTPStatus.OK
     assert payload["ok"] is False
     assert sync_flow.active_phase() == "measuring"
-    assert sync_env["window_closed"] == 0
+    assert sync_env["window_events"] == ["open"]
 
     good = SimpleNamespace(
         ok=True,
@@ -490,8 +463,7 @@ def test_analyze_gates_errors_retry_and_success(sync_env, monkeypatch):
     assert payload["ok"] is True
     assert sync_flow.active_phase() is None
     assert sync_flow.handle_status()["phase"] == "analyzed"
-    wait_until_sync(lambda: sync_env["window_closed"] == 1)
-    assert sync_env["window_closed"] == 1
+    wait_until_sync(lambda: sync_env["window_events"] == ["open", "close"])
 
 
 def test_stop_terminates_playback_releases_window_and_watcher_finishes(sync_env):
@@ -509,8 +481,7 @@ def test_stop_terminates_playback_releases_window_and_watcher_finishes(sync_env)
     assert stop_status == HTTPStatus.OK
     assert stop_payload == {"ok": True}
     assert sync_env["procs"][0].terminated is True
-    wait_until_sync(lambda: sync_env["window_closed"] == 1)
-    assert sync_env["window_closed"] == 1
+    wait_until_sync(lambda: sync_env["window_events"] == ["open", "close"])
     for future in sync_env["futures"]:
         future.result(timeout=1)
     assert sync_flow.active_phase() is None

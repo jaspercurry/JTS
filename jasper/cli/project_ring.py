@@ -51,7 +51,12 @@ from jasper.cli._refusal import (
 )
 
 
-def _build_parser() -> argparse.ArgumentParser:
+#: Tool-menu authority tier (scripts/generate-tuning-tool-menu.py): it writes a
+#: ring beside the bundle and changes nothing the speaker plays.
+AUTHORITY_TIER = "mutating (projects evidence; changes nothing played)"
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jasper-project-ring",
         description=(
@@ -91,7 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
 
     try:
         projection = project_ring(

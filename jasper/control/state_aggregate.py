@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
 from .. import identity_state
+from ..accessories import status as accessory_status
 from ..audio_quality import (
     DEFAULT_CONVERTER as _default_audio_converter,
     converter_options as _audio_converter_options,
@@ -360,11 +361,10 @@ def _coupling_state(
         from pathlib import Path
 
         from ..audio_runtime_plan import TRANSPORT_DAC_CONTENT_RING
-        from ..fanin.ring_health import FANIN_ENV_PATH
+        from ..fanin.ring_health import FANIN_ENV_PATH, persisted_coupling_feeds_ring
         from ..fanin_coupling import (
             COUPLING_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-            coupling_value_removed,
             dac_content_marker_contradicted,
             dac_content_ring_served,
             outputd_content_is_central_ring,
@@ -424,7 +424,7 @@ def _coupling_state(
             # would report a correctly-configured speaker as mid-flip. `direct`
             # remains the one incoherent value — nothing serves it.
             "intent_coherent": (
-                not coupling_value_removed(coupling)
+                persisted_coupling_feeds_ring(text=fanin_text)
                 and content_bridge not in ("direct", "contradicted")
             ),
             "live_transport": live_transport,
@@ -862,18 +862,6 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _capture_relay_config() -> dict[str, Any]:
-    """Network-free phone-mic-relay config snapshot for `/state.capture_relay`.
-
-    The parser lives in an import-light top-level module so jasper-control does
-    not import the capture-relay package's audio/crypto runtime for one config
-    field.
-    """
-    from jasper.capture_relay_config import relay_config_from_env
-
-    return relay_config_from_env()
-
-
 async def _get_state(
     *,
     camilla_host: str,
@@ -1133,9 +1121,7 @@ async def _get_state(
         )
         raise
 
-    spotify_blob = librespot_state.read(
-        os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),
-    )
+    spotify_blob = librespot_state.read(librespot_state.configured_path())
     if sound_profile is not None:
         runtime = _sound_runtime_status(
             sound_profile,
@@ -1341,8 +1327,6 @@ async def _get_state(
     from ..mic_presence import read_mic_presence
     mic_presence = read_mic_presence()
 
-    capture_relay_state = _capture_relay_config()
-
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -1499,6 +1483,9 @@ async def _get_state(
             # like the doctor and audio_health surfaces, so a down CamillaDSP
             # cannot make a parked box read as not-parked.
             "active_speaker_parked": _active_speaker_parked_snapshot(),
+            # jasper-input stays `active` while one bridge loops in restart
+            # backoff (ADR-0225); this is the only non-journal sign of it.
+            "accessory_bridges": accessory_status.snapshot(),
         },
         "home_assistant": ha_status,
         # Multiroom grouping (off by default). null only if the fresh
@@ -1531,9 +1518,6 @@ async def _get_state(
         # Async research summary. Counts and timestamps only; no prompt or
         # answer text leaves the local store through /state.
         "research": research_state,
-        # Phone-mic capture relay config snapshot (network-free; the doctor
-        # probes reachability on demand). {configured, relay_base}.
-        "capture_relay": capture_relay_state,
         # The open measurement window, as jasper-control sees it
         # ({active, owner, mode, expires_in_s, held_for_s}). This process holds
         # one of the three self-expiring copies of that fact — the copy that

@@ -13,22 +13,55 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.audio_profile_state import MicProbe
+from jasper.chip_aec import health as chip_aec_health
+from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli import doctor
+from jasper.control import aec_endpoints
+from tests._aec_bridge_helpers import _rms_log_line
 
 
 # --------------------------------------------- AEC bridge output assessment
 
 
-def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
-    """Synthesize one bridge `rms over` log line in the journal `--output=cat`
-    format the parser sees. Helper for the _assess_aec_bridge_output tests
-    below."""
+
+def _chip_rms_log_line(
+    ref: int, near: int, primary: int, level_delta_db: float,
+    raw0: int | None = None,
+) -> str:
+    """Synthesize one `chip_aec rms over` line — the shape the bridge emits
+    instead of the AEC3 one when production chip AEC is armed. Legs are the
+    fixed 150/210 ASR beams (`jasper/cli/aec_bridge.py`). `raw0=None`
+    reproduces a journal from a build that predates the raw-mic-0 token."""
+    raw0_token = "" if raw0 is None else f" raw0={raw0}"
     return (
-        f"2026-05-16 17:00:00,000 aec-bridge INFO "
-        f"rms over 5.0s: ref={ref} mic={mic} aec={aec} → "
-        f"attenuation={attn_db:.1f} dB (frames=1 ref_q=0 mic_q=0 "
-        f"ref_clip=0.00% out_clip=0.00%)"
+        f"2026-09-02 17:00:00,000 aec-bridge INFO "
+        f"chip_aec rms over 5.0s: ref={ref} near=chip_aec_210:{near} "
+        f"primary=chip_aec_150:{primary} "
+        f"level_delta={level_delta_db:.1f} dB{raw0_token} "
+        f"(frames=1 ref_q=0 mic_q=0 "
+        f"ref_starve=0 ref_clip=0.00% out_clip=0.00%)"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw0, expected_mic",
+    [(2_900, 2_900), (None, 2_400)],
+    ids=["raw0-present", "raw0-absent-falls-back-to-near"],
+)
+def test_chip_window_mic_is_the_raw_capture_channel(raw0, expected_mic):
+    """The chip `near` beam is already cancelled, so it understates the
+    near-end level the music gate was calibrated on. `raw0` carries the
+    uncancelled capture channel and must win when the bridge emits it."""
+    w = doctor._parse_rms_window(
+        _chip_rms_log_line(
+            ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
+            raw0=raw0,
+        )
+    )
+
+    assert w is not None
+    assert (w.ref, w.mic, w.level_db, w.chip) == (
+        1_200, expected_mic, None, True,
     )
 
 
@@ -86,11 +119,20 @@ def _healthy_journal(windows: int = 8) -> str:
     )
 
 
+_REASON_BRIDGE_OUTPUT_NO_WINDOWS = doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
+_REASON_BRIDGE_OUTPUT_IDLE = doctor.aec.REASON_BRIDGE_OUTPUT_IDLE
+_REASON_BRIDGE_OUTPUT_HEALTHY_WORK = doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
+_REASON_BRIDGE_OUTPUT_REF_SILENT = doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
+_REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
+    doctor.aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
+)
+
+
 @pytest.mark.parametrize(
-    "journal, status, must_name",
+    "journal, status, reason",
     [
-        # No rms lines: the bridge probably just restarted inside the window.
-        ("", "ok", "no recent rms windows"),
+        # An active bridge logs a window every 5 s: none is missing evidence.
+        ("", "warn", _REASON_BRIDGE_OUTPUT_NO_WINDOWS),
         # Mic and ref both quiet — the speaker has been idle.
         (
             "\n".join(
@@ -98,10 +140,10 @@ def _healthy_journal(windows: int = 8) -> str:
                 for _ in range(10)
             ),
             "ok",
-            "no music activity",
+            _REASON_BRIDGE_OUTPUT_IDLE,
         ),
-        (_healthy_journal(), "ok", "real AEC work"),
-        (_silent_ref_journal(), "fail", "reference path is delivering silence"),
+        (_healthy_journal(), "ok", _REASON_BRIDGE_OUTPUT_HEALTHY_WORK),
+        (_silent_ref_journal(), "fail", _REASON_BRIDGE_OUTPUT_REF_SILENT),
         # Exactly one healthy_ref window flips the silent-ref pattern from fail
         # to ok: if the ref chain proved itself once, it is trusted.
         (
@@ -109,7 +151,7 @@ def _healthy_journal(windows: int = 8) -> str:
             + "\n"
             + _rms_log_line(ref=300, mic=400, aec=80, attn_db=-14.0),
             "ok",
-            "",
+            _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY,
         ),
         # 1-4 silent-ref windows are below the 5-count alarm but still
         # surfaced, so an intermittent glitch is visible before it tips over.
@@ -121,17 +163,113 @@ def _healthy_journal(windows: int = 8) -> str:
                 for _ in range(3)
             ),
             "ok",
-            "silent-ref=3",
+            _REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
         ),
     ],
     ids=["empty", "idle", "healthy", "silent-ref", "one-healthy-window",
          "below-alarm"],
 )
-def test_assess_aec_bridge_output_verdicts(journal, status, must_name):
+def test_assess_aec_bridge_output_verdicts(journal, status, reason):
     r = doctor._assess_aec_bridge_output(journal)
 
     assert r.status == status
-    assert must_name in r.detail.lower() or must_name in r.detail
+    assert r.reason == reason
+
+
+def test_assess_aec_bridge_output_below_alarm_still_names_the_count():
+    """The reason code says WHICH branch fired; the below-alarm count itself
+    is data the reason can't carry (it varies per run), so it stays a detail
+    assertion."""
+    journal = (
+        _healthy_journal(6)
+        + "\n"
+        + "\n".join(
+            _rms_log_line(ref=0, mic=2200, aec=2100, attn_db=-0.4)
+            for _ in range(3)
+        )
+    )
+
+    r = doctor._assess_aec_bridge_output(journal)
+
+    assert r.reason == doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
+    assert "silent-ref=3" in r.detail
+
+
+@pytest.mark.parametrize(
+    "journal",
+    [
+        "\n".join(
+            _rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)
+            for _ in range(8)
+        ),
+        "\n".join(
+            _chip_rms_log_line(
+                ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
+            )
+            for _ in range(8)
+        ),
+    ],
+    ids=["aec3", "chip"],
+)
+def test_assess_aec_bridge_output_counts_windows_in_both_log_shapes(journal):
+    """The bridge emits a different RMS line under chip AEC. Both shapes must
+    reach the assessment as counted windows: a shape the parser drops makes
+    the check report on zero evidence."""
+    lines = journal.split("\n")
+
+    total_windows = [
+        w for w in map(doctor._parse_rms_window, lines) if w is not None
+    ]
+
+    assert len(total_windows) == len(lines) > 0
+    assert doctor._assess_aec_bridge_output(journal).status == "ok"
+
+
+def test_chip_windows_never_count_as_attenuation_evidence():
+    """A chip `level_delta` of -24 dB reads like deep AEC3 attenuation but is
+    the delta between two beams the chip already cancelled, so it must never
+    be counted as proof the canceller did work."""
+    journal = "\n".join(
+        _chip_rms_log_line(
+            ref=1_200, near=2_400, primary=150, level_delta_db=-24.1,
+        )
+        for _ in range(8)
+    )
+
+    windows = [doctor._parse_rms_window(line) for line in journal.split("\n")]
+
+    assert all(
+        w is not None
+        and w.chip
+        and w.level_db is None
+        and w.ref == 1_200
+        and w.mic == 2_400
+        for w in windows
+    )
+    assert doctor._assess_aec_bridge_output(journal).status == "ok"
+
+
+def test_one_chip_window_does_not_displace_the_aec3_assessment():
+    """A restart across a profile change leaves both shapes in one journal.
+    The chip summary is for an all-chip journal; a mixed one still owes the
+    AEC3 verdict over its AEC3 windows."""
+    journal = "\n".join(
+        [_rms_log_line(ref=1_200, mic=2_400, aec=150, attn_db=-24.1)] * 17
+        + [
+            _chip_rms_log_line(
+                ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
+            )
+        ]
+    )
+
+    result = doctor._assess_aec_bridge_output(journal)
+
+    assert result.status == "ok"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
+    # Both counts reported: 17 AEC3 windows assessed, 1 chip window disclosed.
+    # This is computed data the reason code can't carry, so it stays a
+    # detail assertion.
+    assert "17/18" in result.detail and "1/18" in result.detail
 
 
 def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
@@ -150,7 +288,7 @@ def test_assess_aec_output_silent_ref_with_a_healthy_window_names_the_cause():
     r = doctor._assess_aec_bridge_output("\n".join(lines))
 
     assert r.status == "ok"
-    assert "ref path proven healthy" in r.detail
+    assert r.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
 
 
 @pytest.mark.parametrize(
@@ -171,6 +309,7 @@ def test_assess_aec_output_relaxes_only_on_positive_idle_evidence(
 
     assert r.status == status
     if status == "ok":
+        assert r.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC
         # The gate sees only the snd-aloop renderer lanes, so the message must
         # disclose its coverage limit in FULL: a USB Audio Input stream and any
         # ring-armed renderer lane (U3/P6) are both invisible to it.
@@ -178,6 +317,8 @@ def test_assess_aec_output_relaxes_only_on_positive_idle_evidence(
             "USB Audio Input and any ring-armed renderer lane are invisible"
             in r.detail
         )
+    else:
+        assert r.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
 
 
 @pytest.mark.parametrize(
@@ -236,6 +377,11 @@ def test_assess_aec_output_relaxes_only_on_positive_idle_evidence(
 def test_assess_aec_output_remediation_names_only_a_hop_it_can_prove(
     bridge_stats, outputd_status, must_name, must_not_name
 ):
+    """`.reason` says the branch is the ref-silent FAIL; the hop the
+    remediation names is a computed diagnostic value with no other
+    structured home (see `_aec_reference_failure_remediation`), so it stays
+    a `.detail` content assertion, including the never-mention-a-retired-hop
+    guard below."""
     result = doctor._assess_aec_bridge_output(
         _silent_ref_journal(),
         bridge_stats=bridge_stats,
@@ -244,6 +390,7 @@ def test_assess_aec_output_remediation_names_only_a_hop_it_can_prove(
     )
 
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert must_name in result.detail
     if must_not_name:
         assert must_not_name not in result.detail
@@ -269,6 +416,8 @@ def test_assess_aec_output_unusable_outputd_target_is_comparison_neutral(
         outputd_status=outputd_status,
         now=1_000.0,
     )
+
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
 
     assert result.status == "fail"
     assert "no comparable UDP target" in result.detail
@@ -310,6 +459,7 @@ def test_check_aec_output_health_uses_live_outputd_status_on_failure(monkeypatch
     result = doctor.check_aec_bridge_output_health()
 
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert "reference_outputs.udp_target='127.0.0.1:9891'" in result.detail
     assert "udp_error_count=7" in result.detail
 
@@ -327,7 +477,7 @@ def test_check_aec_output_health_skips_outputd_status_when_reference_is_healthy(
     result = doctor.check_aec_bridge_output_health()
 
     assert result.status == "ok"
-    assert "real AEC work" in result.detail
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
 
 
 def _stage_bridge_journal(monkeypatch, journal: str) -> None:
@@ -450,7 +600,7 @@ def test_assess_reference_input_recent_receiver_is_ok():
     result, startup_grace = assessed
     assert result.status == "ok"
     assert startup_grace is False
-    assert "receiver current" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_RECEIVER_CURRENT
 
 
 def test_assess_reference_input_no_frame_after_startup_grace_fails():
@@ -465,7 +615,7 @@ def test_assess_reference_input_no_frame_after_startup_grace_fails():
     result, startup_grace = assessed
     assert result.status == "fail"
     assert startup_grace is False
-    assert "zero complete 20 ms reference frames" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_ZERO_FRAMES_AFTER_GRACE
 
 
 @pytest.mark.parametrize(
@@ -486,7 +636,7 @@ def test_assess_reference_input_runtime_identity_mismatch_fails(
     assert assessed is not None
     result, _startup_grace = assessed
     assert result.status == "fail"
-    assert "does not match configured outputd UDP input" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_ROUTE_MISMATCH
 
 
 def test_assess_reference_input_formerly_nonzero_but_frozen_fails():
@@ -500,8 +650,7 @@ def test_assess_reference_input_formerly_nonzero_but_frozen_fails():
     assert assessed is not None
     result, _startup_grace = assessed
     assert result.status == "fail"
-    assert "receiver is stale" in result.detail
-    assert "carried-forward AEC frame" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
 
 
 @pytest.mark.parametrize(
@@ -518,34 +667,34 @@ def test_assess_reference_input_undeclared_schema_preserves_fallback(stats):
 
 
 @pytest.mark.parametrize(
-    ("stats", "expected_detail"),
+    ("stats", "reason"),
     [
         (
             {
                 **_reference_input_stats(),
                 "reference_input": {"source": "outputd_udp"},
             },
-            "missing required field",
+            "REASON_REF_CONTRACT_MISSING_FIELD",
         ),
         (
             _reference_input_stats(snapshot_age_sec=31.0),
-            "stats writer has not advanced",
+            "REASON_REF_STATS_WRITER_STALE",
         ),
         (
             _reference_input_stats(snapshot_age_sec=-0.1),
-            "is in the future",
+            "REASON_REF_CONTRACT_SNAPSHOT_IN_FUTURE",
         ),
     ],
     ids=["malformed", "writer-stale", "future-monotonic"],
 )
-def test_assess_reference_input_declared_v4_fails_closed(stats, expected_detail):
+def test_assess_reference_input_declared_v4_fails_closed(stats, reason):
     assessed = _assess_reference_stats(stats)
 
     assert assessed is not None
     result, startup_grace = assessed
     assert result.status == "fail"
     assert startup_grace is False
-    assert expected_detail in result.detail
+    assert result.reason == getattr(doctor.aec, reason)
 
 
 @pytest.mark.parametrize(
@@ -572,7 +721,14 @@ def test_assess_reference_input_rejects_untrusted_numeric_fields(field, value):
     assert assessed is not None
     result, _startup_grace = assessed
     assert result.status == "fail"
-    assert "untrustworthy" in result.detail
+    # frames_enqueued has its own dedicated uint64 bounds check (a distinct
+    # branch/reason from the shared nonnegative-float validator every other
+    # field here goes through).
+    assert result.reason == (
+        doctor.aec.REASON_REF_CONTRACT_INVALID_FRAMES_ENQUEUED
+        if field == "frames_enqueued"
+        else doctor.aec.REASON_REF_CONTRACT_INVALID_NUMERIC
+    )
 
 
 @pytest.mark.parametrize(
@@ -614,6 +770,9 @@ def test_assess_reference_input_ignores_wall_clock_jumps(
     assert fresh is not None and fresh[0].status == "ok" and fresh[1] is False
     assert startup is not None and startup[0].status == "ok" and startup[1] is True
     assert stale is not None and stale[0].status == "fail"
+    assert fresh[0].reason == doctor.aec.REASON_REF_RECEIVER_CURRENT
+    assert startup[0].reason == doctor.aec.REASON_REF_STARTUP_GRACE
+    assert stale[0].reason == doctor.aec.REASON_REF_RECEIVER_STALE
 
 
 def test_assess_reference_input_young_process_gets_explicit_grace():
@@ -629,10 +788,16 @@ def test_assess_reference_input_young_process_gets_explicit_grace():
     result, startup_grace = assessed
     assert result.status == "ok"
     assert startup_grace is True
-    assert "10s startup grace" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_STARTUP_GRACE
 
 
 def test_assess_reference_input_sender_active_is_not_receiver_proof():
+    """`.reason` pins the stale-receiver branch; the localization text
+    (what outputd's own STATUS says about the sender) is a computed
+    diagnostic value from a separate helper (`_outputd_reference_
+    localization`) with no other structured home, so it stays a `.detail`
+    content assertion — same call this module made for the remediation-hop
+    tests above."""
     assessed = _assess_reference_stats(
         _reference_input_stats(last_frame_age_ms=9_000)
     )
@@ -640,6 +805,7 @@ def test_assess_reference_input_sender_active_is_not_receiver_proof():
     assert assessed is not None
     result, _startup_grace = assessed
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
     assert "sender active" in result.detail
     assert "send success is not receiver proof" in result.detail
 
@@ -678,6 +844,7 @@ def test_reference_input_failure_localizes_outputd_without_using_it_as_proof(
     assert assessed is not None
     result, _startup_grace = assessed
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
     assert expected_detail in result.detail
 
 
@@ -767,7 +934,7 @@ def test_check_reference_freshness_fails_with_usb_invisible_to_loopback(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert "receiver is stale" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
@@ -790,6 +957,7 @@ def test_check_reference_freshness_failure_cannot_be_overridden_by_rms(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
     assert "historical RMS cannot prove current receiver progress" in result.detail
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
@@ -811,17 +979,29 @@ def test_check_undeclared_reference_stats_fall_back_to_journal(
 
     result = doctor.aec.check_aec_bridge_output_health()
 
-    assert result.status == "ok"
-    assert "no recent RMS windows" in result.detail
+    assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 
 
-@pytest.mark.parametrize("snapshot_age_sec", [29.0, 31.0])
+@pytest.mark.parametrize(
+    ("snapshot_age_sec", "reason"),
+    [
+        # Under the 30s writer-freshness limit: the snapshot itself is
+        # trusted, so this is a genuinely stale RECEIVER, not a malformed
+        # writer.
+        (29.0, "REASON_REF_RECEIVER_STALE"),
+        # Past the limit: the snapshot itself can no longer be trusted.
+        (31.0, "REASON_REF_STATS_WRITER_STALE"),
+    ],
+    ids=["receiver-stale", "writer-stale"],
+)
 def test_check_declared_v4_never_ages_from_fail_into_journal_fallback(
     monkeypatch,
     tmp_path: Path,
     snapshot_age_sec,
+    reason,
 ):
     calls = _install_reference_health_check_fakes(
         monkeypatch,
@@ -836,6 +1016,7 @@ def test_check_declared_v4_never_ages_from_fail_into_journal_fallback(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
+    assert result.reason == getattr(doctor.aec, reason)
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
@@ -856,6 +1037,7 @@ def test_check_malformed_declared_v4_fails_without_row_traceback(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_REF_CONTRACT_MISSING_FIELD
     assert "missing required field 'process_age_ms'" in result.detail
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
@@ -879,8 +1061,8 @@ def test_check_oversized_json_integer_preserves_fallback_without_traceback(
 
     result = doctor.aec.check_aec_bridge_output_health()
 
-    assert result.status == "ok"
-    assert "no recent RMS windows" in result.detail
+    assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 
@@ -960,7 +1142,7 @@ def test_stale_env_ref_source_still_runs_the_authoritative_check(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert "receiver is stale" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_RECEIVER_STALE
     assert not any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
@@ -988,7 +1170,7 @@ def test_env_route_still_reaches_the_receiver_identity_fail(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert "does not match configured outputd UDP input" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_ROUTE_MISMATCH
     assert not any(command[0] == "journalctl" for command in calls)
 
 
@@ -1024,7 +1206,7 @@ def test_stale_env_inside_startup_grace_converges_to_ok(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "ok"
-    assert "startup grace" in result.detail
+    assert result.reason == doctor.aec.REASON_REF_STARTUP_GRACE
     assert not any(command[0] == "journalctl" for command in calls)
 
 
@@ -1054,7 +1236,7 @@ def test_the_same_box_past_the_startup_grace_fails(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert "reference path is delivering silence" in result.detail
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert any(command[0] == "journalctl" for command in calls)
 
 
@@ -1081,8 +1263,8 @@ def test_neither_route_outputd_keeps_the_journal_fallback(
 
     result = doctor.aec.check_aec_bridge_output_health()
 
-    assert result.status == "ok"
-    assert "no recent RMS windows" in result.detail
+    assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
     assert any(command[0] == "journalctl" for command in calls)
     assert not any(command[0] == "outputd-status" for command in calls)
 
@@ -1106,7 +1288,7 @@ def test_check_fresh_receiver_still_fails_silent_reference_content(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
-    assert "reference path is delivering silence" in result.detail
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert any(command[0] == "journalctl" for command in calls)
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
@@ -1139,6 +1321,7 @@ def test_check_fresh_v4_journal_failure_uses_monotonic_identity(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert "source=outputd_udp at 127.0.0.1:9891" in result.detail
     assert "reference_outputs.udp_target='127.0.0.1:9891'" in result.detail
     assert "provenance is unavailable" not in result.detail
@@ -1168,6 +1351,7 @@ def test_check_fresh_v4_identity_overrides_contradictory_legacy_plan(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert "source=outputd_udp at 127.0.0.1:9891" in result.detail
     assert "source=alsa" not in result.detail
     assert "pcm.jasper_capture" not in result.detail
@@ -1205,6 +1389,7 @@ def test_check_legacy_non_outputd_fallback_skips_status(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "fail"
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_SILENT
     assert "cannot safely name the failed hop" in result.detail
     assert not any(command[0] == "outputd-status" for command in calls)
 
@@ -1233,8 +1418,7 @@ def test_check_fresh_receiver_and_one_healthy_rms_window_is_ok(
     result = doctor.aec.check_aec_bridge_output_health()
 
     assert result.status == "ok"
-    assert "ref path proven healthy" in result.detail
-    assert "reference receiver current" in result.detail
+    assert result.reason == doctor.aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
     assert not any(command[0] == "outputd-status" for command in calls)
 
 
@@ -1261,10 +1445,11 @@ def _dtln_failed_line(reason: str = "No such file or directory") -> str:
 
 def test_assess_dtln_engine_loaded_returns_ok():
     """Happy path: bridge logged a successful engine-init line.
-    Doctor reports the engine size for the operator to confirm."""
+    Doctor reports the engine size for the operator to confirm — a value
+    with no other structured home, so it stays a `.detail` assertion."""
     r = doctor._assess_dtln_engine(_dtln_loaded_line(size=256))
     assert r.status == "ok"
-    assert "loaded" in r.detail.lower()
+    assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_JOURNAL
     assert "size=256" in r.detail
 
 
@@ -1279,18 +1464,17 @@ def test_assess_dtln_engine_load_failed_returns_fail():
         _dtln_failed_line(reason="DTLN ONNX models missing in /var/lib/jasper/dtln")
     )
     assert r.status == "fail"
-    assert "couldn't load" in r.detail
-    assert "/var/lib/jasper/dtln" in r.detail  # actionable path
-    assert "jasper-aec-bridge" in r.detail  # actionable next step
+    assert r.reason == doctor.aec.REASON_DTLN_LOAD_FAILED
+    assert "/var/lib/jasper/dtln" in r.detail  # actionable path, the failed reason
 
 
 def test_assess_dtln_engine_no_marker_warns():
     """Bridge running but no engine-init marker in the journal
     window — probably means the bridge hasn't restarted since the
-    env var was set. Warn with the actionable fix command."""
+    env var was set."""
     r = doctor._assess_dtln_engine("some unrelated log lines\nbridge boot\n")
     assert r.status == "warn"
-    assert "systemctl restart jasper-aec-bridge" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_NO_INIT_LINE
 
 
 def test_assess_dtln_engine_picks_most_recent_marker():
@@ -1306,6 +1490,7 @@ def test_assess_dtln_engine_picks_most_recent_marker():
     )
     r = doctor._assess_dtln_engine(journal)
     assert r.status == "ok"
+    assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_JOURNAL
 
 
 def test_check_dtln_skips_when_env_disabled(monkeypatch):
@@ -1316,7 +1501,7 @@ def test_check_dtln_skips_when_env_disabled(monkeypatch):
     monkeypatch.delenv("JASPER_AEC_DTLN_ENABLED", raising=False)
     r = doctor.check_aec_bridge_dtln_engine()
     assert r.status == "ok"
-    assert "skipped" in r.detail.lower()
+    assert r.reason == doctor.aec.REASON_DTLN_DISABLED
 
 
 def _install_fake_dtln_registry(monkeypatch, tmp_path: Path):
@@ -1361,7 +1546,7 @@ def test_check_dtln_fails_when_enabled_model_file_missing(monkeypatch, tmp_path:
     r = doctor.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
-    assert "model files are missing" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_MODEL_FILES_MISSING
     assert "dtln_aec_256_2.onnx" in r.detail
     assert "deploy/install.sh" in r.detail
 
@@ -1378,7 +1563,7 @@ def test_check_dtln_fails_when_enabled_model_hash_mismatches(
     r = doctor.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
-    assert "hashes do not match" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_MODEL_HASH_MISMATCH
     assert "dtln_aec_256_2.onnx" in r.detail
     assert "deploy/install.sh" in r.detail
 
@@ -1398,7 +1583,7 @@ def test_check_dtln_uses_configured_model_size(monkeypatch, tmp_path: Path):
     r = doctor.check_aec_bridge_dtln_engine()
 
     assert r.status == "ok"
-    assert "bridge not running" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_BRIDGE_NOT_RUNNING
 
 
 def test_check_dtln_fails_when_configured_model_size_is_invalid(
@@ -1412,8 +1597,7 @@ def test_check_dtln_fails_when_configured_model_size_is_invalid(
     r = doctor.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
-    assert "JASPER_AEC_DTLN_SIZE" in r.detail
-    assert "not an integer" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_SIZE_NOT_INTEGER
 
 
 def test_check_dtln_fails_when_configured_model_size_is_not_registered(
@@ -1427,10 +1611,158 @@ def test_check_dtln_fails_when_configured_model_size_is_not_registered(
     r = doctor.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
-    assert "JASPER_AEC_DTLN_SIZE=512" in r.detail
-    assert "not registered" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_SIZE_NOT_REGISTERED
     assert "128" in r.detail
     assert "256" in r.detail
+
+# --------------------------------- Chip-AEC alignment: the record, unaltered
+# ---------------------------------------------------------------------------
+
+
+def _alignment_env(status: str, selection: str = "xvf_chip_aec") -> RuntimeAecEnv:
+    return RuntimeAecEnv(
+        chip_enabled=True,
+        chip_aec_150_device="udp:9887",
+        chip_aec_210_device="udp:9888",
+        chip_aec_alignment=chip_aec_health.AlignmentHealth(
+            status=status,
+            reason="published reason",
+            action=chip_aec_health.ACTION_RECOMMISSION,
+            selection=selection,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "status, expected_result, expected_reason, expects_action",
+    [
+        (
+            chip_aec_health.STATUS_READY, "ok",
+            "REASON_ALIGNMENT_READY", False,
+        ),
+        (
+            chip_aec_health.STATUS_DISCLOSED_STALE, "warn",
+            "REASON_ALIGNMENT_NOT_READY", True,
+        ),
+        (
+            chip_aec_health.STATUS_CHECKING, "warn",
+            "REASON_ALIGNMENT_NOT_READY", True,
+        ),
+        (
+            chip_aec_health.STATUS_FAULT, "warn",
+            "REASON_ALIGNMENT_NOT_READY", True,
+        ),
+        (
+            chip_aec_health.STATUS_UNAVAILABLE, "warn",
+            "REASON_ALIGNMENT_NOT_READY", True,
+        ),
+        ("", "ok", "REASON_ALIGNMENT_NO_VERDICT", False),
+    ],
+)
+def test_chip_aec_alignment_row_follows_the_published_record(
+    status, expected_result, expected_reason, expects_action,
+):
+    """One row per published verdict: the record's status decides the doctor
+    result, and the operator only gets an action when it is not ready. The
+    action hint itself (`chip_aec_health.ACTION_RECOMMISSION`) is a known
+    cross-module constant, not free prose, so checking its presence stays a
+    content assertion alongside the reason code."""
+
+    result = doctor.aec._assess_chip_aec_alignment(
+        _alignment_env(status), "xvf_chip_aec",
+    )
+
+    assert result.name == "Chip-AEC alignment"
+    assert result.status == expected_result
+    assert result.reason == getattr(doctor.aec, expected_reason)
+    assert (chip_aec_health.ACTION_RECOMMISSION in result.detail) is expects_action
+
+
+@pytest.mark.parametrize(
+    "stamp, reading_selection, owned",
+    [
+        ("xvf_chip_aec", "xvf_chip_aec", True),
+        ("xvf_chip_aec", "custom", False),
+        ("xvf_chip_aec", "xvf_software_aec3", False),
+        ("xvf_chip_aec_testing", "xvf_chip_aec", False),
+        ("", "xvf_chip_aec", True),
+        ("", "custom", False),
+    ],
+)
+def test_chip_aec_alignment_row_serves_only_the_stamped_selection(
+    stamp, reading_selection, owned,
+):
+    """A leftover record from a path the box has left is not a verdict here:
+    an operator who toggles a leg lands on `custom` and must not keep getting
+    a warning with a commission command behind it."""
+
+    result = doctor.aec._assess_chip_aec_alignment(
+        _alignment_env(chip_aec_health.STATUS_FAULT, selection=stamp),
+        reading_selection,
+    )
+
+    assert result.status == ("warn" if owned else "ok")
+    assert result.reason == (
+        doctor.aec.REASON_ALIGNMENT_NOT_READY
+        if owned
+        else doctor.aec.REASON_ALIGNMENT_NO_VERDICT
+    )
+    assert (chip_aec_health.ACTION_RECOMMISSION in result.detail) is owned
+
+
+# ---------------------------------------------------------------------------
+# aec_mode.env — one parser (env_load.parse_env_file) behind the doctor
+# helpers and /aec's _read_aec_state
+# ---------------------------------------------------------------------------
+
+
+# (file body or None for missing, (mode, profile, JASPER_WAKE_LEG_RAW))
+_MODE_FILE_CASES = {
+    "missing_file": (None, ("auto", "", True)),
+    "empty_file": ("", ("auto", "", True)),
+    "quoted_values": (
+        "JASPER_AEC_MODE=\"disabled\"\nJASPER_WAKE_LEG_RAW='0'\n"
+        "JASPER_AUDIO_INPUT_PROFILE=\"xvf_chip_aec\"\n",
+        ("disabled", "xvf_chip_aec", False),
+    ),
+    "export_lines_ignored": (
+        "export JASPER_AEC_MODE=disabled\nexport JASPER_WAKE_LEG_RAW=0\n",
+        ("auto", "", True),
+    ),
+    "trailing_comment_kept_malformed_bool_defaults": (
+        "JASPER_AEC_MODE=disabled # note\nJASPER_WAKE_LEG_RAW=0 # note\n",
+        ("disabled # note", "", True),
+    ),
+    "duplicate_key_last_wins": (
+        "JASPER_AEC_MODE=disabled\nJASPER_WAKE_LEG_RAW=0\n"
+        "JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\n",
+        ("auto", "", True),
+    ),
+    "empty_value": ("JASPER_AEC_MODE=\nJASPER_WAKE_LEG_RAW=\n", ("auto", "", False)),
+    "space_before_equals_matched": ("JASPER_AEC_MODE = disabled\n", ("disabled", "", True)),
+    "unbalanced_quote_kept_verbatim": ("JASPER_AEC_MODE=\"disabled\n", ('"disabled', "", True)),
+}
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"), _MODE_FILE_CASES.values(), ids=_MODE_FILE_CASES.keys(),
+)
+def test_aec_mode_file_readers_share_one_parser(
+    tmp_path, monkeypatch, body, expected,
+):
+    path = tmp_path / "aec_mode.env"
+    if body is not None:
+        path.write_text(body)
+    monkeypatch.setattr(doctor.aec, "DEFAULT_AEC_MODE_PATH", path)
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(path))
+
+    assert (
+        doctor.aec._aec_mode_setting(),
+        doctor.aec._aec_profile_setting(),
+        doctor.aec._wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
+    ) == expected
+    state = aec_endpoints._read_aec_state()
+    assert (state["mode"], state["leg_raw"]) == (expected[0], expected[2])
 
 
 # ---------------------------------------------------------------------------
@@ -1469,17 +1801,23 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
             variant_id="xvf3800_legacy_square_6ch",
             geometry="square",
             chip_beam_plan="xvf_square_fixed_150_210",
+            chip_aec_supported=True,
         ),
     )
     result = doctor._assess_audio_profile(status)
 
     assert result.status == "ok"
+    assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_OK
     assert "requested=xvf_chip_aec" in result.detail
     assert "active=xvf_chip_aec" in result.detail
     assert "Chip AEC 150 beam via :9876" in result.detail
 
 
-def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
+def test_aec_bridge_running_does_not_re_render_the_audio_profile(monkeypatch):
+    """A running bridge is one fact; which AEC it carries belongs to the
+    Audio profile / Chip-AEC alignment rows, so this check must not rebuild
+    the profile status (a mic-firmware probe) to say it."""
+
     def fake_run(cmd, **kwargs):
         if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
             return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
@@ -1487,25 +1825,19 @@ def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
             return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
         raise AssertionError(f"unexpected command: {cmd!r}")
 
+    def unexpected_status(**_kwargs):
+        raise AssertionError("the running branch must not re-render /aec")
+
     monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
     monkeypatch.setattr(doctor.aec, "_run", fake_run)
     monkeypatch.setattr(
-        doctor.aec,
-        "_audio_profile_status_for_doctor",
-        lambda *, bridge_active=None: {
-            "audio_profile": {"active": "xvf_chip_aec"},
-            "microphone": {"processing_mode": "Chip-AEC"},
-            "chip_aec_gate": {"status": "approved", "source": "static"},
-        },
+        doctor.aec, "_audio_profile_status_for_doctor", unexpected_status,
     )
 
     result = doctor.aec.check_aec_bridge_running()
 
     assert result.status == "ok"
-    assert "chip-AEC beam forwarding" in result.detail
-    assert "WebRTC AEC3 bypassed" in result.detail
-    assert "gate=approved/static" in result.detail
-    assert "software AEC enabled" not in result.detail
+    assert result.reason == doctor.aec.REASON_BRIDGE_RUNNING
 
 
 def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
@@ -1532,6 +1864,46 @@ def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
     result = doctor.aec.check_aec_bridge_running()
 
     assert result.status == "ok"
+    assert result.reason == doctor.aec.REASON_BRIDGE_COMMISSIONING
+
+
+def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
+    monkeypatch, tmp_path
+):
+    """ADR-0224. Without the ready marker systemd never even runs the start
+    job, so a down bridge is a reconciler problem; with it, the bridge itself
+    failed. Same severity, different diagnosis and different remedy — the row
+    has to name which."""
+    from jasper.mics import xvf3800
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
+
+    marker = tmp_path / "aec-bridge-ready"
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+    monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
+    monkeypatch.setattr(
+        xvf3800,
+        "capture_channels",
+        lambda: xvf3800.RECOMMENDED_FIRMWARE.capture_channels,
+    )
+
+    withheld = doctor.aec.check_aec_bridge_running()
+    marker.write_text("reason=systemd\n")
+    admitted = doctor.aec.check_aec_bridge_running()
+
+    assert withheld.status == "fail"
+    assert admitted.status == "fail"
+    assert withheld.reason == doctor.aec.REASON_BRIDGE_DOWN_READY_ABSENT
+    assert admitted.reason == doctor.aec.REASON_BRIDGE_DOWN_READY_PRESENT
+    # The marker path itself is a computed value with no other structured
+    # home (it comes from JASPER_AEC_BRIDGE_READY_MARKER), so it stays a
+    # `.detail` content assertion.
+    assert str(marker) in withheld.detail
 
 
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
@@ -1576,11 +1948,11 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     result = doctor._assess_audio_profile(status)
 
     assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
     assert "active=none" in result.detail
-    assert "chip-AEC bridge failed after alignment reapply" in result.detail
-    assert (
-        "action=Inspect jasper-aec-bridge, then run the reconciler" in result.detail
-    )
+    # The reconciler's own reason/action belong to the Chip-AEC alignment row.
+    assert "chip-AEC bridge failed after alignment reapply" not in result.detail
+    assert "Inspect jasper-aec-bridge" not in result.detail
 
 
 def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
@@ -1617,6 +1989,7 @@ def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
     result = doctor._assess_audio_profile(status)
 
     assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_AUDIO_PROFILE_NEEDS_ATTENTION
     assert "Configured AEC mic L16K6Ch" in result.detail
     assert "detected XVF card Array" in result.detail
 
@@ -1633,7 +2006,7 @@ def test_audio_validation_advisory_ok_when_chip_aec_not_requested():
     )
 
     assert result.status == "ok"
-    assert "advisory" in result.detail
+    assert result.reason == doctor.aec.REASON_VALIDATION_NOT_CHIP_PROFILE
 
 
 def test_audio_validation_warns_when_chip_aec_requested_and_missing():
@@ -1648,8 +2021,8 @@ def test_audio_validation_warns_when_chip_aec_requested_and_missing():
     )
 
     assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_VALIDATION_ADVISORY
     assert "sudo jasper-audio-validate --stdout" in result.detail
-    assert "advisory" in result.detail
 
 
 def test_audio_validation_suggests_hardware_runner_when_ready_for_passive_evidence():
@@ -1664,10 +2037,10 @@ def test_audio_validation_suggests_hardware_runner_when_ready_for_passive_eviden
     )
 
     assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_VALIDATION_ADVISORY
     assert (
         "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout" in result.detail
     )
-    assert "advisory" in result.detail
 
 
 def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendation():
@@ -1682,6 +2055,7 @@ def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendatio
     )
 
     assert result.status == "warn"
+    assert result.reason == doctor.aec.REASON_VALIDATION_ADVISORY
     assert (
         "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout" in result.detail
     )
@@ -1718,6 +2092,11 @@ def test_audio_validation_passive_evidence_follows_dac_approval(
     )
 
     assert result.status == expected_status
+    assert result.reason == (
+        doctor.aec.REASON_VALIDATION_PASSIVE_EVIDENCE
+        if expected_status == "ok"
+        else doctor.aec.REASON_VALIDATION_ADVISORY
+    )
     if expected_status == "ok":
         assert dac_id in result.detail
         assert "xvf3800" in result.detail
@@ -1759,6 +2138,7 @@ def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
     result = doctor.check_audio_validation_readiness()
 
     assert result.status == "ok"
+    assert result.reason == doctor.aec.REASON_VALIDATION_CURRENT_PASS
     assert captured == {
         "requested_profile": "xvf_chip_aec",
         "mic_id": "xvf3800",
@@ -1790,7 +2170,7 @@ def test_assess_dtln_stats_loaded_returns_ok():
         _time.time(),
     )
     assert r is not None and r.status == "ok"
-    assert "stats snapshot" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_LOADED_FROM_STATS
 
 
 def test_assess_dtln_stats_load_failure_returns_fail_with_detail():
@@ -1801,9 +2181,8 @@ def test_assess_dtln_stats_load_failure_returns_fail_with_detail():
         _time.time(),
     )
     assert r is not None and r.status == "fail"
+    assert r.reason == doctor.aec.REASON_DTLN_ENGINE_UNAVAILABLE
     assert "onnx missing" in r.detail
-    assert "engine unavailable" in r.detail
-    assert "could not load" not in r.detail
     assert ":9878" in r.detail  # names the unfed leg voice listens on
 
 
@@ -1815,11 +2194,11 @@ def test_assess_dtln_stats_bridge_started_without_leg_warns():
         _time.time(),
     )
     assert r is not None and r.status == "warn"
-    assert "systemctl restart jasper-aec-bridge" in r.detail
+    assert r.reason == doctor.aec.REASON_DTLN_NOT_STARTED_WITH_LEG
     # A hand-set JASPER_AEC_DTLN_ENABLED=1 under the chip-AEC profile is
-    # NOT a stale-restart problem — the chip profile never loads DTLN.
-    # The message must point at checking the active input profile, not
-    # only at restarting the bridge.
+    # NOT a stale-restart problem — the chip profile never loads DTLN. The
+    # message must point at checking the active input profile, not only at
+    # restarting the bridge — a value with no other structured home.
     assert "input profile" in r.detail
     assert "xvf_chip_aec" in r.detail
 
@@ -1875,8 +2254,8 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
     r = doctor.check_aec_bridge_dtln_engine()
 
     assert r.status == "fail"
+    assert r.reason == doctor.aec.REASON_DTLN_ENGINE_UNAVAILABLE
     assert "no onnxruntime" in r.detail
-
 
 # --- Optional enhanced AEC: requested-only advisory -----------------
 
@@ -1896,13 +2275,21 @@ def test_enhanced_aec_doctor_is_quiet_and_cheap_when_not_requested(monkeypatch):
     result = doctor.check_enhanced_aec()
 
     assert result.status == "ok"
-    assert "not requested" in result.detail
+    assert result.reason == doctor.aec.REASON_ENHANCED_AEC_NOT_REQUESTED
 
 
-@pytest.mark.parametrize("state", ["installed", "not_needed", "installing"])
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        ("installed", "REASON_ENHANCED_AEC_INSTALLED"),
+        ("not_needed", "REASON_ENHANCED_AEC_INSTALLED"),
+        ("installing", "REASON_ENHANCED_AEC_INSTALLING"),
+    ],
+)
 def test_enhanced_aec_doctor_accepts_non_actionable_states(
     monkeypatch,
     state,
+    reason,
 ):
     monkeypatch.setattr(
         doctor.aec.enhanced_aec,
@@ -1933,6 +2320,7 @@ def test_enhanced_aec_doctor_accepts_non_actionable_states(
     result = doctor.check_enhanced_aec()
 
     assert result.status == "ok"
+    assert result.reason == getattr(doctor.aec, reason)
     assert result.detail == f"state={state}"
 
 
@@ -1970,5 +2358,4 @@ def test_enhanced_aec_doctor_warns_only_after_request(monkeypatch, state):
     result = doctor.check_enhanced_aec()
 
     assert result.status == "warn"
-    assert "standard echo cancellation remains available" in result.detail
-    assert "/system/" in result.detail
+    assert result.reason == doctor.aec.REASON_ENHANCED_AEC_UNAVAILABLE

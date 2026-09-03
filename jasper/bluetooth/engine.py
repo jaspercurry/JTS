@@ -24,7 +24,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from typing import AsyncIterator
+from typing import AsyncIterator, TypeVar
 
 from dbus_next import BusType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 BLUEZ_BUS = "org.bluez"
 DEFAULT_ADAPTER = "hci0"
 SCAN_DBUS_TIMEOUT_SEC = 5.0
+CONNECT_TIMEOUT_S = 30.0
 SCAN_OPERATION_ERRORS = (
     AttributeError,
     DBusError,
@@ -70,6 +71,21 @@ async def _default_accessory_reconcile(reason: str) -> object:
 
     request_reconcile(reason)
     return None
+
+
+_T = TypeVar("_T")
+
+
+async def _await_with_timeout(
+    awaitable: Awaitable[_T],
+    timeout_s: float,
+    error_name: str,
+    message: str,
+) -> _T:
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout_s)
+    except asyncio.TimeoutError as e:
+        raise DBusError(error_name, message) from e
 
 
 def _stop_discovery_already_idle(err: DBusError) -> bool:
@@ -515,12 +531,17 @@ class BluetoothEngine:
         yield {"stage": "pairing"}
         try:
             async with _bondable_for_pair(self._adapter):
-                await self._call_pair_with_timeout(dev_iface, timeout_s)
+                await _await_with_timeout(
+                    dev_iface.call_pair(),
+                    timeout_s,
+                    "org.bluez.Error.AuthenticationTimeout",
+                    f"pair timed out after {int(timeout_s)} s",
+                )
         except asyncio.CancelledError:
             yield {"stage": "error", "message": "pair operation was cancelled"}
             return
         except Exception as err:  # noqa: BLE001
-            yield {"stage": "error", "message": _format_dbus_error(err)}
+            yield {"stage": "error", "message": _classify_dbus_error(err)[0]}
             return
 
         yield {"stage": "paired", "address": dev.address}
@@ -604,7 +625,12 @@ class BluetoothEngine:
                 dev.path,
                 intro,
             ).get_interface("org.bluez.Device1")
-            await iface.call_connect()
+            await _await_with_timeout(
+                iface.call_connect(),
+                CONNECT_TIMEOUT_S,
+                "org.bluez.Error.Failed",
+                "connect-timeout",
+            )
             if not await self._reconcile_accessories("bluetooth-connect"):
                 return BluetoothActionResult(
                     True,
@@ -685,15 +711,6 @@ class BluetoothEngine:
             )
             return False
 
-    async def _call_pair_with_timeout(self, dev_iface, timeout_s: float):
-        try:
-            await asyncio.wait_for(dev_iface.call_pair(), timeout=timeout_s)
-        except asyncio.TimeoutError as e:
-            raise DBusError(
-                "org.bluez.Error.AuthenticationTimeout",
-                f"pair timed out after {int(timeout_s)} s",
-            ) from e
-
     async def _refresh_device(self, path: str) -> BluetoothDevice | None:
         """Re-read a device's properties from bluez after state-
         changing calls (Pair, Connect). Used to keep the handler
@@ -713,37 +730,83 @@ class BluetoothEngine:
             return None
 
 
-def _format_dbus_error(err: BaseException) -> str:
-    """Turn a DBusError into a user-friendly message. Maps known
-    bluez error names to the iPhone-equivalent copy."""
+# BlueZ >= 5.63 reports Device1.Connect failures as org.bluez.Error.Failed
+# with the message set to a reason token rather than a distinct error name.
+_NOT_ANSWERING = (
+    "The device didn't answer. Make sure its Bluetooth is on and it's nearby."
+)
+_REFUSED = (
+    "The device refused. If you removed JTS on the device, Forget it here "
+    "and pair again."
+)
+_BUSY = "Bluetooth is busy. Try again in a moment."
+_CONNECT_FAILURE_REASONS: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "br-connection-page-timeout",
+            "le-connection-abort-by-local",
+            "connect-timeout",
+            "br-connection-timeout",
+            "le-connection-timeout",
+        ),
+        _NOT_ANSWERING,
+    ),
+    **dict.fromkeys(
+        (
+            "br-connection-refused",
+            "br-connection-key-missing",
+            "le-connection-refused",
+            "br-connection-aborted-by-remote",
+            "le-connection-abort-by-remote",
+        ),
+        _REFUSED,
+    ),
+    "br-connection-profile-unavailable": (
+        "No usable profile between this speaker and the device. For a "
+        "phone, check Bluetooth is on in Sources."
+    ),
+    "br-connection-busy": _BUSY,
+    "br-connection-canceled": "Connection was cancelled.",
+}
+
+# Pre-5.63 pair/connect failures, still reported as their own error names.
+_NAME_ERROR_REASONS: dict[str, str] = {
+    "AuthenticationTimeout": (
+        "Pairing took too long. Make sure the device is in range "
+        "and in pair mode, then try again."
+    ),
+    "AuthenticationCanceled": "Pairing was cancelled.",
+    "AuthenticationRejected": "Pairing was rejected by the device.",
+    "AuthenticationFailed": "Pairing failed. The link key didn't match.",
+    "ConnectionAttemptFailed": (
+        "Could not connect. Try moving the device closer and retrying."
+    ),
+    "AlreadyExists": "This device is already paired.",
+    "InProgress": _BUSY,
+}
+
+
+def _classify_dbus_error(err: BaseException) -> tuple[str, str | None]:
+    """Map a DBusError to (user-facing message, BlueZ reason code)."""
     if not isinstance(err, DBusError):
-        return str(err)
+        return str(err), None
     name = err.type or ""
     msg = str(err)
+    if msg in _CONNECT_FAILURE_REASONS:
+        return _CONNECT_FAILURE_REASONS[msg], msg
+    short_name = name.rsplit(".", 1)[-1]
     if "AuthenticationTimeout" in name or "AuthenticationTimeout" in msg:
-        return (
-            "Pairing took too long. Make sure the device is in range "
-            "and in pair mode, then try again."
-        )
-    if "AuthenticationCanceled" in name:
-        return "Pairing was cancelled."
-    if "AuthenticationRejected" in name:
-        return "Pairing was rejected by the device."
-    if "AuthenticationFailed" in name:
-        return "Pairing failed. The link key didn't match."
-    if "ConnectionAttemptFailed" in name:
-        return "Could not connect. Try moving the device closer and retrying."
-    if "AlreadyExists" in name:
-        return "This device is already paired."
-    if "InProgress" in name:
-        return "Bluetooth is busy. Try again in a moment."
-    return msg or "Unknown bluetooth error."
+        short_name = "AuthenticationTimeout"
+    if short_name in _NAME_ERROR_REASONS:
+        return _NAME_ERROR_REASONS[short_name], short_name
+    return msg or "Unknown bluetooth error.", None
 
 
 def _device_action_error(err: DBusError) -> BluetoothActionResult:
-    if err.type == "org.bluez.Error.NotReady":
+    if err.type == "org.bluez.Error.NotReady" or str(err).endswith("adapter-not-powered"):
         return adapter_not_ready_result()
-    return BluetoothActionResult(False, _format_dbus_error(err))
+    message, code = _classify_dbus_error(err)
+    return BluetoothActionResult(False, message, code)
 
 
 __all__ = ["BluetoothEngine", "REGISTRY"]

@@ -6,8 +6,7 @@ now the bridge's only reference source, and the aloop tap itself is deleted
 later in the same arc (P9). This file pins the three halves of that
 retirement so none of them can quietly come back:
 
-  1. the bridge (and the tuning tool beside it) has no ALSA reference
-     reader left,
+  1. the bridge has no ALSA reference reader left,
   2. a live box still carrying the retired value converges instead of
      going deaf, while a genuinely unknown value still fails loudly, and
   3. `jasper-aec-reconcile` — the single writer of that env var — never
@@ -24,11 +23,28 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jasper.cli import aec_bridge
+from jasper.cli import (
+    aec_bridge,
+    aec_bridge_capture,
+    aec_bridge_config,
+    aec_bridge_reference,
+)
+from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
-AEC_TUNE = REPO / "jasper" / "cli" / "aec_tune.py"
+# The reference reader the retirement removed spanned the bridge entry point
+# and the modules cut out of it that open capture devices or query them, so
+# all four are in scope for the guards.
+BRIDGE_SOURCES = (
+    BRIDGE_SOURCE,
+    REPO / "jasper" / "cli" / "aec_bridge_capture.py",
+    REPO / "jasper" / "cli" / "aec_bridge_config.py",
+    REPO / "jasper" / "cli" / "aec_bridge_reference.py",
+)
+BRIDGE_MODULES = (
+    aec_bridge, aec_bridge_capture, aec_bridge_config, aec_bridge_reference,
+)
 RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 
 RETIRED = "alsa"
@@ -72,67 +88,29 @@ def test_the_bridge_module_has_no_alsa_reference_reader():
     the fd-leak row in docs/testing-tooling.md). Only a string the code
     actually uses can be a device name.
     """
-    tree = ast.parse(BRIDGE_SOURCE.read_text())
-    docstrings = _docstring_node_ids(tree)
-    offenders = sorted(
-        f"{BRIDGE_SOURCE.name}:{node.lineno}: {node.value!r}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "jasper_ref" in node.value
-        and id(node) not in docstrings
-    )
+    offenders = []
+    for source in BRIDGE_SOURCES:
+        tree = ast.parse(source.read_text())
+        docstrings = _docstring_node_ids(tree)
+        offenders += sorted(
+            f"{source.name}:{node.lineno}: {node.value!r}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "jasper_ref" in node.value
+            and id(node) not in docstrings
+        )
     assert not offenders, (
         "the AEC bridge must not name the retired pcm.jasper_ref tap:\n"
         + "\n".join(offenders)
     )
-    assert not hasattr(aec_bridge, "REF_DEVICE"), (
-        "REF_DEVICE named the retired ALSA reference PCM"
-    )
-    assert not hasattr(aec_bridge, "_ref_thread"), (
-        "_ref_thread was the retired ALSA reference capture loop"
-    )
-
-
-def test_the_tuning_tool_has_no_raw_dsnoop_reference_reader():
-    """The same retirement, one tool over (U4 / P7-2): `jasper/cli/aec_tune.py`
-    used to open the summed program's dsnoop tap RAW to record its AEC
-    reference, which made it a second declarer of the fan-in lane width — a raw
-    open cannot absorb a format move. It reads outputd's UDP speaker monitor
-    now, and the tap's PCM definition is gone from asound.conf entirely.
-
-    AST-walked over *values* only, exactly as the bridge guard above: the
-    tool's own prose names the retired tap to explain the retirement, and must
-    neither satisfy nor trip the guard against it.
-    """
-    tree = ast.parse(AEC_TUNE.read_text())
-    docstrings = _docstring_node_ids(tree)
-    # Positive control FIRST — the assertion below is an ABSENCE, so a reader
-    # that found nothing would satisfy it vacuously.
-    assert any(
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "jasper_capture" in node.value
-        and id(node) in docstrings
-        for node in ast.walk(tree)
-    ), (
-        "aec_tune's own docstrings should still explain the retirement — if "
-        "that prose is gone, this guard is no longer reading what it thinks"
-    )
-    offenders = sorted(
-        f"{AEC_TUNE.name}:{node.lineno}: {node.value!r}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and ("jasper_capture" in node.value or "jasper_ref" in node.value)
-        and id(node) not in docstrings
-    )
-    assert not offenders, (
-        "jasper/cli/aec_tune.py must not name the aloop dsnoop tap — it moved "
-        "to jasper-outputd's UDP speaker monitor in U4/P7-2, and re-opening "
-        "the raw tap would make it a width declarer again:\n"
-        + "\n".join(offenders)
-    )
+    for module in BRIDGE_MODULES:
+        assert not hasattr(module, "REF_DEVICE"), (
+            f"{module.__name__}.REF_DEVICE named the retired ALSA reference PCM"
+        )
+        assert not hasattr(module, "_ref_thread"), (
+            f"{module.__name__}._ref_thread was the retired ALSA capture loop"
+        )
 
 
 def test_the_bridge_never_imports_alsaaudio():
@@ -141,20 +119,43 @@ def test_the_bridge_never_imports_alsaaudio():
     AST-walked, not grepped, so the docstring above (which names the module)
     cannot satisfy the guard.
     """
-    tree = ast.parse(BRIDGE_SOURCE.read_text())
+    trees = [ast.parse(source.read_text()) for source in BRIDGE_SOURCES]
     imported = {
         alias.name.split(".")[0]
+        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.Import)
         for alias in node.names
     } | {
         node.module.split(".")[0]
+        for tree in trees
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module
     }
     assert "alsaaudio" not in imported, (
         "the bridge reads its reference over UDP; an alsaaudio import means "
         "an ALSA reference reader came back"
+    )
+
+
+def test_the_reference_geometry_matches_outputd_the_producer():
+    """48 kHz stereo is jasper-outputd's fact, not the bridge's free parameter.
+
+    Cross-language pin against the producer's own source. Asserting the
+    constants against each other would be self-referential — moving one would
+    move both sides and stay green — so they are checked against
+    `rust/jasper-outputd/src/types.rs`, where the value is fixed and
+    `Config::from_env` refuses any other rate.
+    """
+    types_rs = (REPO / "rust" / "jasper-outputd" / "src" / "types.rs").read_text()
+
+    assert f"pub const SAMPLE_RATE: u32 = {REF_RATE:_};" in types_rs, (
+        "REF_RATE must equal jasper-outputd's core sample rate; "
+        "the reference datagrams are that daemon's playout periods"
+    )
+    assert f"pub const CHANNELS: u16 = {REF_CHANNELS};" in types_rs, (
+        "REF_CHANNELS must equal jasper-outputd's channel count; "
+        "the reference is stereo whatever the sink's width"
     )
 
 
@@ -165,7 +166,7 @@ def test_the_bridge_never_imports_alsaaudio():
 
 def test_the_supported_source_is_returned_untouched():
     config = _config(aec_bridge.REF_SOURCE)
-    assert aec_bridge._resolved_reference_source(config) is config
+    assert aec_bridge.resolved_reference_source(config) is config
 
 
 def test_the_retired_source_warns_and_falls_back_to_outputd_udp(caplog):
@@ -177,7 +178,7 @@ def test_the_retired_source_warns_and_falls_back_to_outputd_udp(caplog):
     bridge converges and says so.
     """
     with caplog.at_level(logging.WARNING, logger="jasper.aec_bridge"):
-        resolved = aec_bridge._resolved_reference_source(_config(RETIRED))
+        resolved = aec_bridge.resolved_reference_source(_config(RETIRED))
 
     assert resolved.ref_source == aec_bridge.REF_SOURCE
     assert "event=aec_ref_source_retired" in caplog.text
@@ -194,7 +195,7 @@ def test_an_unknown_source_is_still_a_hard_failure(value):
     engine on a reference the operator did not ask for.
     """
     with pytest.raises(aec_bridge.UnsupportedReferenceSource) as excinfo:
-        aec_bridge._resolved_reference_source(_config(value))
+        aec_bridge.resolved_reference_source(_config(value))
     assert repr(value) in str(excinfo.value)
 
 
@@ -218,7 +219,7 @@ def test_main_resolves_the_reference_source_before_publishing_provenance():
         node.lineno for node in ast.walk(main)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_resolved_reference_source"
+        and node.func.id == "resolved_reference_source"
     )
     reset_line = min(
         node.lineno for node in ast.walk(main)
@@ -229,6 +230,34 @@ def test_main_resolves_the_reference_source_before_publishing_provenance():
     assert resolve_line < reset_line, (
         "main() must resolve ref_source before _bridge_stats.reset publishes it"
     )
+
+
+def test_main_wires_the_ref_thread_to_the_process_stats_and_shutdown():
+    """The one surviving transport reads its endpoint from the resolved
+    config and shares the process's stats and shutdown Event. A throwaway
+    pair leaves the reference running, unreportable and unstoppable — no
+    unit test opens the real socket, so nothing else would notice.
+    """
+    tree = ast.parse(BRIDGE_SOURCE.read_text())
+    thread = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and any(
+            kw.arg == "target"
+            and ast.unparse(kw.value) == "outputd_ref_udp_thread"
+            for kw in node.keywords
+        )
+    )
+    kwargs = next(kw.value for kw in thread.keywords if kw.arg == "kwargs")
+    assert {
+        key.value: ast.unparse(value)
+        for key, value in zip(kwargs.keys, kwargs.values)
+    } == {
+        "host": "config.outputd_ref_udp_host",
+        "port": "config.outputd_ref_udp_port",
+        "stats": "_bridge_stats",
+        "shutdown": "_shutdown",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +323,7 @@ def test_chip_aec_refuses_to_start_without_a_chip_reference_producer(
     """
     _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="")
     sd_mod = MagicMock()
-    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
 
     with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
         assert aec_bridge.main() == 1
@@ -318,7 +347,7 @@ def test_the_chip_reference_guard_lets_a_configured_producer_through(
     _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="hw:Array,0")
     sd_mod = MagicMock()
     sd_mod.query_devices.side_effect = ValueError("no such device")
-    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    monkeypatch.setattr(aec_bridge_config, "sd", sd_mod)
 
     assert aec_bridge.main() == 1
     sd_mod.query_devices.assert_called_once()

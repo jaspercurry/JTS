@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from jasper import aec_ready
 from tests.systemd_unit_helpers import (
     value_for as _value_for,
     values_for as _values_for,
@@ -15,6 +16,8 @@ from tests.systemd_unit_helpers import (
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-aec-bridge.service"
+RECONCILER_PATH = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
+INSTALL_UNITS_PATH = REPO / "deploy" / "lib" / "install" / "systemd-units.sh"
 
 def test_bridge_camilla_dependency_is_startup_only_not_lifecycle_coupled() -> None:
     """Regression guard for #1264.
@@ -76,3 +79,29 @@ def test_bridge_sources_wake_corpus_env_after_system_env() -> None:
         < env_files.index("-/var/lib/jasper/usb_mic.env")
         < env_files.index("-/var/lib/jasper/wake_corpus_bridge.env")
     )
+
+
+def test_bridge_gates_on_the_reconciler_published_ready_marker() -> None:
+    """ADR-0224. The verdict is a file the reconciler publishes, read by PID 1
+    for the cost of a stat — not an ExecCondition= that re-runs the reconciler
+    (and ~38 MB of CPython) inside every start job, spending a StartLimitBurst
+    slot on its way to StartLimitAction=reboot.
+
+    The path literal is duplicated across the unit, the bash writer and the
+    Python readers; this is the drift pin.
+    """
+    unit = UNIT_PATH.read_text()
+    marker = aec_ready.DEFAULT_AEC_BRIDGE_READY_MARKER
+
+    assert _values_for(unit, "ConditionPathExists") == (marker,)
+    assert _value_for(unit, "ExecCondition") is None
+    # An ordering edge here would deadlock: the reconciler blocking-restarts
+    # this unit from inside its own ExecStart.
+    assert "jasper-aec-reconcile.service" not in _values_for(unit, "After")
+    assert f'AEC_BRIDGE_READY_MARKER="${{JASPER_AEC_BRIDGE_READY_MARKER:-{marker}}}"' in (
+        RECONCILER_PATH.read_text()
+    )
+    # The streambox park is the one place outside the writer that removes it:
+    # it disables the reconciler, so a leftover verdict would have nothing to
+    # withdraw it before the next boot.
+    assert f"rm -f {marker}" in INSTALL_UNITS_PATH.read_text()

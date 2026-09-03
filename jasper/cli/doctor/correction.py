@@ -77,8 +77,8 @@ def check_correction_web_service() -> CheckResult:
 
 # One rendered line from _systemd.py's _log_deferred_exit: "systemd idle-exit
 # deferred: 2 active requests/holds after 7530s idle, busy for 7530s
-# (threshold 600s, holds: relay:level_ramp:room)" — optionally followed by the
-# " — busy past ...LEAKED hold..." note, which is what pushes it to WARNING.
+# (threshold 600s, holds: capture:crossover_v2:session)" — optionally followed
+# by the " — busy past ...LEAKED hold..." note, which pushes it to WARNING.
 # Captures (busy_for_seconds, holds).
 _DEFERRED_HOLD_RE = re.compile(
     r"idle-exit deferred: \d+ active requests/holds after [\d.]+s idle, "
@@ -94,10 +94,9 @@ def check_correction_idle_exit_holds() -> CheckResult:
 
     ``IdleShutdownTracker.hold()`` (jasper/web/_systemd.py, issue #1854/#1856)
     keeps correction-web's socket-activated process alive across background
-    session work that generates no inbound HTTP traffic: a crossover-v2 cloud
-    session, and — since #1860 — the two human-paced level-ramp kinds
-    (``level_ramp:room``, ``level_ramp:crossover``). Past
-    ``HOLD_LEAK_WARN_AFTER_SEC`` of unbroken busy time, ``_systemd.py`` itself
+    session work that generates no inbound HTTP traffic: a crossover-v2
+    measurement session. Past ``HOLD_LEAK_WARN_AFTER_SEC`` of unbroken busy
+    time, ``_systemd.py`` itself
     escalates its rate-limited "idle-exit deferred" line from INFO to
     WARNING, because no legitimate session runs that long. This check reads
     that same escalation from the unit's journal so a stuck hold shows up
@@ -536,69 +535,6 @@ def check_correction_cert_hostname() -> CheckResult:
         "https://" + effective + "/correction/ will show a browser "
         "warning. Redeploy (bash scripts/deploy-to-pi.sh) to regenerate "
         "the leaf cert after converging the hostname.",
-    )
-
-
-@doctor_check(order=32.5, group="correction")
-def check_capture_relay() -> CheckResult:
-    """Phone-mic capture relay (cloud transport for browser mic capture).
-
-    Fresh installs seed JASPER_CAPTURE_RELAY_BASE=https://relay.jasper.tech so
-    phones can use a publicly trusted HTTPS mic-capture page. If an operator
-    explicitly sets the base to disabled/off/0/none, the speaker uses the on-Pi
-    same-origin capture and this reports OK/skipped. When configured, confirm the
-    AEAD decrypt
-    dependency is importable and the relay's /healthz is reachable (a relay
-    outage breaks NEW measurements only — existing corrections are unaffected).
-
-    Also reports the relay's advertised capture-plan ceiling. The crossover-v2
-    cloud session emits a plan larger than the pre-capacity Worker's frozen
-    ceiling of 8, so a stale deployment refuses it — correctly and before any
-    tone plays, but only at the moment a household taps Start. Surfacing the
-    ceiling here turns that into something an operator finds during a
-    diagnostic run instead. A reachable relay whose ceiling is too small is a
-    WARN, not a fail: every measurement OTHER than the cloud still works, and
-    the remedy is one Worker deploy."""
-    label = "Phone-mic relay"
-    try:
-        from jasper.capture_relay import health
-    except ImportError as e:
-        return CheckResult(label, "fail", f"capture_relay subsystem import failed: {e}")
-
-    base = health.relay_base_from_env()
-    if not base:
-        return CheckResult(
-            label, "ok",
-            "not configured/disabled (skipped — fresh installs default to "
-            "https://relay.jasper.tech; set JASPER_CAPTURE_RELAY_BASE to route "
-            "phone-mic capture through another cloud relay)",
-        )
-    reachable, detail = health.probe_relay_health(base)
-    if not reachable:
-        # Unreachable relay: the capability probe would only repeat the same
-        # failure, so do not spend a second round-trip saying it twice.
-        return CheckResult(
-            label, "warn",
-            f"{base} {detail} — new phone-mic measurements need the relay; "
-            "existing applied corrections are unaffected",
-        )
-    from jasper.active_speaker.crossover_v2_flow import relay_plan_attempts_required
-
-    # The SHARED producer, not local arithmetic: it counts R16's lateral walk,
-    # which an operator's staged angle walk can add to any session, so this
-    # number and the runtime capacity guard's move together. See its docstring
-    # for what reading the cloud figure alone would have cost a Pi on an older
-    # Worker.
-    needed = relay_plan_attempts_required()
-    ceiling, capacity_detail = health.probe_relay_plan_capacity(base)
-    if ceiling is not None and ceiling >= needed:
-        return CheckResult(label, "ok", f"{base} {detail}, {capacity_detail}")
-    return CheckResult(
-        label, "warn",
-        f"{base} {detail}, but {capacity_detail} — the crossover measurement "
-        f"needs {needed}. Deploy the current relay Worker "
-        "(cd relay && npx wrangler deploy); other phone-mic measurements are "
-        "unaffected",
     )
 
 

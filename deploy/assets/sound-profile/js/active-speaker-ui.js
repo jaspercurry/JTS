@@ -559,9 +559,8 @@ export function commissionGateReason(gateId) {
 // jts.local/correction lands on the sibling Room tab, and "room correction" is
 // already this copy's name for the later stage you may skip to.
 // Placement geometry is OWNED by jasper/active_speaker/capture_geometry.py and
-// rendered by the capture page — which instruction the household sees depends
-// on the capture kind (capture_relay.spec.BUILDERS). Do NOT restate a distance
-// or an aim instruction here.
+// rendered by the measurement page for the capture kind in play. Do NOT
+// restate a distance or an aim instruction here.
 export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
   'Automatic tuning option: confirming each driver by ear here is enough to ' +
   'finish. The automatic crossover measures the drivers for you — open ' +

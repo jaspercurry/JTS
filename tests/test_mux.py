@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -104,7 +105,7 @@ def mux(tmp_path):
     # touch /run/librespot or the real /var/lib/jasper/mux_mode.json if a
     # test forgets to stub the probes.
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=_FakeVolumeCoordinator(),
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
@@ -151,6 +152,24 @@ def _stub_probes(
 def _stub_pauses(mux: Mux):
     """Replace the pause action with a capturing AsyncMock."""
     mux._pause = AsyncMock()
+
+
+class _FakeClock:
+    """Stand-in for jasper.mux's `time`; the module only calls monotonic()."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def mux_clock(monkeypatch):
+    """Advanceable jasper.mux clock. The asyncio loop clock is untouched."""
+    clock = _FakeClock()
+    monkeypatch.setattr(mux_module, "time", clock)
+    return clock
 
 
 async def test_no_transitions_no_pause_calls(mux, patched_probes):
@@ -205,7 +224,9 @@ async def test_notify_control_command_only_marks_source_dirty(mux):
     mux._fanin_select.assert_not_awaited()
 
 
-async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
+async def test_alert_and_patrol_share_reconciler_policy(
+    mux, patched_probes, mux_clock,
+):
     _stub_pauses(mux)
     _stub_probes(patched_probes, spotify=True)
 
@@ -218,11 +239,66 @@ async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
     assert mux._last_reconcile["trigger"] == "alert"
     assert mux._last_reconcile["dirty_sources"] == ["spotify"]
 
-    # A lost alert is repaired by the same operation on the patrol path.
+    # A lost alert is repaired by the same operation on the patrol path, once
+    # the deferred AirPlay probe comes due again.
     _stub_probes(patched_probes, spotify=False, airplay=True)
+    mux_clock.now += mux_module.EVENT_BACKED_PROBE_SEC
     await mux._reconcile(trigger="patrol", dirty_sources=set())
     assert mux._winner is Source.AIRPLAY
     assert mux._patrol_repairs == 1
+
+
+async def test_idle_patrols_defer_the_subprocess_backed_probes(
+    mux, patched_probes, mux_clock,
+):
+    """An idle minute of patrols must not fork busctl/bluealsa-cli 60 times."""
+    _stub_probes(patched_probes)
+    patrols = int(60 / mux.POLL_INTERVAL_SEC)
+    for _ in range(patrols):
+        await mux._reconcile(trigger="patrol", dirty_sources=set())
+        mux_clock.now += mux.POLL_INTERVAL_SEC
+
+    assert patched_probes.spotify.await_count == patrols
+    assert patched_probes.usbsink.await_count == patrols
+    forked = math.ceil(
+        patrols * mux.POLL_INTERVAL_SEC / mux_module.EVENT_BACKED_PROBE_SEC,
+    )
+    assert patched_probes.airplay.await_count == forked
+    assert patched_probes.bluetooth.await_count == forked
+
+
+@pytest.mark.parametrize(
+    ("alerted", "elapsed_sec", "expected_winner"),
+    [
+        (True, 0.0, Source.AIRPLAY),
+        (False, mux_module.EVENT_BACKED_PROBE_SEC / 2, None),
+        (False, mux_module.EVENT_BACKED_PROBE_SEC, Source.AIRPLAY),
+    ],
+)
+async def test_a_start_is_noticed_by_its_event_or_within_the_repair_window(
+    mux, patched_probes, mux_clock, alerted, elapsed_sec, expected_winner,
+):
+    """The bound on noticing a subprocess-backed source change.
+
+    With its event delivered, immediately. With the event lost, no later than
+    EVENT_BACKED_PROBE_SEC.
+    """
+    _stub_pauses(mux)
+    _stub_probes(patched_probes)
+    await mux._reconcile(trigger="patrol", dirty_sources=set())
+
+    _stub_probes(patched_probes, airplay=True)
+    mux_clock.now += elapsed_sec
+    dirty: set[Source] = set()
+    if alerted:
+        mux.notify_source_changed(Source.AIRPLAY, "dbus")
+        dirty = set(mux._dirty_sources)
+        mux._dirty_sources.clear()
+    await mux._reconcile(
+        trigger="alert" if dirty else "patrol", dirty_sources=dirty,
+    )
+
+    assert mux._winner is expected_winner
 
 
 async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
@@ -1145,7 +1221,7 @@ async def test_source_observations_serialize_probe_and_record(mux):
     release_first_probe = asyncio.Event()
     calls = 0
 
-    async def probe_sources():
+    async def probe_sources(**_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -1178,7 +1254,7 @@ def _make_mux_mute_stubbed(tmp_path):
     """Real Mux with the fan-in lane-mute transport stubbed so
     `_usbsink_set_preempt` / the reassertion run for real but touch no socket.
     Returns (mux, fanin_lane_mute_mock)."""
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
     fanin_mute = AsyncMock(return_value={})
     m._fanin_lane_mute = fanin_mute
     return m, fanin_mute
@@ -1190,7 +1266,7 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
     command = AsyncMock(return_value={})
     monkeypatch.setattr(mux_module, "fanin_command", command)
     monkeypatch.setattr(mux_module, "FANIN_CONTROL_SOCKET", "/tmp/override.sock")
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
 
     await m._fanin_select_label("correction")
     await m._fanin_auto()
@@ -1840,7 +1916,7 @@ async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
     )
     coordinator.load_persisted_level()
     real_mux = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=coordinator,
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
@@ -2216,7 +2292,7 @@ def _fresh_mux_after_restart(tmp_path):
     librespot + mode-state paths the `mux` fixture uses — i.e. what a
     deploy/restart produces (a brand-new process, on-disk state intact)."""
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         volume_coordinator=_FakeVolumeCoordinator(),
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
@@ -2276,7 +2352,7 @@ async def test_auto_select_persists_auto_so_restart_stays_auto(
 def test_fresh_mux_with_no_state_file_is_auto(tmp_path):
     """First boot / no prior pin → Auto."""
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         mode_state_path=str(tmp_path / "missing.json"),
     )
     assert m._manual_source is None
@@ -2288,7 +2364,7 @@ def test_fresh_mux_with_corrupt_state_file_is_auto(tmp_path):
     state = tmp_path / "mux_mode.json"
     state.write_text("{half-written", encoding="utf-8")
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         mode_state_path=str(state),
     )
     assert m._manual_source is None
@@ -2307,7 +2383,7 @@ def test_mux_mode_state_path_defaults_from_env(monkeypatch, tmp_path):
     custom = tmp_path / "custom_mode.json"
     p.write_mode(custom, Source.SPOTIFY)
     m = Mux(
-        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        librespot_state_path=str(tmp_path / "librespot.state.env"),
         mode_state_path=str(custom),
     )
     assert m._manual_source is Source.SPOTIFY

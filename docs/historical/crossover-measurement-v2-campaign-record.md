@@ -11,7 +11,7 @@
 > `prepare_v2_session(verify_only=True)` in #3166 — are kept where they are
 > what the entry was about at the time. Current operational truth is
 > [`tuning-operator-runbook.md`](../tuning-operator-runbook.md), and the file
-> map in [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md) is
+> map in [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md) is
 > the current shape.
 >
 > **Two sections are the exception, and this tag does not cover them:**
@@ -224,32 +224,6 @@ the text. The two refusals stay distinct — normalization failure means the YAM
 we submitted is invalid, mismatch means something else is live.
 
 ### Current status (2026-08-05)
-
-#### Relay sequence and terminal precedence (2026-08-08)
-
-`capture-page/js/relay-client.js` is the single owner of the phone-event
-sequence. It serializes event signing and POST delivery, and keeps the active
-session's high-water mark in `sessionStorage`, re-reading it on every allocation
-so reload and back/forward restoration continue above the last sequence. If
-storage is unavailable, capture continues with the instance counter.
-
-The Pi authenticates every event before sequence handling. A lower authenticated
-sequence is a stale no-op (`event=capture_relay.capture_event_stale_ignored`);
-an identical current-sequence replay remains idempotent, while a conflicting
-payload at that sequence or any MAC/session-binding failure remains fatal.
-Accepted transitions are visible at
-`event=capture_relay.capture_event_sequence_accepted`, once per new slot.
-
-For the same session, a durably persisted VERIFY acoustic outcome is the
-authoritative terminal commissioning result. A later relay timeout, delivery
-fault, or cleanup fault cannot replace its durable failure or phone-facing
-`capture_result`; the demotion is visible at
-`event=correction.crossover_v2_terminal_verdict_preserved`. Before a
-VERIFY outcome exists, relay death keeps the existing fail-loud `relay_timeout`
-behavior. Volume restore and relay purge still run independently on every exit;
-their result is reported by `correction.crossover_v2_cleanup_complete` or
-the existing component-specific `correction.crossover_v2_volume_*_failed`
-events; relay-purge failure uses `correction.crossover_v2_cleanup_failed`.
 
 #### Live attempts loop (2026-08-03)
 
@@ -627,7 +601,7 @@ The journey is **two relay sessions** with an untimed household decision
 between them (two-stage commission work order D1/D2, PR-T3). Both use
 `crossover_v2:session` / `crossover_v2:verify`; the conductor hands
 `authorize_begin` / `on_armed` / `consume_capture` to `run_capture_plan`
-(`jasper/capture_relay/session.py`) in each.
+in each.
 
 **Stage 1 — 3 captures at either tier.** `STAGE1_INCLUDES_ENTRY_BASELINE` is
 `True` (#2291 Phase 3c) and `STAGE1_INCLUDES_CLOUD_MEASURE` (R15, #2106) is
@@ -1162,16 +1136,6 @@ together. Design rationale:
   those numbers, not the position counts, against
   [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
   fundamental 1's "N≈8–12 gated sweeps".
-- **No new phone mechanism.** Prompts ride the shipped
-  `CapturePlanEntry.screen` + `AUTO_ADVANCE_TAP`; the deployed capture
-  page renders per-entry screens and has no plan-length cap. What the
-  cloud *did* need was relay capacity — PR-3a raised
-  `MAX_CAPTURE_PLAN_ATTEMPTS` 8 → 32 and gated emission on the Worker's
-  `GET /capabilities`. A stale Worker refuses the session at
-  registration with a clean 400 (`RelayCapacityUnavailable`, a
-  `ValueError` so the dispatcher's refusal arm answers it), and
-  `jasper-doctor`'s `check_capture_relay` reports the advertised ceiling
-  so an operator finds it before a household taps Start.
 - **Prompt copy** is `CLOUD_POSITION_PROMPTS` — numeric ABSOLUTE poses in
   inches and centimetres, each stating a complete target (distance, bearing,
   and height) measured from the mark, with "the microphone" as the actor.
@@ -2603,16 +2567,10 @@ per-corner ceiling), so a plan narrowed by declarations asks for less wall than
 a full one. `FC_SWEEP_COMPUTE_BUDGET_S` is the largest budget any plan can ask
 for (six corners, 96 s).
 
-The phone's per-capture result wait is **minted from that ceiling on the Pi**
+The per-capture result wait is **minted from that ceiling on the Pi**
 (`fc_sweep_result_wait_s` = ceiling + `FC_SWEEP_RESULT_OVERHEAD_S`, the measured
 10.48–12.46 s of blob pull, anchor analysis, publication and polling) and
-carried to the page on `CaptureSpec.result_wait_s`. The page holds no copy: its
-`CAPTURE_RESULT_WAIT_BUDGET_MS` is a 90 s fallback for a Pi that publishes no
-wait, and nothing else. That split matters because the page is a separately
-deployed bundle — a page whose wait is shorter than the Pi's ceiling does not
-degrade, it throws a terminal `sweepFailed` and the household loses a completed
-capture. See `capture-page/README.md`'s release-order entry for build
-`20260818.1` (forward: page first; rollback: Pi first).
+carried to the capture consumer on `CaptureSpec.result_wait_s`.
 
 The configured candidate always starts. Later candidates start only when the
 slowest attempt so far forecasts they fit; otherwise each is represented as
@@ -2629,7 +2587,7 @@ alternative as best; its durable summary labels the comparison incomplete.
 (2026-08-17/18) attempted 45 alternative corners; the 42 with a timed cost span
 11.65–15.52 s. The configured corner runs 1.7–2.3 s (it reuses the anchor's
 analysis rather than re-running it), a complete all-six sweep 62.81–69.84 s, and
-the phone-visible `capture_relay.captured`→`crossover_v2_result` wall
+the phone-visible capture-complete→`crossover_v2_result` wall
 67.95–81.28 s (73.29–81.28 s for the five all-six rounds); analysis workspaces
 are around 400–500 MB. The derived budget is a bounded deployment ceiling, not a
 claimed runtime — it is sized so completion is the normal case, not so it is
@@ -2999,7 +2957,7 @@ exceedance run from 0.575 to 0.307 octaves, under the width rule.
 Unlike the tracking check, this comparison is **not** level-offset-invariant —
 a level shortfall is one of the things it classifies — so it takes the apply
 boundary's declared move (`expected_offset_db`,
-[invariant 10a](../crossover-v2-engine-design.md)) and removes it
+[invariant 10a](crossover-v2-engine-design.md)) and removes it
 before classifying. What survives is measured where the correction commanded
 nothing and reported as `residual_offset_db`; a material, sufficient residual
 is the `level_mismatch` verdict, which is a finding, not a rollback.
@@ -3460,10 +3418,6 @@ capture_result is terminal immediately** (`terminal=true`,
 relay runner publishes it and returns, so the phone never receives a live
 retry button while the conductor waits to refuse the next begin;
 `authorize_begin` keeps only a replay/old-page backstop.
-
-That terminal path has a page-first release dependency; the operational
-fixture, skew proof, and rollback order live in
-[`capture-page/README.md`](../../capture-page/README.md).
 
 Diagnosis and action are distinct for **every retriable reason**. Each
 positive-budget `ReasonSpec` is built from one `RetryableReasonCopy`
@@ -4588,7 +4542,7 @@ no retries-as-bodge). Treat these as regression fences.
    is why the additive form had to go. The target-band floor is unchanged.
 7. **The −65 dB tweeter cap is a relic** (#1595). The HF measurement
    ceiling is derived from sensitivity (invariants 1–2 in
-   [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md)); the old
+   [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md)); the old
    seed read near-inaudible (27 dB in-band SNR) on the DE250. Since
    2026-08-23 the research ask no longer emits it and the field is
    optional, so a profile saved from here on says the same thing by
@@ -5044,8 +4998,8 @@ no retries-as-bodge). Treat these as regression fences.
     after 600 s with no INBOUND request (`IdleShutdownTracker`,
     `jasper/web/_systemd.py`). A v2 session's only inbound traffic is the
     POST that starts it plus whatever the operator tab polls — and when
-    the operator's browser IS the phone that then navigates to
-    `capture.jasper.tech`, there is none at all: relay polling, sweep
+    the operator's browser IS the phone that then navigates to the
+    relay's capture page, there is none at all: relay polling, sweep
     playback, analysis, auto-apply and verify are all outbound from
     background workers. On JTS3 the process therefore exited exactly
     600.2 s after the last envelope GET, 5 s after the verify capture
@@ -5218,11 +5172,11 @@ Snapshot narrative, for "why did we end up here," not current state.
 
 The v2 rebuild ran 2026-07-17 → 2026-07-19 (PRs #1578–#1604), architected
 by Fable. Its motivation and full decision record are in
-[`crossover-measurement-productization-design.md`](../crossover-measurement-productization-design.md);
+[`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md);
 the first-principles research is
-[`crossover-measurement-deep-research-2026-07-18.md`](../crossover-measurement-deep-research-2026-07-18.md);
+[`crossover-measurement-deep-research-2026-07-18.md`](../research/crossover-measurement-deep-research-2026-07-18.md);
 the on-hardware log that motivated it is
-[`crossover-room-e2e-validation-log.md`](../crossover-room-e2e-validation-log.md).
+[`crossover-room-e2e-validation-log.md`](crossover-room-e2e-validation-log.md).
 
 **Why v2 exists.** The legacy flow's cost was structural, not
 parametric: a full automatic 2-way run was ~17 page actions + ~12
@@ -5348,7 +5302,7 @@ offline tests; no live-Pi run. P0.4 re-verified the VERIFY claim and terminal gr
 sections; the four outcomes remain offline-tested with no live-Pi run. P0.3 verified only "Relay sequence and terminal
 precedence" and its page-first/Pi-second release note against the relay client,
 session verifier, and v2 cleanup/persistence seams. P0.2 re-verified only "Recommending an Fc" against
-the selector, conductor, durable summary, household copy, and capture-page wait;
+the selector, conductor, durable summary, household copy, and capture wait;
 the post-P0.1 live-Pi all-six timing remains explicitly unverified. The prior
 2026-08-04 pass added and verified the planning-vs-shipped
 orientation above against the current phase routing; the prior 2026-08-03 pass
@@ -5362,15 +5316,15 @@ wrote the new "Timeline anchor" section against `program_analysis.py`
 #2093, with its measured numbers re-derived from the 11 retained 2026-08-03
 cloud VERIFY captures; and re-verified the retry/refusal contract (the position-group
 retry-budget bullet, the reason-registry paragraph, and the attempt-meter
-paragraph under Failure taxonomy) against `crossover_v2_flow.py` /
-`capture_relay/session.py` / `capture-page/js/main.js` while landing the #2086
+paragraph under Failure taxonomy) against `crossover_v2_flow.py`
+while landing the #2086
 ruling; then re-verified that same retry/refusal contract after #2097's
 adversarial review against the structured all-reason diagnosis model, the
 final-capture terminal runner path, final-index stage-1/stage-2 rendering, and
 the stable spent-event evidence pairing. R17 added the "Recommending an Fc"
 section, written and verified against `fc_selector.py` and the conductor's
 `_fc_candidate_set` / `_sweep_fc_candidates` / `_adjudicate_fc` as landed, with
-the phone-deadline figures re-derived from `capture-page/js/main.js` and the
+the phone-deadline figures re-derived from the shipped capture page and the
 memory/wall numbers quoted from the #1894 on-Pi profile rather than re-measured
 here. Sections outside those paths carry their 2026-07-30 verification.
 

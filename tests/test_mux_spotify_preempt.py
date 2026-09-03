@@ -28,7 +28,7 @@ from jasper.mux import Mux, Source
 
 @pytest.fixture
 def mux(tmp_path):
-    return Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    return Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
 
 
 def _mock_broker(*, ok: bool = True, rc: int = 0, error: str | None = None):

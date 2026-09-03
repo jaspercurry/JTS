@@ -2,44 +2,34 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""CLI shim for chip-AEC policy decisions used by shell reconcilers."""
+"""CLI shim for chip-AEC policy decisions used by shell reconcilers.
+
+`--alignment` answers the second question `deploy/bin/jasper-aec-reconcile`
+asks: what the alignment record says for a disposition only the shell can see.
+`jasper-aec-init` publishes its own pass's record directly; every other
+disposition comes through here, so no alignment string is typed in shell.
+"""
 from __future__ import annotations
 
 import argparse
 import json
-import shlex
-import socket
 import sys
 from typing import Any
 
-from ..chip_aec_policy import resolve_chip_aec_dac_gate
+from ..chip_aec.health import DISPOSITIONS, alignment_health, render_shell_assignments
+from ..chip_aec.policy import resolve_chip_aec_dac_gate
+from ..route_latency.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
 
 
-def _query_outputd_status(path: str, *, timeout: float = 1.0) -> tuple[dict[str, Any] | None, str]:
+def _query_outputd_status(
+    path: str, *, timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS
+) -> tuple[dict[str, Any] | None, str]:
     if not path:
         return None, "STATUS socket path is empty"
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            sock.connect(path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            total = 0
-            while total < 65536:
-                chunk = sock.recv(8192)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-    except OSError as exc:
-        return None, f"STATUS socket {path}: {exc}"
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except json.JSONDecodeError as exc:
-        return None, f"invalid STATUS JSON: {exc}"
-    if not isinstance(payload, dict):
-        return None, "STATUS payload is not an object"
-    return payload, ""
+        return read_status_socket(path, timeout=timeout), ""
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return None, str(exc)
 
 
 def _shell_assignments(gate, *, testing_requested: bool) -> str:
@@ -52,16 +42,35 @@ def _shell_assignments(gate, *, testing_requested: bool) -> str:
         "JASPER_CHIP_AEC_DAC_GATE_SOURCE": gate.source,
         "JASPER_CHIP_AEC_DAC_GATE_DETAIL": gate.detail,
     }
-    return "\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items())
+    return render_shell_assignments(values)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dac-id", required=True)
+    # The two questions this shim answers, one per call. Both callers are
+    # `|| true` shell, so an unanswerable call must fail at the parser where CI
+    # sees it, not print an empty record the reconciler then treats as a
+    # missing interpreter.
+    question = parser.add_mutually_exclusive_group(required=True)
+    question.add_argument("--dac-id")
+    question.add_argument("--alignment", choices=DISPOSITIONS)
     parser.add_argument("--outputd-socket", default="")
     parser.add_argument("--testing-requested", action="store_true")
     parser.add_argument("--shell-env", action="store_true")
+    parser.add_argument("--selection", default="")
+    parser.add_argument("--reason", default="")
+    parser.add_argument("--action", default="")
     args = parser.parse_args(argv)
+
+    if args.alignment:
+        health = alignment_health(
+            args.alignment,
+            selection=args.selection,
+            reason=args.reason,
+            action=args.action,
+        )
+        print(health.to_shell(), end="")
+        return 0
 
     outputd_status = None
     outputd_error = ""
@@ -74,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         outputd_error=outputd_error,
     )
     if args.shell_env:
-        print(_shell_assignments(gate, testing_requested=args.testing_requested))
+        print(_shell_assignments(gate, testing_requested=args.testing_requested), end="")
     else:
         print(json.dumps(gate.to_dict(), sort_keys=True))
     return 0

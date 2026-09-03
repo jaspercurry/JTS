@@ -72,23 +72,6 @@ def state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
 
 
-def failure_status(attempt: Any) -> str:
-    """A transport/infra failure retries until the reservation circuit-breaker.
-
-    Transport failures never play a tone, so they are refunded from the
-    audible ``MAX_ATTEMPTS`` budget (see ``measurement_attempts``) and the set
-    stays retryable — a box just needs to get its captures through. Only
-    reaching ``MAX_RESERVATIONS`` total reservations makes an infra failure
-    terminal so a box that can never complete a pass cannot loop forever.
-    """
-
-    try:
-        number = int(attempt)
-    except (TypeError, ValueError):
-        number = MAX_RESERVATIONS
-    return "refused" if number >= MAX_RESERVATIONS else "active"
-
-
 def result_emitted_audio(result: Mapping[str, Any]) -> bool:
     """Whether one stored attempt consumed the audible measurement budget.
 
@@ -543,43 +526,6 @@ def abort_ready(
             reason=reason_id,
         )
         return entry
-
-
-def reservation_is_finished(
-    comparison_set: Mapping[str, Any],
-    *,
-    target_id: str,
-    target_fingerprint: str,
-    attempt: int,
-    path: str | Path | None = None,
-) -> bool:
-    """Return whether the exact audible reservation was already consumed.
-
-    Request-boundary recovery can observe an exception after a deeper layer
-    has durably finished or aborted the attempt.  Re-finishing that same token
-    would replace the useful original error with a misleading persistence
-    failure.  The authoritative ledger proves consumption with the target
-    binding, attempt counter, no inflight token, and a matching result entry.
-    """
-
-    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
-        return False
-    target = state_path(path)
-    with _locked(target):
-        state = _load(target)
-        _assert_comparison(state, comparison_set)
-        entry = (state.get("targets") or {}).get(target_id)
-        if not isinstance(entry, Mapping):
-            return False
-        results = entry.get("results") or ()
-        latest = results[-1] if isinstance(results, list) and results else None
-        return bool(
-            entry.get("target_fingerprint") == target_fingerprint
-            and entry.get("attempts") == attempt
-            and entry.get("inflight") is None
-            and isinstance(latest, Mapping)
-            and latest.get("attempt") == attempt
-        )
 
 
 def snapshot(

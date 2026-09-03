@@ -245,7 +245,7 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
 
     monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
-    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
     await state_aggregate._get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,
@@ -296,11 +296,12 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # shell helper PROBES STATUS; they do not move either daemon's bind socket.
     "JASPER_FANIN_STATUS_SOCKET": "AirPlay helper probe path, not a fanin knob",
     "JASPER_OUTPUTD_STATUS_SOCKET": "AirPlay helper probe path, not an outputd knob",
-    # outputd failure-reconcile helper state. These tune the one-shot marker that
-    # bounds EX_CONFIG=78 self-heal retries; they are consumed only by
-    # deploy/bin/jasper-outputd-failure-reconcile, not by the Rust daemon.
-    "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper retry marker path; script-only",
-    "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper retry marker window; script-only",
+    # outputd failure-reconcile helper state. These tune the stamp that bounds
+    # the helper to one reconcile per window across every failure class; they
+    # are consumed only by deploy/bin/jasper-outputd-failure-reconcile, not by
+    # the Rust daemon.
+    "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper reconcile stamp path; script-only",
+    "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper reconcile window; script-only",
     # The retired content lane's capture PCM. outputd no longer reads it
     # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
     # sweep removed the last writes and now actively REMOVES the key line from

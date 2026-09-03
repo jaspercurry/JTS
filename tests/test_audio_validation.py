@@ -591,6 +591,7 @@ def _active_chip_inputs() -> dict:
             variant_id="xvf3800_legacy_square_6ch",
             geometry="square",
             chip_beam_plan="xvf_square_fixed_150_210",
+            chip_aec_supported=True,
         ),
         "service_states": {
             "jasper-outputd.service": "active",
@@ -736,6 +737,29 @@ def test_chip_aec_readiness_snapshot_uses_schema_helper_and_passes():
     # run even though every readiness check passes.
     assert artifact.recommendation == "run_hardware_validation"
     assert "readiness_snapshot" in artifact.notes[0]
+
+
+def test_chip_aec_readiness_mic_detected_fails_for_unvalidated_beam_plan():
+    """A registered-but-unvalidated beam plan must read as chip-AEC NOT
+    detected, mirroring the doctor / /aec pin in test_control_aec_state.py.
+    build_chip_aec_readiness_artifact reads MicProbe.chip_aec_supported
+    directly rather than re-deriving bool(xvf_present and chip_beam_plan),
+    which ignored production_validated."""
+    inputs = _active_chip_inputs()
+    inputs["mic_probe"] = MicProbe(
+        xvf_present=True,
+        capture_channels=6,
+        recommended_channels=6,
+        alsa_card_name="Array",
+        variant_id="experimental_variant",
+        geometry="square",
+        chip_beam_plan="experimental_unvalidated",
+        chip_aec_supported=False,
+    )
+
+    artifact = audio_validation.build_chip_aec_readiness_artifact(**inputs)
+
+    assert artifact.checks["mic_detected"]["status"] == "fail"
 
 
 def test_chip_aec_readiness_accepts_explicit_extra_wake_beams():

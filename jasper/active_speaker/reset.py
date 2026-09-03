@@ -42,12 +42,10 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_SPEAKER_SETUP_RESET_KIND = "jts_active_speaker_setup_reset"
 
-# The one artifact in the tables below that is HALF OF A PAIR: `staged_config`
-# is the staged startup anchor's METADATA half, whose GRAPH half this module
-# deliberately leaves on disk (see the module docstring). #2518 gave that pair
-# a cross-process lock and both of its writers take it; this reset did not, so
-# a reset racing a stage could lose the reset (the stage's metadata lands after
-# the unlink) or leave the pair torn. See :func:`_staged_anchor_unlink_guard`.
+# The one artifact below that is HALF OF A PAIR: `staged_config` is the staged
+# startup anchor's METADATA half, whose GRAPH half stays on disk. #2518 gave
+# that pair a cross-process lock, and a reset racing a stage without it can lose
+# the reset or leave the pair torn. See :func:`_staged_anchor_unlink_guard`.
 _STAGED_ANCHOR_ARTIFACT_ID = "staged_config"
 _STAGED_ANCHOR_LOCK_SOURCE = "active_speaker_reset"
 
@@ -74,47 +72,23 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
     }
 
 
-# Artifacts that are pure MEASUREMENT-JOURNEY evidence: driver captures, the
-# summed-crossover validation, the compiled-but-not-loaded protected-startup
-# candidate, its pre-load safety checklist, and the per-driver commissioning
-# ramp/load bookkeeping. Clearing these lets a household restart the guided
-# capture flow from a clean slate.
-#
-# Deliberately EXCLUDED from this subset, unlike the nuclear
+# Pure MEASUREMENT-JOURNEY evidence, safe to clear so a household can restart
+# the guided capture flow. Deliberately EXCLUDED, unlike the nuclear
 # ``active_speaker_setup_state_paths()`` above:
 #
-# * ``design_draft`` — the driver research (model, sensitivity, protection
-#   bands), any manually entered crossover settings, and the topology intent
-#   the household spent time on. Losing it would force re-researching drivers
-#   from scratch, not just re-measuring them.
-# * ``baseline_profile`` — the SOLO applied Layer-A anchor: once a baseline
-#   has been applied, this file's ``applied_recomposition_profile`` is the
-#   sole durable record of the corrections (gain/delay/polarity) the SOLO
-#   speaker is playing, read as the "what is currently applied" SSOT by
-#   ``jasper.sound.graph_carrier`` and ``jasper-doctor`` (not just by this
-#   flow). Clearing it would corrupt the solo applied graph's record.
-#   Multiroom is a DIFFERENT story — keeping this file does NOT protect a
-#   bonded speaker's group crossover, because the active-leader/follower
-#   builders (``jasper/multiroom/active_leader_config.py`` /
-#   ``follower_config.py``) never read it. They REBUILD the driver-domain
-#   graph from ``design_draft`` (KEPT) plus ``crossover_preview`` +
-#   ``measurements`` (both CLEARED) via
-#   ``build_baseline_profile_candidate(driver_domain=True)``. So after a
-#   scoped reset a bonded speaker's next re-prove sees empty measurements →
-#   ``may_apply=False`` → ActiveLeaderError/ActiveFollowerError → the
-#   grouping reconciler's readiness gate fails SAFE to solo-active (no mute,
-#   no loud output; self-recovers when the household re-measures and
-#   re-groups). The scoped reset therefore keeps the SOLO applied audio, but
-#   a grouped speaker needs re-measurement before it can re-group — see the
-#   grouping-aware "Start over" copy.
-# * ``startup_load`` — the load/rollback bookkeeping for whichever protected
-#   candidate CamillaDSP is CURRENTLY running. Hardware-verified on 2026-07-17
-#   (JTS3): this file's ``previous_config_path`` is, at that moment, the ONLY
-#   recorded path back to the config that was playing before the active-
-#   speaker flow's muted candidate was loaded. Deleting it while
-#   ``loaded=True`` would not stop any audio by itself, but it would strand
-#   the rollback pointer, leaving no automated way back to the prior config.
-#   A scoped "start over" must never risk that.
+# * ``design_draft`` — the driver research and topology intent; losing it forces
+#   re-researching drivers, not just re-measuring them.
+# * ``baseline_profile`` — the SOLO applied Layer-A anchor and the sole durable
+#   record of the corrections the speaker is playing, read as the applied SSOT
+#   by ``jasper.sound.graph_carrier`` and ``jasper-doctor``. It does NOT protect
+#   a bonded speaker: the multiroom builders rebuild the driver-domain graph
+#   from ``design_draft`` plus the CLEARED ``crossover_preview`` +
+#   ``measurements``, so after a scoped reset a grouped speaker fails SAFE to
+#   solo-active and needs re-measurement before it can re-group.
+# * ``startup_load`` — the load/rollback bookkeeping for the protected candidate
+#   CamillaDSP is CURRENTLY running. Its ``previous_config_path`` is the only
+#   recorded path back to the config that was playing before, so deleting it
+#   while ``loaded=True`` strands the rollback pointer.
 _MEASUREMENT_JOURNEY_ARTIFACT_IDS = (
     "crossover_preview",
     "staged_config",
@@ -145,22 +119,17 @@ def active_speaker_measurement_journey_paths() -> dict[str, Path]:
 def _staged_anchor_unlink_guard(artifact_id: str) -> Iterator[None]:
     """Hold the staged startup anchor's pair lock — for ONE unlink only.
 
-    Scoped to the ``staged_config`` artifact and nothing else, deliberately.
-    Holding this across the whole clear loop would let one contending stage
-    block the other eight, unrelated deletions; the race this closes is only
-    ever about the pair, so the hold is only ever about the pair.
+    Scoped to the ``staged_config`` artifact and nothing else: holding it across
+    the whole clear loop would let one contending stage block eight unrelated
+    deletions.
 
-    The lock is :func:`~jasper.active_speaker.staging.staged_anchor_lock` keyed
-    on the GRAPH half's path (``staged_config_path()``) — the same key both
-    writers pass (``stage_protected_startup_config`` and ``baseline-reemit``'s
-    publish), which is what makes this the same lock and not a second one
-    beside it.
-
-    It inherits that lock's contract unchanged: bounded wait, then
-    :class:`StagedAnchorLockContended`; and fail-OPEN at WARNING on a lock file
-    that cannot be opened at all. The caller turns a contention into this
-    artifact's ``errors`` entry, which is the existing ``status="partial"``
-    refusal — no new exception type and no new return shape.
+    :func:`~jasper.active_speaker.staging.staged_anchor_lock` keyed on the GRAPH
+    half's path (``staged_config_path()``) — the same key both writers pass,
+    which is what makes this the same lock rather than a second one. Its
+    contract is inherited unchanged: bounded wait, then
+    :class:`StagedAnchorLockContended`, and fail-OPEN at WARNING on a lock file
+    that cannot be opened. The caller turns a contention into this artifact's
+    ``errors`` entry, the existing ``status="partial"`` refusal.
     """
 
     if artifact_id != _STAGED_ANCHOR_ARTIFACT_ID:
@@ -185,10 +154,9 @@ def _clear_paths(
         try:
             with _staged_anchor_unlink_guard(artifact_id):
                 path.unlink()
-        # `StagedAnchorLockContended` is a RuntimeError, so it needs its own
-        # arm; the `OSError` arm below would not catch it. A contended pair is
-        # reported as this artifact's error and the loop continues, so the
-        # other eight artifacts still clear.
+        # `StagedAnchorLockContended` is a RuntimeError, so the `OSError` arm
+        # below would not catch it. A contended pair is reported as this
+        # artifact's error and the loop continues.
         except StagedAnchorLockContended as exc:
             errors.append({
                 "id": artifact_id,
@@ -239,18 +207,14 @@ def clear_active_speaker_setup_state() -> dict[str, Any]:
 def clear_active_speaker_measurement_journey() -> dict[str, Any]:
     """Clear ONLY the active-speaker measurement journey, in place.
 
-    This is the scoped sibling of :func:`clear_active_speaker_setup_state`,
-    for an in-flow "start over" that restarts the guided capture sequence
-    without losing driver research or disturbing whatever audio graph is
-    currently applied/loaded. See :data:`_MEASUREMENT_JOURNEY_ARTIFACT_IDS`
-    for exactly what is cleared and why the rest is kept.
+    The scoped sibling of :func:`clear_active_speaker_setup_state`: restarts the
+    guided capture sequence without losing driver research or disturbing the
+    applied/loaded graph. :data:`_MEASUREMENT_JOURNEY_ARTIFACT_IDS` says exactly
+    what is cleared and why the rest is kept.
 
-    Callers are responsible for the surrounding safety choreography this
-    file does not own: stopping any in-flight relay/level-match session and
-    invalidating the in-process comparison-set/level-lock lease BEFORE
-    calling this (see ``jasper.web.correction_crossover_backend
-    .reset_measurement_journey``), so no capture is silently orphaned mid-
-    flight.
+    Callers own the surrounding choreography: stop any in-flight
+    relay/level-match session and invalidate the comparison-set/level-lock lease
+    BEFORE calling this, so no capture is orphaned mid-flight.
     """
 
     return _clear_paths(

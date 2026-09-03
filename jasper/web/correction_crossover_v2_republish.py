@@ -5,10 +5,10 @@
 """The v2 republish door — make a BANKED measured candidate live again.
 
 A sibling of the v2 web host (:mod:`jasper.web.correction_crossover_v2`), in
-the shape ``correction_crossover_v2_relay`` and ``correction_crossover_v2_wired``
-already established: the host is reached **late-bound**, from inside the
-handler, so this module can lean on the host's durable-state owner without
-either file importing the other at module scope.
+the shape ``correction_crossover_v2_wired`` already established: the host is
+reached **late-bound**, from inside the handler, so this module can lean on
+the host's durable-state owner without either file importing the other at
+module scope.
 
 Its own file rather than a hundred more lines in the host, because the host is
 already at its line ceiling (``tests/test_lint_contracts.py``'s ratchet) and

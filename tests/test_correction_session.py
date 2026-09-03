@@ -451,7 +451,7 @@ async def test_local_capture_setup_binds_realized_input_before_first_upload(
         )
 
 
-async def test_local_capture_setup_rejects_relay_or_started_measurement(
+async def test_local_capture_setup_rejects_a_started_measurement(
     tmp_path: Path,
 ):
     device = {
@@ -462,15 +462,6 @@ async def test_local_capture_setup_rejects_relay_or_started_measurement(
         "noise_suppression": False,
         "auto_gain_control": False,
     }
-    relay = _make_session(tmp_path / "relay")
-    relay.capture_transport = "relay"
-    await relay.begin_noise_capture()
-    with pytest.raises(RuntimeError, match="unavailable"):
-        await relay.bind_local_capture_setup(
-            mic_calibration=None,
-            input_device=device,
-        )
-
     advanced = _make_session(tmp_path / "advanced")
     advanced.current_position = 1
     await advanced.begin_noise_capture()

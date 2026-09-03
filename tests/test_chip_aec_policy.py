@@ -4,13 +4,14 @@
 
 import pytest
 
-from jasper.chip_aec_policy import (
+from jasper.chip_aec.policy import (
     ACTION_RUN_TESTING_AND_VALIDATE,
     ACTION_USE_CHIP_AEC,
     ACTION_USE_SOFTWARE_OR_TEST,
     STATUS_APPROVED,
     STATUS_NEEDS_CALIBRATION,
     STATUS_TESTING,
+    effective_chip_aec_dac_gate,
     gate_from_runtime_env,
     resolve_chip_aec_dac_gate,
 )
@@ -155,3 +156,33 @@ def test_runtime_env_gate_rejects_missing_persisted_dac_identity():
     })
 
     assert gate is None
+
+
+@pytest.mark.parametrize(
+    ("env", "testing_requested", "status", "action"),
+    [
+        ({"JASPER_AUDIO_DAC_ID": "hifiberry_dac8x"}, False,
+         STATUS_APPROVED, ACTION_USE_CHIP_AEC),
+        ({"JASPER_AUDIO_DAC_ID": "mystery_usb_audio"}, True,
+         STATUS_TESTING, ACTION_RUN_TESTING_AND_VALIDATE),
+        (
+            {
+                "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
+                "JASPER_AEC_CHIP_AEC_DAC_ID": "mystery_usb_audio",
+                "JASPER_AEC_CHIP_AEC_DAC_STATUS": "approved",
+                "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "runtime_env_carried",
+                "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "carried verdict",
+            },
+            False, STATUS_APPROVED, ACTION_USE_CHIP_AEC,
+        ),
+    ],
+    ids=["approved_no_record", "uncalibrated_testing_no_record",
+         "served_record_overrides_registry"],
+)
+def test_effective_dac_gate_prefers_served_record_over_registry(
+    env, testing_requested, status, action,
+):
+    """The served-record-beats-registry rule (module docstring)."""
+    gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
+    assert gate.status == status
+    assert gate.recommended_action == action

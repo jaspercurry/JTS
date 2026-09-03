@@ -22,11 +22,14 @@ drift from.
 **Two contracts live here, and the second is not implied by the first.** Token
 normalization (above) says what ``S32_LE`` means. The ASSISTANT WIDTH VERDICT
 (below, U2 PR-2) says what a BOX is — and it is a conjunction: the declared
-format AND the ``shm_ring`` coupling. Pinning only the normalizer left the
-two languages free to reach different verdicts about the same box from the same
-tokens, which is exactly what happened: the Python assistant-width predicate
-keyed on the token alone while ``Config::program_wire_is_wide`` had always
-required both halves.
+format AND a coupling that leaves fan-in on the ring. Pinning only the
+normalizer left the two languages free to reach different verdicts about the
+same box from the same tokens, which is exactly what happened twice: the Python
+assistant-width predicate first keyed on the format token alone while
+``Config::program_wire_is_wide`` had always required both halves, and then
+required the literal ``shm_ring`` token for the transport half while the daemon
+passed ``true`` unconditionally (#3655), so an UNDECLARED box sheared the other
+way.
 
 Rust-source pins ``pytest.skip()`` when the sources are absent, mirroring
 ``tests/test_fanin_host_clock_contract.py``'s idiom.
@@ -417,6 +420,70 @@ def test_the_two_languages_reach_the_same_assistant_width_verdict(monkeypatch) -
     ), "a declared-wide box that never armed the ring writes fan-in's narrow aloop lane"
 
 
+# `Config::program_wire_is_wide` passes the TRANSPORT half as a literal. Matched
+# inside that function's BODY only (see `_program_wire_is_wide_body`): an
+# unbounded search would keep matching after the call moved to a sibling method,
+# which is the drift this pin exists to catch.
+_PROGRAM_WIRE_COUPLING_RE = re.compile(
+    r"from_box_declaration\(\s*"
+    r"matches!\(self\.ring_wire_format, RingWireFormat::S32Le\)\s*,\s*"
+    r"(?P<coupling>\w+)\s*,",
+    re.S,
+)
+
+
+def _program_wire_is_wide_body(source: str) -> str:
+    """That method's own text, delimited the way :func:`_from_env_value_body` is."""
+    start = source.index("pub fn program_wire_is_wide(")
+    end = source.find("\n    pub fn ", start + 1)
+    if end == -1:  # last method in the impl block
+        end = source.index("\n}", start)
+    return source[start:end]
+
+
+# ``None`` is not in this list: at the VALUE level it means "not supplied" and
+# sends the predicate to its file reader (pinned separately below). A caller
+# holding an absent key hands over ``""``, as `_assistant_width_token` does.
+@pytest.mark.parametrize(
+    "coupling",
+    ["", "   ", "shm_ring", " SHM_RING "],
+    ids=["absent_key", "whitespace", "declared", "declared_noisy"],
+)
+def test_an_undeclared_coupling_is_the_ring_on_both_sides(coupling) -> None:
+    """#3655: the transport half agrees with the literal the daemon passes.
+
+    ``jasper-fanin`` hands ``from_box_declaration`` a hard-coded ``true`` for the
+    transport, because ADR-0100 left one transport and the daemon refuses every
+    other value at parse (exit 78). The Python mirror keyed on the ``shm_ring``
+    TOKEN instead, so a box whose ``fanin.env`` named no coupling — the ordinary
+    state of one the reconciler has not written — resolved NARROW here while the
+    daemon on that same box ran WIDE. The literal is re-read out of the Rust
+    source rather than assumed, so relaxing it there fails this.
+    """
+    from jasper.fanin_coupling import assistant_wire_is_wide
+
+    body = _program_wire_is_wide_body(_config_rs())
+    matches = list(_PROGRAM_WIRE_COUPLING_RE.finditer(body))
+    assert len(matches) == 1, (
+        "expected exactly one from_box_declaration call in "
+        f"Config::program_wire_is_wide ({_FANIN_CONFIG_RS}), found "
+        f"{len(matches)} — if it was reshaped or moved, re-point this contract "
+        "rather than deleting it"
+    )
+    assert matches[0].group("coupling") == "true", (
+        "the daemon no longer asserts the transport half unconditionally; the "
+        "Python mirror below is pinned to that literal"
+    )
+    assert (
+        assistant_wire_is_wide(wire_format=RING_WIRE_FORMAT_WIDE, coupling=coupling)
+        is True
+    )
+    assert (
+        assistant_wire_is_wide(wire_format=RING_WIRE_FORMAT, coupling=coupling)
+        is False
+    ), "the FORMAT half still decides; only the transport half went unconditional"
+
+
 def test_the_assistant_width_defaults_to_the_declared_files(monkeypatch) -> None:
     """Both halves default to a FILE-FRESH read of the same SSOT the daemons use.
 
@@ -424,7 +491,7 @@ def test_the_assistant_width_defaults_to_the_declared_files(monkeypatch) -> None
     loaded ``fanin.env``, which is the stale-``os.environ`` class AGENTS.md
     canonizes.
     """
-    import jasper.fanin.coupling_reconcile as cr
+    import jasper.fanin.ring_health as rh
     import jasper.fanin_coupling as fc
 
     seen = {"format": 0, "coupling": 0}
@@ -433,12 +500,12 @@ def test_the_assistant_width_defaults_to_the_declared_files(monkeypatch) -> None
         seen["format"] += 1
         return RING_WIRE_FORMAT_WIDE
 
-    def _coupling(*_a, **_k) -> str:
+    def _coupling(*_a, **_k) -> bool:
         seen["coupling"] += 1
-        return "shm_ring"
+        return True
 
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", _format)
-    monkeypatch.setattr(cr, "read_persisted_coupling", _coupling)
+    monkeypatch.setattr(rh, "persisted_coupling_feeds_ring", _coupling)
     assert fc.assistant_wire_is_wide() is True
     assert seen == {"format": 1, "coupling": 1}, (
         "both halves must be read from their own SSOT reader"

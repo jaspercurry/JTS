@@ -40,72 +40,6 @@ class _SystemctlResult:
         self.stdout = ""
 
 
-def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
-    """AEC mode changes must restart the oneshot reconciler, not just start it.
-
-    A rapid off/on click can happen while the previous reconcile is still
-    active; `systemctl start` would be a no-op and leave runtime env behind
-    the persisted intent.
-    """
-    base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
-
-    mode_file = tmp_path / "aec_mode.env"
-    mode_file.write_text("JASPER_AEC_MODE=auto\n")
-    popens: list[list[str]] = []
-
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
-    monkeypatch.setattr(srv_mod, "_aec_bridge_active", lambda: False)
-    monkeypatch.setattr(
-        srv_mod,
-        "_aec_full_status",
-        lambda: {"software_aec3": {"bypassed": False}},
-    )
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
-
-    status, body = _post(f"{base}/aec/toggle", None)
-
-    assert status == 200
-    assert body["mode"] == "disabled"
-    assert popens == [
-        ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
-    ]
-
-
-def test_aec_toggle_refuses_to_disable_chip_aec_carrier(
-    monkeypatch, tmp_path, server_with_coordinator,
-):
-    base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
-
-    mode_file = tmp_path / "aec_mode.env"
-    mode_file.write_text(
-        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec\n"
-        "JASPER_AEC_MODE=auto\n"
-        "JASPER_WAKE_LEG_CHIP_AEC=1\n"
-    )
-    popens: list[list[str]] = []
-
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
-    monkeypatch.setattr(
-        srv_mod,
-        "_aec_full_status",
-        lambda: {
-            "bridge_role": "chip_aec_carrier",
-            "software_aec3": {"bypassed": True},
-        },
-    )
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
-
-    status, body = _post(f"{base}/aec/toggle", None)
-
-    assert status == 409
-    assert "already bypassed" in body["error"]
-    assert body["bridge_role"] == "chip_aec_carrier"
-    assert "JASPER_AEC_MODE=auto" in mode_file.read_text()
-    assert popens == []
-
-
 def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
     """Leg changes use the same restart kick as the software-AEC3 toggle."""
     base, _ = server_with_coordinator
@@ -851,7 +785,23 @@ def test_aec_commission_409_while_a_run_is_active(
     status, body = _post(f"{base}/aec/commission", None)
 
     assert status == 409
-    assert body["commission"] == {"running": True}
+    assert body["commission"] == {"running": True, "state": "", "detail": ""}
+
+
+def test_aec_commission_502_when_the_unit_will_not_start(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(srv_mod, "_start_aec_commission", lambda: False)
+
+    status, body = _post(f"{base}/aec/commission", None)
+
+    assert status == 502
+    assert body["code"] == "aec_commission_start_failed"
+    assert body["commission"] == {"running": False, "state": "", "detail": ""}
 
 
 def test_aec_commission_concurrent_second_click_starts_nothing(

@@ -534,39 +534,20 @@ def _headroom_gain(yaml: str) -> str:
     return block.split("gain:", 1)[1].splitlines()[0].strip()
 
 
-def test_the_blend_stage_charges_no_headroom_and_is_not_a_term():
-    """Two halves, and the second is the one the panel had to find.
+def test_the_blend_stage_charges_no_headroom():
+    """The graph's gain staging is byte-identical with and without the stage.
 
-    **It charges nothing** — the graph's gain staging is byte-identical with
-    and without the stage.
-
-    **And it is not a TERM in the charge**, which is a different fact and the
-    reason the first one holds. ``total_headroom_db`` sums baseline headroom,
-    the room PEQs' positive boost, the linearization charge, and the output
-    trim; ``blend_correction`` appears nowhere in it. Today that is correct
-    precisely because the stage cannot boost. A future boost posture that
-    changed only the refusal — reasoning that position above the gain buys
-    absorption — would charge 0 for a real boost and silently spend the room
-    layer's allocation.
-
-    So the assertion is on the EXPRESSION, not only on the number: an author
-    who makes this stage boostable trips here and has to add the term.
+    Correct because the stage cannot boost — pinned at the solver by
+    ``test_no_curve_however_hot_produces_a_boost_or_breaks_a_ceiling`` and at
+    the emitter by ``test_the_emitter_refuses_a_boost_rather_than_clamping_it``.
+    A boostable blend stage would need a term in ``total_headroom_db``.
     """
-
-    import inspect
 
     plain = _emitted(None)
     with_blend = _emitted([
         {"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -3.0},
     ])
     assert _headroom_gain(plain) == _headroom_gain(with_blend)
-
-    source = inspect.getsource(camilla_yaml._emit_baseline_filter_definitions)
-    expression = source.split("total_headroom_db = (", 1)[1].split("\n    )", 1)[0]
-    assert "blend" not in expression, (
-        "the blend stage became a headroom term — if it can now boost, this "
-        "test should be updated deliberately; if it cannot, the term is dead"
-    )
 
 
 # --------------------------------------------------------------------------- #

@@ -41,20 +41,8 @@ globalThis.__postJSON = async () => {
   return postResponse;
 };
 
-// deploy/assets/shared/js/qr.js's renderRelayQr is tested in isolation by
-// tests/js/qr_harness.mjs (pure encoder + DOM structure). Here a spy checks
-// only the WIRING — that render()/renderRelay() hand it the crossover-relay-qr
-// container and the exact relay.tap_link href, per "assert on its input, not
-// on pixel output."
-const relayQrCalls = [];
-globalThis.__renderRelayQr = (container, text) => {
-  relayQrCalls.push({ container, text });
-};
-function lastRelayQrCall() { return relayQrCalls[relayQrCalls.length - 1] || null; }
-
 // PR-7's before/after visualization (./cloud.js) is out of scope for this
-// harness — it only pins the Stop-measurement flow — so a no-op stands in,
-// same shape as the __renderRelayQr stub above.
+// harness — it only pins the Stop-measurement flow — so a no-op stands in.
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
@@ -63,7 +51,7 @@ const { render, runAction, stopRelay } = await loadEsm(
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderRelayQr", "renderCloud", "redrawCloudChart",
+      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render", "runAction", "stopRelay"],
@@ -72,33 +60,11 @@ const { render, runAction, stopRelay } = await loadEsm(
 
 render({
   ...terminalEnvelope,
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=cap" },
+  relay: { status: "awaiting_phone" },
   next_action: null,
 });
 
-// --- QR hand-off wiring: renderRelay() passes the crossover-relay-qr
-//     container and the EXACT tap_link (fragment included, since the
-//     capture key rides there) to renderRelayQr while awaiting_phone.
-assert.equal(
-  lastRelayQrCall() && lastRelayQrCall().container,
-  elements.get("crossover-relay-qr"),
-  "the QR renders into the crossover-relay-qr container",
-);
-assert.equal(
-  lastRelayQrCall() && lastRelayQrCall().text,
-  "https://capture.test/#s=cap",
-  "the QR is handed the exact tap_link, fragment included",
-);
-
 await stopRelay();
-
-// stopRelay's own render (status: "stopping", no tap_link) clears the QR —
-// the hand-off step is over once a Stop is in flight.
-assert.equal(
-  lastRelayQrCall() && lastRelayQrCall().text,
-  null,
-  "a relay with no tap_link (e.g. stopping) clears the QR",
-);
 
 const actions = elements.get("crossover-action").children;
 assert.equal(actions.length, 1);
@@ -115,7 +81,7 @@ postResponse = { status: "ok" };
 
 const stoppableEnvelope = {
   ...terminalEnvelope,
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=cap2" },
+  relay: { status: "awaiting_phone" },
   next_action: null,
 };
 render(stoppableEnvelope);

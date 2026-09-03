@@ -122,6 +122,7 @@ impl Heartbeat {
         let me = Arc::clone(self);
         std::thread::Builder::new()
             .name("fanin-heartbeat".into())
+            .stack_size(crate::HELPER_STACK_BYTES)
             .spawn(move || me.run())
             .expect("heartbeat thread spawn failed");
     }

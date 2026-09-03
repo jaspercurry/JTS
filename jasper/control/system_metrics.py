@@ -46,6 +46,12 @@ VCGENCMD_INTERVAL_SEC = 30.0
 SERVICE_STATE_INTERVAL_SEC = 30.0
 HISTORY_POINTS = 720  # 60 min @ 5 s
 
+# Lower bound on the pause between ticks. Without it a tick that runs
+# longer than SAMPLE_INTERVAL_SEC — exactly the memory/IO pressure the
+# dashboard exists to surface — collapses the loop into a ~10 Hz spin
+# that makes the pressure worse.
+MIN_SLEEP_SEC = 1.0
+
 # Kernel thermal zone for SoC temperature. Prefer this over vcgencmd because
 # jasper-control runs as a non-root service user and vcgencmd can be blocked
 # by firmware-device permissions even while the same command works over SSH.
@@ -74,6 +80,14 @@ CGROUP_ROOT = "/sys/fs/cgroup"
 SERVICE_PREFIX = "jasper-"
 SERVICE_SUFFIX = ".service"
 
+# How many ticks a cached cgroup walk survives before it is redone. The
+# walk is the sampler's single most expensive step (~0.8% of a core at
+# the 5 s cadence on a Pi 5), and the unit set only changes when a
+# service starts or stops. A stopped unit is caught immediately (its
+# cgroup directory is gone); a newly started one waits at most this many
+# ticks — 12 × 5 s ≈ 60 s.
+SERVICE_CGROUP_RESCAN_TICKS = 12
+
 JASPER_SERVICE_GROUPS = {
     "jasper-aec-bridge.service": "Mic",
     "jasper-voice.service": "Voice",
@@ -89,7 +103,6 @@ JASPER_SERVICE_GROUPS = {
     "jasper-system-web.service": "Control",
     "jasper-input.service": "Hardware",
     "jasper-accessory-reconcile.service": "Hardware",
-    "jasper-wiim-remote-mic.service": "Hardware",
     "jasper-headphone-monitor.service": "Hardware",
 }
 
@@ -126,6 +139,16 @@ CGROUP_MEMORY_STAT_FILE = "/sys/fs/cgroup/memory.stat"
 # guest_nice columns; the dashboard wants active vs total to compute
 # a per-core utilization percentage.
 PROC_STAT = "/proc/stat"
+
+# Kernel pressure-stall information. install.sh puts `psi=1` on the
+# cmdline; without it (or without CONFIG_PSI) the file is absent and the
+# sampler omits the field rather than reporting a zero that would read as
+# "no pressure". The "some" line's avg60 is the share of the last 60
+# seconds in which at least one task stalled waiting on memory, 0-100.
+PROC_PRESSURE_MEMORY = "/proc/pressure/memory"
+# Cumulative OOM kills since boot. Absent on kernels that don't publish
+# the counter.
+PROC_VMSTAT = "/proc/vmstat"
 
 
 class SystemSampler:
@@ -164,6 +187,8 @@ class SystemSampler:
         # Current snapshot values that are not stored in the main
         # 5-second ring buffers.
         self._mem_total_mb = 0
+        self._mem_psi_some_avg60: float | None = None
+        self._oom_kill: int | None = None
         self._disk_used_pct = 0.0
         self._disk_total_gb = 0.0
         self._temp_c: float | None = None
@@ -181,6 +206,10 @@ class SystemSampler:
         #   _services_snapshot — public: list of dicts for snapshot().
         self._service_samples: dict[str, tuple[int, float]] = {}
         self._services_snapshot: list[dict[str, Any]] = []
+        # Cached cgroup walk — see _service_cgroups().
+        self._service_cgroups_cache: list[dict[str, str]] | None = None
+        self._service_cgroups_root: str | None = None
+        self._service_cgroups_ticks = 0
         self._service_state_snapshot: dict[str, dict[str, Any]] = {}
         self._last_service_state_at = 0.0
         # Per-core CPU state. Same delta pattern as per-service: first
@@ -207,7 +236,7 @@ class SystemSampler:
         """Return current values + ring-buffer history. Copies arrays
         inside the lock so the caller can release before serializing."""
         with self._lock:
-            return {
+            snap = {
                 "sample_interval_sec": self._sample_interval,
                 "history_points": self._history_points,
                 "last_sample_at": self._last_sample_at,
@@ -276,6 +305,16 @@ class SystemSampler:
                 # (race with cgroup teardown). 100% = 1 core saturated.
                 "services": list(self._services_snapshot),
             }
+            # Omitted, not zeroed, when the kernel doesn't publish them —
+            # the dashboard must be able to tell "this kernel has no PSI"
+            # from "there is no memory pressure".
+            if self._mem_psi_some_avg60 is not None:
+                snap["current"]["mem_psi_some_avg60"] = round(
+                    self._mem_psi_some_avg60, 2,
+                )
+            if self._oom_kill is not None:
+                snap["current"]["oom_kill"] = self._oom_kill
+            return snap
 
     def service_states_snapshot(self) -> dict[str, dict[str, Any]]:
         """Return the already-cached 30 s systemd state without re-probing.
@@ -308,12 +347,22 @@ class SystemSampler:
                     logger.exception("vcgencmd tick failed")
                 last_vcgencmd_at = now_mono
             elapsed = time.monotonic() - sample_start
-            sleep_for = max(0.1, self._sample_interval - elapsed)
-            time.sleep(sleep_for)
+            time.sleep(self._next_sleep_sec(elapsed))
+
+    def _next_sleep_sec(self, elapsed: float) -> float:
+        """Pause before the next tick, floored so a slow tick can't spin.
+
+        The floor never exceeds the configured interval, so a sampler
+        constructed with a sub-second cadence still honours it.
+        """
+        floor = min(MIN_SLEEP_SEC, self._sample_interval)
+        return max(floor, self._sample_interval - elapsed)
 
     def _tick(self) -> None:
         """Cheap-metric sample — /proc reads + statvfs + sysfs only."""
         mem = self._read_meminfo()
+        mem_psi = self._read_mem_psi_some_avg60()
+        oom_kill = self._read_oom_kill()
         load = self._read_loadavg_1m()
         net = self._read_net_dev()
         disk_used_pct, disk_total_gb = self._read_disk()
@@ -349,6 +398,8 @@ class SystemSampler:
                 self._append(self._fan_rpm, 0.0)
                 self._append(self._fan_pwm, 0.0)
             self._mem_total_mb = mem["total_mb"]
+            self._mem_psi_some_avg60 = mem_psi
+            self._oom_kill = oom_kill
             self._net_rx_bytes = net["rx_bytes"]
             self._net_tx_bytes = net["tx_bytes"]
             self._disk_used_pct = disk_used_pct
@@ -405,6 +456,41 @@ class SystemSampler:
             "used_mb": (total_kb - avail_kb) // 1024,
             "swap_used_mb": (swap_total_kb - swap_free_kb) // 1024,
         }
+
+    @staticmethod
+    def _read_mem_psi_some_avg60(
+        path: str = PROC_PRESSURE_MEMORY,
+    ) -> float | None:
+        """Percent of the last 60 s in which at least one task stalled on
+        memory, or None where the kernel publishes no PSI.
+
+        Line shape: ``some avg10=0.00 avg60=1.23 avg300=0.41 total=12345``.
+        """
+        try:
+            with open(path) as f:
+                for line in f:
+                    if not line.startswith("some "):
+                        continue
+                    for field in line.split()[1:]:
+                        key, _, value = field.partition("=")
+                        if key == "avg60":
+                            return float(value)
+        except (OSError, ValueError):
+            return None
+        return None
+
+    @staticmethod
+    def _read_oom_kill(path: str = PROC_VMSTAT) -> int | None:
+        """OOM kills since boot (cumulative), or None where /proc/vmstat
+        has no ``oom_kill`` counter."""
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("oom_kill "):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
 
     @staticmethod
     def _read_loadavg_1m() -> float:
@@ -536,7 +622,7 @@ class SystemSampler:
         the live set, prev-sample entries we no longer see get dropped
         when we rebuild the dict below."""
         now_mono = time.monotonic()
-        services = self._list_service_cgroups(root_dir)
+        services = self._service_cgroups(root_dir)
         prev = self._service_samples
         new_samples: dict[str, tuple[int, float]] = {}
         out: list[dict[str, Any]] = []
@@ -733,6 +819,35 @@ class SystemSampler:
         if unit.startswith(SERVICE_PREFIX) and unit.endswith(SERVICE_SUFFIX):
             return JASPER_SERVICE_GROUPS.get(unit, "JTS")
         return EXTRA_SERVICE_GROUPS.get(unit)
+
+    def _service_cgroups(self, root_dir: str) -> list[dict[str, str]]:
+        """Cached ``_list_service_cgroups`` for the 5-second tick.
+
+        The walk itself is the sampler's dominant cost, so keep its result
+        and re-derive it only when the unit set can have changed: a
+        vanished cgroup directory (checked with one stat per cached unit,
+        which is orders of magnitude cheaper than re-walking the tree) or
+        SERVICE_CGROUP_RESCAN_TICKS elapsed, which is what catches a
+        newly started unit.
+
+        An empty result is never cached: ``os.walk`` swallows its errors,
+        so "no services" is indistinguishable from "the walk failed", and
+        holding that for a minute would blank the table during exactly the
+        pressure event worth watching.
+        """
+        cache = self._service_cgroups_cache
+        if (
+            cache
+            and root_dir == self._service_cgroups_root
+            and self._service_cgroups_ticks < SERVICE_CGROUP_RESCAN_TICKS
+            and all(os.path.isdir(entry["path"]) for entry in cache)
+        ):
+            self._service_cgroups_ticks += 1
+            return cache
+        self._service_cgroups_cache = self._list_service_cgroups(root_dir)
+        self._service_cgroups_root = root_dir
+        self._service_cgroups_ticks = 1
+        return self._service_cgroups_cache
 
     @classmethod
     def _list_service_cgroups(

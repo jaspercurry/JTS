@@ -19,9 +19,6 @@ docs/active-crossover-information-design.md:
     tier that rejects scalar-only evidence, and the worst-RELEVANT-band
     partial-pass rule (a bad octave outside the window a decision depends on
     must not veto it).
-  - :func:`cap_null_depth_db` — a null of depth D needs D + 10 dB of overlap
-    SNR to be provable; a deeper measured null reports capped at what the
-    SNR can prove.
   - :func:`excitation_covered_bands` / :func:`apply_noise_band_fallback` —
     the phantom-noise-floor fix. A band the reference sweep never excited
     reads a Tikhonov regularization artifact from the deconvolved domain, not
@@ -39,7 +36,7 @@ import math
 import numpy as np
 import pytest
 
-from jasper.audio_measurement import level_solver, program_analysis, snr_policy, sweep
+from jasper.audio_measurement import program_analysis, snr_policy, sweep
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.correction import acoustic_quality
 from jasper.correction import session as correction_session
@@ -588,7 +585,7 @@ def test_worst_band_verdict_none_when_nothing_covered():
 #
 # Verdict rank still dominates (the refusal path is unchanged); among EQUAL
 # verdicts the entry with the LOWEST estimated_snr_db wins, because that is
-# the number cap_null_depth_db proves the reported null against.
+# the band that actually limits the measurement.
 
 
 def test_worst_band_verdict_breaks_equal_verdict_ties_on_lowest_snr():
@@ -608,12 +605,6 @@ def test_worst_band_verdict_breaks_equal_verdict_ties_on_lowest_snr():
     worst = snr_policy.worst_band_verdict(bands, 800.0, 3200.0)
     assert worst["band_id"] == "sweep_high"
     assert worst["estimated_snr_db"] == pytest.approx(38.0)
-    # And the cap that reads it now proves a 30 dB null against 38 dB, not 55.
-    reported, capped = snr_policy.cap_null_depth_db(
-        30.0, worst, DRIVER.null_cap_margin_db
-    )
-    assert reported == pytest.approx(28.0)
-    assert capped is True
 
 
 def test_worst_band_verdict_lowest_snr_wins_regardless_of_table_order():
@@ -657,8 +648,7 @@ def test_worst_band_verdict_rank_still_dominates_snr():
 
 def test_worst_band_verdict_prefers_numeric_evidence_over_missing_snr():
     """A same-verdict band with no usable number never displaces one that has
-    a number: cap_null_depth_db cannot cap against ``None``/NaN, so treating
-    the numberless band as "worst" would silently REMOVE the cap."""
+    a number: a consumer cannot grade against ``None``/NaN."""
     for absent in (None, float("nan"), "n/a"):
         bands = [
             {"band_id": "no_number", "band_hz": [800.0, 1600.0],
@@ -676,8 +666,8 @@ def test_worst_band_verdict_prefers_numeric_evidence_over_missing_snr():
 
 
 def test_band_snr_verdicts_worst_relevant_is_the_lowest_snr_ok_band():
-    """End-to-end through the builder: `worst_relevant` (what the cap reads)
-    reports the lowest-SNR band of the window, not the first one."""
+    """End-to-end through the builder: `worst_relevant` reports the
+    lowest-SNR band of the window, not the first one."""
     capture_bands = [
         {"band_id": "sweep_low", "band_hz": [800.0, 1269.9], "level_dbfs": -10.0},
         {"band_id": "sweep_mid", "band_hz": [1269.9, 2015.9], "level_dbfs": -10.0},
@@ -700,10 +690,6 @@ def test_band_snr_verdicts_worst_relevant_is_the_lowest_snr_ok_band():
     assert block["verdict"] == "ok"
     assert block["worst_relevant"]["band_id"] == "sweep_high"
     assert block["worst_relevant"]["estimated_snr_db"] == pytest.approx(38.0)
-    reported, capped = snr_policy.cap_null_depth_db(
-        30.0, block["worst_relevant"], DRIVER.null_cap_margin_db
-    )
-    assert (reported, capped) == (pytest.approx(28.0), True)
 
 
 def test_magnitude_worst_relevant_is_the_lowest_of_equal_insufficient_bands():
@@ -716,10 +702,9 @@ def test_magnitude_worst_relevant_is_the_lowest_of_equal_insufficient_bands():
     ``jasper.web.correction_crossover_backend``'s completion-time correction
     reads (its own comment cites hardware run 19: 16.3 / 13.4 / 7.8 dB).
 
-    `worst_relevant` there is not a display value: the backend computes
-    ``shortfall_db = driver_solve_requirement_db(DRIVER) - worst_band_snr_db``
-    and hands it to the level solve, so grading against the first band in table
-    order UNDERSTATES the shortfall and solves too quiet.
+    `worst_relevant` there is not a display value: the backend subtracts it
+    from the solver's requirement to size a level shortfall, so grading against
+    the first band in table order UNDERSTATES it and solves too quiet.
     """
     capture_bands = [
         {"band_id": "sub_bass", "band_hz": [20.0, 80.0], "level_dbfs": -30.0},
@@ -761,57 +746,6 @@ def test_magnitude_worst_relevant_is_the_lowest_of_equal_insufficient_bands():
     # ...but the graded number is the lowest, not `sub_bass`'s 14.2 dB.
     assert block["worst_relevant"]["band_id"] == "upper_bass"
     assert block["worst_relevant"]["estimated_snr_db"] == pytest.approx(7.8)
-
-    # And that is what the level solve sizes its shortfall from.
-    required_db = level_solver.driver_solve_requirement_db(DRIVER)
-    shortfall_db = required_db - block["worst_relevant"]["estimated_snr_db"]
-    assert shortfall_db == pytest.approx(required_db - 7.8)
-    # Grading against the first band in table order would understate it by
-    # 6.4 dB of playback level.
-    assert shortfall_db - (required_db - 14.2) == pytest.approx(6.4)
-
-
-# ---------- cap_null_depth_db -------------------------------------------------
-
-
-def test_cap_null_depth_caps_to_snr_minus_margin():
-    # overlap SNR 20 dB + measured 25 dB null -> reported 10 dB, capped.
-    worst_relevant = {
-        "band_id": "mid", "estimated_snr_db": 20.0, "verdict": "insufficient",
-    }
-    reported, capped = snr_policy.cap_null_depth_db(
-        25.0, worst_relevant, DRIVER.null_cap_margin_db
-    )
-    assert reported == pytest.approx(10.0)
-    assert capped is True
-
-
-def test_cap_null_depth_uncapped_when_measured_within_proof():
-    worst_relevant = {"band_id": "mid", "estimated_snr_db": 40.0, "verdict": "ok"}
-    reported, capped = snr_policy.cap_null_depth_db(
-        12.0, worst_relevant, DRIVER.null_cap_margin_db
-    )
-    assert reported == pytest.approx(12.0)
-    assert capped is False
-
-
-def test_cap_null_depth_floors_at_zero():
-    worst_relevant = {
-        "band_id": "mid", "estimated_snr_db": 5.0, "verdict": "insufficient",
-    }
-    reported, capped = snr_policy.cap_null_depth_db(
-        8.0, worst_relevant, DRIVER.null_cap_margin_db
-    )
-    assert reported == 0.0
-    assert capped is True
-
-
-def test_cap_null_depth_unchanged_when_no_evidence():
-    reported, capped = snr_policy.cap_null_depth_db(
-        9.0, None, DRIVER.null_cap_margin_db
-    )
-    assert reported == 9.0
-    assert capped is False
 
 
 # ---------- excitation_covered_bands / apply_noise_band_fallback ------------
@@ -1122,68 +1056,3 @@ def test_apply_noise_band_fallback_keeps_deconvolved_value_when_raw_is_floor_cla
     )
     assert adjusted[0]["basis"] == "deconvolved"
     assert adjusted[0]["level_dbfs"] == pytest.approx(-88.62)
-
-
-# ---------- sweep_excitation_bands ------------------------------------------
-# The summed-crossover capture sweeps only [fc/2, fc*2], which is too narrow to
-# cover any canonical band at the shipped crossover frequencies. Deriving the
-# band table from the sweep is what keeps both sides of the SNR subtraction in
-# one domain; these pin that the derivation cannot silently stop doing so.
-
-
-@pytest.mark.parametrize("fc_hz", [800.0, 1250.0, 1600.0, 2000.0, 2500.0, 3000.0])
-def test_sweep_excitation_bands_are_covered_by_construction(fc_hz):
-    """Every derived band lies ENTIRELY inside the sweep, so
-    apply_noise_band_fallback's raw-ambient branch is unreachable for them.
-
-    This is the property the summed-crossover SNR gate's correctness rests on.
-    Widening a band past f1/f2 — or adding one — re-opens the raw-vs-deconvolved
-    units mismatch that read up to 22 dB wrong (SC-1 SNR units defect,
-    2026-08-01), so this fails rather than let that happen quietly.
-    """
-    f1_hz, f2_hz = fc_hz / 2.0, fc_hz * 2.0
-    bands = snr_policy.sweep_excitation_bands(f1_hz=f1_hz, f2_hz=f2_hz)
-
-    # The count and the ids are both load-bearing, and neither is implied by
-    # the coverage check below (which derives its keys from this function's own
-    # output, so ANY contiguous table would satisfy it).
-    #
-    # THREE bands, not one: the alignment gate takes the WORST band, and a
-    # single band spanning [f1, f2] averages across two octaves — it would
-    # clear a capture whose lower shoulder cannot support the null being
-    # certified. Collapsing to one band is a silent loss of protective power.
-    #
-    # These ids: `band_id` is written into the persisted summed-analysis
-    # artifact and byte-compared when that artifact is reopened, so renaming
-    # one is an evidence-format change, not a cosmetic edit.
-    assert len(bands) == 3
-    assert tuple(band_id for band_id, _lo, _hi in bands) == (
-        "sweep_low", "sweep_mid", "sweep_high",
-    )
-
-    covered = snr_policy.excitation_covered_bands(bands, f1_hz=f1_hz, f2_hz=f2_hz)
-    assert covered == {band_id: True for band_id, _lo, _hi in bands}
-
-    # Contiguous, in order, and spanning exactly the sweep: no gap where a
-    # band edge could drift outside [f1, f2] while each band stayed "covered".
-    edges = [bands[0][1]] + [hi for _id, _lo, hi in bands]
-    assert edges[0] == pytest.approx(f1_hz)
-    assert edges[-1] == pytest.approx(f2_hz)
-    assert edges == sorted(edges)
-    for (_id, lo, hi), expected_lo in zip(bands, edges):
-        assert lo == pytest.approx(expected_lo)
-        assert hi > lo
-
-
-def test_sweep_excitation_bands_rejects_a_degenerate_range():
-    """A zero-width, inverted, or non-finite sweep has no honest band table."""
-    for f1_hz, f2_hz in [
-        (4000.0, 1000.0),
-        (1000.0, 1000.0),
-        (0.0, 1000.0),
-        (-10.0, 1000.0),
-        (float("nan"), 1000.0),
-        (1000.0, float("inf")),
-    ]:
-        with pytest.raises(ValueError, match="0 < f1_hz < f2_hz"):
-            snr_policy.sweep_excitation_bands(f1_hz=f1_hz, f2_hz=f2_hz)

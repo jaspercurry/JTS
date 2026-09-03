@@ -21,7 +21,11 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from jasper.web import _common, wake_setup
 
@@ -420,10 +424,23 @@ def test_wake_module_renders_server_choices_action_and_runtime_effective_label()
     assert 'await postJSON("usb-mic-leg", { leg })' in module
     assert 'const action = el("echo-status-action")' in module
     assert "action.textContent = actionText" in module
-    # The re-measure button gates on the backend-decoded boolean, never on
-    # matching the action prose.
-    assert "echo.commission_recommended" in module
     assert 'includes("jasper-aec-commission")' not in module
+
+
+def test_commission_button_visibility_and_confirm_gate():
+    """tests/js/wake_commission_button_test.mjs — the button follows the mic
+    view model's chip-AEC capability, and a dismissed confirm posts nothing.
+    A Python test cannot execute the browser module's click path."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the commission-button harness")
+    result = subprocess.run(
+        [node, "tests/js/wake_commission_button_test.mjs"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_get_unknown_path_404(tmp_path):

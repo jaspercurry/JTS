@@ -92,25 +92,6 @@ def usb_mic_enabled(path: str | os.PathLike[str] = INTENT_PATH) -> bool:
     return state.valid and state.enabled
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Import-cheap helper used by the root gadget composition script."""
-
-    import argparse
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-intent", action="store_true")
-    parser.add_argument("--intent-path", default=INTENT_PATH)
-    args = parser.parse_args(argv)
-    if args.check_intent:
-        return 0 if usb_mic_enabled(args.intent_path) else 1
-    parser.error("one action is required")
-    return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 def write_usb_mic_enabled(
     enabled: bool,
     path: str | os.PathLike[str] = INTENT_PATH,

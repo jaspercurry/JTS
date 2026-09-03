@@ -69,7 +69,10 @@ from jasper.active_speaker.crossover_v2_flow import (
     remote_cloud_verify_positions,
     resolve_plan_shape,
 )
-from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
+from jasper.active_speaker.crossover_v2.capture_source import (
+    CaptureBeginDeferred,
+    CaptureBeginRefused,
+)
 from jasper.web._common import CSRF_COOKIE_NAME
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.web.correction_crossover_v2 import (
@@ -416,14 +419,12 @@ def test_a_remote_stage_2_anchor_drops_the_confirm_tap_it_cannot_answer():
         assert anchor["confirm_title"] == "Back on the mark, holding still?"
 
 
-def test_remote_costs_the_relay_no_more_than_full_does():
+def test_remote_costs_no_more_attempts_than_full_does():
     remote = resolve_plan_shape(TIER_REMOTE)
     full = resolve_plan_shape(TIER_FULL)
     assert remote.max_attempts <= full.max_attempts
     for plan in (_stage1(TIER_REMOTE), _stage2(TIER_REMOTE)):
         assert plan.max_attempts <= MAX_CAPTURE_PLAN_ATTEMPTS
-    # The worst-case guard is tier-independent and must stay satisfied.
-    flow.assert_cloud_plan_fits_relay_capacity()
 
 
 # --------------------------------------------------------------------------- #
@@ -1217,21 +1218,17 @@ def test_the_arm_keeps_its_countdown_when_a_person_gains_the_gate():
         assert POSITION_DEG_KEY in entry.screen
 
 
-def test_the_wired_source_is_what_makes_a_hand_walked_round_gated():
-    """Who pairs the two halves: the shape knows its tier, the host knows the
-    source, and only the wired + hand-walked pair has no page tap to pace it.
-    Every other pairing is returned untouched."""
-    from jasper.web.correction_crossover_v2 import (
-        SOURCE_RELAY, SOURCE_WIRED, _hand_released_plan_shape,
-    )
+def test_only_a_hand_walked_shape_is_told_a_person_releases_its_begins():
+    """A hand-walked round has nothing pacing it, so its begins are held and
+    released by hand. Every other shape is returned untouched."""
+    from jasper.web.correction_crossover_v2 import _hand_released_plan_shape
 
     full = resolve_plan_shape(TIER_FULL)
-    assert _hand_released_plan_shape(full, SOURCE_WIRED).hand_released_positions
-    assert _hand_released_plan_shape(full, SOURCE_RELAY) == full
+    assert _hand_released_plan_shape(full).hand_released_positions
     remote = resolve_plan_shape(TIER_REMOTE)
-    assert _hand_released_plan_shape(remote, SOURCE_WIRED) == remote
+    assert _hand_released_plan_shape(remote) == remote
     # The tier-less recovery re-arm: one sweep at the mark, nowhere to walk to.
-    assert _hand_released_plan_shape(None, SOURCE_WIRED) is None
+    assert _hand_released_plan_shape(None) is None
 
 
 def test_the_preparer_builds_the_gate_from_the_shapes_own_answer():
@@ -1253,24 +1250,22 @@ def test_a_hand_walked_wired_round_opens_with_a_gate_and_a_retake(
 ):
     """The acceptance criterion, through the REAL preparer.
 
-    A wired round has no capture page, so nothing there taps: without a hold
-    the local runner fires every capture back to back while the household is
-    still walking. So a hand-walked shape on the wired source opens gated,
-    announces WHO releases the holds, and carries the local retake seam — and
-    the same tier on the relay opens exactly as it always has.
+    A hand-walked round has nothing pacing it: without a hold the local runner
+    fires every capture back to back while the household is still walking. So
+    a hand-walked shape opens gated, announces WHO releases the holds, and
+    carries the local retake seam.
     """
     from jasper.web import correction_crossover_v2 as v2host
 
     caplog.set_level(logging.INFO, logger=v2host.__name__)
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source",
-        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     prepared = v2host.prepare_v2_session(
         {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
     )
 
-    assert prepared.capture_source == v2host.SOURCE_WIRED
     assert prepared.position_gate is not None
     assert prepared.request_retake is not None
     assert prepared.request_complete is not None
@@ -1287,17 +1282,16 @@ def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
 
     The gate is built at TWO construction sites, and a source pin says they
     read the same predicate — but only a drive proves stage 2 rebinds the shape
-    off the resolved source at all. Its plan is built inside ``_open``, so a
-    rebind that landed one line too late would emit a plan whose entries the
-    gate cannot read.
+    at all. Its plan is built inside ``_open``, so a rebind that landed one
+    line too late would emit a plan whose entries the gate cannot read.
     """
     from jasper.web import correction_crossover_v2 as v2host
 
     v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
     caplog.set_level(logging.INFO, logger=v2host.__name__)
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source",
-        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     prepared = v2host.prepare_v2_session(
         {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
@@ -1317,15 +1311,14 @@ def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
 def _opened_conductor(monkeypatch, v2host, prepared):
     """Run a prepared session's real ``_open`` and hand back its conductor.
 
-    ``tests.test_crossover_v2_stage_bridge._open_prepared`` does this for a
-    RELAY session by stubbing the relay runner, which is also where it catches
-    the conductor. A wired session never reaches that runner (``_build_source_run``
-    routes to the wired provider instead), so the capture point here is the
-    router itself — the one seam both sources pass through.
+    ``tests.test_crossover_v2_stage_bridge._open_prepared`` does this by
+    stubbing the runner builder, which is also where it catches the conductor;
+    this is the same capture point, kept local so the two suites do not share
+    a harness across modules.
     """
     captured: dict = {}
 
-    def _router(_source, conductor, **_kwargs):
+    def _builder(conductor, **_kwargs):
         captured["conductor"] = conductor
 
         async def _run(_client, _pi_session):
@@ -1333,10 +1326,8 @@ def _opened_conductor(monkeypatch, v2host, prepared):
 
         return _run
 
-    monkeypatch.setattr(v2host, "_build_source_run", _router)
-    prepared.open(
-        object(), "http://relay.test", "http://origin.test", "http://return.test",
-    )
+    monkeypatch.setattr(v2host, "_build_wired_run", _builder)
+    prepared.open()
     return captured["conductor"]
 
 
@@ -1363,11 +1354,8 @@ def test_both_preparers_tell_their_conductor_whether_its_begins_are_held(
     from jasper.web import correction_crossover_v2 as v2host
 
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source",
-        lambda: (
-            v2host.SOURCE_WIRED,
-            SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
-        ),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     stage_1 = v2host.prepare_v2_session(
         {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
@@ -1384,27 +1372,6 @@ def test_both_preparers_tell_their_conductor_whether_its_begins_are_held(
     assert _opened_conductor(monkeypatch, v2host, stage_2)._positions_gated is True
 
 
-def test_a_relay_stage_2_conductor_is_told_nothing_holds_its_begins(monkeypatch):
-    """The control: the ordinary phone round is paced by its own tap, so its
-    conductor must NOT think a gate is republishing bearings behind it."""
-    from jasper.web import correction_crossover_v2 as v2host
-
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source",
-        lambda: (v2host.SOURCE_RELAY, None),
-    )
-    v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
-    prepared = v2host.prepare_v2_session(
-        {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
-        status=_status(), run_async=None, camilla_factory=None, verify_only=True,
-    )
-    assert prepared.position_gate is None
-    # The shared harness, because this one DOES reach the relay runner it
-    # stubs — and it mints no wired session, so it needs the relay stub too.
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-    assert conductor._positions_gated is False
-
-
 def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatch):
     """The one-sweep recovery re-verify has no gate and no group (#2879 gate N6).
 
@@ -1417,8 +1384,8 @@ def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatc
     from jasper.web import correction_setup
 
     monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source",
-        lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
+        v2host, "_resolve_prepare_wired_mic",
+        lambda: SimpleNamespace(card_id="hw:9,0", model_key="umik2"),
     )
     v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
     prepared = v2host.prepare_v2_session(
@@ -1445,33 +1412,6 @@ def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatc
             )
     finally:
         correction_setup._set_relay_capture(None)
-
-
-def test_a_hand_walked_relay_round_still_opens_with_no_gate(caplog, monkeypatch):
-    """The control for the pin above: the SOURCE is what changed, not the tier.
-
-    A relay round is paced by the page's own tap, so it carries no gate, no
-    local completion signal, and no local retake — byte-identical to what
-    every hand-walked session has always opened with.
-    """
-    from jasper.web import correction_crossover_v2 as v2host
-
-    caplog.set_level(logging.INFO, logger=v2host.__name__)
-    monkeypatch.setattr(
-        v2host, "_resolve_prepare_capture_source",
-        lambda: (v2host.SOURCE_RELAY, None),
-    )
-    prepared = v2host.prepare_v2_session(
-        {"tier": TIER_FULL}, status=_status(), run_async=None, camilla_factory=None,
-    )
-
-    assert prepared.position_gate is None
-    assert prepared.request_retake is None
-    assert prepared.request_complete is None
-    assert not [
-        r for r in caplog.records
-        if "correction.crossover_v2_remote_session_open" in r.getMessage()
-    ]
 
 
 def test_a_person_may_be_asked_for_a_bearing_the_arm_cannot_reach():
@@ -1545,35 +1485,6 @@ def test_a_live_hold_reaches_the_envelope_on_the_relay_block():
         assert "position_pending" not in setup._get_relay_capture_for("crossover_v2:")
 
 
-def test_the_slot_names_which_source_the_live_session_opened_on():
-    """WHICH transport is running, for the whole in-flight life of the slot.
-
-    Two surfaces have no other way to ask (#2881): the browser, which cannot
-    otherwise tell "no phone link YET" from a wired session's "no phone link
-    EVER" and sat on "creating the link" for the whole round; and the closing
-    screen, which has to know whose move the all-spots-measured confirm is.
-
-    Pinned across the registration hop as well as the claim, because
-    ``_publish_relay_waiting`` REBUILDS the dict — a field it dropped would be
-    present exactly until the session became reachable.
-    """
-    from jasper.active_speaker.crossover_v2.capture_source import (
-        SOURCE_RELAY,
-        SOURCE_WIRED,
-    )
-    from jasper.web import correction_setup as setup
-
-    for local, expected in ((True, SOURCE_WIRED), (False, SOURCE_RELAY)):
-        setup._set_relay_capture(None)
-        assert setup._begin_relay_capture("crossover_v2:session", local=local)
-        try:
-            assert setup._get_relay_capture()["source"] == expected
-            setup._publish_relay_waiting("crossover_v2:session", "https://t/#s=x")
-            assert setup._get_relay_capture_for("crossover_v2:")["source"] == expected
-        finally:
-            setup._set_relay_capture(None)
-
-
 def test_a_finished_session_stops_advertising_its_hold():
     """The strand check. A hold published into durable state could outlive the
     session holding it; riding the relay slot means the existing terminal
@@ -1585,7 +1496,7 @@ def test_a_finished_session_stops_advertising_its_hold():
         assert setup._get_relay_capture_for("crossover_v2:")["position_pending"]
         # The runner's own terminal publish, verbatim in shape.
         setup._set_relay_capture(
-            {"status": "complete", "kind": "crossover_v2:session", "tap_link": "x"}
+            {"status": "complete", "kind": "crossover_v2:session"}
         )
         assert setup._relay_position_gate is None
         relay = setup._get_relay_capture_for("crossover_v2:")
@@ -1796,104 +1707,6 @@ def test_a_tap_paced_session_registers_no_gate_at_all():
         assert "position_pending" not in relay
     finally:
         correction_setup._set_relay_capture(None)
-
-
-# --------------------------------------------------------------------------- #
-# the link
-# --------------------------------------------------------------------------- #
-
-
-def test_a_remote_stages_link_outlives_the_stage_it_hosts():
-    """Issue #2509: the relay link is an ABSOLUTE clock, so it has to be minted
-    long enough for the walk it is hosting.
-
-    The first real remote run died at ~890 s of a stage whose own ceiling is
-    2520 s — the phone was still posting, and the relay answered the Pi's next
-    status poll with 404. Both stages are pinned, because stage 2 mints its own
-    link across the apply boundary and would have died the same way.
-    """
-    from jasper.capture_protocol import MAX_TTL_S
-    from jasper.web.correction_crossover_v2_relay import relay_link_ttl_s
-
-    shape = resolve_plan_shape(TIER_REMOTE)
-    for plan in (_stage1(TIER_REMOTE), _stage2(TIER_REMOTE)):
-        ceiling = flow.session_wall_clock_ceiling_s(plan)
-        ttl = relay_link_ttl_s(shape, ceiling)
-        assert ttl >= ceiling, (
-            f"a remote stage whose ceiling is {ceiling} s would be hosted on a "
-            f"{ttl} s link — the link expires mid-walk"
-        )
-        assert ttl <= MAX_TTL_S, (
-            "the worker clamps above MAX_TTL_S, so an unclamped request would "
-            "publish a link lifetime the relay never granted"
-        )
-
-
-def test_the_biggest_plan_the_ceiling_allows_still_asks_a_grantable_link():
-    """The clamp binds rather than the margin, and it binds SAFELY.
-
-    ``session_wall_clock_ceiling_s`` is itself capped at
-    ``MAX_WALL_CLOCK_CEILING_S``, which is exactly the Worker's ``MAX_TTL_S``.
-    So at the largest plan the ceiling admits, the margin is entirely clamped
-    away and the link is the ceiling — still covering it, with nothing to
-    spare. Pinned because the day those two constants stop being equal is the
-    day this tier silently goes back to expiring mid-walk.
-    """
-    from jasper.active_speaker.session_volume_plan import MAX_WALL_CLOCK_CEILING_S
-    from jasper.capture_protocol import MAX_TTL_S
-    from jasper.web.correction_crossover_v2_relay import relay_link_ttl_s
-
-    shape = resolve_plan_shape(TIER_REMOTE)
-    assert relay_link_ttl_s(shape, MAX_WALL_CLOCK_CEILING_S) == MAX_TTL_S
-    assert MAX_WALL_CLOCK_CEILING_S <= MAX_TTL_S
-
-
-def test_a_hand_walked_stage_keeps_the_default_link():
-    """Scoped to the observed-broken path. A hand-walked walk is a person
-    tapping through, and no run of one has been observed to reach 900 s; the
-    tier-less recovery re-arm (``plan_shape=None``) is one sweep."""
-    from jasper.capture_relay.session import DEFAULT_TTL_S
-    from jasper.web.correction_crossover_v2_relay import relay_link_ttl_s
-
-    for tier in HAND_WALKED:
-        shape = resolve_plan_shape(tier)
-        for plan in (_stage1(tier), _stage2(tier)):
-            ceiling = flow.session_wall_clock_ceiling_s(plan)
-            assert relay_link_ttl_s(shape, ceiling) == DEFAULT_TTL_S, tier
-    assert relay_link_ttl_s(None, 2520.0) == DEFAULT_TTL_S
-
-
-def test_the_preparer_mints_its_link_from_the_ceiling_it_arms():
-    """The two are one decision: a stage that armed a 2520 s ceiling and minted
-    a 900 s link is exactly the failure. Read out of the source, the same way
-    the ceiling re-arm itself is pinned.
-
-    Since #2662 W2b the mint lives behind ``_mint_source_session`` (the
-    per-source fork), so the invariant is pinned at both sites: the helper's
-    relay branch is where the TTL literal must live, and the preparer must
-    hand THAT helper the ``ceiling_s`` it derived — the number it arms the
-    volume plan with a few lines later, for whichever stage it opened.
-    """
-    import inspect
-
-    from jasper.web import correction_crossover_v2 as v2host
-
-    # The one mint owner derives the link TTL from the ceiling it is handed.
-    helper_source = inspect.getsource(v2host._mint_source_session)
-    assert "ttl_s=relay.relay_link_ttl_s(plan_shape, ceiling_s)" in helper_source, (
-        "_mint_source_session's relay branch must mint from the ceiling it "
-        "is handed"
-    )
-    # ...and the preparer hands it the ceiling it arms.
-    source = inspect.getsource(v2host.prepare_v2_session)
-    assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in source, (
-        "the preparer must derive its ceiling from the plan it emitted"
-    )
-    assert re.search(
-        r"_mint_source_session\([^)]*ceiling_s=ceiling_s", source, re.S
-    ), (
-        "the preparer must mint its relay link from the ceiling it arms"
-    )
 
 
 def _tier_resolved_by_prepare(body, state, tmp_path):

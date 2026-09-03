@@ -1079,7 +1079,7 @@ On hardware whose class already ships a proof, a fresh install starts from
 that alignment and discloses it, so commissioning personalizes rather than
 enables. The shipped table is empty today; harvest a row off a commissioned
 box with `sudo jasper-aec-commission --emit-class-entry` and paste it into
-`jasper/chip_aec_shipped_alignment.py`. A per-unit artifact always wins.
+`jasper/chip_aec/shipped.py`. A per-unit artifact always wins.
 
 On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` from the
 detected card. Do not hand-pin `JASPER_AEC_MIC_DEVICE` when swapping between

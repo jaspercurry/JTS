@@ -807,9 +807,8 @@ Three things are **session-level one-timers at 0°**, not per-capture work:
    (default 65.0) and `max_commissioning_level_db_spl` (default 85.0), each
    validated into 45–85
    ([`jasper/active_speaker/profile.py`](../jasper/active_speaker/profile.py)),
-   and the ramp reads neither. Both shipped presets
-   (`bc_de250_dayton_e150he44_v1.json` and
-   `epique_e150he44_eminence_f110m8_safe_v1.json`) declare **85**, and the
+   and the ramp reads neither. The shipped preset
+   (`epique_e150he44_eminence_f110m8_safe_v1.json`) declares **85**, and the
    preview-staging path rides that dataclass default rather than restating it
    — so the ratified band's top sits 5 dB under the ceiling. A band top AT
    the declared limit would still be legal by the 2026-08-17 boundary ruling
@@ -1106,7 +1105,7 @@ seeds, and from what:
 - **Polarity, and a geometry-bounded delay.** Declared geometry does not
   produce a free delay guess; it produces a **bound around a seed** —
   `null_walk.geometry_seed_us` converts the signed path difference into
-  microseconds, `alignment_walk.driver_delay_walk_spec` bounds "one
+  microseconds, `delay_sweep.sweep_spec` bounds "one
   driver-to-driver walk from an a-priori geometry estimate", and
   `measured_candidate.py`'s input contract fixes `delay_bound` at
   `declared_geometry_plus_minus_half_period`. The acoustic-centre provenance is
@@ -1761,8 +1760,8 @@ JTS3, issues for anything parked.
 
 #1650 relay voids (two located causes) · #1652 anomaly/quality program ·
 #1654 Fix-4 tweeter-sweep energy (revival trigger fired ×3) · #1656
-crossover-v2 wrong-cal primary scope · #1658 capture-page on-device pass +
-optional nits · #1660 room-relay device threading · #1664 worktree hygiene ·
+crossover-v2 wrong-cal primary scope ·
+#1660 room-relay device threading · #1664 worktree hygiene ·
 #1665 component entry + pad declarations (schema + pad/class-declaration
 slice landed 2026-07-24; JTS3 hardware validation and the research-prefill-
 audit portion still open) · #1666 apply promotion · #1667 trim-band bias
@@ -1822,7 +1821,7 @@ only, and verified that section's own code claims at HEAD: `design_draft.py`'s
 ordering, `crossover_preview.build_crossover_preview`'s bounded-intent
 docstring and its `SCHEMA_VERSION = 2` bump for the #2603 collapse,
 `measured_candidate.py`'s `declared_geometry_plus_minus_half_period` delay
-bound plus `null_walk.geometry_seed_us` / `alignment_walk.driver_delay_walk_spec`,
+bound plus `null_walk.geometry_seed_us` / `delay_sweep.sweep_spec`,
 `driver_pad.effective_sensitivity_db`, `branch_chain.beaming_onset_hz`,
 `gating.f_trusted_floor_hz` (2.5 / 7 ms = 357.14 Hz) with
 `flat_spec.BEST_EFFORT_ABOVE_HZ = 16000.0`, and the existence of

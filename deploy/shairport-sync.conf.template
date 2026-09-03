@@ -119,16 +119,19 @@ general = {
 };
 
 sessioncontrol = {
-    // Release the loopback device 1s after AP2 idle so other
-    // renderers (librespot, bluealsa-aplay) can take over
-    // immediately when the user switches sources. With
-    // `latest-source-wins` arbitration in jasper-mux the user's
-    // expectation is "I selected Spotify on my phone, it should
-    // play right now" — not "wait N seconds for the dead AirPlay
-    // session to time out." Keep small but non-zero so a brief
-    // transport glitch on Mac doesn't destroy the session and force
-    // re-establishing.
-    session_timeout = 1;
+    // 60 is the FLOOR shairport-sync accepts, not a tuned value:
+    // shairport.c:1203-1216 rejects anything in 1..59 with a warning and
+    // silently substitutes 60 (4.3.7 took any integer, so this lane ran
+    // at 1 until the 5.2.3 bump). 0 means "never time out", which holds
+    // the lane forever — strictly worse. So 60 is the only reachable
+    // value below "never".
+    // This is the passive path only. Source switching does NOT wait for
+    // it: `latest-source-wins` arbitration in jasper-mux actively calls
+    // the native D-Bus DropSession (jasper/mux.py) when another renderer
+    // claims the output, so "I selected Spotify, it should play right
+    // now" still holds. What changes is how long a dead AirPlay session
+    // squats the lane when nothing else claims it.
+    session_timeout = 60;
     // Fires BEFORE the connect-time volume push, so the volume hook above
     // can tell that snapshot from a user's nudge and mark it
     // `observation_initial` — which keeps connecting a sender from
@@ -142,14 +145,24 @@ alsa = {
     // `jasper-audio-config renderer-lanes`): shairport_substream — the
     // snd-aloop lane, and the fallback when no map exists — or
     // shairport_ring_lane when the airplay lane is armed (U3/P6d). Both
-    // are plug wrappers that handle shairport's native 44100 → 48000
-    // S16_LE conversion through libsamplerate (samplerate_medium by
-    // default, toggleable at /system/); only the slave under the wrapper
-    // differs. shairport-sync still only
-    // accepts output_rate values that are integer multiples of 44100, so
-    // 44100 stays here as shairport's native AirPlay rate.
+    // are plug wrappers over a 48000 slave; only the slave under the
+    // wrapper differs.
+    // MUST EQUAL THE LANE'S SLAVE RATE. 5.x probes the device once at
+    // startup and calls snd_pcm_hw_params_set_rate_resample(..., 0)
+    // before snd_pcm_hw_params_test_rate(..., 0) -- resampling off,
+    // exact rate only (audio_alsa.c:329). So the plug wrapper cannot
+    // convert during the probe and only the slave's own 48000 passes.
+    // A rate that fails is struck from config.rate_set
+    // (audio_alsa.c:339); once that set is empty the
+    // permissible_configurations table is never filled
+    // (audio_alsa.c:379), every later lookup returns EINVAL, and the
+    // session dies at player.c:2432 "An unknown format was encountered
+    // while choosing output bit depth". 4.3.7 had no such probe and let
+    // the plug layer resample, which is why 44100 worked there.
+    // shairport now does the 44.1 -> 48 conversion itself (soxr/FFmpeg)
+    // instead of the plug layer, so this also drops one resample.
     output_device = "__RENDERER_DEVICE__";
-    output_rate = 44100;
+    output_rate = 48000;
     // S32 stays for the same reason it did before -- efficient when
     // the plug layer above the fan-in lane only has to downconvert
     // format (S32 -> the lane's own width). This is the fan-in ingress
@@ -158,6 +171,15 @@ alsa = {
     // USB-C dongle (APPLE_USB_C_DONGLE in jasper/audio_hardware/dac.py)
     // is S24_3LE, not S16_LE.
     output_format = "S32";
+    // Pinned for the same reason as output_rate/output_format above. 5.0
+    // added multichannel: `output_channels` now defaults to "auto" (match
+    // the source) while `six_channel_mode`/`eight_channel_mode` default to
+    // "on", so a sender may offer 5.1/7.1. This lane is `type plug` over a
+    // 2-channel slave (deploy/alsa/conf.d/61-jts-renderer-lanes.conf), and
+    // plug accepts any channel count — it would route/fold surround into
+    // stereo instead of letting shairport's own `mixdown` do it. Pinning 2
+    // keeps the 4.3.7 stereo-only behaviour this lane's geometry assumes.
+    output_channels = 2;
     use_mmap_if_available = "no";
     // Templated — see file header. Free-running ("yes") is the fallback
     // that stops chasing the sender clock entirely: it trades A/V sync
@@ -172,16 +194,7 @@ metadata = {
 };
 
 diagnostics = {
-    // Raised from default 1 → 2 on 2026-05-21 to log the post-SETUP
-    // RECORD / cipher / PTP-sync state for an open AP2 failure mode:
-    // shairport accepts the SETUP, logs "Connection N. AP2 Realtime
-    // Audio Stream." at rtsp.c:3304, then silently fails to start
-    // audio. Level 1 stops logging at that line — level 2 emits
-    // enough downstream detail to name the failing component on the
-    // next recurrence.
-    // EARMARK: drop back to log_verbosity = 1 once this failure is
-    // closed — this level-2 detail is ~55% of shairport's log volume
-    // (~40 PTP-anchor lines/min).
-    log_verbosity = 2;
-    log_show_file_and_line_numbers = "no";
+    // 2 logs post-SETUP RECORD/cipher/PTP-sync detail; re-raise only if
+    // the AP2 post-SETUP silent-failure mode (issue #171) recurs.
+    log_verbosity = 1;
 };

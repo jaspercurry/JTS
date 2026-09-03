@@ -27,6 +27,7 @@ from .assistant_loudness import (
     upsample_2x,
 )
 from .assistant_volume import EffectiveVolumeContext
+from .dsp_numpy import resample_poly
 from .log_event import log_event
 from .tts_routing import FANIN_TTS_SOCKET
 
@@ -203,14 +204,10 @@ class MicCapture:
         if self._decimation == 1:
             chunk = ch0.astype(np.int16, copy=True)
         else:
-            # Polyphase resample with built-in anti-alias filter. We use
-            # scipy here (already installed transitively for openwakeword)
-            # rather than naive stride-decimation, which would alias voice
-            # content above 8 kHz back into the audible band.
-            from scipy.signal import resample_poly  # local import: keeps daemon startup fast
-            resampled = resample_poly(
-                ch0.astype(np.float32), up=1, down=self._decimation,
-            )
+            # Polyphase resample with a built-in anti-alias filter, not
+            # naive stride-decimation, which would alias voice content
+            # above 8 kHz back into the audible band.
+            resampled = resample_poly(ch0, up=1, down=self._decimation)
             chunk = np.clip(resampled, -32768, 32767).astype(np.int16)
         # call_soon_threadsafe schedules _enqueue to run on the loop thread,
         # which is the only place asyncio.Queue.put_nowait can raise
@@ -808,10 +805,11 @@ def tts_wire_is_wide() -> bool:
     :func:`jasper.fanin_coupling.assistant_wire_is_wide`, the Python mirror of
     the shared crate's ``TtsWireWidth::from_box_declaration`` that
     ``jasper-fanin``'s ``Config::program_wire_is_wide`` calls. Both halves of
-    the box's declaration are required — the ``S32_LE`` wire format AND the
-    ``shm_ring`` coupling — and both are read file-fresh, not from
-    ``os.environ``: ``jasper-voice`` never loaded ``fanin.env``, which is the
-    stale-``os.environ`` class AGENTS.md canonizes.
+    the box's declaration are required — the ``S32_LE`` wire format AND a
+    coupling that leaves fan-in on the ring (an UNDECLARED one does, ADR-0100)
+    — and both are read file-fresh, not from ``os.environ``: ``jasper-voice``
+    never loaded ``fanin.env``, which is the stale-``os.environ`` class
+    AGENTS.md canonizes.
 
     WHY A BAD TOKEN DOES NOT RAISE HERE. ``jasper-fanin`` already treats an
     unrecognized value as a config-class fault and parks at exit 78, and the

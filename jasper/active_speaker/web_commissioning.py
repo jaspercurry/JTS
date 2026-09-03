@@ -828,7 +828,10 @@ def _commission_tone_signal_plan(
     preset: Any = None,
     crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from jasper.active_speaker import DRIVER_TEST_SIGNAL_PLAN_KIND, driver_test_signal_plan
+    from jasper.active_speaker.test_signal_plan import (
+        DRIVER_TEST_SIGNAL_PLAN_KIND,
+        driver_test_signal_plan,
+    )
 
     role_id = str(role or "").strip().lower()
     source = "explicit_preset" if preset is not None else "preset_fallback"

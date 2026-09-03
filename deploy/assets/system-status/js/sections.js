@@ -12,8 +12,8 @@ import { h } from "/assets/shared/js/dom.js";
 import { sparkline, cpuBars } from "./charts.js";
 import {
   fmtBytes, fmtAgo, fmtDur, capacityPercent, fanStepInfo, FAN_STEPS,
-  toneForMemoryHeadroom, loadPressureInfo, cpuUsageInfo, temperatureDisplay,
-  toneForDiskUse,
+  toneForMemoryHeadroom, memoryPressureInfo, loadPressureInfo, cpuUsageInfo,
+  temperatureDisplay, toneForDiskUse,
 } from "./format.js";
 import { statCard, defList, badge } from "./components.js";
 
@@ -139,6 +139,22 @@ export function vitalsCards(cur, hist, cores) {
     tone: memTone,
     chart: sparkline(hist.mem_used_mb, { min: 0, max: memTotal, tone: memTone, fill: true }),
   }));
+
+  // Memory pressure — kernel PSI + the boot's OOM-kill count. Every Linux
+  // kernel publishes oom_kill (usually 0), so that field alone must not
+  // conjure the tile: without PSI and without a kill there is nothing to say,
+  // and a box that hasn't rebooted since `psi=1` landed would show a dead
+  // tile forever.
+  if (cur.mem_psi_some_avg60 != null || cur.oom_kill > 0) {
+    const psiInfo = memoryPressureInfo(cur.mem_psi_some_avg60, cur.oom_kill);
+    cards.push(statCard({
+      label: "Memory pressure",
+      value: psiInfo.value,
+      sub: psiInfo.sub,
+      tone: psiInfo.tone,
+      chart: psiInfo.killed ? badge("OOM killed", "danger") : null,
+    }));
+  }
 
   // Load pressure
   const loadHist = hist.load_1m || [];

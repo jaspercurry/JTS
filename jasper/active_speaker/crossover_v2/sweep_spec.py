@@ -7,27 +7,16 @@
 One spec states everything a capture of one measurement kind needs: the
 recording window, the mono/48 kHz format the analysis demands, the operator
 consent surface, and — for a session-spanning walk — the
-:class:`~jasper.capture_protocol.CapturePlan` the session follows. It is
-built by a per-kind builder (:func:`build_crossover_sweep_spec` here),
-validated strictly and loudly at the boundary, and handed to the session
-open, which re-runs :meth:`CaptureSpec.validate` before a tone can play.
+:class:`~jasper.capture_protocol.CapturePlan`. It is built by a per-kind builder
+(:func:`build_crossover_sweep_spec` here), validated strictly and loudly at the
+boundary, and re-validated at session open before a tone can play. The plan
+shape itself is owned by :mod:`jasper.capture_protocol`.
 
-The plan shape itself — :class:`~jasper.capture_protocol.CapturePlan`,
-:class:`~jasper.capture_protocol.CapturePlanEntry`,
-:class:`~jasper.capture_protocol.CaptureSpecError` and the attempt ceiling —
-is owned by :mod:`jasper.capture_protocol` and imported back here, so a
-session builder can state a plan without this module.
-
-Two boundaries are load-bearing and tested:
-
-  1. **Kind-agnostic.** ``kind`` is an open string. The schema validates every
-     other field but never enumerates kinds, so a new kind that fills the same
-     fields validates with zero schema changes.
-  2. **The consent surface is an allowlisted token vocabulary, not markup.**
-     ``theme`` carries *tokens* that a renderer maps to fixed values, never raw
-     CSS; ``screen`` is a list of known component types with escaped text. A
-     builder refuses to emit anything outside the vocabulary, so a bug never
-     ships a payload a renderer would have to reject.
+Two boundaries are load-bearing and tested: ``kind`` is an OPEN string, so a new
+kind that fills the same fields validates with zero schema changes; and the
+consent surface is an allowlisted TOKEN vocabulary, never markup — ``theme``
+carries tokens a renderer maps to fixed values, ``screen`` is a list of known
+component types with escaped text.
 """
 from __future__ import annotations
 
@@ -36,7 +25,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
-from urllib.parse import urlsplit
 
 from jasper.capture_protocol import (
     MAX_CAPTURE_PLAN_ATTEMPTS,
@@ -51,17 +39,10 @@ from jasper.capture_protocol import as_int as _as_int
 SCHEMA_VERSION = 1
 # The capture choreography a spec is stated against, independent of the JSON
 # schema above: additive fields stay schema-compatible while a choreography
-# change (setup binding, level stream, session-spanning plans) does not. Every
-# builder emits this value and a mismatch is a loud incompatibility, never a
-# negotiated downgrade.
-#
-# What this integer does NOT encode: whether a session is session-spanning.
-# That is carried by `capture_plan` presence alone (a `capture_plan` spec runs
-# the plan loop; a plan-free spec runs one capture). Do not reintroduce a
-# protocol-number test for plan-ness.
-#
-# Persisted placement proofs may carry an older value (see
-# active_speaker.capture_geometry).
+# change does not. A mismatch is a loud incompatibility, never a negotiated
+# downgrade. It does NOT encode whether a session is session-spanning — that is
+# carried by `capture_plan` presence alone. Persisted placement proofs may carry
+# an older value (see active_speaker.capture_geometry).
 CAPTURE_PROTOCOL_VERSION = 3
 
 
@@ -69,10 +50,6 @@ CAPTURE_PROTOCOL_VERSION = 3
 # (`jasper/web/correction_setup.py`: REQUIRED_SAMPLE_RATE, MAX_WAV_BODY_BYTES).
 REQUIRED_SAMPLE_RATE_HZ = 48000
 REQUIRED_CHANNELS = 1
-DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024  # 32 MiB; matches MAX_WAV_BODY_BYTES
-# A hard validation ceiling well above the default so a builder bug cannot mint
-# a spec that admits a capture of unbounded size.
-HARD_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 # Theme is a TOKEN allowlist: a renderer maps each token to a fixed value and
 # never interprets one as raw CSS.
@@ -85,17 +62,15 @@ DEFAULT_THEME = {"accent": "sage", "font": "figtree"}
 UI_COMPONENT_TYPES = ("heading", "steps", "level_meter", "button", "note")
 UI_BUTTON_ACTIONS = ("begin_capture", "retry", "stop")
 UI_METER_SOURCES = ("mic",)
-CALIBRATION_MODEL_KEYS = ("key", "label", "aliases")
 
 # Per-kind measurement-validity policy vocabulary.
 CLEAN_CAPTURE_POLICIES = ("refuse", "warn")
 CLOCK_DRIFT_MODES = ("ignore", "single_window", "critical")
 
-# `default_setup.calibration.mode` vocabulary: "serial" for a vendor lookup,
-# "upload" for a bring-your-own file. There is no "none" — a household record
-# is only ever written after a calibration successfully established, so the
-# hint is either present and actionable or absent entirely (`default_setup`
-# stays `None`). It describes how the ORIGINAL calibration was established.
+# `default_setup.calibration.mode` vocabulary. There is no "none": a household
+# record is only written after a calibration successfully established, so the
+# hint is either present and actionable or absent entirely. It describes how the
+# ORIGINAL calibration was established.
 DEFAULT_SETUP_CALIBRATION_MODES = ("serial", "upload")
 DEFAULT_SETUP_CALIBRATION_KEYS = (
     "mode", "model", "serial_display", "calibration_id", "resolvable",
@@ -105,7 +80,6 @@ DEFAULT_SETUP_CALIBRATION_KEYS = (
 STIMULUS_PLAYERS = ("pi",)
 
 OUTPUT_FORMATS = ("wav",)
-RETURN_URL_SCHEMES = ("http", "https")
 
 
 # --- Sub-records --------------------------------------------------------------
@@ -148,8 +122,7 @@ class CaptureStimulus:
     """What the speaker plays during the capture window.
 
     ``label`` is display/telemetry only — never trusted for logic. A ``None``
-    stimulus on the spec means a passive record (no playback), e.g. a
-    noise-floor capture.
+    stimulus on the spec means a passive record (no playback).
     """
 
     played_by: str = "pi"
@@ -173,19 +146,15 @@ class CaptureValidity:
       - ``clean_capture``: ``"refuse"`` or ``"warn"`` if the capture device did
         not honor the EC/AGC/NS=false constraints.
       - ``allow_capability_fallback``: if a clean capture is impossible on this
-        device, degrade **gracefully and labeled** rather than dead-ending.
-        Pairs with ``clean_capture="refuse"`` to mean "refuse the clean path,
-        offer the labeled fallback."
-      - ``require_alignment``: the owning analysis has a hard alignment gate (a
-        weak/ambiguous result fails loud). False means alignment is absent or
-        observation-only; it must not be set speculatively before a calibrated
-        production gate exists.
+        device, degrade gracefully and LABELED rather than dead-ending.
+      - ``require_alignment``: the owning analysis has a hard alignment gate.
+        False means alignment is absent or observation-only, and it must not be
+        set before a calibrated production gate exists.
       - ``clock_drift``: per-kind handling of independent mic/playback clock
         drift. ``"ignore"`` for magnitude FR and level work; ``"single_window"``
         for timing comparisons that must stay within one recording;
-        ``"critical"`` reserved for the strictest sync paths. Deliberately
-        per-flow: a timing marker and an acoustic sweep do not share a
-        meaningful confidence scale.
+        ``"critical"`` for the strictest sync paths. Per-flow because a timing
+        marker and an acoustic sweep do not share a confidence scale.
     """
 
     clean_capture: str = "refuse"
@@ -254,15 +223,10 @@ class DefaultSetupCalibration:
     """A household's remembered measurement-mic calibration, as an OPTIONAL
     prefill hint — never binding.
 
-    Populated from ``jasper.correction.household_mic`` when a prior session on
-    this speaker established a calibration.
-
-    ``resolvable`` is a SEPARATE, freshly-checked flag from the fact that this
-    hint exists at all: ``calibration_id`` is re-resolved against the
-    calibration store at spec-build time (see
-    ``jasper.web.correction_setup._default_setup_calibration_for_spec``) and
-    the flag is set only when THAT resolves cleanly, rather than trusting that
-    an earlier resolve — used to build the hint's other fields — is still good.
+    ``resolvable`` is a SEPARATE, freshly-checked flag from the fact that the
+    hint exists: ``calibration_id`` is re-resolved against the calibration store
+    at spec-build time and the flag is set only when THAT resolves cleanly,
+    rather than trusting the earlier resolve that built the other fields.
     Defaults ``False`` and is omitted from the wire JSON in that case.
     """
 
@@ -301,17 +265,15 @@ class DefaultSetupCalibration:
         )
 
 
-# schema_version 1 is the pre-entries shape (no `entries`, byte-identical to
-# the original v3 contract); 2 is additive — per-capture heterogeneity
-# (crossover-measurement-productization-design.md §5.7). A plan's
-# schema_version and its `entries` presence are kept in strict lockstep by
-# validation (`_validate_capture_plan_entries`) so a reader never has to
+# schema_version 1 is the pre-entries shape; 2 is additive (per-capture
+# heterogeneity). A plan's schema_version and its `entries` presence are kept in
+# strict lockstep by `_validate_capture_plan_entries`, so a reader never has to
 # re-derive one from the other.
 CAPTURE_PLAN_SCHEMA_VERSIONS = (1, 2)
 CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION = 2
-# Per-entry presentation copy is OPAQUE like `presentation_variant` — the
-# schema bounds its size and value types, never its keys/vocabulary — but a
-# size ceiling keeps a spec from carrying an oversized payload.
+# Per-entry presentation copy is OPAQUE — the schema bounds its size and
+# value types, never its keys/vocabulary — but a size ceiling keeps a spec
+# from carrying an oversized payload.
 MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES = 4096
 
 
@@ -350,10 +312,8 @@ def ui_note(text: str) -> dict[str, str]:
 class CaptureSpec:
     """A kind-agnostic capture spec.
 
-    Build one with a per-kind builder (:func:`build_crossover_sweep_spec`),
-    serialize with ``to_dict()``, and reconstruct/validate inbound JSON with
-    ``from_dict()``. ``validate()`` is called by ``from_dict()`` and may be
-    called explicitly after a builder.
+    Build with a per-kind builder, serialize with ``to_dict()``, reconstruct and
+    validate inbound JSON with ``from_dict()``.
     """
 
     kind: str
@@ -365,59 +325,15 @@ class CaptureSpec:
     validity: CaptureValidity = field(default_factory=CaptureValidity)
     theme: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME))
     screen: tuple[Mapping[str, Any], ...] = ()
-    calibration_models: tuple[Mapping[str, Any], ...] = ()
     sample_rate_hz: int = REQUIRED_SAMPLE_RATE_HZ
     channels: int = REQUIRED_CHANNELS
     output_format: str = "wav"
-    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
-    return_url: str = ""
-    # Whether the guided setup preflights (notably vendor mic serial lookup)
-    # before advancing to the Start step.
-    setup_validation: bool = False
-    # Opaque setup binding used by flows that retain a setup identity across
-    # captures (notably Active crossover).
-    setup_binding_id: str = ""
-    # Whether the guided setup asks for the room position count. Crossover level
-    # matching uses the same setup flow without that room-only question.
-    setup_collect_positions: bool = False
-    # Optional placement progress, carried on the spec so position authority
-    # stays on the speaker.
-    position: int | None = None
-    total_positions: int | None = None
-    # Optional kind-owned presentation variant. It may change consent copy only;
-    # the owning flow still controls sequencing, timeouts, and admission. The
-    # shared schema validates its shape without enumerating per-kind values.
-    presentation_variant: str = ""
     acknowledgement: CaptureAcknowledgement | None = None
-    # Optional per-run nonce (additive, empty for kinds that don't use it), so
-    # a feed can distinguish THIS run's events from a previous run's.
-    run_token: str = ""
-    # Optional household-mic prefill hint. See `DefaultSetupCalibration` —
-    # never binding.
+    # Optional household-mic prefill hint — never binding.
     default_setup_calibration: DefaultSetupCalibration | None = None
-    # Session-spanning capture plan: one session covers a driver's whole repeat
-    # SET. Presence — and ONLY presence — selects the plan loop over the
-    # single-capture path.
+    # Session-spanning capture plan. Presence — and ONLY presence — selects the
+    # plan loop over the single-capture path.
     capture_plan: CapturePlan | None = None
-    # The two clocks a household can run out of, in seconds, so a surface can
-    # say which one is running and which one expired (issue #1807). NOT a new
-    # budget and NOT enforced here: both numbers are owned elsewhere and this
-    # field only PUBLISHES them. ``None`` renders nothing; a surface must not
-    # invent a number it was not told.
-    time_budget: Mapping[str, int] | None = None
-    # How long to wait for one capture to be answered, in seconds, minted by
-    # whichever flow knows what its own analysis costs.
-    #
-    # **A sibling of ``time_budget`` rather than a third key inside it**:
-    # ``time_budget`` is a CLOSED, all-keys-required set of the two clocks a
-    # HOUSEHOLD races and is spent on one rendered sentence, where this is a
-    # machine deadline, per-capture rather than per-session, and nameable only
-    # by the flows that run an expensive post-capture analysis. Folding it in
-    # would have made a required key of a number most kinds cannot compute.
-    #
-    # ``None`` — every kind that does not set it — means the reader keeps its
-    # own conservative floor.
-    result_wait_s: int | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
@@ -437,39 +353,13 @@ class CaptureSpec:
             "constraints": self.constraints.to_dict(),
             "stimulus": self.stimulus.to_dict() if self.stimulus else None,
             "validity": self.validity.to_dict(),
-            "calibration_models": [
-                {
-                    "key": str(model["key"]),
-                    "label": str(model["label"]),
-                    "aliases": [str(alias) for alias in model.get("aliases", ())],
-                }
-                for model in self.calibration_models
-            ],
             "ui": {
                 "theme": dict(self.theme),
                 "screen": [dict(component) for component in self.screen],
             },
-            "return_url": self.return_url,
-            "setup_validation": self.setup_validation,
-            "setup_binding_id": self.setup_binding_id,
-            "setup_collect_positions": self.setup_collect_positions,
-            **(
-                {
-                    "position": self.position,
-                    "total_positions": self.total_positions,
-                }
-                if self.position is not None
-                else {}
-            ),
-            **(
-                {"presentation_variant": self.presentation_variant}
-                if self.presentation_variant
-                else {}
-            ),
             "acknowledgement": (
                 self.acknowledgement.to_dict() if self.acknowledgement else None
             ),
-            "run_token": self.run_token,
             **(
                 {
                     "default_setup": {
@@ -484,18 +374,7 @@ class CaptureSpec:
                 if self.capture_plan is not None
                 else {}
             ),
-            **(
-                {"time_budget": dict(self.time_budget)}
-                if self.time_budget is not None
-                else {}
-            ),
-            **(
-                {"result_wait_s": int(self.result_wait_s)}
-                if self.result_wait_s is not None
-                else {}
-            ),
             "output": {"format": self.output_format},
-            "max_upload_bytes": self.max_upload_bytes,
         }
 
     @classmethod
@@ -515,12 +394,6 @@ class CaptureSpec:
         output = data.get("output") or {}
         if not isinstance(output, Mapping):
             raise CaptureSpecError("output must be an object")
-        calibration_models = data.get("calibration_models") or []
-        if not isinstance(calibration_models, Sequence) or isinstance(
-            calibration_models, (str, bytes)
-        ):
-            raise CaptureSpecError("calibration_models must be a list")
-        setup_validation = data.get("setup_validation", False)
         stimulus_raw = data.get("stimulus")
         acknowledgement_raw = data.get("acknowledgement")
         if acknowledgement_raw is not None and not isinstance(
@@ -543,7 +416,6 @@ class CaptureSpec:
                     calibration_raw
                 )
         capture_plan_raw = data.get("capture_plan")
-        time_budget_raw = data.get("time_budget")
         if capture_plan_raw is not None and not isinstance(capture_plan_raw, Mapping):
             raise CaptureSpecError("capture_plan must be an object or null")
         spec = cls(
@@ -564,71 +436,29 @@ class CaptureSpec:
                 for component in screen
                 if isinstance(component, Mapping)
             ),
-            calibration_models=tuple(
-                dict(model)
-                for model in calibration_models
-                if isinstance(model, Mapping)
-            ),
             sample_rate_hz=_as_int(data, "sample_rate_hz", default=REQUIRED_SAMPLE_RATE_HZ),
             channels=_as_int(data, "channels", default=REQUIRED_CHANNELS),
             output_format=str(output.get("format", "wav")),
-            max_upload_bytes=_as_int(
-                data, "max_upload_bytes", default=DEFAULT_MAX_UPLOAD_BYTES
-            ),
-            return_url=str(data.get("return_url") or ""),
-            setup_validation=setup_validation,
-            setup_binding_id=str(data.get("setup_binding_id") or ""),
-            setup_collect_positions=_as_bool(
-                data, "setup_collect_positions", default=False
-            ),
-            position=(
-                _as_int(data, "position")
-                if data.get("position") is not None
-                else None
-            ),
-            total_positions=(
-                _as_int(data, "total_positions")
-                if data.get("total_positions") is not None
-                else None
-            ),
-            presentation_variant=data.get("presentation_variant", ""),
             acknowledgement=(
                 CaptureAcknowledgement.from_dict(acknowledgement_raw)
                 if isinstance(acknowledgement_raw, Mapping)
                 else None
             ),
-            run_token=str(data.get("run_token") or ""),
             default_setup_calibration=default_setup_calibration,
             capture_plan=(
                 CapturePlan.from_dict(capture_plan_raw)
                 if isinstance(capture_plan_raw, Mapping)
                 else None
             ),
-            time_budget=(
-                {str(k): _as_int(time_budget_raw, str(k)) for k in time_budget_raw}
-                if isinstance(time_budget_raw, Mapping)
-                else None
-            ),
-            # Absent stays absent: a spec that published no wait is not the
-            # same as one that published a default, and the reader's own
-            # fallback is the only honest answer for it.
-            result_wait_s=(
-                _as_int(data, "result_wait_s")
-                if data.get("result_wait_s") is not None
-                else None
-            ),
             # REQUIRED on the wire, with no default — a spec that states no
             # protocol is incompatible, not legacy. The dataclass field still
-            # defaults, so builders stay ergonomic; the strictness belongs on
-            # the parse boundary, not the constructor.
+            # defaults, so builders stay ergonomic.
             capture_protocol_version=_as_int(data, "capture_protocol_version"),
             schema_version=_as_int(data, "schema_version", default=SCHEMA_VERSION),
         )
         # Guard against a screen entry that was not a Mapping (dropped above).
         if len(spec.screen) != len(screen):
             raise CaptureSpecError("every ui.screen entry must be an object")
-        if len(spec.calibration_models) != len(calibration_models):
-            raise CaptureSpecError("every calibration_models entry must be an object")
         spec.validate()
         return spec
 
@@ -644,8 +474,8 @@ class CaptureSpec:
                 f"{CAPTURE_PROTOCOL_VERSION}, "
                 f"got {self.capture_protocol_version}"
             )
-        # NB: kinds are deliberately NOT enumerated — a new kind needs no schema
-        # change. We validate the *shape*, never the *vocabulary* of kind.
+        # Kinds are deliberately NOT enumerated: validate the *shape*, never the
+        # *vocabulary* of kind.
         if self.sample_rate_hz != REQUIRED_SAMPLE_RATE_HZ:
             raise CaptureSpecError(
                 f"sample_rate_hz must be {REQUIRED_SAMPLE_RATE_HZ}, "
@@ -676,71 +506,14 @@ class CaptureSpec:
                 f"output.format must be one of {OUTPUT_FORMATS}, "
                 f"got {self.output_format!r}"
             )
-        if not isinstance(self.setup_validation, bool):
-            raise CaptureSpecError("setup_validation must be a boolean")
-        if not isinstance(self.setup_collect_positions, bool):
-            raise CaptureSpecError("setup_collect_positions must be a boolean")
-        _validate_run_token(self.run_token)
         _validate_acknowledgement(self.acknowledgement)
         _validate_capture_plan(self.capture_plan)
-        if self.setup_binding_id and not re.fullmatch(
-            r"[A-Za-z0-9_-]{12,160}", self.setup_binding_id
-        ):
-            raise CaptureSpecError(
-                "setup_binding_id must be 12..160 URL-safe characters"
-            )
-        if self.setup_collect_positions and not self.setup_validation:
-            raise CaptureSpecError(
-                "setup_collect_positions requires setup_validation=true"
-            )
-        if (self.position is None) != (self.total_positions is None):
-            raise CaptureSpecError(
-                "position and total_positions must be supplied together"
-            )
-        if self.position is not None:
-            if (
-                not isinstance(self.position, int)
-                or isinstance(self.position, bool)
-                or not isinstance(self.total_positions, int)
-                or isinstance(self.total_positions, bool)
-            ):
-                raise CaptureSpecError(
-                    "position and total_positions must be integers"
-                )
-            if (
-                self.position <= 0
-                or self.total_positions <= 0
-                or self.position > self.total_positions
-            ):
-                raise CaptureSpecError(
-                    "position must be within 1..total_positions"
-                )
-        if not isinstance(self.presentation_variant, str) or (
-            self.presentation_variant
-            and not re.fullmatch(
-                r"[a-z][a-z0-9_-]{0,63}", self.presentation_variant
-            )
-        ):
-            raise CaptureSpecError(
-                "presentation_variant must be an empty or 1..64-character slug"
-            )
-        if (
-            not isinstance(self.max_upload_bytes, int)
-            or isinstance(self.max_upload_bytes, bool)
-            or self.max_upload_bytes <= 0
-            or self.max_upload_bytes > HARD_MAX_UPLOAD_BYTES
-        ):
-            raise CaptureSpecError(
-                f"max_upload_bytes must be in 1..{HARD_MAX_UPLOAD_BYTES}, "
-                f"got {self.max_upload_bytes}"
-            )
         if self.stimulus is not None and self.stimulus.played_by not in STIMULUS_PLAYERS:
             raise CaptureSpecError(
                 f"stimulus.played_by must be one of {STIMULUS_PLAYERS}, "
                 f"got {self.stimulus.played_by!r}"
             )
         _validate_validity(self.validity)
-        _validate_calibration_models(self.calibration_models)
         _validate_default_setup_calibration(self.default_setup_calibration)
         _validate_theme(self.theme)
         _validate_screen(self.screen)
@@ -752,75 +525,14 @@ class CaptureSpec:
             raise CaptureSpecError(
                 "acknowledgement requires a begin_capture button"
             )
-        _validate_return_url(self.return_url)
-        _validate_time_budget(self.time_budget)
-        _validate_result_wait(self.result_wait_s)
         return self
 
     def with_screen(self, *components: Mapping[str, Any]) -> CaptureSpec:
         """Return a copy whose `screen` is the given components (validated)."""
         return replace(self, screen=tuple(components)).validate()
 
-    def with_return_url(self, return_url: str) -> CaptureSpec:
-        """Return a copy carrying the URL the capture surface returns to."""
-        return replace(self, return_url=str(return_url or "")).validate()
-
-    def with_time_budget(self, *, step_s: int, session_s: int) -> CaptureSpec:
-        """Return a copy publishing the two clocks this session actually runs.
-
-        Set at MINT time rather than by a spec builder, for the same reason
-        :meth:`with_return_url` is: a builder does not know which session its
-        spec ends up in, and ``session_s`` has to be the ceiling the session is
-        genuinely minted with or the quoted number is one nothing enforces.
-        """
-        return replace(
-            self, time_budget={"step_s": int(step_s), "session_s": int(session_s)}
-        ).validate()
-
-    def with_result_wait(self, result_wait_s: int) -> CaptureSpec:
-        """Return a copy publishing how long one capture may take to answer.
-
-        Set at MINT time by the flow that knows its own post-capture cost, for
-        the same reason :meth:`with_time_budget` is set there: a reader cannot
-        derive it, and a reader-side constant is a second copy of a number that
-        drifts the moment the analysis changes.
-        """
-        return replace(self, result_wait_s=int(result_wait_s)).validate()
-
 
 # --- Validation helpers -------------------------------------------------------
-
-# The clocks ``CaptureSpec.time_budget`` may name. A CLOSED set, like every
-# other spec vocabulary: exactly these two are rendered, so an unknown key is
-# drift to catch here rather than a sentence nobody wrote.
-TIME_BUDGET_KEYS = ("step_s", "session_s")
-
-
-def _validate_time_budget(time_budget: Mapping[str, int] | None) -> None:
-    if time_budget is None:
-        return
-    if not isinstance(time_budget, Mapping):
-        raise CaptureSpecError("time_budget must be an object or null")
-    extra = set(time_budget) - set(TIME_BUDGET_KEYS)
-    if extra:
-        raise CaptureSpecError(f"time_budget has unknown keys: {sorted(extra)}")
-    for key in TIME_BUDGET_KEYS:
-        if key not in time_budget:
-            raise CaptureSpecError(f"time_budget.{key} is required")
-        value = time_budget[key]
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise CaptureSpecError(f"time_budget.{key} must be a positive integer")
-
-
-def _validate_result_wait(result_wait_s: int | None) -> None:
-    if result_wait_s is None:
-        return
-    if (
-        not isinstance(result_wait_s, int)
-        or isinstance(result_wait_s, bool)
-        or result_wait_s <= 0
-    ):
-        raise CaptureSpecError("result_wait_s must be a positive integer or null")
 
 
 def _validate_validity(validity: CaptureValidity) -> None:
@@ -838,40 +550,6 @@ def _validate_validity(validity: CaptureValidity) -> None:
         raise CaptureSpecError("validity.allow_capability_fallback must be a bool")
     if not isinstance(validity.require_alignment, bool):
         raise CaptureSpecError("validity.require_alignment must be a bool")
-
-
-def _validate_calibration_models(models: Sequence[Mapping[str, Any]]) -> None:
-    if not isinstance(models, Sequence) or isinstance(models, (str, bytes)):
-        raise CaptureSpecError("calibration_models must be a list")
-    seen: set[str] = set()
-    for index, model in enumerate(models):
-        if not isinstance(model, Mapping):
-            raise CaptureSpecError(f"calibration_models[{index}] must be an object")
-        extra = set(model) - set(CALIBRATION_MODEL_KEYS)
-        if extra:
-            raise CaptureSpecError(
-                f"calibration_models[{index}] has unknown keys: {sorted(extra)}"
-            )
-        key = model.get("key")
-        label = model.get("label")
-        aliases = model.get("aliases", ())
-        if not isinstance(key, str) or not key:
-            raise CaptureSpecError(f"calibration_models[{index}].key must be a string")
-        if key in seen:
-            raise CaptureSpecError(f"duplicate calibration model key: {key}")
-        seen.add(key)
-        if not isinstance(label, str) or not label:
-            raise CaptureSpecError(
-                f"calibration_models[{index}].label must be a string"
-            )
-        if not isinstance(aliases, Sequence) or isinstance(aliases, (str, bytes)):
-            raise CaptureSpecError(
-                f"calibration_models[{index}].aliases must be a list"
-            )
-        if not all(isinstance(alias, str) for alias in aliases):
-            raise CaptureSpecError(
-                f"calibration_models[{index}].aliases must be a list of strings"
-            )
 
 
 def _validate_default_setup_calibration(
@@ -947,19 +625,6 @@ def _validate_screen(screen: Sequence[Mapping[str, Any]]) -> None:
                 )
 
 
-def _validate_run_token(run_token: str) -> None:
-    if not isinstance(run_token, str):
-        raise CaptureSpecError("run_token must be a string")
-    if not run_token:
-        return
-    if len(run_token) > 64 or not all(
-        ch.isalnum() or ch in "-_" for ch in run_token
-    ):
-        raise CaptureSpecError(
-            "run_token must be <= 64 URL-safe characters (alnum, '-', '_')"
-        )
-
-
 def _validate_acknowledgement(
     acknowledgement: CaptureAcknowledgement | None,
 ) -> None:
@@ -977,10 +642,7 @@ def _validate_acknowledgement(
 
 def _validate_capture_plan(capture_plan: CapturePlan | None) -> None:
     # `capture_plan` is optional and its PRESENCE is the only session-spanning
-    # signal — there is no protocol-number coupling. (Before the protocol-1/2
-    # deletion this was a biconditional with protocol 3; with one protocol both
-    # halves were vacuous, and requiring a plan would have broken every
-    # plan-free flow — room_sweep, level_ramp, sync_marker.)
+    # signal — there is no protocol-number coupling.
     if capture_plan is None:
         return
     if capture_plan.schema_version not in CAPTURE_PLAN_SCHEMA_VERSIONS:
@@ -1008,11 +670,9 @@ def _validate_capture_plan(capture_plan: CapturePlan | None) -> None:
 def _validate_capture_plan_entries(capture_plan: CapturePlan) -> None:
     """Reciprocal contract: schema_version 2 <=> entries present.
 
-    v1 payloads without entries stay exactly as strict as before this field
-    existed (``entries is None`` and ``schema_version == 1`` is the only
-    legal pre-Wave-3 shape). A plan that DOES carry entries must cover every
-    index ``0..capture_target-1`` exactly once — contiguous, unique — so the
-    session runner can always resolve "the entry for capture N" with no gaps.
+    A plan that carries entries must cover every index ``0..capture_target-1``
+    exactly once — contiguous, unique — so the session runner can always resolve
+    "the entry for capture N" with no gaps.
     """
     entries = capture_plan.entries
     if entries is None:
@@ -1095,28 +755,6 @@ def _validate_capture_plan_entry_screen(
         )
 
 
-def _validate_return_url(return_url: str) -> None:
-    if not isinstance(return_url, str):
-        raise CaptureSpecError("return_url must be a string")
-    if not return_url:
-        return
-    if len(return_url) > 2048 or any(
-        ord(ch) < 32 or ord(ch) == 127 for ch in return_url
-    ):
-        raise CaptureSpecError("return_url must be a clean absolute URL")
-    parsed = urlsplit(return_url)
-    if parsed.scheme not in RETURN_URL_SCHEMES:
-        raise CaptureSpecError(
-            f"return_url scheme must be one of {RETURN_URL_SCHEMES}"
-        )
-    if not parsed.netloc or not parsed.hostname:
-        raise CaptureSpecError("return_url must include a host")
-    if parsed.username or parsed.password:
-        raise CaptureSpecError("return_url must not include credentials")
-    if parsed.fragment:
-        raise CaptureSpecError("return_url must not include a URL fragment")
-
-
 def _as_bool(data: Mapping[str, Any], key: str, *, default: bool = False) -> bool:
     value = data.get(key, default)
     if not isinstance(value, bool):
@@ -1124,15 +762,12 @@ def _as_bool(data: Mapping[str, Any], key: str, *, default: bool = False) -> boo
     return value
 
 
-# Household-facing names for the commission tiers. The ids themselves
-# (``crossover_v2_flow.TIER_FULL`` / ``TIER_EXPRESS`` / ``TIER_REMOTE``) are the
-# flow's vocabulary; this is the only place they become copy, and an id with no
-# entry here contributes no line rather than leaking a raw slug onto a consent
-# screen.
-#
-# String literals rather than the flow's constants: ``crossover_v2_flow``
-# imports this module's caller, so reaching back for them would close an import
-# cycle. Kept in step with ``crossover_envelope_v2._TIER_LABELS`` by test.
+# Household-facing names for the commission tiers. The ids are the flow's
+# vocabulary; this is the only place they become copy, and an id with no entry
+# here contributes no line rather than leaking a raw slug onto a consent screen.
+# String literals rather than the flow's constants: ``crossover_v2_flow`` imports
+# this module's caller, so reaching back would close an import cycle. Kept in
+# step with ``crossover_envelope_v2._TIER_LABELS`` by test.
 _GUIDED_TIER_LABELS = {
     "full": "Full measurement",
     "express": "Quick tune",
@@ -1145,19 +780,14 @@ def _guided_tier_step(
 ) -> str:
     """The one tier line a guided consent screen adds, or ``""``.
 
-    Both numbers are DERIVED — the capture count from the plan the household
-    is about to walk, the duration from :meth:`CapturePlan.estimated_minutes`.
-    Nothing here is hand-written, so this line can never quote a session other
-    than the one about to run.
+    Both numbers are DERIVED — the capture count from the plan the household is
+    about to walk, the duration from :meth:`CapturePlan.estimated_minutes` — so
+    this line can never quote a session other than the one about to run.
 
-    **Both numbers are THIS SESSION's, which since the two-stage split is one
-    stage of two.** The line therefore says so: an unqualified "Full
-    measurement: 10 measurements, about 8 minutes" beside a chooser that quoted
-    16 and 11 reads as a contradiction, when in fact it is the honest half. The
-    chooser (``_tier_action``) owns the whole-journey figure; this owns the
-    session in front of the household, and neither is allowed to state the
-    other's. It stays deliberately silent about WHICH stage this is, because
-    both stages render this same line.
+    Both are THIS SESSION's, which since the two-stage split is one stage of
+    two, and the line says so. The chooser (``_tier_action``) owns the
+    whole-journey figure; neither may state the other's. It stays silent about
+    WHICH stage this is, because both stages render this same line.
     """
     label = _GUIDED_TIER_LABELS.get(str(guided_tier or "").strip().lower())
     if not label or not walk or capture_plan is None:
@@ -1173,24 +803,17 @@ def _guided_tier_step(
 def _courtesy_beeps_step(announced: tuple[int, ...], walk: int) -> str:
     """WHAT THE SPEAKER DOES, for the session in front of the household.
 
-    ``announced`` is the 1-based captures of this plan that open on the
-    courtesy prelude, derived by the caller from the plan's own index → phase
-    map (``crossover_v2_flow.announced_capture_indexes``). It is a *value*
-    rather than a rule this module re-derives, because which phases announce is
-    the measurement flow's decision and this module owns only how to say it.
+    ``announced`` is the 1-based captures of this plan that open on the courtesy
+    prelude, derived by the caller from the plan's own index → phase map. A
+    VALUE rather than a rule this module re-derives, because which phases
+    announce is the measurement flow's decision.
 
     Three shapes are stateable: every capture, the first alone, and the first
-    and the last. Shipped sessions produce the middle one (stage 2's walk); the
-    other two are the shapes a plan change reaches — the first-and-last is what
-    stage 1 renders with the lateral walk re-armed (its entry baseline plays
-    stage 2's anchor object and therefore announces too), and every-capture is
-    the pre-trim rule's own. **Anything else raises.** A consent screen that
-    cannot describe what the speaker will do must not be rendered with a
-    sentence that is nearly right — this is the exact defect the 2026-08-18 gate
-    round found, where "The first measurement has three short beeps" was shipped
-    against a stage 1 that beeps twice.
+    and the last. **Anything else raises** — a consent screen that cannot
+    describe what the speaker will do must not be rendered with a sentence that
+    is nearly right.
 
-    "has"/"tones" are load-bearing and survive from #1979 — see the call site.
+    "has"/"tones" are load-bearing (#1979) — see the call site.
     """
     if not announced or announced[0] < 1 or announced[-1] > walk:
         raise CaptureSpecError(
@@ -1231,7 +854,6 @@ def build_crossover_sweep_spec(
     hard_timeout_ms: int = 30000,
     accent: str = "sage",
     font: str = "figtree",
-    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ambient_duration_ms: int = 0,
     capture_plan: CapturePlan | None = None,
     guided_captures: int = 0,
@@ -1243,80 +865,53 @@ def build_crossover_sweep_spec(
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work: a clean log sweep, magnitude FR, drift-insensitive, with
-    consent copy that names the driver under test so the household measures
-    each driver in turn.
+    consent copy that names the driver under test.
 
-    ``stimulus_duration_ms`` defaults to the **kernel-side** sweep length the
-    active-crossover flow actually plays —
-    ``driver_acoustics.DEFAULT_DURATION_S`` — rather than a second, forked
-    sweep constant. The driver/summed capture sweep is written and deconvolved
-    from that one length (``web_measurement.capture_sweep_meta`` /
-    ``write_driver_sweep_wav``), and the deconvolution reference is regenerated
-    from the played ``sweep_meta``, so the spec must not advertise a different
-    duration: the recording window is sized from this. Sourcing it here keeps
-    ONE sweep definition.
+    ``stimulus_duration_ms`` defaults to the KERNEL-side sweep length the
+    active-crossover flow actually plays (``driver_acoustics.DEFAULT_DURATION_S``)
+    rather than a second, forked sweep constant. The capture sweep is written
+    and deconvolved from that one length and the deconvolution reference is
+    regenerated from the played ``sweep_meta``, so the spec must not advertise a
+    different duration: the recording window is sized from this.
 
-    ``duration_ms`` is the HARD recording deadline, and its clock starts when
-    the capture arms — before the sweep completes the speaker must load the
+    ``duration_ms`` is the HARD recording deadline, and its clock starts when the
+    capture arms — before the sweep completes the speaker must load the
     commissioning config, generate the sweep WAV, play the full sweep, release
-    the fan-in lane and roll the transient graph back. So the acoustic window
-    is **floored by ``hard_timeout_ms``**: the normal stop is the sweep
-    completing and the deadline is only the backstop, never the working margin.
+    the fan-in lane and roll the transient graph back. The acoustic window is
+    therefore FLOORED by ``hard_timeout_ms``: the normal stop is the sweep
+    completing, and the deadline is only the backstop.
 
-    ``capture_plan`` opts the spec into a session-spanning walk: one session for
-    the driver's whole repeat set. A plan requires an
+    ``capture_plan`` opts the spec into a session-spanning walk. It requires an
     ``acknowledgement_binding``, because placement gates run per capture.
 
-    ``guided_captures`` (> 0) declares that this summed session is a GUIDED
-    SPATIAL CLOUD of that many prompted CAPTURES — the count the household
-    counts down ("Measurement 4 of N"), NOT the smaller number of distinct mic
-    positions the session thinks in. ``N`` is per SESSION, so the two-stage
-    commission's two stages count separately; the shipped per-stage numbers
-    come from ``crossover_v2_flow.tier_display_info()`` and are not restated
-    here, where a plan change cannot reach them. The consent copy is written
-    against captures because that is what the household is promising about: one
-    held-still sweep each. It selects the consent surface to match — placement
-    instruction, steps, button, and acknowledgement policy/label all describe a
-    walk instead of a stationary mic — because the stationary copy makes a
-    whole-session promise ("I will not move it") that a cloud asks the
-    household to break on the very next screen. Per-sweep stillness stays
-    promised in every shape, because that one is still true. ``0`` keeps the
-    stationary copy, and that path stays reachable on purpose: the 1-entry
-    re-verify re-arm really does keep the mic still for its whole session.
+    ``guided_captures`` (> 0) declares a GUIDED SPATIAL CLOUD of that many
+    prompted CAPTURES — the count the household counts down, NOT the smaller
+    number of distinct mic positions the session thinks in — and ``N`` is per
+    SESSION, so a two-stage commission's stages count separately. It selects the
+    walk consent surface, because the stationary copy makes a whole-session
+    promise ("I will not move it") that a cloud asks the household to break on
+    the next screen. Per-sweep stillness stays promised in every shape. ``0``
+    keeps the stationary copy, which the 1-entry re-verify re-arm still earns.
 
-    ``guided_tier`` names WHICH guided instrument the household is consenting
-    to. It adds exactly one line to the consent steps — the tier and the plan's
-    own DERIVED duration (:meth:`CapturePlan.estimated_minutes`) — so a
-    household can tell a quick tune from a full measurement before the first
-    tone rather than by counting prompts afterwards. Only meaningful alongside
-    ``guided_captures``; ignored otherwise.
+    ``guided_tier`` names WHICH guided instrument is being consented to, adding
+    exactly one line (the tier plus the plan's own derived duration). Only
+    meaningful alongside ``guided_captures``; ignored otherwise.
 
     ``walk_shape`` is the ORIENTATION half of the guided consent screen: how far
     the walk reaches from the mark and that each position is prompted, in ONE
-    sentence below the steps, so a household knows the shape of the session
-    before the first tone instead of discovering it one prompt at a time.
-    Supplied by the caller that owns the plan —
-    :func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_shape`, derived
-    from the same table the per-entry screens are built from — because this
-    builder must not grow a second description of a walk it does not own.
+    sentence. Supplied by the caller that owns the plan
+    (:func:`~jasper.active_speaker.crossover_v2_flow.cloud_walk_shape`), so this
+    builder grows no second description of a walk it does not own. Deliberately
+    one sentence rather than an enumeration of every position; the per-entry
+    screens do the spoon-feeding.
 
-    Deliberately ONE sentence, not a ``Sequence[str]`` of every position: a
-    ten-item enumeration under a 73-word placement block is a wall, and a
-    household cannot act on the last prompted move while standing at the first.
-    The intent — no surprises — is kept by the sentence; the spoon-feeding is
-    the per-entry screens' job. Empty renders nothing, and like ``guided_tier``
-    it is only meaningful alongside ``guided_captures``.
+    ``reverify_lead`` is an OPT-IN first step for the 1-entry re-verify re-arm.
 
-    ``reverify_lead`` is an OPT-IN first step for the 1-entry re-verify re-arm:
-    the recovery is one sweep back at the mark, and the 2026-07-27 hardware
-    session abandoned it because no screen said so.
-
-    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint
-    (``jasper.correction.household_mic``). A ``crossover_sweep`` capture has no
-    calibration-picker screen of its own, so without the hint every capture
-    logged ``crossover_v2_uncalibrated_capture`` even when the household had a
-    resolvable stored mic. It is applied silently when nothing has already been
-    chosen for the session.
+    ``default_setup_calibration`` is the OPTIONAL household-mic prefill hint. A
+    ``crossover_sweep`` capture has no calibration-picker screen of its own, so
+    without the hint every capture logged
+    ``crossover_v2_uncalibrated_capture`` even with a resolvable stored mic. It
+    is applied silently when nothing has already been chosen for the session.
     """
     if stimulus_duration_ms is None:
         # Lazy import: the kernel module pulls numpy/scipy, and the socket-
@@ -1353,10 +948,9 @@ def build_crossover_sweep_spec(
         raise CaptureSpecError("driver capture geometry is unsupported")
     # Plan SHAPE, not plan presence, selects the summed consent copy: a guided
     # cloud asks the household to move the mic between captures, so the
-    # stationary policy's "I will not move it" promise would be false on the
-    # very first screen. ``guided_captures == 0`` (every pre-cloud caller,
-    # including the 1-entry re-verify re-arm, whose stationary promise is still
-    # TRUE) keeps the byte-identical stationary copy and policy id.
+    # stationary policy's "I will not move it" promise would be false on the very
+    # first screen. ``guided_captures == 0`` keeps the byte-identical stationary
+    # copy and policy id.
     walk = int(guided_captures or 0)
     if walk < 0:
         raise CaptureSpecError("guided_captures must not be negative")
@@ -1422,22 +1016,9 @@ def build_crossover_sweep_spec(
         steps.append(tier_line)
     if walk:
         # WHAT TO BRING, before the session rather than during it (#1941 R2).
-        # The 2026-07-30 field session reached the first prompted distance
-        # holding neither a tape measure nor a stand, because nothing had said
-        # to fetch either — expectation-setting that arrives at the moment it
-        # is needed has already failed.
-        #
-        # The tape measure is stated as the CONSEQUENCE of a fact the
-        # placement step used to carry unattached ("each one named with a
-        # distance"): a fact that motivates an action reads once and sticks,
-        # where the same fact floating in a placement paragraph reads as
-        # trivia. The stand is a RECOMMENDATION, not a requirement — the
-        # owner's ruling on #1941 Q3, and the honest shape: we cannot detect a
-        # hand-held mic, so refusing to proceed is not on the table, and the
-        # acknowledgement contract (``cloud_walk_acknowledgement_label``)
-        # deliberately does not promise one. Its "why" is one clause and is
-        # physical rather than exhortative, because "use a tripod!" without a
-        # reason is the kind of instruction a household skips.
+        # The stand is a RECOMMENDATION, not a requirement (owner ruling on #1941
+        # Q3): a hand-held mic is undetectable, so refusing to proceed is not on
+        # the table and ``cloud_walk_acknowledgement_label`` promises no stand.
         steps.append(
             "Bring a tape measure or ruler — every position is named with a "
             "distance from the mark. A stand or tripod for the microphone is "
@@ -1446,53 +1027,18 @@ def build_crossover_sweep_spec(
         )
     steps.append(placement_instruction)
     if walk:
-        # What the SPEAKER does, said before the first tone (work order D7 /
-        # issue #1804). The household has been told how long it takes, what to
-        # bring, and where to stand; this is the fourth thing an orientation
-        # screen owes them — what they are about to hear — because an
-        # unexplained burst of beeps at measurement level is the moment a
-        # first-time household stops the session.
+        # What the SPEAKER does, said before the first tone (#1804), and placed
+        # BEFORE "tap Start and stay quiet" (#1941 R1) so a household reading in
+        # order learns what the noise will be before sitting through it.
         #
-        # It sits BEFORE "tap Start and stay quiet" rather than after the
-        # whole block (#1941 R1): those seconds of silence are the seconds
-        # this sentence describes, so a household that reads in order learns
-        # what the noise will be before being asked to sit through it.
-        #
-        # Deliberately states no duration of its own: ``seconds`` is the
-        # LONGEST plan entry's whole capture window (quiet window + beeps +
-        # tone), which the step below already quotes honestly as the time to
-        # stay quiet. Reusing it here would advertise a 40-second "tone" that
-        # is nothing of the kind. "three" mirrors
-        # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT``,
-        # spelled out because a household counts beeps, and pinned by test.
-        #
-        # It says "HAS" and "TONES", and both words are load-bearing (#1979).
-        # It used to say "is … a rising tone", which was false for the two
-        # captures a household hears FIRST:
-        #
-        #   * "is" read as an exhaustive description of the whole measurement,
-        #     but CHECK opens on a 12 s room-noise window
-        #     (``program.DEFAULT_CHECK_AMBIENT_S``) BEFORE the beeps. "has"
-        #     names the elements and their order without claiming nothing
-        #     precedes them. This screen does not restate the window because
-        #     per-phase narration belongs to the live capture surface, not to
-        #     the consent screen.
-        #   * no program in the session plays exactly ONE rising tone: CHECK
-        #     plays four pilot chirps and no sweep at all, MEASURE plays two
-        #     pilots then six sweeps (2 drivers × ``MEASURE_REPEAT_COUNT``),
-        #     and a prompted cloud position plays two pilots then one sweep.
-        #     The plural is the one shape true of all three; a count here would
-        #     need three different sentences for three different phases.
-        #
-        # WHICH measurements beep is now DERIVED, not stated: since 2026-08-18
-        # the courtesy prelude announces a SESSION rather than a capture
-        # (``crossover_v2.programs.courtesy_prelude_for_phase``), so the beeps
-        # and the tones are two different populations and the caller hands this
-        # builder the first one. A hand-written "The first measurement…" was
-        # shipped and was FALSE for stage 1, whose entry baseline announces too
-        # — a consent screen that over-promises what the speaker will do is the
-        # same defect as one that under-promises it, and a sentence that cannot
-        # be checked against the plan is how either survives review.
+        # It states no duration of its own: ``seconds`` is the LONGEST plan
+        # entry's whole capture window, which the step below already quotes as
+        # the time to stay quiet. "three" mirrors
+        # ``jasper.audio_measurement.program.COURTESY_TONE_BEEP_COUNT``, spelled
+        # out because a household counts beeps, and pinned by test. "has" and
+        # "tones" are both load-bearing (#1979): CHECK opens on a room-noise
+        # window before the beeps, and no program plays exactly ONE rising tone.
+        # WHICH measurements beep is DERIVED from the plan, never hand-written.
         steps.append(
             _courtesy_beeps_step(tuple(int(i) for i in announced_captures), walk)
         )
@@ -1505,9 +1051,7 @@ def build_crossover_sweep_spec(
                 else f"Tap Start, then stay quiet for about {seconds} seconds"
             ),
             # Per-sweep stillness is true in EVERY shape — it is the
-            # whole-session promise the cloud breaks. The guided
-            # wording adds what happens between sweeps so the household
-            # is not surprised by the first move prompt.
+            # whole-session promise the cloud breaks.
             (
                 "Keep the microphone still until each sweep finishes, then "
                 "follow the on-screen prompt to move it"
@@ -1534,41 +1078,29 @@ def build_crossover_sweep_spec(
         theme=build_theme(accent=accent, font=font),
         screen=(
             # A SUMMED capture measures the speaker, not a named driver, so
-            # ``driver_label`` there is whatever the caller had to hand — the
-            # v2 cloud passed the literal "crossover" and the household read
-            # "Crossover — crossover" (flow-simplification §2.3). Name what is
-            # about to happen instead; the per-driver flows keep their label,
-            # which is genuinely informative for them.
+            # ``driver_label`` there is whatever the caller had to hand. Name
+            # what is about to happen instead; the per-driver flows keep their
+            # label, which is genuinely informative for them.
             ui_heading(
                 f"Crossover — {driver_label}" if is_driver else "Tune your speaker"
             ),
             ui_steps(steps),
             # The shape of the walk, in one sentence, between the steps and the
-            # Start button (work order D7's intent, #1941 R1's presentation).
-            # A ``note`` rather than a seventh step: it is not an instruction —
-            # nothing here is for the household to DO — and the renderer's
-            # component vocabulary is a closed allowlist, so this composes from
-            # the existing types rather than widening it.
-            #
-            # It replaced a ``ui_note`` lead plus a SECOND ``ui_steps`` list of
-            # every prompted position. Two stacked lists is the defect the
-            # owner reported: the eye cannot tell which one it is meant to act
-            # on, and the second was a walk's worth of moves the household
-            # could not act on yet. Absent for every caller that passes no
-            # shape, so no screen grows an empty section.
+            # Start button. A ``note`` rather than a seventh step: it is not an
+            # instruction, and the renderer's component vocabulary is a closed
+            # allowlist, so this composes from the existing types. Absent for
+            # every caller that passes no shape, so no screen grows an empty
+            # section.
             *((ui_note(str(walk_shape)),) if walk and walk_shape else ()),
-            # (A mic level meter does not belong here: every crossover
-            # consent screen — the v2 cloud, the legacy per-driver sweeps,
-            # and the 1-entry re-verify alike — feeds ``updateLevelMeters``
-            # only from the level-ramp protocol, so the component would
-            # never move and would read as a broken mic. The
-            # ``ui_level_meter`` BUILDER stays — the level-ramp flow still
-            # uses it.)
+            # (A mic level meter does not belong here: every crossover consent
+            # screen feeds ``updateLevelMeters`` only from the level-ramp
+            # protocol, so the component would never move and would read as a
+            # broken mic. The ``ui_level_meter`` BUILDER stays — the level-ramp
+            # flow still uses it.)
             ui_button(button_label, action="begin_capture"),
             ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the recording."),
         ),
-        max_upload_bytes=max_upload_bytes,
         acknowledgement=acknowledgement,
         capture_plan=capture_plan,
         default_setup_calibration=default_setup_calibration,

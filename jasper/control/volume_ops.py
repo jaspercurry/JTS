@@ -201,6 +201,7 @@ async def _with_coordinator(
     (callers that write camilla via the accessory/web path), the
     coordinator defers its camilla write iff the probe returns True.
     See `_make_duck_active_probe` for the wire details."""
+    from .. import librespot_state
     from ..camilla import CamillaController
     from ..assistant_volume import volume_context_publisher_for_runtime
     from ..renderer import RendererClient
@@ -216,9 +217,7 @@ async def _with_coordinator(
         ),
     )
     backend = RendererClient(
-        librespot_state_path=os.environ.get(
-            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
-        ),
+        librespot_state_path=librespot_state.configured_path(),
     )
     # Build a Spotify router per-request so accessory volume can dispatch
     # to Spotify via Web API (librespot 0.8.0 has no local HTTP).
@@ -311,13 +310,12 @@ async def _dispatch_transport(
     dispatcher's documented vocabulary."""
     # Import inside the function so jasper-control doesn't import the
     # full voice-daemon dependency tree at startup.
+    from .. import librespot_state
     from ..renderer import RendererClient
     from ..tools.transport import make_transport_dispatcher
 
     renderer = RendererClient(
-        librespot_state_path=os.environ.get(
-            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
-        ),
+        librespot_state_path=librespot_state.configured_path(),
     )
 
     dispatch = make_transport_dispatcher(renderer, spotify_router_factory())

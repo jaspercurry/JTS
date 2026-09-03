@@ -2,76 +2,54 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Direct contracts for the shell-facing chip-AEC policy shim."""
+"""Direct contracts for the shell-facing chip-AEC policy shim.
+
+The socket wire protocol itself (missing socket, timeout, malformed JSON,
+non-object reply) is `jasper.route_latency.status_socket.read_status_socket`'s
+contract, pinned in `tests/test_route_latency_status_socket.py`; this shim
+only wraps that reader, so its own test covers the empty-path short-circuit
+and that a read failure is turned into a `(None, str)` pair rather than
+raising.
+"""
 
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from jasper.chip_aec_policy import ChipAecGate
+from jasper.chip_aec import health as chip_aec_health
+from jasper.chip_aec.policy import ChipAecGate
 from jasper.cli import chip_aec_policy
 
-
-class _Socket:
-    def __init__(self, chunks):
-        self.chunks = iter(chunks)
-        self.sent = []
-        self.timeout = None
-        self.path = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return None
-
-    def settimeout(self, timeout):
-        self.timeout = timeout
-
-    def connect(self, path):
-        self.path = path
-
-    def sendall(self, payload):
-        self.sent.append(payload)
-
-    def recv(self, _size):
-        return next(self.chunks, b"")
+ROOT = Path(__file__).resolve().parents[1]
+# Everything an operator-supplied park reason can carry that shell would
+# otherwise act on: an apostrophe, a command substitution, a backquote, a
+# double quote, and the line break that would split the assignment in two.
+HOSTILE_REASON = "it's a $(rm -rf /) `whoami` \"6-ch\" mic\nsecond line"
 
 
-def test_query_outputd_status_owns_socket_protocol(monkeypatch):
-    sock = _Socket([b'{"reference_', b'outputs": {}}', b""])
-    monkeypatch.setattr(
-        chip_aec_policy.socket,
-        "socket",
-        lambda *_args: sock,
-    )
-
-    payload, error = chip_aec_policy._query_outputd_status(
-        "/run/outputd.sock", timeout=0.25
-    )
-
-    assert payload == {"reference_outputs": {}}
-    assert error == ""
-    assert sock.timeout == 0.25
-    assert sock.path == "/run/outputd.sock"
-    assert sock.sent == [b"STATUS\n"]
-
-
-def test_query_outputd_status_classifies_empty_invalid_and_non_object(monkeypatch):
+def test_query_outputd_status_empty_path_short_circuits():
     assert chip_aec_policy._query_outputd_status("") == (
         None, "STATUS socket path is empty"
     )
-    for body, expected in ((b"{", "invalid STATUS JSON"), (b"[]", "not an object")):
-        monkeypatch.setattr(
-            chip_aec_policy.socket,
-            "socket",
-            lambda *_args, body=body: _Socket([body, b""]),
-        )
-        payload, error = chip_aec_policy._query_outputd_status("/run/test.sock")
-        assert payload is None
-        assert expected in error
+
+
+def test_query_outputd_status_returns_none_and_error_on_read_failure(monkeypatch):
+    def _raise(*_args, **_kwargs):
+        raise OSError("no such socket")
+
+    monkeypatch.setattr(chip_aec_policy, "read_status_socket", _raise)
+
+    payload, error = chip_aec_policy._query_outputd_status("/run/outputd.sock")
+
+    assert payload is None
+    assert "no such socket" in error
 
 
 def test_shell_assignments_quote_values():
@@ -149,3 +127,58 @@ def test_main_forwards_status_and_emits_shell_or_json(monkeypatch, capsys):
         "--dac-id", "apple_usb_c_dongle", "--shell-env",
     ]) == 0
     assert "JASPER_CHIP_AEC_DAC_GATE_STATUS=approved" in capsys.readouterr().out
+
+
+def _fold_dac_id(value: str) -> str:
+    # normalize_dac_id's transform: lowercased, hyphens folded to underscores.
+    return value.lower().replace("-", "_")
+
+
+_XVF_UNUSABLE = ["--alignment", chip_aec_health.XVF_UNUSABLE, "--reason", HOSTILE_REASON]
+_DAC_UNCALIBRATED = [
+    "--alignment", chip_aec_health.DAC_UNCALIBRATED, "--reason", HOSTILE_REASON,
+]
+_DAC_GATE_KEY = "JASPER_CHIP_AEC_DAC_GATE_DAC"
+
+
+@pytest.mark.parametrize(
+    ("cli_args", "key", "transform"),
+    [
+        (_XVF_UNUSABLE, chip_aec_health.REASON_KEY, str),
+        (_DAC_UNCALIBRATED, chip_aec_health.REASON_KEY, str),
+        (["--dac-id", HOSTILE_REASON, "--shell-env"], _DAC_GATE_KEY, _fold_dac_id),
+    ],
+    ids=["xvf_unusable", "dac_uncalibrated", "dac_gate_shell_env"],
+)
+def test_shell_measured_free_text_survives_the_reconcilers_eval(
+    cli_args: list[str], key: str, transform,
+) -> None:
+    """Both shell-facing emitters share one quoting helper, driven the way
+    `deploy/bin/jasper-aec-reconcile` drives them: this shim's stdout is
+    eval'd by bash.  Free text reaches the record as one collapsed line and
+    nothing in it is executed.
+    """
+    emit = shlex.join(
+        [sys.executable, "-m", "jasper.cli.chip_aec_policy", *cli_args]
+    )
+    result = subprocess.run(
+        ["bash", "-c", f'eval "$({emit})"; printf %s "${key}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+    )
+
+    assert result.stdout == transform(" ".join(HOSTILE_REASON.split()))
+
+
+def test_an_unknown_alignment_token_fails_at_the_parser() -> None:
+    """The shell call sites are `|| true`, so a typo that only raised inside
+    `alignment_health` would print nothing and silently leave the last record
+    standing.  argparse's closed vocabulary makes it a CI-visible exit 2.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        chip_aec_policy.main(["--alignment", "half_applied"])
+
+    assert exit_info.value.code == 2

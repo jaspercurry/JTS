@@ -17,12 +17,22 @@ truth. That classification should not live in one HTTP handler.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
-from .chip_aec_policy import (
+from .chip_aec.health import (
+    ACTION_RECOMMISSION, ENV_KEYS, STATUS_DISCLOSED_STALE, STATUS_READY,
+    AlignmentHealth,
+)
+from .chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
+from .mics.xvf3800 import AEC_MIC_DEVICE_ENV, CHIP_AEC_ENABLED_ENV
 
+
+# The operator's audio-input selection, written by the /aec wizard and read
+# back by every consumer of the vocabulary below.
+DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
 
 PROFILE_AUTO = "auto"
 PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"
@@ -30,12 +40,6 @@ PROFILE_XVF_CHIP_AEC_TESTING = "xvf_chip_aec_testing"
 PROFILE_XVF_SOFTWARE_AEC3 = "xvf_software_aec3"
 PROFILE_DIRECT_MIC = "direct_mic"
 PROFILE_CUSTOM = "custom"
-
-# The reconciler's fixed re-commission remedy (ALIGNMENT_RECOMMISSION_ACTION
-# in deploy/bin/jasper-aec-reconcile — the two writers of this vocabulary).
-# `action` equal to this constant is what `commission_recommended` decodes, so
-# consumers gate on the boolean instead of scanning operator prose.
-ALIGNMENT_RECOMMISSION_ACTION = "Run sudo jasper-aec-commission"
 
 CONCRETE_PROFILES = (
     PROFILE_XVF_CHIP_AEC,
@@ -83,10 +87,7 @@ class RuntimeAecEnv:
     dtln_enabled: bool = False
     chip_aec_150_device: str = ""
     chip_aec_210_device: str = ""
-    chip_aec_alignment_status: str = ""
-    chip_aec_alignment_reason: str = ""
-    chip_aec_alignment_action: str = ""
-    chip_aec_alignment_selection: str = ""
+    chip_aec_alignment: AlignmentHealth = AlignmentHealth("")
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class MicProbe:
     variant_id: str = ""
     geometry: str = ""
     chip_beam_plan: str = ""
+    chip_aec_supported: bool = False
     probe_error: str | None = None
 
 
@@ -221,6 +223,32 @@ def profile_env_updates(profile: str) -> dict[str, str]:
     return updates
 
 
+def resolve_profile_wake_legs(
+    profile: str,
+    *,
+    chip_available: bool,
+) -> dict[str, str]:
+    """Runtime AEC mode and wake legs the reconciler applies for a profile.
+
+    `profile_env_updates` owns the per-profile vectors; runtime capability
+    only decides which of them a chip-seeking profile lands on. `custom`
+    yields no keys — the operator's own mode and legs stand.
+    """
+
+    normalized = normalize_audio_input_profile(profile, default=PROFILE_CUSTOM)
+    if normalized in (
+        PROFILE_AUTO,
+        PROFILE_XVF_CHIP_AEC,
+        PROFILE_XVF_CHIP_AEC_TESTING,
+    ):
+        normalized = (
+            PROFILE_XVF_CHIP_AEC if chip_available else PROFILE_XVF_SOFTWARE_AEC3
+        )
+    updates = profile_env_updates(normalized)
+    updates.pop("JASPER_AUDIO_INPUT_PROFILE")
+    return updates
+
+
 def resolve_audio_input_intent(
     intent: AecIntent,
     *,
@@ -323,7 +351,7 @@ def runtime_env_from_mapping(
 
     return RuntimeAecEnv(
         primary_device=env_value(env, "JASPER_MIC_DEVICE", "Array", process_env=process_env),
-        aec_device=env_value(env, "JASPER_AEC_MIC_DEVICE", "Array", process_env=process_env),
+        aec_device=env_value(env, AEC_MIC_DEVICE_ENV, "Array", process_env=process_env),
         mic_variant=env_value(env, "JASPER_XVF_VARIANT", "", process_env=process_env),
         mic_geometry=env_value(env, "JASPER_XVF_GEOMETRY", "", process_env=process_env),
         mic_display_name=env_value(
@@ -345,7 +373,7 @@ def runtime_env_from_mapping(
             process_env=process_env,
         ),
         chip_enabled=parse_env_bool(
-            env_value(env, "JASPER_AEC_CHIP_AEC_ENABLED", "0", process_env=process_env),
+            env_value(env, CHIP_AEC_ENABLED_ENV, "0", process_env=process_env),
             default=False,
         ),
         raw_device=env_value(
@@ -376,29 +404,11 @@ def runtime_env_from_mapping(
             "",
             process_env=process_env,
         ),
-        chip_aec_alignment_status=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS",
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_alignment_reason=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON",
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_alignment_action=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION",
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_alignment_selection=env_value(
-            env,
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION",
-            "",
-            process_env=process_env,
+        chip_aec_alignment=AlignmentHealth.from_env(
+            {
+                key: env_value(env, key, "", process_env=process_env)
+                for key in ENV_KEYS
+            }
         ),
     )
 
@@ -635,23 +645,15 @@ def build_audio_profile_status(
         PROFILE_XVF_CHIP_AEC,
         PROFILE_XVF_CHIP_AEC_TESTING,
     }
-    # Serving rule for both records: jasper.chip_aec_policy's module docstring.
-    # A legacy record carries no stamp; its only writers were managed
-    # selections, so it answers for those and for no custom profile.
-    alignment_selection = normalize_audio_input_profile(
-        runtime.chip_aec_alignment_selection, default=""
-    )
-    alignment_owned = (
-        alignment_selection == selection
-        if alignment_selection
-        else selection != PROFILE_CUSTOM
-    )
-    alignment_status = runtime.chip_aec_alignment_status if alignment_owned else ""
+    # Serving rule for both records: jasper.chip_aec.policy's module docstring.
+    alignment = runtime.chip_aec_alignment
+    alignment_owned = alignment.applies_to(selection, custom_profile=PROFILE_CUSTOM)
+    alignment_status = alignment.status if alignment_owned else ""
     # Absent is not "blocked": with no verdict published for this selection the
     # chip arms on the live evidence _wake_engine checks — the operator's leg
     # and a beam actually on the carrier — rather than on a record about
     # someone else's path.
-    alignment_permits_chip = alignment_status == "ready" or not alignment_owned
+    alignment_permits_chip = alignment_status == STATUS_READY or not alignment_owned
     # A device mismatch means the bridge is not capturing the detected XVF, so
     # what arrives cannot be this mic's chip beam. The beam plan and the DAC
     # gate answer whether chip-AEC may arm, not what the bridge is carrying, so
@@ -661,7 +663,7 @@ def build_audio_profile_status(
         not aec_device_mismatch
         and (
             (chip_available and gate_permitted and alignment_permits_chip)
-            or alignment_status == "disclosed_stale"
+            or alignment_status == STATUS_DISCLOSED_STALE
         )
     )
     running_engine = _wake_engine(
@@ -676,7 +678,7 @@ def build_audio_profile_status(
     disclosed_engine = (
         running_engine
         if requested_intent.mode == "auto"
-        and alignment_status == "disclosed_stale"
+        and alignment_status == STATUS_DISCLOSED_STALE
         else None
     )
     direct_engine = running_engine if requested_intent.mode != "auto" else None
@@ -696,7 +698,7 @@ def build_audio_profile_status(
     if (
         managed_xvf
         and alignment_status
-        and alignment_status not in {"ready", "disclosed_stale"}
+        and alignment_status not in {STATUS_READY, STATUS_DISCLOSED_STALE}
     ):
         processing_mode = "Chip-AEC parked"
         session_source = "parked pending chip-AEC alignment"
@@ -704,22 +706,18 @@ def build_audio_profile_status(
         active_profile: str | None = None
         profile_state = alignment_status
         profile_reason = (
-            runtime.chip_aec_alignment_reason
-            or "Managed XVF chip-AEC alignment is not ready."
+            alignment.reason or "Managed XVF chip-AEC alignment is not ready."
         )
-        profile_action = runtime.chip_aec_alignment_action
+        profile_action = alignment.action
     elif disclosed_engine is not None:
         # ADR-0101: disclosed_stale is a RUNNING state — name the engine the
         # wake path actually has, and let the reconciler's own reason/action
         # say what chip-AEC lost. A disclosed box with no live engine keeps
         # the pending/waiting arms below: it is not running anything to claim.
         processing_mode, session_source, wake_legs, active_profile = disclosed_engine
-        profile_state = "disclosed_stale"
-        profile_reason = (
-            runtime.chip_aec_alignment_reason
-            or "Chip-AEC is not fully armed."
-        )
-        profile_action = runtime.chip_aec_alignment_action
+        profile_state = STATUS_DISCLOSED_STALE
+        profile_reason = alignment.reason or "Chip-AEC is not fully armed."
+        profile_action = alignment.action
     elif direct_engine is not None:
         processing_mode, session_source, wake_legs, active_profile = direct_engine
         profile_state = "disabled"
@@ -772,13 +770,13 @@ def build_audio_profile_status(
                 # The GATE's own disclosure, for a box whose blocked chip-AEC no
                 # alignment status describes; `disclosed_engine` above serves the
                 # ones the reconciler already published an alignment reason for.
-                profile_state = "disclosed_stale"
+                profile_state = STATUS_DISCLOSED_STALE
                 # `action` is operator text, while the gate answers in action
                 # CODES. Only the uncodified-DAC code has a command behind it —
                 # the one the reconciler pairs with its own disclosure of that
                 # same condition; every other code is said by `reason` instead.
                 profile_action = (
-                    ALIGNMENT_RECOMMISSION_ACTION
+                    ACTION_RECOMMISSION
                     if str(gate.get("recommended_action") or "")
                     == ACTION_USE_SOFTWARE_OR_TEST
                     else ""
@@ -839,7 +837,6 @@ def build_audio_profile_status(
     audio_profile: dict[str, Any] = {
         "selection": selection,
         "requested": requested_profile,
-        "resolved": requested_profile,
         "active": active_profile,
         "state": profile_state,
         "reason": profile_reason,
@@ -847,7 +844,7 @@ def build_audio_profile_status(
         "action": profile_action,
         # Structured decode of `action` against the writers' shared constant,
         # so UI surfaces gate on a boolean rather than matching prose.
-        "commission_recommended": profile_action == ALIGNMENT_RECOMMISSION_ACTION,
+        "commission_recommended": profile_action == ACTION_RECOMMISSION,
     }
     if gate:
         audio_profile["chip_aec_gate"] = gate

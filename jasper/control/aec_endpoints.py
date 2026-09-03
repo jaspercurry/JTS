@@ -15,9 +15,12 @@ import threading
 import time
 from typing import Any, Iterator
 
+from ..chip_aec import record as commission_record
 from .. import enhanced_aec
+from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
     AecIntent,
+    DEFAULT_AEC_MODE_PATH,
     MicProbe,
     PROFILE_DIRECT_MIC,
     PROFILE_XVF_CHIP_AEC,
@@ -31,28 +34,22 @@ from ..audio_profile_state import (
     profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
-    validation_profile,
 )
-from ..audio_validation import (
-    current_artifact_filter_kwargs as _audio_validation_filter_kwargs,
-)
-from ..audio_validation import latest_artifact_summary as _audio_validation_summary
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
+from ..env_load import read_env_file_state
 from ..usb_mic import (
     build_usb_mic_status,
     read_usb_mic_leg,
     usb_mic_leg_choices,
 )
-from ..chip_aec_policy import (
+from ..chip_aec.policy import (
     combine_mic_availability,
-    gate_from_runtime_env,
-    resolve_chip_aec_dac_gate,
+    effective_chip_aec_dac_gate,
 )
 from ..wake_models import WAKE_MODEL_FILE
-from ..output_hardware import published_dac_id
 
-_AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
+_AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
@@ -60,11 +57,6 @@ _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
 _AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
 _AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
-# Duplicates jasper.cli.aec_commission.STATE_PATH (same pattern as the
-# firmware-update state file above): importing the writer would pull numpy
-# into the long-lived control daemon. Agreement pinned by
-# tests/test_aec_commission.py.
-_AEC_COMMISSION_STATE_FILE = "/var/lib/jasper/chip-aec-commission.json"
 _UNIT_LIVE_STATES = frozenset({"active", "activating", "reloading"})
 _AEC_BRIDGE_STATS_FILE = "/run/jasper/aec_bridge_stats.json"
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
@@ -107,91 +99,40 @@ def _parse_env_bool(raw: str, default: bool) -> bool:
 
 
 def _read_aec_state() -> dict:
-    """Full /var/lib/jasper/aec_mode.env state — mode + both leg
-    booleans. Missing keys fall back to the documented defaults so a
-    partial file from a pre-leg-toggle deploy still parses sanely.
-
-    The reconciler's ensure_mode_file appends any missing keys on its
-    next run, so this fallback is a one-pass deal — but it must be
-    correct for the GET that races that first reconcile."""
-    state = {
-        "mode": "auto",
-        "leg_raw": _LEG_DEFAULT_RAW,
-        "leg_dtln": _LEG_DEFAULT_DTLN,
-        "leg_chip_aec": _LEG_DEFAULT_CHIP_AEC,
-        "leg_chip_aec_150": _LEG_DEFAULT_CHIP_AEC_150,
-        "leg_chip_aec_210": _LEG_DEFAULT_CHIP_AEC_210,
-        "profile": "",
-    }
-    file_found = False
-    try:
-        with open(_AEC_MODE_FILE) as f:
-            file_found = True
-            for line in f:
-                line = line.strip()
-                if line.startswith("JASPER_AEC_MODE="):
-                    val = line.split("=", 1)[1].strip().strip("'\"") or "auto"
-                    state["mode"] = val
-                elif line.startswith("JASPER_WAKE_LEG_RAW="):
-                    state["leg_raw"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_RAW,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_DTLN="):
-                    state["leg_dtln"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_DTLN,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC="):
-                    state["leg_chip_aec"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC_150="):
-                    state["leg_chip_aec_150"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC_150,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC_210="):
-                    state["leg_chip_aec_210"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC_210,
-                    )
-                elif line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
-                    state["profile"] = normalize_audio_input_profile(
-                        line.split("=", 1)[1],
-                        default=_PROFILE_DEFAULT,
-                    )
-    except OSError:
-        pass
-    if not state["profile"]:
-        if file_found:
-            state["profile"] = infer_audio_input_profile(
-                AecIntent(
-                    mode=state["mode"],
-                    raw_enabled=bool(state["leg_raw"]),
-                    dtln_enabled=bool(state["leg_dtln"]),
-                    chip_aec_enabled=bool(state["leg_chip_aec"]),
-                    chip_aec_150_enabled=bool(state["leg_chip_aec_150"]),
-                    chip_aec_210_enabled=bool(state["leg_chip_aec_210"]),
-                ),
-            )
-        else:
-            state["profile"] = "auto"
+    """Full aec_mode.env state; missing keys take the documented defaults
+    so a partial file from a pre-leg-toggle deploy still parses sanely
+    (the reconciler's ensure_mode_file appends them on its next run)."""
+    env_file = read_env_file_state(_AEC_MODE_FILE)
+    values = env_file.values
+    state: dict[str, Any] = {"mode": values.get("JASPER_AEC_MODE") or "auto"}
+    for name, key, default in (
+        ("leg_raw", "JASPER_WAKE_LEG_RAW", _LEG_DEFAULT_RAW),
+        ("leg_dtln", "JASPER_WAKE_LEG_DTLN", _LEG_DEFAULT_DTLN),
+        ("leg_chip_aec", "JASPER_WAKE_LEG_CHIP_AEC", _LEG_DEFAULT_CHIP_AEC),
+        ("leg_chip_aec_150", "JASPER_WAKE_LEG_CHIP_AEC_150", _LEG_DEFAULT_CHIP_AEC_150),
+        ("leg_chip_aec_210", "JASPER_WAKE_LEG_CHIP_AEC_210", _LEG_DEFAULT_CHIP_AEC_210),
+    ):
+        raw = values.get(key)
+        state[name] = default if raw is None else _parse_env_bool(raw, default)
+    profile = values.get("JASPER_AUDIO_INPUT_PROFILE")
+    if profile is not None:
+        state["profile"] = normalize_audio_input_profile(
+            profile, default=_PROFILE_DEFAULT,
+        )
+    elif env_file.status == "loaded":
+        state["profile"] = infer_audio_input_profile(
+            AecIntent(
+                mode=state["mode"],
+                raw_enabled=state["leg_raw"],
+                dtln_enabled=state["leg_dtln"],
+                chip_aec_enabled=state["leg_chip_aec"],
+                chip_aec_150_enabled=state["leg_chip_aec_150"],
+                chip_aec_210_enabled=state["leg_chip_aec_210"],
+            ),
+        )
+    else:
+        state["profile"] = "auto"
     return state
-
-
-def _read_aec_mode() -> str:
-    """Compatibility shim — returns just the mode string."""
-    return _read_aec_state()["mode"]
-
-
-def _write_aec_mode(mode: str) -> None:
-    """Atomic write of the AEC mode key, preserving leg keys."""
-    if mode not in ("auto", "disabled"):
-        raise ValueError(f"invalid mode: {mode!r}")
-    locked_update_env_file(
-        _AEC_MODE_FILE,
-        {
-            "JASPER_AEC_MODE": mode,
-            "JASPER_AUDIO_INPUT_PROFILE": "custom",
-        },
-    )
 
 
 def _write_aec_leg(leg: str, enabled: bool) -> None:
@@ -366,27 +307,15 @@ def _read_xvf_firmware_update_state() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _read_commission_state() -> dict[str, Any]:
-    try:
-        with open(_AEC_COMMISSION_STATE_FILE) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _commission_status() -> dict[str, Any]:
     """The /aec `commission` object: live job truth + last-run verdict.
 
     `state`/`detail` come from the commissioner's persisted outcome record
     (empty strings before the first run), so a failed run's reason survives
     for the wake page instead of dying in the journal."""
-    last = _read_commission_state()
-    return {
-        "running": _unit_active(_AEC_COMMISSION_SERVICE),
-        "state": str(last.get("state") or ""),
-        "detail": str(last.get("detail") or ""),
-    }
+    last = commission_record.read(commission_record.OUTCOME_PATH)
+    outcome = last if last is not None else commission_record.CommissionOutcome()
+    return outcome.to_public(running=_unit_active(_AEC_COMMISSION_SERVICE))
 
 
 def _xvf_firmware_update_status() -> dict[str, Any]:
@@ -530,6 +459,7 @@ def _xvf_mic_probe() -> MicProbe:
             variant_id=runtime_profile.variant_id,
             geometry=runtime_profile.geometry,
             chip_beam_plan=runtime_profile.chip_beam_plan_id,
+            chip_aec_supported=runtime_profile.chip_aec_supported,
             probe_error=None,
         )
     except Exception:  # noqa: BLE001
@@ -544,18 +474,6 @@ def _xvf_mic_probe() -> MicProbe:
             chip_beam_plan="",
             probe_error="firmware probe failed",
         )
-
-
-def _chip_aec_available(mic_probe: MicProbe) -> bool:
-    """True when one mic snapshot names a production-validated beam plan."""
-    if not mic_probe.xvf_present or not mic_probe.chip_beam_plan:
-        return False
-    try:
-        from ..mics import xvf3800
-        plan = xvf3800.chip_beam_plan(mic_probe.chip_beam_plan)
-        return bool(plan and plan.production_validated)
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _chip_aec_gate(
@@ -580,14 +498,9 @@ def _chip_aec_gate(
         ),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    dac_gate = gate_from_runtime_env(env)
-    if dac_gate is None:
-        dac_gate = resolve_chip_aec_dac_gate(
-            published_dac_id(env),
-            testing_requested=testing_requested,
-        )
+    dac_gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     # Fold the input-mic fact into the DAC-only gate so blockers +
-    # recommended_action use chip_aec_policy's single canonical vocabulary
+    # recommended_action use chip_aec.policy's single canonical vocabulary
     # (BLOCKER_MIC / BLOCKER_DAC). Do not re-add a parallel code scheme here.
     gate = combine_mic_availability(
         dac_gate,
@@ -662,7 +575,7 @@ def _build_aec_full_status() -> dict:
     # Wrap defensively so a profile probe failure can never 500 a status
     # GET the /wake/ page polls every 3 s.
     mic_probe = _xvf_mic_probe()
-    chip_available = _chip_aec_available(mic_probe)
+    chip_available = mic_probe.chip_aec_supported
     chip_gate = _chip_aec_gate(env, state, mic_available=chip_available)
     requested_intent = AecIntent(
         mode=state["mode"],
@@ -696,14 +609,6 @@ def _build_aec_full_status() -> dict:
         bridge_active=bridge_active,
         profile_status=profile_status["audio_profile"],
     )
-    requested_profile = (
-        profile_status["audio_profile"].get("validation_profile")
-        or validation_profile(profile_status["audio_profile"].get("requested"))
-    )
-    validation_filters = _audio_validation_filter_kwargs(
-        requested_profile=requested_profile,
-        system_env=env,
-    )
     payload = {
         "mode": effective.mode,
         "profile": state["profile"],
@@ -716,6 +621,12 @@ def _build_aec_full_status() -> dict:
             "leg_chip_aec_210": state["leg_chip_aec_210"],
         },
         "bridge_active": bridge_active,
+        # The reconciler's published verdict, which is what admits the bridge's
+        # next start (jasper-aec-bridge.service's ConditionPathExists). Read
+        # fresh per call: `ready:false` with `bridge_active:false` is "no
+        # reconcile pass has admitted the bridge", a different diagnosis from a
+        # bridge that was admitted and died.
+        "bridge_ready": read_aec_bridge_ready().as_dict(),
         "bridge_role": _bridge_role(
             effective,
             profile_status=profile_status["audio_profile"],
@@ -806,7 +717,6 @@ def _build_aec_full_status() -> dict:
         "chip_aec_gate": chip_gate,
         "audio_profile": profile_status["audio_profile"],
         "microphone": profile_status["microphone"],
-        "validation": _audio_validation_summary(**validation_filters),
         "firmware_update": _xvf_firmware_update_status(),
         "commission": _commission_status(),
     }

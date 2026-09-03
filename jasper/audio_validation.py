@@ -29,6 +29,7 @@ from typing import Any, Mapping
 
 from .atomic_io import atomic_write_text
 from .audio_profile_state import (
+    DEFAULT_AEC_MODE_PATH,
     AecIntent,
     MicProbe,
     RuntimeAecEnv,
@@ -36,7 +37,7 @@ from .audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
-from .chip_aec_policy import (
+from .chip_aec.policy import (
     APPROVED_DAC_IDS,
     HIFIBERRY_DAC8X_DAC_ID,
     STATUS_APPROVED,
@@ -69,7 +70,6 @@ MAX_SHORT_HARDWARE_OBSERVE_SECONDS = 120.0
 LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
 MAX_LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
 DEFAULT_CHIP_POLL_INTERVAL_SECONDS = 5.0
-DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
 DEFAULT_SYSTEM_ENV_PATH = Path("/etc/jasper/jasper.env")
 DEFAULT_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
 DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
@@ -500,6 +500,7 @@ def _probe_xvf_mic() -> MicProbe:
             variant_id=runtime_profile.variant_id,
             geometry=runtime_profile.geometry,
             chip_beam_plan=runtime_profile.chip_beam_plan_id,
+            chip_aec_supported=runtime_profile.chip_aec_supported,
         )
     except Exception as e:  # noqa: BLE001 - readiness must fail soft
         return MicProbe(
@@ -521,6 +522,7 @@ def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
         "variant_id": mic.variant_id,
         "geometry": mic.geometry,
         "chip_beam_plan": mic.chip_beam_plan,
+        "chip_aec_supported": mic.chip_aec_supported,
         "probe_error": mic.probe_error,
     }
 
@@ -811,20 +813,9 @@ def _dac_identity_check(
     )
 
 
-def _normalize_dac_id(value: object) -> str:
-    normalized = (
-        str(value or "unknown")
-        .strip()
-        .strip("'\"")
-        .lower()
-        .replace("-", "_")
-    )
-    return normalized or "unknown"
-
-
 def _chip_aec_dac_support_check(dac: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
-    dac_id = _normalize_dac_id(dac.get("id"))
-    gate = resolve_chip_aec_dac_gate(dac_id)
+    gate = resolve_chip_aec_dac_gate(dac.get("id"))
+    dac_id = gate.dac_id
     observed = {
         "id": dac_id,
         "status": gate.status,
@@ -1603,7 +1594,7 @@ def build_chip_aec_readiness_artifact(
 
     intent = _intent_from_env(mode_env)
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
-    chip_available = bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+    chip_available = mic_probe.chip_aec_supported
     dac = _dac_details(system_env, outputd_status)
     chip_gate = resolve_chip_aec_dac_gate(dac.get("id"), outputd_status=outputd_status)
     profile_status = build_audio_profile_status(

@@ -32,7 +32,10 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
 )
-from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
+from jasper.active_speaker.crossover_v2.capture_source import (
+    CaptureBeginDeferred,
+    CaptureBeginRefused,
+)
 
 from tests.crossover_v2_fixtures import (
     CLOUD_MEASURE_INDEXES,

@@ -263,6 +263,7 @@ impl DirectOpener {
         let (res_tx, res_rx) = std::sync::mpsc::channel::<DirectOpenOutcome>();
         std::thread::Builder::new()
             .name("fanin-direct-opener".to_string())
+            .stack_size(crate::HELPER_STACK_BYTES)
             .spawn(move || {
                 while let Ok(req) = req_rx.recv() {
                     // Close the retired handle FIRST: reopening the same gadget

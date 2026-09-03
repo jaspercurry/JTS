@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor checks — aec domain.
-
-Re-homed verbatim from the original monolithic
-``jasper/cli/doctor.py``; see ``jasper/cli/doctor/__init__.py``
-for the package overview and ``_registry.py`` for how order is
-preserved. No check logic changed in the split."""
+"""jasper-doctor checks — aec domain."""
 from __future__ import annotations
 
 import json
@@ -16,23 +11,31 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import NamedTuple
 from ... import enhanced_aec
+from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
 from ...audio_profile_state import (
     AecIntent,
+    DEFAULT_AEC_MODE_PATH,
     MicProbe,
+    PROFILE_CUSTOM,
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
+    RuntimeAecEnv,
     build_audio_profile_status,
+    infer_audio_input_profile,
     normalize_audio_input_profile,
+    parse_env_bool,
     runtime_env_from_mapping,
     validation_profile as _audio_validation_profile,
 )
 from ...audio_validation import CHIP_AEC_PROFILE
 from ...audio_validation import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
 from ...audio_validation import latest_artifact_summary as _audio_validation_summary
-from ...chip_aec_policy import (
+from ...chip_aec.health import STATUS_READY
+from ...chip_aec.policy import (
     STATUS_APPROVED,
-    gate_from_runtime_env,
+    effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
 )
 from ...env_load import parse_env_file as _shared_parse_env_file
@@ -45,66 +48,223 @@ from ._shared import (
     _run,
     _sha256_file,
 )
-from ...output_hardware import published_dac_id
+
+# Closed vocabulary for this module's `CheckResult.reason`: one snake_case
+# constant per distinct decision branch across the aec-domain checks below.
+# `detail` stays the human sentence (free to reword); `reason` is what tests
+# pin instead (AGENTS.md: assert types/codes/structured fields, never
+# prose). Grouped by check; `_AEC_REASONS` is the closed set every assigned
+# value below must belong to.
+
+REASON_PARKED_BONDED_FOLLOWER = "parked_bonded_follower"
+
+REASON_AUDIO_PROFILE_OK = "audio_profile_ok"
+REASON_AUDIO_PROFILE_NEEDS_ATTENTION = "audio_profile_needs_attention"
+
+REASON_ALIGNMENT_NO_VERDICT = "alignment_no_verdict"
+REASON_ALIGNMENT_READY = "alignment_ready"
+REASON_ALIGNMENT_NOT_READY = "alignment_not_ready"
+
+REASON_ENHANCED_AEC_NOT_REQUESTED = "enhanced_aec_not_requested"
+REASON_ENHANCED_AEC_STATUS_UNAVAILABLE = "enhanced_aec_status_unavailable"
+REASON_ENHANCED_AEC_INSTALLED = "enhanced_aec_installed"
+REASON_ENHANCED_AEC_INSTALLING = "enhanced_aec_installing"
+REASON_ENHANCED_AEC_UNAVAILABLE = "enhanced_aec_unavailable"
+
+REASON_VALIDATION_NOT_CHIP_PROFILE = "validation_not_chip_profile"
+REASON_VALIDATION_CURRENT_PASS = "validation_current_pass"
+REASON_VALIDATION_PASSIVE_EVIDENCE = "validation_passive_evidence"
+REASON_VALIDATION_ADVISORY = "validation_advisory"
+
+REASON_BRIDGE_RUNNING = "bridge_running"
+REASON_BRIDGE_COMMISSIONING = "bridge_commissioning_in_progress"
+REASON_BRIDGE_MODE_DISABLED = "bridge_mode_disabled"
+REASON_BRIDGE_CHIP_ABSENT = "bridge_off_chip_absent"
+REASON_BRIDGE_WRONG_FIRMWARE = "bridge_off_wrong_firmware"
+REASON_BRIDGE_DOWN_READY_PRESENT = "bridge_down_ready_marker_present"
+REASON_BRIDGE_DOWN_READY_ABSENT = "bridge_down_ready_marker_absent"
+
+# `_assess_aec_reference_input_from_stats`'s schema-v4 contract branches.
+REASON_REF_CONTRACT_NOT_OBJECT = "ref_contract_not_object"
+REASON_REF_CONTRACT_MISSING_FIELD = "ref_contract_missing_field"
+REASON_REF_CONTRACT_INVALID_NUMERIC = "ref_contract_invalid_numeric"
+REASON_REF_CONTRACT_INVALID_SOURCE = "ref_contract_invalid_source"
+REASON_REF_CONTRACT_INVALID_ENDPOINT = "ref_contract_invalid_endpoint"
+REASON_REF_CONTRACT_INVALID_FRAMES_ENQUEUED = "ref_contract_invalid_frames_enqueued"
+REASON_REF_CONTRACT_SNAPSHOT_IN_FUTURE = "ref_contract_snapshot_in_future"
+REASON_REF_CONTRACT_PROCESS_AGE_EXCEEDS_SNAPSHOT = (
+    "ref_contract_process_age_exceeds_snapshot"
+)
+REASON_REF_STATS_WRITER_STALE = "ref_stats_writer_stale"
+REASON_REF_CONTRACT_FRAME_AGE_MUST_BE_NULL = "ref_contract_frame_age_must_be_null"
+REASON_REF_CONTRACT_FRAME_AGE_EXCEEDS_PROCESS_AGE = (
+    "ref_contract_frame_age_exceeds_process_age"
+)
+REASON_REF_ROUTE_MISMATCH = "ref_route_mismatch"
+REASON_REF_STARTUP_GRACE = "ref_startup_grace"
+REASON_REF_ZERO_FRAMES_AFTER_GRACE = "ref_zero_frames_after_grace"
+REASON_REF_RECEIVER_STALE = "ref_receiver_stale"
+REASON_REF_RECEIVER_CURRENT = "ref_receiver_current"
+
+# `_assess_aec_bridge_output` + `check_aec_bridge_output_health`'s own branches.
+REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING = "bridge_output_bridge_not_running"
+REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE = "bridge_output_journal_unreadable"
+REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC = "bridge_output_ref_silent_no_music"
+REASON_BRIDGE_OUTPUT_REF_SILENT = "bridge_output_ref_silent"
+REASON_BRIDGE_OUTPUT_NO_WINDOWS = "bridge_output_no_windows"
+REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = "bridge_output_ref_proven_healthy"
+REASON_BRIDGE_OUTPUT_CHIP_ONLY = "bridge_output_chip_only"
+REASON_BRIDGE_OUTPUT_IDLE = "bridge_output_idle"
+REASON_BRIDGE_OUTPUT_HEALTHY_WORK = "bridge_output_healthy_work"
+
+REASON_DTLN_DISABLED = "dtln_disabled"
+REASON_DTLN_SIZE_NOT_INTEGER = "dtln_size_not_integer"
+REASON_DTLN_SIZE_NOT_REGISTERED = "dtln_size_not_registered"
+REASON_DTLN_MODEL_FILES_MISSING = "dtln_model_files_missing"
+REASON_DTLN_MODEL_HASH_MISMATCH = "dtln_model_hash_mismatch"
+REASON_DTLN_BRIDGE_NOT_RUNNING = "dtln_bridge_not_running"
+REASON_DTLN_JOURNAL_UNREADABLE = "dtln_journal_unreadable"
+REASON_DTLN_LOADED_FROM_STATS = "dtln_loaded_from_stats"
+REASON_DTLN_ENGINE_UNAVAILABLE = "dtln_engine_unavailable"
+REASON_DTLN_NOT_STARTED_WITH_LEG = "dtln_not_started_with_leg"
+REASON_DTLN_LOADED_FROM_JOURNAL = "dtln_loaded_from_journal"
+REASON_DTLN_LOAD_FAILED = "dtln_load_failed"
+REASON_DTLN_NO_INIT_LINE = "dtln_no_init_line"
+
+REASON_XVF_FIRMWARE_CARD_ABSENT = "xvf_firmware_card_absent"
+REASON_XVF_FIRMWARE_OK = "xvf_firmware_ok"
+REASON_XVF_FIRMWARE_WRONG_CHANNELS = "xvf_firmware_wrong_channels"
+REASON_XVF_MIXER_CARD_ABSENT = "xvf_mixer_card_absent"
+REASON_XVF_MIXER_CGET_FAILED = "xvf_mixer_cget_failed"
+REASON_XVF_MIXER_OK = "xvf_mixer_ok"
+REASON_XVF_MIXER_DRIFT = "xvf_mixer_drift"
+
+_AEC_REASONS = (
+    REASON_PARKED_BONDED_FOLLOWER,
+    REASON_AUDIO_PROFILE_OK,
+    REASON_AUDIO_PROFILE_NEEDS_ATTENTION,
+    REASON_ALIGNMENT_NO_VERDICT,
+    REASON_ALIGNMENT_READY,
+    REASON_ALIGNMENT_NOT_READY,
+    REASON_ENHANCED_AEC_NOT_REQUESTED,
+    REASON_ENHANCED_AEC_STATUS_UNAVAILABLE,
+    REASON_ENHANCED_AEC_INSTALLED,
+    REASON_ENHANCED_AEC_INSTALLING,
+    REASON_ENHANCED_AEC_UNAVAILABLE,
+    REASON_VALIDATION_NOT_CHIP_PROFILE,
+    REASON_VALIDATION_CURRENT_PASS,
+    REASON_VALIDATION_PASSIVE_EVIDENCE,
+    REASON_VALIDATION_ADVISORY,
+    REASON_BRIDGE_RUNNING,
+    REASON_BRIDGE_COMMISSIONING,
+    REASON_BRIDGE_MODE_DISABLED,
+    REASON_BRIDGE_CHIP_ABSENT,
+    REASON_BRIDGE_WRONG_FIRMWARE,
+    REASON_BRIDGE_DOWN_READY_PRESENT,
+    REASON_BRIDGE_DOWN_READY_ABSENT,
+    REASON_REF_CONTRACT_NOT_OBJECT,
+    REASON_REF_CONTRACT_MISSING_FIELD,
+    REASON_REF_CONTRACT_INVALID_NUMERIC,
+    REASON_REF_CONTRACT_INVALID_SOURCE,
+    REASON_REF_CONTRACT_INVALID_ENDPOINT,
+    REASON_REF_CONTRACT_INVALID_FRAMES_ENQUEUED,
+    REASON_REF_CONTRACT_SNAPSHOT_IN_FUTURE,
+    REASON_REF_CONTRACT_PROCESS_AGE_EXCEEDS_SNAPSHOT,
+    REASON_REF_STATS_WRITER_STALE,
+    REASON_REF_CONTRACT_FRAME_AGE_MUST_BE_NULL,
+    REASON_REF_CONTRACT_FRAME_AGE_EXCEEDS_PROCESS_AGE,
+    REASON_REF_ROUTE_MISMATCH,
+    REASON_REF_STARTUP_GRACE,
+    REASON_REF_ZERO_FRAMES_AFTER_GRACE,
+    REASON_REF_RECEIVER_STALE,
+    REASON_REF_RECEIVER_CURRENT,
+    REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING,
+    REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
+    REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC,
+    REASON_BRIDGE_OUTPUT_REF_SILENT,
+    REASON_BRIDGE_OUTPUT_NO_WINDOWS,
+    REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY,
+    REASON_BRIDGE_OUTPUT_CHIP_ONLY,
+    REASON_BRIDGE_OUTPUT_IDLE,
+    REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
+    REASON_DTLN_DISABLED,
+    REASON_DTLN_SIZE_NOT_INTEGER,
+    REASON_DTLN_SIZE_NOT_REGISTERED,
+    REASON_DTLN_MODEL_FILES_MISSING,
+    REASON_DTLN_MODEL_HASH_MISMATCH,
+    REASON_DTLN_BRIDGE_NOT_RUNNING,
+    REASON_DTLN_JOURNAL_UNREADABLE,
+    REASON_DTLN_LOADED_FROM_STATS,
+    REASON_DTLN_ENGINE_UNAVAILABLE,
+    REASON_DTLN_NOT_STARTED_WITH_LEG,
+    REASON_DTLN_LOADED_FROM_JOURNAL,
+    REASON_DTLN_LOAD_FAILED,
+    REASON_DTLN_NO_INIT_LINE,
+    REASON_XVF_FIRMWARE_CARD_ABSENT,
+    REASON_XVF_FIRMWARE_OK,
+    REASON_XVF_FIRMWARE_WRONG_CHANNELS,
+    REASON_XVF_MIXER_CARD_ABSENT,
+    REASON_XVF_MIXER_CGET_FAILED,
+    REASON_XVF_MIXER_OK,
+    REASON_XVF_MIXER_DRIFT,
+)
+
+
+def _aec_mode_env() -> dict[str, str]:
+    """The wizard-owned mode file, read fresh per call; missing or unreadable
+    reads as empty so each setting falls back to its reconcile_aec_state seed."""
+    return _shared_parse_env_file(str(DEFAULT_AEC_MODE_PATH))
+
 
 def _aec_mode_setting() -> str:
-    """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
-    'auto' (the install.sh default) when the file is missing or
-    unreadable, matching the reconciler's behaviour."""
-    p = Path("/var/lib/jasper/aec_mode.env")
-    if not p.exists():
-        return "auto"
-    try:
-        for line in p.read_text().split("\n"):
-            line = line.strip()
-            if line.startswith("JASPER_AEC_MODE="):
-                return line.split("=", 1)[1].strip().strip("'\"") or "auto"
-    except OSError:
-        pass
-    return "auto"
+    return _aec_mode_env().get("JASPER_AEC_MODE") or "auto"
+
 
 def _aec_profile_setting() -> str:
-    """Read JASPER_AUDIO_INPUT_PROFILE from aec_mode.env.
+    """Empty string means pre-profile config; audio_profile_state infers the
+    nearest legacy profile from JASPER_AEC_MODE + leg booleans."""
 
-    Empty string means pre-profile config; audio_profile_state infers the
-    nearest legacy profile from JASPER_AEC_MODE + leg booleans.
-    """
+    return _aec_mode_env().get("JASPER_AUDIO_INPUT_PROFILE", "")
 
-    p = Path("/var/lib/jasper/aec_mode.env")
-    if not p.exists():
-        return ""
-    try:
-        for line in p.read_text().split("\n"):
-            line = line.strip()
-            if line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
-                return line.split("=", 1)[1].strip().strip("'\"")
-    except OSError:
-        pass
-    return ""
 
 def _wake_leg_setting(key: str, default: bool) -> bool:
-    """Read a JASPER_WAKE_LEG_* boolean from aec_mode.env, with the
-    same normalization the bash reconciler does. Defaults applied when
-    the file is missing, the key is missing, or the value is malformed
-    — matches install.sh's reconcile_aec_state seeds."""
-    p = Path("/var/lib/jasper/aec_mode.env")
-    if not p.exists():
-        return default
-    try:
-        for line in p.read_text().split("\n"):
-            line = line.strip()
-            if line.startswith(f"{key}="):
-                val = line.split("=", 1)[1].strip().strip("'\"").lower()
-                if val in ("1", "on", "true", "yes", "y",
-                           "enabled", "enable"):
-                    return True
-                if val in ("0", "off", "false", "no", "n",
-                           "disabled", "disable", ""):
-                    return False
-                return default
-    except OSError:
-        pass
-    return default
+    raw = _aec_mode_env().get(key)
+    return default if raw is None else parse_env_bool(raw, default)
+
+
+def _doctor_env_file() -> dict[str, str]:
+    """Parse the reconciler-applied runtime env fresh.
+
+    The doctor is a one-shot CLI, so it reads the env file rather than
+    trusting whatever the calling shell inherited.
+    """
+
+    return _shared_parse_env_file(
+        os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
+    )
+
+
+def _doctor_aec_intent() -> AecIntent:
+    """The operator-requested AEC state, from the wizard-owned mode file."""
+
+    return AecIntent(
+        mode=_aec_mode_setting(),
+        raw_enabled=_wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
+        dtln_enabled=_wake_leg_setting("JASPER_WAKE_LEG_DTLN", False),
+        chip_aec_enabled=_wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC", False),
+        profile_selection=_aec_profile_setting(),
+    )
+
+
+def _doctor_audio_input_selection() -> str:
+    """The profile this box is on — the same resolution /aec applies."""
+
+    intent = _doctor_aec_intent()
+    return normalize_audio_input_profile(
+        intent.profile_selection,
+        default=infer_audio_input_profile(intent),
+    )
+
 
 def _chip_aec_available_for_doctor() -> bool:
     try:
@@ -132,9 +292,7 @@ def _audio_profile_status_for_doctor(
             .stdout.strip() == "active"
         )
     if env is None:
-        env = _shared_parse_env_file(
-            os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
-        )
+        env = _doctor_env_file()
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
 
     if mic_probe is None:
@@ -150,6 +308,7 @@ def _audio_profile_status_for_doctor(
                 variant_id=runtime_profile.variant_id,
                 geometry=runtime_profile.geometry,
                 chip_beam_plan=runtime_profile.chip_beam_plan_id,
+                chip_aec_supported=runtime_profile.chip_aec_supported,
             )
         except Exception:  # noqa: BLE001
             mic_probe = MicProbe(
@@ -158,30 +317,15 @@ def _audio_profile_status_for_doctor(
                 probe_error="firmware probe failed",
             )
 
-    chip_available = (
-        bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
-        if mic_probe is not None
-        else _chip_aec_available_for_doctor()
-    )
+    chip_available = mic_probe.chip_aec_supported
     profile_selection = _aec_profile_setting()
     testing_requested = (
         normalize_audio_input_profile(profile_selection, default="")
         == PROFILE_XVF_CHIP_AEC_TESTING
     )
-    gate = gate_from_runtime_env(env) or resolve_chip_aec_dac_gate(
-        published_dac_id(env),
-        testing_requested=testing_requested,
-    )
+    gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     status = build_audio_profile_status(
-        AecIntent(
-            mode=_aec_mode_setting(),
-            raw_enabled=_wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
-            dtln_enabled=_wake_leg_setting("JASPER_WAKE_LEG_DTLN", False),
-            chip_aec_enabled=_wake_leg_setting(
-                "JASPER_WAKE_LEG_CHIP_AEC", False,
-            ),
-            profile_selection=profile_selection,
-        ),
+        _doctor_aec_intent(),
         runtime,
         mic_probe,
         bridge_active=bridge_active,
@@ -218,16 +362,14 @@ def _assess_audio_profile(status: dict) -> CheckResult:
         )
     if warnings:
         detail += "; " + " ".join(str(w) for w in warnings)
-    if profile.get("reason"):
-        detail += f"; reason={profile['reason']}"
-    if profile.get("action"):
-        detail += f"; action={profile['action']}"
 
     if state in {"active", "disabled"} and not warnings:
         result = "ok"
+        reason = REASON_AUDIO_PROFILE_OK
     else:
         result = "warn"
-    return CheckResult("Audio profile", result, detail)
+        reason = REASON_AUDIO_PROFILE_NEEDS_ATTENTION
+    return CheckResult("Audio profile", result, detail, reason=reason)
 
 @doctor_check(order=46, group="aec")
 def check_audio_profile_runtime() -> CheckResult:
@@ -237,9 +379,77 @@ def check_audio_profile_runtime() -> CheckResult:
             "Audio profile", "ok",
             "parked (bonded follower) — the dumb-follower profile stops "
             "this while paired; the pair leader owns playback + the mic",
+            reason=REASON_PARKED_BONDED_FOLLOWER,
         )
 
     return _assess_audio_profile(_audio_profile_status_for_doctor())
+
+
+def _assess_chip_aec_alignment(
+    runtime: RuntimeAecEnv, selection: str,
+) -> CheckResult:
+    """Render the published chip-AEC alignment record as one doctor row.
+
+    `jasper.chip_aec.health` judges the record and `AlignmentHealth.
+    applies_to` says which selection it answers for; this only reports what
+    they say. An absent or unowned record is not a fault: on `custom` the
+    chip arms on the live evidence `_wake_engine` checks, and on a managed
+    selection the profile stays pending until the reconciler publishes one.
+
+    Severity mirrors what the Audio profile row already gave these states:
+    ready is ok and every other status warns.
+    """
+
+    health = runtime.chip_aec_alignment
+    if not health.status or not health.applies_to(
+        selection, custom_profile=PROFILE_CUSTOM,
+    ):
+        return CheckResult(
+            "Chip-AEC alignment", "ok",
+            f"no alignment verdict published for {selection or 'this profile'}",
+            reason=REASON_ALIGNMENT_NO_VERDICT,
+        )
+
+    legs = [
+        name
+        for name, device in (
+            ("chip_aec_150", runtime.chip_aec_150_device),
+            ("chip_aec_210", runtime.chip_aec_210_device),
+        )
+        if device
+    ]
+    detail = (
+        f"state={health.status}, "
+        f"selection={health.selection or 'unstamped'}, "
+        f"armed={'+'.join(legs) if runtime.chip_enabled and legs else 'none'}"
+    )
+    if health.reason:
+        detail += f"; {health.reason}"
+    if health.status != STATUS_READY and health.action:
+        detail += f"; action={health.action}"
+    ready = health.status == STATUS_READY
+    return CheckResult(
+        "Chip-AEC alignment",
+        "ok" if ready else "warn",
+        detail,
+        reason=REASON_ALIGNMENT_READY if ready else REASON_ALIGNMENT_NOT_READY,
+    )
+
+
+@doctor_check(order=45.5, group="aec")
+def check_chip_aec_alignment() -> CheckResult:
+    """Report the reconciler's chip-AEC alignment verdict, unaltered."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "Chip-AEC alignment", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "voice + the AEC stack while paired; the leader owns the mic",
+            reason=REASON_PARKED_BONDED_FOLLOWER,
+        )
+    return _assess_chip_aec_alignment(
+        runtime_env_from_mapping(_doctor_env_file(), process_env=os.environ),
+        _doctor_audio_input_selection(),
+    )
 
 
 def _assess_enhanced_aec_status(payload: dict) -> CheckResult:
@@ -252,12 +462,14 @@ def _assess_enhanced_aec_status(payload: dict) -> CheckResult:
             "Enhanced AEC",
             "ok",
             detail or f"optional enhancement state={state}",
+            reason=REASON_ENHANCED_AEC_INSTALLED,
         )
     if state == "installing":
         return CheckResult(
             "Enhanced AEC",
             "ok",
             detail or "optional enhancement is installing in the background",
+            reason=REASON_ENHANCED_AEC_INSTALLING,
         )
     return CheckResult(
         "Enhanced AEC",
@@ -266,6 +478,7 @@ def _assess_enhanced_aec_status(payload: dict) -> CheckResult:
             detail or f"requested optional enhancement state={state}"
         )
         + "; standard echo cancellation remains available — retry from /system/",
+        reason=REASON_ENHANCED_AEC_UNAVAILABLE,
     )
 
 
@@ -283,6 +496,7 @@ def check_enhanced_aec() -> CheckResult:
             "Enhanced AEC",
             "ok",
             "not requested; standard echo cancellation is installed",
+            reason=REASON_ENHANCED_AEC_NOT_REQUESTED,
         )
 
     chip_active = False
@@ -313,6 +527,7 @@ def check_enhanced_aec() -> CheckResult:
             "requested optional enhancement status could not be inspected "
             f"({type(exc).__name__}); standard echo cancellation remains "
             "available — retry from /system/",
+            reason=REASON_ENHANCED_AEC_STATUS_UNAVAILABLE,
         )
     return _assess_enhanced_aec_status(payload)
 
@@ -341,9 +556,13 @@ def _assess_audio_validation_summary(
             "Audio validation",
             "ok",
             detail + "; advisory because chip-AEC is not the requested profile",
+            reason=REASON_VALIDATION_NOT_CHIP_PROFILE,
         )
     if state == "current" and status == "pass":
-        return CheckResult("Audio validation", "ok", detail)
+        return CheckResult(
+            "Audio validation", "ok", detail,
+            reason=REASON_VALIDATION_CURRENT_PASS,
+        )
     passive_pair = _chip_aec_passive_evidence_pair(summary)
     if passive_pair is not None:
         return CheckResult(
@@ -353,6 +572,7 @@ def _assess_audio_validation_summary(
             + f"; mic={passive_pair[0]}/dac={passive_pair[1]} passed passive "
             "hardware validation on an approved chip-AEC DAC; optional "
             "acoustic drift/delay probe not implemented/run",
+            reason=REASON_VALIDATION_PASSIVE_EVIDENCE,
         )
     if recommendation in {"run_hardware_validation", "run_drift_delay_validation"}:
         command = "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout"
@@ -362,6 +582,7 @@ def _assess_audio_validation_summary(
         "Audio validation",
         "warn",
         detail + f"; advisory: consider `{command}` after chip-AEC is active",
+        reason=REASON_VALIDATION_ADVISORY,
     )
 
 def _chip_aec_passive_evidence_pair(
@@ -410,44 +631,12 @@ def check_audio_validation_readiness() -> CheckResult:
     )
     validation_filters = _audio_validation_filter_kwargs(
         requested_profile=requested_profile,
-        system_env=_shared_parse_env_file(
-            os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
-        ),
+        system_env=_doctor_env_file(),
     )
     return _assess_audio_validation_summary(
         _audio_validation_summary(**validation_filters),
         requested_profile=requested_profile,
     )
-
-def _running_aec_bridge_detail() -> str:
-    try:
-        status = _audio_profile_status_for_doctor(bridge_active=True)
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return "running (audio profile unavailable)"
-
-    profile = status.get("audio_profile") or {}
-    mic = status.get("microphone") or {}
-    active_profile = normalize_audio_input_profile(
-        str(profile.get("active") or ""),
-        default="",
-    )
-    processing_mode = str(mic.get("processing_mode") or "")
-    if (
-        active_profile in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
-        or "Chip-AEC" in processing_mode
-    ):
-        gate = status.get("chip_aec_gate")
-        gate_detail = ""
-        if isinstance(gate, dict):
-            gate_status = str(gate.get("status") or "unknown")
-            gate_source = str(gate.get("source") or "unknown")
-            gate_detail = f"; gate={gate_status}/{gate_source}"
-        return (
-            "running (chip-AEC beam forwarding; WebRTC AEC3 bypassed"
-            f"{gate_detail})"
-        )
-
-    return "running (software AEC3 enabled)"
 
 def _dfu_flash_remedy() -> str:
     """`xvf3800.dfu_flash_command` owns the command text so no hint drifts from it."""
@@ -469,20 +658,24 @@ def check_aec_bridge_running() -> CheckResult:
     any "AEC could be on but isn't" state as a warning (gentle
     nudge), only suppressing it to ok when the operator explicitly
     opted out via JASPER_AEC_MODE=disabled. A silent-disabled bridge
-    (the May 2026 reconciler bug that mis-read Playback Channels: 2
-    as the capture count) shows up as a hard fail."""
+    shows up as a hard fail."""
     if _parked_as_bonded_follower():
         return CheckResult(
             "AEC bridge", "ok",
             "parked (bonded follower) — the dumb-follower profile stops "
             "voice + the AEC stack while paired; the leader owns the mic",
+            reason=REASON_PARKED_BONDED_FOLLOWER,
         )
     from ...mics import xvf3800
     is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
 
     if is_active == "active":
-        return CheckResult("AEC bridge service", "ok", _running_aec_bridge_detail())
+        # Which AEC the running bridge carries is the Audio profile row's
+        # fact, and its alignment is the Chip-AEC alignment row's.
+        return CheckResult(
+            "AEC bridge service", "ok", "running", reason=REASON_BRIDGE_RUNNING,
+        )
 
     # The commissioner stops the whole AEC stack for its audible measurement
     # (minutes) and its live marker parks every reconcile, so a down bridge is
@@ -496,6 +689,7 @@ def check_aec_bridge_running() -> CheckResult:
         return CheckResult(
             "AEC bridge service", "ok",
             "chip-AEC commissioning in progress; bridge intentionally stopped",
+            reason=REASON_BRIDGE_COMMISSIONING,
         )
 
     aec_mode = _aec_mode_setting()
@@ -508,6 +702,7 @@ def check_aec_bridge_running() -> CheckResult:
         return CheckResult(
             "AEC bridge service", "ok",
             f"disabled (JASPER_AEC_MODE={aec_mode})",
+            reason=REASON_BRIDGE_MODE_DISABLED,
         )
 
     if not chip_present:
@@ -515,6 +710,7 @@ def check_aec_bridge_running() -> CheckResult:
             "AEC bridge service", "warn",
             f"off — {xvf3800.DISPLAY_NAME} not present. Software AEC needs it; "
             "plug it in and the reconciler will enable AEC on next event.",
+            reason=REASON_BRIDGE_CHIP_ABSENT,
         )
 
     if not is_6ch:
@@ -523,28 +719,89 @@ def check_aec_bridge_running() -> CheckResult:
             f"off — XVF chip is on {capture_ch}-channel firmware, not "
             f"{xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch. After flashing: "
             f"sudo systemctl start jasper-aec-reconcile. {_dfu_flash_remedy()}",
+            reason=REASON_BRIDGE_WRONG_FIRMWARE,
         )
 
     # An alignment the reconciler could not apply no longer stops the bridge
     # (ADR-0101) — it runs software AEC3 and discloses — so a bridge that is
-    # down here is a bridge that failed, and the remedy below names it. The
-    # disclosure itself reaches the operator through check_audio_profile_runtime,
-    # which carries the reconciler's reason/action verbatim in every state.
+    # down here is a bridge that failed OR one the reconciler never admitted.
+    # The ready marker separates the two (ADR-0224): PID 1 refuses to even
+    # start the unit while it is absent, so a missing verdict is a reconciler
+    # problem and a present one is a bridge problem. The alignment disclosure
+    # itself reaches the operator through check_chip_aec_alignment, which
+    # carries the reconciler's reason/action verbatim in every state.
+    ready = read_aec_bridge_ready()
+    if ready.ready:
+        verdict = (
+            f"ready marker present (reason={ready.reason or 'unknown'}), so the "
+            "reconciler admitted the bridge and the bridge itself is down. "
+            "Run: journalctl -u jasper-aec-bridge -e"
+        )
+        down_reason = REASON_BRIDGE_DOWN_READY_PRESENT
+    else:
+        verdict = (
+            f"ready marker {aec_bridge_ready_marker_path()} absent, so no "
+            "reconcile pass has admitted the bridge and systemd skips its start "
+            "condition. Run: sudo systemctl start jasper-aec-reconcile && "
+            "journalctl -u jasper-aec-reconcile -e"
+        )
+        down_reason = REASON_BRIDGE_DOWN_READY_ABSENT
     return CheckResult(
         "AEC bridge service", "fail",
         f"is-active='{is_active}', is-enabled='{is_enabled}'. "
-        f"AEC should be on (mode=auto, 6-ch firmware loaded) but bridge isn't running. "
-        f"Run: sudo systemctl start jasper-aec-reconcile && "
-        f"journalctl -u jasper-aec-bridge -e",
+        "AEC should be on (mode=auto, 6-ch firmware loaded) but the bridge "
+        f"isn't running: {verdict}",
+        reason=down_reason,
     )
 
 
-# Compiled once: matches the bridge's periodic RMS log lines, e.g.
-# "rms over 5.0s: ref=15694 mic=2077 aec=311 → attenuation=-16.5 dB (...)".
+# The bridge emits one of two RMS window shapes per 5 s, chosen by whether
+# production chip AEC is armed (jasper/cli/aec_bridge.py):
+#   software AEC3: "rms over 5.0s: ref=15694 mic=2077 aec=311 →
+#                   attenuation=-16.5 dB (...)"
+#   chip AEC:      "chip_aec rms over 5.0s: ref=15694 near=chip_aec_210:2077
+#                   primary=chip_aec_150:311 level_delta=-16.5 dB raw0=2411
+#                   (...)"
+# `raw0` is the raw mic-0 capture channel. Optional: builds before it emitted
+# only the chip-cancelled beams, and the bridge omits it for a window that
+# drained no raw0 frames.
 _AEC_RMS_RE = re.compile(
-    r"rms over [\d.]+s: ref=(\d+) mic=(\d+) aec=(\d+) → "
-    r"attenuation=(-?\d+\.\d+) dB"
+    r"rms over [\d.]+s: ref=(?P<ref>\d+) mic=(?P<mic>\d+) aec=\d+ → "
+    r"attenuation=(?P<level>-?\d+\.\d+) dB"
 )
+_CHIP_AEC_RMS_RE = re.compile(
+    r"chip_aec rms over [\d.]+s: ref=(?P<ref>\d+) near=[^\s:]+:(?P<near>\d+) "
+    r"primary=[^\s:]+:\d+ level_delta=-?\d+\.\d+ dB(?: raw0=(?P<raw0>\d+))?"
+)
+
+
+class _RmsWindow(NamedTuple):
+    """`mic` is the least-cancelled near-end level each shape offers: AEC3
+    `mic` (capture lane 1), chip `raw0` (truly-raw capture channel 2), or the
+    cancelled `near` beam when a chip line carries no `raw0`.
+    `level_db` is AEC3 `attenuation` and is None on chip AEC, whose
+    `level_delta` compares two beams the chip already cancelled."""
+
+    ref: int
+    mic: int
+    level_db: float | None
+    chip: bool
+
+
+def _parse_rms_window(line: str) -> _RmsWindow | None:
+    """Parse either bridge RMS log shape into one record, else None."""
+    if m := _CHIP_AEC_RMS_RE.search(line):
+        return _RmsWindow(
+            ref=int(m["ref"]), mic=int(m["raw0"] or m["near"]),
+            level_db=None, chip=True,
+        )
+    if m := _AEC_RMS_RE.search(line):
+        return _RmsWindow(
+            ref=int(m["ref"]), mic=int(m["mic"]),
+            level_db=float(m["level"]), chip=False,
+        )
+    return None
+
 
 # Thresholds for `check_aec_bridge_output_health`.
 # Ambient room (no music) puts mic at ~600 RMS at our chip-side AGC
@@ -565,7 +822,10 @@ _BRIDGE_STATS_FRESH_SEC = 30.0
 # UDP send success is not delivery proof, so only the bridge's successful
 # conversion + bounded-queue enqueue advances this signal.
 _AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION = 4
+# A bridge younger than this has not necessarily bound its receiver yet.
 _AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC = 10.0
+# outputd publishes a 20 ms reference frame continuously, so a gap this long
+# past the grace is a stopped receiver, not a lull.
 _AEC_REFERENCE_INPUT_STALE_SEC = 5.0
 
 
@@ -649,12 +909,13 @@ def _assess_aec_reference_input_from_stats(
         error=outputd_status_error,
     )
 
-    def fail_contract(detail: str) -> tuple[CheckResult, bool]:
+    def fail_contract(detail: str, reason: str) -> tuple[CheckResult, bool]:
         return (
             CheckResult(
                 "AEC bridge output", "fail",
                 f"bridge reference freshness schema v4 is untrustworthy: "
                 f"{detail}. {localization}",
+                reason=reason,
             ),
             False,
         )
@@ -672,7 +933,10 @@ def _assess_aec_reference_input_from_stats(
 
     reference_input = stats.get("reference_input")
     if not isinstance(reference_input, dict):
-        return fail_contract("reference_input is missing or not an object")
+        return fail_contract(
+            "reference_input is missing or not an object",
+            REASON_REF_CONTRACT_NOT_OBJECT,
+        )
     try:
         source = reference_input["source"]
         endpoint = reference_input["endpoint"]
@@ -691,14 +955,23 @@ def _assess_aec_reference_input_from_stats(
             "doctor monotonic clock",
         )
     except KeyError as exc:
-        return fail_contract(f"missing required field {exc.args[0]!r}")
+        return fail_contract(
+            f"missing required field {exc.args[0]!r}",
+            REASON_REF_CONTRACT_MISSING_FIELD,
+        )
     except (TypeError, ValueError, OverflowError) as exc:
-        return fail_contract(str(exc))
+        return fail_contract(str(exc), REASON_REF_CONTRACT_INVALID_NUMERIC)
 
     if not isinstance(source, str) or not source:
-        return fail_contract("reference_input.source is not a nonempty string")
+        return fail_contract(
+            "reference_input.source is not a nonempty string",
+            REASON_REF_CONTRACT_INVALID_SOURCE,
+        )
     if not isinstance(endpoint, str) or not endpoint:
-        return fail_contract("reference_input.endpoint is not a nonempty string")
+        return fail_contract(
+            "reference_input.endpoint is not a nonempty string",
+            REASON_REF_CONTRACT_INVALID_ENDPOINT,
+        )
     if (
         isinstance(frames_enqueued, bool)
         or not isinstance(frames_enqueued, int)
@@ -706,7 +979,8 @@ def _assess_aec_reference_input_from_stats(
         or frames_enqueued > (1 << 64) - 1
     ):
         return fail_contract(
-            "reference_input.frames_enqueued is not a nonnegative uint64"
+            "reference_input.frames_enqueued is not a nonnegative uint64",
+            REASON_REF_CONTRACT_INVALID_FRAMES_ENQUEUED,
         )
 
     snapshot_monotonic_sec = snapshot_monotonic_ms / 1000.0
@@ -714,23 +988,27 @@ def _assess_aec_reference_input_from_stats(
     snapshot_age_sec = current_monotonic_sec - snapshot_monotonic_sec
     if snapshot_age_sec < 0:
         return fail_contract(
-            "reference_input.snapshot_monotonic_ms is in the future"
+            "reference_input.snapshot_monotonic_ms is in the future",
+            REASON_REF_CONTRACT_SNAPSHOT_IN_FUTURE,
         )
     if process_age_at_snapshot_sec > snapshot_monotonic_sec:
         return fail_contract(
-            "reference_input.process_age_ms exceeds the same-boot monotonic snapshot"
+            "reference_input.process_age_ms exceeds the same-boot monotonic snapshot",
+            REASON_REF_CONTRACT_PROCESS_AGE_EXCEEDS_SNAPSHOT,
         )
     if snapshot_age_sec > _BRIDGE_STATS_FRESH_SEC:
         return fail_contract(
             f"stats writer has not advanced for {snapshot_age_sec:.2f}s "
-            f"(limit {_BRIDGE_STATS_FRESH_SEC:g}s)"
+            f"(limit {_BRIDGE_STATS_FRESH_SEC:g}s)",
+            REASON_REF_STATS_WRITER_STALE,
         )
 
     process_age_sec = process_age_at_snapshot_sec + snapshot_age_sec
     if frames_enqueued == 0:
         if last_frame_age_ms is not None:
             return fail_contract(
-                "last_frame_age_ms must be null when frames_enqueued is zero"
+                "last_frame_age_ms must be null when frames_enqueued is zero",
+                REASON_REF_CONTRACT_FRAME_AGE_MUST_BE_NULL,
             )
         receiver_age_sec: float | None = None
     else:
@@ -740,10 +1018,11 @@ def _assess_aec_reference_input_from_stats(
                 "reference_input.last_frame_age_ms",
             ) / 1000.0
         except (TypeError, ValueError, OverflowError) as exc:
-            return fail_contract(str(exc))
+            return fail_contract(str(exc), REASON_REF_CONTRACT_INVALID_NUMERIC)
         if receiver_age_at_snapshot_sec > process_age_at_snapshot_sec:
             return fail_contract(
-                "last_frame_age_ms exceeds process_age_ms"
+                "last_frame_age_ms exceeds process_age_ms",
+                REASON_REF_CONTRACT_FRAME_AGE_EXCEEDS_PROCESS_AGE,
             )
         receiver_age_sec = receiver_age_at_snapshot_sec + snapshot_age_sec
 
@@ -755,6 +1034,7 @@ def _assess_aec_reference_input_from_stats(
                 f"outputd UDP input: source={source!r}, endpoint={endpoint!r}, "
                 f"expected source='outputd_udp', endpoint={expected_endpoint!r}; "
                 f"{localization}",
+                reason=REASON_REF_ROUTE_MISMATCH,
             ),
             False,
         )
@@ -771,6 +1051,7 @@ def _assess_aec_reference_input_from_stats(
                 f"reference receiver is within its "
                 f"{_AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC:g}s startup grace "
                 f"({age_detail}; process age={process_age_sec:.2f}s)",
+                reason=REASON_REF_STARTUP_GRACE,
             ),
             True,
         )
@@ -782,6 +1063,7 @@ def _assess_aec_reference_input_from_stats(
                 "bridge has received zero complete 20 ms reference frames "
                 f"after {process_age_sec:.1f}s; outputd UDP reference receiver "
                 f"is not making progress. {localization}",
+                reason=REASON_REF_ZERO_FRAMES_AFTER_GRACE,
             ),
             False,
         )
@@ -794,6 +1076,7 @@ def _assess_aec_reference_input_from_stats(
                 f"{_AEC_REFERENCE_INPUT_STALE_SEC:g}s; frames_enqueued="
                 f"{frames_enqueued}. A carried-forward AEC frame and historical "
                 f"RMS cannot prove current receiver progress. {localization}",
+                reason=REASON_REF_RECEIVER_STALE,
             ),
             False,
         )
@@ -802,6 +1085,7 @@ def _assess_aec_reference_input_from_stats(
             "AEC bridge output", "ok",
             f"outputd UDP reference receiver current: last complete 20 ms frame "
             f"age={receiver_age_sec:.2f}s, frames_enqueued={frames_enqueued}",
+            reason=REASON_REF_RECEIVER_CURRENT,
         ),
         False,
     )
@@ -851,38 +1135,44 @@ def _assess_aec_bridge_output(
     healthy_ref_windows = 0
     healthy_windows = 0
     total_windows = 0
+    chip_windows = 0
 
     for line in journal_text.split("\n"):
-        m = _AEC_RMS_RE.search(line)
-        if not m:
+        w = _parse_rms_window(line)
+        if w is None:
             continue
-        ref = int(m.group(1))
-        mic = int(m.group(2))
-        attn_db = float(m.group(4))
         total_windows += 1
+        if w.chip:
+            chip_windows += 1
         # ref ≥ silent-threshold = the reference chain delivered
         # real samples in this window. Any single occurrence proves the
-        # chain works end-to-end.
-        if ref >= _AEC_REF_SILENT_THRESHOLD:
+        # chain works end-to-end. Both shapes carry the same `ref`: the
+        # outputd speaker monitor, upstream of whichever AEC runs.
+        if w.ref >= _AEC_REF_SILENT_THRESHOLD:
             healthy_ref_windows += 1
         # mic > music-threshold = something acoustic was loud enough to
         # plausibly be music (ambient is ~600 RMS, well below). ref <
         # silent-threshold = ref path silent in this window.
-        if mic > _AEC_MIC_MUSIC_THRESHOLD and ref < _AEC_REF_SILENT_THRESHOLD:
+        # The threshold carries over to chip AEC because `mic` is `raw0`
+        # there, measured at ~1.2-1.8x the cancelled beams
+        # (docs/AEC-DIAG-06-xvf-format-level-profile.md:252).
+        if w.mic > _AEC_MIC_MUSIC_THRESHOLD and w.ref < _AEC_REF_SILENT_THRESHOLD:
             silent_ref_count += 1
         # "Healthy AEC work" = music-loud mic + meaningful attenuation.
         # Below the music threshold AEC output is just noise floor so we
         # can't tell whether the attenuation number means anything.
-        if mic > _AEC_MIC_MUSIC_THRESHOLD and attn_db <= -8.0:
+        # `level_db is None` excludes chip windows, which carry no
+        # attenuation-equivalent to threshold.
+        if (
+            w.level_db is not None
+            and w.mic > _AEC_MIC_MUSIC_THRESHOLD
+            and w.level_db <= -8.0
+        ):
             healthy_windows += 1
 
-    # Failure mode 1 — ref path broken. The 2026-05-15 dsnoop rate-lock
-    # signature: AirPlay was playing, mic was 2000+, ref was 0 across
-    # every window for four days because the dsnoop's 48 kHz declared
-    # rate mismatched shairport's locked 44.1 kHz. We only fail the
-    # check when NO window has ref signal at all; otherwise the silent-
-    # ref windows are mic-only artifacts (room voice, ambient noise)
-    # which is the 2026-05-16 false-positive mode.
+    # Failure mode 1 — ref path broken. Only fail when NO window has ref
+    # signal at all; otherwise the silent-ref windows are mic-only
+    # artifacts (room voice, ambient noise), a false-positive mode.
     if silent_ref_count >= 5 and healthy_ref_windows == 0:
         # Second false-positive guard: if the music chain isn't
         # currently active (no renderer writing the loopback), a
@@ -905,6 +1195,7 @@ def _assess_aec_bridge_output(
                 f"reference itself is outputd's speaker monitor, so program "
                 f"audio on ANY transport exercises the ref path; only this "
                 f"gate is snd-aloop-scoped.",
+                reason=REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC,
             )
         return CheckResult(
             "AEC bridge output", "fail",
@@ -919,23 +1210,27 @@ def _assess_aec_bridge_output(
                 now=time.time() if now is None else now,
                 trusted_reference_identity=trusted_reference_identity,
             ),
+            reason=REASON_BRIDGE_OUTPUT_REF_SILENT,
         )
 
-    # No log windows = bridge restarted within the last 90 s OR
-    # journal isn't capturing the level (unlikely on default config).
+    # An active bridge writes an RMS window every 5 s, so an empty 90 s
+    # window is missing evidence, not evidence of health: a restart loop, a
+    # wedged processing thread, or a journal not capturing INFO all look
+    # like this. Warn rather than assert an unverified ok.
     if total_windows == 0:
         return CheckResult(
-            "AEC bridge output", "ok",
-            "no recent RMS windows logged "
-            "(bridge may have just started)",
+            "AEC bridge output", "warn",
+            "no recent RMS windows logged while the bridge is running "
+            "(expected one per 5 s) — bridge may have just restarted, or "
+            "its processing loop is wedged. Check: journalctl -u "
+            "jasper-aec-bridge -e",
+            reason=REASON_BRIDGE_OUTPUT_NO_WINDOWS,
         )
 
-    # silent_ref bursts with a healthy ref path = the false-positive
-    # mode from 2026-05-16: loud room voice or ambient noise raises mic
-    # above the music threshold while the reference (correctly) carries
-    # no program audio. Surface the diagnosis so an operator who runs
-    # `jasper-doctor` after seeing the old fail can confirm the path
-    # is fine.
+    # silent_ref bursts with a healthy ref path are room/ambient noise,
+    # not a fault: loud room voice raises mic above the music threshold
+    # while the reference (correctly) carries no program audio. Surface
+    # the diagnosis so an operator can confirm the path is fine.
     if silent_ref_count >= 5 and healthy_ref_windows > 0:
         return CheckResult(
             "AEC bridge output", "ok",
@@ -943,37 +1238,60 @@ def _assess_aec_bridge_output(
             f"(likely room voice or ambient noise — sound the speaker never "
             f"played is absent from the reference by design); ref path proven "
             f"healthy in {healthy_ref_windows}/{total_windows} windows",
+            reason=REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY,
         )
+
+    # Chip AEC: the bridge runs no canceller, so the line carries no
+    # attenuation-equivalent to evaluate. Report the evidence that does
+    # exist; the ref-path branches above remain the verdict-bearing part on
+    # this profile. Only when EVERY window is chip-shaped — a mixed journal
+    # (a restart across a profile change) still owes the AEC3 assessment.
+    if chip_windows == total_windows:
+        return CheckResult(
+            "AEC bridge output", "ok",
+            f"chip AEC: {total_windows} recent windows; ref carried signal "
+            f"in {healthy_ref_windows}/{total_windows} (the chip cancels "
+            f"upstream, so this profile logs no attenuation to evaluate)",
+            reason=REASON_BRIDGE_OUTPUT_CHIP_ONLY,
+        )
+
+    mixed = (
+        f"; {chip_windows}/{total_windows} windows are chip-shaped and carry "
+        f"no attenuation" if chip_windows else ""
+    )
 
     # All windows quiet — speaker has been idle, nothing to assess.
     if healthy_windows == 0 and silent_ref_count == 0:
         return CheckResult(
             "AEC bridge output", "ok",
             f"no music activity in last 90 s "
-            f"({total_windows} log windows; no AEC work to evaluate)",
+            f"({total_windows} log windows; no AEC work to evaluate){mixed}",
+            reason=REASON_BRIDGE_OUTPUT_IDLE,
         )
 
     summary = (
         f"{healthy_windows}/{total_windows} recent windows show real AEC "
         f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB)"
+        f"{mixed}"
     )
     if silent_ref_count:
         # Non-zero silent_ref without hitting the FAIL threshold —
         # surface as diagnostic so partial ref-path glitches are visible
         # before they tip into a sustained outage.
         summary += f"; silent-ref={silent_ref_count} (<5 = below alarm)"
-    return CheckResult("AEC bridge output", "ok", summary)
+    return CheckResult(
+        "AEC bridge output", "ok", summary,
+        reason=REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
+    )
 
 @doctor_check(order=48, group="aec", exclusive_group="audio-probe")
 def check_aec_bridge_output_health() -> CheckResult:
     """Verify the bridge isn't silently producing garbage. The bare
     `is-active` check passes whenever the process is running — but
     the bridge can be running and STILL be in a degraded state: the
-    AEC reference path is delivering silence (the May 2026 dsnoop
-    rate-lock incident, which went undetected for 4 days because
-    doctor only checked service liveness). That leaves the wake
-    detector consuming an un-cancelled mic with music blasting
-    through it, but `systemctl is-active` says ok.
+    AEC reference path can deliver silence while `systemctl is-active`
+    says ok, leaving the wake detector consuming an un-cancelled mic
+    with music blasting through it.
 
     Exact schema-v4 monotonic stats are authoritative for current
     outputd-UDP receiver progress: a freshness failure returns before
@@ -991,6 +1309,7 @@ def check_aec_bridge_output_health() -> CheckResult:
             "AEC bridge output", "ok",
             "parked (bonded follower) — the dumb-follower profile stops "
             "voice + the AEC stack while paired; the leader owns the mic",
+            reason=REASON_PARKED_BONDED_FOLLOWER,
         )
     is_active = _run(
         ["systemctl", "is-active", "jasper-aec-bridge.service"]
@@ -1000,6 +1319,7 @@ def check_aec_bridge_output_health() -> CheckResult:
         return CheckResult(
             "AEC bridge output", "ok",
             "(bridge not running — see AEC bridge service check above)",
+            reason=REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING,
         )
 
     env_source = os.environ.get(
@@ -1015,7 +1335,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     # enough to demand it: the env states intent, the bridge's own snapshot
     # states what it applied, and the two legitimately diverge on a box parked
     # by a pre-P7-1 reconciler (the retired `alsa` spelling survives on disk
-    # while the bridge converges — `aec_bridge._resolved_reference_source`).
+    # while the bridge converges — `aec_bridge_config.resolved_reference_source`).
     # Gating on the env alone sent exactly that box to the music-conditional
     # journal fallback, which returns OK for a dead reference whenever no
     # snd-aloop renderer lane is open. OR is the fail-closed direction, with
@@ -1076,9 +1396,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     # hasn't reconnected yet. Within 90 s of deploy completion, that
     # transient looks like the broken state we're trying to catch.
     # Looking at the most recent 90 s only avoids the false-positive
-    # while still being long enough to confirm sustained failures
-    # (the 2026-05-15 dsnoop incident produced ref=0 for 4 days, so
-    # 90 s is more than enough to see it).
+    # while still being long enough to confirm sustained failures.
     proc = _run(
         ["journalctl", "-u", "jasper-aec-bridge.service",
          "--since", "90 sec ago", "--no-pager", "--output", "cat"],
@@ -1088,6 +1406,7 @@ def check_aec_bridge_output_health() -> CheckResult:
         return CheckResult(
             "AEC bridge output", "warn",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
+            reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
         )
 
     now_epoch = time.time()
@@ -1147,7 +1466,7 @@ def _applied_reference_source(stats: dict | None) -> str | None:
     """The reference source the running bridge APPLIED, or None if unreadable.
 
     The bridge resolves ``JASPER_AEC_REF_SOURCE`` before anything reads it
-    (``aec_bridge._resolved_reference_source``) and publishes the resolved
+    (``aec_bridge_config.resolved_reference_source``) and publishes the resolved
     value into its stats snapshot, so this is the box's runtime truth where
     the env file is only its intent — and a box parked by a pre-P7-1
     reconciler still carries the retired ``alsa`` spelling in
@@ -1339,6 +1658,7 @@ def _assess_dtln_engine_from_stats(
             "DTLN-aec engine", "ok",
             "loaded (per bridge stats snapshot; triple-stream tertiary "
             "leg active)",
+            reason=REASON_DTLN_LOADED_FROM_STATS,
         )
     if enabled:
         return CheckResult(
@@ -1348,6 +1668,7 @@ def _assess_dtln_engine_from_stats(
             "degraded to AEC3-only — triple-stream is "
             "dual-stream and voice listens on an unfed :9878 leg. Check "
             "/var/lib/jasper/dtln/ and `journalctl -u jasper-aec-bridge -e`.",
+            reason=REASON_DTLN_ENGINE_UNAVAILABLE,
         )
     return CheckResult(
         "DTLN-aec engine", "warn",
@@ -1358,6 +1679,7 @@ def _assess_dtln_engine_from_stats(
         "localhost:8780/aec` or http://jts.local/wake/. Otherwise the "
         "bridge may not have restarted since the env changed — try: "
         "sudo systemctl restart jasper-aec-bridge",
+        reason=REASON_DTLN_NOT_STARTED_WITH_LEG,
     )
 
 def _assess_dtln_engine(journal_text: str) -> CheckResult:
@@ -1381,6 +1703,7 @@ def _assess_dtln_engine(journal_text: str) -> CheckResult:
             return CheckResult(
                 "DTLN-aec engine", "ok",
                 f"loaded (size={size}, triple-stream tertiary leg active)",
+                reason=REASON_DTLN_LOADED_FROM_JOURNAL,
             )
         if "DTLN couldn't load" in line:
             detail = line.split("couldn't load:", 1)[-1].strip()
@@ -1390,6 +1713,7 @@ def _assess_dtln_engine(journal_text: str) -> CheckResult:
                 f"{detail}. Bridge degraded to AEC3-only — triple-stream "
                 f"is silently dual-stream. Check /var/lib/jasper/dtln/ "
                 f"and `journalctl -u jasper-aec-bridge -e`.",
+                reason=REASON_DTLN_LOAD_FAILED,
             )
 
     # Neither marker found. Either the bridge has been running long
@@ -1400,6 +1724,7 @@ def _assess_dtln_engine(journal_text: str) -> CheckResult:
         "JASPER_AEC_DTLN_ENABLED=1 but no engine-init line in last "
         "10 min — bridge may not have restarted since the env var was "
         "set. Try: sudo systemctl restart jasper-aec-bridge",
+        reason=REASON_DTLN_NO_INIT_LINE,
     )
 
 @doctor_check(order=54, group="aec")
@@ -1422,12 +1747,14 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
             "DTLN engine", "ok",
             "parked (bonded follower) — the dumb-follower profile stops "
             "voice + the AEC stack while paired; the leader owns the mic",
+            reason=REASON_PARKED_BONDED_FOLLOWER,
         )
     enabled = os.environ.get("JASPER_AEC_DTLN_ENABLED", "0").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
         return CheckResult(
             "DTLN-aec engine", "ok",
             "skipped — JASPER_AEC_DTLN_ENABLED not set (dual-stream mode)",
+            reason=REASON_DTLN_DISABLED,
         )
 
     model_result = _check_dtln_model_assets()
@@ -1442,6 +1769,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
         return CheckResult(
             "DTLN-aec engine", "ok",
             "(bridge not running — see AEC bridge service check above)",
+            reason=REASON_DTLN_BRIDGE_NOT_RUNNING,
         )
 
     # Prefer the bridge's live stats snapshot — authoritative and not
@@ -1466,6 +1794,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
         return CheckResult(
             "DTLN-aec engine", "warn",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
+            reason=REASON_DTLN_JOURNAL_UNREADABLE,
         )
 
     return _assess_dtln_engine(proc.stdout)
@@ -1483,6 +1812,7 @@ def _check_dtln_model_assets() -> CheckResult | None:
             "DTLN-aec engine", "fail",
             "JASPER_AEC_DTLN_ENABLED=1 but JASPER_AEC_DTLN_SIZE is not "
             f"an integer: {raw_size!r}",
+            reason=REASON_DTLN_SIZE_NOT_INTEGER,
         )
     model_entry = dtln_models.by_size(model_size)
     if model_entry is None:
@@ -1494,6 +1824,7 @@ def _check_dtln_model_assets() -> CheckResult | None:
             "JASPER_AEC_DTLN_ENABLED=1 but JASPER_AEC_DTLN_SIZE="
             f"{model_size} is not registered in jasper/aec_engines/"
             f"dtln_models.py (available: {available})",
+            reason=REASON_DTLN_SIZE_NOT_REGISTERED,
         )
     model_dir = Path(
         os.environ.get("JASPER_DTLN_MODEL_DIR", dtln_models.DTLN_MODELS_DIR)
@@ -1511,6 +1842,7 @@ def _check_dtln_model_assets() -> CheckResult | None:
             "DTLN-aec engine", "fail",
             "JASPER_AEC_DTLN_ENABLED=1 but model files are missing: "
             f"{', '.join(sorted(missing))} in {model_dir}; re-run deploy/install.sh",
+            reason=REASON_DTLN_MODEL_FILES_MISSING,
         )
     if mismatched:
         return CheckResult(
@@ -1518,6 +1850,7 @@ def _check_dtln_model_assets() -> CheckResult | None:
             "JASPER_AEC_DTLN_ENABLED=1 but model file hashes do not match "
             "the registry: "
             f"{', '.join(sorted(mismatched))} in {model_dir}; re-run deploy/install.sh",
+            reason=REASON_DTLN_MODEL_HASH_MISMATCH,
         )
     return None
 
@@ -1532,14 +1865,17 @@ def check_xvf_firmware_6ch() -> CheckResult:
     card = xvf3800.alsa_card_name()
     if capture_ch is None:
         return CheckResult("XVF firmware 6-ch", "warn",
-                           f"{card} card not present")
+                           f"{card} card not present",
+                           reason=REASON_XVF_FIRMWARE_CARD_ABSENT)
     target = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
     if capture_ch == target:
         return CheckResult("XVF firmware 6-ch", "ok",
-                           f"capture is {target}-channel")
+                           f"capture is {target}-channel",
+                           reason=REASON_XVF_FIRMWARE_OK)
     return CheckResult("XVF firmware 6-ch", "warn",
                        f"capture is {capture_ch}-channel — re-flash for "
-                       f"software AEC. {_dfu_flash_remedy()}")
+                       f"software AEC. {_dfu_flash_remedy()}",
+                       reason=REASON_XVF_FIRMWARE_WRONG_CHANNELS)
 
 @doctor_check(order=56, group="aec", exclusive_group="audio-probe")
 def check_xvf_mixer_state() -> CheckResult:
@@ -1553,7 +1889,8 @@ def check_xvf_mixer_state() -> CheckResult:
     from ...mics import xvf3800
     if not xvf3800.is_present():
         return CheckResult("XVF mixer state", "warn",
-                           f"{xvf3800.alsa_card_name()} card not present")
+                           f"{xvf3800.alsa_card_name()} card not present",
+                           reason=REASON_XVF_MIXER_CARD_ABSENT)
     card = xvf3800.alsa_card_name()
     # Use cget (not get) — these controls aren't part of any aggregated
     # "simple control" group, so `amixer get` misses them.
@@ -1562,7 +1899,8 @@ def check_xvf_mixer_state() -> CheckResult:
     vol = _run(["amixer", "-c", card, "cget",
                 f"name={xvf3800.MIXER_CAPTURE_VOLUME}"])
     if sw.returncode != 0 or vol.returncode != 0:
-        return CheckResult("XVF mixer state", "warn", "amixer cget failed")
+        return CheckResult("XVF mixer state", "warn", "amixer cget failed",
+                           reason=REASON_XVF_MIXER_CGET_FAILED)
 
     def _extract_values(out: str) -> str | None:
         for line in out.split("\n"):
@@ -1585,6 +1923,7 @@ def check_xvf_mixer_state() -> CheckResult:
         return CheckResult(
             "XVF mixer state", "ok",
             f"all {nch} capture channels open (switch={switch_norm}, vol={volume})",
+            reason=REASON_XVF_MIXER_OK,
         )
 
     issues = []
@@ -1597,4 +1936,5 @@ def check_xvf_mixer_state() -> CheckResult:
         " | ".join(issues)
         + ". Heal: sudo /usr/local/sbin/jasper-aec-reconcile --reason heal "
         "(reconciler will reset switch/volume + alsactl store)",
+        reason=REASON_XVF_MIXER_DRIFT,
     )

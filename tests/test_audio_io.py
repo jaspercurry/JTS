@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -395,6 +396,12 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
         output_rate=48000,
         gain_db=OutputdTtsPlayout.MIN_TTS_GAIN_DB,
         drain_tail_sec=0.0,
+        # STATED, not inherited. The byte-level expectations below are S16, and
+        # what the box the suite runs on RESOLVES is not this test's subject —
+        # tests/test_tts_wire_width.py owns that question. An undeclared box now
+        # resolves WIDE (ADR-0100: undeclared is the ring), so leaving this to
+        # the resolver made these assertions depend on the host's /var/lib state.
+        wire_wide=False,
     )
     stream = _CaptureOutputdStream()
     p._stream = stream  # type: ignore[assignment]
@@ -419,6 +426,8 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
         output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
+        # S16 frame bytes are what the chunk boundaries below are counted in.
+        wire_wide=False,
     )
     stream = _CaptureOutputdStream()
     p._stream = stream  # type: ignore[assignment]
@@ -1232,3 +1241,33 @@ def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, 
     with caplog.at_level(logging.WARNING, logger="jasper.audio_io"):
         audio_io_mod._log_audio_open_failure("MicCapture", "hw:1,0", RuntimeError("boom"))
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
+    """The decimating mic path resamples on `jasper.dsp_numpy`.
+
+    scipy is ~58 MB resident for the life of jasper-voice, whose
+    `jts-mic.slice` sets `MemorySwapMax=0` (issue #3697), and the callback
+    is the one place the mic path could reach for it. Blocking the import
+    here fails a reintroduced `from scipy.signal import ...` outright.
+    """
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "scipy.signal", None)
+    cap = audio_io_mod.MicCapture(
+        "hw:1,0", capture_rate=48_000, capture_channels=2,
+    )
+    delivered: list[np.ndarray] = []
+    cap._loop = SimpleNamespace(
+        call_soon_threadsafe=lambda _fn, chunk: delivered.append(chunk),
+    )
+    frames = audio_io_mod.MicCapture.OUTPUT_FRAME_SAMPLES * 3
+    indata = np.random.default_rng(7).integers(
+        -20_000, 20_000, size=(frames, 2), dtype=np.int16,
+    )
+
+    cap._callback(indata, frames, None, None)
+
+    (chunk,) = delivered
+    assert chunk.dtype == np.int16
+    assert chunk.shape == (audio_io_mod.MicCapture.OUTPUT_FRAME_SAMPLES,)
+    assert audio_io_mod.resample_poly.__module__ == "jasper.dsp_numpy"

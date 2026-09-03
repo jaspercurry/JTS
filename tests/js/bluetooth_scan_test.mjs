@@ -11,6 +11,7 @@ const {
   deviceActionDisabled,
   deviceMutationLabel,
   deviceMutationOutcome,
+  deviceSection,
   recoverUnknownDeviceMutation,
   submitDeviceMutation,
   visibleDeviceRows,
@@ -24,6 +25,7 @@ const {
     "deviceActionDisabled",
     "deviceMutationLabel",
     "deviceMutationOutcome",
+    "deviceSection",
     "recoverUnknownDeviceMutation",
     "submitDeviceMutation",
     "visibleDeviceRows",
@@ -308,6 +310,21 @@ function harness(overrides = {}) {
   assert(mutation.action === "disconnect"
     && mutation.mutationId === "new-action-id" && !mutation.stream,
   "busy rejection rewrote the requested action identity");
+}
+
+{
+  const cases = [
+    [{paired: true}, false, 'mine'],
+    [{paired: false, rssi: -60}, false, 'nearby'],
+    [{paired: false, connected: true}, false, 'nearby'],
+    [{paired: false, trusted: true}, false, 'nearby'],
+    [{paired: false}, false, null],
+    [{paired: false}, true, 'nearby'],
+  ];
+  for (const [device, pending, want] of cases) {
+    assert(deviceSection(device, pending) === want,
+      `deviceSection(${JSON.stringify(device)}, ${pending}) expected ${want}`);
+  }
 }
 
 console.log(JSON.stringify({ ok: true }));

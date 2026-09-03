@@ -80,7 +80,7 @@ from jasper.audio_measurement.program_analysis import (
     solve_branch_trims,
 )
 from jasper.active_speaker.flat_spec import spec_convergence_residual
-from jasper.capture_relay.session import CaptureResult
+from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -434,8 +434,8 @@ def bank_into(
     The id is minted the way the store mints it, off the record's OWN take id,
     which is the invariant the seam exists to keep.
 
-    ``with_capture`` keeps the :class:`CaptureResult` beside the record, for
-    the two tests that assert the raw bytes cross the seam.
+    ``with_capture`` keeps the :class:`WiredCaptureAnswer` beside the record,
+    for the two tests that assert the raw bytes cross the seam.
     """
     def bank_take(result: Any, record: Mapping[str, Any]) -> str:
         banked = dict(record)
@@ -727,8 +727,8 @@ def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     )
 
 
-def _capture() -> CaptureResult:
-    return CaptureResult(wav=b"fake-wav")
+def _capture() -> WiredCaptureAnswer:
+    return WiredCaptureAnswer(wav=b"fake-wav")
 
 
 def _configured_sections(conductor, role: str) -> tuple:
@@ -793,8 +793,9 @@ def _plan_spy(mp) -> list:
 
 def _run_phase(conductor, index, attempt) -> dict:
     # Mirrors the production host's own authorize wrapper
-    # (``correction_crossover_v2_relay.build_v2_run_and_consume``): admission, and
-    # ONLY admission. It used to call ``confirm_cloud_measure_group(index)``
+    # (``correction_crossover_v2_wired.build_v2_wired_run_and_consume``):
+    # admission, and ONLY admission. It used to call
+    # ``confirm_cloud_measure_group(index)``
     # first, because the household's confirmation was inferred from a begin
     # past the cloud group; since the two-stage split (work order D1) the
     # confirmation is its own explicit signal and rides no begin at all.
@@ -1040,56 +1041,6 @@ def _count_builds(c) -> list:
 
     c._build_candidate = _counting_build
     return builds
-
-
-def _assert_room_layer_can_read_the_evidence(candidate, pipeline, tmp_root=None):
-    """End-to-end: a REAL produced candidate resolves through the room seam.
-
-    The seam's own unit tests drive synthetic payloads; this is the one place
-    that proves the producer in ``crossover_v2_flow`` and the reader in
-    ``jasper.correction.applied_speaker_evidence`` agree on key names and
-    shapes across a live conductor run (issue #1787, plan RC1 / D2).
-    """
-    import json
-    import tempfile
-    from pathlib import Path
-    from unittest.mock import patch
-
-    from jasper.correction.applied_speaker_evidence import (
-        AppliedSpeakerEvidence,
-        resolve_applied_speaker_evidence,
-    )
-
-    with tempfile.TemporaryDirectory() as raw_root:
-        root = Path(tmp_root or raw_root)
-        artifact = (
-            root / "bundle" / "evidence" / "v1" / "artifacts"
-            / "crossover_v2" / "session" / "candidate.json"
-        )
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
-
-        applied = {
-            # Non-empty linearization marks this as an ACOUSTIC commission —
-            # the seam's discriminator against electrical-only profiles, and
-            # true here since this candidate came from a real cloud fit.
-            "linearization": dict(candidate.linearization),
-            "source": {"measured_candidate_fingerprint": candidate.fingerprint},
-        }
-        target = (
-            "jasper.active_speaker.baseline_profile."
-            "load_applied_baseline_profile_state"
-        )
-        with patch(target, return_value=applied):
-            result = resolve_applied_speaker_evidence(
-                state_path=root / "state.json", sessions_dir=root
-            )
-
-    assert isinstance(result, AppliedSpeakerEvidence), result
-    assert result.candidate_fingerprint == candidate.fingerprint
-    assert result.validity_floor_hz == pipeline["validity_floor_hz"]
-    assert list(result.gated_spec_freqs_hz) == pipeline["curve"]["freqs_hz"]
-    assert result.has_gated_curve is True
 
 
 def _lock(monkeypatch, *, thin: bool = False):
@@ -2190,3 +2141,14 @@ def bank_capture_round(
             doc["curves"] = [{"role": "summed", "band_hz": list(radiated_band_hz)}]
         (summed / f"{stem}.json").write_text(json.dumps(doc))
     return root
+
+
+def fake_measurement_mic():
+    """The resolved measurement mic a suite names rather than probes: no
+    machine running these tests has one plugged in."""
+    from jasper.audio_measurement.wired_capture import WiredMicDevice
+
+    return WiredMicDevice(
+        card_id="UMIK2", card_index=9, usb_id="2752:0072",
+        model_key="minidsp_umik2", model_label="miniDSP UMIK-2",
+    )

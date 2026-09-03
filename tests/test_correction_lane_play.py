@@ -185,11 +185,11 @@ def test_popen_wizard_shape(monkeypatch) -> None:
 
 
 def test_popen_operator_cli_shape(monkeypatch) -> None:
-    """Popen(argv, stdout=None, stderr=None, umask) — jasper/cli/aec_tune.py.
+    """Popen(argv, stdout=None, stderr=None, umask) — the inherit-stdio shape.
 
     ``None`` stdio is Popen's documented default (inherit — aplay's stderr
-    stays on the operator's terminal); asserted so a future edit that
-    starts redirecting it fails this golden. Argv order is the P6c-i
+    stays on a foreground operator's terminal); asserted so a future edit
+    that starts redirecting it fails this golden. Argv order is the P6c-i
     normalized one — the pre-P6c-i site spelled ``-q`` first, a
     semantically identical order this golden deliberately no longer pins.
     """

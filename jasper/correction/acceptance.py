@@ -4,84 +4,15 @@
 
 """Deterministic verify-acceptance verdict (revision plan §4 P4).
 
-JTS's genuine differentiator: after a correction is applied and the room is
-re-measured, **deterministic code** — never a model, never the household's
-optimism — decides whether the correction stays, gets surfaced for a human
-call, or is automatically reverted. The LLM may *propose* a filter; this module
-is the judge, and the room's own re-measurement is the evidence.
-
-Why this is not a one-line "did RMS go down?" check
----------------------------------------------------
-The naive rule the revision plan explicitly killed (§8) is: take the single
-verify capture, compare it against the multi-position spatial average, and
-revert if any frequency got worse. That rule reverts *good* corrections on
-measurement noise, because:
-
-  * The "before" is an N-position spatial average; the verify is **one**
-    position. Comparing one seat against the average of several is not
-    apples-to-apples — a single seat legitimately differs from the room mean.
-  * Per-frequency seat-to-seat standard deviation of **4–6 dB is NORMAL** in
-    this repo's own measurements (see :mod:`jasper.correction.spatial`,
-    ``HIGH_CONFIDENCE_STD_DB`` / ``MEDIUM_CONFIDENCE_STD_DB``). A raw per-bin
-    "this band got 3 dB worse" verdict sits *inside* that repeatability floor —
-    it is noise, not a regression.
-
-So the acceptance rule (plan §4 P4, points 1–4) is:
-
-  1. **Aggregate to ≥1/3-octave smoothed bands** before *any* per-band verdict.
-     Raw per-bin comparison is forbidden — a deep null wandering by one bin is
-     not a regression.
-  2. **"Clear regression" requires BOTH** (a) at least one band worsening
-     *beyond the repeatability floor* (seeded from ``spatial.py``'s 4–6 dB std
-     constants, shipped as env-tunable ``JASPER_ACCEPT_*`` knobs — placeholders
-     until H1 supplies real on-device repeatability), **and** (b) the overall
-     band-RMS-error-to-target moving in the *wrong* direction beyond a noise
-     margin. Neither alone is enough: one band worse while the whole curve
-     improved is a local trade the correction made on purpose; a whole-curve
-     RMS wobble inside the noise margin with no band clearly worse is
-     measurement drift, not damage.
-  3. **Matched comparison basis.** The verify is captured at position 1 (a flow
-     instruction). We compare it against the **stored position-1 pre-correction
-     curve** whenever that curve exists — same geometry, apples-to-apples. The
-     spatial average is only a fallback basis (single-position sessions, or a
-     lost position-1 curve).
-  4. **One confirmatory re-measure before auto-revert.** A clear regression on
-     the *first* verify yields ``revert_pending_confirm`` — the flow asks for a
-     second measurement. Only a *second concordant* clear regression escalates
-     to ``revert`` and trips the automatic rollback. A false revert is
-     trust-expensive; a second sweep is cheap.
-
-The four verdicts
------------------
-``accept``
-    The measured error-to-target dropped and no band regressed clearly. The
-    correction stays applied. A verify capture whose own SNR was low or
-    unestimable does not change this verdict — it is disclosed alongside it
-    (see :func:`jasper.correction.session._verify_snr_quality_warning`),
-    never gated on.
-``surface``
-    Ambiguous — the numbers sit inside the noise floor, or improvement and a
-    borderline regression cancel out. We show the honest before/after and let
-    the household decide; we never revert on a tie.
-``revert_pending_confirm``
-    A clear regression on this verify. Not yet reverted — the flow asks for
-    one confirmatory re-measure. Declining is simply *not doing it*: the
-    verdict stays ``revert_pending_confirm``, nothing ever reverts without the
-    concordant second sweep, the correction stays applied, and /start (a fresh
-    measurement) and /reset (manual removal) remain available as always.
-``revert``
-    A clear regression, *confirmed* by a second concordant verify — strictly
-    the verify immediately after the pending one; a clean verify in between
-    clears the pending question (the session owns that adjacency bookkeeping).
-    The session performs the automatic rollback through the **existing** reset
-    path (this module never writes CamillaDSP — it returns a verdict; the
-    session acts).
-
-This module is **pure**: it takes numpy curves + thresholds and returns a typed
-verdict. No I/O, no CamillaDSP, no session state. That keeps it synthetically
-testable against curves with known ground truth (a genuinely-improved room, a
-genuinely-regressed band, pure noise at the repeatability floor, the ambiguous
-middle) — see ``tests/test_correction_acceptance.py``.
+After a correction is applied and the room re-measured, deterministic code —
+never a model — decides whether it stays (``accept``), is shown for a human
+call (``surface``), or is rolled back (``revert_pending_confirm`` then
+``revert``). The rule: aggregate to >=1/3-octave bands before any per-band
+verdict; a "clear regression" needs BOTH a band past the repeatability floor
+AND the overall band-RMS moving the wrong way past a noise margin; compare
+against the matched position-1 curve when it exists; and escalate to ``revert``
+only on a second concordant clear regression. Pure — numpy curves and
+thresholds in, a typed verdict out; the session performs any rollback.
 """
 from __future__ import annotations
 
@@ -99,24 +30,16 @@ from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
 from jasper.env_load import bounded_env_float, bounded_env_int
 
 
-# --- env knobs ---------------------------------------------------------------
-#
-# Every threshold whose true value is hardware-gated is a deploy-time knob (H1
-# supplies the real numbers on-device — the defaults here are conservative
-# placeholders, NOT empirically derived), mirroring the
-# JASPER_CAPTURE_ALIGNMENT_THRESHOLD pattern in audio_measurement/alignment.py and
-# the JASPER_RAMP_* knobs in audio_measurement/ramp.py. Set them in jasper.env
-# once measured; no rebuild required. Out-of-range or unparseable values fall
-# back to the documented default — a jasper.env edit can never brick the
-# evaluator at construction time.
+# Every threshold whose true value is hardware-gated is a deploy-time knob; the
+# defaults here are conservative placeholders, NOT empirically derived (H1
+# supplies the real numbers on-device). Out-of-range or unparseable values fall
+# back to the documented default.
 
 
 class Verdict(str, Enum):
     """The deterministic acceptance decision.
 
-    ``str`` mixin so the value serializes directly into the envelope /
-    result.json / event logs as a plain string (``"accept"``, …) with no
-    per-callsite ``.value``.
+    ``str`` mixin so the value serializes directly as a plain string.
     """
 
     ACCEPT = "accept"
@@ -129,50 +52,39 @@ class Verdict(str, Enum):
 class AcceptanceThresholds:
     """Tunable statistical thresholds for the acceptance verdict.
 
-    All defaults are **conservative placeholders** retuned at H1 from real
-    on-device repeatability data (revision plan §5 H1). They are seeded from
-    ``jasper.correction.spatial``'s per-frequency seat-to-seat std constants
-    (4–6 dB), which are this repo's own measured repeatability floor.
+    All defaults are conservative placeholders, retuned at H1 from real
+    on-device repeatability data, and seeded from
+    ``jasper.correction.spatial``'s 4-6 dB seat-to-seat std constants.
     """
 
     # A band counts as "clearly worse" only if its error-to-target grew by more
-    # than this many dB. Seeded from spatial.MEDIUM_CONFIDENCE_STD_DB (6.0): a
-    # 1/3-octave-band shift inside the seat-to-seat repeatability floor is
-    # noise, not damage. We use the *medium* (looser) floor, not the *high*
-    # (4 dB) one, deliberately — auto-revert is the one automatic action the
-    # system takes against the user's applied choice, so its trigger must clear
-    # the *generous* end of the repeatability band, never the tight end.
+    # than this many dB. Seeded from spatial.MEDIUM_CONFIDENCE_STD_DB (6.0),
+    # the GENEROUS end of the repeatability band: auto-revert is the one
+    # automatic action taken against the user's applied choice.
     band_regression_db: float = field(
         default_factory=lambda: bounded_env_float(
             "JASPER_ACCEPT_BAND_REGRESSION_DB", 6.0, lo=0.5, hi=24.0,
         )
     )
-    # The overall band-RMS-error-to-target must move in the wrong direction by
-    # more than this to count toward a clear regression. A smaller margin than
-    # the per-band one: RMS over many bands averages out per-band noise, so a
-    # real whole-curve regression shows up at a lower dB. Seeded below the 4 dB
-    # high-confidence std because it is an aggregate, not a single band.
+    # The overall band-RMS-error-to-target must move the wrong way by more than
+    # this to count toward a clear regression. Smaller than the per-band margin
+    # because RMS over many bands already averages out per-band noise.
     overall_rms_regression_db: float = field(
         default_factory=lambda: bounded_env_float(
             "JASPER_ACCEPT_OVERALL_RMS_REGRESSION_DB", 1.0, lo=0.1, hi=12.0,
         )
     )
-    # To call an *accept* (not merely "surface"), the overall band-RMS error
-    # must have *improved* by at least this much. Below it the result is a wash
-    # — honest "surface", neither revert nor a claimed win. Small: even a
-    # modest, real modal cut clears it, but pure noise (mean ~0) does not.
-    # The range floor deliberately permits 0.0, and the comparison is >=, so
-    # an operator setting 0 opts into ACCEPT-ON-TIE ("confirmed improved" on
-    # an exactly-zero delta) — keep it > 0 unless that is the intent.
+    # To call an *accept* rather than "surface", the overall band-RMS error must
+    # have improved by at least this much. The range floor permits 0.0 and the
+    # comparison is >=, so setting 0 opts into ACCEPT-ON-TIE.
     overall_rms_improvement_db: float = field(
         default_factory=lambda: bounded_env_float(
             "JASPER_ACCEPT_OVERALL_RMS_IMPROVEMENT_DB", 0.5, lo=0.0, hi=12.0,
         )
     )
-    # Fractional-octave band width for aggregation. 3 = 1/3-octave (the plan's
-    # ">=1/3-octave" floor; the audiometric standard). Higher = finer bands =
-    # closer to per-bin (do not raise past ~6 without re-deriving the floor —
-    # finer bands have a higher repeatability std).
+    # Fractional-octave band width. 3 = 1/3-octave (the plan's floor; the
+    # audiometric standard). Do not raise past ~6 without re-deriving the
+    # repeatability floor — finer bands have a higher std.
     smoothing_fraction: int = field(
         default_factory=lambda: bounded_env_int(
             "JASPER_ACCEPT_SMOOTHING_FRACTION", 3, lo=1, hi=6,
@@ -183,11 +95,9 @@ class AcceptanceThresholds:
     def from_env(cls) -> "AcceptanceThresholds":
         """Read all knobs from the environment (each field already does).
 
-        A cross-field sanity net: if the improvement floor is somehow set at or
-        above the per-band regression floor (a nonsensical combination that
-        would make *accept* harder to reach than *revert*), fall back to the
-        whole default set rather than shipping an incoherent threshold pair —
-        mirrors ``MeasurementRamp.from_env``'s all-or-nothing fallback.
+        Cross-field sanity net: an improvement floor at or above the per-band
+        regression floor would make accept harder to reach than revert, so the
+        whole default set is used instead.
         """
         t = cls()
         if t.overall_rms_improvement_db >= t.band_regression_db:
@@ -204,11 +114,9 @@ class AcceptanceThresholds:
 class BandVerdict:
     """Per-band before/after error-to-target for the verdict table.
 
-    ``center_hz`` is the geometric-mean center of the 1/3-octave band;
-    ``before_err_db`` / ``after_err_db`` are absolute deviations from target
-    (|curve − target|) averaged over the band; ``delta_db`` is
-    ``before − after`` (positive = improved); ``regressed`` is True when the
-    band grew worse by more than the regression threshold.
+    ``center_hz`` is the geometric-mean band center; the error fields are
+    ``|curve - target|`` averaged over the band; ``delta_db`` is
+    ``before - after`` (positive = improved).
     """
 
     center_hz: float
@@ -231,12 +139,10 @@ class BandVerdict:
 class AcceptanceResult:
     """The typed output of :func:`evaluate_acceptance`.
 
-    ``verdict`` is the decision; ``reasons`` are short machine-stable strings
-    explaining it (for logs + the evidence bundle); ``bands`` is the per-band
-    table the decision was made on; the scalar fields are the aggregate numbers
-    that drove it. ``confirmed`` is True only for the terminal ``REVERT``
-    (a second concordant clear regression). ``basis`` records whether the
-    matched position-1 curve or the spatial-average fallback was used.
+    ``reasons`` are short machine-stable strings; ``bands`` is the table the
+    decision was made on. ``confirmed`` is True only for the terminal
+    ``REVERT``. ``basis`` records whether the matched position-1 curve or the
+    spatial-average fallback was used.
     """
 
     verdict: Verdict
@@ -276,9 +182,7 @@ class AcceptanceResult:
     def clear_regression(self) -> bool:
         """True when this verify shows a clear regression (both criteria met).
 
-        ``revert_pending_confirm`` (first verify) and ``revert`` (confirmed)
-        both rest on this; ``surface``/``accept`` do not. Used by the session
-        to decide whether a *second* verify is concordant with the first.
+        The session reads it to decide whether a second verify is concordant.
         """
         return self.verdict in (
             Verdict.REVERT_PENDING_CONFIRM,
@@ -291,10 +195,8 @@ def _band_edges(
 ) -> np.ndarray:
     """Fractional-octave band edges spanning [f_low, f_high].
 
-    Returns edge frequencies (N+1 edges for N bands), each a factor of
-    ``2**(1/fraction)`` apart, anchored so the band grid starts at or below
-    ``f_low`` and covers ``f_high``. Bands are the aggregation unit for the
-    per-band verdict — never raw FFT bins.
+    Returns N+1 edges for N bands, each a factor of ``2**(1/fraction)`` apart,
+    anchored at or below ``f_low`` and covering ``f_high``.
     """
     if f_high <= f_low:
         return np.asarray([f_low, f_high], dtype=np.float64)
@@ -315,18 +217,11 @@ def _aggregate_band_errors(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Mean absolute error-to-target per fractional-octave band.
 
-    The curve is first 1/N-octave power-smoothed (the plan's ">=1/3-octave
-    aggregation" — no per-bin judgement), then the mean |smoothed − target| is
-    taken within each band. Returns (band_centers_hz, band_err_db). A band with
-    no grid points in it is dropped (its center never appears in the output).
-
-    The band grid over-shoots ``f_high`` (the last 2^(1/N) edge lands past
-    it), so the mask additionally clamps to ``freqs <= f_high`` — otherwise
-    the per-band criterion would judge content above ``f_high`` that the
-    overall-RMS criterion (``deviation_metrics``, inclusive of ``f_high``)
-    excludes, and the two halves of the AND rule would read different bands.
-    The clamped last band is narrower than 1/N octave; its per-point values
-    are already 1/N-octave-smoothed, so a narrow band is not noisy.
+    Returns ``(band_centers_hz, band_err_db)``; a band with no grid points is
+    dropped. The band grid overshoots ``f_high``, so the mask also clamps to
+    ``freqs <= f_high`` — otherwise the per-band criterion would judge content
+    the overall-RMS criterion excludes and the two halves of the AND rule would
+    read different bands.
     """
     smoothed = smooth_fractional_octave(freqs, curve_db, fraction=fraction)
     err = np.abs(smoothed - target_db)
@@ -355,8 +250,7 @@ def _surface_reason_result(
 ) -> AcceptanceResult:
     """A ``surface`` verdict with empty numbers, for degraded inputs.
 
-    We never ``accept`` or ``revert`` when the inputs are missing or malformed
-    — the honest fallback is to show what we have and let the household decide.
+    Missing or malformed inputs never ``accept`` or ``revert``.
     """
     return AcceptanceResult(
         verdict=Verdict.SURFACE,
@@ -388,29 +282,13 @@ def evaluate_acceptance(
 ) -> AcceptanceResult:
     """Decide accept / surface / revert_pending_confirm / revert.
 
-    All curves share one frequency grid (they do in the verify path — every
-    capture resamples onto the same log grid). ``before_db`` is the
-    pre-correction curve at the **matched** geometry (position 1 preferred);
-    ``verify_db`` is the post-correction re-measurement; ``target_db`` is the
-    shared correction target.
-
-    ``verify_index`` is 1 for the first verify, 2+ for a confirmatory
-    re-measure. ``prior_clear_regression`` is True when an *earlier* verify in
-    this session already showed a clear regression: the confirmatory-re-measure
-    concordance gate. The escalation rule (plan §4 P4 point 4):
-
-      * first clear regression (``verify_index == 1`` or no prior) →
-        ``revert_pending_confirm`` (ask for one more sweep, do not revert);
-      * a clear regression that is **concordant** with a prior clear regression
-        (``prior_clear_regression and verify_index >= 2``) → ``revert``
-        (confirmed; the session auto-reverts);
-      * anything not a clear regression → ``accept`` (improved beyond the
-        noise floor) or ``surface`` (a wash / ambiguous).
-
-    Band width, the regression floor, the RMS margins, and the smoothing
-    fraction come from ``thresholds`` (env-tunable; H1 retunes). Returns a fully
-    populated :class:`AcceptanceResult`; degraded inputs return ``surface`` with
-    an explanatory reason, never a crash and never an accept/revert on bad data.
+    All curves share one frequency grid. ``before_db`` is the pre-correction
+    curve at the matched geometry (position 1 preferred); ``verify_db`` is the
+    post-correction re-measurement. ``verify_index`` is 1 for the first verify,
+    2+ for a confirmatory re-measure, and ``prior_clear_regression`` is the
+    concordance gate: a first clear regression yields
+    ``revert_pending_confirm``, and only a concordant second yields ``revert``.
+    Degraded inputs return ``surface`` with a reason, never a crash.
     """
     t = thresholds or AcceptanceThresholds.from_env()
 
@@ -434,12 +312,9 @@ def evaluate_acceptance(
             verify_index=verify_index,
         )
 
-    # --- overall aggregate error-to-target (band-RMS over [f_low, f_high]) ---
-    # deviation_metrics computes RMS |curve − target| over the raw grid in the
-    # band. That is the aggregate the "overall RMS moved wrong" criterion tests.
-    # (No per-band smoothing needed for the RMS aggregate — RMS over the band
-    # already averages out per-bin noise; smoothing is what protects the *per
-    # band* verdict below.)
+    # deviation_metrics computes RMS |curve - target| over the raw grid in the
+    # band; RMS already averages out per-bin noise, so no smoothing is needed
+    # for the aggregate (smoothing protects the per-band verdict below).
     before_rms = deviation_metrics(
         b, tgt, f, f_low=f_low, f_high=f_high,
     )["rms_db"]
@@ -448,7 +323,6 @@ def evaluate_acceptance(
     )["rms_db"]
     overall_delta = before_rms - after_rms  # positive = improved
 
-    # --- per-band verdict on >=1/3-octave smoothed bands --------------------
     centers, before_band_err = _aggregate_band_errors(
         f, b, tgt, f_low=f_low, f_high=f_high, fraction=t.smoothing_fraction,
     )
@@ -479,10 +353,8 @@ def evaluate_acceptance(
     worst_delta = float(band_delta[worst_idx])
     worst_center = float(centers[worst_idx])
 
-    # --- combine into a verdict ---------------------------------------------
     # "Clear regression" = BOTH a band clearly worse AND the overall RMS moved
-    # the wrong way beyond the noise margin (plan §4 P4 point 2). Neither alone
-    # trips it.
+    # the wrong way beyond the noise margin (plan §4 P4 point 2).
     band_regressed = regressed_count > 0
     overall_worsened = overall_delta < -t.overall_rms_regression_db
     clear_regression = band_regressed and overall_worsened
@@ -521,15 +393,10 @@ def evaluate_acceptance(
             verify_index=verify_index,
         )
 
-    # Not a clear regression. Accept only if the overall RMS improved beyond the
-    # improvement floor; otherwise it is a wash / ambiguous → surface. A single
-    # band worse (but not paired with an overall regression) is a local trade
-    # the correction made on purpose — it degrades an accept to surface if the
-    # overall win is small, but never triggers a revert.
+    # Not a clear regression: accept only if the overall RMS improved past the
+    # improvement floor, else surface. A single band worse without an overall
+    # regression is a local trade and never triggers a revert.
     if band_regressed:
-        # A band cleared the per-band floor but the overall RMS did not worsen
-        # beyond its margin — a borderline local trade. Never accept silently;
-        # surface it honestly.
         reasons.append(
             f"{regressed_count} band(s) worse by >"
             f"{t.band_regression_db:.1f} dB, but overall RMS held "

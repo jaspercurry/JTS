@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # affordance shows on the review/apply/result screens (available when an
 # OpenAI key is configured; hidden-with-nudge otherwise). Availability only,
 # no paid call — the endpoints are per-tap and confirm-gated.
-# v5 wires the relay-owned level-before-sweep actions.
+# v5 adds the level-before-sweep actions.
 # v6 makes the ordered `sections` list the sole whole-page visibility
 # authority. The browser maps this fixed vocabulary to DOM nodes; it does not
 # carry a second screen-to-section policy. v7 adds the closed `blocker` and
@@ -101,7 +101,6 @@ SCREEN_RESULT = "result"
 SECTION_CURRENT_CORRECTION = "current-correction"
 SECTION_RUN_DEFAULTS = "run-defaults"
 SECTION_READINESS_BLOCKER = "readiness-blocker"
-SECTION_CAPTURE_HANDOFF = "capture-handoff"
 SECTION_PLACEMENT = "placement"
 SECTION_CAPTURE_SETUP = "capture-setup"
 SECTION_LOCAL_CERTIFICATE_WARNING = "local-certificate-warning"
@@ -118,7 +117,6 @@ SECTION_VOCABULARY = frozenset({
     SECTION_CURRENT_CORRECTION,
     SECTION_RUN_DEFAULTS,
     SECTION_READINESS_BLOCKER,
-    SECTION_CAPTURE_HANDOFF,
     SECTION_PLACEMENT,
     SECTION_CAPTURE_SETUP,
     SECTION_LOCAL_CERTIFICATE_WARNING,
@@ -139,23 +137,19 @@ _SCREEN_SECTIONS: dict[str, tuple[str, ...]] = {
     ),
     SCREEN_MIC: (
         SECTION_RUN_DEFAULTS,
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
     ),
     SCREEN_LEVEL: (
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
         SECTION_LEVEL_CHECK,
     ),
     SCREEN_SWEEP: (
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
         SECTION_POSITION_CAPTURE,
     ),
     SCREEN_REVIEW: (SECTION_MEASUREMENT_REVIEW,),
     SCREEN_APPLY: (SECTION_APPLY_STATUS,),
     SCREEN_VERIFY: (
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
         SECTION_VERIFICATION,
     ),
@@ -257,11 +251,10 @@ def screen_for_state(state_value: str) -> str:
 def _screen_for(session: Any) -> str:
     """Resolve the live screen, folding in the level-match sub-state.
 
-    The room session has no dedicated "level" state. For local capture the
-    first ``needs_noise_capture`` stop means mic setup until the realized
-    input is bound, then level matching until the first noise upload. Later
-    positions have already crossed both setup gates and are sweep screens.
-    Relay capture folds its separate level-match snapshot here as before.
+    The room session has no dedicated "level" state. The first
+    ``needs_noise_capture`` stop means mic setup until the realized input is
+    bound, then level matching until the first noise upload. Later positions
+    have already crossed both setup gates and are sweep screens.
     """
     screen = screen_for_state(session.state.value)
     if (
@@ -274,8 +267,7 @@ def _screen_for(session: Any) -> str:
         # session state solely for presentation.
         return SCREEN_VERIFY
     if (
-        getattr(session, "capture_transport", "local") != "relay"
-        and session.state.value == "needs_noise_capture"
+        session.state.value == "needs_noise_capture"
         and bool(getattr(session, "local_capture_setup_bound", False))
     ):
         return (
@@ -283,20 +275,6 @@ def _screen_for(session: Any) -> str:
             if int(getattr(session, "current_position", 0) or 0) == 0
             else SCREEN_SWEEP
         )
-    if (
-        getattr(session, "capture_transport", "local") == "relay"
-        and session.state.value == "needs_noise_capture"
-    ):
-        return SCREEN_MIC if _relay_level_ready(session) else SCREEN_LEVEL
-    if (
-        getattr(session, "capture_transport", "local") == "relay"
-        and session.state.value == "applied"
-        and not _relay_level_ready(session)
-    ):
-        # Verification level matching is part of verification, not a return to
-        # the run's initial level step. Keep progress and section ownership on
-        # Verify; the next-action endpoint distinguishes level check from sweep.
-        return SCREEN_VERIFY
     if screen == SCREEN_IDLE:
         autolevel = _autolevel_snapshot(session)
         if autolevel.get("status") == "ramping":
@@ -312,7 +290,6 @@ def screen_for_session(session: Any) -> str:
 def _sections_for(
     screen: str,
     *,
-    capture_transport: str,
     reports_available: bool,
     tuning_offered: bool,
     readiness_blocked: bool,
@@ -329,7 +306,7 @@ def _sections_for(
         if screen == SCREEN_IDLE and readiness_blocked
         else list(_SCREEN_SECTIONS[screen])
     )
-    if screen == SCREEN_MIC and capture_transport == "local":
+    if screen == SCREEN_MIC:
         sections.extend((
             SECTION_LOCAL_CERTIFICATE_WARNING,
             SECTION_CAPTURE_SETUP,
@@ -347,74 +324,6 @@ def _level_match_snapshot(session: Any) -> dict[str, Any]:
     except (AttributeError, RuntimeError, TypeError):
         return {}
     return snap if isinstance(snap, dict) else {}
-
-
-def _relay_level_ready(session: Any) -> bool:
-    level = _level_match_snapshot(session)
-    last = level.get("last") if isinstance(level, dict) else None
-    ramp = last.get("ramp") if isinstance(last, dict) else None
-    return bool(
-        isinstance(ramp, dict)
-        and ramp.get("state") == "locked"
-    )
-
-
-def _relay_confirmation_pending(session: Any) -> bool:
-    acceptance = getattr(session, "acceptance", None)
-    return bool(
-        isinstance(acceptance, dict)
-        and str(acceptance.get("verdict") or "") == "revert_pending_confirm"
-    )
-
-
-def _level_match_refusal_failure(session: Any) -> dict[str, Any] | None:
-    """The last relay level-match ramp's terminal refusal, in the envelope's
-    public-failure shape — or None when there is nothing to report.
-
-    A level-match ramp terminal (``agc_suspected``, a safety timeout, a lost
-    phone feed, ...) never advances ``session.state`` — it is a retryable
-    sub-step, not a session failure — so it falls outside every other
-    ``failure`` branch in :func:`build_envelope`. Before this, the phone
-    terminal echoed the raw ramp code and the Room page showed nothing at
-    all (the 2026-07-16 jts3 finding: the operator saw the level check
-    silently give up with no explanation). This translates the last
-    unlocked ramp's code through the single shared mapping
-    (:func:`jasper.correction.level_match.describe_ramp_refusal`) so the
-    homeowner always sees why, in the same code/text/retryable/
-    recovery_action shape the rest of the envelope already uses.
-
-    Scoped by ``ramp["error"]`` being non-empty, not by ``ramp["state"]``: a
-    plain user-initiated cancel and a safety-timeout terminal both land in
-    ``RampState.CANCELLED``, and only the timeout sets an ``error`` — an
-    ordinary cancel must stay silent here. While a RETRY ramp is live
-    (``running`` is True — the same liveness source
-    :func:`_next_action_for` reads), the prior attempt's terminal is stale
-    news, not the current state, so nothing is reported mid-check. Once the
-    level locks, :func:`_relay_level_ready` short-circuits so a stale prior
-    failure never lingers after a successful retry.
-    """
-    if _relay_level_ready(session):
-        return None
-    level = _level_match_snapshot(session)
-    if level.get("running") is True:
-        return None
-    last = level.get("last") if isinstance(level, dict) else None
-    ramp = last.get("ramp") if isinstance(last, dict) else None
-    if not isinstance(ramp, dict):
-        return None
-    error_code = ramp.get("error")
-    if not error_code:
-        return None
-
-    from .level_match import describe_ramp_refusal
-
-    refusal = describe_ramp_refusal(error_code, ramp.get("error_detail"))
-    return {
-        "code": refusal.code,
-        "text": refusal.user_message,
-        "retryable": True,
-        "recovery_action": None,
-    }
 
 
 def _autolevel_snapshot(session: Any) -> dict[str, Any]:
@@ -1101,17 +1010,7 @@ def _verdict_text(
     if screen == SCREEN_MIC:
         return "Recording a moment of quiet to gauge the room noise."
     if screen == SCREEN_LEVEL:
-        if getattr(session, "capture_transport", "local") == "relay":
-            level = _level_match_snapshot(session)
-            last = level.get("last") if isinstance(level, dict) else None
-            ramp = last.get("ramp") if isinstance(last, dict) else None
-            state = (
-                str(ramp.get("state") or "")
-                if isinstance(ramp, dict)
-                else ""
-            )
-        else:
-            state = str(_autolevel_snapshot(session).get("status") or "")
+        state = str(_autolevel_snapshot(session).get("status") or "")
         if state == "maxed_out":
             return (
                 "The microphone is still too quiet at the safe software limit. "
@@ -1140,9 +1039,6 @@ def _next_action_for(
     session: Any,
     screen: str,
     verdict: dict[str, Any] | None,
-    *,
-    capture_transport: str,
-    relay_capture_pending: bool,
 ) -> dict[str, str] | None:
     """The single forward button, verdict-aware on the result screen.
 
@@ -1162,8 +1058,6 @@ def _next_action_for(
     reverts, the correction stays applied, and /reset remains the manual
     undo.
     """
-    if relay_capture_pending and capture_transport == "relay":
-        return None
     if session.state.value == "failed":
         return {
             "label": "Start over",
@@ -1177,16 +1071,9 @@ def _next_action_for(
     if session.state.value == "needs_repeat_capture":
         return {
             "label": "Repeat the main seat",
-            "endpoint": (
-                "/relay/capture"
-                if capture_transport == "relay"
-                else "/repeat-position"
-            ),
+            "endpoint": "/repeat-position",
         }
-    if (
-        screen == SCREEN_MIC
-        and getattr(session, "capture_transport", "local") != "relay"
-    ):
+    if screen == SCREEN_MIC:
         if bool(getattr(session, "local_capture_setup_bound", False)):
             return None
         return {
@@ -1194,8 +1081,7 @@ def _next_action_for(
             "endpoint": "/local-capture/setup",
         }
     if (
-        getattr(session, "capture_transport", "local") != "relay"
-        and session.state.value == "needs_noise_capture"
+        session.state.value == "needs_noise_capture"
         and bool(getattr(session, "local_capture_setup_bound", False))
     ):
         autolevel_status = str(_autolevel_snapshot(session).get("status") or "")
@@ -1214,44 +1100,6 @@ def _next_action_for(
             "label": "Measure this position",
             "endpoint": "/upload-noise",
         }
-    if getattr(session, "capture_transport", "local") == "relay":
-        if session.state.value == "needs_noise_capture":
-            level = _level_match_snapshot(session)
-            if _relay_level_ready(session):
-                return {
-                    "label": "Measure this position",
-                    "endpoint": "/relay/capture",
-                }
-            if level.get("running") is True:
-                return None
-            last = level.get("last") if isinstance(level, dict) else None
-            retry = isinstance(last, dict) and last.get("ramp")
-            return {
-                "label": "Retry level check" if retry else "Check measurement level",
-                "endpoint": "/relay/level-match",
-            }
-        if session.state.value == "applied":
-            if _relay_level_ready(session):
-                return {
-                    "label": "Verify correction",
-                    "endpoint": "/relay/verify",
-                }
-            return {
-                "label": "Check verification level",
-                "endpoint": "/relay/level-match",
-            }
-        if (
-            session.state.value == "verified"
-            and _relay_confirmation_pending(session)
-        ):
-            return {
-                "label": "Measure again to confirm",
-                "endpoint": (
-                    "/relay/verify"
-                    if _relay_level_ready(session)
-                    else "/relay/level-match"
-                ),
-            }
     if screen == SCREEN_RESULT and verdict is not None:
         if str(verdict.get("verdict")) == "revert_pending_confirm":
             return {
@@ -1273,12 +1121,7 @@ def room_position_label(total_positions: int) -> str:
     return f"{total_positions} {noun}"
 
 
-def _run_defaults(
-    session: Any,
-    *,
-    screen: str,
-    capture_transport: str,
-) -> dict[str, Any]:
+def _run_defaults(session: Any, *, screen: str) -> dict[str, Any]:
     """Disclose the exact Room choices the current or next run will use."""
     from .session import (
         DEFAULT_REPEAT_MAIN_POSITION,
@@ -1335,7 +1178,6 @@ def _run_defaults(
         },
         "repeat_main_position": repeat_main_position,
         "repeat_disclosure": repeat_disclosure,
-        "capture_transport": capture_transport,
         "change_allowed": (
             screen == SCREEN_IDLE and session.state.value == "idle"
         ),
@@ -1345,8 +1187,6 @@ def _run_defaults(
 def build_envelope(
     session: Any,
     *,
-    capture_transport: str | None = None,
-    relay_capture_pending: bool = False,
     reports_available: bool = False,
     readiness_blocker: dict[str, Any] | None | _ReadinessUnset = _READINESS_UNSET,
 ) -> dict[str, Any]:
@@ -1358,35 +1198,9 @@ def build_envelope(
     deterministic verdict block + verdict text, homeowner nudges, the next
     action, and progress.
     """
-    transport = str(
-        capture_transport
-        or getattr(session, "capture_transport", "local")
-        or "local"
-    )
     screen = _screen_for(session)
-    if (
-        relay_capture_pending
-        and transport == "relay"
-        and (
-            session.state.value == "applied"
-            or (
-                session.state.value == "verified"
-                and _relay_confirmation_pending(session)
-            )
-        )
-    ):
-        # Verification begins while the durable state remains APPLIED (or a
-        # pending-confirmation VERIFIED). Present the actual capture screen so
-        # its phone handoff stays visible and progress does not jump backward.
-        screen = SCREEN_VERIFY
     verdict = _verdict(session)
-    next_action = _next_action_for(
-        session,
-        screen,
-        verdict,
-        capture_transport=transport,
-        relay_capture_pending=relay_capture_pending,
-    )
+    next_action = _next_action_for(session, screen, verdict)
     blocker = None
     if screen == SCREEN_IDLE:
         if isinstance(readiness_blocker, _ReadinessUnset):
@@ -1421,10 +1235,6 @@ def build_envelope(
             failure = public_failure(CORRECTION_AUTO_REVERT_FAILED)
         else:
             failure = session_failure(getattr(session, "error", None))
-    elif transport == "relay":
-        failure = _level_match_refusal_failure(session)
-    if failure is not None and session.state.value != "failed":
-        next_action = None
     tuning_llm = _tuning_llm(screen)
     if failure is not None or session.state.value == "analyzing":
         tuning_llm["offered"] = False
@@ -1436,17 +1246,12 @@ def build_envelope(
         "state": session.state.value,
         "sections": _sections_for(
             screen,
-            capture_transport=transport,
             reports_available=reports_available,
             tuning_offered=bool(tuning_llm.get("offered")),
             readiness_blocked=blocker is not None,
             analyzing=session.state.value == "analyzing",
         ),
-        "run_defaults": _run_defaults(
-            session,
-            screen=screen,
-            capture_transport=transport,
-        ),
+        "run_defaults": _run_defaults(session, screen=screen),
         "curves": _curves(session),
         "fill_segments": _fill_segments(session),
         "headline": _headline(session),
@@ -1498,8 +1303,6 @@ _last_logged_signature: tuple[Any, ...] | None = None
 def build_envelope_logged(
     session: Any,
     *,
-    capture_transport: str | None = None,
-    relay_capture_pending: bool = False,
     reports_available: bool = False,
     readiness_blocker: dict[str, Any] | None | _ReadinessUnset = _READINESS_UNSET,
 ) -> dict[str, Any]:
@@ -1511,8 +1314,6 @@ def build_envelope_logged(
     """
     envelope = build_envelope(
         session,
-        capture_transport=capture_transport,
-        relay_capture_pending=relay_capture_pending,
         reports_available=reports_available,
         readiness_blocker=readiness_blocker,
     )

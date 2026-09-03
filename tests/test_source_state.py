@@ -13,12 +13,13 @@ error rather than raising — every test here exercises that contract too.
 from __future__ import annotations
 
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from jasper import source_state
+
+from tests._librespot_state import write_librespot_state
 
 
 @pytest.fixture(autouse=True)
@@ -80,31 +81,31 @@ async def test_spotify_playing_missing_state_file(tmp_path):
     """librespot writes the state file lazily (first --onevent fires
     after the first session). Before that, the probe must report
     not-playing rather than raising."""
-    path = tmp_path / "librespot.state.json"
+    path = tmp_path / "librespot.state.env"
     assert await source_state.spotify_playing(str(path)) is False
 
 
 async def test_spotify_playing_state_file_says_playing(tmp_path):
-    path = tmp_path / "librespot.state.json"
-    path.write_text(json.dumps(
-        {"playing": True, "paused": False, "stopped": False},
-    ))
+    path = write_librespot_state(
+        tmp_path / "librespot.state.env",
+        playing=True, paused=False, stopped=False,
+    )
     assert await source_state.spotify_playing(str(path)) is True
 
 
 async def test_spotify_playing_state_file_says_paused(tmp_path):
     """A paused session is not active. is_playing's contract is "playing,
     not paused, not stopped" — make sure paused state surfaces correctly."""
-    path = tmp_path / "librespot.state.json"
-    path.write_text(json.dumps(
-        {"playing": False, "paused": True, "stopped": False},
-    ))
+    path = write_librespot_state(
+        tmp_path / "librespot.state.env",
+        playing=False, paused=True, stopped=False,
+    )
     assert await source_state.spotify_playing(str(path)) is False
 
 
 async def test_spotify_observation_distinguishes_bad_read_from_stopped(tmp_path):
-    path = tmp_path / "librespot.state.json"
-    path.write_text("{not-json")
+    path = tmp_path / "librespot.state.env"
+    path.write_text("{not-an-assignment")
     assert await source_state.spotify_playing_observed(str(path)) is None
     # Existing callers retain the historical fail-soft bool contract.
     assert await source_state.spotify_playing(str(path)) is False

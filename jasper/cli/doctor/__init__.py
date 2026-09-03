@@ -231,13 +231,15 @@ from .aec import (
     _audio_profile_status_for_doctor,
     _assess_audio_profile,
     check_audio_profile_runtime,
+    _assess_chip_aec_alignment,
+    check_chip_aec_alignment,
     _assess_enhanced_aec_status,
     check_enhanced_aec,
     _assess_audio_validation_summary,
     _chip_aec_passive_evidence_pair,
     check_audio_validation_readiness,
     check_aec_bridge_running,
-    _AEC_RMS_RE,
+    _parse_rms_window,
     _AEC_MIC_MUSIC_THRESHOLD,
     _AEC_REF_SILENT_THRESHOLD,
     _assess_aec_bridge_output,
@@ -549,13 +551,15 @@ __all__ = [
     "_audio_profile_status_for_doctor",
     "_assess_audio_profile",
     "check_audio_profile_runtime",
+    "_assess_chip_aec_alignment",
+    "check_chip_aec_alignment",
     "_assess_enhanced_aec_status",
     "check_enhanced_aec",
     "_assess_audio_validation_summary",
     "_chip_aec_passive_evidence_pair",
     "check_audio_validation_readiness",
     "check_aec_bridge_running",
-    "_AEC_RMS_RE",
+    "_parse_rms_window",
     "_AEC_MIC_MUSIC_THRESHOLD",
     "_AEC_REF_SILENT_THRESHOLD",
     "_assess_aec_bridge_output",
@@ -716,7 +720,12 @@ def _json_payload(
         "warns": sum(1 for r in results if r.status == "warn"),
         "generated_at_epoch": time.time(),
         "results": [
-            {"name": r.name, "status": r.status, "detail": r.detail}
+            {
+                "name": r.name,
+                "status": r.status,
+                "detail": r.detail,
+                "reason": r.reason,
+            }
             for r in results
         ],
     }

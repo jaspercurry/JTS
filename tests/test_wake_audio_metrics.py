@@ -73,7 +73,6 @@ def test_identical_rms_consumers_alias_the_shared_function(
         ("_audit_wake_events.py", "rms"),
         ("_offline_wake_count.py", "_rms"),
         ("_waveform_fusion_experiment.py", "_rms"),
-        ("aec_erle_analyze.py", "_rms"),
     )
     for filename, attribute in consumers:
         module = _load_script(filename)

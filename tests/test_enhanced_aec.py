@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper import enhanced_aec
-from jasper.cli import aec_bridge
+from jasper.cli import aec_bridge_engines
 from jasper.cli import enhanced_aec_install
 
 
@@ -307,17 +307,17 @@ def test_select_engine_does_not_import_unverified_v2(monkeypatch):
 
     monkeypatch.setattr(enhanced_aec, "runtime_v2_verified", lambda: False)
     monkeypatch.setattr(
-        aec_bridge,
-        "_Aec3Engine",
+        aec_bridge_engines,
+        "Aec3V1Engine",
         lambda **_kwargs: selected.append("v1") or "v1",
     )
     monkeypatch.setattr(
-        aec_bridge,
-        "_Aec3V2Engine",
+        aec_bridge_engines,
+        "Aec3V2Engine",
         lambda **_kwargs: selected.append("v2") or "v2",
     )
     monkeypatch.setenv("JASPER_AEC_BINDING", "auto")
-    assert aec_bridge._select_engine() == "v1"
+    assert aec_bridge_engines.select_engine() == "v1"
     assert selected == ["v1"]
 
 
@@ -370,14 +370,14 @@ def test_select_engine_uses_v2_only_after_verification(monkeypatch):
 
     monkeypatch.setattr(enhanced_aec, "runtime_v2_verified", lambda: True)
     monkeypatch.setattr(
-        aec_bridge,
-        "_Aec3V2Engine",
+        aec_bridge_engines,
+        "Aec3V2Engine",
         lambda **_kwargs: selected.append("v2") or "v2",
     )
     fake_package = SimpleNamespace(HAS_V2=True)
     monkeypatch.setitem(sys.modules, "jasper_aec3", fake_package)
     monkeypatch.setenv("JASPER_AEC_BINDING", "auto")
-    assert aec_bridge._select_engine() == "v2"
+    assert aec_bridge_engines.select_engine() == "v2"
     assert selected == ["v2"]
 
 

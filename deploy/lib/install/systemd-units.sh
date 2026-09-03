@@ -219,20 +219,29 @@ _rollback_full_unit_install_transaction() {
 # than the AEC bridge's local-array path. The AEC units below stay
 # full-profile only, deliberately.
 install_hid_accessory_unit_files() {
-    # jasper-input: third-party HID accessory bridge (Anticater VK-01
-    # volume knob today; future macro pads / foot pedals). Reads
-    # /dev/input/event* via python-evdev, translates known devices'
-    # key events into HTTP calls against jasper-control. Always-on
-    # like jasper-mux — idle cost is negligible if no accessory is
+    # The WiiM mic adapter is a task inside jasper-input now (ADR-0225). An
+    # upgraded box still has the old daemon running and its unit enabled, and
+    # both producers would subscribe to the same GATT voice report and send to
+    # the same UDP mic source. Retire it before staging the host. Fresh
+    # installs no-op.
+    systemctl disable --now jasper-wiim-remote-mic.service \
+        >/dev/null 2>&1 || true
+    rm -f "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service" \
+          "${SYSTEMD_DIR}/multi-user.target.wants/jasper-wiim-remote-mic.service"
+    # jasper-input: every accessory bridge in one interpreter (ADR-0225).
+    # Reads /dev/input/event* via python-evdev and translates known devices'
+    # key events into HTTP calls against jasper-control; also runs the BLE mic
+    # adapter task for whichever accessory mic the reconciler below publishes.
+    # Always-on like jasper-mux — idle cost is negligible if no accessory is
     # attached. See jasper/accessories/.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-input.service" \
         "${SYSTEMD_DIR}/jasper-input.service"
     # Optional accessory mic profiles are activated by this root oneshot:
-    # it reads BlueZ's paired-device state, writes
-    # /var/lib/jasper/accessory-mics.env for jasper-voice, and owns the
-    # matching adapter unit state. This keeps rare remotes from imposing
-    # resident cost on every speaker.
+    # it reads BlueZ's paired-device state and writes
+    # /var/lib/jasper/accessory-mics.env, which is both jasper-voice's source
+    # list and jasper-input's instruction about which mic adapter to run. This
+    # keeps rare remotes from imposing resident cost on every speaker.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
@@ -242,12 +251,6 @@ install_hid_accessory_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.path" \
         "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
-    # WiiM Remote 2 BLE microphone adapter. Button events still flow through
-    # jasper-input; this companion daemon only decodes the remote's GATT voice
-    # report into the wiim_remote_2 manual mic UDP source.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-mic.service" \
-        "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
     # Root oneshot the adapter kicks (through jasper-control's restart broker)
     # on every reconnect: it reserves BLE connection-event length on the live
     # remote link. BlueZ hardcodes that to 0, which starves the mic to ~24% of
@@ -366,6 +369,7 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/bt-agent.service"
             "${SYSTEMD_DIR}/jasper-mux.service"
             "${SYSTEMD_DIR}/jasper-usbgadget.service"
+            "${SYSTEMD_DIR}/jasper-usbmic.service"
             "${SYSTEMD_DIR}/jasper-usbsink.service"
             "${SYSTEMD_DIR}/jasper-usbsink-volume.service"
             "${SYSTEMD_DIR}/jasper-usbnet-dhcp.service"
@@ -384,7 +388,6 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-voice.service"
             "${SYSTEMD_DIR}/jasper-input.service"
             "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
             "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
         )
         if [[ -x /usr/bin/snapserver ]]; then
@@ -963,6 +966,14 @@ park_low_memory_build_units() {
         _record_low_memory_parked_unit "${unit}"
     done
 
+    # jasper-fanin must stop before park_audio_clients_for_core_graph_restart
+    # stops jasper-outputd below: with outputd gone and CamillaDSP
+    # free-running, fanin's mixer loop loses its downstream pacer and its RT
+    # thread trips RLIMIT_RTTIME (SIGKILL) within ~1s. fanin is a restart
+    # target (JASPER_CORE_GRAPH_RESTART_TARGETS), not parked here, so it is
+    # stopped explicitly rather than reordered into either park list.
+    systemctl stop jasper-fanin.service 2>/dev/null || true
+    systemctl reset-failed jasper-fanin.service 2>/dev/null || true
     park_audio_clients_for_core_graph_restart
     for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
         systemctl stop "${unit}" 2>/dev/null || true
@@ -1113,11 +1124,16 @@ park_streambox_brain_units() {
     done
     systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
         >/dev/null 2>&1 || true
-    # The marker's only writer (jasper-aec-reconcile) is parked above, so a
-    # stale one would condition-fail every jasper-voice start the accessory
-    # reconciler issues for a paired mic remote.
+    # Both markers' only writer (jasper-aec-reconcile) is parked above, so
+    # neither can be corrected until the next boot, and each fails in its own
+    # direction. A stale voice-input-absent would condition-fail every
+    # jasper-voice start the accessory reconciler issues for a paired mic
+    # remote; a stale aec-bridge-ready would admit the bridge that voice's
+    # reconciler-owned Wants= drop-in pulls with it (ADR-0224), on a box with
+    # no XVF and nothing left to withdraw the verdict.
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
     rm -f "${STATE_DIR}/voice-input-absent"
+    rm -f /run/jasper-aec-reconcile/aec-bridge-ready
 }
 
 enable_streambox_web_sockets() {
@@ -1239,12 +1255,47 @@ start_streambox_runtime_units() {
     systemctl restart jasper-control.service
     # Enabling only arms these for the NEXT boot; deploy health checks this
     # boot. Mirrors the full path: restart the bridge so an already-paired
-    # remote picks up new code, then let the reconciler bring up the optional
-    # mic units a paired remote needs. Ordered after jasper-control, which is
-    # what the bridge posts key events to.
+    # remote picks up new code, then let the reconciler publish the mic source
+    # a paired remote needs. Ordered after jasper-control, which is what the
+    # bridge posts key events to.
     systemctl restart jasper-input.service 2>/dev/null || true
     /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
+}
+
+mask_distro_background_units() {
+    # Distro housekeeping a single-purpose speaker never benefits from. On a
+    # 415 MB Zero 2 W an apt-daily or man-db run evicts the audio path's page
+    # cache; cloud-init costs 6.9 s of boot re-deciding a host identity JTS
+    # already owns. Masking the timers leaves the services runnable by hand
+    # (`systemctl start apt-daily.service`) — only the schedule goes away.
+    # apt-daily-upgrade.timer is what drives unattended-upgrades, so security
+    # updates become the owner's `apt upgrade`, not the box's.
+    # To undo on a box that already ran this: `systemctl unmask --now <unit>`.
+    # A mask outlives the installer, so deleting this function does not
+    # restore the timers.
+    local unit
+    for unit in apt-daily.timer apt-daily-upgrade.timer man-db.timer \
+                dpkg-db-backup.timer e2scrub_all.timer; do
+        # `mask --now` also stops the unit, and stopping an absent one fails:
+        # these five ship in different packages and no image carries them all.
+        if systemctl list-unit-files "${unit}" 2>/dev/null \
+                | grep -q "^${unit}"; then
+            systemctl mask --now "${unit}" >/dev/null 2>&1 || true
+            # `mask --now` on a still-active timer records Result=resources
+            # (the mask severs the trigger link before the stop resolves it)
+            # and the unit sits in `failed` state forever even though the
+            # mask itself succeeded — clear that stale record.
+            systemctl reset-failed "${unit}" >/dev/null 2>&1 || true
+        fi
+    done
+    # The sentinel file is cloud-init's own opt-out: the package stays
+    # installed, and deleting the file restores it on the next boot.
+    local cloud_dir="${JTS_CLOUD_INIT_DIR:-/etc/cloud}"
+    if [[ -d "${cloud_dir}" ]]; then
+        touch "${cloud_dir}/cloud-init.disabled" \
+            || echo "  WARN: could not write ${cloud_dir}/cloud-init.disabled"
+    fi
 }
 
 install_streambox_systemd_units() {
@@ -1260,6 +1311,7 @@ install_streambox_systemd_units() {
     install_voice_unit_files
     install_audio_output_recovery_unit_files
     park_streambox_brain_units
+    mask_distro_background_units
 
     validate_streambox_systemd_units
     systemctl daemon-reload
@@ -1662,6 +1714,8 @@ install_systemd_units() {
     # boot — both carry [Install], so a copy alone is not enough.
     systemctl enable --now jts-audio.slice jts-mic.slice
 
+    mask_distro_background_units
+
     # Hardware-gated USB management network: enable the composite gadget (first
     # gadget unit we enable) and wire the device-activated DHCP. Its condition
     # skips cleanly when the resolved role cannot provide management transport
@@ -1775,7 +1829,7 @@ install_systemd_units() {
     systemctl restart jasper-input.service 2>/dev/null || true
     # Optional adapter-backed mic sources are profile-gated. Reconcile after
     # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
-    # without one keep the BLE decoder stopped/disabled.
+    # without one never load the BLE decoder at all.
     /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 

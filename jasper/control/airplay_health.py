@@ -197,10 +197,13 @@ def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
         # trigger is a bonded LEADER whose Snapcast round-trip pushes the
         # offset past a tight budget (the proactive, bond-aware diagnosis +
         # remediation lives in jasper/multiroom/airplay_latency.py + the
-        # grouping doctor check). Matches the stable substring of shairport's
-        # warning ("... it too short to accommodate an offset ..." — the "it"
-        # is shairport's own typo).
-        if "too short to accommodate an offset" in line:
+        # grouping doctor check). The fleet runs both shairport-sync 4.3.7
+        # and 5.2.3, and this warn()'s wording differs between them (4.3.7
+        # rtp.c:1822 vs. 5.2.3 rtp.c:1717) — verified against both trees at
+        # their pinned commits, so the match is trimmed to the substring
+        # both share rather than either version's full wording. warn()
+        # never consults debuglev, so it prints at any verbosity.
+        if "too short to accommodate an" in line:
             return {
                 "type": "shairport_offset_too_short",
                 "subsystem": "shairport",
@@ -629,7 +632,9 @@ class AirPlayHealthSampler:
             except Exception:  # noqa: BLE001
                 logger.exception("airplay health sampler tick failed")
             elapsed = time.monotonic() - sample_start
-            time.sleep(max(0.1, self._sample_interval - elapsed))
+            # Floor bounds the loop rate when a tick overruns the interval,
+            # so a slow tick under load can't collapse it to a tight spin.
+            time.sleep(max(1.0, self._sample_interval - elapsed))
 
     def _tick(self) -> None:
         now = self._time()

@@ -384,90 +384,30 @@ _PI5_8GB_MEMTOTAL_KB = 8128464   # 7938 MB
 _PI5_16GB_MEMTOTAL_KB = 16264848 # 15883 MB
 
 
-def test_compute_1gb_pi():
-    """1 GB Pi: 2% × 991 MB ≈ 19.8 MB → ~20 MB."""
-    result = _compute_min_free_kbytes(_PI5_1GB_MEMTOTAL_KB)
-    # 2% × 1014768 = 20295.36 → round to 20295
-    assert result == 20295
-    # And in human-readable terms, this is about 20 MB
-    assert 19_000 < result < 22_000
-
-
-def test_compute_2gb_pi():
-    """2 GB Pi: 2% × ~2 GB → ~40 MB."""
-    result = _compute_min_free_kbytes(_PI5_2GB_MEMTOTAL_KB)
-    # 2% × 2031264 = 40625.28 → round to 40625
-    assert result == 40625
-    assert 39_000 < result < 43_000
-
-
-def test_compute_4gb_pi():
-    """4 GB Pi: 2% × ~4 GB → ~81 MB."""
-    result = _compute_min_free_kbytes(_PI5_4GB_MEMTOTAL_KB)
-    assert 80_000 < result < 83_000
-
-
-def test_compute_8gb_pi():
-    """8 GB Pi: 2% × ~8 GB → ~160 MB."""
-    result = _compute_min_free_kbytes(_PI5_8GB_MEMTOTAL_KB)
-    assert 160_000 < result < 165_000
-
-
-def test_compute_16gb_pi_hits_ceiling():
-    """16 GB Pi: 2% × 16 GB = ~320 MB, but capped at 256 MB.
-    This is the load-bearing ceiling — verify the cap fires."""
-    result = _compute_min_free_kbytes(_PI5_16GB_MEMTOTAL_KB)
-    assert result == 262144   # exactly 256 MB
-
-
-def test_compute_very_small_hits_floor():
-    """A pathological tiny MemTotal (1 MB) shouldn't reduce
-    min_free_kbytes below the Pi Foundation default of 8192 kB."""
-    result = _compute_min_free_kbytes(1024)
-    assert result == 8192
-
-
-def test_compute_floor_threshold_exactly():
-    """At the boundary: 2% of 409600 kB = 8192 kB exactly. Should
-    return 8192 (the floor)."""
-    # 8192 / 0.02 = 409600 kB. So MemTotal at exactly this gives 8192.
-    result = _compute_min_free_kbytes(409_600)
-    assert result == 8192
-
-
-def test_compute_ceiling_threshold_exactly():
-    """At the boundary: 2% × 13107200 kB = 262144 kB exactly.
-    The cap should return 262144 (not over-clamp)."""
-    result = _compute_min_free_kbytes(13_107_200)
-    assert result == 262144
-
-
-def test_compute_just_below_ceiling():
-    """Just below the ceiling: should still be computed proportionally,
-    not pinned to 262144."""
-    # 2% × 13_000_000 = 260_000 kB
-    result = _compute_min_free_kbytes(13_000_000)
-    assert result == 260_000
-    assert result < 262144   # NOT capped
-
-
-def test_compute_rounding_behavior():
-    """awk's int(x + 0.5) gives round-half-up. Verify a value
-    that hits the rounding boundary."""
-    # 2% × 100_001 = 2000.02 → round to 2000 → floor to 8192
-    # 2% × 8_192_050 = 163841 (rounds from 163841.0)
-    result = _compute_min_free_kbytes(8_192_050)
-    assert result == 163_841
-
-
-def test_compute_rejects_negative_or_garbage_input():
-    """awk on a non-numeric input would produce 0 (which then hits
-    the floor). Verify that the floor kicks in rather than a
-    crash or negative output."""
-    # awk treats non-numeric strings as 0 in arithmetic contexts.
-    # int(0 * 0.02 + 0.5) = 0, then clamped to 8192.
-    result = _compute_min_free_kbytes(0)
-    assert result == 8192
+@pytest.mark.parametrize(
+    "memtotal_kb, expected",
+    [
+        # Unreadable/garbage MemTotal: awk yields 0, the floor catches it.
+        (0, 16384),
+        (1024, 16384),
+        (458_752, 16384),      # Pi Zero 2 W, 512 MB board: 2% is only ~9 MB
+        (819_200, 16384),      # 2% lands exactly on the floor
+        (_PI5_1GB_MEMTOTAL_KB, 20295),
+        (_PI5_2GB_MEMTOTAL_KB, 40625),
+        (_PI5_4GB_MEMTOTAL_KB, 81278),
+        (_PI5_8GB_MEMTOTAL_KB, 162569),
+        (8_192_050, 163841),   # awk's int(x + 0.5) rounds half up
+        (13_000_000, 260000),  # just below the ceiling: still proportional
+        (13_107_200, 262144),  # 2% lands exactly on the ceiling
+        (_PI5_16GB_MEMTOTAL_KB, 262144),  # capped
+    ],
+)
+def test_compute_min_free_kbytes_clamps_two_percent_between_16mb_and_256mb(
+    memtotal_kb, expected
+):
+    """min_free_kbytes is 2% of RAM, floored at the 16 MB Raspberry Pi OS
+    itself ships in /etc/sysctl.d/98-rpi.conf and capped at 256 MB."""
+    assert _compute_min_free_kbytes(memtotal_kb) == expected
 
 
 # --- optional enhanced-AEC: canonical C++ build parallelism -----------
@@ -531,6 +471,51 @@ def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o750
+
+
+def test_ensure_state_dir_does_not_rechmod_an_existing_dir(tmp_path):
+    """`install -d -m` re-chmods an EXISTING dir, briefly narrowing an
+    already-widened 0770 STATE_DIR back to 0750 on every call. Pin that an
+    existing STATE_DIR never reaches `install` at all, via a fake `install`
+    on PATH that records its invocations."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o770)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "install.calls"
+    fake_install = bin_dir / "install"
+    fake_install.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> "
+        + shlex.quote(str(calls))
+        + "\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_install.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && "
+            + "STATE_DIR="
+            + shlex.quote(str(state_dir))
+            + " && ensure_state_dir",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not calls.exists(), (
+        "ensure_state_dir called `install -d` on an existing STATE_DIR: "
+        f"{calls.read_text(encoding='utf-8') if calls.exists() else ''}"
+    )
 
 
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
@@ -704,6 +689,163 @@ def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
     assert "connection.autoconnect yes" in body
     assert "connection.autoconnect-retries 0" in body
     assert "802-11-wireless.powersave 2" in body
+
+
+_SYSTEMD_UNITS_LIB = _INSTALL_LIB_DIR / "systemd-units.sh"
+
+
+def test_mask_distro_background_units_masks_present_timers_only(tmp_path):
+    """Only the timers the image actually carries are masked (`mask --now` on
+    an absent unit would fail the install); each masked unit's stale
+    Result=resources failed-state is cleared; and cloud-init is opted out via
+    its own sentinel rather than by removing the package."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "systemctl.log"
+    present = "apt-daily.timer\napt-daily-upgrade.timer\nman-db.timer\n"
+    stub = bindir / "systemctl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [[ "$1" == "list-unit-files" ]]; then printf %s {shlex.quote(present)};'
+        " exit 0; fi\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    cloud_dir = tmp_path / "cloud"
+    cloud_dir.mkdir()
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH={shlex.quote(str(bindir))}:$PATH && "
+            f"source {_SYSTEMD_UNITS_LIB} >/dev/null 2>&1 && "
+            "mask_distro_background_units",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "JTS_CLOUD_INIT_DIR": str(cloud_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (cloud_dir / "cloud-init.disabled").exists()
+    calls = log.read_text(encoding="utf-8").splitlines()
+    masked = [line.split()[-1] for line in calls if line.startswith("mask ")]
+    assert masked == [
+        "apt-daily.timer",
+        "apt-daily-upgrade.timer",
+        "man-db.timer",
+    ]
+    reset = [
+        line.split()[-1] for line in calls if line.startswith("reset-failed ")
+    ]
+    assert reset == masked
+
+
+def _run_tune_nginx_worker_processes(conf: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {_INSTALL_SH} >/dev/null 2>&1; tune_nginx_worker_processes",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "JTS_NGINX_MAIN_CONF": str(conf)},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "packaged",
+    [
+        "user www-data;\nworker_processes auto;\npid /run/nginx.pid;\n",
+        "worker_processes 4;  # tuned\nevents { worker_connections 768; }\n",
+        "user www-data;\nevents { worker_connections 768; }\n",
+        "worker_processes 1;\n",
+    ],
+)
+def test_tune_nginx_worker_processes_pins_one_worker(tmp_path, packaged):
+    """One main-context worker_processes directive, value 1, stable on re-run.
+
+    A second copy would make nginx reject the config as duplicate, so the
+    count matters as much as the value."""
+    conf = tmp_path / "nginx.conf"
+    conf.write_text(packaged, encoding="utf-8")
+    _run_tune_nginx_worker_processes(conf)
+    once = conf.read_text(encoding="utf-8")
+    _run_tune_nginx_worker_processes(conf)
+    assert conf.read_text(encoding="utf-8") == once
+
+    directives = [
+        line.strip()
+        for line in once.splitlines()
+        if re.match(r"^\s*worker_processes\s", line)
+    ]
+    assert len(directives) == 1
+    assert directives[0].startswith("worker_processes 1;")
+
+
+def _run_reconcile_headless_boot_config(cfg_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {_RENDERERS_LIB} >/dev/null 2>&1; "
+            "reconcile_headless_boot_config",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "JTS_BOOT_CONFIG_FILE": str(cfg_path)},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "stock",
+    [
+        "[all]\ndtparam=audio=on\ndtoverlay=vc4-kms-v3d\nmax_framebuffers=2\n",
+        "dtoverlay=vc4-kms-v3d,cma-256\ngpu_mem=64\n[pi5]\ngpu_mem=128\n",
+        "dtparam=audio  # bare form means on\ngpu_mem_512=64\n",
+        "dtparam=audio=on # codec\ndtoverlay=vc4-kms-v3d  # display\n",
+        "arm_64bit=1",
+    ],
+)
+def test_reconcile_headless_boot_config_owns_directives_and_is_idempotent(
+    tmp_path, stock
+):
+    """Headless trim: one copy of each directive, stable across re-runs.
+
+    The bare ``dtoverlay=`` must precede ``dtparam=audio=off``; without it
+    the firmware offers the parameter to whatever overlay was declared last
+    instead of to the base DTB.
+    """
+    cfg = tmp_path / "config.txt"
+    cfg.write_text(stock, encoding="utf-8")
+    _run_reconcile_headless_boot_config(cfg)
+    once = cfg.read_text(encoding="utf-8")
+    _run_reconcile_headless_boot_config(cfg)
+    assert cfg.read_text(encoding="utf-8") == once
+
+    lines = [line.strip() for line in once.splitlines()]
+    assert lines.count("gpu_mem=16") == 1
+    assert lines.count("dtparam=audio=off") == 1
+    assert lines.count("dtoverlay=") == 1
+    assert lines.index("dtoverlay=") == lines.index("dtparam=audio=off") - 1
+    assert not [line for line in lines if line.startswith("dtparam=audio=on")]
+    assert not [
+        line
+        for line in lines
+        if line.startswith("gpu_mem") and line != "gpu_mem=16"
+    ]
+    assert not [line for line in lines if line.startswith("dtparam=audio")][1:]
+    vc4 = [line for line in lines if line.startswith("dtoverlay=vc4-kms-v3d")]
+    assert len(vc4) == (1 if "vc4-kms-v3d" in stock else 0)
+    assert all(line.startswith("dtoverlay=vc4-kms-v3d,cma-64") for line in vc4)
 
 
 def _run_reconcile_usb_data_role(
@@ -2269,6 +2411,26 @@ def test_aborted_install_restores_units_from_both_park_phases(tmp_path):
     assert not still_dead, (
         f"aborted install left these units stopped: {still_dead}"
     )
+
+
+def test_park_stops_fanin_before_outputd(tmp_path):
+    """jasper-fanin must be stopped before jasper-outputd during the park.
+
+    With outputd gone and CamillaDSP free-running, fanin's mixer loop loses
+    its downstream pacer and its RT thread trips RLIMIT_RTTIME (SIGKILL)
+    within ~1s if it is still running when outputd stops. Regression pin for
+    park_low_memory_build_units's explicit early fanin stop.
+    """
+    run = _run_park_cycle(
+        tmp_path,
+        active=["jasper-fanin.service", "jasper-outputd.service"],
+        scenario="mark_trap; exit 1",
+    )
+
+    stops = [call.split()[-1] for call in run.calls if call.startswith("stop ")]
+    assert stops.index("jasper-fanin.service") < stops.index(
+        "jasper-outputd.service"
+    ), f"jasper-fanin must be stopped before jasper-outputd; got {stops}"
 
 
 def test_aborted_install_restores_the_graph_before_its_renderers(tmp_path):

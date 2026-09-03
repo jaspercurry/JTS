@@ -78,31 +78,35 @@ def test_every_parked_local_source_unit_has_systemd_start_marker():
         assert LOADER_ENV_SCRUB in text, unit
 
 
-def test_every_declared_bluetooth_accessory_adapter_has_source_start_marker():
-    """Optional adapters inherit Bluetooth Off from registry metadata."""
-
-    services = {
-        profile.mic.adapter_service
+def _adapter_host_units() -> set[Path]:
+    hosts = {
+        str(profile.mic.adapter_host_service)
         for profile in KNOWN_PROFILES
-        if profile.mic.status == "adapter" and profile.mic.adapter_service
+        if profile.mic.status == "adapter" and profile.mic.adapter_host_service
     }
-    assert services
-    for service in services:
-        path = REPO / "deploy" / "systemd" / service
-        assert path.exists(), service
+    assert hosts
+    return {REPO / "deploy" / "systemd" / host for host in hosts}
+
+
+def test_an_accessory_adapter_host_is_not_gated_on_the_bluetooth_marker():
+    """Adapters run inside the always-on HID bridge (ADR-0225), so their host
+    unit must start with Bluetooth Off — its buttons are USB-capable and its
+    push-to-talk is how a wired mic is used. Bluetooth Off reaches the adapter
+    through jasper-accessory-reconcile, which publishes no source and refreshes
+    the host, rather than through a unit Condition that would take the buttons
+    down with the microphone."""
+
+    for path in _adapter_host_units():
+        assert path.exists(), path
         text = path.read_text()
-        assert f"ConditionPathExists={marker_path('bluetooth')}" in text, service
-        assert LOADER_ENV_SCRUB in text, service
+        assert f"ConditionPathExists={MARKER_DIR}/" not in text, path
+        assert LOADER_ENV_SCRUB in text, path
 
 
 def test_source_start_markers_do_not_order_after_the_coordinator():
     """The coordinator starts these units; an After= edge would deadlock."""
 
-    accessory_paths = {
-        REPO / "deploy" / "systemd" / str(profile.mic.adapter_service)
-        for profile in KNOWN_PROFILES
-        if profile.mic.status == "adapter" and profile.mic.adapter_service
-    }
+    accessory_paths = _adapter_host_units()
     for path in set(PARKED_UNIT_DEPLOY_FILES.values()) | accessory_paths:
         for line in path.read_text().splitlines():
             if line.startswith(("After=", "Requires=")):

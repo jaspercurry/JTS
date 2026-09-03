@@ -11,14 +11,19 @@ calls against jasper-control on localhost.
 Adding a normal evdev-backed HID remote is a one-entry change in
 `KNOWN_PROFILES`. Hardware that needs vendor feature reports, LED
 feedback, or a real remote microphone should extend the profile
-metadata first, then add the narrow runtime adapter it needs.
+metadata first, then add the narrow runtime adapter it needs as a task
+in the bridge process (bridge.MIC_ADAPTERS).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal, Mapping, Union
 
-from .constants import WIIM_REMOTE_2_MIC_DEVICE, WIIM_REMOTE_2_NAME_RE
+from .constants import (
+    WIIM_REMOTE_2_MIC_DEVICE,
+    WIIM_REMOTE_2_NAME_RE,
+    WIIM_REMOTE_2_SOURCE_ID,
+)
 
 
 # Subset of evdev keycodes we care about for HID consumer-control
@@ -126,7 +131,11 @@ class RemoteMicSupport:
     detail: str = "No remote microphone integration."
     capture_profile_id: str | None = None
     device: str | None = None
-    adapter_service: str | None = None
+    # The unit whose process RUNS the adapter, not a unit the adapter owns:
+    # adapters are tasks inside the always-on HID bridge (ADR-0225), so
+    # jasper-accessory-reconcile refreshes this unit and never enables,
+    # disables or stops it.
+    adapter_host_service: str | None = None
 
 
 @dataclass(frozen=True)
@@ -248,14 +257,14 @@ WIIM_REMOTE_2 = RemoteProfile(
     },
     mic=RemoteMicSupport(
         status="adapter",
-        capture_profile_id="wiim_remote_2",
+        capture_profile_id=WIIM_REMOTE_2_SOURCE_ID,
         device=WIIM_REMOTE_2_MIC_DEVICE,
-        adapter_service="jasper-wiim-remote-mic.service",
+        adapter_host_service="jasper-input.service",
         detail=(
             "The remote has a built-in MEMS mic exposed as a HID-over-GATT "
-            "voice report, not a standard Linux capture device. "
-            "jasper-wiim-remote-mic decodes that stream and forwards it to "
-            "the wiim_remote_2 manual mic source."
+            "voice report, not a standard Linux capture device. The "
+            "wiim_remote_mic adapter task inside jasper-input decodes that "
+            "stream and forwards it to the wiim_remote_2 manual mic source."
         ),
     ),
     reserved_features=(

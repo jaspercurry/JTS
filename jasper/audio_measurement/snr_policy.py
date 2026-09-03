@@ -335,110 +335,6 @@ def excitation_covered_bands(
     }
 
 
-def sweep_excitation_bands(
-    *,
-    f1_hz: float,
-    f2_hz: float,
-) -> tuple[tuple[str, float, float], ...]:
-    """Three log-uniform SNR bands spanning EXACTLY the swept range.
-
-    :data:`CROSSOVER_SNR_BANDS_HZ` is a table of canonical ACOUSTIC bands, and
-    it is the right table when the sweep is wide enough to excite them. It is
-    the wrong table for a narrow sweep, because a band the sweep only partly
-    covers puts the two sides of an SNR subtraction into different units:
-    :func:`apply_noise_band_fallback` substitutes a RAW dBFS ambient level for
-    an uncovered band, while the signal side stays a gated, deconvolved
-    transfer-function level. Those do not subtract.
-
-    The summed-crossover capture was exactly that narrow case: a sweep one
-    octave either side of the crossover (``[fc/2, fc*2]``), so at the shipped
-    crossover frequencies NO canonical band was fully covered and every band
-    that decided the alignment verdict took the raw fallback. Measured through
-    the production analyzer at an 8 s sweep (synthetic captures, 162 cases) the
-    resulting SNR error ran **-22.08 to +11.11 dB** and refused **43 of 162**
-    captures whose whole-sweep SNR was genuinely sufficient (SC-1 SNR units
-    defect, 2026-08-01). That producer is deleted (ADR-0197), so the numbers
-    below describe the hazard rather than a live path — but the units rule is
-    path-independent and binds whatever measures a narrow band next.
-
-    **Sweep duration must be stated with any number here, and 8 s is a CEILING
-    rather than "the" production length.** The length that produced these
-    figures was ``min(SUMMED_SWEEP_DURATION_S, maximum_duration_s)``, where
-    ``maximum_duration_s`` is the minimum across BOTH adjacent drivers'
-    operator-declared ``max_sweep_duration_s``, then decremented until the
-    sweep fits. With ``MAX_TWEETER_SWEEP_DURATION_S = 4.0`` a real two-way ran
-    a 4 s summed sweep, so shipped configurations sat BETWEEN the two lengths
-    measured here and are not covered by either.
-
-    That matters because duration controls the SIGN: the raw substitute gets no
-    sweep processing gain while the deconvolved side does, so the substitution
-    understates noise at short sweeps and overstates it at long ones. The same
-    code at 1 s runs -13.32 to +27.44 dB and produced 3 outright false PASSES.
-    At 8 s none of the 162 cases became a false pass — but 6 still read HIGH (up
-    to +11.11 dB), and the false-pass regime IS the short-sweep regime, so the
-    8 s result is not evidence that shorter shipped configurations are safe.
-
-    Deriving the table from ``[f1_hz, f2_hz]`` removes the mismatch at its
-    source rather than correcting for it: every band is covered by
-    construction, so the fallback is structurally unreachable and both sides
-    of every subtraction stay in the one gated deconvolved domain.
-
-    Three bands rather than one keeps per-band granularity **on the REFUSAL
-    path**, where it is real: :func:`band_snr_verdicts` reduces with
-    :func:`worst_band_verdict`, any one band verdicting ``insufficient``
-    outranks its ``ok`` siblings, and a capture whose lower shoulder cannot
-    support the null it is about to certify is refused instead of cleared by a
-    two-octave average. Resolution is two thirds of an octave for a
-    full-width sweep, comparable to the canonical table's own bands.
-
-    It reaches the null-depth CAP too, but only since the equal-verdict
-    tie-break was fixed (issue #2026). While :func:`worst_band_verdict`
-    replaced its incumbent on a STRICTLY greater verdict rank, a table of all
-    ``ok`` bands returned the FIRST — ``sweep_low`` — and
-    :func:`cap_null_depth_db` capped against a band that could be far more
-    permissive than the true worst (17 dB apart on the reported example, 55 dB
-    against 38 dB). That tie-break now prefers the lowest ``estimated_snr_db``
-    among equal verdicts, so the cap is taken against the worst of the three.
-
-    Coverage is ASSERTED, not assumed: this raises rather than return a table
-    that would re-open the fallback. That assertion is what makes "covered by
-    construction" a checked claim.
-
-    Raises :class:`ValueError` for a non-finite, non-positive, or inverted
-    range, and for any table that fails :func:`excitation_covered_bands`.
-    """
-
-    lo, hi = float(f1_hz), float(f2_hz)
-    if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= lo:
-        raise ValueError(
-            "sweep_excitation_bands: need 0 < f1_hz < f2_hz, "
-            f"got f1_hz={f1_hz!r} f2_hz={f2_hz!r}"
-        )
-    # Interior edges are clamped into (lo, hi): cubing a cube root can overshoot
-    # the endpoint by an ulp, which would invert the top band's edges.
-    ratio = (hi / lo) ** (1.0 / 3.0)
-    edge_low = min(max(lo * ratio, lo), hi)
-    edge_high = min(max(edge_low, edge_low * ratio), hi)
-    bands = (
-        ("sweep_low", lo, edge_low),
-        ("sweep_mid", edge_low, edge_high),
-        ("sweep_high", edge_high, hi),
-    )
-    uncovered = sorted(
-        band_id
-        for band_id, is_covered in excitation_covered_bands(
-            bands, f1_hz=lo, f2_hz=hi
-        ).items()
-        if not is_covered
-    )
-    if uncovered:
-        raise ValueError(
-            "sweep_excitation_bands: derived bands must be covered by "
-            f"[{lo}, {hi}] by construction, but {uncovered} are not"
-        )
-    return bands
-
-
 def apply_noise_band_fallback(
     noise_bands: Sequence[Mapping[str, Any]],
     *,
@@ -491,8 +387,7 @@ def apply_noise_band_fallback(
     the gate does not read and the deconvolved value there is a Tikhonov
     artifact). It is not a licence to mix domains inside a gated band. A
     consumer whose gate reads uncovered bands should narrow its band table to
-    the excited range instead — see :func:`sweep_excitation_bands`, which
-    makes the fallback structurally unreachable rather than correcting for it.
+    the excited range instead.
     """
 
     robust_by_id = {item["band_id"]: item for item in robust_bands}
@@ -555,9 +450,8 @@ def _band_overlaps(band_hz: Any, lo_hz: float, hi_hz: float) -> bool:
 def _worst_snr_key(band: Mapping[str, Any]) -> float:
     """A band's ``estimated_snr_db`` as a comparable tie-break key.
 
-    Lower sorts worse. Both consumers of the winning entry's SNR read a
-    number the measurement must actually support, so both want the minimum:
-    :func:`cap_null_depth_db` proves a reported null depth against it, and
+    Lower sorts worse. The consumer of the winning entry's SNR reads a number
+    the measurement must actually support, so it wants the minimum:
     ``jasper.web.correction_crossover_backend``'s completion-time level
     correction subtracts it from the solver's requirement to size a
     playback-level shortfall.
@@ -596,12 +490,11 @@ def worst_band_verdict(
     * ``verdict`` — the REFUSAL signal. Ranks insufficient > reduced > ok, and
       dominates the selection: one ``insufficient`` band vetoes its ``ok``
       siblings however good its own SNR is.
-    * ``estimated_snr_db`` — the number two live consumers grade against.
-      :func:`cap_null_depth_db` proves a reported null depth against it
-      (alignment class), and ``jasper.web.correction_crossover_backend``'s
-      completion-time level correction subtracts it from the solver's
-      requirement to size a playback-level shortfall (magnitude class — the
-      route ``analyze_driver_capture`` and
+    * ``estimated_snr_db`` — the number the live consumer grades against.
+      ``jasper.web.correction_crossover_backend``'s completion-time level
+      correction subtracts it from the solver's requirement to size a
+      playback-level shortfall (magnitude class — the route
+      ``analyze_driver_capture`` and
       ``program_analysis._driver_response`` feed). Among entries of EQUAL
       verdict rank the LOWEST one wins, so this is the minimum over the
       window, not whichever band happened to come first in the table (issue
@@ -791,50 +684,3 @@ def band_snr_verdicts(
         "worst_relevant": worst_relevant,
         "verdict": overall_verdict,
     }
-
-
-def cap_null_depth_db(
-    measured_db: float,
-    worst_relevant: Mapping[str, Any] | None,
-    margin_db: float,
-) -> tuple[float, bool]:
-    """Cap a measured null depth to what the overlap-band SNR can prove.
-
-    A null of depth D needs at least D + ``margin_db`` of SNR in the overlap
-    band to be trustworthy ("Level control and SNR": "a null of depth D
-    cannot be measured with less than about D + 10 dB of SNR in the overlap
-    band"). Reporting a deeper number than the noise floor can support would
-    overstate confidence, so this returns the (possibly capped) depth to
-    REPORT and whether capping occurred.
-
-    ``worst_relevant`` is the ``worst_relevant`` entry from
-    :func:`band_snr_verdicts` for the overlap band (``relevant_hz=[fc/2,
-    fc*2]`` for a summed-crossover decision). Only its ``estimated_snr_db`` is
-    read here, and that number is the MINIMUM over the window at the worst
-    verdict rank (see :func:`worst_band_verdict`'s tie-break) — the band that
-    actually limits the measurement, not the first one in the table. When
-    ``worst_relevant`` is ``None`` or carries no numeric evidence — including
-    the alignment-class "unknown" case, where :func:`band_snr_verdicts`
-    already nulls out ``estimated_snr_db`` for scalar-only/no evidence — the
-    measured depth is returned unchanged, uncapped: there is no SNR figure to
-    cap against.
-
-    The capped value floors at 0 dB (never negative — "a null shallower than
-    nothing" is not a meaningful report) but the comparison against
-    ``measured_db`` uses the UNCLAMPED cap, so a very low overlap SNR still
-    reports "capped at 0 dB", not silently "uncapped because 0 > cap".
-
-    The pass/fail verdict for a summed-crossover capture must be computed
-    from the UNCAPPED ``measured_db`` BEFORE calling this — a capped-but-
-    still-deep null is safely "at least that deep". This function does not
-    itself decide that verdict.
-    """
-    if worst_relevant is None:
-        return measured_db, False
-    snr = worst_relevant.get("estimated_snr_db")
-    if snr is None:
-        return measured_db, False
-    cap = float(snr) - margin_db
-    if measured_db > cap:
-        return max(cap, 0.0), True
-    return measured_db, False

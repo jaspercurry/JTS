@@ -46,6 +46,7 @@ const el = (id) => document.getElementById(id);
 const commissionButtonEl = el("echo-commission-button");
 // The idle label is single-sourced from the server-rendered markup.
 const COMMISSION_LABEL = commissionButtonEl ? commissionButtonEl.textContent : "";
+const COMMISSION_RUNNING_LABEL = "Aligning…";
 
 function setText(id, value) {
   const node = el(id);
@@ -105,6 +106,14 @@ function applyFirmwareUpdateStatus(s) {
   }
 }
 
+function commissionLine(commission, running) {
+  if (running) return "Running…";
+  if (commission.state === "failed") {
+    return "Last alignment failed: " + (commission.detail || "see the journal");
+  }
+  return commission.state === "passed" ? "Aligned." : "";
+}
+
 function applyProfileStatus(s) {
   const settings = s.mic_settings || {};
   const echo = settings.echo || {};
@@ -115,32 +124,27 @@ function applyProfileStatus(s) {
 
   setText("echo-status-title", echo.title || "Microphone input");
   setText("echo-status-detail", echo.detail || profile.reason || "—");
-  // A commission-recommending action (backend-decoded boolean, absent key =
-  // hidden) renders as the one-tap button instead of the SSH instruction it
-  // replaces; every other action stays a text line.
   const actionText = echo.action || "";
-  const commissionable = !!echo.commission_recommended;
+  // Alignment is an affordance of the array, not of a remedy the reconciler
+  // happens to be recommending, so the button follows the hardware fact.
+  const chipCapable = !!(settings.mic || {}).chip_aec_capable;
   const commission = s.commission || {};
   const running = !!commission.running;
   const action = el("echo-status-action");
   if (action) {
-    action.hidden = !actionText || commissionable;
+    action.hidden = !actionText;
     action.textContent = actionText;
   }
   if (commissionButtonEl && !commissionBusy) {
-    commissionButtonEl.hidden = !commissionable && !running;
+    commissionButtonEl.hidden = !chipCapable;
     commissionButtonEl.disabled = running;
-    commissionButtonEl.textContent = running
-      ? "Re-measuring chip AEC…"
-      : COMMISSION_LABEL;
+    commissionButtonEl.textContent = running ? COMMISSION_RUNNING_LABEL : COMMISSION_LABEL;
   }
   const commissionDetail = el("echo-commission-detail");
   if (commissionDetail) {
-    const failed = !running && commission.state === "failed";
-    commissionDetail.hidden = !failed;
-    commissionDetail.textContent = failed
-      ? "Last re-measurement failed: " + (commission.detail || "see the journal")
-      : "";
+    const text = chipCapable ? commissionLine(commission, running) : "";
+    commissionDetail.hidden = !text;
+    commissionDetail.textContent = text;
   }
 
   const warning = el("echo-status-warning");
@@ -590,6 +594,14 @@ if (firmwareButton) {
 
 if (commissionButtonEl) {
   commissionButtonEl.addEventListener("click", async () => {
+    if (!(await jtsConfirm(
+      "The speaker will play short test chirps for about a minute. " +
+        "Music stops now and starts again when the run ends. " +
+        "Keep every speaker in the room quiet.",
+      { title: "Play the calibration tones?" },
+    ))) {
+      return;
+    }
     commissionBusy = true;
     commissionButtonEl.disabled = true;
     commissionButtonEl.textContent = "Starting…";
@@ -600,11 +612,11 @@ if (commissionButtonEl) {
       if (err && err.status === 409 && err.body && err.body.commission) {
         // Another client already started the run — reflect it calmly; the
         // poll below re-renders from truth.
-        commissionButtonEl.textContent = "Re-measuring chip AEC…";
+        commissionButtonEl.textContent = COMMISSION_RUNNING_LABEL;
       } else {
         commissionButtonEl.textContent = COMMISSION_LABEL;
         commissionButtonEl.disabled = false;
-        alertMessage = "Re-measurement failed to start: " + err.message;
+        alertMessage = "Alignment failed to start: " + err.message;
       }
     }
     commissionBusy = false;

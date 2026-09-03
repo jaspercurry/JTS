@@ -18,8 +18,8 @@ streambox = [
     # through a paired remote's mic (push-to-talk, no wake word). Exactly
     # [full] minus the wake/mic/AEC/XVF runtimes that path never loads.
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
-    "google-genai==2.9.0",
-    "openai>=2.36.0",
+    "google-genai==2.22.0",
+    "openai>=3.7.0",
     "audioop-lts>=0.2; python_version >= '3.13'",
     "camilladsp @ https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087",
     "sounddevice==0.5.6",
@@ -27,21 +27,20 @@ streambox = [
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
     "httpx==0.28.1",
-    "gtfs-realtime-bindings==2.1.0",
-    "protobuf==7.35.1",
+    "gtfs-realtime-bindings==2.2.0",
+    "protobuf==7.36.0",
     "rapidfuzz>=3.6,<4",
-    "google-auth>=2.36",
+    "google-auth>=2.56.0",
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.150",
-    "evdev>=1.7; sys_platform == 'linux'",
+    "evdev>=2.0; sys_platform == 'linux'",
     "pyudev>=0.24",
     "dbus-next>=0.2.3",
-    "zeroconf>=0.149,<1.0",
-    "cryptography>=50.0.0",
+    "zeroconf>=0.151.3,<1.0",
 ]
 
 full = [
-    "google-genai==2.9.0",
+    "google-genai==2.22.0",
     # OpenAI Realtime SDK — used by jasper.voice.openai_session for
     # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
     # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
@@ -51,7 +50,7 @@ full = [
     # which we don't use. Pulls in `websockets` as the realtime
     # transport. Skippable at install time only if the active
     # provider is gemini AND the user is sure they'll never switch.
-    "openai>=2.36.0",
+    "openai>=3.7.0",
     # `audioop` was removed from Python 3.13's stdlib (PEP 594). PiOS
     # Trixie ships 3.13, and jasper.voice.openai_session uses
     # audioop.ratecv to upsample 16 kHz mic audio to the 24 kHz that
@@ -80,14 +79,14 @@ full = [
     "scipy>=1.13,<2",
     "spotipy==2.26.0",
     "httpx==0.28.1",
-    "onnxruntime>=1.17",
+    "onnxruntime>=1.29",
     # The subway fallback only needs the standard GTFS-Realtime wire
     # schema. nyct-gtfs hard-pins the unsupported protobuf 4.25.3 runtime;
     # use the maintained schema bindings and keep the shared protobuf
     # runtime explicit because ONNX Runtime and the Google client stack
     # consume it too.
-    "gtfs-realtime-bindings==2.1.0",
-    "protobuf==7.35.1",
+    "gtfs-realtime-bindings==2.2.0",
+    "protobuf==7.36.0",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
     # vendor-control interface for boot-time profile writes and diagnostics.
@@ -97,21 +96,20 @@ full = [
     # needed because the USB-mic relay wants nonblocking period writes and
     # explicit gadget-ring occupancy control, and the probes capture the XVF
     # mic directly. NOT for an AEC reference: every reference consumer reads
-    # jasper-outputd's UDP speaker monitor now (the bridge since U4/P7-1,
-    # jasper-aec-tune since U4/P7-2), so nothing opens a custom asoundrc PCM
-    # for it any more.
+    # jasper-outputd's UDP speaker monitor now (the bridge since U4/P7-1),
+    # so nothing opens a custom asoundrc PCM for it any more.
     "pyalsaaudio>=0.11; sys_platform == 'linux'",
     # Google integration (Calendar + Gmail voice tools). google-auth and
     # google-auth-oauthlib drive the per-account OAuth + refresh flow;
     # google-api-python-client is the discovery-based service factory
     # (resource shapes for `calendar` and `gmail`). Pure-Python, tiny.
-    "google-auth>=2.36",
+    "google-auth>=2.56.0",
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.150",
     # jasper-input: third-party HID accessory bridge (volume knobs,
     # macro pads, etc.) reads /dev/input/event* via python-evdev and
     # watches for hot-plug via pyudev. Tiny pure-Python deps.
-    "evdev>=1.7; sys_platform == 'linux'",
+    "evdev>=2.0; sys_platform == 'linux'",
     "pyudev>=0.24",
     # Web-driven BT pairing for HID accessories. dbus-next is the
     # asyncio-native bluez D-Bus client; lighter and more reliable
@@ -126,14 +124,7 @@ full = [
     # the dual-stack conflict (pyvisa-py#378). Imported lazily inside
     # jasper.peering.discovery so the package is import-cheap when
     # peering is OFF (the default). ~5-8 MB Pss when active.
-    "zeroconf>=0.149,<1.0",
-    # jasper.capture_relay.crypto: AES-256-GCM decryption of the phone-mic
-    # capture blob the Pi pulls from the relay (the page encrypts with
-    # WebCrypto; the Pi decrypts here before feeding the existing room/
-    # balance/sync/crossover analysis). pyca/cryptography is the standard
-    # AEAD implementation — never roll our own — pinned here because we import
-    # it directly. aarch64 wheels exist for PiOS Trixie, so no Pi-side build.
-    "cryptography>=50.0.0",
+    "zeroconf>=0.151.3,<1.0",
 ]
 
 dev = [
@@ -187,7 +178,6 @@ jasper-control-token = "jasper.cli.control_token:main"
 jasper-mux = "jasper.mux:main"
 jasper-aec-init = "jasper.cli.aec_init:main"
 jasper-aec-commission = "jasper.cli.aec_commission:main"
-jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
 jasper-usbmic = "jasper.cli.usb_mic:main"
 jasper-aec-sweep-config = "jasper.cli.aec_sweep_config:main"
@@ -204,7 +194,6 @@ jasper-correction-bundle = "jasper.cli.correction_bundle:main"
 jasper-calibration-agent = "jasper.calibration_agent.cli:main"
 jasper-active-speaker = "jasper.cli.active_speaker:main"
 jasper-audition = "jasper.cli.audition:main"
-jasper-active-speaker-attempts-replay = "jasper.cli.active_speaker_attempts_replay:main"
 jasper-crossover-prescriber = "jasper.cli.crossover_prescriber:main"
 jasper-project-ring = "jasper.cli.project_ring:main"
 jasper-classify-features = "jasper.cli.classify_features:main"
@@ -228,7 +217,6 @@ jasper-output-topology-reset = "jasper.cli.output_topology_reset:main"
 jasper-cues = "jasper.cues.cli:main"
 jasper-input = "jasper.accessories.bridge:main"
 jasper-accessory-reconcile = "jasper.accessories.reconcile:main"
-jasper-wiim-remote-mic = "jasper.accessories.wiim_remote_mic:main"
 jasper-wiim-remote-ce = "jasper.cli.wiim_remote_ce:main"
 jasper-bluetooth-agent = "jasper.bluetooth.no_code_agent:main"
 jasper-bluetooth-web = "jasper.web.bluetooth_setup:main"
@@ -347,6 +335,15 @@ warn_unused_configs = true
 # Treat that library boundary as untyped rather than silencing the JTS
 # modules that call it.
 module = ["dbus_next", "dbus_next.*"]
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# The importable jasper_aec3 package is the pybind11 build's install
+# artifact; the repo path of the same name is that build's project
+# directory, which mypy resolves first and which exposes none of the
+# package's names. Treat it as an untyped boundary rather than annotating
+# around a resolution artifact.
+module = ["jasper_aec3"]
 follow_imports = "skip"
 
 [[tool.mypy.overrides]]

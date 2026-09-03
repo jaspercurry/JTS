@@ -21,7 +21,7 @@ import {
   vitalsCards, softwareList, haBody, networkList, servicesTable, waitingNote,
   transportParkCard, transportParkBody,
 } from "./sections.js";
-import { outputAlert, outputAlertBody } from "./audio-sections.js";
+import { outputAlert, outputAlertBody, usbSourceOff } from "./audio-sections.js";
 import { buildDebugCard } from "./debug-card.js";
 import { buildUsbForensicsCard } from "./usb-forensics-card.js";
 import { buildEnhancedAecCard } from "./optional-features-card.js";
@@ -217,5 +217,6 @@ export function update(refs, snap) {
   } catch (e) {
     console.error("system: applying capabilities failed", e);
   }
+  refs.forensics.card.hidden = usbSourceOff(snap.audio_health);
   refs.forensics.update(snap.usb_gadget_forensics || {});
 }

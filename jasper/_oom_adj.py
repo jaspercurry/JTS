@@ -37,7 +37,7 @@ EXPECTED: dict[str, int] = {
     "nginx": -450,              # management front door; recoverable
     "jasper-mux": -300,         # transient-graceful (latest-source-wins)
     "jasper-input": -300,       # direct USB still works without bridge
-    "jasper-wiim-remote-mic": -300,  # optional accessory; normal mic remains
+    "bt-agent": -300,           # pairing only; bonded devices reconnect without it
     "jasper-snapclient": -300,  # grouping reconcile can restart
     "jasper-snapserver": -300,  # grouping reconcile can restart
     "ssh": -250,                # recovery path; moderately protected

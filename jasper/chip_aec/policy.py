@@ -1,0 +1,417 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Shared chip-AEC capability policy.
+
+This module is intentionally side-effect-free. It does not probe ALSA,
+talk to outputd, read env files, or write service config. Callers pass in
+the hardware facts they already observed; this module classifies whether
+the XVF3800 chip-AEC path may be armed automatically, explicitly, or only
+as an operator testing run.
+
+Reconciler records, their stamps, and who may read them.
+``deploy/bin/jasper-aec-reconcile`` writes two records and stamps each with
+what produced it. A stamp is AUTHORSHIP: it says what wrote the record, and
+does not by itself decide who may read it. The serving policy decides that,
+and the two records differ because their staleness differs:
+
+* The DAC gate (``JASPER_AEC_CHIP_AEC_DAC_*``, stamped with the DAC identity
+  it was resolved for and, in ``JASPER_AEC_CHIP_AEC_TESTING_REQUESTED``, the
+  selection it was resolved under) serves EVERY selection. The PERMISSION is
+  what the output hardware owns: ``auto_allowed`` round-trips and
+  ``ChipAecGate.permits`` turns it into the per-selection answer. The
+  descriptive fields do not — ``status``, ``source``, ``detail`` and the
+  ``recommended_action`` derived from them still carry the selection the
+  record was resolved under, and operator surfaces branch on them. Only a
+  missing status, or an identity mismatch, withholds the record; never the
+  selection. A served record beats a fresh registry lookup in BOTH
+  directions: it withdraws a permission the registry would still grant (a
+  revoked verdict) and grants one the registry has since demoted. Agreeing
+  with what the reconciler actually armed is the point.
+* The alignment record (``JASPER_AEC_CHIP_AEC_ALIGNMENT_*``, stamped with the
+  selection it was written under; read by ``jasper.audio_profile_state``)
+  serves ONLY the selection its stamp names. The reconciler writes it on
+  managed-XVF paths alone and never clears it on a custom profile, so a
+  record read under any other selection is a leftover, not a verdict.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal, Mapping
+
+from ..audio_hardware import dac as dac_profiles
+from ..output_hardware import published_dac_id
+
+
+DacChipAecStatus = Literal["approved", "needs_calibration"]
+ChipAecGateStatus = Literal["approved", "testing", "needs_calibration"]
+
+STATUS_APPROVED: Literal["approved"] = "approved"
+STATUS_TESTING: Literal["testing"] = "testing"
+STATUS_NEEDS_CALIBRATION: Literal["needs_calibration"] = "needs_calibration"
+
+ACTION_USE_CHIP_AEC = "use_chip_aec"
+ACTION_RUN_TESTING_AND_VALIDATE = "run_chip_aec_testing_and_validate"
+ACTION_USE_SOFTWARE_OR_TEST = "use_software_aec3_or_enable_testing"
+ACTION_FIX_MIC_PROFILE = "fix_mic_profile_before_chip_aec"
+
+# Canonical machine codes for ChipAecGate.blockers — one stable vocabulary
+# every consumer switches on. The two subsystems that can gate chip-AEC are
+# the input mic (no validated XVF beam plan) and the output DAC (no codified
+# chip-AEC timing). recommended_action reasons over these exact codes, so any
+# surface that injects a blocker (e.g. jasper-control folding in mic
+# availability via combine_mic_availability) MUST use them rather than a
+# parallel scheme. Human-facing text rides ChipAecGate.detail / the
+# per-subsystem status fields, never the code list.
+BLOCKER_MIC = "mic"
+BLOCKER_DAC = "dac"
+CHIP_AEC_BLOCKER_CODES = frozenset({BLOCKER_MIC, BLOCKER_DAC})
+
+SOURCE_STATIC = "static"
+SOURCE_OPERATOR_TESTING = "explicit_testing"
+SOURCE_RUNTIME_ENV = "runtime_env"
+
+HIFIBERRY_DAC8X_DAC_ID = dac_profiles.HIFIBERRY_DAC8X_ID
+
+
+@dataclass(frozen=True)
+class OutputdAecClockEvidence:
+    """Already-observed outputd/XVF timing evidence.
+
+    The policy module does not fetch this. The reconciler or a status
+    surface that already read outputd passes the result in.
+    """
+
+    ok: bool
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class DacChipAecQualification:
+    """Static DAC registry qualification for chip-AEC."""
+
+    dac_id: str
+    status: DacChipAecStatus
+    source: str
+    detail: str
+
+
+def permits_selection(*, auto_allowed: bool, testing_requested: bool) -> bool:
+    """The whole gate rule, for a caller holding a serialized gate.
+
+    ADR-0101: an uncodified DAC is a quality signal, not an admission gate, so
+    only the AUTOMATIC selection is gated — an explicit testing request arms
+    whatever the status and carries the gate's detail as its disclosure.
+    """
+
+    return auto_allowed or testing_requested
+
+
+@dataclass(frozen=True)
+class ChipAecGate:
+    """Combined mic + DAC gate for the production chip-AEC path."""
+
+    dac_id: str
+    status: ChipAecGateStatus
+    source: str
+    detail: str
+    auto_allowed: bool
+    blockers: tuple[str, ...] = ()
+
+    def permits(self, *, testing_requested: bool) -> bool:
+        """Whether the selection in play may be armed."""
+
+        return permits_selection(
+            auto_allowed=self.auto_allowed, testing_requested=testing_requested
+        )
+
+    @property
+    def recommended_action(self) -> str:
+        # A missing/unvalidated mic beam plan blocks chip-AEC outright, so it
+        # dominates the DAC's own status: no DAC approval can make chip-AEC
+        # usable without a mic that supports it. Callers that only resolve the
+        # DAC side (resolve_chip_aec_dac_gate / gate_from_runtime_env) never
+        # carry BLOCKER_MIC, so their action is unchanged; only a caller that
+        # folds the mic fact in via combine_mic_availability reaches this.
+        if BLOCKER_MIC in self.blockers:
+            return ACTION_FIX_MIC_PROFILE
+        if self.status == STATUS_APPROVED:
+            return ACTION_USE_CHIP_AEC
+        if self.status == STATUS_TESTING:
+            return ACTION_RUN_TESTING_AND_VALIDATE
+        return ACTION_USE_SOFTWARE_OR_TEST
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "dac_id": self.dac_id,
+            "status": self.status,
+            "source": self.source,
+            "detail": self.detail,
+            "auto_allowed": self.auto_allowed,
+            "recommended_action": self.recommended_action,
+            "blockers": list(self.blockers),
+        }
+
+
+def normalize_dac_id(value: object) -> str:
+    normalized = (
+        str(value or "unknown")
+        .strip()
+        .strip("'\"")
+        .lower()
+        .replace("-", "_")
+    )
+    return normalized or "unknown"
+
+
+def approved_chip_aec_dac_ids() -> tuple[str, ...]:
+    return tuple(
+        profile.id
+        for profile in dac_profiles.all_profiles()
+        if profile.chip_aec_qualification == STATUS_APPROVED
+    )
+
+
+APPROVED_DAC_IDS = frozenset(approved_chip_aec_dac_ids())
+
+
+def static_dac_qualification(dac_id: object) -> DacChipAecQualification:
+    normalized = normalize_dac_id(dac_id)
+    profile = dac_profiles.by_id(normalized)
+    if profile is None:
+        if normalized == "unknown":
+            detail = (
+                "output DAC profile is unknown; run audio-hardware reconcile "
+                "and calibrate chip-AEC timing before arming production chip AEC"
+            )
+        else:
+            detail = (
+                f"output DAC profile {normalized} has no codified chip-AEC "
+                "calibration"
+            )
+        return DacChipAecQualification(
+            dac_id=normalized,
+            status=STATUS_NEEDS_CALIBRATION,
+            source=SOURCE_STATIC,
+            detail=detail,
+        )
+
+    if profile.chip_aec_qualification == STATUS_APPROVED:
+        detail = profile.chip_aec_detail or (
+            f"{profile.label} is approved for production chip-AEC"
+        )
+        return DacChipAecQualification(
+            dac_id=normalized,
+            status=STATUS_APPROVED,
+            source=SOURCE_STATIC,
+            detail=detail,
+        )
+
+    detail = profile.chip_aec_detail or (
+        f"{profile.label} needs chip-AEC timing calibration before arming "
+        "production chip AEC"
+    )
+    return DacChipAecQualification(
+        dac_id=normalized,
+        status=STATUS_NEEDS_CALIBRATION,
+        source=SOURCE_STATIC,
+        detail=detail,
+    )
+
+
+def _outputd_clock_evidence(
+    outputd_status: Mapping[str, Any] | None,
+    outputd_error: str = "",
+) -> OutputdAecClockEvidence | None:
+    if outputd_status is None:
+        detail = (
+            f"outputd aec_clock unavailable: {outputd_error}"
+            if outputd_error else "outputd aec_clock unavailable"
+        )
+        return OutputdAecClockEvidence(ok=False, detail=detail)
+    refs = outputd_status.get("reference_outputs")
+    if not isinstance(refs, Mapping):
+        return OutputdAecClockEvidence(
+            ok=False,
+            detail="outputd aec_clock unavailable: STATUS missing reference_outputs",
+        )
+    clock = refs.get("aec_clock")
+    if not isinstance(clock, Mapping):
+        return OutputdAecClockEvidence(
+            ok=False,
+            detail=(
+                "outputd aec_clock unavailable: STATUS missing "
+                "reference_outputs.aec_clock"
+            ),
+        )
+    writer = refs.get("chip_ref_writer")
+    if not isinstance(writer, Mapping) or not writer.get("enabled"):
+        return OutputdAecClockEvidence(
+            ok=False,
+            detail="outputd aec_clock unavailable: chip-ref writer is not active",
+        )
+    verdict = str(clock.get("verdict") or "")
+    status = str(clock.get("sro_estimator_status") or "")
+    observe = clock.get("observe")
+    ppm = clock.get("chip_ref_sro_ppm")
+    reason = str(clock.get("verdict_reason") or "").strip()
+    detail = (
+        f"outputd aec_clock verdict={verdict or 'missing'} "
+        f"status={status or 'missing'} observe={observe} "
+        f"chip_ref_sro_ppm={ppm} reason={reason}"
+    )
+    return OutputdAecClockEvidence(
+        ok=verdict == "coherent" and status == "locked",
+        detail=detail,
+    )
+
+
+def resolve_chip_aec_dac_gate(
+    dac_id: object,
+    *,
+    testing_requested: bool = False,
+    outputd_status: Mapping[str, Any] | None = None,
+    outputd_error: str = "",
+) -> ChipAecGate:
+    """Resolve the DAC side of the chip-AEC gate.
+
+    Mic capability is intentionally separate: the mic profile registry owns
+    beam-plan support, while this function owns output-DAC qualification.
+    """
+
+    static = static_dac_qualification(dac_id)
+    if static.status == STATUS_APPROVED:
+        return ChipAecGate(
+            dac_id=static.dac_id,
+            status=STATUS_APPROVED,
+            source=static.source,
+            detail=static.detail,
+            auto_allowed=True,
+        )
+
+    outputd_clock = _outputd_clock_evidence(outputd_status, outputd_error)
+    outputd_detail = ""
+    if outputd_clock is not None and outputd_clock.detail:
+        outputd_detail = f"; {outputd_clock.detail}"
+    if testing_requested:
+        return ChipAecGate(
+            dac_id=static.dac_id,
+            status=STATUS_TESTING,
+            source=SOURCE_OPERATOR_TESTING,
+            detail=(
+                f"operator testing profile permits chip-AEC trial for "
+                f"output DAC {static.dac_id}; {static.detail}{outputd_detail}"
+            ),
+            auto_allowed=False,
+        )
+
+    return ChipAecGate(
+        dac_id=static.dac_id,
+        status=STATUS_NEEDS_CALIBRATION,
+        source=static.source,
+        detail=f"{static.detail}{outputd_detail}",
+        auto_allowed=False,
+        blockers=(BLOCKER_DAC,),
+    )
+
+
+def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
+    """Reconstruct the reconciler-applied DAC gate from jasper.env.
+
+    Served to whichever selection asks — see the module docstring for why this
+    record crosses selections and the alignment record does not. The caller
+    turns the verdict into a per-selection answer with ``ChipAecGate.permits``,
+    which is the mapping the reconciler's ``carry_chip_aec_dac_gate`` applies
+    to this same record.
+    """
+
+    status = str(
+        env.get("JASPER_AEC_CHIP_AEC_DAC_STATUS")
+        or ""
+    )
+    if not status:
+        return None
+    active_dac_id = normalize_dac_id(published_dac_id(env))
+    raw_gate_dac_id = str(env.get("JASPER_AEC_CHIP_AEC_DAC_ID") or "").strip()
+    if not raw_gate_dac_id:
+        return None
+    gate_dac_id = normalize_dac_id(raw_gate_dac_id)
+    if gate_dac_id != active_dac_id:
+        return None
+    source = str(
+        env.get("JASPER_AEC_CHIP_AEC_DAC_SOURCE")
+        or SOURCE_RUNTIME_ENV
+    )
+    detail = str(
+        env.get("JASPER_AEC_CHIP_AEC_DAC_DETAIL")
+        or ""
+    )
+    if status == STATUS_APPROVED:
+        gate_status: ChipAecGateStatus = STATUS_APPROVED
+        auto_allowed = True
+        blockers: tuple[str, ...] = ()
+    elif status in {STATUS_TESTING, "trial"}:
+        gate_status = STATUS_TESTING
+        auto_allowed = False
+        blockers = ()
+    else:
+        gate_status = STATUS_NEEDS_CALIBRATION
+        auto_allowed = False
+        blockers = (BLOCKER_DAC,)
+    return ChipAecGate(
+        dac_id=gate_dac_id,
+        status=gate_status,
+        source=source,
+        detail=detail,
+        auto_allowed=auto_allowed,
+        blockers=blockers,
+    )
+
+
+def combine_mic_availability(
+    gate: ChipAecGate,
+    *,
+    mic_available: bool,
+    testing_requested: bool = False,
+) -> ChipAecGate:
+    """Fold the input-mic fact into a DAC-only gate, in one vocabulary.
+
+    ``resolve_chip_aec_dac_gate`` / ``gate_from_runtime_env`` only know the
+    output-DAC side, so their ``blockers`` carry at most ``BLOCKER_DAC``. The
+    input-mic side (a validated XVF beam plan) is observed separately by the
+    caller. This helper merges that fact in so the returned gate's
+    ``blockers`` and ``recommended_action`` are correct and use the single
+    canonical vocabulary (``CHIP_AEC_BLOCKER_CODES``) — rather than the caller
+    layering a parallel code scheme onto the serialized dict.
+
+    The DAC blocker is recomputed against the *requested selection*
+    (production, or testing when ``testing_requested``) so the reported
+    blockers match what would actually block arming that selection; the gating
+    logic itself is unchanged.
+    """
+
+    blockers: list[str] = []
+    if not mic_available:
+        blockers.append(BLOCKER_MIC)
+    if not gate.permits(testing_requested=testing_requested):
+        blockers.append(BLOCKER_DAC)
+    return ChipAecGate(
+        dac_id=gate.dac_id,
+        status=gate.status,
+        source=gate.source,
+        detail=gate.detail,
+        auto_allowed=gate.auto_allowed,
+        blockers=tuple(blockers),
+    )
+
+
+def effective_chip_aec_dac_gate(
+    env: Mapping[str, str], *, testing_requested: bool,
+) -> ChipAecGate:
+    """A served record wins over a fresh lookup — see the module docstring's
+    "served record" paragraph."""
+
+    return gate_from_runtime_env(env) or resolve_chip_aec_dac_gate(
+        published_dac_id(env), testing_requested=testing_requested,
+    )

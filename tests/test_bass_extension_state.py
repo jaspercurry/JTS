@@ -129,7 +129,7 @@ async def _state_snapshot(monkeypatch, tmp_path):
     monkeypatch.setattr(state_aggregate.mpris, "shairport_playing", no_mpris)
     monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kwargs: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
-    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
     return await state_aggregate._get_state(
         camilla_host="127.0.0.1",
         camilla_port=1234,

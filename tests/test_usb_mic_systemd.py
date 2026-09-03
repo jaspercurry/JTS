@@ -2,7 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+import re
+import subprocess
 from pathlib import Path
+
+import pytest
+
+from jasper.usb_mic import GADGET_PATH, INTENT_PATH, usb_mic_enabled
+from tests.systemd_unit_helpers import values_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +24,6 @@ SERVICE_USERS = ROOT / "deploy/lib/install/service-users.sh"
 
 def test_usb_mic_service_is_dependency_enabled_and_gadget_scoped() -> None:
     text = UNIT.read_text()
-    assert "ExecCondition=/opt/jasper/.venv/bin/jasper-usbmic --check-ready" in text
     assert "ExecStart=/opt/jasper/.venv/bin/jasper-usbmic" in text
     assert "After=jasper-usbgadget.service jasper-aec-bridge.service" in text
     assert (
@@ -131,3 +138,105 @@ def test_installer_creates_dedicated_least_privilege_usb_mic_user() -> None:
     assert "getent passwd jasper-usbmic" in text
     assert "-g jasper -G audio jasper-usbmic" in text
     assert "-G input jasper-usbmic" not in text
+
+
+CHMASK_PATH = f"{GADGET_PATH}/functions/uac2.usb0/p_chmask"
+ENABLED = "JASPER_USB_MIC=enabled\n"
+OFF = "intent_off_or_invalid"
+
+
+def _condition_script(tmp_path: Path) -> str:
+    """The unit's ExecCondition as /bin/sh receives it, retargeted at tmp_path.
+
+    systemd resolves C escapes, ``%%`` specifiers and ``$$`` before exec, inside
+    its single quotes as well; replaying all three rules is what makes this the
+    shipped line rather than a copy of it. The two absolute paths are the ones
+    Python reads, so a unit that drifts off them fails here.
+    """
+    argv = values_for(UNIT.read_text(), "ExecCondition")
+    assert argv[:2] == ("/bin/sh", "-c")
+    script = argv[2].replace("\\\\", "\\").replace("%%", "%").replace("$$", "$")
+    for literal, name in ((INTENT_PATH, "usb_mic.env"), (CHMASK_PATH, "p_chmask")):
+        assert script.count(literal) == 1, literal
+        script = script.replace(literal, str(tmp_path / name))
+    return script
+
+
+def _run_condition(
+    tmp_path: Path, intent: str | None, chmask: str | None, bridge: bool
+) -> subprocess.CompletedProcess[str]:
+    if intent is not None:
+        (tmp_path / "usb_mic.env").write_text(intent, encoding="utf-8")
+    if chmask is not None:
+        (tmp_path / "p_chmask").write_text(chmask, encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "systemctl"
+    stub.write_text(f"#!/bin/sh\nexit {0 if bridge else 3}\n", encoding="utf-8")
+    stub.chmod(0o755)
+    # macOS ships no `timeout(1)`; the condition script wraps its systemctl
+    # call in one, so stand in a passthrough (matches test_control_systemd.py).
+    timeout_stub = bin_dir / "timeout"
+    timeout_stub.write_text('#!/bin/sh\nshift\nexec "$@"\n', encoding="utf-8")
+    timeout_stub.chmod(0o755)
+    return subprocess.run(
+        ["/bin/sh", "-c", _condition_script(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("intent", "chmask", "bridge", "reason"),
+    [
+        pytest.param(ENABLED, "1\n", True, "", id="ready"),
+        pytest.param(
+            '\tJASPER_USB_MIC = "enabled" \n', "1\n", True, "", id="quoted"
+        ),
+        pytest.param("JASPER_USB_MIC=disabled\n", "1\n", True, OFF, id="disabled"),
+        pytest.param(
+            ENABLED + "JASPER_USB_MIC=disabled\n", "1\n", True, OFF, id="last_wins"
+        ),
+        pytest.param(None, "1\n", True, OFF, id="intent_missing"),
+        pytest.param("JASPER_USB_MIC=maybe\n", "1\n", True, OFF, id="intent_corrupt"),
+        pytest.param(ENABLED, None, True, "uac2_missing", id="uac2_missing"),
+        pytest.param(ENABLED, "2\n", True, "p_chmask_2", id="chmask_stereo"),
+        pytest.param(ENABLED, "1\n", False, "aec_bridge_inactive", id="bridge_inactive"),
+    ],
+)
+def test_usb_mic_start_condition_gates_on_intent_gadget_and_bridge(
+    tmp_path: Path,
+    intent: str | None,
+    chmask: str | None,
+    bridge: bool,
+    reason: str,
+) -> None:
+    """#3697: the start gate is inline sh, so RUN it — intent (fail-closed and
+    byte-for-byte the intent jasper.usb_mic.read_intent reports), then the UAC2
+    capture channel mask, then the AEC bridge. Exit 0 starts the relay; any
+    non-zero exit is a clean skip that names its reason.
+    """
+    result = _run_condition(tmp_path, intent, chmask, bridge)
+
+    assert usb_mic_enabled(tmp_path / "usb_mic.env") is (reason != OFF)
+    if reason:
+        assert result.returncode != 0
+        assert f"event=usb_mic.skip reason={reason}" in result.stderr
+    else:
+        assert result.returncode == 0
+        assert result.stderr == ""
+
+
+def test_usb_mic_start_condition_doubles_every_percent() -> None:
+    """A bare ``%x`` in the ExecCondition is a systemd specifier, not shell.
+
+    ``printf "%s"`` shipped once and expanded to the user shell at unit load,
+    so the gate compared a path instead of the intent line and skipped the
+    unit on every start. ``systemd-analyze verify`` parses that happily, and
+    the runner above replays ``%%`` -> ``%``, so only this pin catches it.
+    """
+    condition = values_for(UNIT.read_text(), "ExecCondition")[2]
+
+    assert not re.search(r"(?<!%)(?:%%)*%(?!%)", condition)

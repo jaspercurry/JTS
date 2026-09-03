@@ -19,12 +19,16 @@ from pathlib import Path
 
 import pytest
 
-from jasper import chip_aec_alignment as alignment
-from jasper import chip_aec_shipped_alignment as shipped_alignment
+from jasper.chip_aec import alignment as alignment
+from jasper.chip_aec import shipped as shipped_alignment
+from jasper.chip_aec import health as chip_aec_health
 from jasper import output_hardware
-from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
+from jasper.chip_aec.alignment import AlignmentArtifact, AlignmentIdentity
+from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
+from jasper.env_load import parse_env_file
 from jasper.mics import xvf3800
+from tests._log_events import event_fields, event_records
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 
 _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
@@ -33,12 +37,26 @@ _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 ROOT = Path(__file__).resolve().parents[1]
 
 
+_SELECTION = "xvf_chip_aec"
+
+
 @pytest.fixture(autouse=True)
-def disclosure_file(tmp_path, monkeypatch) -> Path:
-    """Keep `publish_disclosure` off the host's /run for every test here."""
-    path = tmp_path / "alignment-disclosure"
-    monkeypatch.setenv("JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE", str(path))
+def alignment_record(tmp_path, monkeypatch) -> Path:
+    """Keep the published record off the host's /run for every test here, and
+    give every run one mode-file selection to stamp it with."""
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text(
+        f"JASPER_AUDIO_INPUT_PROFILE={_SELECTION}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("JASPER_AEC_MODE_FILE", str(mode_file))
+    path = tmp_path / "alignment"
+    monkeypatch.setenv("JASPER_AEC_ALIGNMENT_RECORD_FILE", str(path))
     return path
+
+
+def _published(path: Path) -> AlignmentHealth:
+    """The record this run left for jasper-aec-reconcile."""
+    return AlignmentHealth.from_env(parse_env_file(str(path)))
 
 
 class _Closeable:
@@ -169,7 +187,7 @@ def test_corpus_profile_applies_and_verifies_expected_chip_routes(monkeypatch) -
 
 
 def test_production_chip_profile_uses_chip_flag_and_delay(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     dev = _FakeXvfDevice()
     _install_fake_xvf(monkeypatch, dev)
@@ -216,9 +234,11 @@ def test_production_chip_profile_uses_chip_flag_and_delay(
     assert writes["AUDIO_MGR_OP_L"] == [7, 0]
     assert writes["AUDIO_MGR_OP_R"] == [7, 1]
     assert dev.dev.closed is True
-    # An alignment that matched has nothing to disclose, so the reconciler is
-    # left to publish `ready`.
-    assert not disclosure_file.exists()
+    # An alignment that matched has nothing to disclose, so the record the
+    # reconciler copies into jasper.env is `ready`.
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.APPLIED, selection=_SELECTION
+    )
 
 
 def test_production_chip_profile_parks_when_nothing_is_banked_or_shipped(
@@ -275,17 +295,14 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
 
 
 @pytest.mark.parametrize(
-    "changes, expected_disclosure_fields",
+    "changes, discloses",
     [
-        ({"xvf_serial": "replacement"}, ("xvf_serial",)),
-        (
-            {"output_hardware_key": "usb-serial:replacement"},
-            ("output_hardware_key",),
-        ),
+        ({"xvf_serial": "replacement"}, True),
+        ({"output_hardware_key": "usb-serial:replacement"}, True),
         # The DAC identity is part of the hardware class K was measured
         # against, so it is hardware-class divergence — the loud kind, still
         # not a park.
-        ({"output_id": "different_dac"}, ("output_id",)),
+        ({"output_id": "different_dac"}, True),
         # xvf_variant/beam_plan/output_format carry no timing story
         # (ADR-0190): moving all three produces no divergence, so nothing is
         # disclosed at all — the chip arms clean.
@@ -295,12 +312,12 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
                 "beam_plan": "other_plan",
                 "output_format": "S32_LE",
             },
-            (),
+            False,
         ),
     ],
 )
 def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
-    monkeypatch, disclosure_file, changes, expected_disclosure_fields
+    monkeypatch, alignment_record, changes, discloses
 ) -> None:
     # ADR-0101: the proof stopped describing this box, nothing observably
     # broke. The banked K is applied and the chip armed; what the household
@@ -317,16 +334,17 @@ def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
-    if expected_disclosure_fields:
-        disclosure_text = disclosure_file.read_text(encoding="utf-8")
-        for field in expected_disclosure_fields:
-            assert field in disclosure_text
-    else:
-        assert not disclosure_file.exists()
+    # What the disclosure SAYS is pinned once, on the judge
+    # (tests/test_chip_aec_health.py); this altitude owns only whether one was
+    # published at all.
+    assert (
+        _published(alignment_record).status
+        == chip_aec_health.STATUS_DISCLOSED_STALE
+    ) is discloses
 
 
 def test_an_older_schema_artifact_is_treated_as_nothing_banked(
-    monkeypatch, disclosure_file, tmp_path
+    monkeypatch, alignment_record, tmp_path
 ) -> None:
     # An artifact predating the current schema cannot be compared against
     # this box, so the reader refuses it like any other invalid artifact and
@@ -364,7 +382,7 @@ def _shipped_row(
 
 
 def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     # ADR-0101 / #2984 Q1: an XVF that is there gets chip AEC. A box that has
     # never been commissioned runs from the proof its hardware class ships and
@@ -381,13 +399,11 @@ def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [row.sys_delay]
-    disclosure = disclosure_file.read_text(encoding="utf-8")
-    assert row.label in disclosure
-    assert "jasper-aec-commission" in disclosure
+    assert _published(alignment_record).status == chip_aec_health.STATUS_DISCLOSED_STALE
 
 
 def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
-    monkeypatch, disclosure_file, caplog
+    monkeypatch, alignment_record, caplog
 ) -> None:
     # The shipped row is for a different DAC, so it says nothing about this
     # box: no K to run from, and the commissioner is the answer. The park
@@ -404,7 +420,9 @@ def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
         assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
 
     assert _write_map(dev)["SHF_BYPASS"] == [1]
-    assert not disclosure_file.exists()
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.COMMISSION_REQUIRED, selection=_SELECTION
+    )
     assert row.divergence(_live_identity()) == ("output_id",)
 
 
@@ -464,7 +482,7 @@ def test_a_shipped_k_the_driver_cap_refuses_parks_instead_of_faulting(
 
 
 def test_a_commissioned_artifact_outranks_the_row_shipped_for_its_class(
-    monkeypatch, disclosure_file
+    monkeypatch, alignment_record
 ) -> None:
     # Commissioning personalizes: once this unit has measured its own K, the
     # class default is never consulted again.
@@ -481,7 +499,9 @@ def test_a_commissioned_artifact_outranks_the_row_shipped_for_its_class(
     assert aec_init.main() == 0
 
     assert _write_map(dev)["AUDIO_MGR_SYS_DELAY"] == [-38]
-    assert not disclosure_file.exists()
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.APPLIED, selection=_SELECTION
+    )
 
 
 def test_build_identity_binds_physical_xvf_and_usb_output() -> None:
@@ -631,10 +651,6 @@ def test_outputd_start_instant_probe_is_bounded_per_call(monkeypatch) -> None:
     [
         # The probed never-run rendering on systemd 257: empty, rc=0.
         ("", 0),
-        # Defensive only — systemd 257 prints empty, not a literal zero. Kept in
-        # case another version renders it this way; same "nothing has run" case.
-        ("@0\n", 0),
-        ("0\n", 0),
         ("[not set]\n", 0),    # non-empty but unparseable
         ("@1786127844\n", 1),  # systemctl itself failed
     ],
@@ -665,21 +681,30 @@ def test_an_inert_ordering_guard_says_so_in_the_journal(
 
     assert aec_init.outputd_main_start_realtime() is None
 
-    assert "event=chip_aec_init.ordering_probe" in caplog.text
-    assert f"outcome={outcome}" in caplog.text
+    fields = event_fields(caplog, "chip_aec_init.ordering_probe")
+    assert fields["outcome"] == outcome
+    assert fields["unit"] == aec_init.OUTPUTD_UNIT
+    assert int(fields["returncode"]) == returncode
 
 
-@pytest.mark.parametrize("stdout", ["", "@0\n"])
-def test_a_unit_that_never_ran_is_quiet(monkeypatch, caplog, stdout: str) -> None:
+def test_a_unit_that_never_ran_is_quiet(monkeypatch, caplog) -> None:
     # The legitimate case stays out of the journal: nothing has started, so there
     # is nothing anomalous to report and a WARN would be noise on every box that
     # boots with outputd gated off.
-    _stub_systemctl_show(monkeypatch, stdout)
+    _stub_systemctl_show(monkeypatch, "")
     caplog.set_level("WARNING", logger="jasper.aec_init")
 
     assert aec_init.outputd_main_start_realtime() is None
 
-    assert "ordering_probe" not in caplog.text
+    assert event_records(caplog, "chip_aec_init.ordering_probe") == []
+
+
+def test_a_literal_zero_timestamp_parses_as_the_epoch(monkeypatch) -> None:
+    # Not the observed never-run rendering (that is an empty value, see above) —
+    # a literal `@0` parses like any other numeric ExecMainStartTimestamp.
+    _stub_systemctl_show(monkeypatch, "@0\n")
+
+    assert aec_init.outputd_main_start_realtime() == 0.0
 
 
 def test_outputd_start_instant_survives_a_host_without_systemctl(
@@ -694,7 +719,7 @@ def test_outputd_start_instant_survives_a_host_without_systemctl(
     assert aec_init.outputd_main_start_realtime() is None
     # Not a systemd host at all — the daemon could never run here, so this is not
     # the inert-guard anomaly the WARN exists for.
-    assert "ordering_probe" not in caplog.text
+    assert event_records(caplog, "chip_aec_init.ordering_probe") == []
 
 
 def test_outputd_start_instant_warns_on_a_non_missing_binary_oserror(
@@ -715,8 +740,9 @@ def test_outputd_start_instant_warns_on_a_non_missing_binary_oserror(
 
     assert aec_init.outputd_main_start_realtime() is None
 
-    assert "event=chip_aec_init.ordering_probe" in caplog.text
-    assert "outcome=systemctl_oserror" in caplog.text
+    fields = event_fields(caplog, "chip_aec_init.ordering_probe")
+    assert fields["outcome"] == "systemctl_oserror"
+    assert fields["unit"] == aec_init.OUTPUTD_UNIT
 
 
 def test_staleness_fails_closed_when_the_systemctl_probe_times_out(
@@ -993,9 +1019,11 @@ def test_production_chip_profile_defers_when_outputd_predates_its_declaration(
     # Chip left bypassed, no profile armed, and STATUS never consulted.
     assert _write_map(dev) == {"SHF_BYPASS": [1]}
     assert reads == []
-    assert "outcome=deferred" in caplog.text
-    assert "action=" in caplog.text
-    assert "jasper-aec-commission" not in caplog.text
+    fields = event_fields(caplog, "chip_aec_init")
+    # `deferred`, not `parked`: the remedy names the outputd unit to wait on
+    # rather than sending a household at the commissioner.
+    assert fields["outcome"] == "deferred"
+    assert aec_init.OUTPUTD_UNIT in fields["action"]
 
 
 @pytest.mark.parametrize(
@@ -1139,7 +1167,7 @@ def test_init_reports_missing_xvf_control_dependency(monkeypatch, caplog) -> Non
 
     assert aec_init.main() == 1
 
-    assert "event=chip_aec_init" in caplog.text
+    assert event_fields(caplog, "chip_aec_init")["outcome"] == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -1370,11 +1398,9 @@ def test_the_collected_window_is_one_runtime_sys_delay_accepts(monkeypatch) -> N
     _install_queue_stream(monkeypatch, stream, clock)
 
     _status, queue = aec_init.collect_reference_queue(REFERENCE_PCM)
-    commissioned = 400 - alignment.median_samples(queue)
 
-    assert (
-        alignment.runtime_sys_delay(400, queue, commissioned_sys_delay=commissioned)
-        == commissioned
+    assert alignment.runtime_sys_delay(400, queue) == 400 - alignment.median_samples(
+        queue
     )
 
 
@@ -1399,13 +1425,20 @@ def test_an_outputd_without_the_sample_ring_is_named_not_guessed(
     with pytest.raises(aec_init.ChipInitError) as excinfo:
         aec_init.collect_reference_queue(REFERENCE_PCM)
 
+    # `ChipInitError` carries no code or structured attribute, so the refusal
+    # itself can only be told apart by its message.
     reason = str(excinfo.value)
     assert "no chip-ref sample ring" in reason
     assert "deploy an outputd that reports it" in reason
     # Every numeric field of this refusal is zero, so without the reason the
     # event cannot be told from any other empty-window failure.
-    assert "outcome=unstable samples=0 spread=0" in caplog.text
-    assert 'reason="outputd STATUS has no chip-ref sample ring' in caplog.text
+    fields = event_fields(caplog, "chip_aec_init.reference_queue")
+    assert fields["outcome"] == "unstable"
+    assert int(fields["samples"]) == 0
+    assert int(fields["spread"]) == 0
+    # The refusal's own last error travels into the event verbatim, rather
+    # than the event restating it.
+    assert fields["reason"] and reason.endswith(fields["reason"])
 
 
 def test_an_empty_sample_ring_is_a_writer_that_has_not_written_yet(
@@ -1478,23 +1511,14 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
         "a closable-looking shortfall and an unclosable ceiling must stay "
         "distinguishable in the message"
     )
-    assert "event=chip_aec_init.reference_queue" in caplog.text
-    assert "outcome=unstable" in caplog.text
-    # The VALUES, not the labels: a covariate reported as a constant separates
-    # nothing, and a label-only assertion would not notice.
-    assert stream.reads > 1
-    assert f"status_reads={stream.reads}" in caplog.text
-    assert (
-        f"poll_interval_ms={round(aec_init.QUEUE_POLL_INTERVAL_SEC * 1_000, 1)}"
-        in caplog.text
-    )
     # Every field by value against the window that was actually refused —
     # a label-only assertion cannot tell a live covariate from a constant.
-    line = next(
-        text for text in caplog.text.splitlines() if "outcome=unstable" in text
-    )
-    fields = dict(
-        part.split("=", 1) for part in line.split() if "=" in part and "event=" not in part
+    fields = event_fields(caplog, "chip_aec_init.reference_queue")
+    assert fields["outcome"] == "unstable"
+    assert stream.reads > 1
+    assert int(fields["status_reads"]) == stream.reads
+    assert float(fields["poll_interval_ms"]) == round(
+        aec_init.QUEUE_POLL_INTERVAL_SEC * 1_000, 1
     )
     assert int(fields["samples"]) > alignment.QUEUE_SAMPLE_COUNT
     assert int(fields["spread"]) > alignment.QUEUE_MAX_SPREAD
@@ -1507,9 +1531,9 @@ def test_a_queue_that_never_holds_still_fails_with_its_own_numbers(
         "say so"
     )
     assert float(fields["held_sec"]) >= aec_init.QUEUE_MIN_WINDOW_SEC
-    # The reason is a quoted sentence, so it is read off the line, not the
-    # whitespace split above.
-    assert 'reason="chip-reference queue spread' in line
+    # The reason travels into the event verbatim rather than being restated
+    # there — it is what tells two all-zero refusals apart.
+    assert fields["reason"] and reason.endswith(fields["reason"])
 
 
 def test_a_window_whose_median_walked_is_rejected_on_both_sides_of_the_edge() -> None:
@@ -1569,10 +1593,8 @@ def test_moving_error_counters_are_not_one_window(monkeypatch) -> None:
 
     _install_queue_stream(monkeypatch, tick, clock)
 
-    with pytest.raises(aec_init.ChipInitError) as excinfo:
+    with pytest.raises(aec_init.ReferenceCountersMovedError):
         aec_init.collect_reference_queue(REFERENCE_PCM)
-
-    assert "error counters moved" in str(excinfo.value)
 
 
 def test_the_ring_cannot_rebuild_a_window_across_a_seam(monkeypatch) -> None:
@@ -1639,6 +1661,7 @@ def test_a_rewound_write_counter_splits_the_window(monkeypatch) -> None:
     assert len(aec_init._merge_writes(window, forward, now=10.5, floor=0.0)) == 2
 
     restarted = [aec_init.ReferenceWrite(delay=448, frames=341, sequence=1, age_ms=0)]
+    # `match=` stands: ChipInitError carries no code or structured attribute.
     with pytest.raises(aec_init.ChipInitError, match="did not progress cleanly"):
         aec_init._merge_writes(window, restarted, now=10.5, floor=0.0)
 
@@ -1655,6 +1678,7 @@ def test_a_ring_out_of_write_order_is_refused(monkeypatch) -> None:
     assert len(writes) >= 3
     writes[1]["frames_written"] = writes[0]["frames_written"]
 
+    # `match=` stands: ChipInitError carries no code or structured attribute.
     with pytest.raises(aec_init.ChipInitError, match="not in write order"):
         aec_init.validate_reference_status(status, expected_pcm=REFERENCE_PCM)
 
@@ -1737,6 +1761,7 @@ def test_a_writer_further_behind_than_the_pipelining_ceiling_is_rejected() -> No
         lag=aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT + 1,
     )(REFERENCE_PCM)
 
+    # `match=` stands: ChipInitError carries no code or structured attribute.
     with pytest.raises(aec_init.ChipInitError, match="mix periods behind"):
         aec_init.validate_reference_status(behind, expected_pcm=REFERENCE_PCM)
 
@@ -1878,29 +1903,55 @@ def test_a_spread_past_the_horizon_names_the_ceiling_not_a_shortfall(
     assert "held" not in reason, "a closable shortfall would misattribute this"
 
 
-def test_a_queue_that_moved_past_the_margin_is_applied_and_disclosed(
-    monkeypatch, disclosure_file
+def test_a_moved_live_queue_arms_the_delay_k_resolves_without_disclosure(
+    monkeypatch, alignment_record
 ) -> None:
-    # The live queue left the window K was measured against; nothing is broken,
-    # and the delay it resolves has already cleared the chip's declared
-    # SYS_DELAY range. Apply it, arm the chip, and say how far it moved.
+    # Every outputd restart re-opens the chip-reference PCM at a different fill,
+    # and K - live median is exactly what absorbs it: jts.local commissioned at
+    # a median of 200 and booted at 266, applied -21, and the chip converged.
+    # A moved queue is the case K answers, not a reason to nag (ADR-0223).
     dev = _FakeXvfDevice()
-    # Commissioned at -47; the live queue resolves one frame past the bound.
     _arm_chip_aec(
-        monkeypatch, dev,
-        artifact=lambda: AlignmentArtifact(
-            _live_identity(), 245, -38 - alignment.MIN_EDGE_MARGIN - 1
-        ),
+        monkeypatch, dev, artifact=lambda: AlignmentArtifact(_live_identity(), 245, 45)
+    )
+    monkeypatch.setattr(
+        aec_init, "collect_reference_queue",
+        lambda _pcm: ({"reference_outputs": {}}, (266,) * 8),
     )
 
     assert aec_init.main() == 0
 
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
-    assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
-    assert f"{alignment.MIN_EDGE_MARGIN + 1:+d} frames" in disclosure_file.read_text(
-        encoding="utf-8"
+    assert writes["AUDIO_MGR_SYS_DELAY"] == [245 - 266]
+    assert _published(alignment_record) == alignment_health(
+        chip_aec_health.APPLIED, selection=_SELECTION
     )
+
+
+def test_a_queue_that_resolves_past_the_driver_cap_leaves_the_chip_bypassed(
+    monkeypatch, alignment_record
+) -> None:
+    # The declared CHIP_AEC_SYS_DELAY_MIN..MAX range is the one thing K may not
+    # resolve outside of: no delay is written, the chip stays bypassed, and the
+    # run fails loudly rather than clamping to an alignment nothing proved.
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: AlignmentArtifact(_live_identity(), 245, -38)
+    )
+    monkeypatch.setattr(
+        aec_init, "collect_reference_queue",
+        lambda _pcm: (
+            {"reference_outputs": {}},
+            (245 - xvf3800.CHIP_AEC_SYS_DELAY_MIN + 1,) * 8,
+        ),
+    )
+
+    assert aec_init.main() == 1
+
+    writes = _write_map(dev)
+    assert writes["SHF_BYPASS"] == [1]
+    assert "AUDIO_MGR_SYS_DELAY" not in writes
 
 
 def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> None:
@@ -1911,13 +1962,13 @@ def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> No
     # rounded up.
     assert aec_init.MAX_REFERENCE_PERIODS_IN_FLIGHT == 2
     assert aec_init.QUEUE_MIN_WINDOW_SEC == 2.0
-    # This round's own constants, pinned for the same reason. The drift bound
+    # This round's own constants, pinned for the same reason: the drift bound
     # survives being widened to 26 against fixtures built from it, which walks
-    # back most of the tightening it exists for; MIN_EDGE_MARGIN is the only
-    # end-to-end guard between the alignment the commissioner verified and
-    # what boot applies, and it survives being cut to 1.
+    # back most of the tightening it exists for.
     assert alignment.QUEUE_MAX_MEDIAN_DRIFT == 17
     assert alignment.QUEUE_DRIFT_NOISE_SIGMAS == 3
+    # Commissioning-side only since ADR-0223: the causal-window margin
+    # `choose_delay` reserves and `_final_timing` re-checks at chirp time.
     assert alignment.MIN_EDGE_MARGIN == 8
     assert (
         aec_init.QUEUE_MIN_WINDOW_SEC

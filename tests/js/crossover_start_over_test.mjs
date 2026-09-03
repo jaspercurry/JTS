@@ -36,10 +36,8 @@ globalThis.__jtsConfirm = async (message) => {
 let postResponse = { ...baseEnvelope };
 globalThis.__getJSON = async () => ({ ...baseEnvelope });
 globalThis.__postJSON = async () => postResponse;
-globalThis.__renderRelayQr = () => {};
 // PR-7's before/after visualization (./cloud.js) is out of scope for this
 // harness — it only pins Start-over — so a no-op stands in, same shape as
-// the __renderRelayQr stub above.
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
@@ -48,7 +46,7 @@ const { render, startOver } = await loadEsm(
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderRelayQr", "jtsConfirm", "renderCloud", "redrawCloudChart",
+      "getJSON", "postJSON", "jtsConfirm", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render", "startOver"],

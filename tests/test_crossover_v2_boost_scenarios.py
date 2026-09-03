@@ -44,17 +44,10 @@ because "the flow decided X" is only a finding next to "the right answer was
 Y". Two of the scenarios below deliberately reach the SAME decision from
 OPPOSITE truths — that is the point of the pair, and it is the residual #1967
 names rather than a bug this file is reporting.
-
-**One test here is not a scenario.** The last section guards
-``scripts/severed-twin-replay.py``'s calibration-convention resolution — the
-corpus-replay rung rather than this one. It lives here because it is one pure
-function whose wrong answer is silent, not because the file is about that tool;
-its own section says so.
 """
 
 from __future__ import annotations
 
-import pathlib
 
 import numpy as np
 import pytest
@@ -109,41 +102,6 @@ BLIND_SPAN_HZ = (1200.0, ECHO_BAND_HF_REGIME_FLOOR_HZ)
 # because the depth statistic is a lower bound on the true depth.
 TAU_TOLERANCE_FRACTION = 0.01
 R_TOLERANCE = 0.05
-
-
-def _load_replay_module():
-    """``scripts/severed-twin-replay.py`` as a module.
-
-    It is a script rather than a package module (laptop-only, never shipped to
-    the Pi), and its filename is not an identifier, so it is loaded by path.
-    """
-    import importlib.util
-    import sys
-
-    name = "_severed_twin_replay"
-    if name in sys.modules:
-        return sys.modules[name]
-    path = pathlib.Path(__file__).resolve().parent.parent / "scripts"
-    path = path / "severed-twin-replay.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Registered BEFORE exec: the module defines dataclasses, and
-    # `dataclasses` resolves each one's own module out of `sys.modules` while
-    # building it.
-    sys.modules[name] = module
-    loaded = False
-    try:
-        spec.loader.exec_module(module)
-        loaded = True
-    finally:
-        # A half-executed module left in `sys.modules` would be handed to every
-        # later caller as if it were fine. `finally` rather than a broad
-        # `except`/`raise`: nothing here wants to inspect the failure, only to
-        # not leave the registration behind.
-        if not loaded:
-            del sys.modules[name]
-    return module
 
 
 def _source_fixed_cloud():
@@ -454,127 +412,3 @@ def test_the_pair_3_boost_is_decided_by_its_own_reach_not_its_centre(q, expect_d
         assert all(
             0.0 < r.realized_max_db < PAIR3_BOOST["gain"] / 2.0 for r in residual
         )
-
-
-# --------------------------------------------------------------------------- #
-# The replay tool's one silent-wrong-answer surface
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    ("calibration_id", "expected"),
-    [
-        ("minidsp-minidsp_umik2-b7343c0c625b", "response"),
-        ("minidsp-minidsp_umik1-abcdef123456", "response"),
-        ("dayton_audio-dayton_umm6-abcdef123456", "response"),
-        ("", "response"),
-        ("vendor-not_a_registered_model-abc", "response"),
-    ],
-)
-def test_the_replay_asks_the_registry_which_way_a_calibration_file_reads(
-    calibration_id, expected,
-):
-    """``scripts/severed-twin-replay.py`` resolves a banked session's
-    calibration sign convention from the product's own mic registry.
-
-    This has a test because its wrong answer is SILENT and was already wrong
-    once: a vendor file states either the mic's RESPONSE or a CORRECTION, the
-    two differ by a sign, and reading it the wrong way moves every magnitude
-    the fit sees while moving none of the timing/deconvolution diagnostics the
-    replay's fidelity gate checks (their count is pinned by
-    `test_the_replay_gate_checks_the_field_count_its_doc_advertises`, so it is
-    not restated here). The first revision of this
-    harness pinned ``"correction"`` as a literal — correct for the 2026-07-24/25
-    corpus it was borrowed from, wrong for the 2026-07-29 sessions it was
-    applied to, and invisible to every check in the tool.
-
-    The unregistered and empty rows are the ones that matter most: both must
-    reach :data:`~jasper.audio_measurement.calibration.DEFAULT_SIGN_CONVENTION`
-    rather than the old default, which is the same "a missing declaration must
-    not resurrect the old wrong default" rule the registry itself follows.
-    """
-    from jasper.audio_measurement.calibration import (
-        DEFAULT_SIGN_CONVENTION,
-        SUPPORTED_MODELS,
-    )
-
-    replay = _load_replay_module()
-
-    assert replay._sign_convention(calibration_id) == expected
-    # Not a restatement of the literal above: it must be the REGISTRY's answer,
-    # so this fails if the registry moves and the expectation does not.
-    for key, spec in SUPPORTED_MODELS.items():
-        assert replay._sign_convention(f"vendor-{key}-hash") == spec["sign_convention"]
-    assert replay._sign_convention("") == DEFAULT_SIGN_CONVENTION
-
-
-def test_the_replay_gate_checks_the_field_count_its_doc_advertises():
-    """`FIDELITY_FIELDS`' size is a number PROSE states, so prose can drift.
-
-    `docs/testing-tooling.md` tells an operator the tool "reproduces 19 of its
-    values and prints no fit unless every one matches" — that sentence is how
-    someone decides whether an exit 1 means their reconstruction is broken, so
-    it has to be the real count. It was 20 and un-pinned until #2052 had to
-    change it, and the same number was restated a third time in the docstring
-    above, which went stale silently.
-
-    Why the count moved, recorded here because the WRONG conclusion is the
-    tempting one: `channel_map_ok` left the tuple because it went tri-state,
-    `analysis_diagnostic_summary` omits a `None` flag entirely, and no
-    MEASURE/VERIFY sidecar records it any more — so keeping it would report a
-    deliberate semantic change as a broken reconstruction. That is the
-    tool's own misattribution failure mode, not a gap in its reach.
-    """
-    replay = _load_replay_module()
-
-    assert len(replay.FIDELITY_FIELDS) == 19
-    assert "channel_map_ok" not in replay.FIDELITY_FIELDS
-    # The other half of the pair — that a healthy MEASURE/VERIFY summary
-    # really does omit the flag, which is WHY it left — is pinned beside that
-    # fixture, in tests/test_crossover_v2_program_pilots.py's
-    # `test_measure_summary_omits_the_channel_map_flag_it_cannot_judge`.
-
-
-def _write_wav(path, values, *, width, channels=1, rate=48_000):
-    """A mono/stereo WAV of ``values`` at the given sample width (stdlib)."""
-    import struct
-    import wave
-
-    with wave.open(str(path), "wb") as writer:
-        writer.setnchannels(channels)
-        writer.setsampwidth(width)
-        writer.setframerate(rate)
-        fmt = {2: f"<{len(values)}h", 4: f"<{len(values)}i"}[width]
-        writer.writeframes(struct.pack(fmt, *values))
-
-
-def test_the_replay_decodes_the_dump_rings_both_sample_widths(tmp_path):
-    """S2 (#2720 gate): the dump ring holds 16-bit phone captures AND 32-bit
-    wired captures (#2662 W2b). A width-blind int16 decode re-strides a
-    32-bit take into garbage the twin verdict then misreports as drift, so
-    the loader reads the width from the container's own fmt chunk — and
-    refuses widths it does not support rather than mis-analyzing them."""
-    import wave
-
-    replay = _load_replay_module()
-
-    sixteen = tmp_path / "phone.wav"
-    _write_wav(sixteen, [0, 16384, -16384, 32767], width=2)
-    assert np.allclose(
-        replay._load_mono(sixteen), [0.0, 0.5, -0.5, 32767 / 2**15]
-    )
-
-    thirty_two = tmp_path / "wired.wav"
-    _write_wav(thirty_two, [0, 2**30, -(2**30), 2**31 - 1], width=4)
-    assert np.allclose(
-        replay._load_mono(thirty_two), [0.0, 0.5, -0.5, (2**31 - 1) / 2**31]
-    )
-
-    eight = tmp_path / "unsupported.wav"
-    with wave.open(str(eight), "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(1)
-        writer.setframerate(48_000)
-        writer.writeframes(bytes([128, 129, 127]))
-    with pytest.raises(ValueError, match="unsupported 8-bit WAV"):
-        replay._load_mono(eight)

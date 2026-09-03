@@ -11,54 +11,41 @@
 # dependency bump needs to land. Everything else still comes from a Pi.
 #
 # Provenance:
-#   generated-at: 2026-06-19T18:51:37Z
-#   source-pi:    pi@192.168.1.53
+#   generated-at: 2026-09-03T05:23:59Z
+#   source-pi:    pi@jts.local
 #   pi-python:    Python 3.13.5
 #   pi-pip:       pip 26.1.2 from /opt/jasper/.venv/lib/python3.13/site-packages/pip (python 3.13)
-#   pi-build:     JASPER_GIT_SHA=7bf41dac-dirty JASPER_GIT_SHA_FULL=7bf41dac8b9097aa977ba46ab89194df62e53e85-dirty JASPER_GIT_BRANCH=HEAD JASPER_INSTALL_AT=2026-06-19T14:50:08-04:00
+#   pi-build:     JASPER_GIT_SHA=2afa50636 JASPER_GIT_SHA_FULL=2afa506360227cd20ccd88006fafc9e7c566aaf0 JASPER_GIT_BRANCH=HEAD JASPER_INSTALL_AT=2026-09-03T01:19:42-04:00 JASPER_INSTALL_STATUS=ok
 #
 # install.sh passes this file to pip via -c ONLY when it exists;
 # deleting it reverts deploys to open-range resolution.
-#
-# 2026-07-11 coherence update: the protobuf chain was deliberately
-# co-resolved in pyproject.toml/uv.lock and this Pi overlay. JTS replaced
-# nyct-gtfs (which hard-pinned the unsupported protobuf 4.25.3 runtime)
-# with the standard GTFS-Realtime bindings, then moved protobuf and every
-# affected consumer together. tests/test_constraints_pi_resolvable.py
-# guards the chain in both ecosystems. A proper on-Pi regeneration after
-# the next deploy overwrites this note and refreshes the provenance above.
-#
-# 2026-08-08 HAND-EDIT (not a Pi regeneration): raised exactly three
-# security pins to match the co-resolved uv.lock, without re-running
-# scripts/generate-pi-constraints.sh — cryptography 49.0.0 -> 50.0.0
-# (CVE-2026-69247), httplib2 0.31.2 -> 0.32.0 (CVE-2026-59939), pyasn1
-# 0.6.3 -> 0.6.4 (CVE-2026-59884/59885/59886, the latter two forced via
-# the new [tool.uv].constraint-dependencies floor since pyasn1 is
-# transitive-only here). No other line in this file was touched. A
-# proper on-Pi regeneration overwrites this note and refreshes the
-# provenance above.
+ajsonrpc==1.2.0
 annotated-types==0.8.0
 anyio==4.14.2
 audioop-lts==0.2.2
+bottle==0.13.4
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.1
+colorama==0.4.6
 cryptography==50.0.1
 dbus-next==0.2.3
 distro==1.9.0
-evdev==1.9.3
+evdev==2.0.0
 flatbuffers==25.12.19
 google-api-core==2.34.0
 google-api-python-client==2.199.0
 google-auth-httplib2==0.4.2
 google-auth-oauthlib==1.4.1
-google-auth==2.53.0
-google-genai==2.9.0
+google-auth==2.57.0
+google-genai==2.22.0
 googleapis-common-protos==1.75.2
-gtfs-realtime-bindings==2.1.0
+gtfs-realtime-bindings==2.2.0
 h11==0.16.0
+httpcore2==2.12.0
 httpcore==1.0.9
 httplib2==0.32.0
+httpx2==2.12.0
 httpx==0.28.1
 idna==3.19
 ifaddr==0.2.0
@@ -66,22 +53,27 @@ importlib_resources==7.1.0
 jiter==0.16.0
 joblib==1.5.3
 libusb-package==1.0.30.0
+marshmallow==3.26.2
+narwhals==2.22.1
 numpy==2.4.6
+nyct-gtfs==2.1.0
 oauthlib==3.3.1
-onnxruntime==1.27.0
-openai==2.41.1
+onnxruntime==1.29.0
+openai==3.7.0
 openwakeword==0.6.0
 packaging==26.3
 proto-plus==1.28.4
-protobuf==7.35.1
+protobuf==7.36.0
 pyalsaaudio==0.11.0
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.0
 pydantic==2.13.5
 pydantic_core==2.46.5
+pyelftools==0.32
 Pygments==2.21.0
 pyparsing==3.3.2
+python-mpd2==3.1.1
 pyudev==0.24.4
 pyusb==1.3.1
 PyYAML==6.0.3
@@ -92,17 +84,23 @@ requests==2.34.2
 scikit-learn==1.9.0
 scipy==1.17.1
 sdnotify==0.3.2
+semantic-version==2.10.0
 sniffio==1.3.1
 sounddevice==0.5.6
 spotipy==2.26.0
+starlette==0.52.1
+tabulate==0.10.0
 tenacity==9.1.4
 threadpoolctl==3.6.0
 tqdm==4.70.0
+truststore==0.10.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 uritemplate==4.2.0
 urllib3==2.7.0
+uvicorn==0.40.0
 websocket-client==1.9.1
 websockets==16.0
 wheel==0.47.0
-zeroconf==0.149.16
+wsproto==1.3.2
+zeroconf==0.151.3

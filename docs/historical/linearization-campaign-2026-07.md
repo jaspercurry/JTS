@@ -31,7 +31,7 @@
 |---|---|---|
 | `flat-linearization-plan.md` | measurement basis, the flat spec, the six fundamentals, the non-goals | `flat_spec.SPEC_BANDS` and `spatial_combine`/`interference_nulls`, each carrying its derivation inline; this record holds the provenance |
 | `flat-linearization-productization-plan.md` | the PR-1…PR-8 build ladder and its declared choreography defaults | the constants it sized — `MAX_CAPTURE_PLAN_ATTEMPTS`, `DEFAULT_SESSIONS_MAX_BYTES`, the PR-4 band derivation — each stating its own arithmetic |
-| `flat-linearization-flow-simplification-plan.md` | Express's claim boundary and the one-instruction screen grammar | `EXPRESS_CLOUD_VERIFY_POSITIONS` and the capture page; its §2.2/§2.6 contracts were already superseded by [`two-stage-commission-flow-plan.md`](../two-stage-commission-flow-plan.md) |
+| `flat-linearization-flow-simplification-plan.md` | Express's claim boundary and the one-instruction screen grammar | `EXPRESS_CLOUD_VERIFY_POSITIONS` and the capture page; its §2.2/§2.6 contracts were already superseded by [`two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md) |
 | `linearization-integrity-plan.md` | the PR-L1…PR-L5 fix ladder for the 10 dB-dark profile | all five items landed; `delta_probe`, `linearization_fit` and `crossover_envelope_v2` carry the live rules, and [ADR-0003](../adr/0003-prediction-gate-frame.md) carries the prediction-gate frame |
 
 ---
@@ -219,9 +219,7 @@ are what size the relay's attempt cap. Worst-case ENTRY count at the section's
 documented maxima: CHECK 1 + MEASURE 1 + `(N−1)` cloud-measure at max N=12 ⇒ 11,
 plus M=6 cloud-verify and 2 geometry-retry positions = **21 entries**. Since
 `max_attempts` doubles as the retake budget, the cap covers entries plus
-retakes: 21 + 11 = **32**, ~52 % retake headroom. That is
-`capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`, kept in lockstep with
-`relay/src/worker.js`.
+retakes: 21 + 11 = **32**, ~52 % retake headroom.
 
 **The named corner-cut that sizes retention:** full per-position WAVs are kept
 rather than derived summaries, *because the S0 forensics that produced this
@@ -286,7 +284,7 @@ One instruction per step; confirm-then-tone wherever a move happened; a plan
 announcement before any sweep; retry and recovery screens using the same
 grammar; courtesy-tone pacing; and per-measurement Retake / Next / Stop
 control. §§2.2 and 2.6 were **superseded** by
-[`two-stage-commission-flow-plan.md`](../two-stage-commission-flow-plan.md) —
+[`two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md) —
 the VERIFY begin-first/confirm-after-apply contract and the group-close
 "one extra tap" contract are that document's. The rest is what
 `tests/js/capture_plan_loop_test.mjs` pins.

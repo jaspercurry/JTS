@@ -43,6 +43,14 @@ _OBJECT_MANAGER_IFACE = "org.freedesktop.DBus.ObjectManager"
 _AIRPLAY_PATH = "/org/mpris/MediaPlayer2"
 _AIRPLAY_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 _BT_INTERFACES = frozenset({"org.bluez.MediaTransport1", "org.bluealsa.PCM1"})
+_DBUS_IFACE = "org.freedesktop.DBus"
+# A producer that dies mid-stream emits no PropertiesChanged and no
+# InterfacesRemoved; its bus name simply loses its owner. Without these the
+# only detector is the reconciler's slow repair probe.
+_PRODUCER_BUS_NAMES = {
+    "org.mpris.MediaPlayer2.ShairportSync": Source.AIRPLAY,
+    "org.bluealsa": Source.BLUETOOTH,
+}
 _RETRY_INITIAL_SEC = 1.0
 _RETRY_MAX_SEC = 30.0
 
@@ -75,6 +83,11 @@ def classify_source_signal(
         if changed_iface in _BT_INTERFACES and (not keys or "State" in keys):
             return (Source.BLUETOOTH,)
         return ()
+
+    if interface == _DBUS_IFACE and member == "NameOwnerChanged":
+        name = body[0] if body and isinstance(body[0], str) else None
+        source = _PRODUCER_BUS_NAMES.get(name or "")
+        return (source,) if source is not None else ()
 
     if interface == _OBJECT_MANAGER_IFACE and member in {
         "InterfacesAdded",
@@ -231,6 +244,11 @@ async def watch_dbus_sources(notify: Notify) -> None:
                 "type='signal',interface='org.freedesktop.DBus.Properties',"
                 "member='PropertiesChanged',arg0='org.bluealsa.PCM1'",
                 "type='signal',interface='org.freedesktop.DBus.ObjectManager'",
+                *(
+                    "type='signal',interface='org.freedesktop.DBus',"
+                    f"member='NameOwnerChanged',arg0='{name}'"
+                    for name in _PRODUCER_BUS_NAMES
+                ),
             )
             for rule in rules:
                 reply = await bus.call(Message(

@@ -4,84 +4,82 @@
 
 """Reader for the librespot state file written by the --onevent hook.
 
-librespot (rust) doesn't expose an HTTP control surface like
-go-librespot did. Instead, we configure it with `--onevent` pointing
-at a small script (`jasper-librespot-event`) that captures env vars
-on every player event and atomically writes them to a JSON file
-under `/run/librespot/state.json`. This module is the read side —
-mux, volume_observers, and RendererClient all consult it for
-"is Spotify active?" and "what's its current volume?".
+librespot (rust) exposes no local control surface, so
+`deploy/bin/jasper-librespot-event` merges each player event's env vars
+into a `KEY=value` file and this module is the read side — mux,
+volume_observers and RendererClient all consult it for "is Spotify
+active?" and "what's its current volume?".
 
-Why a state file instead of, say, a Unix socket or a long-lived
-event subscription:
-
-- librespot's hook is fire-and-forget — one process per event.
-  A socket or pipe would need a long-running listener; a state file
-  needs nothing.
-- Multiple consumers (mux, observer, renderer) read independently.
-  The file is shared state with atomic semantics (POSIX rename).
-- Crash safety: if jasper-voice restarts mid-session, the next
-  read picks up the last known state without re-syncing.
-
-The format is intentionally loose — extend by adding new fields
-as librespot adds new env vars; readers tolerate missing keys.
+Why a file rather than a socket: the hook is fire-and-forget, one process
+per event, so a listener would have to exist somewhere; several consumers
+read independently; and a restart mid-session picks the last known state
+back up without re-syncing. The format is deliberately loose — extend it
+by adding keys as librespot adds env vars; readers tolerate missing ones.
 """
 from __future__ import annotations
 
-import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
+from .env_file import parse_env_lines
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_PATH = "/run/librespot/state.json"
+DEFAULT_PATH = "/run/librespot/state.env"
 
 # librespot reports volume as raw 0-65535 (16-bit) regardless of the
 # `--volume-range` flag. The flag controls the dB curve mapping;
 # the raw 0-65535 is the position. Convert with simple division.
 LIBRESPOT_VOLUME_MAX = 65535
 
+# Keys the hook writes as 1/0 and callers compare with `is True`.
+_BOOL_KEYS = frozenset({"playing", "paused", "stopped", "session_active"})
+
+
+def configured_path() -> str:
+    """The state file this box uses: JASPER_LIBRESPOT_STATE or the default.
+
+    The hook reads the same variable, so an override moves both ends.
+    """
+    return os.environ.get("JASPER_LIBRESPOT_STATE", DEFAULT_PATH)
+
+
+def parse(text: str) -> dict[str, Any]:
+    """Decode state-file text into the state dict (keys lowercased,
+    `_BOOL_KEYS` as bools, every other value as the written string).
+
+    An empty result means the text carried no assignments at all, which
+    callers that distinguish "unknown" from "stopped" treat as unknown.
+
+    Values round-trip verbatim apart from surrounding whitespace and
+    anything past an embedded newline; librespot's event vars are ids,
+    integers, URIs and enums, so neither occurs.
+    """
+    state: dict[str, Any] = {}
+    for key, value in parse_env_lines(text):
+        if value is None:
+            continue
+        name = key.lower()
+        state[name] = value == "1" if name in _BOOL_KEYS else value
+    return state
+
 
 def read(path: str | None = None) -> dict[str, Any]:
     """Return the current state dict, or empty dict on read error.
-    Safe to call any number of times; cheap (small JSON file)."""
+    Safe to call any number of times; cheap (small file)."""
     p = Path(path or DEFAULT_PATH)
     try:
-        return json.loads(p.read_text())
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        return parse(p.read_text())
+    except FileNotFoundError:
+        # Absent until Spotify first plays; volume_observers polls this at
+        # 1 Hz, so logging here is pure spam on every speaker that hasn't
+        # used Spotify yet.
+        return {}
+    except OSError as e:
         logger.debug("librespot state read failed (%s): %s", p, e)
         return {}
-
-
-def is_playing(path: str | None = None) -> bool:
-    """True iff librespot is actively producing audio (track playing,
-    not paused, not stopped). Wrapped by `source_state.spotify_playing`,
-    which is the entry point both RendererClient and the mux daemon use."""
-    state = read(path)
-    if not state:
-        return False
-    # `playing` flag is set by the hook on PLAYER_EVENT=playing /
-    # cleared on paused/stopped/session_disconnected. Belt-and-
-    # suspenders: also check `paused` and `stopped` aren't True.
-    if state.get("playing") is True:
-        return True
-    if state.get("paused") is True or state.get("stopped") is True:
-        return False
-    return False
-
-
-def session_active(path: str | None = None) -> bool:
-    """True if a Spotify Connect session is open (regardless of
-    play/pause state).
-
-    Currently unused: the renderer's "is Spotify the target source"
-    decisions go through `track_uri()` and `source_state.spotify_playing()`
-    instead, and `jasper.control.state_aggregate` re-implements this same
-    `session_active` field lookup inline rather than calling this
-    function."""
-    state = read(path)
-    return bool(state.get("session_active"))
 
 
 def volume_percent(path: str | None = None) -> int | None:

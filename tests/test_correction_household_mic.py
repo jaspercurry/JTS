@@ -81,16 +81,6 @@ def test_household_mic_record_mode_0644(tmp_path: Path):
     assert (path.stat().st_mode & 0o777) == 0o644
 
 
-def test_clear_household_mic_is_idempotent(tmp_path: Path):
-    path = tmp_path / "household_mic.json"
-    record = _store(tmp_path)
-    hm.write_household_mic(hm.household_mic_from_calibration(record), path=path)
-    assert path.exists()
-    hm.clear_household_mic(path=path)
-    assert not path.exists()
-    hm.clear_household_mic(path=path)  # missing file: no error
-
-
 # --- malformed-file fail-soft -------------------------------------------------
 
 

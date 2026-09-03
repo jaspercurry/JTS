@@ -13,7 +13,7 @@
 > | What is the current session boundary? `open` / `measure` / `close`, with four seam fields | [`session.py`](../jasper/active_speaker/crossover_v2/session.py), [`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py), and [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md) |
 > | Where is the program going? What is funded, deleted, pinned? | [`tuning-master-plan.md`](tuning-master-plan.md) |
 > | Why is it like this? Bench results, decision archaeology, the failure taxonomy, the W6 gotcha catalog | [`historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md) |
-> | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](crossover-measurement-productization-design.md) |
+> | Why does it exist at all; what was rejected | [`crossover-measurement-productization-design.md`](historical/crossover-measurement-productization-design.md) |
 > | **How do I actually drive it tonight?** | this file |
 >
 > Read the doctrine once per session. Read this whenever you forget a workflow step.
@@ -63,8 +63,7 @@ while the result is still getting flatter.
   `POST /correction/crossover/v2/session {"tier": "remote"}`.
 - **It is the only flow.** The legacy per-driver near-field procedure, its
   `JASPER_CROSSOVER_FLOW` selector, and the `build_crossover_envelope` shim are
-  gone: callers reach `build_crossover_envelope_v2` directly, or
-  `crossover_envelope.build_crossover_envelope_logged`.
+  gone: callers reach `build_crossover_envelope_v2` directly.
 - **Nothing applies inside a capture session.** A session produces a proposal;
   the household applies it from the `review` screen.
 - **The candidate cycle is a round.** `jasper-angle-capture stage --program
@@ -193,30 +192,8 @@ withdraw` is a different thing — it pulls a staged *walk*.)
 ~1 m in front of the speaker at tweeter height, pick a tier on
 `microphone_check`, tap Start. What paces the walk depends on the capture
 source — the wired default records on the Pi (see *The WIRED capture source*
-below); the parked phone flow is followed on the phone. When measurement ends,
-return to jts.local and choose Apply explicitly.
-
-**Three independent releases ship in a fixed order.** The phone page and the
-relay Worker both go out **before** the Pi, because each must be able to accept
-what the Pi will emit:
-
-1. **Phone capture page** — [`capture-page/`](../capture-page/README.md), a
-   Cloudflare Pages app at `capture.jasper.tech`. Deploy from the repo root:
-   `npx wrangler pages deploy capture-page/dist --project-name jts-capture-page --branch=main`.
-   `--branch=main` is load-bearing — without it wrangler publishes a preview
-   alias and the production domain keeps serving the stale page. The custom
-   domain lags the deploy by ~5 min; verify it before moving on.
-2. **Relay Worker** — [`relay/`](../relay/README.md) at `relay.jasper.tech`.
-   `cd relay && npx wrangler deploy`, then confirm the public artifact:
-   `curl -fsS https://relay.jasper.tech/capabilities` and check
-   `max_capture_plan_attempts` is at least what the Pi build will emit. The
-   Worker's blob-index space *is* the capture-plan attempt ceiling.
-3. **The Pi** — `bash scripts/deploy-to-pi.sh`.
-
-The Pi reads `/capabilities` at session setup and refuses before registering
-rather than dying on the ninth capture
-(`event=capture_relay.plan_capacity_refused`). Both READMEs own the full
-ordering rule, including the removal direction (page last).
+below). When measurement ends, return to jts.local and choose Apply
+explicitly.
 
 ## The capture flow
 
@@ -308,7 +285,7 @@ fourth tier.
 
 **The position gate replaces the tap.** Every begin — including the 0° ones — is
 held until the driver says the microphone has arrived. The hold is the shipped
-`CaptureBeginDeferred` soft-hold, so **no capture-page change is involved**: the
+`CaptureBeginDeferred` soft-hold, so **no page change is involved**: the
 Pi answers `capture_deferred`, the page parks with no affordance and re-posts the
 identical begin every 1.5 s, the attempt budget is not spent, and the session
 does not end. Gating is per `(index, attempt)`, so a retake re-gates.
@@ -351,24 +328,20 @@ park-and-verify held in code. It is opt-in and foreground: nothing starts it. Se
 **The WIRED capture source is the default, and it changes steps 1–2.** A
 measurement-class USB mic plugged into the Pi (usbid matched against the
 calibration registry — a UMIK-2; never a voice array) is what a session opens on:
-the Pi plays and records on one host, so there is **no phone, no relay
-dependency, and none of the three capture-device gestures**. With no such mic the
-session refuses at the tap and says so — it never falls back to the phone quietly
-— and `JASPER_CAPTURE_SOURCE=relay` is the way to the parked phone-mic flow
-([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md); the knob is
-documented in `.env.example`). The position gate is unchanged, and on the wired
-source a hand-walked round is gated too, because there is no capture page to
-tap. Two steps are new: stage 1's held set
+the Pi plays and records on one host, so there is **no phone and none of the
+three capture-device gestures**. With no such mic the session refuses at the tap
+and says so ([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md)). The
+position gate is unchanged, and a hand-walked round is gated too, because
+nothing else paces it. Two steps are new: stage 1's held set
 closes on `POST /correction/crossover/v2/complete` (empty body), bounded by the
 session ceiling and expiring as `session_ceiling_expired`; and
 `POST /correction/crossover/v2/retake` (empty body) re-opens the take that just
-completed. The retake's terms are the relay's own §2.6, stated once in
+completed. The retake's terms are the §2.6 ones, stated once in
 `run_capture_plan`'s docstring and implemented against that statement in
 `build_v2_wired_run_and_consume`
 ([`correction_crossover_v2_wired.py`](../jasper/web/correction_crossover_v2_wired.py))
-— read either, not a third copy. Two facts are LOCAL rather than the relay's: the
-request names no index (WHICH slot is the walk's own fact), and a retake the walk
-cannot serve is journalled as
+— read either, not a third copy. The request names no index (WHICH slot is the
+walk's own fact), and a retake the walk cannot serve is journalled as
 `event=correction.crossover_v2_wired_retake_refused`.
 
 **A hand-walked round is driven from the browser, not a CLI**
@@ -403,15 +376,6 @@ is page-side and fires only on evidence measured in *that take*; the derivation
 of why an `auto_retry` class filter is the wrong one for it, and the 2026-08-15
 deterministic-fault campaign that settled it, are the campaign record's.
 
-**A transient relay failure is NOT that stall — the page recovers on its own.**
-The capture page re-sends the begin exchange automatically on a backoff ladder,
-bounded by both rung count *and* wall clock so it can never spend the
-`awaiting_arm` budget the household's tap still needs. The rungs, the arithmetic
-and the safety argument for re-posting an identical begin are stated in
-`withRelayReconnect` ([`capture-page/js/main.js`](../capture-page/js/main.js)),
-not restated here. A **rejected** capture still needs a human; a **transport**
-blip no longer does.
-
 **A geometry-locked group refuses rather than prompting — on EITHER gated
 shape.** If a group's echo estimates cluster, a screen-paced walk asks for a
 wider retake: 75 cm out, and on the second rung 75 cm out *and above* mark
@@ -433,16 +397,6 @@ actionable sentence. It introduces no new budget: past the ceiling
 `SessionVolumePlan.assert_ready` already refuses a stale-active plan, so every
 capture after it was doomed; what changed is that the session says so instead of
 reporting `relay_timeout`, a claim about a transport that never failed.
-
-**The link is minted to outlive the stage.** A relay link is an absolute clock
-(`TIME_BUDGET_LINK` — minted once, refreshed by nothing) and the shared default
-is shorter than either remote ceiling, so a remote stage sizes its own:
-`relay_link_ttl_s` asks for that stage's ceiling plus `REMOTE_RELAY_TTL_MARGIN_S`,
-clamped at what the relay Worker grants (`capture_relay.session.MAX_TTL_S`,
-mirrored from `relay/src/worker.js`). Each stage mints its own link;
-hand-walked tiers keep the default. Read the numbers off those constants, not
-from here. Symptom when this is wrong: the capture page is alive and re-posting,
-and the Pi's own status poll takes a `404 not_found` mid-walk.
 
 **What a remote walk cannot say.** It samples one axis, so its post-apply group
 carries no `xovr` role at all. The done screen discloses that once
@@ -477,6 +431,7 @@ nothing durable · **mutating** = changes what the speaker plays ·
 | `jasper-round open\|wait\|apply` | Open, wait on and apply a crossover round from the speaker itself. The same three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate. | mutating-with-gates (`open`/`apply` write; `wait` does not) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|per-seat\|repeat\|repeat-floor\|agreement\|co-metrics\|spec-sweep\|frequency` | The round-grading comparison views: entry-state grading, frozen-reference grading, per-seat curves, session-to-session repeatability and the banked repeat floor, per-seat agreement, audibility co-metrics, the gate sweep read onto the spec verdict, and the shared frequency view — over banked rounds and live sessions. | advisory | `jasper/cli/round_views.py` |
 | `jasper-round-bank` | Bank one live commissioning session into the on-box campaign home, where it outlives session retention. | mutating (copies evidence; changes nothing played) | `jasper/cli/round_bank.py` |
+| `jasper-project-ring` | Re-project a banked round into the capture ring that jasper-classify-features and jasper-read-distortion read. | mutating (projects evidence; changes nothing played) | `jasper/cli/project_ring.py` |
 | `jasper-classify-features` | Classify a banked round's features as minimum-phase driver defects, interference, or the room — controls first. | advisory | `jasper/cli/classify_features.py` |
 | `jasper-read-distortion` | Read H2/H3 out of a banked round's MEASURE captures, relative to the fundamental, at the drive each capture used. | advisory | `jasper/cli/read_distortion.py` |
 | `jasper-delay-sweep propose` | Propose an inter-driver delay from banked curves. Computes only; plays nothing. | advisory (plays nothing) | `jasper/cli/delay_sweep.py` |
@@ -554,31 +509,22 @@ pending work, are methodology §4's calls.
 
 ## The doors, and what they refuse
 
-Five prescription doors, one refusal vocabulary each, counted at HEAD:
+Five prescription doors, one refusal vocabulary each:
 
 | Door | Refusal reasons | Vocabulary constant |
 |---|---|---|
-| alignment | 9 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
-| topology | 9 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
-| blend | 17 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
-| driver | 17 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
+| alignment | 10 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
+| topology | 10 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
+| blend | 15 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
+| driver | 15 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
 | spool | 4 | `prescription_spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS` |
 
-The topology door lost `outside_declared_search_band` when
-[#2870](https://github.com/jaspercurry/JTS/issues/2870) deleted the crossover
-search band; its two surviving frequency refusals are both drivers' declared hard
-excitation edges. The driver door dropped six on 2026-08-23, all of them the
-classification bar's — `driver_feature_not_classified`,
-`driver_feature_not_cuttable`, `driver_feature_not_boostable`,
-`driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth` and
-`driver_boost_unvouched`: the owner ruled that a candidate inside the caps may be
-tested, so the vouch DISCLOSES and the round decides. It dropped two more on
-2026-08-29 — `driver_filter_cut_too_shallow` and `driver_filter_boost_too_shallow`
-— on the same ruling: a filter under the fit engine's 0.5 dB cosmetic floor is
-now admitted and counted onto `prescription.subaudible_filters`. It GAINED one
-with the trim pin: `driver_trim_pin_malformed` is the whole judgment on
-`pinned_trim_db` — an object keyed by role, each value between −60 and 0 dB, and
-only for a role the same document prescribes filters for.
+Read the constant, never this count: each frozenset is the door's own list, and
+a count here is a second copy of it. The topology door's two frequency refusals
+are both drivers' declared hard excitation edges, not a search band.
+`driver_trim_pin_malformed` is the whole judgment on `pinned_trim_db` — an
+object keyed by role, each value between −60 and 0 dB, and only for a role the
+same document prescribes filters for.
 
 One refusal still shapes what you can ask for, and it is about **boosts**:
 
@@ -1142,16 +1088,17 @@ whenever it cannot be formed:
 | `graded_band_narrower_than_grid` | bands only: the graded span holds no grid bin, so nothing can be worst |
 
 Refusals print as JSON on stdout and one sentence on stderr, each naming the
-input that was missing: `gate_sweep_no_captures` and `gate_sweep_no_programs`
+input that was missing. Five come from the shared round loader and carry its
+`round_` prefix, not this tool's: `round_no_captures` and `round_no_programs`
 (discovery found no `**/summed/summed_*.json` or no `**/*program*.wav` under the
-round), `gate_sweep_program_hash_unmatched` (a capture's declared stimulus hash
-matches no banked program), `gate_sweep_radiated_band_missing`,
-`gate_sweep_capture_unreadable`, `gate_sweep_reference_band_empty` (the
-2500–8000 Hz reference and this capture's radiated band do not overlap — there
-is no honest normalisation, so nothing is published rather than a curve
-referenced to something else), and `gate_sweep_single_pose` (across-pose σ needs
-at least two poses, so a one-pose round is refused rather than reported as
-window-invariant).
+round), `round_program_hash_unmatched` (a capture's declared stimulus hash
+matches no banked program), `round_radiated_band_missing`, and
+`round_capture_unreadable`. Two are this tool's own:
+`gate_sweep_reference_band_empty` (the 2500–8000 Hz reference and this
+capture's radiated band do not overlap — there is no honest normalisation, so
+nothing is published rather than a curve referenced to something else), and
+`gate_sweep_single_pose` (across-pose σ needs at least two poses, so a one-pose
+round is refused rather than reported as window-invariant).
 
 **The across-pose σ here is a fourth spread and pools with none of the three
 below.** It is computed by this tool, on its own normalisation, its own grid and

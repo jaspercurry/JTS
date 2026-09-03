@@ -37,7 +37,7 @@ architecture, or campaign state, all of which have owners:
 - **Commission flow grading** —
   [`tuning-operator-runbook.md`](../tuning-operator-runbook.md); **architecture
   and file map** —
-  [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md)
+  [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md)
 
 Where this doc and one of those disagree, the owning doc wins. Items here
 move to issues and PRs as they start; session-level detail (what a given
@@ -149,13 +149,6 @@ visibility), `0214b4333` (experimental USB turntable control), and
 fan-in/output path this run exercises and one is on the measurement path,
 so redeploy before the session.
 
-Release order is **direction-dependent**, not a constant — see
-[`capture-page/README.md`](../../capture-page/README.md) "Release order
-(direction matters)": the narrowing side always goes last, which puts the
-page first when adding a protocol and the Pi first when removing one. A
-plain Pi redeploy with no capture-page or relay-Worker change has no page
-or Worker component; it is one deploy.
-
 **2. Surface the crossover-region verdict as a first-class outcome.** The
 R18 absolute claim grades `[Fc/2, 2·Fc]` (`OVERLAP_OCTAVE_RATIO = 2.0`,
 band derived from Fc) at 2.0 dB **for the shipped 2 kHz two-way** —
@@ -229,7 +222,7 @@ four returned **six more**, none of them on the hand list. Also trued up —
 `linearization_fit.py`'s module docstring and `fit_driver_linearization`'s own
 first line (both said "cut-only" while the same docstrings described the boost
 vocabulary below); this file's live-spine sibling
-[`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md)
+[`crossover-v2-engine-design.md`](crossover-v2-engine-design.md)
 invariant 11, which claimed the emitter re-proves a *non-positive gain* when it
 re-proves the cap; the duplicated cut-only justification in
 `deploy/assets/correction/js/crossover/{chart,cloud}.js` (the per-curve

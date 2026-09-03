@@ -176,7 +176,7 @@ def test_shairport_orders_after_outputd_for_live_latency_offset():
 def test_shairport_template_keeps_renderer_placeholder():
     conf = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
     assert 'output_device = "__RENDERER_DEVICE__"' in conf
-    assert "output_rate = 44100" in conf
+    assert "output_rate = 48000" in conf
 
 
 def test_shairport_drift_tolerance_clears_the_lane_delay_grain():

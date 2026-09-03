@@ -127,10 +127,10 @@
 > `/correction/crossover/relay-cancel`. While cancellation and exact cleanup are
 > in flight, the server envelope reports `stopping` and withholds forward
 > actions; terminal `stopped` appears only after the owning worker has drained.
-> The subsequent phone-upload and persistence phases are visibly non-stoppable.
+> The subsequent persistence phase is visibly non-stoppable.
 > User Stop is cancellation, not a measurement failure or failure-cue event.
-> The exact boundary and operational mechanics are canonical in
-> [`phone-mic-relay-plan.md`](phone-mic-relay-plan.md).
+> The exact boundary and operational mechanics are canonical in the handler
+> behind that route.
 
 ## Product goal
 
@@ -1498,8 +1498,7 @@ not part of Active's Wave 2 changes. Its exact integration is:
 5. call `correction_crossover_backend.claim_level_run_owner()` beside the
    existing repeat-admission owner claim at correction-web service startup.
 
-`_run_relay_capture`, relay credentials, capture-page lifecycle, and the generic
-phone transport remain Room-owned. Active supplies only the narrow claim,
+Active supplies only the narrow claim,
 notification, terminal, status, and frozen-config consumer APIs.
 
 Single-position capture also cannot observe vertical lobing: off-axis and

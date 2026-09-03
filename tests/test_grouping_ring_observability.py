@@ -438,18 +438,25 @@ def test_the_narrow_stall_verdict_keeps_its_original_behaviour(tmp_path):
     assert _state(young).state == RING_FLOW_PRIMING
 
 
-def test_reading_a_ring_header_never_opens_it_for_writing():
+def test_reading_a_ring_header_never_opens_it_for_writing(tmp_path, monkeypatch):
     """jasper-control is in the ``jts-ring`` group so it can read this header,
-    and that group grants WRITE on every ring on the box. The code is what keeps
-    the grant read-only in practice, so the code is pinned: the module's only
-    ``open`` of a ring path is ``"rb"``.
+    and that group grants WRITE on every ring on the box. Every open the read
+    path performs, directly or through the classifier, is mode ``"rb"``.
     """
-    import inspect
+    modes: list[str] = []
+    real_open = open
 
-    reader = inspect.getsource(ring_assets.read_ring_header)
-    assert re.findall(r"\bopen\([^)]*\)", reader) == ['open(path, "rb")']
-    # …and the classifier reaches the file only through that one reader.
-    assert "open(" not in inspect.getsource(ring_assets.ring_flow_state)
+    def _spy(path, mode="r", *args, **kwargs):
+        modes.append(mode)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(ring_assets, "open", _spy, raising=False)
+    ring = _ring(tmp_path, writer_pid=1, reader_pid=2, writer_hb=_FRESH)
+
+    ring_assets.read_ring_header(ring)
+    _state(ring)
+
+    assert modes and set(modes) == {"rb"}
 
 
 # --- C-2: the /state block -------------------------------------------------

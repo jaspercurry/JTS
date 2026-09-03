@@ -336,14 +336,6 @@ def test_pyproject_base_install_stays_minimal():
     }
 
 
-def test_correction_relay_dependency_is_explicit_in_both_install_profiles():
-    data = tomllib.loads(PYPROJECT.read_text())
-
-    for profile in ("full", "streambox"):
-        dependencies = data["project"]["optional-dependencies"][profile]
-        assert "cryptography>=50.0.0" in dependencies, profile
-
-
 # ---------- (4) no endpoint install functions / deleted artifacts --------
 
 
@@ -446,7 +438,6 @@ def test_hid_accessory_unit_files_actually_install(tmp_path):
         # The watcher that turns an unprivileged request file into a pass.
         # Without the file on disk `enable --now` exits 1 under set -e.
         "jasper-accessory-reconcile.path",
-        "jasper-wiim-remote-mic.service",
         "jasper-wiim-remote-ce.service",
     }
 

@@ -788,7 +788,11 @@ def test_system_view_surfaces_a_speaker_that_cannot_play() -> None:
     views = (_MODULE_DIR / "views.js").read_text()
     audio_sections = (_MODULE_DIR / "audio-sections.js").read_text()
 
-    assert 'import { outputAlert, outputAlertBody } from "./audio-sections.js";' in views
+    assert re.search(
+        r'import \{[^}]*\boutputAlert, outputAlertBody\b[^}]*\} '
+        r'from "\./audio-sections\.js";',
+        views,
+    )
     assert 'const audioAlert = titledCard("Audio");' in views
     assert "audioAlert.section.hidden = true;" in views
     # First card in the panel: after the live pill, ahead of the vitals grid.
@@ -848,14 +852,14 @@ def test_unknown_route_404(dashboard_server) -> None:
 
 def test_aec_card_moved_to_wake(dashboard_server) -> None:
     """The Wake detection card moved to /wake/. /system/ must no
-    longer serve the routes that backed it — /aec.json, /aec/toggle,
+    longer serve the routes that backed it — /aec.json,
     /aec/leg, /aec/threshold all 404 here, and the HTML must not
     reference the old DOM ids the card's JS bound to."""
     base, received, _ = dashboard_server
     for route in ("/aec.json",):
         status, _ = _http_get(f"{base}{route}")
         assert status == 404, f"{route} should be gone from /system/"
-    for route in ("/aec/toggle", "/aec/leg", "/aec/threshold"):
+    for route in ("/aec/leg", "/aec/threshold"):
         status, _ = _http_post(f"{base}{route}")
         assert status == 404, f"{route} should be gone from /system/"
     # And jasper-control never saw an /aec call from /system/.

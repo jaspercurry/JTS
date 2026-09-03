@@ -341,11 +341,8 @@ def test_driver_signal_plan_identical_across_surfaces(monkeypatch):
         return dict(sentinel_plan)
 
     # Patch the lazy import target the shared helper reaches for.
-    import jasper.active_speaker as active_speaker_pkg
-
     monkeypatch.setattr(
-        active_speaker_pkg,
-        "driver_test_signal_plan",
+        "jasper.active_speaker.test_signal_plan.driver_test_signal_plan",
         _fake_driver_test_signal_plan,
     )
 

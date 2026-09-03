@@ -15,23 +15,11 @@
 # routing map; this list retains the few top-level snapshots that still
 # have active links or near-term reference value.
 session_artifacts = [
-  "docs/AEC-DIAG-01-baseline.md",
   # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
   # historical decision archaeology, no longer a scan target; current truth
   # is tuning-operator-runbook.md.)
   # Verbatim point-in-time implementation plan retained as an execution record.
   "docs/PLAN-usb-mic-export-latency-fix.md",
-  # Execution artifact: per-window build prompts for the barge-in plan. Not a
-  # canonical scan target; retire when barge-in ships.
-  "docs/barge-in-build-prompts.md",
-  # Historical engine design retained for its Apply and session provenance.
-  # Current session and operator contracts live in code, ADR-0198, and the
-  # tuning operator runbook.
-  "docs/crossover-v2-engine-design.md",
-  # Living on-hardware validation log of the JTS3 crossover+room e2e run. Records
-  # what was exercised and the UX findings; the synthesized plan those findings
-  # fed lives in docs/crossover-measurement-productization-design.md.
-  "docs/crossover-room-e2e-validation-log.md",
   # Rescued verbatim from draft PR #1851's closed branch (2026-08-08); not an
   # active target for multiroom-grouping code-change routing until the plan
   # is re-verified and executed. Current operational truth remains
@@ -45,15 +33,6 @@ session_artifacts = [
 # to them as current operational truth.
 research = [
   "docs/RESEARCH-pipewire-low-latency.md",
-  # Verbatim first-principles deep-research report behind the crossover
-  # measurement productization design; the synthesized decisions live in
-  # docs/crossover-measurement-productization-design.md (a subsystem scan target).
-  "docs/crossover-measurement-deep-research-2026-07-18.md",
-  # Owner-supplied deep-research report on first-principles active-DSP
-  # crossover design and optimization, landed 2026-08-19 as a primary-source
-  # archive. No synthesized design doc cites it yet — a future
-  # crossover-agent documentation pack will.
-  "docs/crossover-design-guide-deep-research-2026-08-19.md",
 ]
 
 [[subsystem]]
@@ -419,9 +398,8 @@ code = [
   "jasper/xvf/**",
   # The commissioned-alignment artifact and its identity. outputd's final-edge
   # format is one of those identity fields, so the daemon that negotiates it
-  # routes here too — two PRs in the final-edge format program needed this
-  # route and the map did not have it.
-  "jasper/chip_aec_alignment.py",
+  # routes here too.
+  "jasper/chip_aec/alignment.py",
   "rust/jasper-outputd/**",
   "deploy/bin/jasper-aec-reconcile",
   "deploy/lib/jasper-env-file.sh",
@@ -436,7 +414,6 @@ code = [
 docs = [
   "docs/AEC-DIAG-02-observability.md",
   "docs/AEC-DIAG-03-timing-probe.md",
-  "docs/AEC-DIAG-04-timing-results.md",
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
 ]
 requires_docs_when = [
@@ -521,7 +498,6 @@ code = [
 ]
 docs = [
   "docs/audio-paths.md",
-  "docs/phone-mic-relay-plan.md",
 ]
 requires_docs_when = [
   "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
@@ -595,7 +571,6 @@ code = [
   "deploy/systemd/jasper-usbgadget.service",
   "deploy/systemd/jasper-mux.service",
   "deploy/systemd/jasper-accessory-reconcile.service",
-  "deploy/systemd/jasper-wiim-remote-mic.service",
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/nqptp.service",
   "deploy/systemd/librespot.service",
@@ -747,39 +722,20 @@ code = [
 ]
 docs = [
   "docs/measurement-loop-doctrine.md",
-  "docs/correction-journey-design.md",
   "docs/room-correction-information-design.md",
   "docs/HANDOFF-bass-extension-plan.md",
   "docs/active-crossover-information-design.md",
-  "docs/crossover-measurement-productization-design.md",
   "docs/active-speaker-tuning-layers-design.md",
   "docs/gating-v2-plan.md",
   "docs/room-correction-regime-plan.md",
-  "docs/two-stage-commission-flow-plan.md",
   # Planning authority for the measurement/tuning program (supersessions listed in-doc).
   "docs/tuning-master-plan.md",
-  # Planning authority for the tuning-engine refactor (waves 0-8) and the
-  # coordination boundary it shares with docs/REFACTOR-2026-08.md's program.
+  # Planning authority for the tuning-engine refactor (waves 0-8).
   "docs/REFACTOR-TUNING-2026-08.md",
   # Chunk 2 of that refactor: the cutover, where the engine takes the calls and
   # the two god files dissolve. Scan it when a seam binding, the record store,
   # the analyze registry, or either god file's dissolution order changes.
   "docs/REFACTOR-CUTOVER-2026-08.md",
-  # Tier-7 scaffolding: the line-range concern inventory of
-  # jasper/active_speaker/crossover_v2_flow.py, with each concern's callers and
-  # the cutover work item that absorbs it. Scan it before cutting that file.
-  # Dies when tier 7 completes.
-  "docs/cutover-map-flow.md",
-  # The tier-7 dissolution map for jasper/web/correction_crossover_v2.py: every
-  # concern in that file with a measured line range, its callers, and where it
-  # goes. Scan it before cutting anything out of that file. EXPIRES when tier 7
-  # completes — the file it maps will not exist, and this doc is deleted with it.
-  "docs/cutover-map-web.md",
-  # Chunk 3 of that refactor: the acceptance readiness brief — acceptance rows 9
-  # and 10, the instrument roster's status, and the S11 amendment the producer
-  # build needs. Dies when acceptance passes. Scan it when the baseline
-  # reproduction bar, the roster, or S11's sanctioned-act list changes.
-  "docs/cutover-briefs-acceptance.md",
   # The one operational map for the v2 commission session and the tuning loop
   # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
   # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
@@ -901,12 +857,6 @@ code = [
   # adapter it serves.
   "jasper/cli/wiim_remote_ce.py",
   "deploy/systemd/jasper-wiim-remote-ce.service",
-  # The adapter unit is ALSO in local-source-lifecycle (source enable/disable
-  # owns its unit state). Multi-membership is the convention, not a conflict —
-  # editing this unit needs both the source-lifecycle contract and the
-  # hot-plug/convergence doc below, and listing it in one subsystem meant a
-  # change to the adapter never routed to the doc describing its lifecycle.
-  "deploy/systemd/jasper-wiim-remote-mic.service",
   "deploy/avahi/jasper-peer.service.template",
 ]
 docs = [
@@ -917,7 +867,7 @@ requires_docs_when = [
   "The WiiM remote mic's convergence path changes — adapter gating, the BLE connection-event reservation, or what happens when either fails.",
 ]
 verification = [
-  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py tests/test_accessory_reconcile.py tests/test_wiim_remote_mic.py tests/test_wiim_remote_ce.py",
+  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py tests/test_accessory_reconcile.py tests/test_accessories_bridge.py tests/test_wiim_remote_mic.py tests/test_wiim_remote_ce.py",
 ]
 
 [[subsystem]]
@@ -1015,7 +965,6 @@ code = [
   "NOTICE",
   "LICENSE-third-party.md",
   "docs/DEEP-AUDIT-2026-08-25.md",
-  "docs/REVIEW-deep-audit-ledger.md",
   "docs/audit-pending-followups.md",
   "jasper/http_security.py",
   "jasper/control/server.py",
@@ -1033,7 +982,6 @@ docs = [
   "CHANGELOG.md",
   "LICENSE-third-party.md",
   "docs/DEEP-AUDIT-2026-08-25.md",
-  "docs/REVIEW-deep-audit-ledger.md",
   "docs/audit-pending-followups.md",
 ]
 requires_docs_when = [

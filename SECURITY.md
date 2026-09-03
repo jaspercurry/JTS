@@ -54,7 +54,7 @@ trigger reboots through a wizard.
 Any device already on the trusted LAN can use the low-impact management
 APIs without authentication: changing volume (`POST /volume/set`,
 `/volume/adjust`, `/volume/mute`) and AEC mode/profile/threshold (`POST
-/aec/toggle`, `/aec/leg`, `/aec/profile`, `/aec/threshold`). This is
+/aec/leg`, `/aec/profile`, `/aec/threshold`). This is
 deliberate: supported accessories, Home Assistant, Shortcuts-style automations, and
 other household integrations use the same trusted-LAN posture. The
 highest-impact mutations — reboot / poweroff, voice/audio restart, the
@@ -113,6 +113,10 @@ automatically (embedded in each page behind the read guard, read by
   source on the attached USB host.
 - `POST /aec/usb-mic-leg` — chooses which server-advertised
   computer-microphone source reaches the attached USB host.
+- `POST /aec/firmware/update` — downloads and flashes microphone firmware
+  over DFU.
+- `POST /aec/enhanced-aec/install` — installs the optional enhanced WebRTC
+  AEC build.
 - `POST /aec/commission` — starts the audible chip-AEC re-measurement
   oneshot, which stops voice and the AEC stack for minutes.
 - `POST /grouping/set` — rewires multiroom output routing. This route

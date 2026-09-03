@@ -6,7 +6,7 @@
 > cutover: the engine takes the calls, and the god files dissolve.
 >
 > **The engine's contract is not restated here.**
-> [`crossover-v2-engine-design.md`](crossover-v2-engine-design.md) owns the four
+> [`crossover-v2-engine-design.md`](historical/crossover-v2-engine-design.md) owns the four
 > verbs, the five seams, the session graph, the volume owner and the playback
 > transaction; its *"What is wired today, and what is not"* section is the ground
 > truth this plan builds on. Read a shape question there and a scheduling
@@ -60,10 +60,9 @@ plan whose inputs drifted is a plan whose schedule drifted.
 
 **The fourth-site premise was this plan's own, and it spread before it was
 caught.** It is recorded here rather than quietly deleted, because that is what
-this ledger is for. It had already propagated into `cutover-map-flow.md` and
-`cutover-map-web.md`, which #3145 corrected at the same time; the three
-assertions inside *this* document (`§0`, `§1`, `§6`) were left standing then and
-are retired in this pass.
+this ledger is for. It had already propagated into the two tier-7 dissolution
+maps, which #3145 corrected at the same time; the three assertions inside *this*
+document (`§0`, `§1`, `§6`) were left standing then and are retired in this pass.
 
 ---
 
@@ -868,7 +867,7 @@ Two entry points into the host, both `def`, both near-duplicate twins:
   `_volume_hooks` close/abandon arms (`:5443`, `:5450`),
   `_release_pause_best_effort` (`:1309`), and `_set_relay_capture(None)`. (The
   fourth item this bullet once named, `release_session_measurement_graph`, is
-  gone — deleted by #3240; see `docs/cutover-map-web.md` rows M/O.)
+  gone — deleted by #3240.)
 - **The human's entry point** is `GET /correction/crossover` →
   `correction_setup.py:7847` → `correction_crossover_flow.render_page`
   (`correction_crossover_flow.py:24`); the page is fed by
@@ -1130,7 +1129,7 @@ by name.
 
 **The eighth is the only real placement call, and `contracts.py` wins it for the
 reason it loses the other seven.** `VERIFY_TERMINAL_OUTCOME_DETERMINISTIC` is a
-**wire-contract slot value**, not a threshold: `capture_relay/session.py:2377`
+**wire-contract slot value**, not a threshold: the capture-session code
 reads `terminal_outcome` as an opaque string and never branches on it, exactly as
 `:855-856` claims. `contracts.py` is already where that class of name lives —
 `MEASURE_KINDS :1433`, `POLARITIES :1451`, `POSITION_AXES :1456`, `ADOPTION_ROWS
@@ -1220,7 +1219,7 @@ comment cites it — mutation-checked by grepping the tree for a second copy of 
 
 **One stale-looking label — RULED (owner 2026-08-29): delete it.** The banner
 (`:632`) and five of the eight essays said *"PROVISIONAL pending W6 bench
-validation"*, while `crossover-measurement-productization-design.md:25`
+validation"*, while `historical/crossover-measurement-productization-design.md:25`
 records **W1–W6 complete** (2026-07-19) and the trust floor's own text
 (`:693-695`) already cited a live bench datum that *"undercut it."* Owner
 ruling, verbatim: *"i dont care about the banner. delete it."* The banner and
@@ -1640,8 +1639,8 @@ stamp, and the stamp is false.
 | 5 | `tests/test_crossover_v2_conductor.py:8541` ⚑ (**wraps**) | pins #2 end-to-end |
 | 6 | `jasper/correction/autolevel.py:309` | a failed final `set_main_volume_db` can strand the speaker at measurement level; bare `logger.warning`, not `log_event` |
 | 7 | `tests/test_correction_autolevel.py:392` | pins #6 |
-| 8 | `docs/two-stage-commission-flow-plan.md:440` | decision **D4** — the design source for #2/#5 |
-| 9 | `docs/two-stage-commission-flow-plan.md:696` | decision **D8** — the design source for #4 |
+| 8 | `docs/historical/two-stage-commission-flow-plan.md:440` | decision **D4** — the design source for #2/#5 |
+| 9 | `docs/historical/two-stage-commission-flow-plan.md:696` | decision **D8** — the design source for #4 |
 
 ⚑ = in this plan's zone (five, matching the chunk-1 count).
 

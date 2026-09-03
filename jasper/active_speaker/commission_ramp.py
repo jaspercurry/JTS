@@ -4,40 +4,18 @@
 
 """Stage 5: the per-driver floor-unmute gain ramp (the first AUDIBLE step).
 
-A commission load (``startup_load.load_driver_commissioning_config``) arms one
-driver's physical output at the protected floor — ``{gain: -120 dB, mute: off}``
-— which is silent. Stage 5 is what raises that per-output gain to an audible
-level, one bounded step at a time, behind a gate that fails closed. The level
-model and bounds are owned by :mod:`calibration_level`; the per-driver
-operator-confirmation tri-state is owned by :mod:`safe_playback`; the actual
-graph change rides the same guarded inline load as the arm. This module is the
-orchestration + the Stage-5 gate that ties them together.
+A commission load arms one driver's output at ``{gain: -120 dB, mute: off}``.
+Stage 5 raises that per-output gain, one bounded step at a time, behind a gate
+that fails closed:
 
-The model (the design-of-record):
+  armed (-120 dB) -> first audible step == MIN_TEST_LEVEL_DBFS (-80 dB)
+  -> safe_playback ``floor_pending_operator`` -> operator ACK -> ``floor_confirmed``
+  -> +AUDIBLE_RAMP_STEP_DB per step toward COMMISSION_RAMP_MAX_LEVEL_DBFS,
+     each louder step requiring the prior one to have been operator-handled.
 
-  armed (-120 dB, silent)
-    -> first audible step == the audible floor (MIN_TEST_LEVEL_DBFS, -80 dB)
-       -> safe_playback ``floor_pending_operator`` (driver unmuted, awaiting ACK)
-       -> operator ACK "heard_correct_driver" -> ``floor_confirmed``
-    -> bounded ramp: +AUDIBLE_RAMP_STEP_DB per step toward
-       COMMISSION_RAMP_MAX_LEVEL_DBFS (each louder step requires the operator
-       to have handled the last one — confirmed it, or called it silent and
-       asked to retry louder — unless the caller passes auto_retry_pending
-       for the same target)
-  woofer before tweeter (a driver is ramped only after its lower-frequency
-  siblings are floor-confirmed, unless the caller passes gate-only ordering
-  evidence in role_order_confirmed_roles — the web route's identity audition
-  counts every lower role present in the group as confirmed, the CLI passes
-  only real ones), and before ANY tweeter step the protective high-pass is
-  re-asserted against the RUNNING graph, not just the file.
-
-The gate's "subsonic/DC protection present" requirement is satisfied by the
-protections that already exist in the active graph — the bounded commissioning
-gain envelope, the 0 dB volume ceiling, and the per-driver limiter (AGENTS.md
-"Assert existing protections only"; a dedicated woofer subsonic high-pass is a
-deliberate deferral). The gate does NOT widen ``running_commission_evidence``
-with gain bounds — that live gate checks ``mute: off`` at the floor; the gain
-envelope and per-step limit live here.
+Woofer before tweeter, and before ANY tweeter step the protective high-pass is
+re-asserted against the RUNNING graph, not just the file. Level bounds are
+:mod:`calibration_level`'s; the per-driver tri-state is :mod:`safe_playback`'s.
 """
 
 from __future__ import annotations
@@ -90,8 +68,7 @@ RAMP_BACKEND = "commission_gain_ramp"
 COMMISSION_RAMP_MAX_LEVEL_DBFS = 0.0
 
 # Low-frequency first: a driver is ramped audible only after its lower siblings
-# are floor-confirmed. The protective tweeter high-pass is re-asserted live
-# before the tweeter is ever raised (running_commission_evidence below).
+# are floor-confirmed.
 RAMP_ROLE_ORDER = ("woofer", "mid", "tweeter")
 
 _EPS = 1e-6
@@ -103,13 +80,11 @@ ToneEmitter = Callable[..., Awaitable[dict[str, Any]]]
 
 
 def next_ramp_gain_db(current_gain_db: float) -> float:
-    """The next per-output audible gain, given the current one.
+    """Propose the next per-output audible gain, in dBFS.
 
-    From the silent/armed floor (anything below the audible floor), the first
-    audible step is exactly the audible floor (``MIN_TEST_LEVEL_DBFS``). Once
-    audible, each step rises by ``AUDIBLE_RAMP_STEP_DB`` and is clamped to the
-    Stop-controlled commissioning ramp ceiling. The bound is enforced again by
-    the gate; this is the proposer.
+    From below ``MIN_TEST_LEVEL_DBFS`` the first step is exactly that floor;
+    above it each step rises by ``AUDIBLE_RAMP_STEP_DB``, clamped to
+    ``COMMISSION_RAMP_MAX_LEVEL_DBFS``. The gate enforces the bound again.
     """
     current = float(current_gain_db)
     if current < MIN_TEST_LEVEL_DBFS:
@@ -119,14 +94,9 @@ def next_ramp_gain_db(current_gain_db: float) -> float:
 
 # --- ramp progress state -----------------------------------------------------
 #
-# Small and group-scoped: which roles have been floor-confirmed (the
-# woofer-before-tweeter memory the per-target safe_playback tri-state cannot
-# carry across drivers), plus the one step currently awaiting an operator ACK
-# (so a second step cannot be taken before the last one is acknowledged, unless
-# the caller passes `auto_retry_pending` for the same target — the web
-# auto-ramp does, the CLI does not). The authoritative per-driver floor
-# confirmation lives in safe_playback's tri-state; the loaded gain lives in the
-# commission-load state. This file holds only what neither of those can.
+# Group-scoped, and holding only what neither safe_playback's per-driver
+# tri-state nor the commission-load state can: the floor-confirmed roles (the
+# woofer-before-tweeter memory) and the one step awaiting an operator ACK.
 
 
 def ramp_state_path(path: str | Path | None = None) -> Path:
@@ -234,18 +204,8 @@ def clear_pending_ramp_step(
 ) -> dict[str, Any]:
     """Drop the one audible step awaiting an ACK, keeping the ordering memory.
 
-    Two callers, one meaning — "no audible step is outstanding any more":
-
-    * a fresh silent arm, which passes the arming group and the durable
-      confirmed roles for it;
-    * a bare ``commission-rollback``, which passes neither: the graph is back
-      on the all-muted anchor, so the step it was waiting on no longer exists,
-      but the group and the woofer-before-tweeter memory are still true. An
-      omitted ``speaker_group_id`` therefore means "this ramp's own group",
-      not "a different group" (which is what wipes the memory).
-
-    ``ack`` and ``abort`` clear the step through their own terminal writes —
-    ``abort`` resets the whole ramp, which is a stronger claim than this.
+    An omitted ``speaker_group_id`` means "this ramp's own group", not "a
+    different group" — the latter is what wipes the ordering memory.
     """
 
     prior = load_ramp_state(state_path=state_path)
@@ -275,11 +235,8 @@ def clear_pending_ramp_step(
 # --- live running-graph protection checks (the gate's extra assertions) ------
 #
 # running_commission_evidence covers the audible mask, the live tweeter
-# high-pass, and the transient commissioning headroom. The Stage-5 gate adds the
-# two remaining "existing protections" the AGENTS.md decision names: the 0 dB
-# volume ceiling and the audible driver's per-driver limiter. Kept
-# self-contained (a small YAML parse) rather than reaching into staging's private
-# helpers.
+# high-pass, and the transient commissioning headroom; the two checks below add
+# the 0 dB volume ceiling and the audible driver's per-driver limiter.
 
 
 def _safe_load_running(running_config_raw: str | None) -> dict[str, Any]:
@@ -373,19 +330,15 @@ def build_stage5_ramp_gate(
 ) -> dict[str, Any]:
     """Decide whether one audible gain step is safe. Pure; fails closed.
 
-    Owns level/gain bounds (the slice-2b-ii live gate deliberately does not):
-    the gain envelope ``[MIN_TEST_LEVEL_DBFS, COMMISSION_RAMP_MAX_LEVEL_DBFS]``
-    and the per-step limit. Defers the live mask + tweeter high-pass + transient
-    commissioning headroom to :func:`running_commission_evidence`, and adds the
-    0 dB ceiling + the audible driver's limiter (the "existing protections"
-    reading of subsonic/DC). Also enforces woofer-before-tweeter ordering and
-    that a louder step only follows an operator-handled prior step.
+    Owns the gain envelope ``[MIN_TEST_LEVEL_DBFS,
+    COMMISSION_RAMP_MAX_LEVEL_DBFS]`` and the per-step limit; defers the live
+    mask, tweeter high-pass and commissioning headroom to
+    :func:`running_commission_evidence`; adds the 0 dB ceiling and the audible
+    driver's limiter. Also enforces woofer-before-tweeter ordering.
 
-    ``prior_step_cleared`` means the previous audible step was acknowledged in a
-    way that permits going louder — either the operator confirmed it
-    (``floor_confirmed``) or judged it inaudible and asked to retry louder
-    (``silent`` retry). The first step up from the silent floor needs neither
-    (it IS the confirmation step), so it is vacuously satisfied there.
+    ``prior_step_cleared`` means the previous audible step was operator-handled
+    (confirmed, or judged inaudible with a request to retry louder). The first
+    step up from the silent floor IS that handling, so it is vacuous there.
     """
     role = (role or "").strip().lower()
     present = {str(r).strip().lower() for r in present_roles}
@@ -507,18 +460,13 @@ async def ramp_audible_step(
 ) -> dict[str, Any]:
     """Raise one driver's per-output gain by one bounded, gated audible step.
 
-    Reads the loaded gain from the commission-load state, proposes the next
-    gain, runs :func:`build_stage5_ramp_gate` against the RUNNING graph, and —
-    only if it passes — performs the SAME guarded inline load as the arm at the
-    new ``audible_gain_db``. On success the driver is unmuted at the new level
-    and the per-driver safe_playback tri-state moves to ``floor_pending_operator``
-    (the operator must confirm the correct driver before any louder step or any
-    sibling driver). Fails closed: a blocked gate or a failed load emits no new
-    audible level.
+    Fails closed: a blocked :func:`build_stage5_ramp_gate` or a failed load
+    emits no new audible level. On success the tri-state moves to
+    ``floor_pending_operator``.
 
-    ``confirmed_roles`` is persisted ramp evidence. ``role_order_confirmed_roles``
-    is gate-only and lets a caller satisfy ordering for a transient audition
-    without recording fake heard-driver evidence.
+    ``confirmed_roles`` is persisted ramp evidence; ``role_order_confirmed_roles``
+    is gate-only, satisfying ordering for a transient audition without recording
+    heard-driver evidence.
     """
     role = (role or "").strip().lower()
     group_id = (speaker_group_id or "").strip()
@@ -597,14 +545,9 @@ async def ramp_audible_step(
             },
         )
 
-    # Mask params for the gate: re-emit the per-driver config at the next gain
-    # (stateless, no syntax check — the load re-validates) and read the off-device
-    # evidence's mask. present_roles comes from the same preset binding. This is a
-    # deliberately separate emit from the load's two (its preflight gate + its
-    # TOCTOU-safe in-lock re-emit): the ramp gate must see the mask BEFORE the load
-    # decides to apply. The emit is cheap and the operator steps are seconds apart,
-    # so the redundancy is intentional — do not collapse it by trusting the file
-    # the load will overwrite.
+    # A third emit, separate from the load's preflight gate and its TOCTOU-safe
+    # in-lock re-emit: the ramp gate must see the mask BEFORE the load decides
+    # to apply, so it may not read the file the load will overwrite.
     prepare = prepare_driver_commissioning_config(
         topology,
         speaker_group_id=group_id,
@@ -630,11 +573,10 @@ async def ramp_audible_step(
 
     safe_state = load_safe_playback_state(state_path=safe_playback_state_path)
     target = _target(group_id, role, evidence.get("audible_outputs") or [])
-    # A louder step may proceed if the operator confirmed the prior step OR
-    # judged it inaudible and asked to retry louder (both are "handled"). The web
-    # commissioning surface also runs a same-driver automatic ramp; that may replace
-    # the current pending step in place so a user click can still confirm the tone
-    # at any moment instead of racing through a no-pending gap.
+    # A louder step may proceed if the operator confirmed the prior step or
+    # judged it inaudible and asked to retry louder. The web auto-ramp replaces
+    # the pending step in place, so a click can confirm the tone at any moment
+    # instead of racing through a no-pending gap.
     prior_step_cleared = bool(replaced_pending) or _floor_confirmed(
         safe_state, target
     ) or _silent_retry(safe_state, target)
@@ -677,9 +619,8 @@ async def ramp_audible_step(
             "issues": [_stage5_gate_issue(f) for f in failed],
         }
 
-    # Precondition (fail-closed): the per-driver operator-confirmation session must
-    # be armed BEFORE we make the driver audible, so a confirm can always land. If
-    # it cannot arm, do NOT load — emit no new audible level.
+    # Fail-closed: the operator-confirmation session must be armed BEFORE the
+    # driver is audible, so a confirm can always land.
     if not _ensure_safe_session_armed(
         environment_report=environment_report,
         safe_playback_state_path=safe_playback_state_path,
@@ -816,9 +757,8 @@ async def ramp_audible_step(
                 rollback=rollback.get("rollback"),
             )
 
-    # The driver is now audible at next_gain_db. Record it into the (already-armed)
-    # safe_playback tri-state -> floor_pending_operator, and mark the ramp step
-    # pending so a second step cannot precede the ACK.
+    # Audible at next_gain_db: mark the ramp step pending so a second step
+    # cannot precede the ACK.
     playback_id = (
         (load_payload.get("load") or {}).get("dsp_apply") or {}
     ).get("op_id") or f"{group_id}:{role}:{next_gain_db:.1f}"
@@ -927,13 +867,12 @@ async def ramp_audible_step(
     }
 
 
-# The Stage-5 gate (`build_stage5_ramp_gate`) + the guarded load ARE the safety
-# authority for the audible step. The safe_playback session is only the per-driver
-# operator-confirmation tri-state holder, armed so the ACK can land. So it arms on
-# a static ready report rather than re-running `probe_active_speaker_environment`,
-# whose `ok_to_load_active_config` folds in `calibration_level_not_at_floor` — a
-# gate orthogonal to the ramp's own gated gain that would otherwise block the
-# confirm flow (observed live on jts3).
+# The gate and the guarded load are the safety authority for the audible step;
+# this session only holds the operator-confirmation tri-state. It arms on a
+# static ready report rather than re-running
+# `probe_active_speaker_environment`, whose `ok_to_load_active_config` folds in
+# `calibration_level_not_at_floor` — a gate orthogonal to the ramp's own gated
+# gain that would otherwise block the confirm flow.
 _RAMP_ARM_REPORT: dict[str, Any] = {
     "status": "ready",
     "load_gate": "ready",
@@ -949,9 +888,11 @@ def _ensure_safe_session_armed(
     environment_report: dict[str, Any] | None,
     safe_playback_state_path: str | Path | None,
 ) -> bool:
-    """Ensure an armed safe_playback session exists to hold the per-driver floor
-    tri-state. Returns whether it is armed. Arming an already-armed session is a
-    no-op (so a mid-ramp ``floor_confirmed`` is preserved)."""
+    """Ensure an armed safe_playback session holds the per-driver floor tri-state.
+
+    Arming an already-armed session is a no-op, preserving a mid-ramp
+    ``floor_confirmed``.
+    """
     state = load_safe_playback_state(state_path=safe_playback_state_path)
     if state.get("status") == "armed":
         return True
@@ -967,8 +908,7 @@ def _record_floor_pending(
     playback_id: str,
     safe_playback_state_path: str | Path | None,
 ) -> dict[str, Any]:
-    """Record the now-audible step into the (already-armed) safe_playback session,
-    moving the per-driver tri-state to ``floor_pending_operator``."""
+    """Move the per-driver tri-state to ``floor_pending_operator``."""
     return record_safe_playback_result(
         {
             "status": "completed",
@@ -1006,13 +946,10 @@ async def record_ramp_operator_ack(
 ) -> dict[str, Any]:
     """Record the operator's verdict for the pending audible step.
 
-    ``heard_correct_driver`` confirms the floor (safe_playback ->
-    ``floor_confirmed``), adds the role to the ramp's confirmed-roles ordering
-    memory, and — when a loader seam is provided — re-mutes the transient graph
-    so a returned browser session starts from a clean state. ``too_loud`` /
-    ``heard_wrong_driver`` abort the ramp with the same rollback. ``silent``
-    clears the step so it can be retried louder. Either way the pending step is
-    cleared (ACK-before-each-step).
+    ``heard_correct_driver`` confirms the floor and records the role in the
+    ordering memory; ``too_loud`` / ``heard_wrong_driver`` abort the ramp with a
+    rollback; ``silent`` clears the step for a louder retry. Every outcome
+    clears the pending step.
     """
     outcome = str(outcome or "").strip().lower()
     ramp_state = load_ramp_state(state_path=ramp_state_path_override)
@@ -1030,16 +967,11 @@ async def record_ramp_operator_ack(
             ],
         }
 
-    # Two distinct things are being acknowledged, and conflating them was a bug:
-    #   * ramp.pending — the per-STEP gate (you can't take another step until you
-    #     acknowledge this one). The authority for that is ``pending`` here.
-    #   * the safe_playback floor tri-state — the per-DRIVER "heard correctly"
-    #     confirmation. Its API only accepts a verdict while it is
-    #     ``floor_pending_operator`` (the floor step, or a silent-retry step). A
-    #     LOUDER step on an already-confirmed driver leaves it ``floor_confirmed``,
-    #     so driving it there returns ``floor_confirmation_not_pending`` — which
-    #     used to wedge the ramp. Drive the tri-state only while it is genuinely
-    #     awaiting a confirm; the ramp.pending gate below stands on its own.
+    # Two distinct acknowledgements: ``pending`` is the per-STEP gate, while the
+    # safe_playback tri-state is the per-DRIVER confirmation and accepts a
+    # verdict only while ``floor_pending_operator``. A louder step on an
+    # already-confirmed driver leaves it ``floor_confirmed``, where driving it
+    # returns ``floor_confirmation_not_pending``.
     safe = load_safe_playback_state(state_path=safe_playback_state_path)
     floor_pending = (safe.get("quiet_start") or {}).get("status") == (
         "floor_pending_operator"
@@ -1054,15 +986,10 @@ async def record_ramp_operator_ack(
     confirmed_roles = set(ramp_state.get("confirmed_roles") or [])
     aborted: dict[str, Any] | None = None
 
-    # A "heard correct" ACK only genuinely confirms the floor when safe_playback
-    # ACCEPTED it: no blocking issues AND the per-driver tri-state actually sits
-    # at ``floor_confirmed`` (it advanced this call, or was already confirmed for
-    # a louder step on the same driver). Without this gate a REJECTED confirm —
-    # e.g. a stale ``playback_id`` from a racing auto-retry — still marked the
-    # role confirmed, and ``confirmed_roles`` is the woofer-before-tweeter
-    # ordering authority, so a tweeter step could proceed before the woofer was
-    # truly heard. Fail closed: anything short of an accepted confirm does NOT
-    # advance the ordering memory.
+    # ``confirmed_roles`` is the woofer-before-tweeter ordering authority, so it
+    # advances only on an ACCEPTED confirm: no blocking issues AND the tri-state
+    # at ``floor_confirmed``. A rejected confirm (a stale ``playback_id`` from a
+    # racing auto-retry) must not let a tweeter step precede the woofer.
     floor_status = (safe.get("quiet_start") or {}).get("status")
     floor_confirmed_ok = not safe_issues and floor_status == "floor_confirmed"
     safe_issue_codes = {
@@ -1089,9 +1016,8 @@ async def record_ramp_operator_ack(
     )
 
     if outcome == "heard_correct_driver" and floor_confirmed_ok:
-        # Heard correctly and the floor confirm was accepted — record it for the
-        # woofer-before-tweeter ordering, release the per-step gate, and re-mute
-        # the transient graph when the operator surface gave us a loader seam.
+        # Accepted: record the ordering, release the per-step gate, and re-mute
+        # the transient graph when the caller supplied a loader seam.
         confirmed_roles.add(str(pending.get("role")))
         new_pending = None
         status = "confirmed"
@@ -1102,10 +1028,9 @@ async def record_ramp_operator_ack(
                 **({"validate": validate} if validate is not None else {}),
             )
     elif outcome == "heard_correct_driver" and ack_reopen_required:
-        # The UI can outlive the short continuous-tone lease. Once the safe
-        # session is expired/stopped/not-pending, the pending ramp step is no
-        # longer confirmable. Clear it and re-mute so Play can reopen the driver
-        # quietly instead of leaving a confirm button that will never succeed.
+        # The UI can outlive the short continuous-tone lease. An expired or
+        # stopped session leaves the pending step unconfirmable: clear it and
+        # re-mute so Play can reopen the driver quietly.
         if "commission_ramp_ack_expired" not in safe_issue_codes:
             safe_issues.append(
                 _issue(
@@ -1123,18 +1048,16 @@ async def record_ramp_operator_ack(
                 **({"validate": validate} if validate is not None else {}),
             )
     elif outcome == "heard_correct_driver":
-        # Operator said "heard correct" but safe_playback REJECTED the floor
-        # confirm. Do NOT advance the ordering memory; leave the step pending so
-        # the operator can re-confirm, and surface the safe issues to the caller.
+        # Rejected floor confirm: leave the step pending for a re-confirm and do
+        # not advance the ordering memory.
         new_pending = pending
         status = "rejected"
     elif outcome in {"too_loud", "heard_wrong_driver"}:
         new_pending = None
         status = "aborted"
         if outcome == "heard_wrong_driver":
-            # Hearing the WRONG driver at this step casts doubt on the role's
-            # identity — drop it from the ordering memory so a sibling step can't
-            # rely on a now-suspect earlier confirmation.
+            # The wrong driver casts doubt on the role's identity: drop it so a
+            # sibling step cannot rely on a now-suspect confirmation.
             confirmed_roles.discard(str(pending.get("role")))
         if load_config is not None:
             aborted = await rollback_driver_commissioning_config(
@@ -1188,8 +1111,10 @@ async def abort_ramp(
     safe_playback_state_path: str | Path | None = None,
     validate: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """Roll the running graph back to the all-muted staged config and reset the
-    ramp. The operator's hard Stop — always available, always re-mutes."""
+    """The operator's hard Stop: roll back to the all-muted staged config.
+
+    Always available, always re-mutes.
+    """
     from .safe_playback import stop_safe_playback_session
 
     rollback = await rollback_driver_commissioning_config(
@@ -1251,13 +1176,11 @@ def _stage5_gate_issue(check: str) -> dict[str, str]:
 
 
 def _present_roles(prepare: dict[str, Any]) -> set[str]:
-    """The driver roles that exist in this speaker.
+    """The driver roles that exist in this speaker, from its way count.
 
-    Derived from the speaker's way count so a tweeter step can require the WOOFER
-    (not visible in a tweeter-step's own mask) and a 2-way is never asked to
-    confirm a non-existent ``mid``. Falls back to the audible role if the way
-    count is somehow absent (the ordering check then only blocks on confirmed
-    siblings it can actually see).
+    A tweeter step must require the woofer, which is not in the tweeter step's
+    own mask, and a 2-way must not be asked for a non-existent ``mid``. Falls
+    back to the audible role when the way count is absent.
     """
     from .profile import required_driver_roles
 
@@ -1289,10 +1212,9 @@ def _pending_step_still_current(
 ) -> bool:
     """Return whether the pending step this retry is replacing still exists.
 
-    The browser's automatic louder retry can race with an operator click. This
-    check is intentionally run immediately before the hardware load so a
-    superseded retry does not briefly reload an old driver after the operator
-    has confirmed, stopped, or changed the test.
+    Run immediately before the hardware load: the browser's automatic louder
+    retry races the operator's click, and a superseded retry must not reload an
+    old driver after a confirm, stop, or change.
     """
 
     current_ramp = load_ramp_state(state_path=ramp_state_path_override)

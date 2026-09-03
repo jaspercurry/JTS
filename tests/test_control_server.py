@@ -276,9 +276,6 @@ def test_legacy_endpoint_token_uses_streambox_route_policy():
     assert not _control_route_allowed_for_install_profile(
         "endpoint", method="GET", path="/mic",
     )
-    assert not _control_route_allowed_for_install_profile(
-        "endpoint", method="POST", path="/aec/toggle",
-    )
 
 
 def test_streambox_profile_control_route_policy():
@@ -396,7 +393,6 @@ def test_streambox_assistant_routes_follow_the_assistant_grant(
     ("GET", "/mic"),
     ("GET", "/aec"),
     ("POST", "/mic/mute"),
-    ("POST", "/aec/toggle"),
     ("POST", "/aec/commission"),
 ])
 def test_streambox_wake_stack_routes_stay_blocked_under_the_assistant_grant(
@@ -531,7 +527,6 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         "_aec_bridge_active_impl",
         "_aec_fresh_jasper_env_impl",
         "_fresh_jasper_env",
-        "_audio_validation_summary",
         "_read_audio_quality_state",
         "_read_active_audio_converter",
         "_same_config_path",

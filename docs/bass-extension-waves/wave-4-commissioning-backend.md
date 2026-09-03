@@ -114,12 +114,9 @@ builds against.
 6. `jasper/active_speaker/excitation_safety_plan.py` — the limits-
    derivation pattern you mirror for the bass owner.
 7. `jasper/correction/coordinator.py` — `measurement_window()`.
-8. `jasper/capture_relay/spec.py` — the builder registry
-   (`BUILDERS`/`SHIPPED_KINDS`) and one existing builder
-   (`build_crossover_sweep_spec`) as the template.
-9. `jasper/active_speaker/repeat_admission.py` — repeat/median/spread
+8. `jasper/active_speaker/repeat_admission.py` — repeat/median/spread
    admission you reuse for the characterize captures.
-10. `jasper/audio_measurement/bundles.py` + `evidence_identity.py` —
+9. `jasper/audio_measurement/bundles.py` + `evidence_identity.py` —
     evidence persistence and `ArtifactIdentity`.
 
 ## Preflight facts
@@ -127,8 +124,6 @@ builds against.
 - Waves 1–3 APIs exist as their prompts specify (spot-check:
   `adapter_for_enclosure`, `interpolate_anchors`,
   `BassExtensionProfile.from_dict`, `apply_bass_extension`).
-- `build_crossover_sweep_spec` exists in `jasper/capture_relay/spec.py`
-  with a `BUILDERS` registry.
 - `measurement_window` exists in `jasper/correction/coordinator.py`.
 - `admit_excitation`, `ExcitationRequest`, `ExcitationLimits`,
   `ProtectionEvidence` exist in
@@ -185,10 +180,6 @@ Create (blocked):
 - `tests/test_web_bassext_backend.py`
 
 Modify (blocked; additive when unblocked):
-- `jasper/capture_relay/spec.py` — `build_bass_nearfield_spec(...)` +
-  registry entry (one builder, mirror `build_crossover_sweep_spec`,
-  including its parameter name `driver_capture_geometry="near_field"`
-  — server-derived, never browser-supplied).
 - `jasper/audio_measurement/playback.py` (or the located playback
   module) — `ensure_bandlimited_noise_wav(path, f_lo, f_hi,
   duration_s, amplitude_dbfs, sample_rate)` for the sustain hold
@@ -484,7 +475,6 @@ ladder implementation for it, stop.
 .venv/bin/pytest tests/test_bass_extension_ladder.py \
   tests/test_bass_extension_limits.py \
   tests/test_web_bassext_backend.py -q
-.venv/bin/pytest tests/test_capture_relay_*.py -q
 scripts/test-fast
 ```
 

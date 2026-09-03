@@ -10,39 +10,41 @@ import pytest
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.accessories import reconcile
 from tests.systemd_unit_helpers import value_for as _value_for
+from tests._log_events import event_field_maps, event_fields
 from jasper.music_sources import Source
 
 ROOT = Path(__file__).resolve().parents[1]
+HOST = "jasper-input.service"
+HOST_REFRESH = ("try-restart", HOST)
+HOST_ACTIVE_PROBE = ("show", HOST, "--property=ActiveState")
 
 
 def _variant(value):
     return SimpleNamespace(value=value)
 
 
-def _parked_systemctl(calls):
-    """Return a fake whose adapter terminal state is disabled + inactive."""
+def _recording_systemctl(calls, *, host_active: bool = True):
+    """Fake that accepts every verb and reports no loadable gate owner."""
 
     def fake_systemctl(args):
         command = tuple(args)
         calls.append(command)
+        if command == HOST_ACTIVE_PROBE:
+            state = "active" if host_active else "failed"
+            return SimpleNamespace(
+                returncode=0, stdout=f"ActiveState={state}\n", stderr="",
+            )
         if command[0] == "show":
             return SimpleNamespace(
-                returncode=0,
-                stdout="UnitFileState=disabled\nActiveState=inactive\n",
-                stderr="",
+                returncode=0, stdout="LoadState=not-found\n", stderr="",
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return fake_systemctl
 
 
-def _voice_owner_systemctl(
-    calls,
-    *,
-    adapter_active: bool = False,
-    voice_active: bool = False,
-):
-    """Fake that answers `show` for jasper-voice, the adapter, and no gate owner."""
+def _voice_owner_systemctl(calls, *, voice_active: bool = False):
+    """Fake that answers `show` for jasper-voice and reports no gate owner."""
 
     def fake_systemctl(args):
         command = tuple(args)
@@ -54,36 +56,26 @@ def _voice_owner_systemctl(
             return SimpleNamespace(
                 returncode=0, stdout=f"ActiveState={state}\n", stderr="",
             )
-        if "--property=LoadState" in command:
+        if command == HOST_ACTIVE_PROBE:
             return SimpleNamespace(
-                returncode=0, stdout="LoadState=not-found\n", stderr="",
+                returncode=0, stdout="ActiveState=active\n", stderr="",
             )
-        enabled = "enabled" if adapter_active else "disabled"
-        active = "active" if adapter_active else "inactive"
         return SimpleNamespace(
-            returncode=0,
-            stdout=f"UnitFileState={enabled}\nActiveState={active}\n",
-            stderr="",
+            returncode=0, stdout="LoadState=not-found\n", stderr="",
         )
 
     return fake_systemctl
 
 
-def _active_systemctl(calls):
-    """Return a fake whose adapter terminal state is enabled + active."""
+def _host_never_disarmed(calls):
+    """Adapters live inside the always-on HID bridge, which carries volume and
+    push-to-talk: the reconciler may refresh that unit, never disarm it."""
 
-    def fake_systemctl(args):
-        command = tuple(args)
-        calls.append(command)
-        if command[0] == "show":
-            return SimpleNamespace(
-                returncode=0,
-                stdout="UnitFileState=enabled\nActiveState=active\n",
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    return fake_systemctl
+    return not any(
+        command[0] in ("enable", "disable", "stop", "restart", "start")
+        for command in calls
+        if HOST in command
+    )
 
 
 def _bluez_device(
@@ -106,7 +98,6 @@ def test_paired_wiim_remote_activates_manual_mic_source():
     })
 
     assert dict(plan.sources) == {"wiim_remote_2": WIIM_REMOTE_2_MIC_DEVICE}
-    assert plan.adapter_services == ("jasper-wiim-remote-mic.service",)
     assert plan.active_profiles == ("wiim_remote_2",)
 
 
@@ -116,7 +107,6 @@ def test_unpaired_wiim_remote_scan_result_does_not_activate_pipeline():
     })
 
     assert dict(plan.sources) == {}
-    assert plan.adapter_services == ()
     assert plan.active_profiles == ()
 
 
@@ -129,7 +119,6 @@ def test_unknown_paired_hid_does_not_activate_pipeline():
     })
 
     assert dict(plan.sources) == {}
-    assert plan.adapter_services == ()
     assert plan.active_profiles == ()
 
 
@@ -156,38 +145,7 @@ def test_write_manual_mic_env_publishes_and_removes_file(tmp_path: Path):
     assert reconcile.write_manual_mic_env({}, path=str(path)) is False
 
 
-def test_apply_adapter_services_starts_only_active_profile_service():
-    calls = []
-
-    fake_systemctl = _active_systemctl(calls)
-
-    reconcile.apply_adapter_services(
-        ("jasper-wiim-remote-mic.service",),
-        systemctl=fake_systemctl,
-    )
-
-    assert ("enable", "jasper-wiim-remote-mic.service") in calls
-    assert ("restart", "jasper-wiim-remote-mic.service") in calls
-    assert ("disable", "--now", "jasper-wiim-remote-mic.service") not in calls
-
-
-def test_apply_adapter_services_can_start_active_profile_without_bounce():
-    calls = []
-
-    fake_systemctl = _active_systemctl(calls)
-
-    reconcile.apply_adapter_services(
-        ("jasper-wiim-remote-mic.service",),
-        systemctl=fake_systemctl,
-        restart_active=False,
-    )
-
-    assert ("enable", "jasper-wiim-remote-mic.service") in calls
-    assert ("start", "jasper-wiim-remote-mic.service") in calls
-    assert ("restart", "jasper-wiim-remote-mic.service") not in calls
-
-
-def test_no_change_boot_reconcile_does_not_restart_active_adapter(
+def test_no_change_boot_reconcile_does_not_restart_the_adapter_host(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -201,17 +159,6 @@ def test_no_change_boot_reconcile_does_not_restart_active_adapter(
     async def fake_bluez():
         return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
 
-    def fake_systemctl(args):
-        command = tuple(args)
-        calls.append(command)
-        if command[0] == "show":
-            return SimpleNamespace(
-                returncode=0,
-                stdout="UnitFileState=enabled\nActiveState=active\n",
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0)
-
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
@@ -219,15 +166,15 @@ def test_no_change_boot_reconcile_does_not_restart_active_adapter(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=fake_systemctl,
+            systemctl=_recording_systemctl(calls),
             reason="boot",
         ),
     )
 
-    assert ("enable", "jasper-wiim-remote-mic.service") in calls
-    assert ("start", "jasper-wiim-remote-mic.service") in calls
-    assert ("restart", "jasper-wiim-remote-mic.service") not in calls
-    assert not any(reconcile.VOICE_UNIT in command for command in calls)
+    # The published set is unchanged, so nothing is applied — but the host is
+    # still observed, because that is the pass on which a bridge that died
+    # after the last change would otherwise stay dead and unreported.
+    assert calls == [HOST_ACTIVE_PROBE]
 
 
 def test_bluez_discovery_timeout_is_bounded_and_observable(
@@ -261,16 +208,20 @@ def test_bluez_discovery_timeout_is_bounded_and_observable(
             )
 
     assert cancelled == [True]
-    assert "event=accessory_mic.bluez_discovery_failed" in caplog.text
-    assert "timeout_sec=0.01" in caplog.text
+    assert event_fields(caplog, "accessory_mic.bluez_discovery_failed") == {
+        "reason": "test",
+        "error": "timeout",
+        "timeout_sec": "0.01",
+    }
 
 
-def test_active_adapter_failure_raises_with_terminal_state_evidence(
+def test_a_refused_host_refresh_raises_with_the_refusal_carried(
     monkeypatch,
     tmp_path: Path,
     caplog,
 ):
     calls = []
+    refusal = "refresh refused"
 
     async def fake_bluez():
         return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
@@ -278,37 +229,22 @@ def test_active_adapter_failure_raises_with_terminal_state_evidence(
     def fake_systemctl(args):
         command = tuple(args)
         calls.append(command)
-        if command[0] == "enable":
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="enable denied",
-            )
-        if command[0] == "restart":
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="start refused",
-            )
+        if command == HOST_REFRESH:
+            return SimpleNamespace(returncode=1, stdout="", stderr=refusal)
         if command[0] == "show":
+            # No loadable gate owner, so refresh_voice_input falls back to
+            # try-restart, which never starts a stopped voice daemon (#2205).
             return SimpleNamespace(
-                returncode=0,
-                stdout="UnitFileState=disabled\nActiveState=inactive\n",
-                stderr="",
+                returncode=0, stdout="LoadState=not-found\n", stderr="",
             )
-        if command == ("--no-block", "try-restart", "jasper-voice.service"):
-            # This fake's `show` reports no LoadState, so refresh_voice_input
-            # sees no loadable gate owner and falls back to try-restart, which
-            # never starts a stopped voice daemon (issue #2205).
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        raise AssertionError(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(reconcile.AdapterServiceActivationError):
+        with pytest.raises(reconcile.AdapterHostRefreshError):
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(tmp_path / "accessory-mics.env"),
@@ -317,9 +253,15 @@ def test_active_adapter_failure_raises_with_terminal_state_evidence(
                 ),
             )
 
-    assert ("enable", "jasper-wiim-remote-mic.service") in calls
-    assert ("restart", "jasper-wiim-remote-mic.service") in calls
-    assert "event=accessory_mic.activation_failed" in caplog.text
+    assert HOST_REFRESH in calls
+    assert _host_never_disarmed(calls)
+    fields = event_fields(caplog, "accessory_mic.host_refresh_failed")
+    assert (fields["reason"], fields["env_changed"], fields["voice"]) == (
+        "test",
+        "1",
+        "voice_try_restart",
+    )
+    assert fields["failures"].endswith(refusal)
 
 
 def test_bluetooth_intent_off_parks_adapter_without_querying_bluez(
@@ -337,7 +279,7 @@ def test_bluetooth_intent_off_parks_adapter_without_querying_bluez(
     async def fail_bluez():
         pytest.fail("Bluetooth Off must not query BlueZ")
 
-    fake_systemctl = _parked_systemctl(calls)
+    fake_systemctl = _recording_systemctl(calls)
 
     monkeypatch.setattr(
         reconcile,
@@ -355,15 +297,14 @@ def test_bluetooth_intent_off_parks_adapter_without_querying_bluez(
     )
 
     assert dict(plan.sources) == {}
-    assert plan.adapter_services == ()
     assert intent_reads == [Source.BLUETOOTH]
     assert not env_file.exists()
-    assert (
-        "disable", "--now", "jasper-wiim-remote-mic.service",
-    ) in calls
-    assert ("reset-failed", "jasper-wiim-remote-mic.service") in calls
+    # The mic adapter unit's old ConditionPathExists= gate on the Bluetooth
+    # marker lives here now: intent Off publishes no source, so the refreshed
+    # host runs no adapter.
+    assert HOST_REFRESH in calls
+    assert _host_never_disarmed(calls)
     assert not any("bluetooth.service" in command for command in calls)
-    assert not any(command[0] == "enable" for command in calls)
 
 
 def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
@@ -377,23 +318,21 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
         encoding="utf-8",
     )
     calls = []
+    intent_detail = "invalid intent value for bluetooth: maybe"
 
     def invalid_intent(_source):
-        raise RuntimeError("invalid intent value for bluetooth: maybe")
+        raise RuntimeError(intent_detail)
 
     async def fail_bluez():
         pytest.fail("malformed intent must fail closed before querying BlueZ")
 
-    fake_systemctl = _parked_systemctl(calls)
+    fake_systemctl = _recording_systemctl(calls)
 
     monkeypatch.setattr(reconcile, "source_intent_enabled", invalid_intent)
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fail_bluez)
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(
-            reconcile.BluetoothSourceIntentError,
-            match="invalid intent value for bluetooth",
-        ):
+        with pytest.raises(reconcile.BluetoothSourceIntentError):
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(env_file),
@@ -403,21 +342,18 @@ def test_malformed_bluetooth_intent_parks_adapter_and_fails_loudly(
             )
 
     assert not env_file.exists()
-    assert (
-        "disable", "--now", "jasper-wiim-remote-mic.service",
-    ) in calls
-    assert (
-        "show",
-        "jasper-wiim-remote-mic.service",
-        "--property=UnitFileState",
-        "--property=ActiveState",
-    ) in calls
-    assert not any(command[0] == "enable" for command in calls)
-    assert "event=accessory_mic.intent_invalid" in caplog.text
-    assert "action=parked" in caplog.text
+    assert HOST_REFRESH in calls
+    assert _host_never_disarmed(calls)
+    fields = event_fields(caplog, "accessory_mic.intent_invalid")
+    assert (fields["reason"], fields["action"], fields["env_changed"]) == (
+        "source-intent",
+        "parked",
+        "1",
+    )
+    assert fields["err"].endswith(intent_detail)
 
 
-def test_role_park_preserves_enabled_intent_but_disables_adapter(
+def test_role_park_preserves_enabled_intent_but_withdraws_the_mic_source(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -432,7 +368,7 @@ def test_role_park_preserves_enabled_intent_but_disables_adapter(
     async def fail_bluez():
         pytest.fail("a role-parked source must not query BlueZ")
 
-    fake_systemctl = _parked_systemctl(calls)
+    fake_systemctl = _recording_systemctl(calls)
 
     monkeypatch.setattr(
         reconcile,
@@ -451,12 +387,10 @@ def test_role_park_preserves_enabled_intent_but_disables_adapter(
     )
 
     assert intent_reads == [Source.BLUETOOTH]
-    assert plan.adapter_services == ()
+    assert dict(plan.sources) == {}
     assert not env_file.exists()
-    assert (
-        "disable", "--now", "jasper-wiim-remote-mic.service",
-    ) in calls
-    assert not any(command[0] == "enable" for command in calls)
+    assert HOST_REFRESH in calls
+    assert _host_never_disarmed(calls)
 
 
 @pytest.mark.parametrize(
@@ -485,24 +419,27 @@ def test_local_source_role_gate_combines_install_and_grouping_permission(
 
 
 def test_local_source_role_probe_failure_parks_and_logs(monkeypatch, caplog):
+    probe_detail = "bad profile"
+
     def invalid_profile():
-        raise ValueError("bad profile")
+        raise ValueError(probe_detail)
 
     monkeypatch.setattr(reconcile, "read_install_profile", invalid_profile)
 
     with caplog.at_level(logging.WARNING):
         assert reconcile._local_sources_allowed() is False
 
-    assert "event=accessory_mic.role_probe_failed" in caplog.text
+    assert event_fields(caplog, "accessory_mic.role_probe_failed") == {
+        "error": probe_detail,
+    }
 
 
 @pytest.mark.parametrize(
     "error",
     [
         reconcile.AccessoryReconcileError("BlueZ discovery timed out"),
-        reconcile.AdapterServiceActivationError("adapter remained inactive"),
+        reconcile.AdapterHostRefreshError("adapter host refused the refresh"),
         reconcile.BluetoothSourceIntentError("malformed source intent"),
-        reconcile.AdapterServiceTeardownError("adapter remained active"),
     ],
 )
 def test_main_returns_failure_for_authoritative_reconcile_errors(
@@ -517,7 +454,10 @@ def test_main_returns_failure_for_authoritative_reconcile_errors(
     with caplog.at_level(logging.ERROR):
         assert reconcile.main(["--reason", "test"]) == 1
 
-    assert "event=accessory_mic.reconcile_failed" in caplog.text
+    assert event_fields(caplog, "accessory_mic.reconcile_failed") == {
+        "reason": "test",
+        "err": str(error),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -600,8 +540,8 @@ def test_main_prefers_a_claimed_reason_over_the_fallback_argument(
             ["--reason", "boot", "--reason-file", str(request)],
         ) == code
 
-    assert "reason=bluetooth-forget" in caplog.text
-    assert "reason=boot" not in caplog.text
+    fields = event_fields(caplog, "accessory_mic.reconcile_failed")
+    assert fields["reason"] == "bluetooth-forget"
     # Drained even on the boot path: PathExists is level-triggered, so a
     # request left on disk re-starts the oneshot forever.
     assert not request.exists()
@@ -623,79 +563,10 @@ def test_main_falls_back_to_its_argument_when_no_request_is_waiting(
             ["--reason", "boot", "--reason-file", str(tmp_path / "absent")],
         ) == 1
 
-    assert "reason=boot" in caplog.text
+    assert event_fields(caplog, "accessory_mic.reconcile_failed")["reason"] == "boot"
 
 
-def test_apply_adapter_services_disables_inactive_profile_service():
-    calls = []
-    failures = reconcile.apply_adapter_services(
-        (), systemctl=_parked_systemctl(calls),
-    )
-
-    assert (
-        "disable", "--now", "jasper-wiim-remote-mic.service",
-    ) in calls
-    assert ("reset-failed", "jasper-wiim-remote-mic.service") in calls
-    assert (
-        "show",
-        "jasper-wiim-remote-mic.service",
-        "--property=UnitFileState",
-        "--property=ActiveState",
-    ) in calls
-    assert failures == ()
-
-
-def test_adapter_teardown_ignores_reset_of_already_clean_unit(caplog):
-    calls = []
-
-    def clean_systemctl(args):
-        command = tuple(args)
-        calls.append(command)
-        if command[0] == "reset-failed":
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr=(
-                    "Failed to reset failed state: Unit adapter.service "
-                    "not loaded."
-                ),
-            )
-        if command[0] == "show":
-            return SimpleNamespace(
-                returncode=0,
-                stdout="UnitFileState=disabled\nActiveState=inactive\n",
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    with caplog.at_level(logging.WARNING):
-        failures = reconcile.apply_adapter_services((), systemctl=clean_systemctl)
-
-    assert ("reset-failed", "jasper-wiim-remote-mic.service") in calls
-    assert failures == ()
-    assert "event=accessory_mic.systemctl_failed" not in caplog.text
-
-
-def test_adapter_teardown_still_rejects_failed_terminal_state():
-    def failed_systemctl(args):
-        command = tuple(args)
-        if command[0] == "reset-failed":
-            return SimpleNamespace(returncode=1, stdout="", stderr="reset failed")
-        if command[0] == "show":
-            return SimpleNamespace(
-                returncode=0,
-                stdout="UnitFileState=disabled\nActiveState=failed\n",
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    assert reconcile.apply_adapter_services((), systemctl=failed_systemctl) == (
-        "jasper-wiim-remote-mic.service: expected is-active=inactive, "
-        "observed failed",
-    )
-
-
-def test_adapter_teardown_is_synchronous_and_bounded(monkeypatch):
+def test_every_systemctl_call_is_synchronous_and_bounded(monkeypatch):
     captured = {}
 
     def fake_run(args, **kwargs):
@@ -705,130 +576,23 @@ def test_adapter_teardown_is_synchronous_and_bounded(monkeypatch):
 
     monkeypatch.setattr(reconcile.subprocess, "run", fake_run)
 
-    reconcile._systemctl(("disable", "--now", "adapter.service"))
+    reconcile._systemctl(("--no-block", "try-restart", HOST))
 
     assert captured["args"] == [
-        "systemctl", "disable", "--now", "adapter.service",
+        "systemctl", "--no-block", "try-restart", HOST,
     ]
     assert captured["kwargs"]["timeout"] == reconcile.SYSTEMCTL_TIMEOUT_SEC
     assert captured["kwargs"]["check"] is False
 
 
-def test_adapter_teardown_attempts_every_service_and_aggregates_failures(
-    monkeypatch,
-):
-    calls = []
-    monkeypatch.setattr(
-        reconcile,
-        "adapter_mic_services",
-        lambda: ("adapter-a.service", "adapter-b.service"),
-    )
-
-    def fake_systemctl(args):
-        command = tuple(args)
-        calls.append(command)
-        service = command[1] if command[0] == "show" else command[-1]
-        if command[:2] == ("disable", "--now"):
-            if service == "adapter-a.service":
-                return SimpleNamespace(
-                    returncode=1, stdout="", stderr="stop denied",
-                )
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if command[0] == "reset-failed":
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if command[0] == "show":
-            enabled = "enabled" if service == "adapter-a.service" else "disabled"
-            active = "active" if service == "adapter-a.service" else "inactive"
-            return SimpleNamespace(
-                returncode=0,
-                stdout=(
-                    f"UnitFileState={enabled}\n"
-                    f"ActiveState={active}\n"
-                ),
-                stderr="",
-            )
-        raise AssertionError(command)
-
-    failures = reconcile.apply_adapter_services((), systemctl=fake_systemctl)
-
-    for service in ("adapter-a.service", "adapter-b.service"):
-        assert ("disable", "--now", service) in calls
-        assert ("reset-failed", service) in calls
-        assert (
-            "show",
-            service,
-            "--property=UnitFileState",
-            "--property=ActiveState",
-        ) in calls
-    assert failures == (
-        "adapter-a.service: systemctl disable --now adapter-a.service "
-        "failed: stop denied",
-        "adapter-a.service: expected is-enabled=disabled, observed enabled",
-        "adapter-a.service: expected is-active=inactive, observed active",
-    )
-
-
-@pytest.mark.parametrize("active", [False, True])
-def test_adapter_services_converge_in_stable_registry_order(monkeypatch, active):
-    """The one owner applies adapters deterministically without worker machinery."""
-
-    services = ("adapter-a.service", "adapter-b.service")
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(reconcile, "adapter_mic_services", lambda: services)
-
-    def fake_systemctl(args):
-        command = tuple(args)
-        calls.append(command)
-        if command[0] == "show":
-            enabled = "enabled" if active else "disabled"
-            activity = "active" if active else "inactive"
-            return SimpleNamespace(
-                returncode=0,
-                stdout=(
-                    f"UnitFileState={enabled}\n"
-                    f"ActiveState={activity}\n"
-                ),
-                stderr="",
-            )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    active_services = services if active else ()
-    assert reconcile.apply_adapter_services(
-        active_services,
-        systemctl=fake_systemctl,
-    ) == ()
-    first_service_b_calls = [
-        index for index, command in enumerate(calls)
-        if "adapter-b.service" in command
-    ]
-    last_service_a_calls = [
-        index for index, command in enumerate(calls)
-        if "adapter-a.service" in command
-    ]
-    assert max(last_service_a_calls) < min(first_service_b_calls)
-    for service in services:
-        if active:
-            assert ("enable", service) in calls
-            assert ("restart", service) in calls
-        else:
-            assert ("disable", "--now", service) in calls
-            assert ("reset-failed", service) in calls
-        assert (
-            "show",
-            service,
-            "--property=UnitFileState",
-            "--property=ActiveState",
-        ) in calls
-
-
 @pytest.mark.parametrize(
     ("malformed_intent", "error_type"),
     [
-        (False, reconcile.AdapterServiceTeardownError),
+        (False, reconcile.AdapterHostRefreshError),
         (True, reconcile.BluetoothSourceIntentError),
     ],
 )
-def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
+def test_refresh_failure_raises_after_env_cleanup_and_voice_refresh(
     monkeypatch,
     tmp_path: Path,
     caplog,
@@ -841,6 +605,8 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
         encoding="utf-8",
     )
     calls = []
+    intent_detail = "malformed Bluetooth intent"
+    refusal = "refresh refused"
 
     async def fail_bluez():
         pytest.fail("Bluetooth Off must not query BlueZ")
@@ -848,37 +614,24 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
     def fake_systemctl(args):
         command = tuple(args)
         calls.append(command)
-        if command[:2] == ("disable", "--now"):
-            return SimpleNamespace(
-                returncode=1, stdout="", stderr="stop failed",
-            )
-        if command[0] == "reset-failed":
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command == HOST_REFRESH:
+            return SimpleNamespace(returncode=1, stdout="", stderr=refusal)
         if command[0] == "show":
             return SimpleNamespace(
-                returncode=0,
-                stdout="UnitFileState=enabled\nActiveState=active\n",
-                stderr="",
+                returncode=0, stdout="LoadState=not-found\n", stderr="",
             )
-        if command == ("is-active", "--quiet", "jasper-voice.service"):
-            return SimpleNamespace(returncode=0)
-        if command == ("--no-block", "try-restart", "jasper-voice.service"):
-            return SimpleNamespace(returncode=0)
-        raise AssertionError(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     def source_intent(_source):
         if malformed_intent:
-            raise RuntimeError("malformed Bluetooth intent")
+            raise RuntimeError(intent_detail)
         return False
 
     monkeypatch.setattr(reconcile, "source_intent_enabled", source_intent)
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fail_bluez)
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(
-            error_type,
-            match="stop failed.*observed enabled.*observed active",
-        ):
+        with pytest.raises(error_type):
             asyncio.run(
                 reconcile.reconcile_once(
                     env_file=str(env_file),
@@ -891,9 +644,19 @@ def test_teardown_failure_raises_after_env_cleanup_and_voice_refresh(
     # try-restart, not restart: these fakes present no loadable gate owner,
     # and refresh_voice_input must never START a stopped voice daemon.
     assert ("--no-block", "try-restart", "jasper-voice.service") in calls
-    assert "event=accessory_mic.teardown_failed" in caplog.text
+    assert _host_never_disarmed(calls)
+    fields = event_fields(caplog, "accessory_mic.host_refresh_failed")
+    assert (fields["reason"], fields["env_changed"], fields["voice"]) == (
+        "source-intent",
+        "1",
+        "voice_try_restart",
+    )
+    assert fields["failures"].endswith(refusal)
+    invalid = event_field_maps(caplog, "accessory_mic.intent_invalid")
     if malformed_intent:
-        assert "event=accessory_mic.intent_invalid" in caplog.text
+        assert len(invalid) == 1 and invalid[0]["err"].endswith(intent_detail)
+    else:
+        assert invalid == []
 
 
 def _gate_owner_systemctl(calls, *, load_state: str, unit_file_state: str):
@@ -950,8 +713,10 @@ def test_refresh_voice_input_never_starts_a_parked_gate_owner(caplog):
         )
     assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
     assert calls[-1] == ("--no-block", "try-restart", "jasper-voice.service")
-    assert "event=accessory_mic.gate_owner_unavailable" in caplog.text
-    assert "state=parked" in caplog.text
+    assert event_fields(caplog, "accessory_mic.gate_owner_unavailable") == {
+        "unit": reconcile.VOICE_INPUT_GATE_UNIT,
+        "state": "parked",
+    }
 
 
 def test_refresh_voice_input_reports_a_masked_gate_owner_as_masked(caplog):
@@ -969,8 +734,10 @@ def test_refresh_voice_input_reports_a_masked_gate_owner_as_masked(caplog):
             == "voice_try_restart"
         )
     assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
-    assert "state=masked" in caplog.text
-    assert "state=absent" not in caplog.text
+    assert event_fields(caplog, "accessory_mic.gate_owner_unavailable") == {
+        "unit": reconcile.VOICE_INPUT_GATE_UNIT,
+        "state": "masked",
+    }
 
 
 def test_refresh_voice_input_falls_back_when_gate_owner_is_absent(caplog):
@@ -988,7 +755,10 @@ def test_refresh_voice_input_falls_back_when_gate_owner_is_absent(caplog):
             == "voice_try_restart"
         )
     assert ("--no-block", "start", "jasper-aec-reconcile.service") not in calls
-    assert "state=absent" in caplog.text
+    assert event_fields(caplog, "accessory_mic.gate_owner_unavailable") == {
+        "unit": reconcile.VOICE_INPUT_GATE_UNIT,
+        "state": "absent",
+    }
 
 
 def test_refresh_voice_input_uses_try_restart_so_it_never_starts_stopped_voice():
@@ -1103,9 +873,7 @@ def test_reconciler_owns_voice_where_it_follows_the_accessory_mic(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=_voice_owner_systemctl(
-                calls, adapter_active=bool(device_name == "WiiM Remote 2"),
-            ),
+            systemctl=_voice_owner_systemctl(calls),
             reason="pair",
         ),
     )
@@ -1141,9 +909,7 @@ def test_owned_voice_restarts_when_published_sources_change_under_it(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=_voice_owner_systemctl(
-                calls, adapter_active=True, voice_active=True,
-            ),
+            systemctl=_voice_owner_systemctl(calls, voice_active=True),
             reason="pair",
         ),
     )
@@ -1173,7 +939,7 @@ def test_wake_detection_profile_keeps_handing_voice_to_its_gate_owner(
     asyncio.run(
         reconcile.reconcile_once(
             env_file=str(env_file),
-            systemctl=_voice_owner_systemctl(calls, adapter_active=True),
+            systemctl=_voice_owner_systemctl(calls),
             reason="pair",
         ),
     )
@@ -1186,18 +952,24 @@ def test_wake_detection_profile_keeps_handing_voice_to_its_gate_owner(
     )
 
 
-def test_adapter_service_systemctl_failures_are_observable(caplog):
+def test_host_refresh_systemctl_failures_are_observable(caplog):
     def failing_systemctl(args):
         return SimpleNamespace(returncode=1)
 
     with caplog.at_level(logging.WARNING):
-        reconcile.apply_adapter_services(
-            ("jasper-wiim-remote-mic.service",),
+        reconcile.refresh_adapter_hosts(
+            (HOST,),
+            restart=True,
+            require_active=True,
             systemctl=failing_systemctl,
         )
 
-    assert "event=accessory_mic.systemctl_failed" in caplog.text
-    assert 'command="systemctl enable jasper-wiim-remote-mic.service"' in caplog.text
+    assert event_field_maps(caplog, "accessory_mic.systemctl_failed") == [
+        {
+            "command": "systemctl " + " ".join(HOST_REFRESH),
+            "returncode": "1",
+        },
+    ]
 
 
 def test_the_path_unit_watches_the_request_file_this_module_publishes():
@@ -1221,13 +993,11 @@ def test_installer_enables_reconciler_not_profile_adapter_by_default():
 
     assert "deploy/systemd/jasper-accessory-reconcile.service" in units_sh
     assert "deploy/systemd/jasper-accessory-reconcile.path" in units_sh
-    assert "deploy/systemd/jasper-wiim-remote-mic.service" in units_sh
     enable_block = units_sh.rsplit(
         "systemctl enable jasper-camilla.service jasper-fanin.service",
         1,
     )[1].split("park_audio_clients_for_core_graph_restart", 1)[0]
     assert "jasper-accessory-reconcile.service" in enable_block
-    assert "jasper-wiim-remote-mic.service" not in enable_block
     assert "jasper-accessory-reconcile --reason install" in units_sh
 
 
@@ -1246,7 +1016,7 @@ def test_both_profiles_start_the_request_watcher_this_boot(function: str):
     assert "systemctl enable --now jasper-accessory-reconcile.path" in body
 
 
-def test_reconciler_does_not_order_before_adapter_it_restarts():
+def test_reconciler_does_not_order_before_the_host_it_restarts():
     unit = (ROOT / "deploy/systemd/jasper-accessory-reconcile.service").read_text(
         encoding="utf-8",
     )
@@ -1255,14 +1025,11 @@ def test_reconciler_does_not_order_before_adapter_it_restarts():
         line for line in unit.splitlines() if line.startswith("Before=")
     )
     assert "jasper-voice.service" in before_line
-    assert "jasper-wiim-remote-mic.service" not in before_line
+    assert HOST not in before_line
 
 
 def test_accessory_units_never_pull_bluetooth_service_up():
-    for name in (
-        "jasper-accessory-reconcile.service",
-        "jasper-wiim-remote-mic.service",
-    ):
+    for name in ("jasper-accessory-reconcile.service", HOST):
         unit = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
         dependency_lines = tuple(
             line for line in unit.splitlines()
@@ -1270,16 +1037,113 @@ def test_accessory_units_never_pull_bluetooth_service_up():
         )
 
         assert all("bluetooth.service" not in line for line in dependency_lines)
-        after_line = next(
-            line for line in unit.splitlines() if line.startswith("After=")
+        assert any(
+            line.startswith("After=") and "bluetooth.service" in line
+            for line in unit.splitlines()
         )
-        assert "bluetooth.service" in after_line
 
 
-def test_wiim_adapter_skips_cleanly_until_console_script_exists():
-    unit = (ROOT / "deploy/systemd/jasper-wiim-remote-mic.service").read_text(
+def test_nothing_can_start_the_deleted_adapter_daemon_again():
+    """The fold is only done once no install step stages the old unit and no
+    console script backs it: either survivor would ship a daemon that races the
+    folded task for the same GATT report and the same UDP mic source. The
+    installer's retirement block is the one place the name may still appear."""
+    deleted = "jasper-wiim-remote-mic"
+    assert not (ROOT / f"deploy/systemd/{deleted}.service").exists()
+    assert deleted not in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    staging = [
+        f"{path.relative_to(ROOT)}:{line}"
+        for path in sorted((ROOT / "deploy").rglob("*"))
+        if path.is_file()
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if deleted in line and ("install " in line or "ExecStart" in line)
+    ]
+    assert staging == []
+
+
+@pytest.mark.parametrize("already_published", [False, True])
+def test_a_published_source_with_a_dead_host_is_not_a_clean_pass(
+    monkeypatch, tmp_path: Path, caplog, already_published: bool,
+):
+    """try-restart succeeds against a stopped or failed unit, so on its own it
+    would report a microphone that will never stream — and voice, /state and
+    the doctor all read that report as an accessory mic being present.
+
+    Both parametrizations matter, and the second is the one that bites: a host
+    past its start limit stays `failed` across every later pass, and on those
+    passes the published file is unchanged, so an observation gated on "the
+    file changed" would never look again.
+    """
+    env_file = tmp_path / "accessory-mics.env"
+    if already_published:
+        env_file.write_text(
+            f"JASPER_MANUAL_MIC_SOURCES=wiim_remote_2={WIIM_REMOTE_2_MIC_DEVICE}\n",
+            encoding="utf-8",
+        )
+    calls = []
+
+    async def fake_bluez():
+        return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
+
+    monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
+    monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
+    monkeypatch.setattr(reconcile, "_local_sources_allowed", lambda: True)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(reconcile.AdapterHostRefreshError):
+            asyncio.run(
+                reconcile.reconcile_once(
+                    env_file=str(env_file),
+                    systemctl=_recording_systemctl(calls, host_active=False),
+                    reason="pair",
+                ),
+            )
+
+    assert HOST_ACTIVE_PROBE in calls
+    assert (HOST_REFRESH in calls) is not already_published
+    assert _host_never_disarmed(calls)
+
+
+def test_withdrawing_the_source_does_not_require_a_running_host():
+    """The teardown direction must stay quiet on a box whose bridge is stopped:
+    with nothing published there is no producer to be missing."""
+    calls = []
+
+    assert reconcile.refresh_adapter_hosts(
+        (HOST,),
+        restart=True,
+        require_active=False,
+        systemctl=_recording_systemctl(calls, host_active=False),
+    ) == ()
+    assert HOST_ACTIVE_PROBE not in calls
+
+
+def test_a_failed_publish_is_authoritative_not_fail_soft(monkeypatch, caplog):
+    """An unwritable env file leaves the previous plan running — under
+    Bluetooth Off that means an adapter still streaming. main() must exit
+    non-zero rather than fold it into the fail-soft I/O class it exits 0 on."""
+
+    def unwritable(*_args, **_kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(reconcile, "write_manual_mic_env", unwritable)
+    monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: False)
+
+    with caplog.at_level(logging.ERROR):
+        assert reconcile.main(["--reason", "test", "--reason-file", "/nonexistent"]) == 1
+
+
+def test_the_installer_retires_the_deleted_adapter_unit_on_upgrade():
+    """Deleting the unit from the repo does not remove it from a deployed Pi.
+    Until the installer disables and deletes it, an upgraded box with a paired
+    remote runs the old daemon AND the folded task against the same GATT
+    report and the same UDP mic source."""
+    units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8",
     )
+    body = units_sh.split("install_hid_accessory_unit_files() {", 1)[1].split(
+        "\n}", 1,
+    )[0]
 
-    assert "ConditionPathExists=/opt/jasper/.venv/bin/jasper-wiim-remote-mic" in unit
-    assert "StartLimitBurst=20" in unit
+    assert "systemctl disable --now jasper-wiim-remote-mic.service" in body
+    assert 'rm -f "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"' in body

@@ -23,10 +23,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper import chip_aec_shipped_alignment as shipped_alignment
+from jasper.chip_aec import health as chip_aec_health
+from jasper.chip_aec import shipped as shipped_alignment
 from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
+from jasper.audio_profile_state import (
+    DEFAULT_AEC_MODE_PATH,
+    PROFILE_CUSTOM,
+    normalize_audio_input_profile,
+)
+from jasper.env_load import parse_env_file
+from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output
 # contract: sink, backend, active width, final-edge format). Imported, never
@@ -37,11 +45,9 @@ from jasper.audio_hardware import dac as dac_registry
 # tests/test_aec_init.py pins this against jasper-outputd.service's own
 # EnvironmentFile= line.
 from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
-from jasper.chip_aec_alignment import (
-    PER_UNIT_IDENTITY_FIELDS,
+from jasper.chip_aec.alignment import (
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
-    QueueMovedFromCommissioned,
     identity_divergence,
     load_artifact,
     median_samples,
@@ -56,13 +62,14 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_statu
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
-# Where an applied-but-disclosed alignment leaves its reason for
-# jasper-aec-reconcile, which owns the household-facing status vocabulary. One
-# line of text, no schema; absent means the alignment is fully ready. The
-# reconciler pairs it with the fixed jasper-aec-commission action (ADR-0101).
-DISCLOSURE_PATH = "/run/jasper-aec-init/alignment-disclosure"
-# Kept in step with the `init_status` branch in jasper-aec-reconcile's
-# activate_managed_chip_aec by tests/test_aec_reconcile.py.
+# Where this run publishes its `jasper.chip_aec.health` verdict, as the shell
+# assignments jasper-aec-reconcile evals and copies into /etc/jasper/jasper.env.
+# Absent means this run reached no verdict (a bypass/corpus run, or one killed
+# before its `finally` — a SIGKILL, an OOM kill, an unmet `Requires=`). The
+# reconciler clears it before every restart and pairs absence with the exit
+# status: a zero exit without a record is a fully applied alignment, a non-zero
+# one is a fault.
+ALIGNMENT_RECORD_PATH = "/run/jasper-aec-init/alignment"
 OUTPUTD_ENV_STALE_EXIT = 3
 OUTPUTD_UNIT = "jasper-outputd.service"
 # How long to let a queued outputd restart land before refusing to commission.
@@ -99,7 +106,7 @@ _MIXER_UNITY = re.compile(r"\[0\.00dB\].*\[on\]", re.IGNORECASE)
 MAX_REFERENCE_PERIODS_IN_FLIGHT = 2
 # Where the writer's own recent per-write observations live in STATUS, and the
 # keys one entry carries.  outputd publishes raw observations; every acceptance
-# rule over them is here and in jasper/chip_aec_alignment.py.
+# rule over them is here and in jasper/chip_aec/alignment.py.
 RECENT_WRITES_KEY = "recent_writes"
 # How long to wait between STATUS reads.  Polling harder buys nothing: outputd's
 # state server is one thread that sleeps 500 ms between accepts and answers one
@@ -147,6 +154,10 @@ REFERENCE_WRITER_COUNTER_NAMES = (
 
 class ChipInitError(RuntimeError):
     pass
+
+
+class ReferenceCountersMovedError(ChipInitError):
+    """The reference writer's error counters advanced mid-window."""
 
 
 class CommissionRequired(ChipInitError):
@@ -423,11 +434,7 @@ def outputd_main_start_realtime(
     if not digits.isdigit():
         _log_ordering_probe_anomaly("unparseable", returncode=0, value=raw)
         return None
-    seconds = int(digits)
-    # A literal zero is not what systemd 257 prints for never-run (it prints
-    # empty, probed) — kept as defence against another version rendering it that
-    # way, and treated as the same "nothing has run" case.
-    return float(seconds) if seconds else None
+    return float(digits)
 
 
 def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
@@ -506,9 +513,9 @@ def require_outputd_env_loaded(
     loaded the declaration on disk — the old process stays up, healthy, and
     answering with the PREVIOUS geometry and final-edge format.
 
-    Binding (or rejecting) a commissioning identity against that is the debt the
-    2026-08-05 final-edge-format PR-2 panel named.  Wait a bounded while for the
-    queued restart to land, then fail rather than commission.
+    Binding (or rejecting) a commissioning identity against that is the debt
+    ADR-0169 closes.  Wait a bounded while for the queued restart to land,
+    then fail rather than commission.
 
     The deadline is monotonic on purpose: it is a DURATION, so it wants the clock
     that cannot step.  The staleness verdict itself compares realtime instants —
@@ -628,6 +635,7 @@ def collect_reference_queue(
     baseline: tuple[tuple[int, ...], float] | None = None
     status_reads = 0
     last_error = "no STATUS response"
+    last_error_cls: type[ChipInitError] = ChipInitError
     while time.monotonic() < deadline:
         try:
             status = read_status_socket(socket_path)
@@ -647,7 +655,9 @@ def collect_reference_queue(
                 baseline = (snapshot.counters, now)
                 window = []
             elif snapshot.counters != baseline[0]:
-                raise ChipInitError("chip-reference writer error counters moved")
+                raise ReferenceCountersMovedError(
+                    "chip-reference writer error counters moved"
+                )
             window = _merge_writes(window, snapshot.writes, now, baseline[1])
         except (OSError, ValueError, ChipInitError) as exc:
             # An xrun, a reopen, or a restart splits the readings on either side
@@ -658,6 +668,7 @@ def collect_reference_queue(
             window = []
             baseline = None
             last_error = str(exc)
+            last_error_cls = type(exc) if isinstance(exc, ChipInitError) else ChipInitError
         else:
             delays = tuple(item.delay for _at, item in window)
             held = _window_span(window)
@@ -671,6 +682,7 @@ def collect_reference_queue(
                 )
                 return status, delays
             last_error = _queue_shortfall(delays, held)
+            last_error_cls = ChipInitError
         time.sleep(interval)
     _log_reference_queue(
         "unstable",
@@ -684,7 +696,7 @@ def collect_reference_queue(
         reason=last_error,
         level=logging.WARNING,
     )
-    raise ChipInitError(f"native chip-reference writer not ready: {last_error}")
+    raise last_error_cls(f"native chip-reference writer not ready: {last_error}")
 
 
 def _window_span(window: Sequence[tuple[float, ReferenceWrite]]) -> float:
@@ -977,19 +989,26 @@ def shipped_class_alignment(
 
 @dataclass(frozen=True)
 class BankedAlignment:
-    """The banked proof one run resolved, and what it discloses about it.
+    """The banked proof one run resolved, and what it says about its source.
 
     ``commissioned_sys_delay`` is the delay banked alongside K — by this unit's
-    own artifact or by the row shipped for its hardware class.  ``sys_delay`` is
-    what the live reference queue resolves that K to, and is what the chip is
-    written with.
+    own artifact or by the row shipped for its hardware class — journalled so a
+    boot's delay can be read against the commissioner's.  ``sys_delay`` is what
+    the live reference queue resolves that K to, and is what the chip is written
+    with; it is not bounded against the commissioned one (ADR-0223).
+
+    ``shipped_label`` names the hardware-class row this ran from when nothing is
+    banked on the unit; ``identity_diff`` is what the unit's own commissioned
+    identity disagrees with live.  `jasper.chip_aec.health` turns them into the
+    household verdict — they are facts here, never prose.
     """
 
     k_samples: int
     commissioned_sys_delay: int
     sys_delay: int
     queue: tuple[int, ...]
-    disclosures: tuple[str, ...]
+    shipped_label: str
+    identity_diff: tuple[str, ...]
 
 
 def resolve_banked_alignment(
@@ -998,14 +1017,15 @@ def resolve_banked_alignment(
     """Resolve the K this run applies, against the live native-reference queue.
 
     ADR-0101: a proof that stopped describing this box is applied and disclosed,
-    not parked. Each disclosure names what moved; the reconciler publishes them
-    as `disclosed_stale` alongside the jasper-aec-commission that clears them.
+    not parked. This returns what moved; `jasper.chip_aec.health` judges it into
+    the `disclosed_stale` the reconciler publishes.
 
     Raises:
         CommissionRequired: this box has no banked K it can run from.
     """
 
-    disclosed: list[str] = []
+    shipped_label = ""
+    changed: tuple[str, ...] = ()
     commissioned_identity: AlignmentIdentity | None = None
     absent: str | None = None
     try:
@@ -1034,38 +1054,13 @@ def resolve_banked_alignment(
         shipped = shipped_class_alignment(dev, plan, status, absent=absent)
         k_samples = shipped.k_samples
         commissioned_sys_delay = shipped.sys_delay
-        disclosed.append(
-            f"running on the shipped class alignment for {shipped.label}; "
-            "run sudo jasper-aec-commission to personalize it to this unit"
-        )
+        shipped_label = shipped.label
     elif commissioned_identity is not None:
         changed = identity_divergence(
             commissioned_identity, build_identity(dev, plan, status)
         )
-        if changed:
-            # K is a property of the hardware CLASS, so a proof measured on a
-            # sibling unit still describes this box; anything else moved the
-            # edge K was measured against.
-            disclosed.append(
-                (
-                    "commissioned alignment was measured on a different unit"
-                    if set(changed) <= PER_UNIT_IDENTITY_FIELDS
-                    else "commissioned alignment no longer matches this "
-                    "hardware class"
-                )
-                + f" ({', '.join(changed)})"
-            )
     try:
-        delay = runtime_sys_delay(
-            k_samples, queue, commissioned_sys_delay=commissioned_sys_delay
-        )
-    except QueueMovedFromCommissioned as exc:
-        # Nothing is broken: the live reference queue simply no longer sits
-        # where it did when K was measured. The delay it carries has already
-        # cleared the chip's declared SYS_DELAY range, so apply it and say how
-        # far it moved.
-        delay = exc.delay
-        disclosed.append(str(exc))
+        delay = runtime_sys_delay(k_samples, queue)
     except ValueError as exc:
         # A shipped K that will not resolve on this box (the driver cap refuses
         # the delay, or the queue is unstable) leaves the same disposition its
@@ -1075,30 +1070,48 @@ def resolve_banked_alignment(
             raise CommissionRequired(f"{absent}; {exc}") from exc
         raise ChipInitError(str(exc)) from exc
     return BankedAlignment(
-        k_samples, commissioned_sys_delay, delay, queue, tuple(disclosed)
+        k_samples, commissioned_sys_delay, delay, queue, shipped_label, changed
     )
 
 
-def publish_disclosure(reason: str, *, env: Mapping[str, str] | None = None) -> None:
-    """Publish why this run's alignment is disclosed-stale, or clear it.
+def alignment_selection(env: Mapping[str, str] | None = None) -> str:
+    """The audio-input profile this alignment pass ran under.
 
-    Best-effort: the profile is applied and the box is hearing by the time this
-    runs, so a failed ``/run`` write must not turn a disclosure back into a
-    park.  `main` calls it exactly once per successful run, so the file cannot
-    outlive the condition it names.
+    The init unit does not load the operator's mode file, so read it here: the
+    record it stamps is what tells a consumer whether the verdict describes the
+    selection now in force.
     """
 
     source = os.environ if env is None else env
-    path = source.get("JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE") or DISCLOSURE_PATH
+    path = source.get("JASPER_AEC_MODE_FILE") or str(DEFAULT_AEC_MODE_PATH)
+    raw = parse_env_file(path).get("JASPER_AUDIO_INPUT_PROFILE", "")
+    return normalize_audio_input_profile(raw, default="") or PROFILE_CUSTOM
+
+
+def publish_alignment_record(
+    health: chip_aec_health.AlignmentHealth | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Publish this run's verdict for jasper-aec-reconcile, or clear it.
+
+    Best-effort: on a disclosed pass the profile is applied and the box is
+    hearing by the time this runs, so a failed ``/run`` write must not turn a
+    disclosure back into a park.  `main` calls it exactly once per run, so the
+    record cannot outlive the pass it describes.
+    """
+
+    source = os.environ if env is None else env
+    path = source.get("JASPER_AEC_ALIGNMENT_RECORD_FILE") or ALIGNMENT_RECORD_PATH
     try:
-        if reason:
-            atomic_write_text(path, " ".join(reason.split()) + "\n")
-        else:
+        if health is None:
             Path(path).unlink(missing_ok=True)
+        else:
+            atomic_write_text(path, health.to_shell())
     except OSError as exc:
         log_event(
             logger,
-            "chip_aec_init.disclosure_unpublished",
+            "chip_aec_init.alignment_record_unpublished",
             path=path,
             reason=str(exc),
             level=logging.WARNING,
@@ -1112,11 +1125,12 @@ def main() -> int:
         "corpus"
         if corpus
         else "chip_aec"
-        if _truthy("JASPER_AEC_CHIP_AEC_ENABLED")
+        if _truthy(CHIP_AEC_ENABLED_ENV)
         else "lab_bypass"
     )
     dev = None
-    disclosure = ""
+    selection = alignment_selection()
+    record: chip_aec_health.AlignmentHealth | None = None
     try:
         from jasper.xvf import xvf_host
 
@@ -1130,12 +1144,21 @@ def main() -> int:
                 )
             banked = resolve_banked_alignment(dev, plan, card=card)
             apply_profile(dev, plan, banked.sys_delay, card=card)
-            disclosure = "; ".join(banked.disclosures)
+            record = chip_aec_health.alignment_health(
+                chip_aec_health.APPLIED,
+                selection=selection,
+                shipped_label=banked.shipped_label,
+                identity_diff=banked.identity_diff,
+            )
+            disclosure = (
+                "" if record.status == chip_aec_health.STATUS_READY
+                else record.reason
+            )
             log_event(
                 logger,
                 "chip_aec_init",
                 level=logging.WARNING if disclosure else logging.INFO,
-                outcome="disclosed_stale" if disclosure else "ready",
+                outcome=record.status,
                 sys_delay=banked.sys_delay,
                 commissioned_sys_delay=banked.commissioned_sys_delay,
                 k_samples=banked.k_samples,
@@ -1163,13 +1186,15 @@ def main() -> int:
             # Only explicit custom/lab routing reaches this path.
             apply_bypass_profile(dev, card=card)
             log_event(logger, "chip_aec_init", outcome="bypassed", mode=mode)
-        publish_disclosure(disclosure)
         return 0
     except OutputdEnvStale as exc:
         # Distinct from a fault: nothing is broken, the output declaration just
         # has not reached the running daemon yet. Keep it a separate exit code so
         # the reconciler's disposition (and /state) names the ordering problem
         # instead of sending a household at the commissioner.
+        record = chip_aec_health.alignment_health(
+            chip_aec_health.OUTPUTD_ENV_STALE, selection=selection
+        )
         if dev is not None:
             _safe_bypass(dev)
         log_event(
@@ -1180,6 +1205,9 @@ def main() -> int:
         )
         return OUTPUTD_ENV_STALE_EXIT
     except CommissionRequired as exc:
+        record = chip_aec_health.alignment_health(
+            chip_aec_health.COMMISSION_REQUIRED, selection=selection
+        )
         if dev is not None:
             _safe_bypass(dev)
         log_event(
@@ -1188,6 +1216,9 @@ def main() -> int:
         )
         return COMMISSION_REQUIRED_EXIT
     except Exception as exc:  # noqa: BLE001
+        record = chip_aec_health.alignment_health(
+            chip_aec_health.REAPPLY_FAILED, selection=selection
+        )
         if dev is not None:
             _safe_bypass(dev)
         log_event(
@@ -1196,6 +1227,9 @@ def main() -> int:
         )
         return 1
     finally:
+        # Only a chip-AEC pass reaches a verdict; a corpus/bypass run clears the
+        # record rather than leaving the previous pass's standing.
+        publish_alignment_record(record if mode == "chip_aec" else None)
         if dev is not None:
             try:
                 if hasattr(dev, "close"):

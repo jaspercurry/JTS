@@ -81,8 +81,8 @@ CAMILLA_URL="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_
 RASPOTIFY_VERSION="0.48.1"
 RASPOTIFY_URL="https://github.com/dtcooper/raspotify/releases/download/${RASPOTIFY_VERSION}/raspotify_${RASPOTIFY_VERSION}.librespot.v0.8.0-ea81314_arm64.deb"
 RASPOTIFY_SHA256="dc1bc4d209378ef1f8348fd7aa6d1a7865fa83abc30c08990d171012d038a717"
-SHAIRPORT_SYNC_VERSION="4.3.7"
-SHAIRPORT_SYNC_COMMIT="0b1c4391ffd398e7b145eb4b98416261380adeea"
+SHAIRPORT_SYNC_VERSION="5.2.3"
+SHAIRPORT_SYNC_COMMIT="7b1bee65b2b0f8fee2e34684db4e20a53cd6c13a"
 NQPTP_COMMIT="c925f27c1fd12e4033ac477e5a405969b0b0260b"
 # Upstream provenance (auto-generated archive, not fetched by install.sh):
 # https://github.com/mikebrady/nqptp/archive/${NQPTP_COMMIT}.tar.gz
@@ -90,8 +90,8 @@ NQPTP_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-de
 NQPTP_SHA256="d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9"
 # Upstream provenance (auto-generated archive, not fetched by install.sh):
 # https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz
-SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/shairport-sync-0b1c4391ffd3.tar.gz"
-SHAIRPORT_SYNC_SHA256="7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865"
+SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/shairport-sync-7b1bee65b2b0.tar.gz"
+SHAIRPORT_SYNC_SHA256="c8d860c68723d78aea3d3eef0861bfbd01aa2f52d81c768c4e359ccabf42cbb5"
 print_install_usage() {
     cat <<'EOF'
 Usage: bash deploy/install.sh [--dry-run|--plan]
@@ -397,7 +397,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd bluez-alsa-utils rfkill avahi-daemon avahi-utils.
+     libswresample-dev xxd libplist-utils bluez-alsa-utils rfkill
+     avahi-daemon avahi-utils.
 
 3. Downloaded or built inputs
    - CamillaDSP: ${CAMILLA_URL}
@@ -557,8 +558,8 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
      libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
      libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd bluez-alsa-utils rfkill avahi-daemon
-     avahi-utils.
+     libswresample-dev xxd libplist-utils bluez-alsa-utils rfkill
+     avahi-daemon avahi-utils.
 
 2. Downloaded or built inputs
    - CamillaDSP: ${CAMILLA_URL}
@@ -640,9 +641,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Remove the retired dmix/fanin topology switch state file, which
      jasper-doctor warns about on presence.
    - Reconcile the USB data role from board topology and the registered
-     output-DAC overlay; add other Pi boot/config changes when needed:
-     memory cgroup/PSI kernel args, MGLRU tmpfiles, sysctl values,
-     and rpi-swap zram sizing.
+     output-DAC overlay; trim the boot config for headless operation
+     (gpu_mem, vc4-kms-v3d CMA, HDMI audio); add other Pi boot/config
+     changes when needed: memory cgroup/PSI kernel args, MGLRU tmpfiles,
+     sysctl values, and rpi-swap zram sizing.
    - Disable WiFi power-save on the active wlan0 connection (nmcli)
      so AirPlay's unicast UDP stream avoids radio-sleep stalls.
    - Repair stored measurement-mic calibrations fetched under the wrong
@@ -822,7 +824,7 @@ _install_renderer_native_deps() {
         libssl-dev libsoxr-dev libplist-dev libsodium-dev \
         libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
-        xxd \
+        xxd libplist-utils \
         bluez-alsa-utils rfkill avahi-daemon avahi-utils
 }
 
@@ -1530,9 +1532,16 @@ reconcile_aec_state() {
             > "${STATE_DIR}/aec_mode.env"
         chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi
+    local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
     systemctl enable jasper-aec-reconcile.service
-    /usr/local/sbin/jasper-aec-reconcile --reason install || \
+    if ! /usr/local/sbin/jasper-aec-reconcile --reason install; then
         echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
+        if [[ -e "$aec_bridge_marker" ]]; then
+            echo "  WARN: AEC bridge marker still present ($aec_bridge_marker) from a prior pass"
+        else
+            echo "  WARN: AEC bridge marker absent ($aec_bridge_marker); echo cancellation is off until the next reconcile"
+        fi
+    fi
 }
 
 reconcile_grouping_state() {
@@ -1706,6 +1715,55 @@ PYBAKE
     rm -f /usr/share/jasper-web/correction-preflight.html
 }
 
+tune_nginx_worker_processes() {
+    # `worker_processes auto` starts one CPU-pinned worker per core to serve a
+    # loopback-only management proxy: four workers, ~14 MB Pss on a Pi 5 and
+    # three extra core-pinned processes on a realtime audio box. One is enough.
+    #
+    # This rewrites the packaged nginx.conf rather than dropping a file into
+    # /etc/nginx/modules-enabled/, which nginx does include at main context:
+    # worker_processes is a main-context directive and nginx rejects a second
+    # copy with "is duplicate", which would fail the `nginx -t` gate on every
+    # install. The cost of that choice is that nginx.conf is an nginx-common
+    # dpkg conffile, so a later package upgrade reports it as locally modified
+    # and keeps this copy. To undo on a box that already ran this, put
+    # `worker_processes auto;` back in /etc/nginx/nginx.conf — dropping the
+    # call here does not revert an installed box.
+    #
+    # Worker count is a comfort optimisation, so every failure path below
+    # leaves the packaged value in place instead of failing the deploy.
+    local main="${JTS_NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
+    if [[ ! -f "${main}" ]]; then
+        echo "  ${main} not present; skipping nginx worker tuning."
+        return 0
+    fi
+    local tmp mode
+    if ! tmp="$(mktemp "${main}.jts.XXXXXX" 2>/dev/null)"; then
+        echo "  WARN: could not stage an ${main} rewrite; workers left as packaged."
+        return 0
+    fi
+    if ! sed -E 's/^([[:space:]]*)worker_processes[[:space:]]+[^;]+;/\1worker_processes 1;/' \
+            "${main}" > "${tmp}"; then
+        rm -f "${tmp}"
+        echo "  WARN: could not rewrite ${main}; workers left as packaged."
+        return 0
+    fi
+    if ! grep -qE '^[[:space:]]*worker_processes[[:space:]]+1;' "${tmp}"; then
+        printf 'worker_processes 1;\n' >> "${tmp}"
+    fi
+    if cmp -s "${tmp}" "${main}"; then
+        rm -f "${tmp}"
+        return 0
+    fi
+    mode="$(stat -c '%a' "${main}" 2>/dev/null || stat -f '%Lp' "${main}" 2>/dev/null || true)"
+    if ! { chmod "${mode:-644}" "${tmp}" && mv -f "${tmp}" "${main}"; }; then
+        rm -f "${tmp}"
+        echo "  WARN: could not publish ${main}; workers left as packaged."
+        return 0
+    fi
+    echo "  nginx worker_processes pinned to 1 in ${main}"
+}
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
@@ -1735,6 +1793,7 @@ install_nginx_site() {
     # default_server directives. nginx-light installs an enabled
     # `default` symlink; remove it idempotently.
     rm -f /etc/nginx/sites-enabled/default
+    tune_nginx_worker_processes
 
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
@@ -1761,6 +1820,7 @@ install_streambox_nginx_site() {
 
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
     rm -f /etc/nginx/sites-enabled/default
+    tune_nginx_worker_processes
 
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
@@ -2187,6 +2247,7 @@ main() {
         install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
         install_camilladsp
         install_renderers
+        reconcile_headless_boot_config
         reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
@@ -2234,6 +2295,7 @@ main() {
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
     install_renderers
+    reconcile_headless_boot_config
     reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper

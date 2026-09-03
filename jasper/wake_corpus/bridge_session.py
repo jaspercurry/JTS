@@ -45,10 +45,8 @@ from jasper.audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
-from jasper.chip_aec_policy import (
-    gate_from_runtime_env,
-    resolve_chip_aec_dac_gate,
-)
+from jasper.chip_aec.policy import effective_chip_aec_dac_gate
+from jasper.mics.xvf3800 import AEC_MIC_DEVICE_ENV
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
@@ -83,9 +81,10 @@ logger = logging.getLogger("jasper-wake-corpus-web")
 
 
 def _mic_chip_aec_available(mic_probe: MicProbe) -> bool:
-    """Whether the detected mic profile has a chip-AEC beam plan."""
+    """Whether the detected mic profile has a production-validated
+    chip-AEC beam plan."""
 
-    return bool(mic_probe.xvf_present and mic_probe.chip_beam_plan)
+    return mic_probe.chip_aec_supported
 
 
 def _chip_aec_gate_for_status(
@@ -99,12 +98,8 @@ def _chip_aec_gate_for_status(
         default=infer_audio_input_profile(intent),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    runtime_gate = gate_from_runtime_env(system_env)
-    if runtime_gate is not None:
-        return runtime_gate.to_dict()
-    return resolve_chip_aec_dac_gate(
-        published_dac_id(system_env),
-        testing_requested=testing_requested,
+    return effective_chip_aec_dac_gate(
+        system_env, testing_requested=testing_requested,
     ).to_dict()
 
 
@@ -301,7 +296,7 @@ def chip_ref_pcm_for_env(env: Mapping[str, Any] | None = None) -> str:
     if env:
         card = str(env.get("JASPER_XVF_ALSA_CARD") or "").strip()
         if not card:
-            aec_mic = str(env.get("JASPER_AEC_MIC_DEVICE") or "").strip()
+            aec_mic = str(env.get(AEC_MIC_DEVICE_ENV) or "").strip()
             if _plain_alsa_card_id(aec_mic):
                 card = aec_mic
     if card:
@@ -715,6 +710,7 @@ def _mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
         variant_id=str(identity.get("variant_id", "")),
         geometry=str(identity.get("geometry", "")),
         chip_beam_plan=str(identity.get("chip_beam_plan", "")),
+        chip_aec_supported=bool(identity.get("chip_aec_supported", False)),
         probe_error=probe_error,
     )
     return probe, identity
@@ -1960,7 +1956,7 @@ def _capture_plan_runtime_snapshot() -> dict[str, Any]:
             mic_identity.get("observed", {})
             if isinstance(mic_identity.get("observed"), dict) else {}
         ).get("capture_channels"),
-        "selected_xvf_mic_device": merged_env.get("JASPER_AEC_MIC_DEVICE", ""),
+        "selected_xvf_mic_device": merged_env.get(AEC_MIC_DEVICE_ENV, ""),
         "selected_usb_mic_device": selected_usb_mic,
         "chip_primary_leg": merged_env.get("JASPER_AEC_CHIP_AEC_PRIMARY_LEG", ""),
     }
@@ -2041,7 +2037,7 @@ def _capture_plan_snapshot_for_desired_env(
 
     mic_source = dict(mic_source_raw)
     mic_source.update({
-        "selected_xvf_mic_device": desired_env.get("JASPER_AEC_MIC_DEVICE", ""),
+        "selected_xvf_mic_device": desired_env.get(AEC_MIC_DEVICE_ENV, ""),
         "selected_usb_mic_device": desired_env.get(
             "JASPER_AEC_USB_MIC_DEVICE", DEFAULT_USB_MIC_DEVICE
         ),
