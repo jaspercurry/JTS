@@ -771,17 +771,30 @@ async def probe_status_from_env(
     )
 
 
+def unconfigured_status(url: str, token: str) -> dict[str, Any] | None:
+    """The status card for credentials that cannot be probed, or None
+    when both a URL and a token are present.
+
+    Sole definition of `configured`: the child probe and
+    jasper-control's parent-side fast path must never disagree.
+    """
+    if url and token:
+        return None
+    return {
+        "configured": False, "connected": False, "url": url,
+        "instance_name": None, "version": None,
+        "error": None,
+    }
+
+
 async def _probe_uncached(
     url: str, token: str, *, verify_ssl: bool = True,
 ) -> dict[str, Any]:
     """The real probe. Separate from probe_status() so the cache wrapper
     stays thin and the inner logic stays testable in isolation."""
-    if not url or not token:
-        return {
-            "configured": False, "connected": False, "url": url,
-            "instance_name": None, "version": None,
-            "error": None,
-        }
+    unconfigured = unconfigured_status(url, token)
+    if unconfigured is not None:
+        return unconfigured
     client = HAClient(url=url, token=token, verify_ssl=verify_ssl)
     try:
         if not await client.healthcheck():

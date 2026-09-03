@@ -10,18 +10,27 @@ import subprocess
 from jasper.control.ha_status_cache import HomeAssistantStatusCache
 
 
+_CONFIGURED_ENV = {
+    "JASPER_HA_URL": "http://ha.local:8123",
+    "JASPER_HA_TOKEN": "token",
+}
+
+
 def _inline_thread(target):
     target()
     return object()
 
 
+def _configured_env():
+    return dict(_CONFIGURED_ENV)
+
+
 def test_snapshot_starts_background_probe_and_returns_checking(monkeypatch):
     calls = []
-    signature = ["a"]
     cache = HomeAssistantStatusCache(
         ttl_sec=30,
         thread_factory=_inline_thread,
-        signature_reader=lambda: signature[0],
+        env_reader=_configured_env,
     )
 
     def fake_run_child():
@@ -48,19 +57,20 @@ def test_snapshot_starts_background_probe_and_returns_checking(monkeypatch):
 
 def test_snapshot_refreshes_when_wizard_env_signature_changes(monkeypatch):
     calls = []
-    signature = ["a"]
+    env = dict(_CONFIGURED_ENV, JASPER_HA_URL="http://ha-a")
     cache = HomeAssistantStatusCache(
         ttl_sec=30,
         thread_factory=_inline_thread,
-        signature_reader=lambda: signature[0],
+        env_reader=lambda: dict(env),
     )
 
     def fake_run_child():
-        calls.append(signature[0])
+        url = env["JASPER_HA_URL"]
+        calls.append(url)
         return {
             "configured": True,
             "connected": True,
-            "url": "http://ha-" + signature[0],
+            "url": url,
             "instance_name": "Home",
             "version": "2026.6.1",
             "error": None,
@@ -70,7 +80,7 @@ def test_snapshot_refreshes_when_wizard_env_signature_changes(monkeypatch):
 
     cache.snapshot()
     assert cache.snapshot()["url"] == "http://ha-a"
-    signature[0] = "b"
+    env["JASPER_HA_URL"] = "http://ha-b"
 
     changed = cache.snapshot()
     refreshed = cache.snapshot()
@@ -78,7 +88,37 @@ def test_snapshot_refreshes_when_wizard_env_signature_changes(monkeypatch):
     assert changed["checking"] is True
     assert changed["stale"] is True
     assert refreshed["url"] == "http://ha-b"
-    assert calls == ["a", "b"]
+    assert calls == ["http://ha-a", "http://ha-b"]
+
+
+def test_unconfigured_env_answers_without_spawning_child(monkeypatch):
+    env = {"JASPER_HA_URL": "http://ha.local:8123"}
+    spawned = []
+    probed = []
+
+    def record_thread(target):
+        spawned.append(target)
+        return object()
+
+    cache = HomeAssistantStatusCache(
+        ttl_sec=30,
+        thread_factory=record_thread,
+        env_reader=lambda: dict(env),
+    )
+    monkeypatch.setattr(cache, "_run_child", lambda: probed.append("probe"))
+
+    status = cache.snapshot()
+
+    assert status["configured"] is False
+    assert status["connected"] is False
+    assert status["error"] is None
+    assert spawned == []
+    assert probed == []
+
+    env["JASPER_HA_TOKEN"] = "token"
+
+    assert cache.snapshot()["checking"] is True
+    assert len(spawned) == 1
 
 
 def test_snapshot_does_not_spawn_duplicate_refreshes(monkeypatch):
@@ -92,6 +132,7 @@ def test_snapshot_does_not_spawn_duplicate_refreshes(monkeypatch):
         ttl_sec=30,
         min_refresh_interval_sec=30,
         thread_factory=hold_thread,
+        env_reader=_configured_env,
     )
 
     assert cache.snapshot()["checking"] is True
@@ -116,6 +157,7 @@ def test_refresh_failure_keeps_stale_cached_status(monkeypatch):
         ttl_sec=1,
         thread_factory=_inline_thread,
         clock=lambda: now[0],
+        env_reader=_configured_env,
     )
 
     def fake_run_child():
@@ -172,6 +214,7 @@ def test_parent_logs_reachability_transitions_from_child_status(monkeypatch, cap
         ttl_sec=1,
         thread_factory=_inline_thread,
         clock=lambda: now[0],
+        env_reader=_configured_env,
     )
     caplog.set_level(logging.INFO, logger="jasper.control.ha_status_cache")
     monkeypatch.setattr(cache, "_run_child", lambda: outcomes.pop(0))
@@ -206,6 +249,7 @@ def test_thread_start_failure_does_not_wedge_refreshing(monkeypatch):
         min_refresh_interval_sec=0.1,
         thread_factory=failing_thread,
         clock=lambda: now[0],
+        env_reader=_configured_env,
     )
 
     first = cache.snapshot()

@@ -12,8 +12,10 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any, Callable
 
+from jasper import home_assistant
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -21,32 +23,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTL_SEC = 15.0
 DEFAULT_TIMEOUT_SEC = 9.0
 DEFAULT_MIN_REFRESH_INTERVAL_SEC = 2.0
-DEFAULT_HA_ENV_FILE = "/var/lib/jasper-intsecrets/home_assistant.env"
 _SIGNATURE_KEYS = (
-    "JASPER_HA_URL",
-    "JASPER_HA_TOKEN",
-    "JASPER_HA_VERIFY_SSL",
+    home_assistant.ENV_URL,
+    home_assistant.ENV_TOKEN,
+    home_assistant.ENV_VERIFY_SSL,
 )
 
 
-def _ha_env_signature(path: str = DEFAULT_HA_ENV_FILE) -> str:
-    values = {key: "" for key in _SIGNATURE_KEYS}
-    try:
-        with open(path) as f:
-            for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                if key in values:
-                    values[key] = value.strip()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        return "unreadable:" + type(exc).__name__
-    payload = json.dumps(values, sort_keys=True, separators=(",", ":"))
+def _env_signature(values: Mapping[str, str]) -> str:
+    payload = json.dumps(
+        {key: values.get(key, "") for key in _SIGNATURE_KEYS},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _unconfigured_status(values: Mapping[str, str]) -> dict[str, Any] | None:
+    return home_assistant.unconfigured_status(
+        values.get(home_assistant.ENV_URL, "").strip(),
+        values.get(home_assistant.ENV_TOKEN, "").strip(),
+    )
 
 
 def _checking_status(cached: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -83,6 +80,8 @@ class HomeAssistantStatusCache:
     The first stale read starts one background refresh and returns a
     checking/stale status immediately. The child owns the HA probe and its
     imports; jasper-control keeps only the small JSON result in memory.
+    An env file without usable credentials is answered by the parent, with
+    no child at all.
     """
 
     def __init__(
@@ -92,10 +91,10 @@ class HomeAssistantStatusCache:
         timeout_sec: float = DEFAULT_TIMEOUT_SEC,
         min_refresh_interval_sec: float = DEFAULT_MIN_REFRESH_INTERVAL_SEC,
         python_exe: str | None = None,
-        env_file_path: str = DEFAULT_HA_ENV_FILE,
+        env_file_path: str = home_assistant.HA_ENV_FILE,
         clock: Callable[[], float] | None = None,
         thread_factory: Callable[[Callable[[], None]], object] | None = None,
-        signature_reader: Callable[[], str] | None = None,
+        env_reader: Callable[[], Mapping[str, str]] | None = None,
     ) -> None:
         self._ttl_sec = max(1.0, float(ttl_sec))
         self._timeout_sec = max(1.0, float(timeout_sec))
@@ -104,7 +103,7 @@ class HomeAssistantStatusCache:
         self._env_file_path = env_file_path
         self._clock = clock or time.monotonic
         self._thread_factory = thread_factory or self._start_thread
-        self._signature_reader = signature_reader
+        self._env_reader = env_reader
         self._lock = threading.Lock()
         self._cached: dict[str, Any] | None = None
         self._cached_signature = ""
@@ -123,14 +122,22 @@ class HomeAssistantStatusCache:
         thread.start()
         return thread
 
-    def _current_signature(self) -> str:
-        if self._signature_reader is not None:
-            return self._signature_reader()
-        return _ha_env_signature(self._env_file_path)
+    def _read_env(self) -> Mapping[str, str]:
+        if self._env_reader is not None:
+            return self._env_reader()
+        return home_assistant.read_ha_env_file(self._env_file_path)
 
     def snapshot(self) -> dict[str, Any]:
         now = self._clock()
-        signature = self._current_signature()
+        values = self._read_env()
+        signature = _env_signature(values)
+        unconfigured = _unconfigured_status(values)
+        if unconfigured is not None:
+            # A resident daemon must not fork an interpreter on a poll
+            # loop; with no credentials the child can only echo this.
+            self._store(unconfigured, signature, now, skip_if_refreshing=True)
+            return dict(unconfigured)
+
         with self._lock:
             cached = dict(self._cached) if self._cached is not None else None
             signature_changed = (
@@ -162,12 +169,6 @@ class HomeAssistantStatusCache:
 
         return _checking_status(cached)
 
-    def refresh_now(self) -> dict[str, Any]:
-        """Synchronously refresh the cache. Used by focused unit tests."""
-        self._refresh_worker(self._current_signature())
-        with self._lock:
-            return dict(self._cached or _failed_status("probe failed"))
-
     def _refresh_worker(self, signature: str) -> None:
         try:
             status = self._run_child()
@@ -177,8 +178,19 @@ class HomeAssistantStatusCache:
 
         status.pop("checking", None)
         status.pop("stale", None)
-        now = self._clock()
+        self._store(status, signature, self._clock())
+
+    def _store(
+        self,
+        status: dict[str, Any],
+        signature: str,
+        now: float,
+        *,
+        skip_if_refreshing: bool = False,
+    ) -> None:
         with self._lock:
+            if skip_if_refreshing and self._refreshing:
+                return
             self._cached = dict(status)
             self._cached_signature = signature
             self._expires_at = now + self._ttl_sec
