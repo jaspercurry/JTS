@@ -163,6 +163,28 @@ def _active_group_member() -> bool:
     return is_active_leader(cfg) or is_bonded_follower(cfg)
 
 
+def _build_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
+    """Serve the v2 session crossover envelope for ``status`` and log the serve."""
+
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    envelope = build_crossover_envelope_v2(status)
+    log_event(
+        logger,
+        "correction.crossover_envelope_serve",
+        screen=envelope["screen"],
+        active=envelope["active"],
+        step_count=len(envelope["steps"]),
+        nudge_count=len(envelope["nudges"]),
+        action=(envelope.get("next_action") or {}).get("id"),
+        alternate_action_count=len(envelope.get("alternate_actions") or []),
+        applied=(envelope.get("applied") or {}).get("state"),
+    )
+    return envelope
+
+
 def handle_envelope(
     *, relay: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], HTTPStatus]:
@@ -170,10 +192,6 @@ def handle_envelope(
     the dumb frontend renders each step from (revision plan §3.2), aligned with
     the room flow's envelope-driven pattern. Additive alongside /crossover/status;
     passive speakers get ``active=False`` (Layer A hidden)."""
-    from jasper.active_speaker.crossover_envelope import (
-        build_crossover_envelope_logged,
-    )
-
     from .correction_crossover_v2 import attach_stage2_preflight
 
     status, _ = handle_status(relay=relay)
@@ -184,7 +202,7 @@ def handle_envelope(
     # cost/side-effect disclosure and for why it cannot live inside the
     # (jasper.active_speaker) envelope builder.
     attach_stage2_preflight(status)
-    envelope = build_crossover_envelope_logged(status)
+    envelope = _build_envelope_logged(status)
     # The "Start over" confirm copy is grouping-aware; carry the (cheap,
     # fail-open) member flag on every polled envelope so the button that is
     # always visible confirms with copy that is true in the current state.
@@ -210,9 +228,6 @@ def handle_reset(
     :func:`handle_status`/:func:`handle_envelope`.
     """
     from . import correction_crossover_backend as backend
-    from jasper.active_speaker.crossover_envelope import (
-        build_crossover_envelope_logged,
-    )
 
     try:
         reset_result = backend.reset_measurement_journey()
@@ -238,7 +253,7 @@ def handle_reset(
     reset_v2_journey_state()
 
     status, _ = handle_status(relay=relay)
-    envelope = build_crossover_envelope_logged(status)
+    envelope = _build_envelope_logged(status)
     envelope["grouping_member"] = _active_group_member()
     # Surface the honest outcome, not the static intent: ``status`` is
     # ``partial`` when any file failed to unlink, and ``errors`` names them —

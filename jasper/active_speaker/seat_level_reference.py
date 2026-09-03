@@ -262,8 +262,6 @@ ANCHOR_UNUSABLE = "seat_anchor_unusable"
 LEVEL_OVER_CEILING = "level_over_ceiling"
 PRESET_UNAVAILABLE = "preset_unavailable"
 
-LEVEL_REFUSAL_REASONS = (ANCHOR_UNUSABLE, LEVEL_OVER_CEILING, PRESET_UNAVAILABLE)
-
 #: Two sens factors this close are one number in two float reprs, not two
 #: calibrations. A real recalibration moves the figure by whole tenths.
 SENS_FACTOR_TOLERANCE_DB = 0.05

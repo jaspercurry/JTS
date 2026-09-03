@@ -9,10 +9,7 @@ import copy
 import pytest
 import yaml
 
-from jasper.active_speaker.alignment_walk import (
-    DRIVER_DELAY_WALK_SCOPE,
-    driver_delay_walk_spec,
-)
+from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.delay_graph import (
     DelayGraphProofError,
     DelayGraphSnapshot,
@@ -116,10 +113,10 @@ def _graph(
 
 
 def _active_spec() -> NullWalkSpec:
-    return driver_delay_walk_spec(
+    return sweep_spec(
         crossover_fc_hz=5000.0,
-        positive_delay_target_role="upper",
-        negative_delay_target_role="lower",
+        upper_role="upper",
+        lower_role="lower",
         signed_acoustic_path_difference_m=0.0,
     )
 
@@ -127,7 +124,7 @@ def _active_spec() -> NullWalkSpec:
 def _snapshot(
     spec: NullWalkSpec | None = None,
     *,
-    scope=DRIVER_DELAY_WALK_SCOPE,
+    scope="active_crossover",
     topology_id: str = "active-topology",
     graph: dict | None = None,
     positive_lane: DelayLaneBinding | None = None,
@@ -220,7 +217,7 @@ def test_snapshot_reuses_exact_f1_predecessor_and_binds_lane_proof():
     )
     snapshot = DelayGraphSnapshot(
         spec,
-        scope=DRIVER_DELAY_WALK_SCOPE,
+        scope="active_crossover",
         topology_id="active-topology",
         positive_lane=DelayLaneBinding(
             "upper", "as_positive_delay", POSITIVE_IDENTITY_FILTER, (0,)

@@ -210,16 +210,6 @@ def percentile(values: Sequence[float], q: float) -> float:
 MAX_USEFUL_REPEAT_AVERAGES = 4
 
 
-def useful_repeats(requested: int) -> int:
-    """Clamp a requested repeat count to what averaging can still pay for.
-
-    The seam the live flow calls when it decides how many repeats to take.
-    See :data:`MAX_USEFUL_REPEAT_AVERAGES` for the measurement behind the cap.
-    """
-
-    return max(1, min(int(requested), MAX_USEFUL_REPEAT_AVERAGES))
-
-
 @dataclass(frozen=True)
 class AttemptBudget:
     """How many *tuning attempts* one speaker gets.

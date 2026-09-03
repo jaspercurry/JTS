@@ -53,11 +53,7 @@ from jasper.active_speaker.delay_sweep import sweep_spec
 from jasper.audio_measurement.null_walk import NullWalkError
 
 from ._logging import configure_verbose_logging
-from ._refusal import refused
-
-EXIT_OK = 0
-EXIT_REFUSED = 1
-EXIT_INPUT = 2
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, failed
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
@@ -78,10 +74,6 @@ def _spec_from_args(args: argparse.Namespace) -> Any:
     )
 
 
-def _refused(reason: str, detail: str) -> int:
-    return refused(reason, detail, exit_code=EXIT_REFUSED)
-
-
 def _cmd_propose(args: argparse.Namespace) -> int:
     bundle_dir = Path(args.bundle_dir)
     spec = _spec_from_args(args)
@@ -90,7 +82,8 @@ def _cmd_propose(args: argparse.Namespace) -> int:
 
     round_dir, why = round_artifact_dir(bundle_dir)
     if round_dir is None:
-        return _refused(
+        return failed(
+            EXIT_REFUSED,
             REFUSE_NO_ROUND,
             f"{bundle_dir}: {why}; bundle_dir must hold info.json beside "
             "evidence/v1/artifacts/crossover_v2/<relay>/",
@@ -103,7 +96,8 @@ def _cmd_propose(args: argparse.Namespace) -> int:
         roles=(lower_role, upper_role),
     )
     if found is None:
-        return _refused(
+        return failed(
+            EXIT_REFUSED,
             REFUSE_NO_CURVES,
             f"{bundle_dir}: no {args.phase} take at {args.position_deg} deg "
             f"carries curves for both {lower_role!r} and {upper_role!r}",
@@ -117,7 +111,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     except DelayLandscapeError as exc:
         # Verbatim: a bank that cannot carry a null at Fc is a finding about
         # the bank, and the module that decided it owns the sentence.
-        return _refused(REFUSE_LANDSCAPE, str(exc))
+        return failed(EXIT_REFUSED, REFUSE_LANDSCAPE, str(exc))
 
     print(json.dumps({
         "status": "proposed",
@@ -226,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
             "     curves, or the landscape could not carry a null at Fc;\n"
             "     \"refused (<reason>): <detail>\" on stderr, and as the\n"
             "     JSON \"status\": \"refused\"\n"
-            "  2  EXIT_INPUT -- the bundle could not be read (OSError)"
+            "  2  EXIT_UNREADABLE -- the bundle could not be read (OSError)"
         ),
     )
     parser.add_argument("--verbose", action="store_true")
@@ -279,7 +273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_REFUSED
     except OSError as exc:
         print(f"unreadable bundle: {exc}", file=sys.stderr)
-        return EXIT_INPUT
+        return EXIT_UNREADABLE
 
 
 if __name__ == "__main__":  # pragma: no cover

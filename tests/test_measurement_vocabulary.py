@@ -81,7 +81,6 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # directly rather than holding its own copy, so this is their only home.
     "jasper/active_speaker/linearization_envelope.py",
     "jasper/active_speaker/crossover_envelope_v2.py",
-    "jasper/active_speaker/crossover_envelope.py",
     "jasper/active_speaker/baseline_profile.py",
     # Cluster 2 — failure / refusal copy.
     "jasper/capture_relay/session.py",

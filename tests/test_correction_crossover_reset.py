@@ -170,7 +170,7 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
     monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
     monkeypatch.setattr(flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
-        "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+        "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {
             "screen": "start",
             "active": True,
@@ -203,7 +203,7 @@ def _reset_scaffold(monkeypatch):
     monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
     monkeypatch.setattr(flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
-        "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+        "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
     )
 
@@ -313,7 +313,7 @@ def test_handle_envelope_carries_grouping_member_flag(monkeypatch) -> None:
     monkeypatch.setattr(flow, "handle_status", lambda *, relay=None: ({}, 200))
     monkeypatch.setattr(flow, "_active_group_member", lambda: True)
     monkeypatch.setattr(
-        "jasper.active_speaker.crossover_envelope.build_crossover_envelope_logged",
+        "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
     )
 

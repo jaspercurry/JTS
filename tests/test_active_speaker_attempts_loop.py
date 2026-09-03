@@ -27,7 +27,6 @@ from jasper.active_speaker.attempts_loop import (
     FLOOR_SCOPE_ACROSS_SITTINGS,
     FLOOR_SCOPE_WITHIN_SITTING,
     FLOOR_SCOPES,
-    MAX_USEFUL_REPEAT_AVERAGES,
     PROVENANCE_MODEL_GRADED,
     PROVENANCE_REALIZED,
     REASON_ATTEMPT_NOT_COMPARABLE,
@@ -59,7 +58,6 @@ from jasper.active_speaker.attempts_loop import (
     material_improvement_db,
     replay,
     summarize,
-    useful_repeats,
 )
 
 METRIC = "max_db_notch_excluded"
@@ -256,19 +254,6 @@ def test_a_non_comparable_predecessor_is_not_skipped_over():
     assert decision.reason == REASON_PREDECESSOR_NOT_COMPARABLE
     # Emphatically not an improvement of 4.0 dB graded against a1.
     assert decision.improvement_db is None
-
-
-# --------------------------------------------------------------------------
-# Constraint 2 — repeat averaging caps at 4
-# --------------------------------------------------------------------------
-
-
-def test_useful_repeats_clamps_to_the_measured_cap():
-    assert MAX_USEFUL_REPEAT_AVERAGES == 4
-    assert useful_repeats(1) == 1
-    assert useful_repeats(4) == 4
-    assert useful_repeats(9) == MAX_USEFUL_REPEAT_AVERAGES
-    assert useful_repeats(0) == 1
 
 
 def test_an_attempt_over_the_repeat_cap_is_disclosed_not_hidden():
