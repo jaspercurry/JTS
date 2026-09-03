@@ -663,6 +663,10 @@ normalize_mode() {
 # RAW defaults on, DTLN defaults off.
 normalize_bool() {
     local value="${1:-}"
+    # Trim surrounding whitespace before matching, matching
+    # jasper.audio_profile_state.parse_env_bool()'s leading .strip().
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
     value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
     case "$value" in
         1|on|true|yes|y|enabled|enable)
@@ -716,6 +720,10 @@ read_audio_input_profile() {
 
 normalize_output_dac_id() {
     local dac_id="${1:-unknown}"
+    # Trim surrounding whitespace before matching, matching
+    # jasper.chip_aec.policy.normalize_dac_id()'s leading .strip().
+    dac_id="${dac_id#"${dac_id%%[![:space:]]*}"}"
+    dac_id="${dac_id%"${dac_id##*[![:space:]]}"}"
     dac_id="$(printf '%s' "$dac_id" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
     dac_id="${dac_id//\'/}"
     dac_id="${dac_id//\"/}"
