@@ -56,7 +56,8 @@ from .registry import (
     lookup,
     lookup_by_name,
 )
-from .supervisor import STATUS_PATH, Bridge, supervise
+from .status import STATUS_PATH
+from .supervisor import Bridge, supervise
 
 logger = logging.getLogger(__name__)
 

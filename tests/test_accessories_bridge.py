@@ -39,7 +39,8 @@ from jasper.accessories.registry import (
     RemoteProfile,
     TapAction,
 )
-from jasper.accessories.supervisor import snapshot, supervise
+from jasper.accessories.status import snapshot
+from jasper.accessories.supervisor import supervise
 from jasper.control.client import ControlError, ControlResponse
 
 
@@ -967,7 +968,12 @@ async def test_last_error_means_parked_in_backoff_right_now(
         "mic": {"restarts": 1, "last_error": last_error},
         "hid": {"restarts": 0, "last_error": None},
     }
-    assert snapshot(tmp_path / "absent.json")["present"] is False
+
+
+def test_a_missing_status_file_reads_as_unpublished(tmp_path):
+    assert snapshot(tmp_path / "absent.json") == {
+        "published": False, "bridges": {},
+    }
 
 
 def test_every_declared_adapter_mic_has_an_in_process_adapter():

@@ -15,7 +15,6 @@ can end the process or another bridge's run.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
@@ -23,6 +22,8 @@ from typing import Any
 
 from jasper.atomic_io import atomic_write_json
 from jasper.log_event import log_event
+
+from .status import STATUS_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -34,27 +35,18 @@ RESTART_BACKOFF_SEC = 2.0
 # attempt count rides along on every failure line.
 MAX_RESTART_BACKOFF_SEC = 60.0
 
-# jasper-input's RuntimeDirectory (deploy/systemd/jasper-input.service), which
-# systemd reaps on stop — so a present file always describes the process
-# running now, and no staleness stamp is needed. 0640 + the parent's group so
-# jasper-control (Group=jasper, like this unit) can read it.
-STATUS_PATH = "/run/jasper-input/status.json"
-_STATUS_FILE_MODE = 0o640
 _publish_failure_warned = False
 
 Bridge = Callable[[], Awaitable[None]]
+Publish = Callable[[], None]
 
 
-def _publish(
-    health: Mapping[str, Any], status_path: str | os.PathLike
-) -> None:
+def _publish(health: Mapping[str, Any], status_path: str | os.PathLike) -> None:
     global _publish_failure_warned
     try:
+        # 0640 + the parent's group: jasper-control (Group=jasper) reads it.
         atomic_write_json(
-            status_path,
-            {"bridges": dict(health)},
-            mode=_STATUS_FILE_MODE,
-            group_from_parent=True,
+            status_path, {"bridges": health}, mode=0o640, group_from_parent=True,
         )
     except OSError as exc:
         # Fail-soft — an unwritable /run costs observability, never a bridge.
@@ -69,47 +61,18 @@ def _publish(
         _publish_failure_warned = True
 
 
-def snapshot(status_path: str | os.PathLike = STATUS_PATH) -> dict[str, Any]:
-    """Read side of :data:`STATUS_PATH`, for ``/state``. Never raises.
-
-    ``last_error`` is the failing exception's CLASS NAME only — a bridge
-    fault's message can carry a device name or address — and is set only while
-    that bridge waits out its backoff, so it discriminates a bridge wedged
-    right now from one that crashed and is running again. ``restarts`` carries
-    the history."""
-    try:
-        with open(status_path, encoding="utf-8") as f:
-            raw = json.load(f)
-        return {
-            "present": True,
-            "bridges": {
-                str(name): {
-                    "restarts": int(entry["restarts"]),
-                    "last_error": (
-                        None if entry["last_error"] is None
-                        else str(entry["last_error"])
-                    ),
-                }
-                for name, entry in raw["bridges"].items()
-            },
-        }
-    except (OSError, AttributeError, KeyError, TypeError, ValueError):
-        return {"present": False, "bridges": {}}
-
-
 async def _run_forever(
     name: str,
     bridge: Bridge,
     backoff_sec: float,
-    health: dict[str, dict[str, Any]],
-    status_path: str | os.PathLike,
+    entry: dict[str, Any],
+    publish: Publish,
 ) -> None:
     consecutive_failures = 0
-    entry = health[name]
     while True:
         if entry["last_error"] is not None:
             entry["last_error"] = None
-            _publish(health, status_path)
+            publish()
         try:
             await bridge()
         except asyncio.CancelledError:
@@ -118,7 +81,7 @@ async def _run_forever(
             consecutive_failures += 1
             entry["restarts"] += 1
             entry["last_error"] = type(exc).__name__
-            _publish(health, status_path)
+            publish()
             log_event(
                 logger,
                 "accessory.bridge_failed",
@@ -147,10 +110,14 @@ async def supervise(
     health: dict[str, dict[str, Any]] = {
         name: {"restarts": 0, "last_error": None} for name in bridges
     }
-    _publish(health, status_path)
+
+    def publish() -> None:
+        _publish(health, status_path)
+
+    publish()
     tasks = [
         asyncio.create_task(
-            _run_forever(name, bridge, backoff_sec, health, status_path),
+            _run_forever(name, bridge, backoff_sec, health[name], publish),
             name=name,
         )
         for name, bridge in bridges.items()
