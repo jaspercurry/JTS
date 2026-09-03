@@ -545,19 +545,26 @@ def check_aec_bridge_running() -> CheckResult:
 #   software AEC3: "rms over 5.0s: ref=15694 mic=2077 aec=311 →
 #                   attenuation=-16.5 dB (...)"
 #   chip AEC:      "chip_aec rms over 5.0s: ref=15694 near=chip_aec_210:2077
-#                   primary=chip_aec_150:311 level_delta=-16.5 dB (...)"
+#                   primary=chip_aec_150:311 level_delta=-16.5 dB raw0=2411
+#                   (...)"
+# `raw0` is the raw mic-0 capture channel. Optional: builds before it emitted
+# only the chip-cancelled beams, and the bridge omits it for a window that
+# drained no raw0 frames.
 _AEC_RMS_RE = re.compile(
     r"rms over [\d.]+s: ref=(?P<ref>\d+) mic=(?P<mic>\d+) aec=\d+ → "
     r"attenuation=(?P<level>-?\d+\.\d+) dB"
 )
 _CHIP_AEC_RMS_RE = re.compile(
-    r"chip_aec rms over [\d.]+s: ref=(?P<ref>\d+) near=[^\s:]+:(?P<mic>\d+) "
-    r"primary=[^\s:]+:\d+ level_delta=-?\d+\.\d+ dB"
+    r"chip_aec rms over [\d.]+s: ref=(?P<ref>\d+) near=[^\s:]+:(?P<near>\d+) "
+    r"primary=[^\s:]+:\d+ level_delta=-?\d+\.\d+ dB(?: raw0=(?P<raw0>\d+))?"
 )
 
 
 class _RmsWindow(NamedTuple):
-    """`level_db` is AEC3 `attenuation` and is None on chip AEC, whose
+    """`mic` is the least-cancelled near-end level each shape offers: AEC3
+    `mic` (capture lane 1), chip `raw0` (truly-raw capture channel 2), or the
+    cancelled `near` beam when a chip line carries no `raw0`.
+    `level_db` is AEC3 `attenuation` and is None on chip AEC, whose
     `level_delta` compares two beams the chip already cancelled."""
 
     ref: int
@@ -570,7 +577,8 @@ def _parse_rms_window(line: str) -> _RmsWindow | None:
     """Parse either bridge RMS log shape into one record, else None."""
     if m := _CHIP_AEC_RMS_RE.search(line):
         return _RmsWindow(
-            ref=int(m["ref"]), mic=int(m["mic"]), level_db=None, chip=True,
+            ref=int(m["ref"]), mic=int(m["raw0"] or m["near"]),
+            level_db=None, chip=True,
         )
     if m := _AEC_RMS_RE.search(line):
         return _RmsWindow(
@@ -903,12 +911,9 @@ def _assess_aec_bridge_output(
         # mic > music-threshold = something acoustic was loud enough to
         # plausibly be music (ambient is ~600 RMS, well below). ref <
         # silent-threshold = ref path silent in this window.
-        # `ref` is the only field identical across both shapes. On chip AEC
-        # `mic` is the already-cancelled 210° beam, not the raw-ish beam this
-        # threshold was calibrated on, so this gate — and the FAIL it feeds —
-        # is less sensitive there. The chip line logs no raw near-end level
-        # to compare instead (raw mic 0 is capture channel 2, exported on its
-        # own UDP leg and never logged).
+        # The threshold carries over to chip AEC because `mic` is `raw0`
+        # there, measured at ~1.2-1.8x the cancelled beams
+        # (docs/AEC-DIAG-06-xvf-format-level-profile.md:252).
         if w.mic > _AEC_MIC_MUSIC_THRESHOLD and w.ref < _AEC_REF_SILENT_THRESHOLD:
             silent_ref_count += 1
         # "Healthy AEC work" = music-loud mic + meaningful attenuation.

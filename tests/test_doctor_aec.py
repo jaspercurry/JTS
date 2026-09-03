@@ -34,16 +34,42 @@ def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
 
 def _chip_rms_log_line(
     ref: int, near: int, primary: int, level_delta_db: float,
+    raw0: int | None = None,
 ) -> str:
     """Synthesize one `chip_aec rms over` line — the shape the bridge emits
     instead of the AEC3 one when production chip AEC is armed. Legs are the
-    fixed 150/210 ASR beams (`jasper/cli/aec_bridge.py`)."""
+    fixed 150/210 ASR beams (`jasper/cli/aec_bridge.py`). `raw0=None`
+    reproduces a journal from a build that predates the raw-mic-0 token."""
+    raw0_token = "" if raw0 is None else f" raw0={raw0}"
     return (
         f"2026-09-02 17:00:00,000 aec-bridge INFO "
         f"chip_aec rms over 5.0s: ref={ref} near=chip_aec_210:{near} "
         f"primary=chip_aec_150:{primary} "
-        f"level_delta={level_delta_db:.1f} dB (frames=1 ref_q=0 mic_q=0 "
+        f"level_delta={level_delta_db:.1f} dB{raw0_token} "
+        f"(frames=1 ref_q=0 mic_q=0 "
         f"ref_starve=0 ref_clip=0.00% out_clip=0.00%)"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw0, expected_mic",
+    [(2_900, 2_900), (None, 2_400)],
+    ids=["raw0-present", "raw0-absent-falls-back-to-near"],
+)
+def test_chip_window_mic_is_the_raw_capture_channel(raw0, expected_mic):
+    """The chip `near` beam is already cancelled, so it understates the
+    near-end level the music gate was calibrated on. `raw0` carries the
+    uncancelled capture channel and must win when the bridge emits it."""
+    w = doctor._parse_rms_window(
+        _chip_rms_log_line(
+            ref=1_200, near=2_400, primary=1_900, level_delta_db=-2.1,
+            raw0=raw0,
+        )
+    )
+
+    assert w is not None
+    assert (w.ref, w.mic, w.level_db, w.chip) == (
+        1_200, expected_mic, None, True,
     )
 
 
@@ -192,7 +218,14 @@ def test_chip_windows_never_count_as_attenuation_evidence():
 
     windows = [doctor._parse_rms_window(line) for line in journal.split("\n")]
 
-    assert all(w is not None and w.chip and w.level_db is None for w in windows)
+    assert all(
+        w is not None
+        and w.chip
+        and w.level_db is None
+        and w.ref == 1_200
+        and w.mic == 2_400
+        for w in windows
+    )
     assert doctor._assess_aec_bridge_output(journal).status == "ok"
 
 
