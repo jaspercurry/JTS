@@ -13,7 +13,11 @@ from dbus_next.errors import DBusError
 
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.bluetooth import engine as engine_module
-from jasper.bluetooth.engine import BluetoothEngine, _format_dbus_error
+from jasper.bluetooth.engine import (
+    BluetoothEngine,
+    _device_action_error,
+    _format_dbus_error,
+)
 from jasper.bluetooth.models import (
     BluetoothActionResult,
     BluetoothDevice,
@@ -1270,3 +1274,49 @@ def test_format_dbus_error_maps_known_errors_and_fallbacks(
 
 def test_format_dbus_error_preserves_non_dbus_message():
     assert _format_dbus_error(RuntimeError("plain failure")) == "plain failure"
+
+
+@pytest.mark.parametrize(
+    ("error_type", "detail", "code"),
+    [
+        (
+            "org.bluez.Error.Failed",
+            "br-connection-page-timeout",
+            "br-connection-page-timeout",
+        ),
+        ("org.bluez.Error.Failed", "br-connection-refused", "br-connection-refused"),
+        ("org.bluez.Error.Failed", "br-connection-busy", "br-connection-busy"),
+        (
+            "org.bluez.Error.AuthenticationTimeout",
+            "timed out",
+            "AuthenticationTimeout",
+        ),
+    ],
+)
+def test_device_action_error_codes(error_type: str, detail: str, code: str):
+    result = _device_action_error(DBusError(error_type, detail))
+    assert (result.ok, result.code) == (False, code)
+
+
+def test_device_action_error_unmatched_reason_has_no_code():
+    result = _device_action_error(
+        DBusError("org.bluez.Error.Failed", "unmapped-reason"),
+    )
+    assert (result.ok, result.code) == (False, None)
+
+
+async def test_connect_returns_connect_timeout_code_on_bluez_hang(monkeypatch):
+    hang = asyncio.Event()
+    engine = _engine([])
+
+    async def call_connect() -> None:
+        await hang.wait()
+
+    bus = engine._bus
+    assert isinstance(bus, _FakeBus)
+    bus.proxy.device.call_connect = call_connect
+    monkeypatch.setattr(engine_module, "CONNECT_TIMEOUT_S", 0.01)
+
+    result = await engine.connect("CA:AC:04:04:09:D7")
+
+    assert (result.ok, result.code) == (False, "connect-timeout")
