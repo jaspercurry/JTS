@@ -32,10 +32,8 @@ globalThis.clearTimeout = () => {};
 
 globalThis.__getJSON = async () => ({});
 globalThis.__postJSON = async () => ({});
-globalThis.__renderRelayQr = () => {};
 // PR-7's before/after visualization (./cloud.js) is out of scope for this
-// harness — it only pins the candidate-review gauges — so a no-op stands
-// in, same shape as the __renderRelayQr stub above.
+// harness — it only pins the candidate-review gauges — so a no-op stands in.
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
@@ -44,7 +42,7 @@ const { render } = await loadEsm(
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderRelayQr", "renderCloud", "redrawCloudChart",
+      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render"],

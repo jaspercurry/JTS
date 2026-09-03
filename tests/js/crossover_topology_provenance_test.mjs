@@ -41,7 +41,6 @@ globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 globalThis.__getJSON = async () => ({});
 globalThis.__postJSON = async () => ({});
-globalThis.__renderRelayQr = () => {};
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
@@ -50,7 +49,7 @@ const { render } = await loadEsm(
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderRelayQr", "renderCloud", "redrawCloudChart",
+      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render"],

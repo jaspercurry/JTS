@@ -296,7 +296,7 @@ source = source.replace(
     // Gauge fix (2026-07-24): orientation label mapping for the loaded-
     // calibration status line.
     orientationLabel,
-    // Mirrors exactly what startMeasurement/startRelayMeasurement do on a
+    // Mirrors exactly what startMeasurement does on a
     // successful /start (sessionId + thisTabStartedCurrentRun together),
     // without driving the full network-calling start flow — so a test can
     // simulate "this tab owns run X" for the S1 gate tests.
@@ -314,13 +314,6 @@ source = source.replace(
     setWizardActionInFlight: function (value) {
       wizardActionInFlight = !!value;
     },
-    setRelayMode,
-    renderRelayCapture,
-    setRelayConfigured: function (value) {
-      relayConfigured = !!value;
-      setRelayMode(relayMode);
-    },
-    getRelayMode: function () { return relayMode; },
     getRunTransportLocked: function () { return runTransportLocked; },
     hasPollTimer: function () { return !!pollTimer; },
     resetEnvelopeBookkeeping: function () {
@@ -363,7 +356,7 @@ const fakeDocument = {
   querySelector(selector) {
     if (selector === "main.correction-stack") {
       const main = getOrMake("correction-stack");
-      main.dataset = { captureRelayEnabled: "0", levelTrustMarginDb: "10" };
+      main.dataset = { levelTrustMarginDb: "10" };
       return main;
     }
     const match = /^\[data-envelope-section="([^"]+)"\]$/.exec(selector);
@@ -463,25 +456,11 @@ async function jtsAlert(message) {
 function escapeText(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 `;
 
-// ---- QR relay hand-off spy ----
-// deploy/assets/shared/js/qr.js (the real renderRelayQr) is tested in
-// isolation by tests/js/qr_harness.mjs — its encoder is a pure function and
-// its DOM output doesn't need re-verifying here. This harness only asserts
-// the WIRING: that renderRelayCapture calls renderRelayQr with the right
-// container and the exact href, per "assert on its input, not on pixel
-// output."
-const relayQrCalls = [];
-function spyRenderRelayQr(container, text) {
-  relayQrCalls.push({ container, text });
-}
-function resetRelayQrCalls() { relayQrCalls.length = 0; }
-function lastRelayQrCall() { return relayQrCalls[relayQrCalls.length - 1] || null; }
-
 // Evaluate using the Function constructor so DOM globals are in scope
 const runner = new Function(
   "document", "window", "fetch", "globalThis", "console",
   "setTimeout", "clearTimeout", "setInterval", "clearInterval",
-  "AudioContext", "AudioWorkletNode", "URL", "renderRelayQr",
+  "AudioContext", "AudioWorkletNode", "URL",
   `${preamble}\n${source}`,
 );
 
@@ -523,7 +502,6 @@ setFetchRoute("/envelope", () => ({
     strategy: { id: "balanced", label: "Balanced" },
     repeat_main_position: true,
     repeat_disclosure: "JTS repeats the main seat once.",
-    capture_transport: "relay",
     change_allowed: true,
   },
   curves: {}, fill_segments: [], headline: null,
@@ -546,7 +524,6 @@ runner(
   FakeAudioContext,
   FakeAudioWorkletNode,
   { createObjectURL() { return "blob:fake"; }, revokeObjectURL() {} },
-  spyRenderRelayQr,
 );
 
 const {
@@ -595,10 +572,6 @@ const {
   getTuningStatusText,
   getEnvelopeFetchCount,
   setWizardActionInFlight,
-  setRelayMode,
-  renderRelayCapture,
-  setRelayConfigured,
-  getRelayMode,
   getRunTransportLocked,
   hasPollTimer,
   resetEnvelopeBookkeeping,
@@ -998,8 +971,7 @@ function makeEnvelope(over) {
       strategy: { id: "balanced", label: "Balanced" },
       repeat_main_position: true,
       repeat_disclosure: "JTS repeats the main seat once.",
-      capture_transport: "relay",
-      change_allowed: true,
+        change_allowed: true,
     },
     curves: {},
     fill_segments: [],
@@ -1219,36 +1191,30 @@ await (async () => {
   resetEnvelopeBookkeeping();
 })();
 
-// 28b. /status is the live transport authority after /start. A reload on a
-//      relay-capable speaker must recover an active local run as local and lock
-//      the Change control against mid-run transport mutation.
+// 28b. /status is the live run authority after /start: a reload must lock the
+//      Change control against mid-run mutation of the run's own defaults.
 await (async () => {
-  setRelayMode(true);
   setFetchRoute("/status", () => ({
     session_id: "active-local-run",
     state: "needs_noise_capture",
-    capture_transport: "local",
     local_capture_setup_bound: true,
     autolevel: { status: "idle" },
   }));
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "level", state: "needs_noise_capture",
-    sections: ["capture-handoff", "placement", "level-check"],
+    sections: ["placement", "level-check"],
     next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
   }));
   await pollState();
   await settle();
-  assert(getRelayMode() === false,
-    "active local status overrides relay-configured browser default");
   assert(getRunTransportLocked() === true,
     "active status locks transport/default mutation controls");
   assert(getOrMake("change-run-defaults").disabled === true &&
       getOrMake("measurement-options").classList.contains("hidden") &&
       getOrMake("change-run-defaults").getAttribute("aria-expanded") === "false",
     "active status closes and disables the run-defaults edit control");
-  setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
+  setFetchRoute("/status", () => ({ state: "idle" }));
   setFetchRoute("/envelope", () => makeEnvelope());
-  setRelayMode(false);
   resetEnvelopeBookkeeping();
 })();
 
@@ -1267,7 +1233,6 @@ await (async () => {
   setFetchRoute("/status", () => ({
     session_id: runId,
     state: "needs_noise_capture",
-    capture_transport: "local",
     local_capture_setup_bound: false,
     autolevel: { status: "idle" },
   }));
@@ -1309,7 +1274,7 @@ await (async () => {
     Promise.reject(new Error("no media"));
   fakeWindow.navigator.mediaDevices.enumerateDevices = () => Promise.resolve([]);
   sessionStorageValues.delete("jts-room-local-capture-v1");
-  setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
+  setFetchRoute("/status", () => ({ state: "idle" }));
   setFetchRoute("/envelope", () => makeEnvelope());
   resetEnvelopeBookkeeping();
 })();
@@ -1327,7 +1292,6 @@ await (async () => {
   setFetchRoute("/status", () => ({
     session_id: runId,
     state: "needs_noise_capture",
-    capture_transport: "local",
     local_capture_setup_bound: false,
     autolevel: { status: "idle" },
   }));
@@ -1364,7 +1328,6 @@ await (async () => {
   setFetchRoute("/status", () => ({
     session_id: "other-tab-run",
     state: "needs_noise_capture",
-    capture_transport: "local",
     local_capture_setup_bound: false,
     autolevel: { status: "idle" },
   }));
@@ -1384,7 +1347,7 @@ await (async () => {
   fakeWindow.navigator.mediaDevices.getUserMedia = () =>
     Promise.reject(new Error("no media"));
   fakeWindow.navigator.mediaDevices.enumerateDevices = () => Promise.resolve([]);
-  setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
+  setFetchRoute("/status", () => ({ state: "idle" }));
   setFetchRoute("/envelope", () => makeEnvelope());
   resetEnvelopeBookkeeping();
 })();
@@ -1422,19 +1385,13 @@ await (async () => {
     "3 positions listening with warm",
   "run defaults: local choices substitute the server-owned summary template");
 
-  setRelayMode(true);
-  const relayPayload = measurementStartPayload();
-  setRelayMode(false);
-  const localPayload = measurementStartPayload();
-  assert(relayPayload.total_positions === 3 &&
-      relayPayload.target_choice === "warm" &&
-      relayPayload.strategy_choice === "balanced" &&
-      relayPayload.capture_transport === "relay" &&
-      localPayload.capture_transport === "local",
+  const payload = measurementStartPayload();
+  assert(payload.total_positions === 3 &&
+      payload.target_choice === "warm" &&
+      payload.strategy_choice === "balanced",
     "run defaults: selected choices reach Start unchanged");
-  assert(!Object.prototype.hasOwnProperty.call(relayPayload, "repeat_main_position") &&
-    !Object.prototype.hasOwnProperty.call(localPayload, "repeat_main_position"),
-  "run defaults: repeat remains server-owned for both transports");
+  assert(!Object.prototype.hasOwnProperty.call(payload, "repeat_main_position"),
+  "run defaults: repeat remains server-owned");
 }
 
 
@@ -1485,8 +1442,7 @@ await (async () => {
       strategy: { id: "balanced", label: "Balanced" },
       repeat_main_position: "true",
       repeat_disclosure: "JTS repeats the main seat once.",
-      capture_transport: "relay",
-      change_allowed: true,
+        change_allowed: true,
     } }),
     makeEnvelope({ run_defaults: {
       ...makeEnvelope().run_defaults,
@@ -1592,58 +1548,6 @@ await (async () => {
   });
 }
 
-// 29a0. The main-seat relay repeat stays single-action while the phone link is
-//       being created. Polling continues through that pre-arm window, and a
-//       terminal relay failure refreshes the envelope so one retry reappears.
-await (async () => {
-  resetEnvelopeBookkeeping();
-  resetFetchCounts();
-  setRelayMode(true);
-  let relayStatus = "awaiting_phone";
-  setFetchRoute("/status", () => ({
-    state: "needs_repeat_capture",
-    capture_transport: "relay",
-    relay: {status: relayStatus, tap_link: "https://capture.example/repeat"},
-    autolevel: {status: "idle"},
-  }));
-  setFetchRoute("/envelope", () => makeEnvelope({
-    screen: "sweep", state: "needs_repeat_capture",
-    sections: ["capture-handoff", "placement"],
-    next_action: relayStatus === "failed"
-      ? {label: "Repeat the main seat", endpoint: "/relay/capture"}
-      : null,
-  }));
-
-  renderEnvelope(makeEnvelope({
-    screen: "sweep", state: "needs_repeat_capture",
-    sections: ["capture-handoff", "placement"],
-    next_action: null,
-  }));
-  await pollState();
-  assert(hasPollTimer(),
-    "pending relay repeat keeps status polling alive before phone arm");
-  assert(wizNext().classList.contains("hidden"),
-    "pending relay repeat offers no duplicate capture action");
-
-  relayStatus = "failed";
-  await pollState();
-  await settle();
-  assert(fetchCountFor("/envelope") >= 1 &&
-      wizNext().getAttribute("data-endpoint") === "/relay/capture" &&
-      !wizNext().classList.contains("hidden"),
-    "terminal relay failure refreshes one server-owned repeat retry", {
-      envelopeFetches: fetchCountFor("/envelope"),
-      endpoint: wizNext().getAttribute("data-endpoint"),
-      hidden: wizNext().classList.contains("hidden"),
-      verdict: wizVerdict().textContent,
-    });
-
-  setRelayMode(false);
-  setFetchRoute("/status", () => ({state: "idle", capture_transport: "local"}));
-  setFetchRoute("/envelope", () => makeEnvelope());
-  resetEnvelopeBookkeeping();
-})();
-
 // 29aa. Failed measurement evidence on the review screen arrives as a WARN
 //       NUDGE, not as a failure: Apply stays live and tuning stays offered.
 //       The nanny burn-down (docs/measurement-loop-doctrine.md deviation (d))
@@ -1736,7 +1640,6 @@ await (async () => {
 // 29ab. Typed Start refusals remain visible across the immediate idle
 //       refresh; a successful retry clears them and advances the verdict.
 await (async () => {
-  setRelayMode(true);
   resetEnvelopeBookkeeping();
   renderEnvelope(makeEnvelope());
   setFetchRoute("/status", () => ({state: "idle", autolevel: {status: "idle"}}));
@@ -1765,18 +1668,15 @@ await (async () => {
     "retryable Start refusal keeps the retry action available");
 
   setFetchRoute("/start", () => ({session_id: "run-1"}));
-  setFetchRoute("/relay/level-match", () => ({
-    relay: {status: "waiting", tap_link: "https://capture.example/session"},
-  }));
   setFetchRoute("/status", () => ({
-    state: "needs_noise_capture", capture_transport: "relay",
+    state: "needs_noise_capture",
     autolevel: {status: "idle"},
   }));
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "level", state: "needs_noise_capture",
-    sections: ["capture-handoff", "placement", "level-check"],
+    sections: ["placement", "level-check"],
     verdict_text: "Check the listening level.",
-    next_action: {label: "Measure position 1", endpoint: "/relay/capture"},
+    next_action: {label: "Allow microphone", endpoint: "/local-capture/setup"},
   }));
   await onWizardNextClick();
   await settle();
@@ -1804,7 +1704,6 @@ await (async () => {
 // 29ad. A failed session gets one server-owned reset action, so reload cannot
 //       strand the household on a terminal sentence with no recovery control.
 await (async () => {
-  setRelayMode(false);
   resetFetchCounts();
   resetEnvelopeBookkeeping();
   const failed = makeEnvelope({
@@ -1857,14 +1756,14 @@ await (async () => {
   setWizardActionInFlight(true);
   renderEnvelope(makeEnvelope({
     screen: "mic", state: "needs_noise_capture",
-    sections: ["run-defaults", "capture-handoff", "placement", "capture-setup"],
+    sections: ["run-defaults", "placement", "capture-setup"],
     next_action: { label: "Allow microphone", endpoint: "/local-capture/setup" },
   }));
   assert(wizNext().classList.contains("hidden") && wizNext().disabled,
     "single-flight latch suppresses an action resurrected by active polling");
   renderEnvelope(makeEnvelope({
     screen: "level", state: "needs_noise_capture",
-    sections: ["capture-handoff", "placement", "level-check"],
+    sections: ["placement", "level-check"],
     next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
   }));
   assert(wizNext().classList.contains("hidden"),
@@ -1872,7 +1771,7 @@ await (async () => {
   setWizardActionInFlight(false);
   renderEnvelope(makeEnvelope({
     screen: "level", state: "needs_noise_capture",
-    sections: ["capture-handoff", "placement", "level-check"],
+    sections: ["placement", "level-check"],
     next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
   }));
   assert(wizNext().getAttribute("data-endpoint") === "/autolevel/start" &&
@@ -2082,7 +1981,7 @@ await (async () => {
   setIdleEnvelopeRefreshMs(30);
   setFetchRoute("/envelope", () => makeEnvelope({
     screen: "sweep", state: "sweeping",
-    sections: ["capture-handoff", "placement", "position-capture"],
+    sections: ["placement", "position-capture"],
     next_action: null,
   }));
   await refreshEnvelope();
@@ -2155,7 +2054,7 @@ await (async () => {
   setFetchRoute("/envelope", () => moved
     ? makeEnvelope({
         screen: "sweep", state: "sweeping",
-        sections: ["capture-handoff", "placement", "position-capture"],
+        sections: ["placement", "position-capture"],
         next_action: null,
       })
     : makeEnvelope());
@@ -2307,8 +2206,8 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
 //     simulation predicted — a flagged one discloses its note and still
 //     offers Apply; a target move renders as a suggestion with plain-text
 //     guidance to the flow's Target curve picker (no apply path, and no
-//     dead #target-select anchor — that picker is hidden in relay mode, so
-//     a link would silently scroll nowhere).
+//     dead #target-select anchor — that picker is hidden on the review
+//     screen, so a link would silently scroll nowhere).
 {
   renderTuningProposals([
     {
@@ -2345,7 +2244,7 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
     "tuning: the ring-flagged proposal still offers Apply");
   // The target-move card's guidance is plain text — an honest affordance,
   // NOT a dead #target-select link (that anchor no-ops on the review
-  // screen when the picker's container is hidden in relay mode).
+  // screen, where the picker's container is hidden).
   const targetCard = cards[2];
   const question = targetCard.children.find(
     (c) => c.className === "tuning-question");
@@ -2635,46 +2534,6 @@ await (async () => {
 
   assert(!resetBtn().classList.contains("hidden"),
     "button inside a hidden section: banner reset remains visible even with another host section shown");
-}
-
-// 44. renderRelayCapture wires the phone-capture QR hand-off (deploy/assets/
-//     shared/js/qr.js's renderRelayQr — encoding/DOM correctness is pinned
-//     independently by tests/js/qr_harness.mjs) into the same relay-qr
-//     container the tap link uses, passing the EXACT href — fragment
-//     included, since the capture key rides there — and clearing it
-//     whenever there is no live awaiting_phone link to encode.
-{
-  const relayQrEl = getOrMake("relay-qr");
-  const tapLink =
-    "https://capture.jasper.tech/#s=cap_test&u=upload&k=SECRETKEY&a=mac";
-
-  resetRelayQrCalls();
-  renderRelayCapture({ status: "awaiting_phone", tap_link: tapLink });
-  assert(lastRelayQrCall() && lastRelayQrCall().container === relayQrEl,
-    "an awaiting_phone relay renders the QR into the relay-qr container");
-  assert(lastRelayQrCall() && lastRelayQrCall().text === tapLink,
-    "the QR is handed the exact tap_link, fragment included",
-    { got: lastRelayQrCall() && lastRelayQrCall().text });
-
-  resetRelayQrCalls();
-  renderRelayCapture(null);
-  assert(lastRelayQrCall() && lastRelayQrCall().container === relayQrEl &&
-      lastRelayQrCall().text === null,
-    "no relay clears the QR container", { got: lastRelayQrCall() });
-
-  resetRelayQrCalls();
-  renderRelayCapture({ status: "starting" });
-  assert(lastRelayQrCall() && lastRelayQrCall().text === null,
-    "a relay without a ready tap_link (starting) shows no QR yet",
-    { got: lastRelayQrCall() });
-
-  resetRelayQrCalls();
-  renderRelayCapture({ status: "complete", tap_link: tapLink });
-  assert(lastRelayQrCall() && lastRelayQrCall().text === null,
-    "a completed relay clears the QR — the hand-off step is over",
-    { got: lastRelayQrCall() });
-
-  resetRelayQrCalls();
 }
 
 // ---- Household-mic prefill + calibration-identity honesty (issue #1656) ---
@@ -2967,9 +2826,8 @@ await (async () => {
 //     run actually bound — must never alert, even when runTransportLocked
 //     correctly flips true (a real run IS in progress) and the reported
 //     calibration genuinely differs from what this tab has selected. The
-//     same shape covers a reload mid-relay-run: thisTabStartedCurrentRun
-//     starts false either way, since a relay start is never remembered
-//     across reload the way rememberLocalCapture does for local mode.
+//     same shape covers a reload mid-run: thisTabStartedCurrentRun starts
+//     false either way.
 await (async () => {
   seedMicModelOptions("");
   seedHouseholdMicData();  // this tab's own prefill: minidsp-minidsp_umik2-...
