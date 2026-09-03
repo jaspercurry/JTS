@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.audio_profile_state import MicProbe
+from jasper import chip_aec_health
+from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli import doctor
 
 
@@ -1544,6 +1545,76 @@ def test_check_dtln_fails_when_configured_model_size_is_not_registered(
     assert "128" in r.detail
     assert "256" in r.detail
 
+# --------------------------------- Chip-AEC alignment: the record, unaltered
+# ---------------------------------------------------------------------------
+
+
+def _alignment_env(status: str, selection: str = "xvf_chip_aec") -> RuntimeAecEnv:
+    return RuntimeAecEnv(
+        chip_enabled=True,
+        chip_aec_150_device="udp:9887",
+        chip_aec_210_device="udp:9888",
+        chip_aec_alignment=chip_aec_health.AlignmentHealth(
+            status=status,
+            reason="published reason",
+            action=chip_aec_health.ACTION_RECOMMISSION,
+            selection=selection,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "status, expected_result, expects_action",
+    [
+        (chip_aec_health.STATUS_READY, "ok", False),
+        (chip_aec_health.STATUS_DISCLOSED_STALE, "warn", True),
+        (chip_aec_health.STATUS_CHECKING, "warn", True),
+        (chip_aec_health.STATUS_FAULT, "warn", True),
+        (chip_aec_health.STATUS_UNAVAILABLE, "warn", True),
+        ("", "ok", False),
+    ],
+)
+def test_chip_aec_alignment_row_follows_the_published_record(
+    status, expected_result, expects_action,
+):
+    """One row per published verdict: the record's status decides the doctor
+    result, and the operator only gets an action when it is not ready."""
+
+    result = doctor.aec._assess_chip_aec_alignment(
+        _alignment_env(status), "xvf_chip_aec",
+    )
+
+    assert result.name == "Chip-AEC alignment"
+    assert result.status == expected_result
+    assert (chip_aec_health.ACTION_RECOMMISSION in result.detail) is expects_action
+
+
+@pytest.mark.parametrize(
+    "stamp, reading_selection, owned",
+    [
+        ("xvf_chip_aec", "xvf_chip_aec", True),
+        ("xvf_chip_aec", "custom", False),
+        ("xvf_chip_aec", "xvf_software_aec3", False),
+        ("xvf_chip_aec_testing", "xvf_chip_aec", False),
+        ("", "xvf_chip_aec", True),
+        ("", "custom", False),
+    ],
+)
+def test_chip_aec_alignment_row_serves_only_the_stamped_selection(
+    stamp, reading_selection, owned,
+):
+    """A leftover record from a path the box has left is not a verdict here:
+    an operator who toggles a leg lands on `custom` and must not keep getting
+    a warning with a commission command behind it."""
+
+    result = doctor.aec._assess_chip_aec_alignment(
+        _alignment_env(chip_aec_health.STATUS_FAULT, selection=stamp),
+        reading_selection,
+    )
+
+    assert result.status == ("warn" if owned else "ok")
+    assert (chip_aec_health.ACTION_RECOMMISSION in result.detail) is owned
+
 
 # ---------------------------------------------------------------------------
 # Audio profile runtime truth — shared classifier used by /aec and doctor
@@ -1591,7 +1662,11 @@ def test_audio_profile_doctor_check_reports_active_chip_profile(monkeypatch):
     assert "Chip AEC 150 beam via :9876" in result.detail
 
 
-def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
+def test_aec_bridge_running_does_not_re_render_the_audio_profile(monkeypatch):
+    """A running bridge is one fact; which AEC it carries belongs to the
+    Audio profile / Chip-AEC alignment rows, so this check must not rebuild
+    the profile status (a mic-firmware probe) to say it."""
+
     def fake_run(cmd, **kwargs):
         if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
             return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
@@ -1599,25 +1674,18 @@ def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
             return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
         raise AssertionError(f"unexpected command: {cmd!r}")
 
+    def unexpected_status(**_kwargs):
+        raise AssertionError("the running branch must not re-render /aec")
+
     monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
     monkeypatch.setattr(doctor.aec, "_run", fake_run)
     monkeypatch.setattr(
-        doctor.aec,
-        "_audio_profile_status_for_doctor",
-        lambda *, bridge_active=None: {
-            "audio_profile": {"active": "xvf_chip_aec"},
-            "microphone": {"processing_mode": "Chip-AEC"},
-            "chip_aec_gate": {"status": "approved", "source": "static"},
-        },
+        doctor.aec, "_audio_profile_status_for_doctor", unexpected_status,
     )
 
     result = doctor.aec.check_aec_bridge_running()
 
     assert result.status == "ok"
-    assert "chip-AEC beam forwarding" in result.detail
-    assert "WebRTC AEC3 bypassed" in result.detail
-    assert "gate=approved/static" in result.detail
-    assert "software AEC enabled" not in result.detail
 
 
 def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
@@ -1724,10 +1792,9 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
 
     assert result.status == "warn"
     assert "active=none" in result.detail
-    assert "chip-AEC bridge failed after alignment reapply" in result.detail
-    assert (
-        "action=Inspect jasper-aec-bridge, then run the reconciler" in result.detail
-    )
+    # The reconciler's own reason/action belong to the Chip-AEC alignment row.
+    assert "chip-AEC bridge failed after alignment reapply" not in result.detail
+    assert "Inspect jasper-aec-bridge" not in result.detail
 
 
 def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
@@ -2023,7 +2090,6 @@ def test_check_dtln_prefers_stats_snapshot_over_journal(
 
     assert r.status == "fail"
     assert "no onnxruntime" in r.detail
-
 
 # --- Optional enhanced AEC: requested-only advisory -----------------
 

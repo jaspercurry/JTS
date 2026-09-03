@@ -644,17 +644,8 @@ def build_audio_profile_status(
         PROFILE_XVF_CHIP_AEC_TESTING,
     }
     # Serving rule for both records: jasper.chip_aec_policy's module docstring.
-    # A legacy record carries no stamp; its only writers were managed
-    # selections, so it answers for those and for no custom profile.
     alignment = runtime.chip_aec_alignment
-    alignment_selection = normalize_audio_input_profile(
-        alignment.selection, default=""
-    )
-    alignment_owned = (
-        alignment_selection == selection
-        if alignment_selection
-        else selection != PROFILE_CUSTOM
-    )
+    alignment_owned = alignment.applies_to(selection, custom_profile=PROFILE_CUSTOM)
     alignment_status = alignment.status if alignment_owned else ""
     # Absent is not "blocked": with no verdict published for this selection the
     # chip arms on the live evidence _wake_engine checks — the operator's leg

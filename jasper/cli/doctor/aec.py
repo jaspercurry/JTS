@@ -22,9 +22,12 @@ from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
 from ...audio_profile_state import (
     AecIntent,
     MicProbe,
+    PROFILE_CUSTOM,
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
+    RuntimeAecEnv,
     build_audio_profile_status,
+    infer_audio_input_profile,
     normalize_audio_input_profile,
     runtime_env_from_mapping,
     validation_profile as _audio_validation_profile,
@@ -32,6 +35,7 @@ from ...audio_profile_state import (
 from ...audio_validation import CHIP_AEC_PROFILE
 from ...audio_validation import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
 from ...audio_validation import latest_artifact_summary as _audio_validation_summary
+from ...chip_aec_health import STATUS_READY
 from ...chip_aec_policy import (
     STATUS_APPROVED,
     gate_from_runtime_env,
@@ -108,6 +112,40 @@ def _wake_leg_setting(key: str, default: bool) -> bool:
         pass
     return default
 
+def _doctor_env_file() -> dict[str, str]:
+    """Parse the reconciler-applied runtime env fresh.
+
+    The doctor is a one-shot CLI, so it reads the env file rather than
+    trusting whatever the calling shell inherited.
+    """
+
+    return _shared_parse_env_file(
+        os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
+    )
+
+
+def _doctor_aec_intent() -> AecIntent:
+    """The operator-requested AEC state, from the wizard-owned mode file."""
+
+    return AecIntent(
+        mode=_aec_mode_setting(),
+        raw_enabled=_wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
+        dtln_enabled=_wake_leg_setting("JASPER_WAKE_LEG_DTLN", False),
+        chip_aec_enabled=_wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC", False),
+        profile_selection=_aec_profile_setting(),
+    )
+
+
+def _doctor_audio_input_selection() -> str:
+    """The profile this box is on — the same resolution /aec applies."""
+
+    intent = _doctor_aec_intent()
+    return normalize_audio_input_profile(
+        intent.profile_selection,
+        default=infer_audio_input_profile(intent),
+    )
+
+
 def _chip_aec_available_for_doctor() -> bool:
     try:
         from ...mics import xvf3800
@@ -134,9 +172,7 @@ def _audio_profile_status_for_doctor(
             .stdout.strip() == "active"
         )
     if env is None:
-        env = _shared_parse_env_file(
-            os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
-        )
+        env = _doctor_env_file()
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
 
     if mic_probe is None:
@@ -175,15 +211,7 @@ def _audio_profile_status_for_doctor(
         testing_requested=testing_requested,
     )
     status = build_audio_profile_status(
-        AecIntent(
-            mode=_aec_mode_setting(),
-            raw_enabled=_wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
-            dtln_enabled=_wake_leg_setting("JASPER_WAKE_LEG_DTLN", False),
-            chip_aec_enabled=_wake_leg_setting(
-                "JASPER_WAKE_LEG_CHIP_AEC", False,
-            ),
-            profile_selection=profile_selection,
-        ),
+        _doctor_aec_intent(),
         runtime,
         mic_probe,
         bridge_active=bridge_active,
@@ -220,10 +248,6 @@ def _assess_audio_profile(status: dict) -> CheckResult:
         )
     if warnings:
         detail += "; " + " ".join(str(w) for w in warnings)
-    if profile.get("reason"):
-        detail += f"; reason={profile['reason']}"
-    if profile.get("action"):
-        detail += f"; action={profile['action']}"
 
     if state in {"active", "disabled"} and not warnings:
         result = "ok"
@@ -242,6 +266,69 @@ def check_audio_profile_runtime() -> CheckResult:
         )
 
     return _assess_audio_profile(_audio_profile_status_for_doctor())
+
+
+def _assess_chip_aec_alignment(
+    runtime: RuntimeAecEnv, selection: str,
+) -> CheckResult:
+    """Render the published chip-AEC alignment record as one doctor row.
+
+    `jasper.chip_aec_health` judges the record and `AlignmentHealth.
+    applies_to` says which selection it answers for; this only reports what
+    they say. An absent or unowned record is not a fault: on `custom` the
+    chip arms on the live evidence `_wake_engine` checks, and on a managed
+    selection the profile stays pending until the reconciler publishes one.
+
+    Severity mirrors what the Audio profile row already gave these states:
+    ready is ok and every other status warns.
+    """
+
+    health = runtime.chip_aec_alignment
+    if not health.status or not health.applies_to(
+        selection, custom_profile=PROFILE_CUSTOM,
+    ):
+        return CheckResult(
+            "Chip-AEC alignment", "ok",
+            f"no alignment verdict published for {selection or 'this profile'}",
+        )
+
+    legs = [
+        name
+        for name, device in (
+            ("chip_aec_150", runtime.chip_aec_150_device),
+            ("chip_aec_210", runtime.chip_aec_210_device),
+        )
+        if device
+    ]
+    detail = (
+        f"state={health.status}, "
+        f"selection={health.selection or 'unstamped'}, "
+        f"armed={'+'.join(legs) if runtime.chip_enabled and legs else 'none'}"
+    )
+    if health.reason:
+        detail += f"; {health.reason}"
+    if health.status != STATUS_READY and health.action:
+        detail += f"; action={health.action}"
+    return CheckResult(
+        "Chip-AEC alignment",
+        "ok" if health.status == STATUS_READY else "warn",
+        detail,
+    )
+
+
+@doctor_check(order=45.5, group="aec")
+def check_chip_aec_alignment() -> CheckResult:
+    """Report the reconciler's chip-AEC alignment verdict, unaltered."""
+    if _parked_as_bonded_follower():
+        return CheckResult(
+            "Chip-AEC alignment", "ok",
+            "parked (bonded follower) — the dumb-follower profile stops "
+            "voice + the AEC stack while paired; the leader owns the mic",
+        )
+    return _assess_chip_aec_alignment(
+        runtime_env_from_mapping(_doctor_env_file(), process_env=os.environ),
+        _doctor_audio_input_selection(),
+    )
 
 
 def _assess_enhanced_aec_status(payload: dict) -> CheckResult:
@@ -412,44 +499,12 @@ def check_audio_validation_readiness() -> CheckResult:
     )
     validation_filters = _audio_validation_filter_kwargs(
         requested_profile=requested_profile,
-        system_env=_shared_parse_env_file(
-            os.environ.get("JASPER_ENV_FILE", "/etc/jasper/jasper.env"),
-        ),
+        system_env=_doctor_env_file(),
     )
     return _assess_audio_validation_summary(
         _audio_validation_summary(**validation_filters),
         requested_profile=requested_profile,
     )
-
-def _running_aec_bridge_detail() -> str:
-    try:
-        status = _audio_profile_status_for_doctor(bridge_active=True)
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return "running (audio profile unavailable)"
-
-    profile = status.get("audio_profile") or {}
-    mic = status.get("microphone") or {}
-    active_profile = normalize_audio_input_profile(
-        str(profile.get("active") or ""),
-        default="",
-    )
-    processing_mode = str(mic.get("processing_mode") or "")
-    if (
-        active_profile in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
-        or "Chip-AEC" in processing_mode
-    ):
-        gate = status.get("chip_aec_gate")
-        gate_detail = ""
-        if isinstance(gate, dict):
-            gate_status = str(gate.get("status") or "unknown")
-            gate_source = str(gate.get("source") or "unknown")
-            gate_detail = f"; gate={gate_status}/{gate_source}"
-        return (
-            "running (chip-AEC beam forwarding; WebRTC AEC3 bypassed"
-            f"{gate_detail})"
-        )
-
-    return "running (software AEC3 enabled)"
 
 def _dfu_flash_remedy() -> str:
     """`xvf3800.dfu_flash_command` owns the command text so no hint drifts from it."""
@@ -484,7 +539,9 @@ def check_aec_bridge_running() -> CheckResult:
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
 
     if is_active == "active":
-        return CheckResult("AEC bridge service", "ok", _running_aec_bridge_detail())
+        # Which AEC the running bridge carries is the Audio profile row's
+        # fact, and its alignment is the Chip-AEC alignment row's.
+        return CheckResult("AEC bridge service", "ok", "running")
 
     # The commissioner stops the whole AEC stack for its audible measurement
     # (minutes) and its live marker parks every reconcile, so a down bridge is
@@ -533,7 +590,7 @@ def check_aec_bridge_running() -> CheckResult:
     # The ready marker separates the two (ADR-0224): PID 1 refuses to even
     # start the unit while it is absent, so a missing verdict is a reconciler
     # problem and a present one is a bridge problem. The alignment disclosure
-    # itself reaches the operator through check_audio_profile_runtime, which
+    # itself reaches the operator through check_chip_aec_alignment, which
     # carries the reconciler's reason/action verbatim in every state.
     ready = read_aec_bridge_ready()
     if ready.ready:
@@ -624,7 +681,10 @@ _BRIDGE_STATS_FRESH_SEC = 30.0
 # UDP send success is not delivery proof, so only the bridge's successful
 # conversion + bounded-queue enqueue advances this signal.
 _AEC_REFERENCE_INPUT_STATS_SCHEMA_VERSION = 4
+# A bridge younger than this has not necessarily bound its receiver yet.
 _AEC_REFERENCE_INPUT_STARTUP_GRACE_SEC = 10.0
+# outputd publishes a 20 ms reference frame continuously, so a gap this long
+# past the grace is a stopped receiver, not a lull.
 _AEC_REFERENCE_INPUT_STALE_SEC = 5.0
 
 

@@ -138,6 +138,31 @@ class AlignmentHealth:
             for key, value in self.to_env().items()
         )
 
+    def applies_to(self, selection: str, *, custom_profile: str) -> bool:
+        """Whether this record answers for `selection`.
+
+        `jasper.chip_aec_policy`'s module docstring is the serving rule: the
+        record is stamped with the selection it was written under and serves
+        ONLY that one.  The reconciler writes it on managed-XVF paths alone
+        and never clears it, so a record read under any other selection is a
+        leftover — an operator who toggles a leg lands on the custom profile
+        and must not keep reading the chip-AEC path's verdict.  A legacy
+        record carries no stamp; its only writers were managed selections, so
+        it answers for those and for no custom profile.
+
+        Both ids are compared as written: `selection` is the caller's already
+        normalized profile id, and the stamp is normalized by its writer —
+        `deploy/bin/jasper-aec-reconcile` resolves the profile through
+        `jasper.cli.audio_input_profile` before stamping it.  The profile
+        vocabulary itself belongs to `jasper.audio_profile_state`, which
+        consumes this module, so `custom_profile` is passed in rather than
+        imported back.
+        """
+
+        return self.selection == selection if self.selection else (
+            selection != custom_profile
+        )
+
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> AlignmentHealth:
         """Read a published record back, leniently.
