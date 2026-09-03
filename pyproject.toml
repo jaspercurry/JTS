@@ -347,6 +347,15 @@ module = ["dbus_next", "dbus_next.*"]
 follow_imports = "skip"
 
 [[tool.mypy.overrides]]
+# The importable jasper_aec3 package is the pybind11 build's install
+# artifact; the repo path of the same name is that build's project
+# directory, which mypy resolves first and which exposes none of the
+# package's names. Treat it as an untyped boundary rather than annotating
+# around a resolution artifact.
+module = ["jasper_aec3"]
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
 # Day-one baseline generated on 2026-06-19 with mypy 2.1.0. Keep this broad
 # but explicit so clean modules are checked now, and tighten by removing
 # entries as local type fixes land.
