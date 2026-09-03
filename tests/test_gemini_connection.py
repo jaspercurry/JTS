@@ -22,6 +22,7 @@ Coverage matches the handoff doc's "How to actually test this" list:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -1159,3 +1160,109 @@ async def test_tool_round_metadata_captures_tool_name_without_args_or_payload():
         await turn.release()
     finally:
         await conn.stop()
+
+
+# ---------------------------------------------------------------------------
+# Reconnect nudge (issue #3855). Gemini's wait is its own implementation,
+# so the OpenAI pins do not cover it.
+# ---------------------------------------------------------------------------
+
+
+class _TerminalRejection(Exception):
+    status_code = 403
+
+    def __str__(self) -> str:
+        return "403 Forbidden: account has no credits"
+
+
+class _SlowThenDeadConnect:
+    """A connect that hangs on the first attempt, then always fails.
+
+    The hang is the window the household's wake actually lands in: a TCP
+    or TLS connect to a dead provider takes tens of seconds, and
+    `is_paused()` is true for all of it."""
+
+    def __init__(self, connecting: asyncio.Event, release: asyncio.Event):
+        self.calls = 0
+        self._connecting = connecting
+        self._release = release
+
+    async def __aenter__(self):
+        self.calls += 1
+        if self.calls == 1:
+            self._connecting.set()
+            await self._release.wait()
+        raise _TerminalRejection()
+
+    async def __aexit__(self, *exc):
+        return None
+
+
+async def test_reconnect_nudge_needs_a_paused_connection_and_is_gated():
+    conn, _factory = _make_conn()
+    # Nothing is waiting, so there is nothing to cut short.
+    assert conn.request_reconnect_now() is False
+    conn._state = ConnectionState.PAUSED_FOR_BACKOFF
+    assert conn.request_reconnect_now() is True
+    # Repeated wakes must not retry the provider faster than an
+    # ordinary blip already does.
+    assert conn.request_reconnect_now() is False
+
+
+async def test_wake_during_a_connect_attempt_cuts_the_next_wait_short():
+    """`request_reconnect_now` must land wherever `is_paused()` is true.
+
+    A bare `sleep(900)` cannot be shortened, so without an interruptible
+    wait a household whose credit is restored waits out the interval;
+    and a nudge accepted during the connect attempt itself must not be
+    dropped before the next wait sees it.
+    """
+    from jasper.backoff import (
+        RECONNECT_BACKOFF_JITTER_FRACTION,
+        TERMINAL_POLL_INTERVAL_SEC,
+    )
+
+    delays: list[float] = []
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) == 1:
+            return  # the seeded ramp delay
+        # Every terminal poll: nothing but a nudge can end this wait.
+        await asyncio.sleep(3600)
+
+    connect = _SlowThenDeadConnect(connecting, release)
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        backoff_schedule=None,
+        connect_factory=lambda *, model, config: connect,
+        sleep=_sleep,
+    )
+    task = asyncio.ensure_future(conn._reconnect_with_backoff())
+    try:
+        await asyncio.wait_for(connecting.wait(), timeout=5.0)
+        assert conn.is_paused()
+        assert conn.request_reconnect_now() is True
+        assert conn.request_reconnect_now() is False
+        release.set()
+        await _wait_until(lambda: len(delays) == 3, timeout=5.0)
+        lo = TERMINAL_POLL_INTERVAL_SEC * (
+            1.0 - RECONNECT_BACKOFF_JITTER_FRACTION
+        )
+        hi = TERMINAL_POLL_INTERVAL_SEC * (
+            1.0 + RECONNECT_BACKOFF_JITTER_FRACTION
+        )
+        assert lo <= delays[1] <= hi, delays
+        # One nudge buys exactly one extra attempt: the loop is parked
+        # on the next poll, not spinning through the schedule.
+        await asyncio.sleep(0.05)
+        assert len(delays) == 3, delays
+        assert connect.calls == 2
+        assert not task.done()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

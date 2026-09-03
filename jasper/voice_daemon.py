@@ -1331,6 +1331,9 @@ class WakeLoop:
             def wake_cue(self) -> str:
                 return "cant_connect"
 
+            def request_reconnect_now(self) -> bool:
+                return False
+
             def supports_server_vad(self) -> bool:
                 return False
 
@@ -3824,7 +3827,10 @@ class WakeLoop:
                 )
                 await self._telemetry_stage("gate_blocked")
                 await self._telemetry_outcome("gate_blocked", "connection_paused")
+                # The cue comes first: it is the household's answer, and
+                # nothing after it may be allowed to swallow it.
                 await self._play_cue(self._connection.wake_cue())
+                self._connection.request_reconnect_now()
                 return
 
             await self._begin_turn(
@@ -4599,6 +4605,7 @@ class WakeLoop:
         if not self._spend_cap.allowed():
             return "CAP"
         if self._connection.is_paused():
+            self._connection.request_reconnect_now()
             return "PAUSED"
         if source:
             self._active_manual_source = source

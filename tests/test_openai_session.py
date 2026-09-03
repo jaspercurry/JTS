@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 
@@ -2713,3 +2714,237 @@ async def test_no_activity_meter_by_default_is_safe():
     registry = ToolRegistry()
     await conn.start(registry, "")
     await conn.stop()  # must not raise with no meter set
+
+
+# ---------------------------------------------------------------------------
+# Post-connect reconnect cadence (issue #3855).
+# ---------------------------------------------------------------------------
+
+
+async def _reconnect_delays(exc, count: int = 4):
+    """Drive the PRODUCTION (unbounded) reconnect loop against a connect
+    factory that always raises.
+
+    ``exc`` is one exception raised on every attempt, or a list raised
+    in order with the last one repeating. Returns the connection and the
+    delays the loop actually slept for. ``backoff_schedule=None`` is the
+    production wiring — the bounded test schedule other tests pass would
+    mask the classification.
+    """
+    excs = list(exc) if isinstance(exc, list) else [exc]
+    delays: list[float] = []
+    holder: dict = {"raised": 0}
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) >= count:
+            holder["conn"]._stopping.set()
+
+    def _factory(*, model: str):
+        i = min(holder["raised"], len(excs) - 1)
+        holder["raised"] += 1
+        raise excs[i]
+
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        backoff_schedule=None,
+        connect_factory=_factory,
+        sleep=_sleep,
+    )
+    holder["conn"] = conn
+    # The loop is unbounded and only exits because `_sleep` sets the
+    # stopping flag; a change that stopped reaching that await would
+    # otherwise spin to the 300 s global timeout.
+    await asyncio.wait_for(conn._reconnect_with_backoff(), timeout=10.0)
+    return conn, delays
+
+
+def _terminal_poll_band() -> tuple[float, float]:
+    """The jittered slow-poll interval's lower and upper bound."""
+    from jasper.backoff import (
+        RECONNECT_BACKOFF_JITTER_FRACTION,
+        TERMINAL_POLL_INTERVAL_SEC,
+    )
+
+    return (
+        TERMINAL_POLL_INTERVAL_SEC * (1.0 - RECONNECT_BACKOFF_JITTER_FRACTION),
+        TERMINAL_POLL_INTERVAL_SEC * (1.0 + RECONNECT_BACKOFF_JITTER_FRACTION),
+    )
+
+
+class _TerminalRejection(Exception):
+    status_code = 403
+
+    def __str__(self) -> str:
+        return "403 Forbidden: account has no credits"
+
+
+class _TransientRejection(Exception):
+    status_code = 500
+
+    def __str__(self) -> str:
+        return "500 Internal Server Error"
+
+
+async def test_terminal_reconnect_failure_drops_to_slow_poll():
+    """A rejection retrying cannot fix must stop hammering the cap.
+
+    Everything after the first (still-unclassified) delay must be the
+    fixed slow poll. See issue #3855.
+    """
+    conn, delays = await _reconnect_delays(_TerminalRejection())
+    assert len(delays) == 4
+    lo, hi = _terminal_poll_band()
+    assert all(lo <= d <= hi for d in delays[1:]), delays
+    # A slow poll, never a park: the loop is still retrying, so an
+    # operator who restores the key recovers without a restart.
+    assert conn._state is ConnectionState.PAUSED_FOR_BACKOFF
+    # The cause survives the whole poll, so /state and the wake cue can
+    # still name the remedy however long the outage lasts.
+    assert conn.last_failure_detail() is not None
+
+
+async def test_transient_reconnect_failure_keeps_exponential_backoff():
+    """A network blip keeps the ramp; only a terminal failure polls.
+
+    The schedule's own shape is pinned in `test_reconnect_backoff.py`;
+    what this owns is which of the two the loop picked.
+    """
+    from jasper.backoff import RECONNECT_MAX_BACKOFF_SEC
+
+    # OSError carries no status, so `is_transient` returns True.
+    _conn, delays = await _reconnect_delays(
+        OSError(-3, "Temporary failure in name resolution"), count=6,
+    )
+    assert all(d <= RECONNECT_MAX_BACKOFF_SEC * 1.25 for d in delays), delays
+    assert delays[0] < delays[-1], delays
+
+
+async def test_recovering_provider_leaves_the_slow_poll_and_restarts_the_ramp():
+    """A terminal outage that turns transient is recovering: retry it in
+    about a second, not from wherever the slow poll left the counter."""
+    from jasper.backoff import (
+        RECONNECT_BACKOFF_JITTER_FRACTION,
+        RECONNECT_INITIAL_BACKOFF_SEC,
+    )
+
+    conn, delays = await _reconnect_delays(
+        [_TerminalRejection()] * 3 + [_TransientRejection()], count=6,
+    )
+    lo, hi = _terminal_poll_band()
+    assert all(lo <= d <= hi for d in delays[1:4]), delays
+    hi_1s = RECONNECT_INITIAL_BACKOFF_SEC * (
+        1.0 + RECONNECT_BACKOFF_JITTER_FRACTION
+    )
+    assert delays[4] <= hi_1s, delays
+    assert delays[5] <= hi_1s * 2, delays
+
+
+class _SlowThenDeadConnect:
+    """A connect that hangs on the first attempt, then always fails.
+
+    The hang is the window the household's wake actually lands in: a TCP
+    or TLS connect to a dead provider takes tens of seconds, and
+    `is_paused()` is true for all of it."""
+
+    def __init__(self, connecting: asyncio.Event, release: asyncio.Event):
+        self.calls = 0
+        self._connecting = connecting
+        self._release = release
+
+    async def __aenter__(self):
+        self.calls += 1
+        if self.calls == 1:
+            self._connecting.set()
+            await self._release.wait()
+        raise _TerminalRejection()
+
+    async def __aexit__(self, *exc):
+        return None
+
+
+async def test_wake_during_a_connect_attempt_cuts_the_next_wait_short():
+    """`request_reconnect_now` must land wherever `is_paused()` is true.
+
+    A bare `sleep(900)` cannot be shortened, so without an interruptible
+    wait a household whose credit is restored waits out the interval;
+    and a nudge accepted during the connect attempt itself must not be
+    dropped before the next wait sees it. See issue #3855.
+    """
+    delays: list[float] = []
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) == 1:
+            return  # the seeded ramp delay
+        # Every terminal poll: nothing but a nudge can end this wait.
+        await asyncio.sleep(3600)
+
+    connect = _SlowThenDeadConnect(connecting, release)
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        backoff_schedule=None,
+        connect_factory=lambda *, model: connect,
+        sleep=_sleep,
+    )
+    task = asyncio.ensure_future(conn._reconnect_with_backoff())
+    try:
+        await asyncio.wait_for(connecting.wait(), timeout=5.0)
+        assert conn.is_paused()
+        assert conn.request_reconnect_now() is True
+        # The gate cannot be bypassed by asking again.
+        assert conn.request_reconnect_now() is False
+        release.set()
+        await _wait_until(lambda: len(delays) == 3, timeout=5.0)
+        lo, hi = _terminal_poll_band()
+        assert lo <= delays[1] <= hi, delays
+        # One nudge buys exactly one extra attempt: the loop is parked
+        # on the next poll, not spinning through the schedule.
+        await asyncio.sleep(0.05)
+        assert len(delays) == 3, delays
+        assert connect.calls == 2
+        assert not task.done()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_cancelling_a_long_backoff_unwinds_at_once():
+    """Shutdown must not be held hostage by a 15-minute poll.
+
+    `stop()` cancels the supervisor task and the cancellation unwinds
+    through the backoff wait. A wait that swallowed it would leave the
+    daemon sitting out the poll it was told to abandon.
+    """
+    started = asyncio.Event()
+    holder: dict = {}
+
+    def _dead(*, model: str):
+        raise _TerminalRejection()
+
+    async def _sleep(seconds: float) -> None:
+        if started.is_set():
+            # Only reached if the cancellation was swallowed. End the
+            # loop so the assertion below reports it instead of hanging.
+            holder["conn"]._stopping.set()
+            return
+        started.set()
+        await asyncio.sleep(seconds)
+
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        backoff_schedule=None,
+        connect_factory=_dead,
+        sleep=_sleep,
+    )
+    holder["conn"] = conn
+    task = asyncio.ensure_future(conn._reconnect_with_backoff())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+    assert task.cancelled()
+
