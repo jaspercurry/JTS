@@ -4,12 +4,6 @@
 
 """AEC bridge telemetry — the UDP leg emitters and the bridge stats file.
 
-One owner for both halves of the same contract: every leg packet leaves
-through `LegEmitter`, and the counters those sends are reconciled against
-(`packets_sent_by_leg`, `udp_send_drops_by_leg`, queue drops, reference-input
-health) land in `BRIDGE_STATS_PATH` via `_BridgeStats`. `jasper.wake_corpus`
-snapshots that file around each clip; jasper-doctor reads `leg_engines`.
-
 Imports run one way only: nothing here reads `jasper.cli.aec_bridge`. The
 capture geometry and reference endpoint the snapshot republishes belong to
 the bridge, so they arrive as a `StatsIdentity`, and each emitter carries the
@@ -35,8 +29,8 @@ from jasper.usb_mic import (
     USB_MIC_PACKET_VERSION,
 )
 
-# Shared with the bridge itself: one logger name keeps journald lines from
-# this split identical to the ones operators and log tooling already read.
+# The bridge's own logger name: these lines reach journald beside the rest of
+# jasper-aec-bridge's output, where log tooling already looks for them.
 logger = logging.getLogger("jasper.aec_bridge")
 
 # Voice consumes 1280-sample (80 ms) chunks. Aggregating four 320-sample AEC
@@ -53,9 +47,8 @@ BRIDGE_STATS_SCHEMA_VERSION = 4
 class StatsIdentity:
     """Static bridge values the snapshot republishes.
 
-    Passed in rather than imported so this module stays a leaf of
-    `jasper.cli.aec_bridge`; `reset` overrides the reference pair once the
-    bridge has resolved its live configuration.
+    `reset` overrides the reference pair once the bridge has resolved its
+    live configuration.
     """
 
     sample_rate_hz: int

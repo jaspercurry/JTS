@@ -42,7 +42,6 @@ from jasper.cli.aec_bridge import (
     BridgeStalled,
     FRAME_SAMPLES,
     MicDeviceUnavailable,
-    OUT_FRAME_BYTES,
     OUT_HOST,
     OUT_PORT,
     OUT_PORT_RAW,
@@ -50,6 +49,7 @@ from jasper.cli.aec_bridge import (
     _shutdown,
     _validate_mic_device,
 )
+from jasper.cli.aec_bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
 
 
 class _AlwaysEmptyQ:
@@ -124,49 +124,12 @@ def _reset_shutdown_and_stub_sd(monkeypatch):
     aec_bridge._bridge_stats.reset()
 
 
-def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
-    path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
-    stats.inc("frames_processed", 3)
-    stats.inc_nested("queue_drops", "mic", 2)
-    stats.inc_nested("packets_sent_by_leg", "on", 1)
-
-    stats.write_snapshot(path)
-
-    import json
-    data = json.loads(path.read_text())
-    assert (
-        data["schema_version"]
-        == aec_bridge_telemetry.BRIDGE_STATS_SCHEMA_VERSION
-    )
-    assert data["pid"] > 0
-    assert data["counters"]["frames_processed"] == 3
-    assert data["counters"]["queue_drops"]["mic"] == 2
-    assert data["counters"]["packets_sent_by_leg"]["on"] == 1
-
-
-def test_bridge_stats_snapshot_carries_negotiated_capture_geometry() -> None:
-    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
-    stats.set_capture_stream(
-        sample_rate_hz=16_000,
-        block_frames=320,
-        input_latency_seconds=0.08,
-    )
-
-    assert stats.snapshot()["capture_stream"] == {
-        "sample_rate_hz": 16_000,
-        "block_frames": 320,
-        "input_latency_seconds": 0.08,
-        "input_latency_frames": 1280,
-    }
-
-
 def test_bridge_stats_reference_input_is_null_before_first_frame(
     monkeypatch,
 ) -> None:
     clock = SimpleNamespace(now=100.0)
     monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
-    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
+    stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
     stats.reset(
         reference_source="outputd_udp",
         reference_endpoint="127.0.0.1:9891",
@@ -238,7 +201,7 @@ def test_bridge_stats_reference_input_age_advances_and_new_input_resets(
 
 
 def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
-    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
+    stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
     snapshot = stats.snapshot()
 
     assert snapshot["schema_version"] == 4
@@ -1325,6 +1288,18 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     usb_engine.close.assert_called_once()
 
 
+def test_loop_emitters_count_into_the_process_bridge_stats() -> None:
+    """The emitters the loop builds feed the singleton the stats writer and
+    the wake-corpus recorder read — the one link the telemetry split moved."""
+    emitters: dict[str, aec_bridge_telemetry.LegEmitter] = {}
+    emitter = aec_bridge._add_loop_emitter(
+        emitters, aec_bridge.BridgeConfig.from_env(), "on", 9876,
+    )
+
+    assert emitter.stats is aec_bridge._bridge_stats
+    emitter.close()
+
+
 def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     """Every configured software/corpus leg uses the shared packet emitter.
 
@@ -1413,146 +1388,6 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
         "usb_dtln",
         "on",
     ]
-
-
-def test_usb_host_mic_emitter_prepends_v2_header(monkeypatch):
-    from jasper.usb_mic import (
-        USB_MIC_HEADER_BYTES,
-        USB_MIC_HEADER_STRUCT,
-        USB_MIC_PACKET_MAGIC,
-        USB_MIC_PACKET_VERSION,
-    )
-
-    usb_sock = MagicMock()
-    usb = aec_bridge.TimestampedLegEmitter(
-        usb_sock,
-        (OUT_HOST, 9894),
-        bytearray(),
-        "usb_host_mic",
-        aec_bridge._bridge_stats,
-        frame_samples=FRAME_SAMPLES,
-    )
-    timestamps = iter((1_000_000_000, 1_020_000_000))
-    clock_ids = []
-
-    def clock_gettime_ns(clock_id):
-        clock_ids.append(clock_id)
-        return next(timestamps)
-
-    monkeypatch.setattr(
-        aec_bridge.time,
-        "clock_gettime_ns",
-        clock_gettime_ns,
-    )
-    frames = (
-        b"\x11\x22" * FRAME_SAMPLES,
-        b"\x33\x44" * FRAME_SAMPLES,
-    )
-
-    for frame in frames:
-        usb.emit(frame)
-
-    assert usb_sock.sendto.call_count == 2
-    assert USB_MIC_HEADER_BYTES == 16
-    assert clock_ids == [aec_bridge.time.CLOCK_MONOTONIC] * 2
-    for seq, (call, frame, timestamp) in enumerate(zip(
-        usb_sock.sendto.call_args_list,
-        frames,
-        (1_000_000_000, 1_020_000_000),
-        strict=True,
-    )):
-        packet = call.args[0]
-        assert len(packet) == 656
-        assert struct.unpack(
-            USB_MIC_HEADER_STRUCT,
-            packet[:USB_MIC_HEADER_BYTES],
-        ) == (
-            USB_MIC_PACKET_MAGIC,
-            USB_MIC_PACKET_VERSION,
-            0,
-            seq,
-            timestamp,
-        )
-        assert packet[USB_MIC_HEADER_BYTES:] == frame
-        assert call.args[1] == (OUT_HOST, 9894)
-
-
-def test_usb_host_mic_sequence_wraps_u32(monkeypatch):
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
-
-    sock = MagicMock()
-    emitter = aec_bridge.TimestampedLegEmitter(
-        sock,
-        (OUT_HOST, 9894),
-        bytearray(),
-        "usb_host_mic",
-        aec_bridge._bridge_stats,
-        frame_samples=FRAME_SAMPLES,
-    )
-    emitter._seq = 0xFFFFFFFF
-    monkeypatch.setattr(aec_bridge.time, "clock_gettime_ns", lambda _clock: 1)
-
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-
-    sequences = [
-        struct.unpack(
-            USB_MIC_HEADER_STRUCT,
-            call.args[0][:USB_MIC_HEADER_BYTES],
-        )[3]
-        for call in sock.sendto.call_args_list
-    ]
-    assert sequences == [0xFFFFFFFF, 0]
-
-
-def test_usb_host_mic_sequence_exposes_sender_drop(monkeypatch):
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
-
-    sock = MagicMock()
-    sock.sendto.side_effect = (BlockingIOError("full"), None)
-    emitter = aec_bridge.TimestampedLegEmitter(
-        sock,
-        (OUT_HOST, 9894),
-        bytearray(),
-        "usb_host_mic",
-        aec_bridge._bridge_stats,
-        frame_samples=FRAME_SAMPLES,
-    )
-    monkeypatch.setattr(
-        aec_bridge.time,
-        "clock_gettime_ns",
-        MagicMock(side_effect=(1, 2)),
-    )
-
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-    emitter.emit(bytes(FRAME_SAMPLES * 2))
-
-    second_packet = sock.sendto.call_args_list[1].args[0]
-    second_header = struct.unpack(
-        USB_MIC_HEADER_STRUCT,
-        second_packet[:USB_MIC_HEADER_BYTES],
-    )
-    assert second_header[3] == 1
-    counters = aec_bridge._bridge_stats.snapshot()["counters"]
-    assert counters["udp_send_drops_by_leg"]["usb_host_mic"] == 1
-    assert counters["packets_sent_by_leg"]["usb_host_mic"] == 1
-
-
-@pytest.mark.parametrize("leg", ["on", "off", "raw0"])
-def test_wake_legs_wire_format_unchanged(leg: str):
-    sock = MagicMock()
-    emitter = aec_bridge.LegEmitter(
-        sock,
-        (OUT_HOST, OUT_PORT),
-        bytearray(),
-        leg,
-        aec_bridge._bridge_stats,
-    )
-    pcm = b"\x12\x34" * aec_bridge.OUT_FRAME_SAMPLES
-
-    emitter.emit(pcm)
-
-    sock.sendto.assert_called_once_with(pcm, (OUT_HOST, OUT_PORT))
 
 
 def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
@@ -2197,86 +2032,3 @@ def test_starvation_watchdog_disabled_when_max_windows_zero():
     wd = aec_bridge._MicStarvationWatchdog(max_starved_windows=0)
     for step in range(1000):
         assert not wd.stalled(step * 1.0)   # no frames ever, still never trips
-
-
-def test_bridge_stats_snapshot_carries_leg_engine_status(tmp_path):
-    """leg_engines is the journal-independent surface jasper-doctor's
-    check_aec_bridge_dtln_engine reads to catch a silent DTLN load
-    failure (bridge degrades to AEC3-only while voice keeps listening
-    on the unfed :9878 leg)."""
-    path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
-    stats.set_leg_engine("dtln", enabled=True, loaded=False, error="no onnx")
-
-    stats.write_snapshot(path)
-
-    import json
-    data = json.loads(path.read_text())
-    assert data["leg_engines"]["dtln"] == {
-        "enabled": True,
-        "loaded": False,
-        "error": "no onnx",
-    }
-
-    stats.set_leg_engine("dtln", enabled=True, loaded=True)
-    stats.write_snapshot(path)
-    data = json.loads(path.read_text())
-    assert data["leg_engines"]["dtln"]["loaded"] is True
-    assert data["leg_engines"]["dtln"]["error"] is None
-
-    # reset() (bridge restart) clears the leg status with the counters.
-    stats.reset()
-    stats.write_snapshot(path)
-    assert json.loads(path.read_text())["leg_engines"] == {}
-
-
-def test_bridge_stats_snapshot_carries_active_capture_plan(tmp_path):
-    path = tmp_path / "aec_bridge_stats.json"
-    stats = aec_bridge._BridgeStats(aec_bridge._STATS_IDENTITY)
-    stats.set_active_capture_plan(
-        wake_corpus_plan_id="plan-123",
-        expected_legs=("chip_aec_150", "chip_aec_210", "raw0"),
-        emitted_legs=["chip_aec_150", "chip_aec_210", "raw0"],
-        corpus_flags={"chip_aec": True, "ref": True},
-        beam_plan={
-            "plan_id": "xvf_square_fixed_150_210",
-            "primary_leg": "chip_aec_150",
-            "emitted_chip_legs": ["chip_aec_150", "chip_aec_210"],
-        },
-        ports={"chip_aec_150": 9887, "chip_aec_210": 9888, "raw0": 9879},
-        mic_reference_identity={
-            "mic_device": "Array",
-            "ref_source": "outputd_udp",
-        },
-        usb_mic_source={
-            "selection": "primary",
-            "mode": "chip_aec",
-            "leg": "chip_aec_150",
-        },
-        mic_fingerprint="mic-a",
-        dac_reference_fingerprint="dac-a",
-    )
-
-    stats.write_snapshot(path)
-
-    data = json.loads(path.read_text())
-    assert (
-        data["schema_version"]
-        == aec_bridge_telemetry.BRIDGE_STATS_SCHEMA_VERSION
-    )
-    assert data["wake_corpus_plan_id"] == "plan-123"
-    assert data["emitted_legs"] == ["chip_aec_150", "chip_aec_210", "raw0"]
-    active = data["active_capture_plan"]
-    assert active["wake_corpus_plan_id"] == "plan-123"
-    assert active["enabled_corpus_flags"]["chip_aec"] is True
-    assert active["beam_plan"]["emitted_chip_legs"] == [
-        "chip_aec_150", "chip_aec_210",
-    ]
-    assert active["usb_mic_source"] == {
-        "selection": "primary",
-        "mode": "chip_aec",
-        "leg": "chip_aec_150",
-    }
-    assert active["ports"]["chip_aec_210"] == 9888
-    assert active["mic_fingerprint"] == "mic-a"
-    assert active["dac_reference_fingerprint"] == "dac-a"

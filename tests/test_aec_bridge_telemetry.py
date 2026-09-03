@@ -10,7 +10,10 @@ so one fixed emit sequence pins both surfaces together.
 """
 from __future__ import annotations
 
+import json
+import os
 import struct
+import time
 
 from jasper.cli.aec_bridge_telemetry import (
     LegEmitter,
@@ -54,13 +57,21 @@ class _FakeSock:
         self.sent.append((packet, dest))
 
 
-def test_emit_sequence_pins_packets_and_stats_snapshot(monkeypatch) -> None:
+def test_emit_sequence_pins_packets_and_stats_snapshot(
+    monkeypatch, tmp_path,
+) -> None:
     monkeypatch.setattr(
         "jasper.cli.aec_bridge_telemetry.time.monotonic", lambda: 1234.5,
     )
+    clock_ids = []
+
+    def clock_gettime_ns(clock_id: int) -> int:
+        clock_ids.append(clock_id)
+        return 7_000_000_123
+
     monkeypatch.setattr(
         "jasper.cli.aec_bridge_telemetry.time.clock_gettime_ns",
-        lambda _clock: 7_000_000_123,
+        clock_gettime_ns,
     )
     stats = _BridgeStats(IDENTITY)
     on_sock = _FakeSock(refuse=frozenset({2}))
@@ -91,6 +102,7 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(monkeypatch) -> None:
     assert on_sock.sent == [(b"".join(FRAMES[:4]), ON_DEST)]
     assert [dest for _packet, dest in usb_sock.sent] == [USB_DEST] * 10
     assert [packet[USB_MIC_HEADER_BYTES:] for packet, _dest in usb_sock.sent] == FRAMES
+    assert clock_ids == [time.CLOCK_MONOTONIC] * 10
     assert [
         struct.unpack(USB_MIC_HEADER_STRUCT, packet[:USB_MIC_HEADER_BYTES])
         for packet, _dest in usb_sock.sent
@@ -130,9 +142,16 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(monkeypatch) -> None:
     )
     stats.mark_leg_unavailable("dtln", error="no onnx")
 
+    path = tmp_path / "aec_bridge_stats.json"
+    stats.write_snapshot(path)
+    written = json.loads(path.read_text())
+    assert written["pid"] == os.getpid()
+
     snapshot = stats.snapshot()
     for volatile in ("pid", "started_epoch_sec", "updated_epoch_sec"):
         snapshot.pop(volatile)
+        written.pop(volatile)
+    assert written == snapshot
 
     assert snapshot == {
         "schema_version": 4,
@@ -198,3 +217,55 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(monkeypatch) -> None:
         "wake_corpus_plan_id": "plan-1",
         "emitted_legs": ["on", "raw0"],
     }
+
+
+def test_timestamped_sequence_wraps_and_survives_a_refused_send(
+    monkeypatch,
+) -> None:
+    """The u32 sequence is the receiver's only drop detector, so it wraps
+    rather than widening and still advances across a refused send."""
+    monkeypatch.setattr(
+        "jasper.cli.aec_bridge_telemetry.time.clock_gettime_ns",
+        lambda _clock: 1,
+    )
+    stats = _BridgeStats(IDENTITY)
+    sock = _FakeSock(refuse=frozenset({2}))
+    emitter = TimestampedLegEmitter(
+        sock=sock,  # type: ignore[arg-type]
+        dest=USB_DEST,
+        batch=bytearray(),
+        stats_key="usb_host_mic",
+        stats=stats,
+        frame_samples=IDENTITY.frame_samples,
+    )
+    emitter._seq = 0xFFFFFFFF
+
+    for frame in FRAMES[:3]:
+        emitter.emit(frame)
+
+    # The dropped middle packet still consumes sequence 0: the receiver sees
+    # the gap rather than a renumbered stream.
+    assert [
+        struct.unpack(USB_MIC_HEADER_STRUCT, packet[:USB_MIC_HEADER_BYTES])[3]
+        for packet, _dest in sock.sent
+    ] == [0xFFFFFFFF, 1]
+    assert sock.attempts == 3
+    counters = stats.snapshot()["counters"]
+    assert counters["udp_send_drops_by_leg"]["usb_host_mic"] == 1
+    assert counters["packets_sent_by_leg"]["usb_host_mic"] == 2
+
+
+def test_leg_engine_status_reloads_and_clears_on_reset() -> None:
+    """`leg_engines` is the journal-independent surface jasper-doctor's
+    check_aec_bridge_dtln_engine reads to catch a silent DTLN load failure."""
+    stats = _BridgeStats(IDENTITY)
+    stats.set_leg_engine("dtln", enabled=True, loaded=False, error="no onnx")
+    stats.set_leg_engine("dtln", enabled=True, loaded=True)
+
+    assert stats.snapshot()["leg_engines"] == {
+        "dtln": {"enabled": True, "loaded": True, "error": None},
+    }
+
+    stats.reset()
+
+    assert stats.snapshot()["leg_engines"] == {}
