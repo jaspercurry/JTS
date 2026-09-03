@@ -45,10 +45,7 @@ from jasper.audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
-from jasper.chip_aec_policy import (
-    gate_from_runtime_env,
-    resolve_chip_aec_dac_gate,
-)
+from jasper.chip_aec_policy import effective_chip_aec_dac_gate
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
@@ -99,12 +96,8 @@ def _chip_aec_gate_for_status(
         default=infer_audio_input_profile(intent),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    runtime_gate = gate_from_runtime_env(system_env)
-    if runtime_gate is not None:
-        return runtime_gate.to_dict()
-    return resolve_chip_aec_dac_gate(
-        published_dac_id(system_env),
-        testing_requested=testing_requested,
+    return effective_chip_aec_dac_gate(
+        system_env, testing_requested=testing_requested,
     ).to_dict()
 
 

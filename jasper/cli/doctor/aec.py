@@ -38,7 +38,7 @@ from ...audio_validation import latest_artifact_summary as _audio_validation_sum
 from ...chip_aec_health import STATUS_READY
 from ...chip_aec_policy import (
     STATUS_APPROVED,
-    gate_from_runtime_env,
+    effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
 )
 from ...env_load import parse_env_file as _shared_parse_env_file
@@ -51,7 +51,6 @@ from ._shared import (
     _run,
     _sha256_file,
 )
-from ...output_hardware import published_dac_id
 
 def _aec_mode_setting() -> str:
     """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
@@ -206,10 +205,7 @@ def _audio_profile_status_for_doctor(
         normalize_audio_input_profile(profile_selection, default="")
         == PROFILE_XVF_CHIP_AEC_TESTING
     )
-    gate = gate_from_runtime_env(env) or resolve_chip_aec_dac_gate(
-        published_dac_id(env),
-        testing_requested=testing_requested,
-    )
+    gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     status = build_audio_profile_status(
         _doctor_aec_intent(),
         runtime,
