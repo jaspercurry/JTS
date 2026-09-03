@@ -3155,9 +3155,10 @@ pipeline:
 
 # --- channel-routed program graph (crossover measurement session, W2) --------
 # The v2 crossover measurement flow plays ONE continuous 2-channel program WAV
-# (docs/crossover-measurement-productization-design.md §5.4): program capture
-# ch0 carries the woofer stimulus, ch1 the tweeter stimulus, sequenced in the
-# WAV so the CamillaDSP graph stays static (no reload mid-program). This graph
+# (docs/historical/crossover-measurement-productization-design.md §5.4):
+# program capture ch0 carries the woofer stimulus, ch1 the tweeter stimulus,
+# sequenced in the WAV so the CamillaDSP graph stays static (no reload
+# mid-program). This graph
 # maps each program capture channel to its driver's PHYSICAL output path.
 
 # LR4 is the shipped crossover slope, and 24 dB/oct is the slope this build

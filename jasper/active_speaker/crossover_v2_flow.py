@@ -24,9 +24,10 @@ The predecessor class ``CrossoverV2Conductor`` was deleted in Phase 5c-iv. It
 was a conductor in the sense of *making* the decisions; those left one at a
 time over Phase 5, and what remained was a session owner, so it is named one.
 
-``docs/crossover-measurement-productization-design.md`` §5 replaces the legacy
-per-driver distributed transaction with this shape: the Pi compiles one
-excitation program per phase, plays it as one continuous stream, and analyzes
+``docs/historical/crossover-measurement-productization-design.md`` §5
+replaces the legacy per-driver distributed transaction with this shape: the
+Pi compiles one excitation program per phase, plays it as one continuous
+stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
 phase state machine that drives the relay session. At the shipped defaults a
 FULL-tier commission is 9 captures (3 in stage 1, then 6) and an express one

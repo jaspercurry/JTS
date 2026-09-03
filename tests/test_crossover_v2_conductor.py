@@ -4,7 +4,7 @@
 
 """W5a conductor orchestration: the CHECK→MEASURE→APPLYING(auto)→VERIFY walk.
 
-Fake-seam state walk per docs/crossover-measurement-productization-design.md
+Fake-seam state walk per docs/historical/crossover-measurement-productization-design.md
 §5/§6 W5a: the happy path, each §5.10 failure template, the deferred-VERIFY
 release on apply, session-death volume abandon, the needs_recovery gate (W2
 ruling), resume-skips-accepted-phases, and new-session-invalidates-evidence.

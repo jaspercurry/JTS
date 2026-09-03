@@ -8,9 +8,10 @@ Its schema version is :data:`CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION` below, which
 is where it is read from rather than restated — two docstrings in this file had
 already drifted to different stale numbers.
 
-``docs/crossover-measurement-productization-design.md`` §5.9/§5.10 defines the
-v2 screen sequence — ``("speaker_setup", "microphone_check", "measure",
-"apply", "verify")`` — and the four failure-screen TEMPLATES the flow
+``docs/historical/crossover-measurement-productization-design.md``
+§5.9/§5.10 defines the v2 screen sequence — ``("speaker_setup",
+"microphone_check", "measure", "apply", "verify")`` — and the four
+failure-screen TEMPLATES the flow
 renders (silent auto-retry banner / fix-and-retry / hard stop / session
 restart), plus the two special screens (``volume_recovery`` and the VERIFY-fail
 one-default screen). This module is the pure ``status → envelope`` function for

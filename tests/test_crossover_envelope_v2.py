@@ -4,7 +4,7 @@
 
 """W5a envelope schema 8: the v2 conductor screen payloads.
 
-Pins docs/crossover-measurement-productization-design.md §5.9 (the five-step
+Pins docs/historical/crossover-measurement-productization-design.md §5.9 (the five-step
 sequence), §5.10 (the four failure-screen templates, parameterized by reason
 copy), the §5.2 VERIFY-fail one-default screen, and the volume_recovery screen
 keyed on ``needs_recovery`` (the W2 gate ruling — never

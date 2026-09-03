@@ -5,7 +5,7 @@
 """Excitation-program composers + schedule model (crossover conductor W1).
 
 Pins the pure-data half of the conductor flow
-(docs/crossover-measurement-productization-design.md §5.3):
+(docs/historical/crossover-measurement-productization-design.md §5.3):
 
   - the three phase composers produce the design's segment layout
     (ambient + pilots for CHECK; woofer → tweeter → woofer-repeat for MEASURE;

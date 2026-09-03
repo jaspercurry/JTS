@@ -29,13 +29,6 @@ may render, and not a gate it was never able to keep honest.
 
 **Nothing here writes.** This module derives and refuses; ``sound_setup`` owns
 the single durable writer, in both directions.
-
-Not to be confused with the ``jasper/correction/crossover_declaration.py`` that
-``docs/correction-ux-wave3/w3.1-declaration-and-gating.md`` designs and nothing
-has built: that one is about whether a household has DECLARED its speaker
-active or passive. Same word, different subject, different package — which the
-repo already does elsewhere (``jasper/sound/camilla_yaml.py`` beside
-``jasper/active_speaker/camilla_yaml.py``).
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@
 
 """W5a composer extension: leading pilot pairs + woofer-repeat level agreement.
 
-docs/crossover-measurement-productization-design.md §5.2: every MEASURE and
+docs/historical/crossover-measurement-productization-design.md §5.2: every MEASURE and
 VERIFY program also opens with a short two-level pilot pair so EACH capture
 carries its own linearity evidence, and MEASURE acceptance additionally
 requires the woofer repeat pair to agree in level within ±0.3 dB (a

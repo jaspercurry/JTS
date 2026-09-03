@@ -5,10 +5,10 @@
 """Session-scoped fixed measurement volume for the crossover session (Wave 2).
 
 The v2 crossover measurement flow
-(docs/crossover-measurement-productization-design.md §5.5) replaces the per-step
-ramp/lock machinery with ONE fixed measurement volume held for the whole
-session: snapshot the household volume on open, set the fixed measurement volume,
-restore it exactly once on close/abandon. Per-driver level differences live in
+(docs/historical/crossover-measurement-productization-design.md §5.5)
+replaces the per-step ramp/lock machinery with ONE fixed measurement volume
+held for the whole session: snapshot the household volume on open, set the
+fixed measurement volume, restore it exactly once on close/abandon. Per-driver level differences live in
 the program's per-segment digital gains (§5.5), not in re-leveling the speaker.
 
 This module owns that plan. It reuses the proven fail-closed latch from
