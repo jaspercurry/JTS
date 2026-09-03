@@ -541,7 +541,7 @@ class BluetoothEngine:
             yield {"stage": "error", "message": "pair operation was cancelled"}
             return
         except Exception as err:  # noqa: BLE001
-            yield {"stage": "error", "message": _format_dbus_error(err)}
+            yield {"stage": "error", "message": _classify_dbus_error(err)[0]}
             return
 
         yield {"stage": "paired", "address": dev.address}
@@ -758,17 +758,20 @@ _CONNECT_FAILURE_REASONS: dict[str, str] = {
 }
 
 # Pre-5.63 pair/connect failures, still reported as their own error names.
-_NAME_ERROR_REASONS: tuple[tuple[str, str], ...] = (
-    ("AuthenticationCanceled", "Pairing was cancelled."),
-    ("AuthenticationRejected", "Pairing was rejected by the device."),
-    ("AuthenticationFailed", "Pairing failed. The link key didn't match."),
-    (
-        "ConnectionAttemptFailed",
-        "Could not connect. Try moving the device closer and retrying.",
+_NAME_ERROR_REASONS: dict[str, str] = {
+    "AuthenticationTimeout": (
+        "Pairing took too long. Make sure the device is in range "
+        "and in pair mode, then try again."
     ),
-    ("AlreadyExists", "This device is already paired."),
-    ("InProgress", _BUSY),
-)
+    "AuthenticationCanceled": "Pairing was cancelled.",
+    "AuthenticationRejected": "Pairing was rejected by the device.",
+    "AuthenticationFailed": "Pairing failed. The link key didn't match.",
+    "ConnectionAttemptFailed": (
+        "Could not connect. Try moving the device closer and retrying."
+    ),
+    "AlreadyExists": "This device is already paired.",
+    "InProgress": _BUSY,
+}
 
 
 def _classify_dbus_error(err: DBusError) -> tuple[str, str | None]:
@@ -777,22 +780,12 @@ def _classify_dbus_error(err: DBusError) -> tuple[str, str | None]:
     msg = str(err)
     if msg in _CONNECT_FAILURE_REASONS:
         return _CONNECT_FAILURE_REASONS[msg], msg
+    short_name = name.rsplit(".", 1)[-1]
     if "AuthenticationTimeout" in name or "AuthenticationTimeout" in msg:
-        return (
-            "Pairing took too long. Make sure the device is in range "
-            "and in pair mode, then try again.",
-            "AuthenticationTimeout",
-        )
-    for token, message in _NAME_ERROR_REASONS:
-        if token in name:
-            return message, token
+        short_name = "AuthenticationTimeout"
+    if short_name in _NAME_ERROR_REASONS:
+        return _NAME_ERROR_REASONS[short_name], short_name
     return msg or "Unknown bluetooth error.", None
-
-
-def _format_dbus_error(err: BaseException) -> str:
-    if not isinstance(err, DBusError):
-        return str(err)
-    return _classify_dbus_error(err)[0]
 
 
 def _device_action_error(err: DBusError) -> BluetoothActionResult:

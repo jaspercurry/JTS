@@ -191,7 +191,7 @@ def test_connected_unpaired_ble_devices_do_not_render_as_ready():
     accessory profile until BlueZ has a pair record."""
     js = _MODULE_JS.read_text()
     assert "deviceSection(d, pending)" in js
-    assert "function deviceRow(d)" in js
+    assert "function deviceRow(d, pending)" in js
     assert "const isPaired = !!d.paired" in js
     assert "const canRemoveUnpaired = !isPaired" in js
     assert "deviceRow(d, true)" not in js

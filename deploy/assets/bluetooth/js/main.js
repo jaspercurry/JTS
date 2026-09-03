@@ -343,11 +343,14 @@ function applyDeviceEvent(data, target = devices) {
   return true;
 }
 
+// A device object's uppercased MAC, or a mac string uppercased directly.
+function macKey(x) {
+  return typeof x === 'string' ? x.toUpperCase() : String(x.address || '').toUpperCase();
+}
+
 function visibleDeviceRows(live = devices, mutations = deviceMutations) {
   const rows = Array.from(live.values());
-  const present = new Set(
-    rows.map(device => String(device.address || '').toUpperCase()),
-  );
+  const present = new Set(rows.map(macKey));
   for (const [mac, mutation] of mutations) {
     if (mutation.device && !present.has(mac)) rows.push(mutation.device);
   }
@@ -368,32 +371,31 @@ function renderDevices() {
   const paired = [];
   const other = [];
   for (const d of visibleDeviceRows()) {
-    const pending = !!deviceMutations.get(String(d.address || '').toUpperCase());
+    const pending = deviceMutations.get(macKey(d));
     const section = deviceSection(d, pending);
-    if (section === 'mine') paired.push(d);
-    else if (section === 'nearby') other.push(d);
+    if (section === 'mine') paired.push({d, pending});
+    else if (section === 'nearby') other.push({d, pending});
   }
   // Paired: connected first, then by name.
-  paired.sort((a, b) => (b.connected - a.connected)
-    || (a.name || a.address).localeCompare(b.name || b.address));
+  paired.sort((a, b) => (b.d.connected - a.d.connected)
+    || (a.d.name || a.d.address).localeCompare(b.d.name || b.d.address));
   // Other: by RSSI desc (nulls last), then name.
   other.sort((a, b) => {
-    const ar = a.rssi ?? -200, br = b.rssi ?? -200;
+    const ar = a.d.rssi ?? -200, br = b.d.rssi ?? -200;
     if (ar !== br) return br - ar;
-    return (a.name || a.address).localeCompare(b.name || b.address);
+    return (a.d.name || a.d.address).localeCompare(b.d.name || b.d.address);
   });
 
   document.getElementById('paired-list').innerHTML = paired.length
-    ? paired.map(d => deviceRow(d)).join('')
+    ? paired.map(({d, pending}) => deviceRow(d, pending)).join('')
     : '<div class="empty">No paired devices yet.</div>';
   document.getElementById('other-list').innerHTML = other.length
-    ? other.map(d => deviceRow(d)).join('')
+    ? other.map(({d, pending}) => deviceRow(d, pending)).join('')
     : '<div class="empty">Nothing nearby. Try scanning.</div>';
 }
 
-function deviceRow(d) {
+function deviceRow(d, pending) {
   const isPaired = !!d.paired;
-  const pending = deviceMutations.get(String(d.address || '').toUpperCase());
   const disabled = action => deviceActionDisabled(
     action, state, mutationInFlight || deviceMutations.size > 0,
   ) ? ' disabled' : '';
@@ -730,10 +732,8 @@ function renderPairStage(mac, data, card) {
 // -------- connect / disconnect / forget --------
 
 function deviceByAddress(mac) {
-  const wanted = mac.toUpperCase();
-  return Array.from(devices.values()).find(
-    device => String(device.address || '').toUpperCase() === wanted,
-  ) || null;
+  const wanted = macKey(mac);
+  return Array.from(devices.values()).find(device => macKey(device) === wanted) || null;
 }
 
 function watchDeviceMutation(mutation) {
@@ -773,7 +773,7 @@ async function rejectDeviceMutation(mutation, message) {
 }
 
 function requestDeviceMutation(action, mac) {
-  const normalizedMac = mac.toUpperCase();
+  const normalizedMac = macKey(mac);
   if (deviceMutations.has(normalizedMac)) return;
   const mutation = {
     action,

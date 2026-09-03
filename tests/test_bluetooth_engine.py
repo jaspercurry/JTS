@@ -15,8 +15,8 @@ from jasper.accessories import reconcile as accessory_reconcile
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.engine import (
     BluetoothEngine,
+    _classify_dbus_error,
     _device_action_error,
-    _format_dbus_error,
 )
 from jasper.bluetooth.models import (
     BluetoothActionResult,
@@ -1218,62 +1218,42 @@ async def test_scan_manual_stop_propagates_permission_and_unexpected_failures(
 
 
 @pytest.mark.parametrize(
-    ("error_type", "detail", "expected"),
+    ("error_type", "detail", "code"),
     [
-        (
-            "org.bluez.Error.AuthenticationTimeout",
-            "timed out",
-            "Pairing took too long. Make sure the device is in range and in pair mode, then try again.",
-        ),
+        ("org.bluez.Error.AuthenticationTimeout", "timed out", "AuthenticationTimeout"),
         (
             "org.bluez.Error.Failed",
             "org.bluez.Error.AuthenticationTimeout",
-            "Pairing took too long. Make sure the device is in range and in pair mode, then try again.",
+            "AuthenticationTimeout",
         ),
         (
             "org.bluez.Error.AuthenticationCanceled",
             "cancelled",
-            "Pairing was cancelled.",
+            "AuthenticationCanceled",
         ),
         (
             "org.bluez.Error.AuthenticationRejected",
             "rejected",
-            "Pairing was rejected by the device.",
+            "AuthenticationRejected",
         ),
-        (
-            "org.bluez.Error.AuthenticationFailed",
-            "failed",
-            "Pairing failed. The link key didn't match.",
-        ),
+        ("org.bluez.Error.AuthenticationFailed", "failed", "AuthenticationFailed"),
         (
             "org.bluez.Error.ConnectionAttemptFailed",
             "failed",
-            "Could not connect. Try moving the device closer and retrying.",
+            "ConnectionAttemptFailed",
         ),
-        (
-            "org.bluez.Error.AlreadyExists",
-            "exists",
-            "This device is already paired.",
-        ),
-        (
-            "org.bluez.Error.InProgress",
-            "busy",
-            "Bluetooth is busy. Try again in a moment.",
-        ),
-        ("org.bluez.Error.Failed", "BlueZ detail", "BlueZ detail"),
-        ("org.bluez.Error.Failed", "", "Unknown bluetooth error."),
+        ("org.bluez.Error.AlreadyExists", "exists", "AlreadyExists"),
+        ("org.bluez.Error.InProgress", "busy", "InProgress"),
+        ("org.bluez.Error.Failed", "BlueZ detail", None),
+        ("org.bluez.Error.Failed", "", None),
     ],
 )
-def test_format_dbus_error_maps_known_errors_and_fallbacks(
+def test_classify_dbus_error_codes(
     error_type: str,
     detail: str,
-    expected: str,
+    code: str | None,
 ):
-    assert _format_dbus_error(DBusError(error_type, detail)) == expected
-
-
-def test_format_dbus_error_preserves_non_dbus_message():
-    assert _format_dbus_error(RuntimeError("plain failure")) == "plain failure"
+    assert _classify_dbus_error(DBusError(error_type, detail))[1] == code
 
 
 @pytest.mark.parametrize(

@@ -394,6 +394,7 @@ svg { display: block; }
    "settings page" vocabulary — cards, key/value lists, and status pills
    that any management sub-page can build on. */
 .section { display: flex; flex-direction: column; gap: 12px; }
+.page > .section + .section { margin-top: 1.5rem; }
 .section__head { padding: 0 0.25rem; }
 /* Card title — names the panel. The middle tier of the typographic grammar:
    region headers stay EYEBROW (.eyebrow), card titles are cased, row labels
