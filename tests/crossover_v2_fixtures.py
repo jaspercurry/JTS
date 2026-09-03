@@ -80,7 +80,7 @@ from jasper.audio_measurement.program_analysis import (
     solve_branch_trims,
 )
 from jasper.active_speaker.flat_spec import spec_convergence_residual
-from jasper.capture_relay.session import CaptureResult
+from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -434,8 +434,8 @@ def bank_into(
     The id is minted the way the store mints it, off the record's OWN take id,
     which is the invariant the seam exists to keep.
 
-    ``with_capture`` keeps the :class:`CaptureResult` beside the record, for
-    the two tests that assert the raw bytes cross the seam.
+    ``with_capture`` keeps the :class:`WiredCaptureAnswer` beside the record,
+    for the two tests that assert the raw bytes cross the seam.
     """
     def bank_take(result: Any, record: Mapping[str, Any]) -> str:
         banked = dict(record)
@@ -727,8 +727,8 @@ def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     )
 
 
-def _capture() -> CaptureResult:
-    return CaptureResult(wav=b"fake-wav")
+def _capture() -> WiredCaptureAnswer:
+    return WiredCaptureAnswer(wav=b"fake-wav")
 
 
 def _configured_sections(conductor, role: str) -> tuple:
