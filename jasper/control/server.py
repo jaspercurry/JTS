@@ -610,14 +610,6 @@ def _read_aec_state() -> dict:
     return _aec_endpoints._read_aec_state()
 
 
-def _read_aec_mode() -> str:
-    return _aec_endpoints._read_aec_mode()
-
-
-def _write_aec_mode(mode: str) -> None:
-    _aec_endpoints._write_aec_mode(mode)
-
-
 def _write_aec_leg(leg: str, enabled: bool) -> None:
     _aec_endpoints._write_aec_leg(leg, enabled)
 
@@ -2034,7 +2026,6 @@ def _make_handler(
             "/session/end": "_post_session",
             "/cue/play": "_post_cue_play",
             "/mic/mute": "_post_mic_mute",
-            "/aec/toggle": "_post_aec_toggle",
             "/aec/leg": "_post_aec_leg",
             "/aec/profile": "_post_aec_profile",
             "/aec/usb-mic": "_post_aec_usb_mic",

@@ -166,24 +166,6 @@ def _read_aec_state() -> dict:
     return state
 
 
-def _read_aec_mode() -> str:
-    """Compatibility shim — returns just the mode string."""
-    return _read_aec_state()["mode"]
-
-
-def _write_aec_mode(mode: str) -> None:
-    """Atomic write of the AEC mode key, preserving leg keys."""
-    if mode not in ("auto", "disabled"):
-        raise ValueError(f"invalid mode: {mode!r}")
-    locked_update_env_file(
-        _AEC_MODE_FILE,
-        {
-            "JASPER_AEC_MODE": mode,
-            "JASPER_AUDIO_INPUT_PROFILE": "custom",
-        },
-    )
-
-
 def _write_aec_leg(leg: str, enabled: bool) -> None:
     """Atomic write of one wake-leg boolean, preserving every other key
     in aec_mode.env (mode, the other leg).

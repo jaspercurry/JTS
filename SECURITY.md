@@ -54,7 +54,7 @@ trigger reboots through a wizard.
 Any device already on the trusted LAN can use the low-impact management
 APIs without authentication: changing volume (`POST /volume/set`,
 `/volume/adjust`, `/volume/mute`) and AEC mode/profile/threshold (`POST
-/aec/toggle`, `/aec/leg`, `/aec/profile`, `/aec/threshold`). This is
+/aec/leg`, `/aec/profile`, `/aec/threshold`). This is
 deliberate: supported accessories, Home Assistant, Shortcuts-style automations, and
 other household integrations use the same trusted-LAN posture. The
 highest-impact mutations — reboot / poweroff, voice/audio restart, the
