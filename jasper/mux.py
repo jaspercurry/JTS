@@ -19,16 +19,14 @@ Renderer support:
             spotipy — librespot 0.8.0 has no local control HTTP.
             We iterate household accounts and issue
             PUT /me/player/pause to any account that has the configured
-            speaker device in its list. Tier 2 (added 2026-05-22) is
-            `systemctl try-restart librespot.service` if Tier 1 fails
-            — guarantees librespot releases its private fan-in lane
-            when it is still active, without resurrecting a concurrently
-            disabled or role-parked source. Tier 2 is still useful
-            after the 2026-05-26 fan-in cutover: renderers no longer
-            share one ALSA device, so an un-pauseable librespot would
-            keep streaming into its own lane and be summed alongside
-            the new winner. Off-switch:
-            JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
+            speaker device in its list. Tier 2 is
+            `systemctl try-restart librespot.service` if Tier 1 fails:
+            renderers each own a private fan-in lane, so an
+            un-pauseable librespot keeps streaming and is summed
+            alongside the new winner. try-restart releases that lane
+            only while the source is still active, so a concurrently
+            disabled or role-parked source is not resurrected.
+            Off-switch: JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
   AirPlay (shairport-sync):
     detect: MPRIS PlaybackStatus == "Playing" AND non-empty MPRIS
             Metadata xesam:title (source_state.airplay_playing) — the
@@ -50,8 +48,8 @@ Renderer support:
   USB sink (jasper-usbsink):
     detect: fan-in DIRECT-captures the gadget, so USB liveness comes
             from fan-in DIRECT-lane telemetry. See _usbsink_playing.
-            NOTE: liveness is now purely "is the host streaming frames to
-            us" — there is no audio-LEVEL gate. A faint sound is still a
+            Liveness is purely "is the host streaming frames to us" —
+            there is no audio-LEVEL gate. A faint sound is still a
             sound; if USB is the only source, we play it.
     pause:  MUTE the fan-in usbsink lane at its mix stage. When all
             other sources go idle, we release the preempt (unmute) so
@@ -59,20 +57,20 @@ Renderer support:
             the mute before USB takes the selected lane.
 
 Automatic source policy:
-  Every source is an equal candidate. A confirmed inactive→active transition
-  becomes the winner, including USB, so Auto has one explainable rule: the
-  latest source to start wins. The losing sources keep their existing
-  source-specific preemption behavior (AirPlay DropSession, Spotify/BT pause,
-  USB lane mute). Alerts only accelerate the authoritative re-read; alert
-  arrival order never chooses the winner.
+  Every source is an equal candidate, including USB: a confirmed
+  inactive→active transition becomes the winner, so Auto has one explainable
+  rule — the latest source to start wins. Losing sources get their
+  source-specific preemption (AirPlay DropSession, Spotify/BT pause, USB lane
+  mute). Alert arrival order never chooses the winner; alerts only accelerate
+  the authoritative re-read.
 
-  Mux records a process-local activation sequence for every confirmed start,
-  including starts observed while a manual pin owns the gate. That sequence
-  chooses the most recently started still-active source when the winner stops
-  or the user returns to Auto. Multiple starts first observed in one snapshot
-  are ordered deterministically by MUSIC_SOURCES registry order because their
-  real-world order is unknowable. A persistent manual pin overrides Auto, and
-  /sources remains the lifecycle surface for disabling a source entirely.
+  A process-local activation sequence records every confirmed start, including
+  starts observed while a manual pin owns the gate, and chooses the most
+  recently started still-active source when the winner stops or the user
+  returns to Auto. Starts first seen in one snapshot tie-break on
+  MUSIC_SOURCES registry order because their real-world order is unknowable.
+  A persistent manual pin overrides Auto; /sources remains the lifecycle
+  surface for disabling a source entirely.
 
 """
 from __future__ import annotations
@@ -111,18 +109,15 @@ FANIN_CONTROL_SOCKET = os.environ.get(
     "JASPER_FANIN_CONTROL_SOCKET", "/run/jasper-fanin/control.sock",
 )
 MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
-# Durable home for the source-selection mode (auto vs manual + the
-# pinned source). Persisted so a household's manual pin survives the
-# Restart=always deploy/restart cycle. RuntimeDirectory is wiped on
-# restart, so this lives under /var/lib/jasper, not /run.
+# Persisted so a household's manual pin survives the Restart=always
+# deploy/restart cycle. RuntimeDirectory is wiped on restart, so this lives
+# under /var/lib/jasper, not /run.
 MUX_MODE_STATE_PATH = os.environ.get(
     "JASPER_MUX_MODE_STATE_PATH", mux_mode_persistence.DEFAULT_PATH,
 )
-# The fan-in input-lane label for the USB source. USB preempt is a MUTE/UNMUTE
-# of THIS lane over the fan-in control socket — the only USB-silencing primitive
-# now that fan-in DIRECT-captures the gadget as its sole live ingress owner.
-# Derived from the same
-# source→label map fan-in SELECT uses, so the two never drift.
+# USB preempt is a MUTE/UNMUTE of THIS fan-in lane — the only USB-silencing
+# primitive, since fan-in DIRECT-captures the gadget as its sole live ingress
+# owner. Derived from the map fan-in SELECT uses, so the two never drift.
 USBSINK_FANIN_LABEL = SOURCE_TO_FANIN_LABEL[Source.USBSINK]
 FANIN_TEST_LABELS = frozenset({"correction"})
 FANIN_TEST_OWNERS = frozenset({
@@ -147,13 +142,10 @@ SHAIRPORT_NATIVE_IFACE = "org.gnome.ShairportSync"
 
 
 def _spotify_preempt_restart_disabled() -> bool:
-    """Env-var escape hatch for the Spotify-preempt Tier 2 escalation
-    (the active-only systemctl try-restart fallback added 2026-05-22).
+    """Env-var escape hatch for the Spotify-preempt Tier 2 escalation.
 
-    Set JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled to revert preempt
-    to "Web API only, mix-on-failure" behaviour — useful if the
-    restart is ever found to cause more disruption than the brief
-    audio mix it was meant to avoid. Default: enabled.
+    JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled reverts preempt to "Web API
+    only, mix-on-failure". Default: enabled.
     """
     return os.environ.get(
         "JASPER_MUX_SPOTIFY_PREEMPT_RESTART", "",
@@ -163,30 +155,21 @@ def _spotify_preempt_restart_disabled() -> bool:
 def _usbsink_preempt_disabled() -> bool:
     """Env-var escape hatch for the USB-sink preempt mechanism.
 
-    Set JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env to
-    short-circuit `_usbsink_set_preempt` — mux stops MUTE/UNMUTE-ing the
-    fan-in usbsink lane when another source wins (the only USB-silencing
-    primitive; jasper-fanin DIRECT-captures the gadget as its sole live ingress
-    owner).
-    USB then behaves like an unsupported source (audio briefly mixes when a
-    new source starts). Operator escape hatch for cases where the lane mute
-    is causing unexpected disruption, without requiring a redeploy or daemon
-    restart. Default: enabled.
-
-    Mirrors JASPER_AIRPLAY_METADATA_GATE / JASPER_MUX_SPOTIFY_PREEMPT_RESTART
-    / JASPER_SHAIRPORT_SUPERVISOR.
+    JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env short-circuits
+    ``_usbsink_set_preempt``: mux stops MUTE/UNMUTE-ing the fan-in usbsink lane
+    when another source wins, so USB behaves like an unsupported source (audio
+    briefly mixes when a new source starts). Read fresh on every call, so it
+    takes effect without a redeploy or daemon restart. Default: enabled.
     """
     return os.environ.get(
         "JASPER_USBSINK_PREEMPT", "",
     ).strip().lower() == "disabled"
 
 
-# Combo-mode USB streaming debounce (mux ticks at POLL_INTERVAL_SEC = 1 Hz).
-# The liveness signal is fan-in's DIRECT-lane host-input counter, read via
-# usbsink_direct_frames_read(). The debounce rides through a brief delivery gap
-# (a status miss / a momentary stall) so the source doesn't flap; a real pause
-# stops the frames and macOS tears the stream down, so the counter genuinely
-# stalls and USB releases after this many ticks.
+# Combo-mode USB streaming debounce, in mux ticks (POLL_INTERVAL_SEC = 1 Hz).
+# Rides through a brief delivery gap (a status miss / a momentary stall) so the
+# source doesn't flap; a real pause stops the frames and macOS tears the stream
+# down, so the counter genuinely stalls and USB releases after this many ticks.
 USBSINK_COMBO_STOP_TICKS = 2
 ALERT_COALESCE_SEC = 0.05
 # A transient unreadable probe must not synthesize stop/start flutter, but a
@@ -201,19 +184,13 @@ class ComboLiveness:
     """Temporal state for combo-mode USB frames-flowing detection.
 
     ``streaming`` is "is the host feeding us frames right now" — there is NO
-    audio-LEVEL component (removed 2026-07-17). A faint sound and a loud one
-    both stream frames and therefore produce the same authoritative source-start
-    edge. The old ``rms_dbfs > -60`` gate attempted to infer intent from level;
-    it instead dropped faint audio and caused quiet-passage routing dropouts, so
-    level is display-only and does not participate in arbitration. Users who do
-    not want computer audio to enter latest-start-wins Auto can persistently pin
-    another source or disable USB Audio Input. Removing the level gate fixed
-    dropped faint audio and level-driven quiet-passage dropouts: a quiet stretch
-    keeps the counter advancing, so the lane no longer reads "stopped". New
-    fan-in builds publish a 20 Hz-derived streaming edge; this state machine
-    remains the rolling-upgrade fallback for older STATUS shapes. A host that
-    actually tears the stream down still stops frames and releases after the
-    stop hysteresis.
+    audio-LEVEL component. A faint sound and a loud one both stream frames and
+    therefore produce the same authoritative source-start edge; level is
+    display-only and does not participate in arbitration, so a quiet passage
+    keeps the counter advancing rather than reading "stopped". New fan-in builds
+    publish a 20 Hz-derived streaming edge; this state machine remains the
+    rolling-upgrade fallback for older STATUS shapes. A host that actually tears
+    the stream down stops frames and releases after the stop hysteresis.
     """
 
     prev_frames: int | None = None
@@ -230,15 +207,11 @@ def step_combo_liveness(
     """Advance the combo-USB streaming state by one mux tick.
 
     A combo box is ``streaming`` on a tick iff the fan-in DIRECT-lane counter
-    ``frames`` grew since the previous tick (the host is feeding the lane).
-
-    Semantics:
-
-    - advanced -> streaming, idle reset.
-    - first reading or counter reset -> re-baseline without inventing a delta.
-    - flat frames -> drop after ``stop_ticks`` consecutive non-advancing patrols.
-    - missing frames -> unknown; retain the complete prior state. A STATUS miss
-      is not evidence that a stream stopped.
+    ``frames`` grew since the previous tick. A first reading or counter reset
+    re-baselines without inventing a delta; flat frames drop after
+    ``stop_ticks`` consecutive non-advancing patrols; missing frames are
+    unknown and retain the complete prior state, because a STATUS miss is not
+    evidence that a stream stopped.
     """
     prev = state.prev_frames
     if frames is None:
@@ -255,9 +228,8 @@ def step_combo_liveness(
 
 @dataclass
 class _State:
-    """Per-source playing flag from the previous tick. The mux uses
-    `prev → current` transitions to drive preemption — we only act
-    when a source goes from not-playing to playing."""
+    """Per-source playing flag from the previous tick. Preemption is driven by
+    `prev → current` transitions — only a not-playing → playing edge acts."""
     playing: dict[Source, bool] = field(
         default_factory=lambda: {s: False for s in MUSIC_SOURCES},
     )
@@ -288,16 +260,10 @@ class Mux:
         self._mode_state_path = mode_state_path
         self._state = _State()
         self._started_seq = 0
-        # Every caller that refreshes source state goes through
-        # _observe_sources(). Serializing probe + record prevents a slower,
-        # older control-path snapshot from overwriting a newer patrol snapshot
-        # and manufacturing a false stop/start edge.
         self._observation_lock = asyncio.Lock()
         self._winner: Optional[Source] = None
-        # Restore a household's manual source pin across restarts. Fails
-        # open to None (auto / latest-source-wins) on a missing or
-        # corrupt file — the pre-persistence behaviour. The fan-in gate
-        # is reasserted from this on the first tick (_reassert_manual_source).
+        # Fails open to None (auto / latest-start-wins) on a missing or corrupt
+        # file. The fan-in gate is reasserted from this on the first tick.
         self._manual_source: Optional[Source] = mux_mode_persistence.read_manual_source(
             mode_state_path,
         )
@@ -311,18 +277,12 @@ class Mux:
                 },
             )
         self._winner_age_ticks = 0
-        # Lazy router for Web API pause. Built on first use, kept
-        # for the daemon's lifetime. None means Spotify env vars
-        # weren't set → pause-via-Web-API not available, log no-op.
         self._spotify_router: Any | None = None
         self._spotify_router_built = False
-        # USB sink preempt state: True while we've told fan-in to silence the
-        # USB lane. Cleared before USB becomes the winner or after all other
-        # sources go idle, so source selection and the defense-in-depth mute
-        # cannot disagree.
+        # True while fan-in has been told to silence the USB lane. Cleared
+        # before USB becomes the winner and once all other sources go idle, so
+        # source selection and the lane mute cannot disagree.
         self._usbsink_preempted = False
-        # USB liveness (see step_combo_liveness). fan-in DIRECT-captures the USB
-        # gadget, so `_usbsink_playing` measures liveness off that DIRECT lane.
         self._usbsink_combo = ComboLiveness()
         self._volume_coordinator = volume_coordinator
         self._last_handoff: dict[str, Any] | None = None
@@ -369,8 +329,8 @@ class Mux:
             startup_pending = True
             while True:
                 try:
-                    # Startup uses the same protected reconciliation path as
-                    # every later patrol. A transient first probe must not exit
+                    # Startup takes the same protected reconciliation path as
+                    # every later patrol: a transient first probe must not exit
                     # into Restart=always while fan-in remains held at NONE.
                     if startup_pending:
                         startup_pending = False
@@ -414,9 +374,9 @@ class Mux:
 
                         # An alert may have landed during that sleep. Clear its
                         # level-triggered wake immediately before snapshotting
-                        # the dirty set (there is no await between these
-                        # operations). A later alert then remains set for the
-                        # next loop instead of causing an empty reconciliation.
+                        # the dirty set — no await between the two — so a later
+                        # alert stays set for the next loop instead of causing
+                        # an empty reconciliation.
                         self._reconcile_wake.clear()
 
                     now = loop.time()
@@ -541,12 +501,11 @@ class Mux:
         """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
         lane.
 
-        fan-in DIRECT-captures the gadget as its sole live ingress owner. New
-        builds publish an edge-detected ``direct.streaming`` boolean from their
-        existing frame counter; older builds fall back to counter deltas across
-        patrols. There is NO audio-level gate (see the module docstring's
-        "Sticky sessions"). A missing/non-direct snapshot is unknown and retains
-        the arbiter's last-known state; do not issue a second STATUS probe.
+        New fan-in builds publish an edge-detected ``direct.streaming`` boolean
+        from their existing frame counter; older builds fall back to counter
+        deltas across patrols. There is NO audio-level gate. A missing or
+        non-direct snapshot is unknown and retains the arbiter's last-known
+        state; do not issue a second STATUS probe.
         """
         fanin = await self._fanin_status_best_effort()
         streaming = usbsink_direct_streaming(fanin)
@@ -673,11 +632,9 @@ class Mux:
             async with self._transition_lock:
                 if self._manual_source is not None:
                     return
-                # If the new winner is USBSINK and an older source transition
-                # left its defense-in-depth lane mute set, clear that mute
-                # before selecting USB. Inside the lock (like select_source /
-                # auto_select) so a concurrent manual selection cannot
-                # interleave between the release and the handoff.
+                # Clear a lane mute an older transition left set before
+                # selecting USB. Inside the lock so a concurrent manual
+                # selection cannot interleave between release and handoff.
                 if target == Source.USBSINK and self._usbsink_preempted:
                     await self._usbsink_set_preempt(
                         False, reason="new_transition",
@@ -698,11 +655,10 @@ class Mux:
             if not selected:
                 return
 
-            # Pause every OTHER source that's currently active after
-            # the fan-in gate has moved. Slow cloud/Web API pause
-            # paths should not delay a safe source switch. Best-effort
-            # per source: one renderer's pause raising (Web API error,
-            # busctl gone) must not abort pausing the rest.
+            # Pause every OTHER active source only after the fan-in gate has
+            # moved: slow cloud/Web API pause paths must not delay the switch.
+            # Best-effort per source — one renderer's pause raising must not
+            # abort pausing the rest.
             for source, is_playing in current.items():
                 if source != target and is_playing:
                     await self._pause_best_effort(
@@ -716,12 +672,11 @@ class Mux:
                 self._pending_auto_target = None
                 await self._fanin_none_best_effort(reason="auto_idle")
 
-        # Release USB preempt when all other sources have gone idle.
-        # Without this, the daemon would stay silent indefinitely
-        # after AirPlay/Spotify stop, even though the user might
-        # still be playing on the host. The check excludes USBSINK
-        # itself — its `playing` flag stays True (RMS-active) even
-        # while preempted, so we look at the OTHER sources to decide.
+        # Release USB preempt once all other sources are idle; without this the
+        # speaker would stay silent after AirPlay/Spotify stop while the host
+        # is still playing. USBSINK is excluded from the check because the mute
+        # is applied downstream of its telemetry, so a muted-but-streaming host
+        # keeps reporting `playing`.
         if self._usbsink_preempted:
             others_playing = any(
                 playing
@@ -733,10 +688,8 @@ class Mux:
                     False, reason="all_others_idle",
                 )
 
-        # Reassert the combo-box fan-in lane mute if still preempted (handles a
-        # fan-in restart that came up unmuted). No-op on solo / not-preempted /
-        # escape-hatch. After the release above so a just-released lane isn't
-        # re-muted this tick.
+        # After the release above, so a just-released lane isn't re-muted this
+        # tick.
         await self._reassert_usbsink_preempt_mute()
 
     async def select_source(self, source: Source) -> dict[str, Any]:
@@ -866,10 +819,10 @@ class Mux:
     ) -> dict[str, Any]:
         """Temporarily route a non-music diagnostic lane through fan-in.
 
-        This is intentionally not persisted and does not change the household
-        source selector. It exists for same-path tests such as active-speaker
-        commissioning that enter through the correction lane while the speaker
-        may otherwise be manually pinned to AirPlay/Spotify/etc.
+        Intentionally not persisted and does not change the household source
+        selector: same-path tests such as active-speaker commissioning enter
+        through the correction lane while the speaker may otherwise be manually
+        pinned to a music source.
         """
 
         label = str(label or "").strip()
@@ -1008,8 +961,7 @@ class Mux:
                 "last": self._last_reconcile,
             },
             "usbsink": {
-                # fan-in DIRECT-captures the gadget on every box now; the aloop
-                # bridge path and its resident helper were removed.
+                # Always true: fan-in DIRECT-captures the gadget on every box.
                 "combo": True,
             },
         }
@@ -1056,8 +1008,9 @@ class Mux:
         """Probe and record one source snapshot in serialized order.
 
         Automatic reconciliation and user control commands are separate event
-        loop tasks. Keeping the awaitable probe inside this narrow lock ensures
-        their snapshots cannot be committed out of probe order.
+        loop tasks. Keeping the awaitable probe inside this lock stops an older
+        control-path snapshot from being committed after a newer patrol one and
+        manufacturing a false stop/start edge.
         """
         async with self._observation_lock:
             current = await self._probe_sources()
@@ -1070,14 +1023,13 @@ class Mux:
     ) -> list[Source]:
         """Record one authoritative source snapshot and return fresh starts.
 
-        This method has no await points: updating activation order and the
-        previous-state snapshot is one event-loop-atomic operation shared by
-        periodic/alert reconciliation and the explicit return-to-Auto path.
-        Alerts never write this state; they only cause a new observation.
+        No await points: updating activation order and the previous-state
+        snapshot is one event-loop-atomic operation shared by periodic/alert
+        reconciliation and the explicit return-to-Auto path. Alerts never write
+        this state; they only cause a new observation.
 
-        If several starts are first visible in one snapshot, iteration follows
-        ``MUSIC_SOURCES`` order. The last registry entry therefore wins the
-        deterministic tie because the sources' real start order is unknowable.
+        Several starts first visible in one snapshot are sequenced in
+        ``MUSIC_SOURCES`` order, so the last registry entry wins that tie.
         """
         newly_started: list[Source] = []
         for source in MUSIC_SOURCES:
@@ -1093,8 +1045,7 @@ class Mux:
 
         ``started_seq`` is authoritative during this mux process. Registry
         order is a deterministic fallback for active sources with no observed
-        start sequence (possible only through direct state injection or future
-        rolling-upgrade compatibility paths).
+        start sequence.
         """
         active = self._active_sources(current)
         if not active:
@@ -1211,7 +1162,7 @@ class Mux:
                 # observer must see the new owner when it acquires the lease.
                 commit_selection()
         # Snapshotting volume context takes the coordinator's local mutation
-        # lock. Publish only after the handoff lease has released; the safety
+        # lock, so publish only after the handoff lease has released: the
         # ordering above requires carrier/gate/owner publication, not
         # observability IPC, to be atomic with source-volume writers.
         with contextlib.suppress(Exception):
@@ -1398,10 +1349,9 @@ class Mux:
     ) -> dict[str, Any]:
         """MUTE/UNMUTE one fan-in input lane at its mix stage.
 
-        Extends the same mux→fan-in control channel used for the selected-input
-        gate (SELECT/AUTO/NONE) with a per-lane silence that is orthogonal to
-        selection and to volume. Today's only caller is the combo-box USB
-        preempt; the command is lane-general (mirrors SELECT)."""
+        A per-lane silence on the same mux→fan-in control channel as the
+        selected-input gate (SELECT/AUTO/NONE), orthogonal to selection and to
+        volume. Lane-general, like SELECT."""
         verb = "MUTE" if muted else "UNMUTE"
         return await fanin_command(
             f"{verb} {label}", socket_path=FANIN_CONTROL_SOCKET,
@@ -1454,12 +1404,11 @@ class Mux:
                 self._handle_control_client,
                 path=MUX_CONTROL_SOCKET,
             )
-            # 0660 (was the umask default ~0755): once mux runs as a non-root
-            # service user with primary group `jasper` (WS1 Phase 3b), the
-            # socket is jasper-mux:jasper and only root + the `jasper` group
-            # (jasper-control / jasper-web clients) can connect — tighter than
-            # the prior world-connectable default. Best-effort like the voice /
-            # peering sockets' post-bind chmod.
+            # 0660: mux runs as the non-root user jasper-mux with primary group
+            # `jasper`, so the socket is jasper-mux:jasper and only root plus
+            # the `jasper` group (jasper-control / jasper-web clients) can
+            # connect. Best-effort, like the voice / peering sockets' post-bind
+            # chmod.
             try:
                 os.chmod(MUX_CONTROL_SOCKET, 0o660)
             except OSError as e:
@@ -1562,14 +1511,9 @@ class Mux:
             ok = await self._spotify_pause_via_web_api()
             if ok:
                 return
-            # Tier 1 failed. With fan-in, an un-pauseable librespot
-            # owns its private lane and does not crash on ALSA EBUSY —
-            # it just keeps streaming and mixes with the new winner.
-            # The user's contract ("we cannot have both played at the
-            # same time") requires us to force a release. systemctl
-            # try-restart kills librespot's FD only while the source remains
-            # active; the new winner is then heard alone for the ~2-3 s before
-            # systemd brings librespot back as an idle Connect device.
+            # Tier 1 failed. An un-pauseable librespot owns its private fan-in
+            # lane and keeps streaming, so it would be summed with the new
+            # winner; escalate to force a release.
             if _spotify_preempt_restart_disabled():
                 logger.warning(
                     "spotify pause: no Web API account could pause the "
@@ -1607,17 +1551,13 @@ class Mux:
     async def _airplay_drop_session_for_preempt(self) -> None:
         """Drop the AirPlay receiver session after another source wins.
 
-        Voice transport still exposes "pause" semantics through
-        RendererClient.pause_airplay(). Mux preemption is different:
-        once Spotify/Bluetooth/USB has the audible lane, keeping an AP2
-        session alive leaves the sender routed to an inaudible receiver.
-
-        ``DropSession`` is receiver-owned and forcibly terminates that
-        connection. MPRIS ``Stop`` is only a remote request to the sender and
-        AirPlay 2 senders may ignore it, so it is retained solely as a
-        compatibility fallback when the native method is unavailable. This
-        cleanup runs after fan-in has moved; failure never rolls back or weakens
-        the authoritative audible-lane handoff.
+        Keeping an AP2 session alive once another source owns the audible lane
+        leaves the sender routed to an inaudible receiver. ``DropSession`` is
+        receiver-owned and forcibly terminates that connection; MPRIS ``Stop``
+        is only a remote request the sender may ignore, so it is retained
+        solely as a compatibility fallback when the native method is
+        unavailable. This cleanup runs after fan-in has moved; failure never
+        rolls back or weakens the authoritative audible-lane handoff.
         """
         dropped = await _busctl(
             "call",
@@ -1675,17 +1615,14 @@ class Mux:
     async def _usbsink_set_preempt(self, silenced: bool, *, reason: str) -> None:
         """Silence/un-silence the USB source when it loses/regains the speaker.
 
-        jasper-fanin DIRECT-captures the gadget as its sole live ingress owner,
-        so USB is silenced by ``MUTE``/``UNMUTE`` of the fan-in usbsink lane at
-        its mix stage. The lane keeps reporting its pre-mute
-        frames/level, so mux still sees a muted-but-streaming host as "playing"
-        (no mute→release→mute flap). See ``_usbsink_set_preempt_fanin``.
+        The lane keeps reporting its pre-mute frames/level, so mux still sees a
+        muted-but-streaming host as "playing" (no mute→release→mute flap).
 
-        No-ops if the requested state matches our tracked state, so a tick that
+        No-ops if the requested state matches the tracked state, so a tick that
         re-emits the same decision doesn't generate stale commands.
         ``self._usbsink_preempted`` advances only on success, so a failure is a
-        bounded WARN + graceful mixing and mux re-attempts on the next tick
-        (1 Hz, no storm) — the escape hatch degrades to never-silence."""
+        bounded WARN plus graceful mixing and mux re-attempts on the next tick
+        (1 Hz, no storm); the escape hatch degrades to never-silence."""
         if self._usbsink_preempted == silenced:
             return
         if _usbsink_preempt_disabled():
@@ -1709,14 +1646,14 @@ class Mux:
 
         The mute is applied at fan-in's mix stage only; the lane's capture and
         per-lane telemetry (frames_read / rms_dbfs) are untouched, so combo
-        liveness (`step_combo_liveness`) still reads the host's true activity.
-        NOT persisted by fan-in — a fan-in restart comes up unmuted, and
+        liveness still reads the host's true activity. NOT persisted by fan-in
+        — a fan-in restart comes up unmuted, and
         ``_reassert_usbsink_preempt_mute`` re-mutes on the next tick."""
         try:
             await self._fanin_lane_mute(USBSINK_FANIN_LABEL, silenced)
         except Exception as e:  # noqa: BLE001
-            # Bounded WARN, graceful mixing, and re-attempt next tick (tracked
-            # flag NOT advanced) — no retry storm, no silent failure.
+            # Tracked flag deliberately NOT advanced, so the next tick
+            # re-attempts.
             logger.warning(
                 "usbsink fanin lane mute failed (muted=%s reason=%s): %s; "
                 "audio may briefly mix",
@@ -1737,14 +1674,12 @@ class Mux:
 
         fan-in does NOT persist the mute (it comes up unmuted on restart), so a
         fan-in bounce mid-preempt would drop the silence while mux still tracks
-        ``_usbsink_preempted=True`` and would never re-mute (the state guard in
-        ``_usbsink_set_preempt`` short-circuits the unchanged decision). This
-        per-reconcile reassertion closes that gap — the next alert or patrol re-mutes an
-        unmuted-after-restart lane. Idempotent on the fan-in side (it logs only
-        on a real flip → no steady-state journal spam), alert-coalesced with a
-        fixed 1 Hz patrol fallback, and fail-soft. Mirrors
-        ``_reassert_auto_winner``'s
-        SELECT reassertion.
+        ``_usbsink_preempted=True`` and would never re-mute — the state guard in
+        ``_usbsink_set_preempt`` short-circuits the unchanged decision. This
+        per-reconcile reassertion closes that gap: the next alert or patrol
+        re-mutes an unmuted-after-restart lane. Idempotent on the fan-in side
+        (it logs only on a real flip, so no steady-state journal spam) and
+        fail-soft.
 
         No-op when USB isn't preempted or when the escape hatch is set."""
         if not self._usbsink_preempted:
@@ -1758,15 +1693,14 @@ class Mux:
 
     # ------------------------------------------------------------------
     # Spotify Web API helpers — librespot 0.8.0 has no local control
-    # HTTP, so to pause Spotify we drive Spotify's cloud → spirc →
-    # librespot. Uses the same multi-account router voice tools
-    # already use for Spotify queries.
+    # HTTP, so pausing Spotify means driving Spotify's cloud → spirc →
+    # librespot, through the same multi-account router the voice tools use.
     # ------------------------------------------------------------------
 
     def _ensure_spotify_router(self) -> Any | None:
-        """Build the multi-account Spotify router on first use, or
-        return the cached one. None means Spotify env vars aren't set
-        and Web API isn't available."""
+        """Build the multi-account Spotify router on first use, or return the
+        cached one. None means Spotify env vars aren't set, so the Web API
+        pause path is unavailable."""
         if self._spotify_router_built:
             return self._spotify_router
         self._spotify_router_built = True
@@ -1793,9 +1727,6 @@ class Mux:
                 default_name="default",
             )
             hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-            # build_clients returns BuildResult (clients dict + per-account
-            # statuses). mux only needs the clients dict — it doesn't read
-            # statuses or surface revoked-vs-needs-oauth distinctions.
             default_redirect_uri = default_spotify_redirect_uri(hostname)
             result = build_clients(
                 registry,
@@ -1816,17 +1747,14 @@ class Mux:
             return None
 
     async def _spotify_pause_via_web_api(self) -> bool:
-        """Try every authorized account; pause whichever has the JTS
-        device. Returns True if any account successfully paused.
+        """Try every authorized account; pause whichever has the JTS device.
+        Returns True if any account successfully paused.
 
-        Pre-2026-05-22 this only tried devices where `is_active` was
-        True. That left a real failure window: librespot can be
-        emitting audio to JTS while the Web API's `is_active` flag
-        still shows the previous device (the flag lags behind player
-        state and is sometimes stale across multiple seconds).
-        We now also try any device named JTS regardless of `is_active`
-        — pause_playback will return an error if the device truly
-        isn't reachable, which we swallow at debug level and continue.
+        The Web API's `is_active` flag lags player state and can be stale for
+        several seconds, so librespot may be emitting audio to JTS while the
+        flag still names the previous device. Devices matching the speaker name
+        are therefore tried regardless of `is_active`; an unreachable device
+        just errors out of pause_playback, swallowed at debug level.
         """
         router = self._ensure_spotify_router()
         if router is None:
@@ -1892,36 +1820,31 @@ class Mux:
         """Tier 2 escalation: try-restart librespot.service to force an
         active instance to drop its FD on the Spotify fan-in lane.
 
-        Effects observed at the audio layer: librespot exits and closes
-        its private Spotify lane writer (`librespot_substream`, or that
-        lane's SHM ring on a box armed for ring ingress — the arbitration
-        is identical either way); fanin then reads silence on that lane
-        while the new winner's lane continues.
-        systemd respawns librespot in ~2-3 s (Restart=always); during
-        that gap, the new winner (AirPlay / Bluetooth) is heard alone.
-        After respawn, librespot is back as an idle Spotify Connect
-        device — the credential cache (--system-cache
-        /var/cache/librespot) persists, so the user's phone re-sees the
-        speaker in the Connect picker without re-authenticating. The catch: any
-        state inside librespot's current session (track position, queue)
-        is lost — the next Spotify Connect cast picks up fresh.
+        librespot exits and closes its private Spotify lane writer
+        (`librespot_substream`, or that lane's SHM ring on a box armed for ring
+        ingress — the arbitration is identical either way); fan-in then reads
+        silence on that lane while the new winner's continues. systemd respawns
+        librespot in ~2-3 s (Restart=always), and during that gap the new winner
+        is heard alone. After respawn librespot is back as an idle Spotify
+        Connect device: the credential cache (--system-cache
+        /var/cache/librespot) persists, so the phone re-sees the speaker in the
+        Connect picker without re-authenticating, but any state inside the
+        current session (track position, queue) is lost.
 
-        We use `systemctl try-restart` rather than `restart` or `kill -TERM` so the
-        same `Restart=always` policy that handles every other
-        active librespot exit also handles this one, while a concurrent
-        household Off or follower park wins the race and stays stopped.
+        `systemctl try-restart` rather than `restart` or `kill -TERM`, so the
+        same `Restart=always` policy that handles every other active librespot
+        exit handles this one, while a concurrent household Off or follower park
+        wins the race and stays stopped.
 
-        Returns True when the active-only mutation succeeds, including
-        systemd's intentional no-op for an already-inactive unit. Logged but
-        not retried on failure (the only thing that would happen on retry is
-        more log spam — the failure mode is "try-restart unavailable" which
-        doesn't self-heal).
+        Returns True when the active-only mutation succeeds, including systemd's
+        intentional no-op for an already-inactive unit. Logged but not retried
+        on failure: the failure mode is "try-restart unavailable", which does
+        not self-heal.
 
-        WS1 Phase 3: routed through jasper-control's restart broker
-        (off-thread, since the broker client is blocking) so jasper-mux
-        needs no privilege of its own once dropped to a non-root service
-        user. While mux is still root the broker client falls back to a
-        direct systemctl if the broker is unreachable.
+        Routed through jasper-control's restart broker (off-thread, since the
+        broker client is blocking) so jasper-mux needs no privilege of its own.
+        The broker client falls back to a direct systemctl if the broker is
+        unreachable.
         """
         resp = await asyncio.to_thread(
             restart_broker.manage_units,
@@ -1942,8 +1865,7 @@ class Mux:
 
 
 async def _busctl(*args: str) -> Optional[str]:
-    """Run busctl on the system bus, return stdout on success or
-    None on any error. Used by the bounded AirPlay preemption adapter."""
+    """Run busctl on the system bus; stdout on success, None on any error."""
     stdout = await system_busctl(*args)
     if stdout is None:
         return None
