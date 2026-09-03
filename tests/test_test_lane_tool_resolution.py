@@ -340,6 +340,7 @@ def _fast_lane_selected_tests(
     *,
     changed_path: str,
     routed_tests: tuple[str, ...],
+    test_contents: dict[str, str] | None = None,
 ) -> set[str]:
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
@@ -351,7 +352,9 @@ def _fast_lane_selected_tests(
         path = repo / relative
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("", encoding="utf-8")
+            path.write_text(
+                (test_contents or {}).get(relative, ""), encoding="utf-8"
+            )
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "tests@example.invalid")
     _git(repo, "config", "user.name", "JTS Tests")
@@ -1297,3 +1300,40 @@ def test_test_merge_mypy_failure_stops_before_pytest_and_fails_the_lane(
     assert calls.read_text(encoding="utf-8").splitlines() == ["mypy"], (
         "pytest must never run once the mypy gate fails"
     )
+
+
+@pytest.mark.parametrize(
+    ("script", "routed_test", "expected"),
+    (
+        ("jasper-camilla-recover", "tests/test_camilla_recover_script.py", "named"),
+        ("jasper-apply-airplay-mode", "tests/test_airplay_render.py", "grep"),
+    ),
+)
+def test_fast_lane_routes_deploy_bin_scripts_to_their_tests(
+    tmp_path: Path,
+    script: str,
+    routed_test: str,
+    expected: str,
+) -> None:
+    """A deploy/bin shell script must select the tests that exercise it.
+
+    These scripts are reached through subprocess, so the jasper/*.py arms
+    cannot route them and before this arm a change under deploy/bin selected
+    nothing at all. Both halves of the arm are pinned because only one of
+    them is a naming convention: `jasper-camilla-recover` has a test named
+    after it, while `jasper-apply-airplay-mode` has none and is covered by
+    tests/test_airplay_render.py, whose 18 macOS-only failures reached main
+    green through this gap. The `grep` case's stub carries the script's name
+    so the sandbox reproduces how the real tree pins it -- by literal
+    reference, not by filename.
+    """
+    selected = _fast_lane_selected_tests(
+        tmp_path,
+        changed_path=f"deploy/bin/{script}",
+        routed_tests=(routed_test,),
+        test_contents=(
+            {routed_test: f"# exercises {script}\n"} if expected == "grep" else None
+        ),
+    )
+
+    assert routed_test in selected, selected

@@ -233,6 +233,35 @@ while IFS= read -r changed; do
       # here.
       add_landing_tests_if_needed
       ;;
+    deploy/bin/*)
+      # These are shell scripts the tests reach through subprocess, so no
+      # import graph routes them and the jasper/*.py arms above never match.
+      # About half are pinned by a test named for the script minus its
+      # `jasper-` prefix; the rest are pinned by contract tests named for the
+      # SUBJECT instead (jasper-apply-airplay-mode is covered by
+      # tests/test_airplay_render.py, which is why the convention alone left
+      # it selecting zero tests). So: convention first, and only when that
+      # finds nothing, the tests that name the script literally -- the broad
+      # `grep` is the fallback and not the rule because the reconcile scripts
+      # are named in ~28 files each, several of them slow.
+      script="${changed##*/}"
+      script_module="${script#jasper-}"
+      script_module="${script_module//-/_}"
+      script_matched=false
+      for candidate in \
+        "tests/test_${script_module}.py" \
+        "tests/test_${script_module}_script.py"; do
+        if [[ -f "${candidate}" ]]; then
+          add_test_if_present "${candidate}"
+          script_matched=true
+        fi
+      done
+      if [[ "${script_matched}" != true ]]; then
+        while IFS= read -r script_test; do
+          add_test_if_present "${script_test}"
+        done < <(grep -l -- "${script}" tests/test_*.py 2>/dev/null || true)
+      fi
+      ;;
     rust/*)
       # The Rust crates' static source guards are Python tests (cargo can't
       # run in every dev env). Run them in the fast lane so a Rust edit that
