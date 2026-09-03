@@ -2,19 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the jasper-doctor audio domain."""
+"""Unit tests for the jasper-doctor audio domain.
+
+Every assertion pins ``status`` and ``reason`` — never ``detail`` prose
+(ADR-0228 rule 3). ``audio.REASON_*`` is the closed vocabulary.
+"""
 
 import grp
+import json
 import os
 import subprocess
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-
+import jasper.active_speaker._common as _common
+import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.camilla import CamillaUnavailable
 from jasper.cli import doctor
 from jasper.cli.doctor import audio
@@ -29,10 +36,7 @@ from jasper.output_hardware import (
 )
 
 
-from .doctor_test_support import (
-    _fresh_cfg,
-    record_active_dac,
-)
+from .doctor_test_support import _fresh_cfg, record_active_dac
 
 
 def _lsusb_only(stdout: str):
@@ -53,8 +57,8 @@ def test_apple_dongle_check_never_assumes_apple_without_a_record(monkeypatch):
 
     result = doctor.check_apple_dongle_audio()
 
-    assert result.status == "ok"
-    assert "no Apple dongle on USB" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == audio.REASON_APPLE_DONGLE_ABSENT
 
 
 def test_apple_dongle_check_warns_when_the_chip_is_on_usb_but_no_card_enumerated(
@@ -69,7 +73,7 @@ def test_apple_dongle_check_warns_when_the_chip_is_on_usb_but_no_card_enumerated
     result = doctor.check_apple_dongle_audio()
 
     assert result.status == "warn"
-    assert "3.5mm" in result.detail
+    assert result.reason == audio.REASON_APPLE_DONGLE_NO_AUDIO_CARD
 
 
 def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
@@ -81,8 +85,8 @@ def test_apple_dongle_check_skips_for_non_apple_output_dac(monkeypatch):
 
     result = doctor.check_apple_dongle_audio()
 
-    assert result.status == "ok"
-    assert "active output DAC is hifiberry_dac8x" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == audio.REASON_APPLE_DONGLE_NOT_APPLICABLE
 
 
 def test_apple_dongle_check_matches_usb_id_case_insensitively(monkeypatch):
@@ -131,6 +135,7 @@ def test_apple_dongle_check_reads_usb_id_from_active_profile(monkeypatch):
     result = doctor.check_apple_dongle_audio()
 
     assert result.status == "ok"
+    assert result.reason == ""
 
 
 def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch):
@@ -145,7 +150,7 @@ def test_apple_dongle_check_ok_for_a_partial_record_naming_its_card(monkeypatch)
     result = doctor.check_apple_dongle_audio()
 
     assert result.status == "ok"
-    assert "A" in result.detail
+    assert result.reason == ""
 
 
 def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch):
@@ -157,8 +162,8 @@ def test_dongle_headphone_gain_check_skips_for_non_apple_output_dac(monkeypatch)
 
     result = doctor.check_dongle_headphone_at_max()
 
-    assert result.status == "ok"
-    assert "active output DAC is hifiberry_dac8x" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == audio.REASON_DONGLE_GAIN_NOT_APPLICABLE
 
 
 def test_dongle_headphone_gain_check_uses_reconciled_card(monkeypatch):
@@ -215,17 +220,13 @@ def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
     result = doctor.check_apple_dongle_audio()
 
     assert result.status == "warn"
-    assert "only 1 Apple audio card(s)" in result.detail
+    assert result.reason == audio.REASON_APPLE_DONGLE_CARDS_MISSING
 
 
-def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
-    monkeypatch,
-    tmp_path,
-):
-    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, save_output_topology
-    from jasper.output_topology import OutputTopology
+def _dual_apple_topology():
+    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
-    topology = OutputTopology.from_mapping(
+    return OutputTopology.from_mapping(
         {
             "artifact_schema_version": 1,
             "kind": OUTPUT_TOPOLOGY_KIND,
@@ -293,8 +294,16 @@ def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
             },
         }
     )
+
+
+def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
+    monkeypatch,
+    tmp_path,
+):
+    from jasper.output_topology import save_output_topology
+
     topology_path = tmp_path / "output_topology.json"
-    save_output_topology(topology, path=topology_path)
+    save_output_topology(_dual_apple_topology(), path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
 
     state = OutputHardwareState(
@@ -318,93 +327,24 @@ def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
     output = doctor.check_output_hardware_state()
     active = doctor.check_active_speaker_output_hardware_match()
 
+    # Basic output health stays green; only the saved-topology check fails.
     assert output.status == "ok"
-    assert "profile=apple_usb_c_dongle status=ready outputs=2" in output.detail
+    assert output.reason == ""
     assert active.status == "fail"
-    assert f"saved={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID}" in active.detail
-    assert f"current={APPLE_USB_C_DONGLE_DEVICE_ID} status=ready" in active.detail
-    assert "active speaker actions are blocked" in active.detail
-    assert "Basic output hardware is reported separately" in active.detail
+    assert active.reason == audio.REASON_OUTPUT_HARDWARE_MISMATCH
 
 
 def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
     monkeypatch,
     tmp_path,
 ):
-    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+    """The saved pair is attached, but the observed serials are not the banked
+    ones — a clock-domain blocker, distinct from a device_id mismatch."""
     from jasper.output_topology import save_output_topology
 
-    topology = OutputTopology.from_mapping(
-        {
-            "artifact_schema_version": 1,
-            "kind": OUTPUT_TOPOLOGY_KIND,
-            "topology_id": "dual_apple_pair",
-            "name": "Dual Apple active pair",
-            "status": "draft",
-            "hardware": {
-                "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-                "device_label": "Dual Apple USB-C DAC 4-channel pair",
-                "physical_output_count": 4,
-                "child_devices": [
-                    {
-                        "child_id": "left_dac",
-                        "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
-                        "device_label": "Apple USB-C audio adapter",
-                        "serial": "DWH53530FHL2FN3AC",
-                        "physical_output_indexes": [0, 1],
-                    },
-                    {
-                        "child_id": "right_dac",
-                        "device_id": APPLE_USB_C_DONGLE_DEVICE_ID,
-                        "device_label": "Apple USB-C audio adapter",
-                        "serial": "DWH53530FLL2FN3A3",
-                        "physical_output_indexes": [2, 3],
-                    },
-                ],
-            },
-            "speaker_groups": [
-                {
-                    "id": "left",
-                    "label": "Left speaker",
-                    "kind": "left",
-                    "mode": "active_2_way",
-                    "channels": [
-                        {"role": "woofer", "physical_output_index": 0},
-                        {
-                            "role": "tweeter",
-                            "physical_output_index": 1,
-                            "startup_muted": True,
-                            "protection_required": True,
-                            "protection_status": "present",
-                        },
-                    ],
-                },
-                {
-                    "id": "right",
-                    "label": "Right speaker",
-                    "kind": "right",
-                    "mode": "active_2_way",
-                    "channels": [
-                        {"role": "woofer", "physical_output_index": 2},
-                        {
-                            "role": "tweeter",
-                            "physical_output_index": 3,
-                            "startup_muted": True,
-                            "protection_required": True,
-                            "protection_status": "present",
-                        },
-                    ],
-                },
-            ],
-            "routing": {
-                "main_left_group_id": "left",
-                "main_right_group_id": "right",
-            },
-        }
-    )
     topology_path = tmp_path / "output_topology.json"
     hardware_path = tmp_path / "output_hardware.json"
-    save_output_topology(topology, path=topology_path)
+    save_output_topology(_dual_apple_topology(), path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
     write_output_hardware_state(
@@ -437,51 +377,17 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
     active = doctor.check_active_speaker_output_hardware_match()
 
     assert output.status == "ok"
-    assert (
-        f"profile={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID} status=ready outputs=4"
-        in output.detail
-    )
     assert active.status == "fail"
-    assert f"saved={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID}" in active.detail
-    assert f"current={DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID} status=ready" in active.detail
-    assert (
-        "current-hardware clock blockers=dual_apple_observed_serial_mismatch"
-        in active.detail
-    )
-    assert "active speaker actions are blocked" in active.detail
-    assert "Basic output hardware is reported separately" in active.detail
+    assert active.reason == audio.REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED
 
 
-def test_output_hardware_state_surfaces_the_declared_final_edge(monkeypatch):
-    # The final edge is the electrical fact the chip-AEC alignment identity is
-    # commissioned against, so the operator-facing line must name it. Read from
-    # the reconciler-emitted env (env_load sources outputd.env), never
-    # re-derived from the registry — a drift between the two is the thing this
-    # line exists to expose.
-    state = OutputHardwareState(
-        profile_id="innomaker_hifi_amp_pro",
-        profile_label="InnoMaker HiFi AMP Pro",
-        status="ready",
-        physical_output_count=2,
-    )
-    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: state)
+def test_output_hardware_state_warns_without_a_record(monkeypatch):
+    monkeypatch.setattr(doctor.audio, "_load_output_hardware_state", lambda: None)
 
-    monkeypatch.setenv("JASPER_OUTPUTD_DAC_FORMAT", "S32_LE")
-    assert "final_edge=S32_LE (declared)" in (
-        doctor.check_output_hardware_state().detail
-    )
+    result = doctor.check_output_hardware_state()
 
-    # Unset (a box predating the emit) and explicit-empty (the reconciler's own
-    # value for an unrecognized DAC) both mean the historical S16_LE edge —
-    # the same resolution outputd's own parse applies.
-    monkeypatch.setenv("JASPER_OUTPUTD_DAC_FORMAT", "")
-    assert "final_edge=S16_LE (declared)" in (
-        doctor.check_output_hardware_state().detail
-    )
-    monkeypatch.delenv("JASPER_OUTPUTD_DAC_FORMAT", raising=False)
-    assert "final_edge=S16_LE (declared)" in (
-        doctor.check_output_hardware_state().detail
-    )
+    assert result.status == "warn"
+    assert result.reason == audio.REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE
 
 
 def test_dual_apple_headphone_gain_checks_every_card(monkeypatch):
@@ -526,7 +432,7 @@ def test_dual_apple_headphone_gain_checks_every_card(monkeypatch):
     result = doctor.check_dongle_headphone_at_max()
 
     assert result.status == "warn"
-    assert "A_1:75%" in result.detail
+    assert result.reason == audio.REASON_DONGLE_GAIN_BELOW_TARGET
     assert ["amixer", "-c", "A", "sget", "Headphone"] in commands
     assert ["amixer", "-c", "A_1", "sget", "Headphone"] in commands
 
@@ -590,33 +496,48 @@ def test_check_arecord_l_does_not_match_wrong_card():
         assert doctor._check_arecord_l_card_device(7, 1) is False
 
 
-def test_check_mic_card_routes_shorthand_through_arecord_l(monkeypatch):
+@pytest.mark.parametrize(
+    "arecord_l, status, reason",
+    [
+        (
+            "card 7: LoopbackAEC [Loopback], device 1: Loopback PCM\n",
+            "ok", "",
+        ),
+        # The shorthand points at a card/device that is gone: the most common
+        # cause is the bridge having moved to UDP with JASPER_MIC_DEVICE stale.
+        (
+            "card 0: dongle [USB Audio], device 0: USB Audio\n",
+            "fail", audio.REASON_MIC_CARD_ABSENT,
+        ),
+    ],
+    ids=["present", "absent"],
+)
+def test_check_mic_card_routes_shorthand_through_arecord_l(
+    monkeypatch, arecord_l, status, reason
+):
     cfg = _fresh_cfg(
         monkeypatch,
         GEMINI_API_KEY="AIzaSyTest",
         JASPER_MIC_DEVICE="hw:7,1",
     )
-    fake_output = "card 7: LoopbackAEC [Loopback], device 1: Loopback PCM\n"
     with (
         patch.object(
             doctor.audio,
             "_run",
             return_value=type(
-                "FakeProc", (), {"stdout": fake_output, "returncode": 0}
+                "FakeProc", (), {"stdout": arecord_l, "returncode": 0}
             )(),
         ),
         patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"),
     ):
         r = doctor.check_mic_card_matches_config(cfg)
-    assert r.status == "ok"
-    assert "card 7 device 1 present" in r.detail
+    assert r.status == status
+    assert r.reason == reason
 
 
 def test_check_mic_capture_falls_back_to_daemon_active(monkeypatch):
-    """When PortAudio refuses to open the mic AND jasper-voice is
-    running, the check returns ok with a 'daemon holds device' note
-    instead of a spurious fail. This is the snd-aloop / AEC bridge
-    case where the daemon owns the capture handle exclusively."""
+    """When PortAudio refuses to open the mic AND jasper-voice is running, the
+    daemon owning the capture handle IS the evidence — not a spurious fail."""
     cfg = _fresh_cfg(
         monkeypatch,
         GEMINI_API_KEY="AIzaSyTest",
@@ -627,23 +548,12 @@ def test_check_mic_capture_falls_back_to_daemon_active(monkeypatch):
         def rec(self, *a, **kw):
             raise ValueError("No input device matching 'hw:7,1'")
 
-    fake_sd = FakeSD()
-
-    def fake_import(*args, **kwargs):
-        if args and args[0] == "sounddevice":
-            return fake_sd
-        return __import__(*args, **kwargs)
-
-    # Use a sd-stub by monkeypatching the import inside the function.
-    # Easier: patch a wrapper. Instead, patch _jasper_voice_active and
-    # mock sd.rec via injecting into sys.modules.
-    sys.modules["sounddevice"] = fake_sd
+    sys.modules["sounddevice"] = FakeSD()
     try:
         with patch.object(doctor.audio, "_jasper_voice_active", return_value=True):
             r = doctor.check_mic_capture(cfg)
-        assert r.status == "ok"
-        assert "skipped" in r.detail
-        assert "jasper-voice holds" in r.detail
+        assert r.status == "skipped"
+        assert r.reason == audio.REASON_MIC_HELD_BY_VOICE
     finally:
         del sys.modules["sounddevice"]
 
@@ -666,36 +576,12 @@ def test_check_mic_capture_fails_hard_when_daemon_inactive(monkeypatch):
         with patch.object(doctor.audio, "_jasper_voice_active", return_value=False):
             r = doctor.check_mic_capture(cfg)
         assert r.status == "fail"
+        assert r.reason == audio.REASON_MIC_CAPTURE_OPEN_FAILED
     finally:
         del sys.modules["sounddevice"]
 
 
-def test_check_mic_card_shorthand_failure_actionable(monkeypatch):
-    """When the shorthand points at a card/device that's missing, the
-    failure detail must mention the AEC bridge — that's the most
-    common cause (bridge disabled but JASPER_MIC_DEVICE still set)."""
-    cfg = _fresh_cfg(
-        monkeypatch,
-        GEMINI_API_KEY="AIzaSyTest",
-        JASPER_MIC_DEVICE="hw:7,1",
-    )
-    fake_output = "card 0: dongle [USB Audio], device 0: USB Audio\n"
-    with (
-        patch.object(
-            doctor.audio,
-            "_run",
-            return_value=type(
-                "FakeProc", (), {"stdout": fake_output, "returncode": 0}
-            )(),
-        ),
-        patch.object(doctor.shutil, "which", return_value="/usr/bin/arecord"),
-    ):
-        r = doctor.check_mic_card_matches_config(cfg)
-    assert r.status == "fail"
-    assert "AEC bridge" in r.detail
-
-
-# ---- check_dac_usb_sync_mode (Stage 6 clock-coherence advisory) -------------
+# ---- check_dac_usb_sync_mode (clock-coherence advisory) ---------------------
 
 
 def _sync_mode_state(*syncs):
@@ -761,25 +647,29 @@ def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("must not probe")),
     )
 
-    assert doctor.check_dac_usb_sync_mode().status == "ok"
+    result = doctor.check_dac_usb_sync_mode()
+
+    assert result.status == "skipped"
+    assert result.reason == audio.REASON_DAC_SYNC_NOT_APPLICABLE
 
 
 @pytest.mark.parametrize(
-    "state, status, must_name",
+    "state, status, reason",
     [
-        (_sync_mode_state("SYNC"), "ok", "synchronous USB playback endpoint"),
-        (_sync_mode_state("ADAPTIVE"), "ok", "synchronous USB playback endpoint"),
-        (_sync_mode_state("ASYNC"), "warn", "async USB playback endpoint"),
-        # A HiFiBerry/I2S HAT is a known profile with no USB endpoint sync tag.
-        (_I2S_STATE, "ok", "I2S clock slave"),
-        # A partial record still names the I2S DAC it observed, so this stays
-        # the ok/I2S branch rather than falling through to "profile is unknown".
-        (_I2S_STATE_PARTIAL, "ok", "I2S clock slave"),
-        (None, "warn", "output hardware state unavailable"),
+        (_sync_mode_state("SYNC"), "ok", ""),
+        (_sync_mode_state("ADAPTIVE"), "ok", ""),
+        # Advisory only: the binding chip-AEC gate is fixed DAC qualification,
+        # so an async endpoint warns and never fails.
+        (_sync_mode_state("ASYNC"), "warn", audio.REASON_DAC_SYNC_ASYNC),
+        # A HiFiBerry/I2S HAT is a known profile with no USB endpoint sync
+        # tag, so there is no USB sync mode to classify at all.
+        (_I2S_STATE, "skipped", audio.REASON_DAC_SYNC_I2S),
+        (_I2S_STATE_PARTIAL, "skipped", audio.REASON_DAC_SYNC_I2S),
+        (None, "warn", audio.REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE),
     ],
     ids=["sync", "adaptive", "async", "i2s", "i2s-partial", "state-unavailable"],
 )
-def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, must_name):
+def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, reason):
     monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
     monkeypatch.setattr(
         doctor.audio, "_output_hardware_state_or_none", lambda: state
@@ -788,23 +678,7 @@ def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, must_name)
     result = doctor.check_dac_usb_sync_mode()
 
     assert result.status == status
-    assert must_name in result.detail
-
-
-def test_check_dac_usb_sync_mode_stays_advisory_about_qualification(monkeypatch):
-    """Neither endpoint sync nor the diagnostic SRO verdict authorizes
-    production — the fixed DAC profile does."""
-    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
-    monkeypatch.setattr(
-        doctor.audio,
-        "_output_hardware_state_or_none",
-        lambda: _sync_mode_state("ASYNC"),
-    )
-
-    assert (
-        "fixed DAC-profile qualification"
-        in doctor.check_dac_usb_sync_mode().detail
-    )
+    assert result.reason == reason
 
 
 # ============================== microphone coherence ==========================
@@ -834,127 +708,103 @@ def _present_non_xvf() -> MicPresence:
     return MicPresence(present=True)
 
 
+def _push_to_talk_only() -> MicPresence:
+    """Gate open (a remote is paired), but no local mic to probe."""
+    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
+
+
+def _local_mic_and_accessory() -> MicPresence:
+    """A healthy non-XVF local mic on a box that ALSO has a remote paired."""
+    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
+
+
 @pytest.fixture(autouse=True)
 def _not_bonded(monkeypatch: pytest.MonkeyPatch) -> None:
     # Keep the bonded-follower short-circuit out of the way — we're exercising
     # the mic-absence path specifically.
-    monkeypatch.setattr(audio, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(audio, "_parked_follower_result", lambda _label: None)
 
 
-def test_headline_absent_is_one_yellow_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(audio, "read_mic_presence", _absent)
+@pytest.mark.parametrize(
+    "presence, status, reason",
+    [
+        (_absent, "warn", audio.REASON_MIC_ABSENT),
+        (_present, "ok", ""),
+        # B1 guard: a present non-XVF mic must read as present (it has no XVF
+        # enrichment, but it IS a microphone).
+        (_present_non_xvf, "ok", ""),
+        # The headline reads the OR verdict, so an accessory-satisfied gate is
+        # `ok`; `mic ALSA card` / `mic capture` are what tell it from a local
+        # mic (issue #2205).
+        (_push_to_talk_only, "ok", ""),
+        (_local_mic_and_accessory, "ok", ""),
+    ],
+    ids=["absent", "xvf", "non-xvf", "accessory-only", "local-plus-accessory"],
+)
+def test_microphone_headline_verdicts(
+    monkeypatch: pytest.MonkeyPatch, presence, status, reason
+) -> None:
+    monkeypatch.setattr(audio, "read_mic_presence", presence)
     r = audio.check_microphone()
     assert r.name == "microphone"
-    assert r.status == "warn"  # the single flag — never a red fail
-    assert "input unavailable" in r.detail
-    assert "No supported XVF3800 ALSA card detected" in r.detail
-
-
-def test_headline_present_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(audio, "read_mic_presence", _present)
-    r = audio.check_microphone()
-    assert r.status == "ok"
-    assert "present" in r.detail
-
-
-def test_headline_non_xvf_present_is_ok_not_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """B1 guard at the headline: a present non-XVF mic must read as present,
-    never "not detected" (it has no XVF enrichment, but it IS a microphone)."""
-    monkeypatch.setattr(audio, "read_mic_presence", _present_non_xvf)
-    r = audio.check_microphone()
-    assert r.status == "ok"
-    assert "not detected" not in r.detail
+    assert r.status == status
+    assert r.reason == reason
 
 
 def test_card_and_capture_defer_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(audio, "read_mic_presence", _absent)
     card = audio.check_mic_card_matches_config(_CFG)
     cap = audio.check_mic_capture(_CFG)
-    # Both defer to the headline — expected idle, never a red failure.
-    assert card.status == "ok"
-    assert "microphone" in card.detail
-    assert cap.status == "ok"
+    # Both defer to the headline, which owns the verdict: nothing was probed
+    # here, so neither may claim a green tick.
+    assert card.status == "skipped"
+    assert card.reason == audio.REASON_MIC_ABSENT_DEFERRED
+    assert cap.status == "skipped"
+    assert cap.reason == audio.REASON_MIC_ABSENT_DEFERRED
 
 
 def test_absent_mic_is_one_flag_zero_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     """The whole point of the cleanup: no mic == one warn, never a cascade."""
     monkeypatch.setattr(audio, "read_mic_presence", _absent)
-    results = [
-        audio.check_microphone(),
-        audio.check_mic_card_matches_config(_CFG),
-        audio.check_mic_capture(_CFG),
+    statuses = [
+        r.status for r in (
+            audio.check_microphone(),
+            audio.check_mic_card_matches_config(_CFG),
+            audio.check_mic_capture(_CFG),
+        )
     ]
-    statuses = [r.status for r in results]
     assert statuses.count("fail") == 0
     assert statuses.count("warn") == 1
 
 
 # --- push-to-talk-only box (issue #2205) -------------------------------------
 
-def _push_to_talk_only() -> MicPresence:
-    """Gate open (a remote is paired), but no local mic to probe."""
-    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
-
-
-def test_push_to_talk_box_reads_as_advisory_not_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The regression this PR must not ship: opening the gate for an accessory
-    makes the local-device checks actually probe, and on a box with no local mic
-    they would find nothing and go RED. A box whose only microphone is a paired
-    remote must not look broken."""
-    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
-    monkeypatch.setattr(
-        audio, "check_alsa_card",
-        lambda *a, **k: audio.CheckResult("mic ALSA card (Array)", "fail", "absent"),
-    )
-    card = audio.check_mic_card_matches_config(_CFG)
-    assert card.status == "warn"
-    assert "wiim_remote_2" in card.detail
-    # GATE state, not runtime state. The daemon half of issue #2205 has landed,
-    # so such a box can answer — but this check never looks at the daemon, so
-    # it still must not claim voice is running on the accessory.
-    assert "the voice-input gate is open for it" in card.detail
-    assert "#2205" in card.detail
-    assert "runs push-to-talk" not in card.detail
-    # The local finding is preserved, not swallowed.
-    assert "absent" in card.detail
-
-
-def test_push_to_talk_box_is_distinguishable_from_a_working_local_mic(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An operator must be able to tell the two apart. The headline names the
-    accessory and never claims "present"; the local probe says which half is
-    actually there."""
-    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
-    headline = audio.check_microphone()
-    assert headline.status == "ok"
-    assert "push-to-talk accessory paired: wiim_remote_2" in headline.detail
-    assert not headline.detail.startswith("present")
-    # Never a present-tense claim about a daemon this check does not look at.
-    assert "runs" not in headline.detail
-
-    monkeypatch.setattr(audio, "read_mic_presence", _present)
-    assert "push-to-talk" not in audio.check_microphone().detail
-
 
 def test_soften_never_upgrades_a_passing_or_warning_result() -> None:
     presence = _push_to_talk_only()
     for status in ("ok", "warn"):
-        original = audio.CheckResult("mic capture", status, "detail")
+        original = audio.CheckResult(
+            "mic capture", status, "detail",
+            reason="" if status == "ok" else "mic_capture_iffy",
+        )
         assert audio._soften_for_push_to_talk(original, presence) is original
+
+
+def test_soften_leaves_failures_alone_without_an_accessory() -> None:
+    """No accessory means a missing local mic really is the whole story — the
+    existing red failure must survive untouched."""
+    original = audio.CheckResult(
+        "mic capture", "fail", "Array: no such device",
+        reason="mic_capture_missing",
+    )
+    assert audio._soften_for_push_to_talk(original, _present_non_xvf()) is original
 
 
 def test_recorded_silence_stays_a_failure_even_with_an_accessory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Scope guard on the softening: a mic that OPENS but records silence is a
-    present-and-broken local mic, not an absent one. Calling that
-    "no local microphone" would be a lie, and hiding it behind an accessory
-    would let a muted array go unnoticed."""
+    present-and-broken local mic, not an absent one."""
     monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
     rec = types.SimpleNamespace()
 
@@ -968,19 +818,11 @@ def test_recorded_silence_stays_a_failure_even_with_an_accessory(
         def abs(_x: object) -> object:
             return types.SimpleNamespace(max=lambda: 0)
 
-    monkeypatch.setitem(__import__("sys").modules, "sounddevice", _FakeSd)
-    monkeypatch.setitem(__import__("sys").modules, "numpy", _FakeNp)
+    monkeypatch.setitem(sys.modules, "sounddevice", _FakeSd)
+    monkeypatch.setitem(sys.modules, "numpy", _FakeNp)
     result = audio.check_mic_capture(_CFG)
     assert result.status == "fail"
-    assert "recorded silence" in result.detail
-    assert "push-to-talk" not in result.detail
-
-
-def test_soften_leaves_failures_alone_without_an_accessory() -> None:
-    """No accessory means a missing local mic really is the whole story — the
-    existing red failure must survive untouched."""
-    original = audio.CheckResult("mic capture", "fail", "Array: no such device")
-    assert audio._soften_for_push_to_talk(original, _present_non_xvf()) is original
+    assert result.reason == audio.REASON_MIC_CAPTURE_SILENT
 
 
 # --- every softening CALL SITE softens, not just the function ----------------
@@ -991,6 +833,7 @@ def test_soften_leaves_failures_alone_without_an_accessory() -> None:
 # the expensive one: on a push-to-talk box the `_jasper_voice_active()`
 # short-circuit above it does not fire (voice exits 66), so a silent revert
 # there flips jasper-doctor from exit 0 to exit 1 on a correct speaker.
+
 
 def _drive_hw_shorthand_site(monkeypatch: pytest.MonkeyPatch):
     """check_mic_card_matches_config, positional `hw:N,M` branch."""
@@ -1005,7 +848,10 @@ def _drive_card_name_site(monkeypatch: pytest.MonkeyPatch):
     """check_mic_card_matches_config, named-card branch."""
     monkeypatch.setattr(
         audio, "check_alsa_card",
-        lambda *a, **k: audio.CheckResult("mic ALSA card (Array)", "fail", "absent"),
+        lambda *a, **k: audio.CheckResult(
+            "mic ALSA card (Array)", "fail", "absent",
+            reason=audio.REASON_ALSA_CARD_ABSENT,
+        ),
     )
     return audio.check_mic_card_matches_config(_CFG)
 
@@ -1026,37 +872,23 @@ def _drive_capture_open_failure_site(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.parametrize(
-    "scenario",
+    "scenario,probe_reason",
     [
-        _drive_hw_shorthand_site,
-        _drive_card_name_site,
-        _drive_capture_open_failure_site,
+        (_drive_hw_shorthand_site, audio.REASON_MIC_CARD_ABSENT),
+        (_drive_card_name_site, audio.REASON_ALSA_CARD_ABSENT),
+        (_drive_capture_open_failure_site, audio.REASON_MIC_CAPTURE_OPEN_FAILED),
     ],
-    ids=lambda fn: fn.__name__,
+    ids=lambda v: getattr(v, "__name__", v),
 )
-def test_every_soften_call_site_still_softens(
-    monkeypatch: pytest.MonkeyPatch, scenario
+def test_every_soften_call_site_keeps_the_probe_reason(
+    monkeypatch: pytest.MonkeyPatch, scenario, probe_reason
 ) -> None:
     monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
 
     result = scenario(monkeypatch)
 
     assert result.status == "warn"
-    assert "wiim_remote_2" in result.detail
-    assert "#2205" in result.detail
-
-
-def _local_mic_and_accessory() -> MicPresence:
-    """A healthy non-XVF local mic on a box that ALSO has a remote paired."""
-    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
-
-
-def test_headline_stays_ok_when_a_working_local_mic_also_has_a_remote(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(audio, "read_mic_presence", _local_mic_and_accessory)
-
-    assert audio.check_microphone().status == "ok"
+    assert result.reason == probe_reason
 
 
 # ------------------------------------------------ CamillaDSP config dir posture
@@ -1064,8 +896,7 @@ def test_headline_stays_ok_when_a_working_local_mic_also_has_a_remote(
 # Pins the jts3 2026-07-06 incident: a deploy left /var/lib/camilladsp/configs
 # root-only (setgid kept, group-write stripped — mode 2755), so the non-root
 # jasper-web user could not atomically write the staged active-speaker config
-# and staging failed with PermissionError, surfacing to the household as
-# "could not load the silent active-speaker setup".
+# and staging failed with PermissionError.
 
 
 def _own_group() -> str:
@@ -1073,19 +904,23 @@ def _own_group() -> str:
 
 
 @pytest.mark.parametrize(
-    "mode, group, status",
+    "mode, group, status, reason",
     [
-        (0o2775, None, "ok"),
-        (0o2755, None, "fail"),  # the exact regression: group-write stripped
+        (0o2775, None, "ok", ""),
+        # the exact regression: group-write stripped
+        (0o2755, None, "fail", audio.REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE),
         # setgid lost (2775 -> 0775): a root-run process creating a NEW
         # subdirectory later would land it group-root, not group-jasper.
-        (0o0775, None, "fail"),
-        (0o2775, "jts-no-such-group-xyz", "fail"),
-        (None, None, "warn"),  # dir absent
+        (0o0775, None, "fail", audio.REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE),
+        (
+            0o2775, "jts-no-such-group-xyz", "fail",
+            audio.REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE,
+        ),
+        (None, None, "warn", audio.REASON_CAMILLA_CONFIG_DIR_MISSING),
     ],
     ids=["group-writable", "group-readonly", "setgid-lost", "wrong-group", "absent"],
 )
-def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status):
+def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status, reason):
     d = tmp_path / "configs"
     if mode is not None:
         d.mkdir()
@@ -1096,18 +931,18 @@ def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status):
     )
 
     assert res.status == status
+    assert res.reason == reason
 
 
 def test_camilla_configs_writable_targets_the_constant_dir(monkeypatch, tmp_path):
     """The decorated check reads CAMILLA_CONFIGS_DIR, so the guard stays
     pointed at the dir the deploy actually permissions."""
-    missing = tmp_path / "nope"
-    monkeypatch.setattr(doctor.audio, "CAMILLA_CONFIGS_DIR", missing)
+    monkeypatch.setattr(doctor.audio, "CAMILLA_CONFIGS_DIR", tmp_path / "nope")
 
     res = doctor.audio.check_camilla_configs_writable()
 
     assert res.status == "warn"
-    assert str(missing) in res.detail
+    assert res.reason == audio.REASON_CAMILLA_CONFIG_DIR_MISSING
 
 
 # ------------------------------------------------------- CamillaDSP websocket
@@ -1138,23 +973,23 @@ def _camilla_controller(monkeypatch, *, volume, clipped):
 
 
 @pytest.mark.parametrize(
-    "volume, clipped, status, must_name",
+    "volume, clipped, status, reason",
     [
-        (-12.5, 0, "ok", "volume=-12.5 dB clipped_samples=0"),
-        (CamillaUnavailable("operation exceeded 5.0s"), 0, "fail", "5.0s"),
+        (-12.5, 0, "ok", ""),
+        (
+            CamillaUnavailable("operation exceeded 5.0s"), 0, "fail",
+            audio.REASON_CAMILLA_UNREACHABLE,
+        ),
         # clipped_samples is optional: an unavailable status command must not
         # sink the probe.
-        (
-            -18.0,
-            CamillaUnavailable("status command unavailable"),
-            "ok",
-            "volume=-18.0 dB clipped_samples=?",
-        ),
+        (-18.0, CamillaUnavailable("status command unavailable"), "ok", ""),
+        # Non-negotiable #1's live half: a fader above the ceiling is a fail.
+        (6.0, 0, "fail", audio.REASON_CAMILLA_VOLUME_ABOVE_CEILING),
     ],
-    ids=["healthy", "timeout", "clipped-optional"],
+    ids=["healthy", "timeout", "clipped-optional", "above-ceiling"],
 )
 async def test_check_camilla_websocket_verdicts(
-    monkeypatch, volume, clipped, status, must_name
+    monkeypatch, volume, clipped, status, reason
 ):
     constructed = _camilla_controller(monkeypatch, volume=volume, clipped=clipped)
     cfg = SimpleNamespace(camilla_host="127.0.0.1", camilla_port=1234)
@@ -1162,50 +997,1160 @@ async def test_check_camilla_websocket_verdicts(
     result = await doctor.audio.check_camilla_websocket(cfg)
 
     assert result.status == status
-    assert must_name in result.detail
+    assert result.reason == reason
     assert constructed == [("127.0.0.1", 1234)]
 
 
 # ---------------------------------------------------- installed prerequisites
 
-def test_check_loopback_reports_present_card(monkeypatch) -> None:
+
+@pytest.mark.parametrize(
+    "aplay_l, status, reason",
+    [
+        ("null\nhw:CARD=Loopback,DEV=0\n", "ok", ""),
+        ("null\ndefault\n", "fail", audio.REASON_LOOPBACK_MISSING),
+    ],
+    ids=["present", "missing"],
+)
+def test_check_loopback_verdicts(monkeypatch, aplay_l, status, reason) -> None:
     def fake_run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
         assert timeout == 5.0
         assert cmd == ["aplay", "-L"]
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout="null\nhw:CARD=Loopback,DEV=0\n",
-            stderr="",
-        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=aplay_l, stderr="")
 
     monkeypatch.setattr(audio, "_run", fake_run)
 
     result = audio.check_loopback()
 
     assert result.name == "snd-aloop"
-    assert result.status == "ok"
-    assert result.detail == "CARD=Loopback present"
+    assert result.status == status
+    assert result.reason == reason
 
 
-def test_check_loopback_reports_missing_card_with_remediation(monkeypatch) -> None:
-    def fake_run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
-        assert timeout == 5.0
-        assert cmd == ["aplay", "-L"]
-        return subprocess.CompletedProcess(
-            cmd,
-            0,
-            stdout="null\ndefault\n",
-            stderr="",
-        )
+# ------------------------------------------- CamillaDSP volume_limit (NN #1)
 
-    monkeypatch.setattr(audio, "_run", fake_run)
 
-    result = audio.check_loopback()
+def _point_at_config(monkeypatch, tmp_path, text, *, name="v1.yml"):
+    config = tmp_path / name
+    config.write_text(text)
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    return config
 
-    assert result.name == "snd-aloop"
-    assert result.status == "fail"
-    assert result.detail == (
-        "Loopback device missing. `sudo modprobe snd-aloop` or check "
-        "/etc/modules-load.d/snd-aloop.conf"
+
+@pytest.mark.parametrize(
+    "text, status, reason",
+    [
+        ("devices:\n  samplerate: 48000\n  volume_limit: 0.0\n", "ok", ""),
+        (
+            "devices:\n  samplerate: 48000\n", "fail",
+            audio.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+        (
+            "devices:\n  samplerate: 48000\n  volume_limit: 6.0\n", "fail",
+            audio.REASON_VOLUME_LIMIT_ABOVE_CEILING,
+        ),
+        # Ambiguous ownership never resolves to "capped": a nested or
+        # duplicated key is not the global fader ceiling.
+        (
+            "devices:\n  playback:\n    volume_limit: 0.0\n", "fail",
+            audio.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+        (
+            "devices:\n  volume_limit: 0.0\ndevices: {volume_limit: 9.0}\n", "fail",
+            audio.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+        (
+            "devices:\n  volume_limit: 0.0\n  volume_limit: 9.0\n", "fail",
+            audio.REASON_VOLUME_LIMIT_ABSENT,
+        ),
+    ],
+    ids=[
+        "capped", "omitted", "positive", "nested-only", "duplicate-block",
+        "duplicate-key",
+    ],
+)
+def test_check_camilla_volume_limit_verdicts(
+    monkeypatch, tmp_path, text, status, reason
+):
+    _point_at_config(monkeypatch, tmp_path, text)
+
+    r = doctor.check_camilla_volume_limit()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+def test_check_camilla_volume_limit_fails_on_a_missing_config(monkeypatch, tmp_path):
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_camilla_volume_limit()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_CAMILLA_CONFIG_MISSING
+
+
+# --------------------------------------------------------- camilla ring chunk
+
+
+def _stage_ring_config(tmp_path, monkeypatch, chunksize: int, extra: str = "") -> None:
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
+    _point_at_config(
+        monkeypatch,
+        tmp_path,
+        "devices:\n"
+        "  samplerate: 48000\n"
+        f"  chunksize: {chunksize}\n"
+        f"{extra}"
+        "  capture:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_CAPTURE_DEVICE}"\n'
+        "  playback:\n"
+        "    type: Alsa\n"
+        f'    device: "{RING_PLAYBACK_DEVICE}"\n',
+        name="ring.yml",
     )
+
+
+def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
+    """jts4's shape: a chunk the ring cannot open, so the box is silent."""
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames() * 4)
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_RING_CHUNK_ABOVE_CAPACITY
+    assert r.speaker_silent is True
+
+
+def test_check_camilla_ring_chunk_ok_at_capacity(monkeypatch, tmp_path):
+    """jts.local's shape: a floor that exactly fills the ring is fine."""
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "ok"
+
+
+def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
+    monkeypatch, tmp_path
+):
+    """The state jts4 actually landed in: chunk fits the ring, box still dead.
+
+    256/4096 passes the ring-capacity half and is still refused by CamillaDSP
+    (ceiling is chunk x (queuelimit + 4) = 2048), so the box crash-loops with
+    the ring half of this check green.
+    """
+    _stage_ring_config(
+        tmp_path, monkeypatch, 256, extra="  queuelimit: 4\n  target_level: 4096\n",
+    )
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_RING_TARGET_LEVEL_ABOVE_CEILING
+    assert r.speaker_silent is True
+
+
+def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
+    """A clamped box says so, so the running chunk is never unexplained.
+
+    A floorless HiFiBerry DAC8x Studio resolves the 1024 default and runs 256.
+    Not the InnoMaker: since #3542 it declares the already-clamped 256/1024
+    outright, so it no longer takes this path.
+    """
+    from jasper.fanin_coupling import ring_capacity_frames
+
+    record_active_dac("hifiberry_dac8x_studio")
+    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
+    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "ok"
+    assert r.reason == audio.REASON_RING_CHUNK_CLAMPED
+
+
+def test_check_camilla_ring_chunk_not_applicable_off_the_ring(monkeypatch, tmp_path):
+    _point_at_config(
+        monkeypatch, tmp_path, "devices:\n  samplerate: 48000\n  chunksize: 1024\n",
+    )
+
+    r = doctor.check_camilla_ring_chunk_fits()
+
+    assert r.status == "skipped"
+    assert r.reason == audio.REASON_RING_CHUNK_NOT_APPLICABLE
+
+
+# ------------------------------------------------- active speaker runtime graph
+
+
+def _save_topology(monkeypatch, tmp_path, topology):
+    from jasper.output_topology import save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    return topology_path
+
+
+def _point_at_topology_and_config(monkeypatch, tmp_path, topology, config_text, name):
+    _save_topology(monkeypatch, tmp_path, topology)
+    return _point_at_config(monkeypatch, tmp_path, config_text, name=name)
+
+
+def test_active_speaker_runtime_graph_fails_flat_graph_without_a_saved_layout(
+    monkeypatch, tmp_path
+):
+    from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
+
+    _point_at_topology_and_config(
+        monkeypatch, tmp_path, _topology([]), _flat_yaml(), "outputd-cutover.yml",
+    )
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_GRAPH_UNSAFE
+
+
+def test_active_speaker_runtime_graph_warns_when_unconfigured_is_parked(
+    monkeypatch, tmp_path
+):
+    """Fresh/reset topology is intentional silence with one next action."""
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    topology = _topology([])
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    _point_at_topology_and_config(
+        monkeypatch, tmp_path, topology, text, "speaker_setup_parked.yml",
+    )
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
+    assert r.speaker_silent is True
+
+
+def test_active_speaker_runtime_graph_fails_incomplete_nonroleful_layout(
+    monkeypatch, tmp_path
+):
+    """Parked is not a healthy substitute for an invalid passive layout."""
+    from dataclasses import replace
+
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    complete = _full_range_stereo()
+    topology = replace(
+        complete,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, physical_output_index=None)
+                    if group.kind == "right"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in complete.speaker_groups
+        ),
+    )
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    _point_at_topology_and_config(
+        monkeypatch, tmp_path, topology, text, "speaker_setup_parked.yml",
+    )
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_GRAPH_LAYOUT_INCOMPLETE
+
+
+def test_active_speaker_runtime_graph_fails_corrupt_saved_topology(
+    monkeypatch,
+    tmp_path,
+):
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_TOPOLOGY_UNREADABLE
+    # An unreadable topology is not proof of silence — it is proof of not
+    # knowing, so this branch must not claim it (#2471).
+    assert r.speaker_silent is False
+
+
+def test_active_speaker_runtime_graph_fails_flat_graph_on_tweeter_topology(
+    monkeypatch,
+    tmp_path,
+):
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _flat_yaml,
+    )
+
+    _point_at_topology_and_config(
+        monkeypatch,
+        tmp_path,
+        _active_topology("mono", "active_2_way"),
+        _flat_yaml(),
+        "outputd-cutover.yml",
+    )
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_GRAPH_UNSAFE
+
+
+def test_active_speaker_runtime_graph_accepts_staged_active_startup(
+    monkeypatch,
+    tmp_path,
+):
+    from tests.test_active_speaker_runtime_contract import (
+        _active_topology,
+        _active_yaml,
+        _staged_metadata,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    config = _point_at_topology_and_config(
+        monkeypatch,
+        tmp_path,
+        topology,
+        _active_yaml("mono", 2, frozenset()),
+        "active_speaker_staged_startup.yml",
+    )
+    metadata = tmp_path / "active_speaker_staged_config.json"
+    metadata.write_text(
+        json.dumps(_staged_metadata(topology, config)),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH", str(metadata))
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "ok"
+    assert r.reason == ""
+    # A legal graph is not silence: the flag stays off (#2471).
+    assert r.speaker_silent is False
+
+
+def test_active_speaker_runtime_graph_warns_when_parked(monkeypatch, tmp_path):
+    # #2135: a declared-but-uncommissioned roleful topology is seeded a parked
+    # (DAC-less, all-muted) graph so the deploy can finish. Nothing is broken and
+    # nothing is audible, so this is a WARN, not a fail.
+    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("mono", "active_2_way")
+    text, graph = build_parked_muted_graph(topology)
+    assert graph.allowed
+    _point_at_topology_and_config(
+        monkeypatch, tmp_path, topology, text, "active_speaker_parked.yml",
+    )
+
+    r = doctor.check_active_speaker_runtime_graph()
+
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_GRAPH_PARKED_SILENT
+    # #2471: this is the speaker-is-silent state, so the summary composer must
+    # be able to name it instead of ending on "warning(s) — non-critical".
+    assert r.speaker_silent is True
+
+
+# ---------------------------------------------- active speaker topology blockers
+
+
+def _blocker_bearing_roleful_topology():
+    """A roleful topology whose tweeter has no DAC output assigned."""
+    from dataclasses import replace
+
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("mono", "active_2_way")
+    return replace(
+        topology,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    replace(channel, physical_output_index=None)
+                    if channel.role == "tweeter"
+                    else channel
+                    for channel in group.channels
+                ),
+            )
+            for group in topology.speaker_groups
+        ),
+    )
+
+
+# #2471: exactly one of the six branches proves the speaker emits nothing. The
+# probe-failure branch has blockers but could not classify the graph, so it does
+# not know; the not-parked branch knows the box is playing.
+_SILENT_BLOCKER_REASONS = frozenset({audio.REASON_TOPOLOGY_BLOCKERS_PARKED})
+
+
+def _assert_blocker_branch(result, reason: str) -> None:
+    assert result.reason == reason
+    assert result.speaker_silent is (reason in _SILENT_BLOCKER_REASONS)
+
+
+def test_topology_blockers_ok_without_roleful_outputs(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    _save_topology(monkeypatch, tmp_path, _topology([]))
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "skipped"
+    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_NOT_ROLEFUL)
+
+
+def test_topology_blockers_ok_when_a_clean_roleful_layout_is_parked(
+    monkeypatch, tmp_path
+):
+    # Parked but CLEAN: `check_active_speaker_runtime_graph` already warns about
+    # the parked state itself. This check speaks only to unresolved blockers, so
+    # a clean layout must stay quiet rather than adding a second warning.
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    _save_topology(monkeypatch, tmp_path, _active_topology("mono", "active_2_way"))
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "ok"
+    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_NO_BLOCKERS)
+
+
+def test_topology_blockers_warns_on_a_parked_layout(monkeypatch, tmp_path):
+    # #2145: this state used to abort every deploy, which was its own loud
+    # notification. It now parks and deploys, so the doctor carries the signal.
+    # WARN, never FAIL: doctor exits non-zero only on fails, and a parked box
+    # must stay deployable.
+    _save_topology(monkeypatch, tmp_path, _blocker_bearing_roleful_topology())
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "warn"
+    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_PARKED)
+
+
+def test_topology_blockers_exits_are_capability_aware(monkeypatch, tmp_path):
+    """The doctor detail must resolve the exits through the OWNED helper.
+
+    The one deliberate `detail` assertion in this file: which of two equal-status
+    strings the line carries is the whole finding, and no structured field can
+    express it. On an ordinary DAC `parked_muted_exits(topology) ==
+    PARKED_MUTED_EXITS`, so only a DAC that declares NO active outputd lane
+    separates them — there "finish crossover preview" can never succeed, so the
+    helper drops it and the bare constant still offers it.
+    """
+    from jasper.active_speaker.runtime_contract import (
+        PARKED_MUTED_EXITS,
+        parked_muted_exits,
+    )
+    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+    from tests.active_speaker_fixtures import register_passive_only_dac
+
+    profile = register_passive_only_dac(monkeypatch)
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench",
+        "name": "Bench speaker",
+        "status": "draft",
+        "hardware": {
+            "device_id": profile.id,
+            "device_label": profile.label,
+            "physical_output_count": profile.physical_output_count,
+        },
+        "speaker_groups": [{
+            "id": "mono",
+            "label": "Mono",
+            "kind": "mono",
+            "mode": "active_2_way",
+            "channels": [
+                {
+                    "role": "woofer",
+                    "physical_output_index": 0,
+                    "identity_verified": True,
+                },
+                {
+                    # Unassigned -> the topology-level blocker this check reports.
+                    "role": "tweeter",
+                    "physical_output_index": None,
+                    "identity_verified": True,
+                    "startup_muted": True,
+                    "protection_required": True,
+                    "protection_status": "present",
+                },
+            ],
+        }],
+        "routing": {"mono_group_id": "mono"},
+    })
+    # The fixture is only meaningful if the helper and the constant DISAGREE.
+    assert parked_muted_exits(topology) != PARKED_MUTED_EXITS
+    _save_topology(monkeypatch, tmp_path, topology)
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "warn"
+    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_PARKED)
+    # Follows the helper, and therefore does NOT offer the impossible action.
+    assert parked_muted_exits(topology) in r.detail
+    assert PARKED_MUTED_EXITS not in r.detail
+
+
+def test_topology_blockers_warn_survives_a_failed_selection_probe(
+    monkeypatch, tmp_path
+):
+    """The blockers are this check's finding; the parked/not-parked split is
+    only how it phrases them, so a probe that raises must still warn."""
+    from jasper.active_speaker import runtime_contract
+
+    _save_topology(monkeypatch, tmp_path, _blocker_bearing_roleful_topology())
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("statefile unreadable")
+
+    monkeypatch.setattr(
+        runtime_contract, "safe_graph_for_current_topology", _boom
+    )
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "warn"
+    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_PROBE_FAILED)
+
+
+def test_topology_blockers_defers_when_the_speaker_is_not_parked(
+    monkeypatch, tmp_path
+):
+    # A blocker-bearing topology that is NOT parked is already reported by
+    # `check_active_speaker_runtime_graph` (it blocks the deploy). Repeating it
+    # here would be a second voice for one fact, so this branch defers.
+    from jasper.active_speaker import runtime_contract
+    from jasper.active_speaker.runtime_contract import (
+        SafeGraphDecision,
+        classify_output_contract,
+    )
+
+    topology = _blocker_bearing_roleful_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+
+    def _blocked(*_args, **_kwargs):
+        return SafeGraphDecision(
+            status="blocked",
+            selected_config_path=None,
+            reason="test double",
+            topology_contract=classify_output_contract(topology),
+        )
+
+    monkeypatch.setattr(
+        runtime_contract, "safe_graph_for_current_topology", _blocked
+    )
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "ok"
+    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_BLOCKERS_NOT_PARKED)
+
+
+def test_topology_blockers_fails_on_an_unloadable_topology(monkeypatch, tmp_path):
+    """Three checks read this artifact; the other two restate the parse error,
+    so this one fails (it cannot answer its question) and points instead."""
+    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+
+    topology_path = tmp_path / "output_topology.json"
+    topology_path.write_text("{not json at all", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    # Prove the fixture actually reaches the branch under test.
+    with pytest.raises(OutputTopologyError):
+        load_output_topology_strict()
+
+    r = doctor.check_active_speaker_topology_blockers()
+
+    assert r.status == "fail"
+    _assert_blocker_branch(r, audio.REASON_TOPOLOGY_UNREADABLE)
+
+
+# ------------------------------------------------------------- sound profile
+
+
+def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "ok"
+    assert r.reason == audio.REASON_SOUND_PROFILE_DEFAULT
+
+
+_SAVED_SOUND_PROFILE = {
+    "enabled": True,
+    "curve_id": "harman",
+    "simple_eq": {"bass_db": 1.0, "mid_db": 0.0, "treble_db": 0.0},
+}
+
+
+def test_check_sound_profile_warns_when_saved_profile_not_active(
+    monkeypatch,
+    tmp_path,
+):
+    profile = tmp_path / "sound_profile.json"
+    profile.write_text(json.dumps(_SAVED_SOUND_PROFILE))
+    _point_at_config(monkeypatch, tmp_path, "# base\n")
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_SOUND_PROFILE_NOT_ACTIVE
+
+
+@pytest.mark.parametrize(
+    "active_name",
+    [
+        # The four shapes the check's old literal set did not know about.
+        "sound_reset_s1_1717000000.yml",
+        "sound_snapshot_s1_1717000000.yml",
+        "sound_lean_current.yml",
+        "grouping_leader.yml",
+    ],
+)
+def test_check_sound_profile_accepts_every_jts_generated_active_name(
+    monkeypatch, tmp_path, active_name,
+):
+    """One owner decides what "JTS-generated" means, and the doctor asks it.
+
+    `check_sound_profile` held a second, narrower copy of that predicate as a
+    literal set and had fallen four shapes behind
+    :func:`jasper.sound.camilla_yaml.is_jts_generated_config`, so it told a
+    household its saved profile was not reflected in a graph that
+    demonstrably carries it. Permanent since #2572: the reconcile now leaves a
+    content-identical graph running under whatever it is named.
+
+    The negative half is
+    `test_check_sound_profile_warns_when_saved_profile_not_active` above.
+    """
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile, build_sound_filters
+
+    profile = tmp_path / "sound_profile.json"
+    profile.write_text(json.dumps(_SAVED_SOUND_PROFILE))
+
+    # The active graph genuinely carries the saved preference EQ.
+    saved = SoundProfile.from_mapping(_SAVED_SOUND_PROFILE)
+    assert build_sound_filters(saved)
+    _point_at_config(
+        monkeypatch,
+        tmp_path,
+        emit_sound_config(saved, profile_id="t"),
+        name=active_name,
+    )
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "ok"
+    assert r.reason == ""
+
+
+def test_check_sound_profile_fails_on_corrupt_json(monkeypatch, tmp_path):
+    profile = tmp_path / "sound_profile.json"
+    profile.write_text("{not json")
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "fail"
+    assert r.reason == audio.REASON_SOUND_PROFILE_UNREADABLE
+
+
+# ----------------------------------------------------------- DSP apply state
+
+
+@pytest.mark.parametrize(
+    "state, status, reason",
+    [
+        (None, "ok", audio.REASON_DSP_APPLY_NONE),
+        (
+            {
+                "op_id": "abcdef123456",
+                "source": "sound",
+                "phase": "done",
+                "result": "success",
+                "candidate_config_path":
+                    "/var/lib/camilladsp/configs/sound_current.yml",
+            },
+            "ok", "",
+        ),
+        (
+            {
+                "op_id": "abcdef123456",
+                "source": "correction",
+                "phase": "load",
+                "result": "load_failed_rollback_failed",
+                "rollback_attempted": True,
+                "rollback_succeeded": False,
+            },
+            "fail", audio.REASON_DSP_APPLY_ROLLBACK_FAILED,
+        ),
+        (
+            {
+                "op_id": "abcdef123456",
+                "source": "correction",
+                "phase": "load",
+                "result": "load_failed",
+                "rollback_attempted": True,
+                "rollback_succeeded": True,
+            },
+            "warn", audio.REASON_DSP_APPLY_UNSUCCESSFUL,
+        ),
+    ],
+    ids=["none-recorded", "success", "rollback-failed", "rolled-back"],
+)
+def test_check_dsp_apply_state_verdicts(monkeypatch, tmp_path, state, status, reason):
+    path = tmp_path / "dsp_apply_state.json"
+    if state is not None:
+        path.write_text(json.dumps(state))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(path))
+
+    r = doctor.check_dsp_apply_state()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+# --- #1666: canonical active-speaker baseline durability -------------------
+
+
+def _point_at_baseline(monkeypatch, *, live, canonical, statefile):
+    if live is not None:
+        statefile.write_text(f"config_path: {live}\n", encoding="utf-8")
+        monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    else:
+        monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(canonical))
+
+
+def test_active_speaker_baseline_canonical_ok_when_live_is_canonical(
+    monkeypatch,
+    tmp_path,
+):
+    canonical = tmp_path / "active_speaker_baseline.yml"
+    canonical.write_text("# whatever is currently loaded\n", encoding="utf-8")
+    _point_at_baseline(
+        monkeypatch,
+        live=canonical,
+        canonical=canonical,
+        statefile=tmp_path / "statefile.yml",
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "ok"
+    assert r.reason == ""
+
+
+@pytest.mark.parametrize("live_name", [None, "outputd-cutover.yml"])
+def test_active_speaker_baseline_canonical_ok_when_not_applicable(
+    monkeypatch,
+    tmp_path,
+    live_name,
+):
+    """A live config that is not a baseline candidate at all (a plain
+    stereo/flat topology's own generated config), and a statefile that cannot
+    be read, are both outside this check's scope — never a false warning on the
+    majority of the fleet that has no active baseline commissioned. A missing
+    statefile is already a real failure at
+    `check_active_speaker_runtime_graph`, which owns it."""
+    live = None
+    if live_name is not None:
+        live = tmp_path / live_name
+        live.write_text("devices:\n  samplerate: 48000\n", encoding="utf-8")
+    _point_at_baseline(
+        monkeypatch,
+        live=live,
+        canonical=tmp_path / "active_speaker_baseline.yml",
+        statefile=tmp_path / "statefile.yml",
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "skipped"
+    assert r.reason == audio.REASON_BASELINE_CANONICAL_NOT_APPLICABLE
+
+
+async def test_active_speaker_baseline_canonical_ok_when_content_matches_live(
+    monkeypatch,
+    tmp_path,
+):
+    """The common case: every successful apply's post-success promote keeps
+    canonical's content equal to whatever candidate is actually live."""
+    from tests.test_active_speaker_baseline_profile import _apply_prior_then_run8
+
+    (
+        _state_path,
+        config_path,
+        _load_config,
+        _current_config_path,
+        _prior_payload,
+        run8_payload,
+        _retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+
+    _point_at_baseline(
+        monkeypatch,
+        live=Path(run8_payload["profile"]["config"]["path"]),
+        canonical=config_path,
+        statefile=tmp_path / "statefile.yml",
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "ok"
+    assert r.reason == ""
+
+
+async def test_active_speaker_baseline_canonical_warns_on_divergence(
+    monkeypatch,
+    tmp_path,
+):
+    """Canonical holds run-8's promoted bytes; simulating CamillaDSP still
+    running the PRIOR candidate is a genuine content mismatch — warn, since the
+    live graph is the audible truth and is correct, but the canonical file is
+    stale for other readers."""
+    from tests.test_active_speaker_baseline_profile import _apply_prior_then_run8
+
+    (
+        _state_path,
+        config_path,
+        _load_config,
+        _current_config_path,
+        prior_payload,
+        _run8_payload,
+        _retained,
+    ) = await _apply_prior_then_run8(monkeypatch, tmp_path)
+
+    _point_at_baseline(
+        monkeypatch,
+        live=Path(prior_payload["profile"]["config"]["path"]),
+        canonical=config_path,
+        statefile=tmp_path / "statefile.yml",
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_BASELINE_CANONICAL_STALE
+
+
+def test_active_speaker_baseline_canonical_warns_on_missing_canonical(
+    monkeypatch,
+    tmp_path,
+):
+    """A live applied-candidate sibling with no canonical file yet (a box whose
+    last promote never ran) warns rather than failing — the next apply or
+    restore re-promotes it."""
+    live = tmp_path / "active_speaker_baseline_candidate_abc123def456.yml"
+    live.write_text("# a real applied candidate, never promoted\n", encoding="utf-8")
+    _point_at_baseline(
+        monkeypatch,
+        live=live,
+        canonical=tmp_path / "active_speaker_baseline.yml",
+        statefile=tmp_path / "statefile.yml",
+    )
+
+    r = doctor.check_active_speaker_baseline_canonical()
+
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_BASELINE_CANONICAL_MISSING
+
+
+# ------------------------------------------------- active speaker startup hold
+
+
+def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
+    # The conftest fixture points the marker at a per-test path that starts
+    # absent, which is the no-hold baseline.
+    r = doctor.check_active_speaker_startup_hold()
+
+    assert r.status == "ok"
+    assert r.reason == audio.REASON_STARTUP_HOLD_NONE
+
+
+@pytest.mark.parametrize(
+    "load_status, status, reason",
+    [
+        ("loaded", "ok", audio.REASON_STARTUP_HOLD_IN_FLIGHT),
+        # A hold with no load behind it keeps a commissioned box on its SILENT
+        # anchor across every reconcile.
+        ("rolled_back", "warn", audio.REASON_STARTUP_HOLD_STALE),
+    ],
+    ids=["in-flight", "stale"],
+)
+def test_active_speaker_startup_hold_verdicts(
+    monkeypatch, tmp_path, load_status, status, reason
+):
+    from jasper.active_speaker.startup_hold import hold_staged_startup
+
+    assert hold_staged_startup() is True
+    state = tmp_path / "startup_load.json"
+    state.write_text(json.dumps({"status": load_status}), encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE", str(state))
+
+    r = doctor.check_active_speaker_startup_hold()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+# ---------------------------------------------------- room correction authority
+
+
+@pytest.mark.parametrize(
+    "acoustic, status, reason",
+    [
+        pytest.param(
+            {"required": False}, "skipped",
+            audio.REASON_ROOM_AUTHORITY_NOT_REQUIRED, id="no_authority_needed",
+        ),
+        pytest.param(
+            {"required": True, "allowed": True, "authority": "manual_applied_profile"},
+            "ok", "", id="banked",
+        ),
+        pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": "active_commissioning_receipt_stale",
+                "detail": "re-mint it when convenient",
+            },
+            "warn", audio.REASON_ROOM_AUTHORITY_UNPROVEN,
+            id="unproven_runs_anyway",
+        ),
+        pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
+                "detail": "finish commissioning when convenient",
+            },
+            "ok", audio.REASON_ROOM_AUTHORITY_UNBANKED,
+            id="never_minted_is_the_state_most_speakers_are_in",
+        ),
+        # ABSENT is also the module's catch-all default, so a store code under a
+        # verified lifecycle (a receipt that VANISHED) arrives here too; it stays
+        # ok rather than turning the fleet's normal state into a nag (ADR-0196).
+        pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
+                "cause": "missing",
+                "detail": "finish commissioning when convenient",
+            },
+            "ok", audio.REASON_ROOM_AUTHORITY_UNBANKED, id="vanished_receipt",
+        ),
+        pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": _common.ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+                "cause": "PermissionError:EACCES:/var/lib/jasper/receipt.json",
+                "detail": "a machine-level fault",
+            },
+            "warn", audio.REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE,
+            id="machine_fault_still_warns",
+        ),
+        pytest.param(
+            None, "warn", audio.REASON_ROOM_AUTHORITY_NO_DECISION,
+            id="no_room_decision_published",
+        ),
+    ],
+)
+def test_room_correction_authority_warns_but_never_fails(
+    monkeypatch, acoustic, status, reason,
+):
+    """The doctor line is the only place an unproven room run is visible.
+
+    Ruling S10 stopped the receipt from refusing the run, so nothing else tells
+    a household that the result it just measured is not banked as verified.
+    WARN, never FAIL: nothing is broken and nothing is stopped.
+    """
+    monkeypatch.setattr(
+        setup_status_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {"acoustic_commissioning": acoustic},
+    )
+
+    r = doctor.check_room_correction_authority()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):
+    def _unreadable(**_kwargs):
+        raise OSError("secret filesystem detail")
+
+    monkeypatch.setattr(
+        setup_status_mod, "read_active_speaker_setup_status", _unreadable
+    )
+
+    r = doctor.check_room_correction_authority()
+
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_SPEAKER_SETUP_UNREADABLE
+
+
+# ------------------------------------------------- active speaker setup notices
+
+
+@pytest.mark.parametrize(
+    "issues, status, reason",
+    [
+        pytest.param([], "ok", audio.REASON_SETUP_NOTICES_NONE, id="nothing_standing"),
+        pytest.param(
+            [{"severity": "blocker", "code": "x", "message": "m"}],
+            "ok", audio.REASON_SETUP_NOTICES_NONE,
+            id="blockers_have_their_own_surfaces",
+        ),
+        pytest.param(
+            [{
+                "severity": "warning",
+                "code": "active_baseline_topology_changed",
+                "message": "topology changed since the applied baseline",
+            }],
+            "warn", audio.REASON_SETUP_NOTICES_STANDING, id="topology_notice",
+        ),
+    ],
+)
+def test_active_speaker_setup_notices_renders_only_non_blockers(
+    monkeypatch, issues, status, reason,
+):
+    """Nothing else in the tree renders a non-blocker setup issue, so demoting
+    the topology block without this line would have been a silent deletion."""
+    monkeypatch.setattr(
+        setup_status_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {"issues": issues},
+    )
+
+    r = doctor.check_active_speaker_setup_notices()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+# -------------------------------------------------- active speaker applied graph
+
+
+@pytest.mark.parametrize(
+    "payload, status, reason",
+    [
+        pytest.param(
+            {"protected_profile": None}, "skipped",
+            audio.REASON_APPLIED_GRAPH_NO_PROFILE, id="nothing_applied_to_bind",
+        ),
+        pytest.param(
+            {"protected_profile": {"layer_a_binding": {
+                "status": "current", "matches": True, "loaded_fingerprint": "a",
+            }}},
+            "ok", "", id="durable_graph_is_the_profiles",
+        ),
+        pytest.param(
+            {"protected_profile": {"layer_a_binding": {
+                "status": "distributed_active_unsupported", "matches": False,
+            }}},
+            "skipped", audio.REASON_APPLIED_GRAPH_NOT_EVALUATED,
+            id="grouped_active_is_not_drift",
+        ),
+        pytest.param(
+            {
+                "issues": [{
+                    "severity": "blocker",
+                    "code": setup_status_mod.IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
+                    "message": "commissioning graph is loaded",
+                }],
+                "protected_profile": {"layer_a_binding": {
+                    "status": "mismatch", "matches": False,
+                }},
+            },
+            "skipped", audio.REASON_APPLIED_GRAPH_STAGED_ANCHOR,
+            id="staged_anchor_mismatch_is_by_design",
+        ),
+        pytest.param(
+            {
+                "active_config_path": "/var/lib/camilladsp/configs/candidate.yml",
+                "protected_profile": {"layer_a_binding": {
+                    "status": "mismatch", "matches": False,
+                    "expected_fingerprint": "a", "loaded_fingerprint": "b",
+                    "differences": [{
+                        "field": "as_woofer_delay.delay",
+                        "expected": "0.0",
+                        "loaded": "0.1286",
+                    }],
+                }},
+            },
+            "warn", audio.REASON_APPLIED_GRAPH_MISMATCH,
+            id="f6_rejected_delay_left_on_the_durable_anchor",
+        ),
+    ],
+)
+def test_active_speaker_applied_graph_discloses_never_gates(
+    monkeypatch, payload, status, reason,
+):
+    """Blind-run finding F-6 had no surface that named the disagreement.
+
+    WARN, never FAIL, and the two states that legitimately differ — a grouped
+    active runtime, a staged/commissioning anchor — must not read as drift.
+    """
+    monkeypatch.setattr(
+        setup_status_mod,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: payload,
+    )
+
+    r = doctor.check_active_speaker_applied_graph()
+
+    assert r.status == status
+    assert r.reason == reason
+
+
+def test_active_speaker_applied_graph_warns_when_setup_cannot_be_read(monkeypatch):
+    def _unreadable(**_kwargs):
+        raise OSError("secret filesystem detail")
+
+    monkeypatch.setattr(
+        setup_status_mod, "read_active_speaker_setup_status", _unreadable
+    )
+
+    r = doctor.check_active_speaker_applied_graph()
+
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_SPEAKER_SETUP_UNREADABLE

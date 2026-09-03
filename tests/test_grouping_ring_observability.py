@@ -602,7 +602,6 @@ def _check(monkeypatch, rc, reason="", *, bonded=False):
 def test_a_resolving_pcm_is_ok(monkeypatch, _installed_confd):
     result = _check(monkeypatch, 0)
     assert result.status == "ok"
-    assert "resolves" in result.detail
 
 
 def test_the_check_has_no_busy_case_because_busy_cannot_happen():
@@ -628,9 +627,11 @@ def test_the_check_has_no_busy_case_because_busy_cannot_happen():
 
 
 def test_a_name_that_does_not_resolve_fails_a_bonded_box(monkeypatch, _installed_confd):
+    from jasper.cli.doctor import grouping as doctor_grouping
+
     result = _check(monkeypatch, -errno.ENOENT, bonded=True)
     assert result.status == "fail"
-    assert "libasound_module_pcm_jts_ring.so" in result.detail
+    assert result.reason == doctor_grouping.REASON_RING_PCM_UNRESOLVED
 
 
 def test_the_same_defect_is_a_warning_on_a_solo_box(monkeypatch, _installed_confd):
@@ -638,9 +639,11 @@ def test_the_same_defect_is_a_warning_on_a_solo_box(monkeypatch, _installed_conf
     nothing opens the name on a solo speaker yet, so the defect is real but not
     load-bearing — and surfacing it here is the whole point, since it gets fixed
     before anyone tries to bond."""
+    from jasper.cli.doctor import grouping as doctor_grouping
+
     result = _check(monkeypatch, -errno.ENOENT, bonded=False)
     assert result.status == "warn"
-    assert "not bonded" in result.detail
+    assert result.reason == doctor_grouping.REASON_RING_PCM_UNRESOLVED
 
 
 def test_a_missing_confd_fails_before_probing(monkeypatch, tmp_path):
@@ -657,7 +660,7 @@ def test_a_missing_confd_fails_before_probing(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor_grouping, "_probe_grouping_pcm", _must_not_probe)
     result = doctor_grouping.check_grouping_ring_device()
     assert result.status == "fail"
-    assert "not installed" in result.detail
+    assert result.reason == doctor_grouping.REASON_RING_CONFD_MISSING
 
 
 def test_an_unrunnable_probe_warns_rather_than_accusing_the_pcm(
@@ -665,9 +668,11 @@ def test_an_unrunnable_probe_warns_rather_than_accusing_the_pcm(
 ):
     """No libasound on this host is a fact about the host, not a verdict about
     the device."""
+    from jasper.cli.doctor import grouping as doctor_grouping
+
     result = _check(monkeypatch, None, "libasound.so.2 unavailable", bonded=True)
     assert result.status == "warn"
-    assert "libasound" in result.detail
+    assert result.reason == doctor_grouping.REASON_RING_PROBE_UNAVAILABLE
 
 
 def test_the_probe_child_opens_and_closes_and_does_nothing_else():

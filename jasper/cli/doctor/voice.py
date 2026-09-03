@@ -32,21 +32,57 @@ from ._shared import (
     _run,
 )
 
+# Machine-stable codes naming which branch of a voice check produced a
+# result (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_PROVIDER_SELECTION_INVALID = "provider_key_selection_invalid"
+REASON_PROVIDER_SELECTION_UNREADABLE = "provider_key_selection_unreadable"
+REASON_PROVIDER_NOT_CONFIGURED = "provider_key_not_configured"
+REASON_PROVIDER_KEY_MISSING = "provider_key_missing"
+REASON_PROVIDER_KEY_WRONG_PREFIX = "provider_key_wrong_prefix"
+REASON_PROVIDER_KEY_OK_ENV_DRIFT = "provider_key_ok_env_drift"
+
+REASON_PROVIDER_IMPORTS_UNDETERMINED = "provider_imports_selection_undetermined"
+REASON_PROVIDER_IMPORTS_NOT_CONFIGURED = "provider_imports_not_configured"
+REASON_PROVIDER_IMPORTS_TIMEOUT = "provider_imports_timed_out"
+REASON_PROVIDER_IMPORTS_FAILED = "provider_imports_failed"
+
+REASON_MANIFEST_MISSING = "manifest_missing"
+REASON_MANIFEST_CURRENT = "manifest_current"
+REASON_MANIFEST_NONCANONICAL = "manifest_noncanonical_order"
+REASON_MANIFEST_STALE = "manifest_stale"
+
+REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE = "tool_packs_runtime_unavailable"
+REASON_TOOL_PACKS_BUILD_FAILED = "tool_packs_build_failed"
+REASON_TOOL_PACKS_MISSING_FROM_RUNTIME = "tool_packs_missing_from_runtime"
+REASON_TOOL_PACKS_HEALTHY = "tool_packs_healthy"
+
+REASON_SPEND_CAP_DISABLED = "spend_cap_disabled"
+REASON_SPEND_CAP_NO_USAGE = "spend_cap_no_usage_recorded"
+REASON_SPEND_CAP_REACHED = "spend_cap_reached"
+REASON_SPEND_CAP_OK = "spend_cap_within_budget"
+REASON_SPEND_CAP_UNREADABLE = "spend_cap_unreadable"
+
+REASON_PRICING_DATA_UNAVAILABLE = "pricing_data_unavailable"
+REASON_PRICING_MODEL_UNDETERMINED = "pricing_active_model_undetermined"
+REASON_PRICING_MODEL_NOT_CONFIGURED = "pricing_active_model_not_configured"
+REASON_PRICING_MODEL_UNPRICED = "pricing_active_model_unpriced"
+REASON_PRICING_MODEL_PRICED = "pricing_active_model_priced"
+REASON_PRICING_UNREADABLE = "pricing_unreadable"
+
 def _provider_api_key_attr(provider_id: str) -> str:
     return f"{provider_id.replace('-', '_')}_api_key"
 
 
 # WHICH provider is active is answered in this module by exactly one
 # authority: the wizard-owned SSOT file, via read_active_provider_state()
-# (jasper.voice.provider_state). Config/os.environ answers a different
-# question — what THIS jasper-doctor process inherited — and a calling-shell
-# export outranks the file there (jasper.env_load.load_env_files uses
-# setdefault), so the two can name different providers in one report
-# (issue #2212). Config stays the authority for the API key *given* a
-# provider (check_provider_key). The MODEL given a provider is likewise
-# read from files rather than Config — read_active_model_from_env_files()
-# merges the same env files jasper-voice sources, so a shell export can't
-# make this process name a model jasper-voice does not run (issue #3133).
+# (jasper.voice.provider_state) — never Config/os.environ, where a
+# calling-shell export outranks the file (jasper.env_load.load_env_files
+# uses setdefault) and would let this process name a different provider
+# than jasper-voice actually runs. Config stays the authority for the API
+# key *given* a provider (check_provider_key). The MODEL given a provider
+# is likewise read from files rather than Config —
+# read_active_model_from_env_files() merges the same env files jasper-voice
+# sources, for the same reason.
 #
 # Statuses where the file cannot name a provider. check_provider_key
 # adjudicates a bad or unreadable selection; its neighbours defer to it and
@@ -68,11 +104,13 @@ def check_provider_key(cfg: Config) -> CheckResult:
     if state.status == "invalid":
         return CheckResult(
             "voice provider key", "fail", f"{state.detail} in {state.path}",
+            reason=REASON_PROVIDER_SELECTION_INVALID,
         )
     if state.status == "unreadable":
         return CheckResult(
             "voice provider key", "warn",
             f"active provider undetermined ({state.detail}); no key checked",
+            reason=REASON_PROVIDER_SELECTION_UNREADABLE,
         )
     if not state.configured:
         # The file is the canonical home for this selection (.env.example
@@ -83,6 +121,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
             f"{state.detail}, but this process's environment names "
             f"{env_provider!r} — no key checked. Pick a provider at "
             f"http://jts.local/voice/ so every surface agrees.",
+            reason=REASON_PROVIDER_NOT_CONFIGURED,
         )
 
     provider = provider_by_id(state.provider)
@@ -107,6 +146,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
             f"not set; required because {state.provider} is the active "
             f"provider. Paste at http://jts.local/voice/ "
             f"or add to /etc/jasper/jasper.env.{drift}",
+            reason=REASON_PROVIDER_KEY_MISSING,
         )
     prefix = provider.key_prefix_hint.rstrip(".")
     if not key.startswith(prefix):
@@ -114,10 +154,16 @@ def check_provider_key(cfg: Config) -> CheckResult:
             env_name, "warn",
             f"doesn't start with '{prefix}' — may be a stale or wrong "
             f"key{drift}",
+            reason=REASON_PROVIDER_KEY_WRONG_PREFIX,
         )
     if drift:
-        return CheckResult(env_name, "warn", f"{key[:8]}...{drift}")
-    return CheckResult(env_name, "ok", f"{key[:8]}...")
+        return CheckResult(
+            env_name, "warn", f"{key[:8]}...{drift}",
+            reason=REASON_PROVIDER_KEY_OK_ENV_DRIFT,
+        )
+    return CheckResult(
+        env_name, "ok", f"{key[:8]}...",
+    )
 
 # Imports the module names handed to it on argv, in order, and reports the
 # FIRST one that fails. Run in a child interpreter rather than in-process for
@@ -212,11 +258,13 @@ def check_provider_importable() -> CheckResult:
         return CheckResult(
             "voice provider imports", "warn",
             f"active provider undetermined ({state.detail}); imports not checked",
+            reason=REASON_PROVIDER_IMPORTS_UNDETERMINED,
         )
     if not state.configured:
         return CheckResult(
-            "voice provider imports", "ok",
-            "no provider configured (skipped — pick one in the /voice wizard)",
+            "voice provider imports", "skipped",
+            "no provider configured — pick one in the /voice wizard",
+            reason=REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
         )
 
     provider = provider_by_id(state.provider)
@@ -235,6 +283,7 @@ def check_provider_importable() -> CheckResult:
             "voice provider imports", "warn",
             f"{state.provider}: import probe timed out after "
             f"{timeout:.0f}s ({joined}) — could not verify",
+            reason=REASON_PROVIDER_IMPORTS_TIMEOUT,
         )
     if proc.returncode == 0:
         return CheckResult(
@@ -262,6 +311,7 @@ def check_provider_importable() -> CheckResult:
         f"selected — re-run the installer (bash scripts/deploy-to-pi.sh) to "
         f"rebuild the venv, or select a provider that loads in the /voice "
         f"wizard.",
+        reason=REASON_PROVIDER_IMPORTS_FAILED,
     )
 
 
@@ -283,6 +333,7 @@ def check_voice_provider_ids_manifest() -> CheckResult:
             "voice provider ids",
             "fail",
             f"{path} missing — re-run install.sh to regenerate the catalog projection",
+            reason=REASON_MANIFEST_MISSING,
         )
     actual = path.read_text().splitlines()
     if actual == expected:
@@ -290,18 +341,21 @@ def check_voice_provider_ids_manifest() -> CheckResult:
             "voice provider ids",
             "ok",
             f"{path} matches catalog ({', '.join(expected)})",
+            reason=REASON_MANIFEST_CURRENT,
         )
     if sorted(actual) == expected and len(actual) == len(expected):
         return CheckResult(
             "voice provider ids",
             "warn",
             f"{path} has the right ids but non-canonical order/format; re-run install.sh",
+            reason=REASON_MANIFEST_NONCANONICAL,
         )
     return CheckResult(
         "voice provider ids",
         "fail",
         f"{path} stale; expected {', '.join(expected)}, "
         f"got {', '.join(actual) or '<empty>'}",
+        reason=REASON_MANIFEST_STALE,
     )
 
 def _voice_tool_packs_runtime() -> "list[dict] | None":
@@ -348,6 +402,7 @@ def _assess_tool_packs(
             f"{len(expected)} packs defined ({', '.join(expected)}); "
             "runtime status unavailable (jasper-control unreachable or "
             "daemon predates tool-pack telemetry).",
+            reason=REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE,
         )
     failed = [p for p in runtime if p.get("status") == "failed"]
     if failed:
@@ -360,6 +415,7 @@ def _assess_tool_packs(
             f"{len(failed)} of {len(runtime)} tool pack(s) failed to build — "
             f"those tool families are silently missing from voice: {detail}. "
             "See `journalctl -u jasper-voice | grep event=tool_pack.build_failed`.",
+            reason=REASON_TOOL_PACKS_BUILD_FAILED,
         )
     runtime_names = {p.get("name") for p in runtime}
     missing = [n for n in expected if n not in runtime_names]
@@ -369,6 +425,7 @@ def _assess_tool_packs(
             f"runtime reported {len(runtime)} packs but the registry defines "
             f"{len(expected)}; not reported: {', '.join(missing)} "
             "(daemon may predate these packs — redeploy).",
+            reason=REASON_TOOL_PACKS_MISSING_FROM_RUNTIME,
         )
     registered = [p for p in runtime if p.get("status") == "registered"]
     skipped = [p for p in runtime if p.get("status") == "skipped"]
@@ -380,6 +437,7 @@ def _assess_tool_packs(
     return CheckResult(
         label, "ok",
         f"{len(registered)}/{len(runtime)} packs active, 0 failed{extra}.",
+        reason=REASON_TOOL_PACKS_HEALTHY,
     )
 
 
@@ -415,6 +473,7 @@ def check_spend_cap(cfg: Config) -> CheckResult:
             return CheckResult(
                 "daily spend cap", "ok",
                 "disabled (JASPER_DAILY_SPEND_CAP_USD=0)",
+                reason=REASON_SPEND_CAP_DISABLED,
             )
         # The doctor runs as root. Never open a usage DB read-write here:
         # creating/re-owning it would lock the owning daemon out of its own DB
@@ -434,6 +493,7 @@ def check_spend_cap(cfg: Config) -> CheckResult:
                 "daily spend cap", "ok",
                 f"no usage recorded yet; $0.00 of "
                 f"${cfg.daily_spend_cap_usd:.2f} used ({ledger_note})",
+                reason=REASON_SPEND_CAP_NO_USAGE,
             )
         cap = SpendCap(
             household_usage_reader(cfg.usage_db),
@@ -446,14 +506,18 @@ def check_spend_cap(cfg: Config) -> CheckResult:
                 "daily spend cap", "warn",
                 f"24h spend reached cap (${cfg.daily_spend_cap_usd:.2f}). "
                 "Voice will refuse new sessions until rollover.",
+                reason=REASON_SPEND_CAP_REACHED,
             )
         return CheckResult(
             "daily spend cap", "ok",
             f"${remaining:.4f} remaining of ${cfg.daily_spend_cap_usd:.2f} "
             f"({ledger_note})",
+            reason=REASON_SPEND_CAP_OK,
         )
     except Exception as e:  # noqa: BLE001
-        return CheckResult("daily spend cap", "warn", str(e))
+        return CheckResult(
+            "daily spend cap", "warn", str(e), reason=REASON_SPEND_CAP_UNREADABLE,
+        )
 
 @doctor_check(order=44, group="voice", label="voice model pricing")
 def check_pricing() -> CheckResult:
@@ -473,24 +537,31 @@ def check_pricing() -> CheckResult:
                 "voice model pricing", "warn",
                 "model_pricing.json failed to load — every model is unpriced, "
                 "so cost reads $0 and the spend cap can't bound it. Re-deploy.",
+                reason=REASON_PRICING_DATA_UNAVAILABLE,
             )
         # Active provider AND model from the merged env files — never from
         # Config/os.environ, where a shell-exported JASPER_GEMINI_MODEL (or
         # the OPENAI/GROK siblings) outranks both jasper.env and the wizard
         # file (env_load.load_env_files uses setdefault) and would make this
-        # row name a model jasper-voice does not actually run (issue #3133,
-        # the same drift class #3129 closed for the provider selector).
+        # row name a model jasper-voice does not actually run.
         state = read_active_provider_state()
         model = (
             read_active_model_from_env_files(state.provider)
             if state.configured else ""
         )
         if not model:
-            return CheckResult(
-                "voice model pricing",
-                "warn" if state.status in _PROVIDER_UNDETERMINED else "ok",
+            unchecked = (
                 f"{len(defaults)} models priced (as of {as_of}); "
-                f"active model not checked ({state.detail or 'no model'})",
+                f"active model not checked ({state.detail or 'no model'})"
+            )
+            if state.status in _PROVIDER_UNDETERMINED:
+                return CheckResult(
+                    "voice model pricing", "warn", unchecked,
+                    reason=REASON_PRICING_MODEL_UNDETERMINED,
+                )
+            return CheckResult(
+                "voice model pricing", "ok", unchecked,
+                reason=REASON_PRICING_MODEL_NOT_CONFIGURED,
             )
         pricing = pricing_for_model(model, overrides=load_pricing_overrides())
         if pricing.label.startswith("unpriced:"):
@@ -499,11 +570,15 @@ def check_pricing() -> CheckResult:
                 f"active model {model!r} has no rate — cost reads $0 and the "
                 "spend cap can't bound it until you set one at /voice "
                 f"({len(defaults)} models priced as of {as_of})",
+                reason=REASON_PRICING_MODEL_UNPRICED,
             )
         return CheckResult(
             "voice model pricing", "ok",
             f"active model {model} priced; {len(defaults)} bundled "
             f"(as of {as_of})",
+            reason=REASON_PRICING_MODEL_PRICED,
         )
     except Exception as e:  # noqa: BLE001
-        return CheckResult("voice model pricing", "warn", str(e))
+        return CheckResult(
+            "voice model pricing", "warn", str(e), reason=REASON_PRICING_UNREADABLE,
+        )

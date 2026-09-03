@@ -19,6 +19,8 @@ import pytest
 
 from tests._bonded_member import bonded_grouping_env
 
+from jasper.cli.doctor import grouping as doctor_grouping
+
 from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_LANE_ENV,
     DAC_CONTENT_RING_PERIOD_FRAMES,
@@ -216,8 +218,8 @@ def test_doctor_check_skips_when_no_local_camilla_is_in_the_chain(monkeypatch):
     # solo
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: _cfg())
     result = check_grouping_rate_adjust()
-    assert result.status == "ok"
-    assert "no local CamillaDSP in a bonded chain" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == doctor_grouping.REASON_NOT_APPLICABLE
     # Enabled-but-INVALID: nothing streams, so no bonded chain exists.
     monkeypatch.setattr(
         cfgmod, "load_config",
@@ -225,8 +227,8 @@ def test_doctor_check_skips_when_no_local_camilla_is_in_the_chain(monkeypatch):
                              error="JASPER_GROUPING_BOND_ID is empty"),
     )
     result = check_grouping_rate_adjust()
-    assert result.status == "ok"
-    assert "no local CamillaDSP in a bonded chain" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == doctor_grouping.REASON_NOT_APPLICABLE
 
 
 def test_doctor_check_covers_the_active_follower(monkeypatch, tmp_path):
@@ -256,7 +258,7 @@ def test_doctor_check_covers_the_active_follower(monkeypatch, tmp_path):
 
     result = check_grouping_rate_adjust()
     assert result.status == "warn"
-    assert "bonded member" in result.detail
+    assert result.reason == doctor_grouping.REASON_RATE_ADJUST_ON
 
     # Severity stays warn, never fail: on a ring capture the key is INERT, so
     # this is an observability lie rather than a hazard. Escalating would red a
@@ -292,8 +294,8 @@ def test_doctor_check_does_not_warn_on_a_dumb_follower(monkeypatch, tmp_path):
     )
 
     result = check_grouping_rate_adjust()
-    assert result.status == "ok"
-    assert "no local CamillaDSP in a bonded chain" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == doctor_grouping.REASON_NOT_APPLICABLE
 
 
 def test_doctor_check_will_not_claim_rate_adjust_off_it_cannot_read(
@@ -322,8 +324,7 @@ def test_doctor_check_will_not_claim_rate_adjust_off_it_cannot_read(
 
     result = check_grouping_rate_adjust()
     assert result.status == "warn"
-    assert "could not confirm" in result.detail
-    assert "rate_adjust off" not in result.detail
+    assert result.reason == doctor_grouping.REASON_RATE_ADJUST_UNCONFIRMED
 
 
 def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_path):
@@ -342,11 +343,10 @@ def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_p
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
     result = check_grouping_rate_adjust()
     assert result.status == "warn"
-    # The detail names the INVARIANT (snapclient is the chain's sole tracker),
-    # not the leader-only symptom: the same message now serves a follower,
+    # The reason names the INVARIANT (snapclient is the chain's sole tracker),
+    # not the leader-only symptom: the same reason now serves a follower,
     # where a stray `true` is inert rather than oscillating.
-    assert "only rate-tracker" in result.detail
-    assert "bond apply did not land" in result.detail
+    assert result.reason == doctor_grouping.REASON_RATE_ADJUST_ON
 
 
 def test_doctor_check_ok_active_leader_rate_adjust_off(monkeypatch, tmp_path):
@@ -400,7 +400,7 @@ def test_leader_pipe_check_warns_on_solo_config_and_passes_on_emitted_pipe(
     config_file.write_text(emit_sound_config(SoundProfile(enabled=False)))
     r = check_grouping_leader_pipe()
     assert r.status == "warn"
-    assert "silent" in r.detail
+    assert r.reason == doctor_grouping.REASON_LEADER_PIPE_NOT_WIRED
 
     # The reconciler's bonded emit → ok.
     config_file.write_text(
@@ -421,7 +421,9 @@ def test_leader_pipe_check_skips_non_leaders(monkeypatch):
         lambda *a, **k: _cfg(enabled=True, role="follower", channel="right",
                              bond_id="b", leader_addr="jts.local"),
     )
-    assert check_grouping_leader_pipe().status == "ok"
+    r = check_grouping_leader_pipe()
+    assert r.status == "skipped"
+    assert r.reason == doctor_grouping.REASON_NOT_APPLICABLE
 
 
 def _channel_pick_check(
@@ -457,7 +459,7 @@ def test_channel_pick_check_warns_when_env_missing(monkeypatch):
                  bond_id="b", leader_addr="jts.local"),
     )
     assert r.status == "warn"
-    assert "not wired" in r.detail
+    assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_LANE_MISSING
 
 
 def test_channel_pick_check_warns_on_channel_drift(monkeypatch, tmp_path):
@@ -475,7 +477,7 @@ def test_channel_pick_check_warns_on_channel_drift(monkeypatch, tmp_path):
         env_path=env,
     )
     assert r.status == "warn"
-    assert "wrong channel" in r.detail
+    assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_DRIFT
 
 
 def test_channel_pick_check_names_an_unreadable_topology_as_such(
@@ -496,7 +498,7 @@ def test_channel_pick_check_names_an_unreadable_topology_as_such(
         topology_state=(None, False),
     )
     assert r.status == "warn"
-    assert "active_speaker_topology_unknown" in r.detail
+    assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_TOPOLOGY_UNKNOWN
 
 
 def test_channel_pick_check_names_a_period_the_return_ring_cannot_carry(
@@ -515,8 +517,7 @@ def test_channel_pick_check_names_a_period_the_return_ring_cannot_carry(
         period=1024,
     )
     assert r.status == "warn"
-    assert "1024" in r.detail and str(DAC_CONTENT_RING_PERIOD_FRAMES) in r.detail
-    assert "jasper-grouping-reconcile" not in r.detail
+    assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_PERIOD_MISMATCH
 
 
 def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
@@ -537,13 +538,11 @@ def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
         env_path=env,
     )
     assert r.status == "ok"
-    assert "channel=left" in r.detail
 
 
 def test_channel_pick_check_active_endpoint_names_the_grouping_ring(
     monkeypatch, tmp_path,
 ):
-    from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
         outputd_grouping_env,
@@ -560,8 +559,6 @@ def test_channel_pick_check_active_endpoint_names_the_grouping_ring(
         active_box=True,
     )
     assert r.status == "ok"
-    # Must not drift from the PCM the reconciler actually hands snapclient.
-    assert GROUPING_RING_PCM in r.detail
 
 
 def test_channel_pick_check_active_endpoint_warns_on_stale_dumb_lane(
@@ -581,7 +578,7 @@ def test_channel_pick_check_active_endpoint_warns_on_stale_dumb_lane(
         active_box=True,
     )
     assert r.status == "warn"
-    assert "active endpoint" in r.detail
+    assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_ACTIVE_ENDPOINT_LANE_ARMED
 
 
 def _sub_corner_check(monkeypatch, *, cfg, env_text=None, env_path=None):
@@ -604,8 +601,8 @@ def test_sub_corner_check_na_for_non_sub(monkeypatch):
         cfg=_cfg(enabled=True, role="follower", channel="right",
                  bond_id="b", leader_addr="jts.local"),
     )
-    assert r.status == "ok"
-    assert "not an active sub member" in r.detail
+    assert r.status == "skipped"
+    assert r.reason == doctor_grouping.REASON_NOT_APPLICABLE
 
 
 def test_sub_corner_check_warns_when_env_missing(monkeypatch):
@@ -615,7 +612,7 @@ def test_sub_corner_check_warns_when_env_missing(monkeypatch):
                  bond_id="b", leader_addr="jts.local"),
     )
     assert r.status == "warn"
-    assert "not wired with the low-pass corner" in r.detail
+    assert r.reason == doctor_grouping.REASON_SUB_CORNER_LANE_MISSING
 
 
 def test_sub_corner_check_na_for_active_speaker_box(monkeypatch):
@@ -629,8 +626,8 @@ def test_sub_corner_check_na_for_active_speaker_box(monkeypatch):
         cfg=_cfg(enabled=True, role="follower", channel="sub",
                  bond_id="b", leader_addr="jts.local"),
     )
-    assert r.status == "ok"
-    assert "active-speaker box" in r.detail
+    assert r.status == "skipped"
+    assert r.reason == doctor_grouping.REASON_NOT_APPLICABLE
 
 
 def test_sub_corner_check_warns_when_corner_absent(monkeypatch, tmp_path):
@@ -644,7 +641,7 @@ def test_sub_corner_check_warns_when_corner_absent(monkeypatch, tmp_path):
         env_path=env,
     )
     assert r.status == "warn"
-    assert "missing while channel=sub" in r.detail
+    assert r.reason == doctor_grouping.REASON_SUB_CORNER_MISSING
 
 
 def test_sub_corner_check_ok_when_wired(monkeypatch, tmp_path):
@@ -667,7 +664,6 @@ def test_sub_corner_check_ok_when_wired(monkeypatch, tmp_path):
         env_path=env,
     )
     assert r.status == "ok"
-    assert "120.0 Hz" in r.detail
 
 
 def test_outputd_grouping_env_clears_when_not_active():
@@ -791,7 +787,7 @@ def test_tts_lane_check_solo_with_stale_override_warns(monkeypatch, tmp_path):
         tmp_path=tmp_path,
     )
     assert r.status == "warn"
-    assert "un-armed" in r.detail
+    assert r.reason == doctor_grouping.REASON_TTS_SOCKET_DRIFT
 
 
 def test_tts_lane_check_solo_with_stale_park_flag_warns(monkeypatch, tmp_path):
@@ -806,8 +802,7 @@ def test_tts_lane_check_solo_with_stale_park_flag_warns(monkeypatch, tmp_path):
         tmp_path=tmp_path,
     )
     assert r.status == "warn"
-    assert "still carries" in r.detail
-    assert VOICE_PARK_ENV in r.detail
+    assert r.reason == doctor_grouping.REASON_TTS_PARK_FLAG_DRIFT
 
 
 def test_tts_lane_check_bonded_without_voice_override_warns(monkeypatch):
@@ -818,7 +813,7 @@ def test_tts_lane_check_bonded_without_voice_override_warns(monkeypatch):
         cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
     )
     assert r.status == "warn"
-    assert "rides the synced stream" in r.detail
+    assert r.reason == doctor_grouping.REASON_TTS_SOCKET_DRIFT
 
 
 def test_tts_lane_check_active_endpoint_fanin_is_ok(monkeypatch, tmp_path):
@@ -842,7 +837,6 @@ def test_tts_lane_check_active_endpoint_fanin_is_ok(monkeypatch, tmp_path):
         active_box=True,
     )
     assert r.status == "ok"
-    assert "upstream of crossover" in r.detail
 
 
 def test_tts_lane_check_active_endpoint_stale_outputd_socket_warns(
@@ -859,7 +853,7 @@ def test_tts_lane_check_active_endpoint_stale_outputd_socket_warns(
         active_box=True,
     )
     assert r.status == "warn"
-    assert "must keep outputd's TTS socket unarmed" in r.detail
+    assert r.reason == doctor_grouping.REASON_TTS_OUTPUTD_LANE_ARMED
 
 
 def test_tts_lane_check_bonded_unarmed_lane_warns_broken(monkeypatch, tmp_path):
@@ -873,7 +867,7 @@ def test_tts_lane_check_bonded_unarmed_lane_warns_broken(monkeypatch, tmp_path):
         tmp_path=tmp_path,
     )
     assert r.status == "warn"
-    assert "BROKEN" in r.detail
+    assert r.reason == doctor_grouping.REASON_TTS_OUTPUTD_LANE_UNARMED
 
 
 def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path):
@@ -898,8 +892,7 @@ def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path
         tmp_path=tmp_path,
     )
     assert r.status == "warn"
-    assert "runtime env resolves" in r.detail
-    assert "rides the synced stream" in r.detail
+    assert r.reason == doctor_grouping.REASON_TTS_SOCKET_DRIFT
 
 
 def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path):
@@ -917,7 +910,6 @@ def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path
         tmp_path=tmp_path,
     )
     assert r.status == "ok"
-    assert "member-local TTS wired" in r.detail
 
 
 def test_tts_lane_check_parked_sub_follower_is_ok(monkeypatch, tmp_path):
@@ -943,7 +935,6 @@ def test_tts_lane_check_parked_sub_follower_is_ok(monkeypatch, tmp_path):
         tmp_path=tmp_path,
     )
     assert r.status == "ok"
-    assert "sub follower" in r.detail
 
 
 def test_grouping_tts_route_matrix_matches_reconciler_writers():
@@ -1120,11 +1111,15 @@ def _pair_channels_check(monkeypatch, *, cfg, leader_payload=None,
 
 
 def test_pair_channels_check_skips_solo_and_leader(monkeypatch):
-    assert _pair_channels_check(monkeypatch, cfg=_cfg()).status == "ok"
-    assert _pair_channels_check(
+    r1 = _pair_channels_check(monkeypatch, cfg=_cfg())
+    assert r1.status == "skipped"
+    assert r1.reason == doctor_grouping.REASON_NOT_APPLICABLE
+    r2 = _pair_channels_check(
         monkeypatch,
         cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
-    ).status == "ok"
+    )
+    assert r2.status == "skipped"
+    assert r2.reason == doctor_grouping.REASON_NOT_APPLICABLE
 
 
 def test_pair_channels_check_warns_on_same_channel_pair(monkeypatch):
@@ -1137,8 +1132,7 @@ def test_pair_channels_check_warns_on_same_channel_pair(monkeypatch):
         leader_payload={"bond_id": "b", "channel": "left"},
     )
     assert r.status == "warn"
-    assert "BOTH speakers" in r.detail
-    assert "Swap" in r.detail  # remediation is one tap
+    assert r.reason == doctor_grouping.REASON_PAIR_CHANNELS_SAME_CHANNEL
 
 
 def test_pair_channels_check_ok_when_coherent(monkeypatch):
@@ -1149,7 +1143,6 @@ def test_pair_channels_check_ok_when_coherent(monkeypatch):
         leader_payload={"bond_id": "b", "channel": "left"},
     )
     assert r.status == "ok"
-    assert "coherent" in r.detail
 
 
 def test_pair_channels_check_unreachable_leader_defers_to_health(monkeypatch):
@@ -1161,8 +1154,8 @@ def test_pair_channels_check_unreachable_leader_defers_to_health(monkeypatch):
                  bond_id="b", leader_addr="jts.local"),
         leader_error=OSError("no route"),
     )
-    assert r.status == "ok"
-    assert "could not compare" in r.detail
+    assert r.status == "skipped"
+    assert r.reason == doctor_grouping.REASON_PAIR_CHANNELS_LEADER_UNREACHABLE
 
 
 def test_pair_channels_check_warns_on_bond_mismatch(monkeypatch):
@@ -1173,7 +1166,7 @@ def test_pair_channels_check_warns_on_bond_mismatch(monkeypatch):
         leader_payload={"bond_id": "OTHER", "channel": "left"},
     )
     assert r.status == "warn"
-    assert "re-pair" in r.detail
+    assert r.reason == doctor_grouping.REASON_PAIR_CHANNELS_BOND_MISMATCH
 
 
 def test_outputd_grouping_env_carries_the_trim():

@@ -24,11 +24,38 @@ from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ._registry import doctor_check
 from ._shared import (
+    REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
     _service_runtime_states,
 )
+
+# Machine-stable codes naming which branch of a resilience check produced a
+# result (AGENTS.md: tests pin status + reason, never detail prose). A check
+# that genuinely observed nothing (systemctl/jasper-control unreachable)
+# reports "skipped" with a reason rather than "ok" — ADR-0228 rule 3.
+REASON_UNITS_FAILED_OR_UNSTABLE = "units_failed_or_unstable"
+REASON_UNITS_RESTARTED = "units_restarted"
+
+REASON_SUPERVISOR_ISSUES = "supervisor_issues"
+REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
+
+REASON_SNAPSHOT_UNAVAILABLE = "supply_voltage_snapshot_unavailable"
+REASON_THROTTLED_BITS_UNREPORTED = "supply_voltage_throttled_bits_unreported"
+REASON_UNDERVOLTAGE_NOW = "supply_voltage_undervoltage_now"
+REASON_UNDERVOLTAGE_HISTORY = "supply_voltage_undervoltage_history"
+
+REASON_REBOOT_STATE_ABSENT = "reboot_state_absent"
+REASON_REBOOT_STATE_UNREADABLE = "reboot_state_unreadable"
+REASON_REBOOT_STATE_CORRUPT = "reboot_state_corrupt"
+REASON_REBOOT_STATE_FUTURE_DATED = "reboot_state_future_dated"
+REASON_REBOOT_STATE_ARMED = "reboot_state_armed"
+
+REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
+REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
+REASON_BOOTLOOP_GUARD_ARMED = "bootloop_guard_armed"
+REASON_BOOTLOOP_GUARD_TRIPPED = "bootloop_guard_tripped"
 
 @doctor_check(order=40, group="resilience")
 def check_service_runtime_state() -> CheckResult:
@@ -41,8 +68,9 @@ def check_service_runtime_state() -> CheckResult:
     states = _service_runtime_states()
     if states is None:
         return CheckResult(
-            "service runtime state", "ok",
+            "service runtime state", "skipped",
             "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
         )
     failed: list[str] = []
     restarted: list[str] = []
@@ -70,11 +98,15 @@ def check_service_runtime_state() -> CheckResult:
         detail = "failed or unstable units: " + ", ".join(failed)
         if restarted:
             detail += "; restarts: " + ", ".join(restarted)
-        return CheckResult("service runtime state", "fail", detail)
+        return CheckResult(
+            "service runtime state", "fail", detail,
+            reason=REASON_UNITS_FAILED_OR_UNSTABLE,
+        )
     if restarted:
         return CheckResult(
             "service runtime state", "warn",
             "restart counts non-zero: " + ", ".join(restarted),
+            reason=REASON_UNITS_RESTARTED,
         )
     return CheckResult(
         "service runtime state", "ok",
@@ -154,6 +186,7 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
             "supervisor runtime snapshots",
             "warn",
             "; ".join(issues),
+            reason=REASON_SUPERVISOR_ISSUES,
         )
     return CheckResult(
         "supervisor runtime snapshots",
@@ -189,8 +222,9 @@ def check_supervisor_runtime_snapshots() -> CheckResult:
     if resilience is None:
         return CheckResult(
             "supervisor runtime snapshots",
-            "ok",
-            "skipped — jasper-control /state unavailable",
+            "skipped",
+            "jasper-control /state unavailable",
+            reason=REASON_CONTROL_UNAVAILABLE,
         )
     return _classify_supervisor_snapshots(resilience)
 
@@ -220,17 +254,24 @@ def check_supply_voltage() -> CheckResult:
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
-        return CheckResult(name, "ok", "n/a — jasper-control /system/snapshot unavailable")
+        return CheckResult(
+            name, "skipped", "jasper-control /system/snapshot unavailable",
+            reason=REASON_SNAPSHOT_UNAVAILABLE,
+        )
     now_bits = current.get("throttled_now")
     history_bits = current.get("throttled_history")
     if not isinstance(now_bits, int) or not isinstance(history_bits, int):
-        return CheckResult(name, "ok", "n/a — throttled bits not reported")
+        return CheckResult(
+            name, "skipped", "throttled bits not reported",
+            reason=REASON_THROTTLED_BITS_UNREPORTED,
+        )
     if now_bits & _UNDER_VOLTAGE_NOW_BIT:
         return CheckResult(
             name, "fail",
             f"under-voltage NOW — throttled={hex(now_bits)}, bit 0 set. "
             "Bit 0 is the Pi firmware's under-voltage-detected flag "
             "(`vcgencmd get_throttled`). Check the power supply and cable.",
+            reason=REASON_UNDERVOLTAGE_NOW,
         )
     if history_bits & _UNDER_VOLTAGE_HISTORY_BIT:
         return CheckResult(
@@ -241,6 +282,7 @@ def check_supply_voltage() -> CheckResult:
             "is the Pi firmware's under-voltage-has-occurred flag "
             "(`vcgencmd get_throttled`); not active now, but the supply was "
             "marginal at some point since the last boot.",
+            reason=REASON_UNDERVOLTAGE_HISTORY,
         )
     return CheckResult(
         name, "ok",
@@ -273,12 +315,16 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
     except FileNotFoundError:
         # Normal on a fresh install or any Pi the supervisor has never
         # had to reboot. Not a warning.
-        return CheckResult(name, "ok", "no supervisor reboot recorded")
+        return CheckResult(
+            name, "ok", "no supervisor reboot recorded",
+            reason=REASON_REBOOT_STATE_ABSENT,
+        )
     except OSError as e:
         return CheckResult(
             name, "warn",
             f"unreadable ({e.__class__.__name__}) — supervisor fails open "
             f"(rate-limit unarmed). Check permissions on {path}",
+            reason=REASON_REBOOT_STATE_UNREADABLE,
         )
     try:
         data = json.loads(raw)
@@ -288,6 +334,7 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
             name, "warn",
             f"corrupt — supervisor fails open (rate-limit unarmed). "
             f"Delete to clear: {path}",
+            reason=REASON_REBOOT_STATE_CORRUPT,
         )
     age = now - last
     if age < -_REBOOT_STATE_FUTURE_SKEW_SEC:
@@ -296,10 +343,12 @@ def _classify_reboot_state(path: Path, *, now: float | None = None) -> CheckResu
             f"future-dated by {-age:.0f}s — T5.2 reboot rate-limit is "
             "suppressed until wall-clock catches up (no RTC; is NTP "
             "syncing?). Delete to re-arm: " + str(path),
+            reason=REASON_REBOOT_STATE_FUTURE_DATED,
         )
     return CheckResult(
         name, "ok",
         f"last supervisor reboot {age / 3600:.1f}h ago — 24h rate-limit armed",
+        reason=REASON_REBOOT_STATE_ARMED,
     )
 
 
@@ -325,6 +374,7 @@ def check_bootloop_guard() -> CheckResult:
             name, "ok",
             "no marker this boot — guard armed (T5.1 reboot escalation "
             "active)",
+            reason=REASON_BOOTLOOP_GUARD_NOT_RUN,
         )
     if snap.get("reload_ok") is False:
         units = [str(u) for u in (snap.get("units") or [])]
@@ -337,6 +387,7 @@ def check_bootloop_guard() -> CheckResult:
             ". Check `journalctl -u jasper-bootloop-guard`; after fixing "
             "the systemd error, re-run `jasper-bootloop-guard --reason "
             "manual` (or reboot).",
+            reason=REASON_BOOTLOOP_GUARD_RELOAD_FAILED,
         )
     if not snap.get("tripped"):
         return CheckResult(
@@ -344,6 +395,7 @@ def check_bootloop_guard() -> CheckResult:
             f"guard armed ({snap.get('boots_in_window')} boot(s) in a "
             f"{snap.get('window_sec')}s window, threshold "
             f"{snap.get('threshold')})",
+            reason=REASON_BOOTLOOP_GUARD_ARMED,
         )
     units = [str(u) for u in (snap.get("units") or [])]
     return CheckResult(
@@ -354,6 +406,7 @@ def check_bootloop_guard() -> CheckResult:
         "rebooting. Fix the failing daemon, then `systemctl reset-failed "
         "<unit> && systemctl start <unit>` (drop-ins self-clear on the "
         "next boot).",
+        reason=REASON_BOOTLOOP_GUARD_TRIPPED,
     )
 
 

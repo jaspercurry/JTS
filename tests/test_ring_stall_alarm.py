@@ -217,7 +217,7 @@ def test_the_doctor_check_reports_a_stalled_active_ring(tmp_path, monkeypatch):
     monkeypatch.setattr(ring_assets, "RING_ACTIVE_CONTENT_FILE", stalled)
     result = audio_runtime.check_ring_reader_stall()
     assert result.status == "warn"
-    assert "ACTIVE ring" in result.detail
+    assert result.reason == audio_runtime.REASON_RING_READER_STALLED
 
 
 def test_the_doctor_check_is_silent_on_an_unarmed_box(tmp_path, monkeypatch):
@@ -231,8 +231,8 @@ def test_the_doctor_check_is_silent_on_an_unarmed_box(tmp_path, monkeypatch):
     ):
         monkeypatch.setattr(ring_assets, attr, str(tmp_path / f"absent-{attr}"))
     result = audio_runtime.check_ring_reader_stall()
-    assert result.status == "ok"
-    assert "no ring is being written" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == audio_runtime.REASON_RING_READER_NO_LIVE_RING
 
 
 if __name__ == "__main__":  # pragma: no cover

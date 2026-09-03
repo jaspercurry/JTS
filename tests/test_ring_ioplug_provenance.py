@@ -473,9 +473,8 @@ def test_provenance_check_skips_when_the_so_is_absent(monkeypatch, tmp_path):
 
     _doctor_env(monkeypatch, tmp_path)
     res = audio.check_ring_ioplug_provenance()
-    assert res.status == "ok"
-    assert "skipped" in res.detail
-    assert "ring platform" in res.detail
+    assert res.status == "skipped"
+    assert res.reason == audio.REASON_RING_IOPLUG_ABSENT
 
 
 def test_provenance_check_warns_when_the_plugin_is_unvouched(
@@ -490,9 +489,7 @@ def test_provenance_check_warns_when_the_plugin_is_unvouched(
     _doctor_env(monkeypatch, tmp_path, so_bytes=b"\x7fELF plugin")
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "warn"
-    assert "UNVOUCHED" in res.detail
-    assert "a deploy revoked the record" in res.detail
-    assert "scripts/deploy-to-pi.sh" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_UNVOUCHED
 
 
 def test_provenance_check_warns_when_the_installed_so_is_stale(
@@ -513,8 +510,7 @@ def test_provenance_check_warns_when_the_installed_so_is_stale(
     )
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "warn"
-    assert "STALE ioplug" in res.detail
-    assert "NOT the one" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_STALE
 
 
 def test_provenance_check_reports_the_caps_when_the_record_matches(
@@ -537,9 +533,6 @@ def test_provenance_check_reports_the_caps_when_the_record_matches(
     )
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "ok"
-    assert "matches the installer's record" in res.detail
-    assert ring_assets.RING_CAP_WIRE_FORMAT in res.detail
-    assert ring_assets.RING_CAP_WIRE_CHANNELS in res.detail
 
 
 def test_provenance_check_reports_a_vouched_plugin_with_no_capabilities(
@@ -563,7 +556,6 @@ def test_provenance_check_reports_a_vouched_plugin_with_no_capabilities(
     )
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "ok"
-    assert "[none]" in res.detail
 
 
 # --- the wire-weighted verdict ----------------------------------------------
@@ -668,9 +660,7 @@ def test_an_undeclared_box_now_needs_the_capability_so_the_verdict_is_a_failure(
     assert _resolved_capabilities() == {ring_assets.RING_CAP_WIRE_FORMAT}
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "fail"
-    assert "REFUSED" in res.detail
-    assert "no provenance record" in res.detail
-    assert "scripts/deploy-to-pi.sh" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_WIRE_UNSUPPORTED
 
 
 def test_an_operator_narrow_pin_is_the_one_shape_the_gate_still_exempts(
@@ -691,7 +681,7 @@ def test_an_operator_narrow_pin_is_the_one_shape_the_gate_still_exempts(
     assert _resolved_capabilities() == frozenset()
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "warn"
-    assert "UNVOUCHED" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_UNVOUCHED
 
 
 def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
@@ -717,8 +707,11 @@ def test_the_arm_gate_itself_refuses_an_undeclared_box_with_no_record(
 
     assert ok is False
     assert "no provenance record" in detail
-    # The gate's own remediation, not a second sentence written for the doctor.
-    assert detail in audio.check_ring_ioplug_provenance().detail
+    # The doctor plumbs the gate's own verdict through, not a second one it
+    # derives itself.
+    doctor_res = audio.check_ring_ioplug_provenance()
+    assert doctor_res.status == "fail"
+    assert doctor_res.reason == audio.REASON_RING_IOPLUG_WIRE_UNSUPPORTED
 
     # A stale record is the other refusing shape, and it names a different fix.
     (tmp_path / "ring-ioplug.provenance").write_text(
@@ -755,9 +748,7 @@ def test_a_declared_wide_wire_with_no_record_is_a_failure(
     assert _resolved_capabilities() == {ring_assets.RING_CAP_WIRE_FORMAT}
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "fail"
-    assert "REFUSED" in res.detail
-    assert "no provenance record" in res.detail
-    assert "scripts/deploy-to-pi.sh" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_WIRE_UNSUPPORTED
 
 
 def test_a_declared_wide_wire_with_a_stale_record_is_a_failure(
@@ -777,7 +768,7 @@ def test_a_declared_wide_wire_with_a_stale_record_is_a_failure(
     )
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "fail"
-    assert "STALE ioplug" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_WIRE_UNSUPPORTED
 
 
 def test_a_vouched_plugin_that_cannot_parse_the_wire_is_a_failure(
@@ -802,7 +793,7 @@ def test_a_vouched_plugin_that_cannot_parse_the_wire_is_a_failure(
     )
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "fail"
-    assert "cannot parse [wire_format]" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_WIRE_UNSUPPORTED
 
 
 def test_a_declared_wide_wire_the_record_covers_is_ok(
@@ -822,7 +813,6 @@ def test_a_declared_wide_wire_the_record_covers_is_ok(
     )
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "ok"
-    assert "matches the installer's record" in res.detail
 
 
 def test_an_illegal_wire_declaration_is_not_reported_as_a_provenance_fault(
@@ -839,7 +829,7 @@ def test_an_illegal_wire_declaration_is_not_reported_as_a_provenance_fault(
     assert audio._resolved_ring_wire() is None
     res = audio.check_ring_ioplug_provenance()
     assert res.status == "warn"
-    assert "UNVOUCHED" in res.detail
+    assert res.reason == audio.REASON_RING_IOPLUG_UNVOUCHED
 
 
 def test_an_absent_so_still_defers_even_when_the_wire_is_wide(
@@ -853,8 +843,8 @@ def test_an_absent_so_still_defers_even_when_the_wire_is_wide(
     _declared_wire("S32_LE")
     _doctor_env(monkeypatch, tmp_path)
     res = audio.check_ring_ioplug_provenance()
-    assert res.status == "ok"
-    assert "skipped" in res.detail
+    assert res.status == "skipped"
+    assert res.reason == audio.REASON_RING_IOPLUG_ABSENT
 
 
 def test_the_build_failure_warn_hands_off_to_the_check_by_its_real_name(

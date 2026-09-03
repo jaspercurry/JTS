@@ -14,10 +14,17 @@ from jasper.research import DONE, ResearchJob, ResearchJobStore
 
 
 @pytest.mark.parametrize(
-    "api_key, store", [(None, "absent"), ("sk-test", "absent"), ("sk-test", "broken")],
+    "api_key, store, expected_status, expected_reason",
+    [
+        (None, "absent", "ok", doctor_research.REASON_DISABLED),
+        ("sk-test", "absent", "warn", doctor_research.REASON_STORE_UNAVAILABLE),
+        ("sk-test", "broken", "warn", doctor_research.REASON_STORE_UNAVAILABLE),
+    ],
     ids=["disabled", "store-missing", "store-unqueryable"],
 )
-def test_research_verdicts(monkeypatch, tmp_path, api_key, store):
+def test_research_verdicts(
+    monkeypatch, tmp_path, api_key, store, expected_status, expected_reason,
+):
     db_path = tmp_path / "research.db"
     if store == "broken":
         conn = sqlite3.connect(db_path)
@@ -31,9 +38,8 @@ def test_research_verdicts(monkeypatch, tmp_path, api_key, store):
 
     r = doctor_research.check_research()
 
-    assert r.status == ("ok" if api_key is None else "warn")
-    if api_key is not None:
-        assert str(db_path) in r.detail
+    assert r.status == expected_status
+    assert r.reason == expected_reason
 
 
 def test_research_ok_store_never_echoes_private_text(monkeypatch, tmp_path):
@@ -59,5 +65,4 @@ def test_research_ok_store_never_echoes_private_text(monkeypatch, tmp_path):
     r = doctor_research.check_research()
 
     assert r.status == "ok"
-    assert "private prompt" not in r.detail
-    assert "private answer" not in r.detail
+    assert not any(secret in r.detail for secret in ("private prompt", "private answer"))

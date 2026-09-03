@@ -516,8 +516,8 @@ def test_the_doctor_stall_check_judges_the_grouping_ring(monkeypatch, tmp_path):
         "check_ring_reader_stall must judge the grouping ring — its tuple is "
         f"hand-kept, and it only asked about {asked}"
     )
-    # Every ring absent => the check stays quiet, which is the fleet's state.
-    assert result.status == "ok"
+    assert result.status == "skipped"
+    assert result.reason == doctor.audio_runtime.REASON_RING_READER_NO_LIVE_RING
 
 
 # --- T-3: install coverage, and the deliberate rm -f asymmetry --------------

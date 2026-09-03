@@ -15,11 +15,23 @@ from ...config import Config
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir
 
+# Machine-stable codes naming which branch of an env check produced a result
+# (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_ENV_FILE_MISSING = "env_file_missing"
+REASON_SPEAKER_NAME_UNPARSEABLE = "speaker_name_unparseable"
+REASON_STATE_DIR_MISSING = "state_dir_missing"
+REASON_STATE_DIR_STAT_FAILED = "state_dir_stat_failed"
+REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
+REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
+
 @doctor_check(order=0, group="env")
 def check_env_file() -> CheckResult:
     p = Path("/etc/jasper/jasper.env")
     if not p.exists():
-        return CheckResult("env file", "fail", f"{p} missing — re-run install.sh")
+        return CheckResult(
+            "env file", "fail", f"{p} missing — re-run install.sh",
+            reason=REASON_ENV_FILE_MISSING,
+        )
     wizard = Path("/var/lib/jasper/voice_provider.env")
     if wizard.exists():
         return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
@@ -36,6 +48,7 @@ def check_speaker_name() -> CheckResult:
             "speaker name",
             "warn",
             f"{p} exists but could not be parsed; using {state.name!r}",
+            reason=REASON_SPEAKER_NAME_UNPARSEABLE,
         )
     return CheckResult(
         "speaker name",
@@ -57,11 +70,16 @@ def check_state_dir(cfg: Config) -> CheckResult:
     own identity rather than needing setgid inheritance from the parent."""
     p = Path(cfg.usage_db).parent
     if not p.exists():
-        return CheckResult("state dir", "warn", f"{p} missing (will be created on first run)")
+        return CheckResult(
+            "state dir", "warn", f"{p} missing (will be created on first run)",
+            reason=REASON_STATE_DIR_MISSING,
+        )
     try:
         st = p.stat()
     except OSError as exc:
-        return CheckResult("state dir", "fail", f"{p}: {exc}")
+        return CheckResult(
+            "state dir", "fail", f"{p}: {exc}", reason=REASON_STATE_DIR_STAT_FAILED,
+        )
     writable, group_name = _group_writable_dir(
         st, expected_group="jasper", require_setgid=False
     )
@@ -70,6 +88,7 @@ def check_state_dir(cfg: Config) -> CheckResult:
             "state dir", "fail",
             f"{p} not writable by the non-root jasper-* daemons "
             f"(group={group_name} mode={oct(st.st_mode & 0o7777)})",
+            reason=REASON_STATE_DIR_NOT_WRITABLE,
         )
     return CheckResult("state dir", "ok", str(p))
 
@@ -123,6 +142,7 @@ def _classify_state_group_write(usage_db: Path) -> CheckResult:
             "state group-write", "warn",
             "not group-`jasper`-writable: " + ", ".join(bad)
             + " — re-deploy to heal (daemons set UMask=0007)",
+            reason=REASON_STATE_GROUP_WRITE_VIOLATION,
         )
     return CheckResult(
         "state group-write", "ok",

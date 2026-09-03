@@ -387,7 +387,7 @@ def test_diagnostics_stale_cache_refresh_failure_is_visible(
     ]
     refresh_row = body["results"][-1]
     assert refresh_row["status"] == "fail"
-    assert "Interactive authentication required" in refresh_row["detail"]
+    assert refresh_row["reason"] == srv_mod.REASON_REFRESH_FAILED
 
 
 def test_diagnostics_placeholder_when_snapshot_missing(
@@ -414,7 +414,7 @@ def test_diagnostics_placeholder_when_snapshot_missing(
     assert body["stale"] is True
     assert body["refreshing"] is True
     assert body["results"][0]["name"] == "jasper-doctor"
-    assert "not ready" in body["results"][0]["detail"]
+    assert body["results"][0]["reason"] == srv_mod.REASON_SNAPSHOT_PENDING
 
 
 def test_diagnostics_missing_snapshot_throttles_refresh_starts(
@@ -476,7 +476,7 @@ def test_diagnostics_fail_row_when_refresh_start_fails(
     assert status == 200
     assert body["fails"] == 1
     assert body["results"][0]["status"] == "fail"
-    assert "Interactive authentication required" in body["results"][0]["detail"]
+    assert body["results"][0]["reason"] == srv_mod.REASON_SNAPSHOT_UNAVAILABLE
 
 
 def test_system_audio_quality_applies_and_try_restarts_renderers(

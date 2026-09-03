@@ -50,56 +50,66 @@ def _unit_block(unit: str, active: str, sub: str, restarts: int = 0) -> str:
 
 
 @pytest.mark.parametrize(
-    "blocks, status, must_name",
+    "blocks, status, reason",
     [
         (
             [("librespot.service", "failed", "failed", 5)],
             "fail",
-            "librespot.service state=failed/failed",
+            resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
         ),
         (
             [("jasper-voice.service", "active", "running", 2)],
             "warn",
-            "jasper-voice.service NRestarts=2",
+            resilience.REASON_UNITS_RESTARTED,
         ),
         # A parked coupling oneshot leaves its evidence only in
         # `systemctl --failed` plus the journal (#1233 follow-up).
         (
             [("jasper-fanin-coupling-auto.service", "failed", "failed", 0)],
             "fail",
-            "jasper-fanin-coupling-auto.service state=failed/failed",
+            resilience.REASON_UNITS_FAILED_OR_UNSTABLE,
         ),
     ],
     ids=["failed-unit", "restart-count", "failed-oneshot"],
 )
 def test_check_service_runtime_state_verdicts(
-    monkeypatch, blocks, status, must_name
+    monkeypatch, blocks, status, reason
 ):
     _systemctl_show(monkeypatch, "\n".join(_unit_block(*b) for b in blocks))
 
     r = doctor.check_service_runtime_state()
 
     assert r.status == status
-    assert must_name in r.detail
+    assert r.reason == reason
 
 
 def test_check_service_runtime_state_ignores_an_in_flight_oneshot(monkeypatch):
     """`activating` is a oneshot's NORMAL mid-run state (a reconcile pass in
     flight), not the stuck-start instability it signals on a long-running
-    daemon — a tick the doctor races must not read as a failure, while a daemon
-    stuck in activating still does."""
+    daemon — a tick the doctor races must not read as a failure."""
     _systemctl_show(
         monkeypatch,
-        _unit_block("jasper-fanin-coupling-auto.service", "activating", "start")
-        + "\n"
-        + _unit_block("jasper-fanin.service", "activating", "start"),
+        _unit_block("jasper-fanin-coupling-auto.service", "activating", "start"),
+    )
+
+    r = doctor.check_service_runtime_state()
+
+    assert r.status == "ok"
+
+
+def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
+    monkeypatch,
+):
+    """The same `activating` state on a long-running daemon still is a
+    finding — only the tracked oneshot is exempt."""
+    _systemctl_show(
+        monkeypatch, _unit_block("jasper-fanin.service", "activating", "start"),
     )
 
     r = doctor.check_service_runtime_state()
 
     assert r.status == "fail"
-    assert "jasper-fanin.service state=activating/start" in r.detail
-    assert "jasper-fanin-coupling-auto.service" not in r.detail
+    assert r.reason == resilience.REASON_UNITS_FAILED_OR_UNSTABLE
 
 
 def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
@@ -110,21 +120,27 @@ def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
 
 
 @pytest.mark.parametrize(
-    "payload, offset, status, must_name",
+    "payload, offset, status, reason",
     [
-        (None, None, "ok", ""),
+        (None, None, "ok", resilience.REASON_REBOOT_STATE_ABSENT),
         # A corrupt file must name itself so the operator knows what to delete.
-        ("{ not json", None, "warn", "reboot.json"),
-        (json.dumps({"last_reboot_at": "nope"}), None, "warn", ""),
-        (None, -7200, "ok", "2.0h ago"),
+        ("{ not json", None, "warn", resilience.REASON_REBOOT_STATE_CORRUPT),
+        (
+            json.dumps({"last_reboot_at": "nope"}), None, "warn",
+            resilience.REASON_REBOOT_STATE_CORRUPT,
+        ),
+        (None, -7200, "ok", resilience.REASON_REBOOT_STATE_ARMED),
         # fake-hwclock + NTP routinely produce small negative ages at boot.
-        (None, 60, "ok", ""),
-        (None, _REBOOT_STATE_FUTURE_SKEW_SEC * 2, "warn", "future-dated"),
+        (None, 60, "ok", resilience.REASON_REBOOT_STATE_ARMED),
+        (
+            None, _REBOOT_STATE_FUTURE_SKEW_SEC * 2, "warn",
+            resilience.REASON_REBOOT_STATE_FUTURE_DATED,
+        ),
     ],
     ids=["absent", "corrupt", "wrong-shape", "recent", "small-skew", "large-skew"],
 )
 def test_classify_reboot_state_verdicts(
-    tmp_path, payload, offset, status, must_name
+    tmp_path, payload, offset, status, reason
 ):
     p = tmp_path / "reboot.json"
     now = time.time()
@@ -136,7 +152,7 @@ def test_classify_reboot_state_verdicts(
     res = _classify_reboot_state(p, now=now)
 
     assert res.status == status
-    assert must_name in res.detail
+    assert res.reason == reason
 
 
 # ---------------------------------------------------------- boot-loop guard
@@ -161,23 +177,24 @@ _ARMED = {
 
 
 @pytest.mark.parametrize(
-    "payload",
+    "payload, reason",
     [
-        None,  # guard never ran this boot (dev host, fresh install)
-        json.dumps(_ARMED),
+        # guard never ran this boot (dev host, fresh install)
+        (None, resilience.REASON_BOOTLOOP_GUARD_NOT_RUN),
+        (json.dumps(_ARMED), resilience.REASON_BOOTLOOP_GUARD_ARMED),
         # The reader is fail-soft ({'ran': False}) and the guard is fail-open,
         # so a torn marker reads as "never ran" — armed, not broken.
-        "{torn",
+        ("{torn", resilience.REASON_BOOTLOOP_GUARD_NOT_RUN),
     ],
     ids=["absent", "untripped", "corrupt"],
 )
-def test_bootloop_guard_reports_armed(monkeypatch, tmp_path, payload):
+def test_bootloop_guard_reports_armed(monkeypatch, tmp_path, payload, reason):
     _bootloop_marker(monkeypatch, tmp_path, payload)
 
     res = check_bootloop_guard()
 
     assert res.status == "ok"
-    assert "guard armed" in res.detail
+    assert res.reason == reason
 
 
 def test_bootloop_guard_warns_on_a_reload_failure(monkeypatch, tmp_path):
@@ -190,8 +207,7 @@ def test_bootloop_guard_warns_on_a_reload_failure(monkeypatch, tmp_path):
     res = check_bootloop_guard()
 
     assert res.status == "warn"
-    assert "jasper-bootloop-guard --reason manual" in res.detail
-    assert "jasper-camilla.service" in res.detail
+    assert res.reason == resilience.REASON_BOOTLOOP_GUARD_RELOAD_FAILED
 
 
 def test_bootloop_guard_tripped_names_the_units_and_the_recovery(
@@ -215,9 +231,7 @@ def test_bootloop_guard_tripped_names_the_units_and_the_recovery(
     res = check_bootloop_guard()
 
     assert res.status == "warn"
-    assert "jasper-camilla.service" in res.detail
-    assert "jasper-voice.service" in res.detail
-    assert "systemctl reset-failed" in res.detail
+    assert res.reason == resilience.REASON_BOOTLOOP_GUARD_TRIPPED
 
 
 # ------------------------------------------------- supervisor runtime snapshots
@@ -243,77 +257,86 @@ def test_supervisor_snapshots_quiet_is_ok():
     assert res.status == "ok"
 
 
-def test_supervisor_snapshots_warn_names_every_non_converging_signal():
-    res = _classify_supervisor_snapshots(
+@pytest.mark.parametrize(
+    "grouping_supervisor",
+    [
+        {"enabled": True, "last_poll_starved": True, "consecutive_starved": 4},
+        {"enabled": True, "kick_count": 2},
+        {"enabled": True, "binding": {"failed_total": 1}},
         {
-            "grouping_supervisor": {
-                "enabled": True,
-                "last_poll_starved": True,
-                "consecutive_starved": 4,
-                "kick_count": 2,
-                "rate_limited_count": 1,
-                "binding": {"failed_total": 1},
-                "reassert": {
-                    "failed_total": 1,
-                    "last_ok": False,
-                    "last_detail": "connection refused",
-                },
+            "enabled": True,
+            "reassert": {
+                "failed_total": 1,
+                "last_ok": False,
+                "last_detail": "connection refused",
             },
-        }
+        },
+    ],
+    ids=["starved", "kicks", "binding-failed", "reassert-failed"],
+)
+def test_supervisor_snapshots_warn_on_every_non_converging_signal(
+    grouping_supervisor,
+):
+    res = _classify_supervisor_snapshots(
+        {"grouping_supervisor": grouping_supervisor},
     )
 
     assert res.status == "warn"
-    assert "grouping lane starved consecutive=4" in res.detail
-    assert "grouping reconciler kicks=2" in res.detail
-    assert "binding repair failures=1" in res.detail
-    assert "connection refused" in res.detail
+    assert res.reason == resilience.REASON_SUPERVISOR_ISSUES
 
 
 def test_supervisor_snapshots_check_skips_when_state_unavailable(monkeypatch):
     monkeypatch.setattr(resilience, "_read_resilience_state", lambda: None)
 
-    assert check_supervisor_runtime_snapshots().status == "ok"
+    res = check_supervisor_runtime_snapshots()
+
+    assert res.status == "skipped"
+    assert res.reason == resilience.REASON_CONTROL_UNAVAILABLE
 
 
 # ------------------------------------------------------- check_supply_voltage
 
 
 @pytest.mark.parametrize(
-    "current, status, must_name",
+    "current, status, reason",
     [
         # No jasper-control /system/snapshot reachable: n/a, not a failure.
-        (None, "ok", "n/a"),
+        (None, "skipped", resilience.REASON_SNAPSHOT_UNAVAILABLE),
         # Bits absent/wrong-typed from a stale or malformed snapshot: n/a.
-        ({"throttled_now": None, "throttled_history": None}, "ok", "n/a"),
+        (
+            {"throttled_now": None, "throttled_history": None}, "skipped",
+            resilience.REASON_THROTTLED_BITS_UNREPORTED,
+        ),
         # Clean box: neither bit set. Both fields are already the shifted
         # nibbles jasper.control.system_metrics._read_throttled() publishes
         # (raw & 0xF, (raw >> 16) & 0xF) -- never a raw 0x50005-style value.
-        ({"throttled_now": 0x0, "throttled_history": 0x0}, "ok", "no under-voltage"),
+        ({"throttled_now": 0x0, "throttled_history": 0x0}, "ok", ""),
         # Bit 0 of throttled_now: under-voltage right now outranks history.
         (
             {"throttled_now": 0x5, "throttled_history": 0x5},
             "fail",
-            "under-voltage now",
+            resilience.REASON_UNDERVOLTAGE_NOW,
         ),
         # Bit 0 of throttled_history only (raw bit 16): happened since boot,
         # not now.
         (
             {"throttled_now": 0x0, "throttled_history": 0x1},
             "warn",
-            "under-voltage occurred since boot",
+            resilience.REASON_UNDERVOLTAGE_HISTORY,
         ),
         # Other throttled bits set (frequency cap, temp limit) but neither
         # under-voltage bit: not this check's concern.
-        ({"throttled_now": 0x2, "throttled_history": 0x2}, "ok", "no under-voltage"),
+        ({"throttled_now": 0x2, "throttled_history": 0x2}, "ok", ""),
     ],
 )
-def test_check_supply_voltage_verdicts(monkeypatch, current, status, must_name):
+def test_check_supply_voltage_verdicts(monkeypatch, current, status, reason):
     monkeypatch.setattr(resilience, "_read_system_metrics_current", lambda: current)
 
     result = check_supply_voltage()
 
     assert result.status == status
-    assert must_name in result.detail.lower()
+    if reason:
+        assert result.reason == reason
 
 
 @pytest.mark.parametrize(

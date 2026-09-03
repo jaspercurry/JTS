@@ -15,19 +15,10 @@ daemon — and because every one of these reads is fail-soft (a caught
 to "not configured / healthy". The daemon keeps running with blank state and
 nothing surfaces.
 
-That bug class has already bitten twice:
-
-- **#900** — ``grouping_leader.yml`` (and the sound configs) were left ``0600``
-  by ``emit_sound_config``'s hand-rolled tempfile writer. jasper-control reads
-  the active CamillaDSP config off-disk (``active_leader_pipe_path``) for the
-  bonded-leader producer-liveness signal; the unreadable file resolved to
-  ``""`` and ``/state`` reported a *bonded leader* "degraded — the stream is
-  silent" while audio was flowing.
-- **#901** — ``bt_roles.json`` was published ``0600`` by ``RoleStore._write``.
-  No active denial (only jasper-web reads it), but latent the moment any
-  non-root ``jasper``-group daemon needs it.
-
-Nothing structural stopped the *next* writer from re-introducing it. This
+That bug class has already bitten twice (#900, #901 — a config or role-store
+file left ``0600`` by its writer, silently unreadable to the non-root daemon
+that needs it). Nothing structural stopped the *next* writer from
+re-introducing it. This
 module is that structural guard: for every non-root daemon it verifies that
 each file the daemon's own code reads at runtime is actually readable by that
 daemon's uid + group set, failing **loud** (WARN, with the exact file + mode)
@@ -75,7 +66,22 @@ from dataclasses import dataclass, field
 
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult, _run
+
+# Machine-stable codes naming which branch of a privsep check produced a
+# result (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_UNIT_NOT_INSTALLED = "daemon_reads_unit_not_installed"
+REASON_UNIT_RUNS_AS_ROOT = "daemon_reads_unit_runs_as_root"
+REASON_USER_NOT_RESOLVABLE = "daemon_reads_user_not_resolvable"
+REASON_NO_DECLARED_INPUTS = "daemon_reads_no_declared_inputs"
+
+REASON_NO_INPUTS_PRESENT = "daemon_reads_no_inputs_present"
+REASON_INPUTS_UNREADABLE = "daemon_reads_unreadable"
+REASON_INPUTS_READABLE = "daemon_reads_readable"
+
+REASON_HOUSEHOLD_SECRET_ABSENT = "household_secret_absent"
+REASON_HOUSEHOLD_SECRET_READABLE = "household_secret_readable"
+REASON_HOUSEHOLD_SECRET_UNREADABLE = "household_secret_unreadable"
 
 
 @dataclass(frozen=True)
@@ -389,7 +395,10 @@ def _classify_readable_inputs(
             if not _process_can_read(st, uid, gids):
                 unreadable.append(_describe(match, st))
     if not checked:
-        return CheckResult(label, "ok", f"no declared inputs present yet ({user})")
+        return CheckResult(
+            label, "skipped", f"no declared inputs present yet ({user})",
+            reason=REASON_NO_INPUTS_PRESENT,
+        )
     if unreadable:
         shown = unreadable[:6]
         overflow = len(unreadable) - len(shown)
@@ -402,8 +411,12 @@ def _classify_readable_inputs(
             + "; ".join(shown)
             + " — expected group `jasper`-readable (0640); the writer must emit "
             "mode 0o640 (atomic_write_text(mode=0o640)). Re-deploy after fixing.",
+            reason=REASON_INPUTS_UNREADABLE,
         )
-    return CheckResult(label, "ok", f"{checked} input(s) readable by {user}")
+    return CheckResult(
+        label, "ok", f"{checked} input(s) readable by {user}",
+        reason=REASON_INPUTS_READABLE,
+    )
 
 
 def _household_secret_verdict(
@@ -417,6 +430,7 @@ def _household_secret_verdict(
             label,
             "ok",
             f"present and readable by {user} — /grouping/set auth gate is enforced",
+            reason=REASON_HOUSEHOLD_SECRET_READABLE,
         )
     return CheckResult(
         label,
@@ -426,6 +440,7 @@ def _household_secret_verdict(
         "(household_credential.verify treats an unreadable secret as 'not paired' "
         "and accepts any X-JTS-Household). Expected group `jasper`-readable (0640); "
         "re-deploy to heal.",
+        reason=REASON_HOUSEHOLD_SECRET_UNREADABLE,
     )
 
 
@@ -505,19 +520,31 @@ def _resolve_runtime(
     resolved."""
     info = _unit_runtime_identity(unit)
     if info is None:
-        return CheckResult(label, "ok", "systemctl unavailable — skipped (not Linux?)")
+        return CheckResult(
+            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
     if info.get("LoadState", "") in ("not-found", "masked"):
-        return CheckResult(label, "ok", f"{unit} not installed (skipped)")
+        return CheckResult(
+            label, "skipped", f"{unit} not installed",
+            reason=REASON_UNIT_NOT_INSTALLED,
+        )
     user = info.get("User", "").strip()
     if user in ("", "root"):
-        return CheckResult(label, "ok", f"{unit} runs as root (reads all inputs; n/a)")
+        return CheckResult(
+            label, "skipped", f"{unit} runs as root (reads all inputs; n/a)",
+            reason=REASON_UNIT_RUNS_AS_ROOT,
+        )
     resolved = _resolve_identity(
         user,
         info.get("Group", "").strip() or "jasper",
         tuple(info.get("SupplementaryGroups", "").split()),
     )
     if resolved is None:
-        return CheckResult(label, "ok", f"user {user!r} not resolvable — skipped")
+        return CheckResult(
+            label, "skipped", f"user {user!r} not resolvable — skipped",
+            reason=REASON_USER_NOT_RESOLVABLE,
+        )
     uid, gids = resolved
     return uid, gids, user
 
@@ -530,8 +557,14 @@ def _check_daemon(unit: str) -> CheckResult:
         # read-less daemon needs no identity resolution beyond that.
         info = _unit_runtime_identity(unit)
         if info is not None and info.get("LoadState", "") in ("not-found", "masked"):
-            return CheckResult(label, "ok", f"{unit} not installed (skipped)")
-        return CheckResult(label, "ok", f"{unit} declares no on-disk inputs (n/a)")
+            return CheckResult(
+                label, "skipped", f"{unit} not installed",
+                reason=REASON_UNIT_NOT_INSTALLED,
+            )
+        return CheckResult(
+            label, "skipped", f"{unit} declares no on-disk inputs",
+            reason=REASON_NO_DECLARED_INPUTS,
+        )
     resolved = _resolve_runtime(unit, label)
     if isinstance(resolved, CheckResult):
         return resolved
@@ -624,7 +657,10 @@ def check_household_secret_readable() -> CheckResult:
     try:
         st = os.stat(path)
     except OSError:
-        return CheckResult(label, "ok", "absent — this speaker is not paired (n/a)")
+        return CheckResult(
+            label, "skipped", "absent — this speaker is not paired",
+            reason=REASON_HOUSEHOLD_SECRET_ABSENT,
+        )
     resolved = _resolve_runtime("jasper-control", label)
     if isinstance(resolved, CheckResult):
         return resolved

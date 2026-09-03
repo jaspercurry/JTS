@@ -22,6 +22,7 @@ import pytest
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli import doctor
+from jasper.cli.doctor import _shared, usbsink
 from jasper.fanin import coupling_auto as _ca
 from jasper.fanin import ring_health as _ring_health
 
@@ -79,21 +80,21 @@ def _available_usb_role(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "role, status, must_name",
+    "role, status, reason",
     [
-        (_role, "ok", "gadget available"),
-        (_zero_host_role, "ok", "output dac"),
-        (_pending_reboot_role, "warn", "reboot"),
+        (_role, "ok", ""),
+        (_zero_host_role, "ok", usbsink.REASON_DATA_ROLE_HOST_ONLY),
+        (_pending_reboot_role, "warn", usbsink.REASON_DATA_ROLE_REBOOT_REQUIRED),
     ],
     ids=["available", "zero-host", "pending-reboot"],
 )
-def test_check_usb_data_role_verdicts(monkeypatch, role, status, must_name):
+def test_check_usb_data_role_verdicts(monkeypatch, role, status, reason):
     monkeypatch.setattr(doctor.usbsink, "current_usb_data_role", role)
 
     r = doctor.check_usb_data_role()
 
     assert r.status == status
-    assert must_name in r.detail.lower()
+    assert r.reason == reason
 
 
 # ----------------------------------------------------------------------
@@ -121,27 +122,33 @@ def _state_env(
 
 
 @pytest.mark.parametrize(
-    "kwargs, status, must_name",
+    "kwargs, status, reason",
     [
-        ({"active": False, "libcomposite": False}, "ok", "disabled"),
+        ({"active": False, "libcomposite": False}, "ok", usbsink.REASON_STATE_DISABLED),
         # Service stopped but libcomposite still loaded: the previous stop did
         # not tear cleanly.
-        ({"active": False, "libcomposite": True}, "warn", "libcomposite"),
+        (
+            {"active": False, "libcomposite": True}, "warn",
+            usbsink.REASON_STATE_RAM_DRIFT,
+        ),
         # uac2 composed while the readiness marker is inactive is the
         # split-brain that made /sources read off while hosts still saw JTS.
         (
             {"active": False, "libcomposite": True, "functions": ("uac2.usb0",)},
             "fail",
-            "readiness marker inactive",
+            usbsink.REASON_STATE_SPLIT_BRAIN,
         ),
         # ncm alone is the hardware-conditional management network, not audio
         # drift.
         (
             {"active": False, "libcomposite": True, "functions": ("ncm.usb0",)},
             "ok",
-            "composite gadget",
+            usbsink.REASON_STATE_DISABLED,
         ),
-        ({"active": False, "libcomposite": False, "parked": True}, "ok", "parked"),
+        (
+            {"active": False, "libcomposite": False, "parked": True}, "ok",
+            usbsink.REASON_STATE_PARKED,
+        ),
         (
             {
                 "active": False,
@@ -150,7 +157,7 @@ def _state_env(
                 "parked": True,
             },
             "ok",
-            "management network",
+            usbsink.REASON_STATE_PARKED,
         ),
         # A parked follower should have been recomposed without uac2.
         (
@@ -161,12 +168,18 @@ def _state_env(
                 "parked": True,
             },
             "fail",
-            "uac2.usb0 function present",
+            usbsink.REASON_STATE_PARKED_STILL_ACTIVE,
         ),
         # Parked + libcomposite but no uac2 is not audio drift by itself;
         # check_usbgadget_composition owns composite RAM-drift detection.
-        ({"active": False, "libcomposite": True, "parked": True}, "ok", "parked"),
-        ({"active": True, "libcomposite": True}, "fail", "uac2.usb0 is absent"),
+        (
+            {"active": False, "libcomposite": True, "parked": True}, "ok",
+            usbsink.REASON_STATE_PARKED,
+        ),
+        (
+            {"active": True, "libcomposite": True}, "fail",
+            usbsink.REASON_STATE_MARKER_ACTIVE_NO_FUNCTION,
+        ),
     ],
     ids=[
         "off-clean",
@@ -181,19 +194,23 @@ def _state_env(
     ],
 )
 def test_check_usbsink_state_verdicts(
-    monkeypatch, tmp_path, kwargs, status, must_name
+    monkeypatch, tmp_path, kwargs, status, reason
 ):
     _state_env(monkeypatch, tmp_path, **kwargs)
 
     r = doctor.check_usbsink_state()
 
     assert r.status == status
-    assert must_name in r.detail.lower()
+    assert r.reason == reason
 
 
 def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
     monkeypatch, tmp_path
 ):
+    """This is the plain healthy-active branch (no distinguishing reason); the
+    UDC-derived boolean it discloses is dynamic runtime data the reason
+    vocabulary doesn't carry, so this keeps the pure-formatting-helper
+    `.detail` exception."""
     _state_env(
         monkeypatch, tmp_path, active=True, libcomposite=True,
         functions=("uac2.usb0",),
@@ -206,6 +223,7 @@ def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
     result = doctor.check_usbsink_state()
 
     assert result.status == "ok"
+    assert result.reason == ""
     assert "host_connected=True" in result.detail
 
 
@@ -215,12 +233,16 @@ def test_check_usbsink_state_active_reads_host_connection_from_the_udc(
 
 
 @pytest.mark.parametrize(
-    "active, card_present, status",
-    [(False, False, "ok"), (True, True, "ok"), (True, False, "fail")],
+    "active, card_present, status, reason",
+    [
+        (False, False, "skipped", usbsink.REASON_USBSINK_SERVICE_INACTIVE),
+        (True, True, "ok", ""),
+        (True, False, "fail", usbsink.REASON_CARD_MISSING),
+    ],
     ids=["disabled", "present", "missing"],
 )
 def test_check_usbsink_card_verdicts(
-    monkeypatch, tmp_path, active, card_present, status
+    monkeypatch, tmp_path, active, card_present, status, reason
 ):
     monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
     card = tmp_path / "UAC2Gadget"
@@ -234,6 +256,7 @@ def test_check_usbsink_card_verdicts(
         r = doctor.check_usbsink_card()
 
     assert r.status == status
+    assert r.reason == reason
 
 
 # ----------------------------------------------------------------------
@@ -243,18 +266,18 @@ def test_check_usbsink_card_verdicts(
 
 
 @pytest.mark.parametrize(
-    "composed, card_present, rate, must_name",
+    "composed, card_present, rate, status, reason",
     [
-        (False, False, None, "uac2.usb0"),
-        (True, False, None, "check_usbsink_card"),
-        (True, True, None, "Capture Rate"),
-        (True, True, 0, "capture_rate=0"),
-        (True, True, 48000, "capture_rate=48000"),
+        (False, False, None, "skipped", usbsink.REASON_HOST_STREAM_NOT_COMPOSED),
+        (True, False, None, "skipped", usbsink.REASON_HOST_STREAM_NO_CARD),
+        (True, True, None, "skipped", usbsink.REASON_HOST_STREAM_NO_CONTROL),
+        (True, True, 0, "ok", usbsink.REASON_HOST_STREAM_IDLE),
+        (True, True, 48000, "ok", usbsink.REASON_HOST_STREAM_ACTIVE),
     ],
     ids=["not-composed", "no-card", "no-control", "host-idle-or-wedged", "streaming"],
 )
 def test_check_usbsink_host_stream_discloses_without_judging(
-    monkeypatch, tmp_path, composed, card_present, rate, must_name
+    monkeypatch, tmp_path, composed, card_present, rate, status, reason
 ):
     function_path = tmp_path / "uac2.usb0"
     if composed:
@@ -268,8 +291,8 @@ def test_check_usbsink_host_stream_discloses_without_judging(
 
     result = doctor.check_usbsink_host_stream()
 
-    assert result.status == "ok"
-    assert must_name in result.detail
+    assert result.status == status
+    assert result.reason == reason
 
 
 @pytest.mark.parametrize(
@@ -300,8 +323,8 @@ def test_check_usbsink_host_stream_never_crashes_the_doctor(
 
     result = doctor._run_doctor_check(doctor.check_usbsink_host_stream)
 
-    assert result.status == "ok"
-    assert "not observable here" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == usbsink.REASON_HOST_STREAM_NO_CONTROL
 
 
 @pytest.mark.parametrize(
@@ -351,19 +374,25 @@ def test_uac2_capture_rate_resolves_the_pcm_control_by_name(
 
 
 @pytest.mark.parametrize(
-    "active, libcomposite, status",
-    [(False, False, "ok"), (True, True, "ok"), (True, False, "fail")],
+    "active, libcomposite, status, reason",
+    [
+        (False, False, "skipped", usbsink.REASON_USBSINK_SERVICE_INACTIVE),
+        (True, True, "ok", ""),
+        (True, False, "fail", usbsink.REASON_ACTIVE_MODULES_UNLOADED),
+    ],
     ids=["disabled", "consistent", "module-unloaded"],
 )
 def test_check_usbsink_active_libcomposite_verdicts(
-    monkeypatch, active, libcomposite, status
+    monkeypatch, active, libcomposite, status, reason
 ):
     """A daemon active with libcomposite missing means audio cannot flow even
     though systemd thinks the unit is healthy."""
     monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda unit: active)
     monkeypatch.setattr(doctor.usbsink, "_module_loaded", lambda name: libcomposite)
 
-    assert doctor.check_usbsink_active_libcomposite().status == status
+    r = doctor.check_usbsink_active_libcomposite()
+    assert r.status == status
+    assert r.reason == reason
 
 
 # ----------------------------------------------------------------------
@@ -417,28 +446,35 @@ def test_low_latency_contract_skips_a_route_that_makes_no_claim(monkeypatch):
 
     r = doctor.check_usbsink_low_latency_contract()
 
-    assert r.status == "ok"
-    assert "no USB low-latency claim" in r.detail
+    assert r.status == "skipped"
+    assert r.reason == usbsink.REASON_LOW_LATENCY_NO_CLAIM
 
 
 @pytest.mark.parametrize(
-    "reason, status, must_name",
+    "audio_reason, status, reason",
     [
-        ("intent_disabled", "ok", "intent_disabled"),
-        ("parked_follower", "ok", "parked_follower"),
-        ("intent_invalid:bad token", "fail", "bad token"),
+        ("intent_disabled", "skipped", usbsink.REASON_LOW_LATENCY_NOT_WANTED),
+        ("parked_follower", "skipped", usbsink.REASON_LOW_LATENCY_NOT_WANTED),
+        (
+            _shared.REASON_SOURCE_INTENT_INVALID, "fail",
+            _shared.REASON_SOURCE_INTENT_INVALID,
+        ),
     ],
     ids=["user-off", "parked", "invalid-intent"],
 )
 def test_low_latency_contract_reports_why_usb_audio_is_not_wanted(
-    monkeypatch, reason, status, must_name
+    monkeypatch, audio_reason, status, reason
 ):
     monkeypatch.setattr(
         audio_runtime_plan,
         "build_audio_runtime_plan_from_system",
         _low_latency_plan,
     )
-    monkeypatch.setattr(doctor.usbsink, "_audio_wanted", lambda: (False, reason))
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "_audio_wanted",
+        lambda: usbsink._AudioIntent(False, audio_reason, "bad token"),
+    )
     monkeypatch.setattr(
         doctor.usbsink,
         "read_status_socket",
@@ -448,11 +484,15 @@ def test_low_latency_contract_reports_why_usb_audio_is_not_wanted(
     result = doctor.check_usbsink_low_latency_contract()
 
     assert result.status == status
-    assert must_name in result.detail
+    assert result.reason == reason
 
 
 def _claiming_route(monkeypatch, status_reader):
-    monkeypatch.setattr(doctor.usbsink, "_audio_wanted", lambda: (True, "enabled"))
+    monkeypatch.setattr(
+        doctor.usbsink,
+        "_audio_wanted",
+        lambda: usbsink._AudioIntent(True, "enabled"),
+    )
     monkeypatch.setattr(
         audio_runtime_plan,
         "build_audio_runtime_plan_from_system",
@@ -470,7 +510,7 @@ def test_low_latency_contract_requires_a_readable_fanin_status(monkeypatch):
     r = doctor.check_usbsink_low_latency_contract()
 
     assert r.status == "fail"
-    assert "fan-in STATUS" in r.detail
+    assert r.reason == usbsink.REASON_LOW_LATENCY_STATUS_UNREADABLE
 
 
 def test_low_latency_contract_warns_when_the_kernel_hides_the_attrs(
@@ -484,7 +524,7 @@ def test_low_latency_contract_warns_when_the_kernel_hides_the_attrs(
     r = doctor.check_usbsink_low_latency_contract()
 
     assert r.status == "warn"
-    assert "kernel does not expose" in r.detail
+    assert r.reason == usbsink.REASON_LOW_LATENCY_ATTR_UNEXPOSED
 
 
 def test_low_latency_contract_fails_on_a_direct_period_mismatch(monkeypatch):
@@ -496,7 +536,7 @@ def test_low_latency_contract_fails_on_a_direct_period_mismatch(monkeypatch):
     r = doctor.check_usbsink_low_latency_contract()
 
     assert r.status == "fail"
-    assert "period_frames" in r.detail
+    assert r.reason == usbsink.REASON_LOW_LATENCY_LIVE_MISMATCH
 
 
 def test_low_latency_contract_fails_on_a_mismatched_exposed_attr(
@@ -513,7 +553,7 @@ def test_low_latency_contract_fails_on_a_mismatched_exposed_attr(
     r = doctor.check_usbsink_low_latency_contract()
 
     assert r.status == "fail"
-    assert "c_sync" in r.detail
+    assert r.reason == usbsink.REASON_LOW_LATENCY_ATTR_MISMATCH
 
 
 # ----------------------------------------------------------------------
@@ -542,10 +582,13 @@ def _write_override(root: Path, body: bytes, marker: str | None) -> None:
 
 
 @pytest.mark.parametrize(
-    "active, speaker, body, marker, status, must_name",
+    "active, speaker, body, marker, status, reason",
     [
-        (False, "Kitchen", None, None, "ok", "skipped"),
-        (True, "Kitchen", None, None, "warn", "no name-patched module override"),
+        (False, "Kitchen", None, None, "skipped", usbsink.REASON_USBSINK_SERVICE_INACTIVE),
+        (
+            True, "Kitchen", None, None, "warn",
+            usbsink.REASON_NAME_OVERRIDE_MISSING,
+        ),
         # Override present but never actually patched.
         (
             True,
@@ -553,7 +596,7 @@ def _write_override(root: Path, body: bytes, marker: str | None) -> None:
             b"\x7fELF" + b"Playback Inactive\x00Capture Inactive\x00rest",
             _MARKER,
             "warn",
-            "stock string",
+            usbsink.REASON_NAME_STOCK_STRING,
         ),
         (
             True,
@@ -561,14 +604,20 @@ def _write_override(root: Path, body: bytes, marker: str | None) -> None:
             b"\x7fELF Kitchen\x00Kitchen Mic\x00Capture Active\x00rest",
             _MARKER,
             "warn",
-            "stock string",
+            usbsink.REASON_NAME_STOCK_STRING,
         ),
-        (True, "Kitchen", _PATCHED, _MARKER, "ok", "Kitchen"),
+        (True, "Kitchen", _PATCHED, _MARKER, "ok", usbsink.REASON_NAME_PATCHED),
         # Patched for an older name; the speaker has since been renamed.
-        (True, "Living Room", _PATCHED, _MARKER, "warn", "stale"),
-        (True, "Kitchen", _PATCHED, None, "warn", "stale"),
+        (
+            True, "Living Room", _PATCHED, _MARKER, "warn",
+            usbsink.REASON_NAME_STALE,
+        ),
+        (True, "Kitchen", _PATCHED, None, "warn", usbsink.REASON_NAME_STALE),
         # A playback-only marker is the pre-mic schema.
-        (True, "Kitchen", _PATCHED, f"{_KVER}\tKitchen\tdeadbeef", "warn", "stale"),
+        (
+            True, "Kitchen", _PATCHED, f"{_KVER}\tKitchen\tdeadbeef", "warn",
+            usbsink.REASON_NAME_STALE,
+        ),
     ],
     ids=[
         "disabled",
@@ -582,7 +631,7 @@ def _write_override(root: Path, body: bytes, marker: str | None) -> None:
     ],
 )
 def test_check_usbsink_name_verdicts(
-    monkeypatch, tmp_path, active, speaker, body, marker, status, must_name
+    monkeypatch, tmp_path, active, speaker, body, marker, status, reason
 ):
     _name_env(monkeypatch, active=active, speaker=speaker)
     if body is not None:
@@ -591,7 +640,7 @@ def test_check_usbsink_name_verdicts(
     r = doctor.check_usbsink_name(modules_root=str(tmp_path))
 
     assert r.status == status
-    assert must_name.lower() in r.detail.lower()
+    assert r.reason == reason
 
 
 # ----------------------------------------------------------------------
@@ -662,14 +711,14 @@ def _patch_composition_env(
 
 
 @pytest.mark.parametrize(
-    "env, status, must_name",
+    "env, status, reason",
     [
         # Fresh install pre-reboot: the unit skips via jasper-usbgadget-wanted
         # and check_usb_data_role owns the reboot prompt.
         (
             {"udc_present": False, "network_env": "enabled", "usbsink_enabled": True},
-            "ok",
-            "no udc",
+            "skipped",
+            usbsink.REASON_COMPOSITION_NO_UDC,
         ),
         (
             {
@@ -680,7 +729,7 @@ def _patch_composition_env(
                 "uac2": True,
             },
             "ok",
-            "matches intent",
+            "",
         ),
         (
             {
@@ -690,7 +739,7 @@ def _patch_composition_env(
                 "ncm": True,
             },
             "ok",
-            "intent_disabled",
+            "",
         ),
         # ADR-0191: a disabled lifecycle mirror no longer suppresses UAC2.
         # Derived state is a consequence of intent, never a precondition.
@@ -704,7 +753,7 @@ def _patch_composition_env(
                 "uac2": True,
             },
             "ok",
-            "enabled",
+            "",
         ),
         # ADR-0191: nor does an unarmed DIRECT lane. The endpoint stays
         # advertised and the consumer state is disclosed instead.
@@ -719,7 +768,7 @@ def _patch_composition_env(
                 "uac2": True,
             },
             "ok",
-            "consumed=False",
+            "",
         ),
         (
             {
@@ -730,7 +779,7 @@ def _patch_composition_env(
                 "ncm": True,
             },
             "ok",
-            "parked_follower",
+            "",
         ),
         # Legacy shape: network off, audio on.
         (
@@ -741,7 +790,7 @@ def _patch_composition_env(
                 "uac2": True,
             },
             "ok",
-            "network=False",
+            "",
         ),
         (
             {
@@ -750,7 +799,7 @@ def _patch_composition_env(
                 "usbsink_enabled": False,
             },
             "ok",
-            "zero-ram",
+            usbsink.REASON_COMPOSITION_ZERO_RAM,
         ),
         # Mismatch cells: composed functions disagree with intent.
         (
@@ -761,7 +810,7 @@ def _patch_composition_env(
                 "uac2": True,
             },
             "fail",
-            "network wanted but ncm.usb0 missing",
+            usbsink.REASON_COMPOSITION_MISMATCH,
         ),
         (
             {
@@ -771,7 +820,7 @@ def _patch_composition_env(
                 "ncm": True,
             },
             "fail",
-            "audio wanted but uac2.usb0 missing",
+            usbsink.REASON_COMPOSITION_MISMATCH,
         ),
         (
             {
@@ -782,7 +831,7 @@ def _patch_composition_env(
                 "uac2": True,
             },
             "fail",
-            "network not wanted but ncm.usb0 present",
+            usbsink.REASON_COMPOSITION_MISMATCH,
         ),
         # The parked-follower shape at the composition level.
         (
@@ -795,7 +844,7 @@ def _patch_composition_env(
                 "uac2": True,
             },
             "fail",
-            "audio not wanted but uac2.usb0 present",
+            usbsink.REASON_COMPOSITION_MISMATCH,
         ),
     ],
     ids=[
@@ -814,31 +863,36 @@ def _patch_composition_env(
     ],
 )
 def test_check_usbgadget_composition_verdicts(
-    monkeypatch, tmp_path, env, status, must_name
+    monkeypatch, tmp_path, env, status, reason
 ):
     _patch_composition_env(monkeypatch, tmp_path, **env)
 
     r = doctor.check_usbgadget_composition()
 
     assert r.status == status
-    assert must_name.lower() in r.detail.lower()
+    assert r.reason == reason
 
 
 @pytest.mark.parametrize(
-    "network_env, expected",
+    "network_env, expected, reason",
     [
-        ("DISABLED", "network=False"),
-        ("off", "network=True"),
-        # review core-7: whitespace-decorated ' disabled ' stays WANTED,
-        # matching jasper-usbgadget-up's raw (untrimmed) comparison. The bash
-        # side is pinned by test_usbgadget_script.py's literal matrix.
-        (" disabled ", "network=True"),
+        ("DISABLED", "network=False", usbsink.REASON_COMPOSITION_ZERO_RAM),
+        ("off", "network=True", ""),
+        # A whitespace-decorated ' disabled ' stays WANTED, matching
+        # jasper-usbgadget-up's raw (untrimmed) comparison. The bash side is
+        # pinned by test_usbgadget_script.py's literal matrix.
+        (" disabled ", "network=True", ""),
     ],
     ids=["uppercase", "other-word", "whitespace"],
 )
 def test_composition_kill_switch_matches_only_the_exact_literal(
-    monkeypatch, tmp_path, network_env, expected
+    monkeypatch, tmp_path, network_env, expected, reason
 ):
+    """The literal-vs-whitespace kill-switch parity with the bash side is the
+    behavior under test here, not a category the reason vocabulary carries on
+    its own (both "network=True" cells land in the same "matches intent"
+    no-reason branch, discriminated only by which function got composed) —
+    kept as the pure-formatting-helper `.detail` exception."""
     _patch_composition_env(
         monkeypatch,
         tmp_path,
@@ -851,6 +905,7 @@ def test_composition_kill_switch_matches_only_the_exact_literal(
     r = doctor.check_usbgadget_composition()
 
     assert r.status == "ok"
+    assert r.reason == reason
     assert expected in r.detail
 
 
@@ -871,7 +926,7 @@ def test_composition_gadget_dir_with_no_functions_is_still_drift(
     r = doctor.check_usbgadget_composition()
 
     assert r.status == "fail"
-    assert "gadget present but neither function should exist" in r.detail
+    assert r.reason == usbsink.REASON_COMPOSITION_STALE
 
 
 def test_composition_unreadable_udc_dir_degrades_to_the_no_udc_skip(
@@ -883,8 +938,8 @@ def test_composition_unreadable_udc_dir_degrades_to_the_no_udc_skip(
 
     r = doctor.check_usbgadget_composition()
 
-    assert r.status == "ok"
-    assert "no udc" in r.detail.lower()
+    assert r.status == "skipped"
+    assert r.reason == usbsink.REASON_COMPOSITION_NO_UDC
 
 
 def test_composition_invalid_source_intent_fails_loud(monkeypatch, tmp_path):
@@ -905,7 +960,7 @@ def test_composition_invalid_source_intent_fails_loud(monkeypatch, tmp_path):
     result = doctor.check_usbgadget_composition()
 
     assert result.status == "fail"
-    assert "bad source intent" in result.detail
+    assert result.reason == _shared.REASON_SOURCE_INTENT_INVALID
 
 
 def test_composition_retains_ncm_during_a_pending_host_reboot(
@@ -935,13 +990,15 @@ def test_composition_retains_ncm_during_a_pending_host_reboot(
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc))
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     monkeypatch.setattr(
-        doctor.usbsink, "_audio_wanted", lambda: (False, "intent_disabled")
+        doctor.usbsink,
+        "_audio_wanted",
+        lambda: usbsink._AudioIntent(False, "intent_disabled"),
     )
 
     result = doctor.check_usbgadget_composition()
 
     assert result.status == "warn"
-    assert "retained" in result.detail.lower()
+    assert result.reason == usbsink.REASON_COMPOSITION_RETAINED_PENDING_REBOOT
 
 
 # ----------------------------------------------------------------------
@@ -974,7 +1031,7 @@ def test_usb_mic_export_accepts_a_clean_off_descriptor(monkeypatch, tmp_path):
     result = doctor.usbsink.check_usb_mic_export()
 
     assert result.status == "ok"
-    assert "disabled" in result.detail
+    assert result.reason == usbsink.REASON_MIC_EXPORT_DISABLED
 
 
 def test_usb_mic_export_skips_intent_when_the_gadget_is_unavailable(monkeypatch):
@@ -988,8 +1045,8 @@ def test_usb_mic_export_skips_intent_when_the_gadget_is_unavailable(monkeypatch)
 
     result = doctor.usbsink.check_usb_mic_export()
 
-    assert result.status == "ok"
-    assert "single USB data port" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == usbsink.REASON_MIC_EXPORT_NOT_APPLICABLE
 
 
 def test_usb_mic_export_rejects_a_missing_intent_when_the_gadget_is_available(
@@ -1005,7 +1062,7 @@ def test_usb_mic_export_rejects_a_missing_intent_when_the_gadget_is_available(
     result = doctor.usbsink.check_usb_mic_export()
 
     assert result.status == "fail"
-    assert result.detail == "USB microphone preference is missing."
+    assert result.reason == _shared.REASON_SOURCE_INTENT_INVALID
 
 
 def test_usb_mic_export_rejects_a_stale_descriptor_revision(monkeypatch, tmp_path):
@@ -1013,13 +1070,15 @@ def test_usb_mic_export_rejects_a_stale_descriptor_revision(monkeypatch, tmp_pat
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
     _mic_intent(monkeypatch)
     monkeypatch.setattr(
-        doctor.usbsink, "_audio_wanted", lambda: (True, "ready")
+        doctor.usbsink,
+        "_audio_wanted",
+        lambda: usbsink._AudioIntent(True, "ready"),
     )
 
     result = doctor.usbsink.check_usb_mic_export()
 
     assert result.status == "fail"
-    assert "0x0210" in result.detail
+    assert result.reason == usbsink.REASON_MIC_EXPORT_DESCRIPTOR_STALE
 
 
 def _relay_mic_env(monkeypatch, tmp_path, payload: dict):
@@ -1031,7 +1090,9 @@ def _relay_mic_env(monkeypatch, tmp_path, payload: dict):
     monkeypatch.setattr(doctor.usbsink.time, "time", lambda: 100.5)
     _mic_intent(monkeypatch)
     monkeypatch.setattr(
-        doctor.usbsink, "_audio_wanted", lambda: (True, "ready")
+        doctor.usbsink,
+        "_audio_wanted",
+        lambda: usbsink._AudioIntent(True, "ready"),
     )
     monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda _unit: True)
 
@@ -1054,27 +1115,42 @@ def test_usb_mic_export_warns_when_the_live_relay_audio_is_stalled(
     result = doctor.usbsink.check_usb_mic_export()
 
     assert result.status == "warn"
-    assert "drop_rate=8" in result.detail
+    assert result.reason == usbsink.REASON_MIC_EXPORT_AUDIO_UNHEALTHY
 
 
 @pytest.mark.parametrize(
-    "host_streaming, p95_ms, relay_schema, metric_scope, status, must_name",
+    "host_streaming, p95_ms, relay_schema, metric_scope, status, reason",
     [
-        (True, 121.0, 4, "bridge_emit_to_alsa_write", "warn", "121.0 ms"),
-        (True, 119.0, 4, "bridge_emit_to_alsa_write", "ok", "119.0 ms"),
-        (True, None, 4, "bridge_emit_to_alsa_write", "warn", "not yet available"),
-        (True, "bad", 4, "bridge_emit_to_alsa_write", "warn", "not yet available"),
-        (True, -1.0, 4, "bridge_emit_to_alsa_write", "warn", "not yet available"),
+        (
+            True, 121.0, 4, "bridge_emit_to_alsa_write", "warn",
+            usbsink.REASON_MIC_EXPORT_LATENCY_HIGH,
+        ),
+        (True, 119.0, 4, "bridge_emit_to_alsa_write", "ok", ""),
+        (
+            True, None, 4, "bridge_emit_to_alsa_write", "warn",
+            usbsink.REASON_MIC_EXPORT_LATENCY_UNAVAILABLE,
+        ),
+        (
+            True, "bad", 4, "bridge_emit_to_alsa_write", "warn",
+            usbsink.REASON_MIC_EXPORT_LATENCY_UNAVAILABLE,
+        ),
+        (
+            True, -1.0, 4, "bridge_emit_to_alsa_write", "warn",
+            usbsink.REASON_MIC_EXPORT_LATENCY_UNAVAILABLE,
+        ),
         (
             True,
             float("nan"),
             4,
             "bridge_emit_to_alsa_write",
             "warn",
-            "not yet available",
+            usbsink.REASON_MIC_EXPORT_LATENCY_UNAVAILABLE,
         ),
-        (True, 20.0, 3, "bridge_emit_to_relay_dequeue", "warn", "unsupported"),
-        (False, 500.0, 4, "bridge_emit_to_alsa_write", "ok", "host_streaming=False"),
+        (
+            True, 20.0, 3, "bridge_emit_to_relay_dequeue", "warn",
+            usbsink.REASON_MIC_EXPORT_METRIC_CONTRACT_UNSUPPORTED,
+        ),
+        (False, 500.0, 4, "bridge_emit_to_alsa_write", "ok", ""),
     ],
     ids=[
         "over-budget",
@@ -1095,7 +1171,7 @@ def test_usb_mic_export_checks_latency_only_during_active_capture(
     relay_schema,
     metric_scope,
     status,
-    must_name,
+    reason,
 ):
     _relay_mic_env(
         monkeypatch,
@@ -1115,7 +1191,7 @@ def test_usb_mic_export_checks_latency_only_during_active_capture(
     result = doctor.usbsink.check_usb_mic_export()
 
     assert result.status == status
-    assert must_name in result.detail
+    assert result.reason == reason
 
 
 # ----------------------------------------------------------------------
@@ -1147,28 +1223,31 @@ def _setup_combo(
 
 
 @pytest.mark.parametrize(
-    "kwargs, status, must_name",
+    "kwargs, status, reason",
     [
-        ({"failed": True}, "fail", "failed state"),
+        ({"failed": True}, "fail", usbsink.REASON_COMBO_UNIT_FAILED),
         # A failed post-toggle kick leaves combo unarmed with no marker.
-        ({"intent": True, "armed": False}, "warn", "NOT armed"),
+        ({"intent": True, "armed": False}, "warn", usbsink.REASON_COMBO_UNARMED),
         # Desired-On is intentionally disarmed while follower-role parked.
-        ({"intent": True, "parked": True, "armed": False}, "ok", "parked_follower"),
-        ({"intent": True, "armed": True}, "ok", "combo armed"),
-        ({"intent": False, "armed": False}, "ok", "disarmed"),
-        ({"gadget": False}, "ok", "not applicable"),
+        (
+            {"intent": True, "parked": True, "armed": False}, "ok",
+            usbsink.REASON_COMBO_DISARMED,
+        ),
+        ({"intent": True, "armed": True}, "ok", usbsink.REASON_COMBO_ARMED),
+        ({"intent": False, "armed": False}, "ok", usbsink.REASON_COMBO_DISARMED),
+        ({"gadget": False}, "skipped", usbsink.REASON_COMBO_NOT_APPLICABLE),
     ],
     ids=["failed-unit", "intent-on-unarmed", "parked", "armed", "off", "no-gadget"],
 )
 def test_check_usb_combo_consistency_verdicts(
-    monkeypatch, tmp_path, kwargs, status, must_name
+    monkeypatch, tmp_path, kwargs, status, reason
 ):
     _setup_combo(monkeypatch, tmp_path, **kwargs)
 
     r = doctor.usbsink.check_usb_combo_consistency()
 
     assert r.status == status
-    assert must_name in r.detail
+    assert r.reason == reason
 
 
 def test_check_usb_combo_consistency_invalid_intent_is_fail(monkeypatch, tmp_path):
@@ -1182,4 +1261,4 @@ def test_check_usb_combo_consistency_invalid_intent_is_fail(monkeypatch, tmp_pat
     result = doctor.usbsink.check_usb_combo_consistency()
 
     assert result.status == "fail"
-    assert "bad USB intent" in result.detail
+    assert result.reason == _shared.REASON_SOURCE_INTENT_INVALID

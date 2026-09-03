@@ -4,16 +4,15 @@
 
 """``jasper-doctor`` — preflight diagnostic CLI (package entry).
 
-This package is the decomposed form of the original single-file
-``jasper/cli/doctor.py``. The console-script entry point
+The console-script entry point
 (``jasper-doctor = jasper.cli.doctor:main``) and every public
-name that external code or the test-suite imports resolve from
-this ``__init__`` exactly as they did from the old module — the
-checks were re-homed into per-domain modules
-(:mod:`~jasper.cli.doctor.audio`, :mod:`~jasper.cli.doctor.audio_runtime`,
-:mod:`~jasper.cli.doctor.network`,
-…) and the cross-cutting harness/helpers into
-:mod:`~jasper.cli.doctor._shared`, then re-exported here.
+name external code or the test-suite imports resolve from this
+``__init__``: the checks live in per-domain modules
+(:mod:`~jasper.cli.doctor.audio`,
+:mod:`~jasper.cli.doctor.audio_runtime`,
+:mod:`~jasper.cli.doctor.network`, …) and the cross-cutting
+harness/helpers in :mod:`~jasper.cli.doctor._shared`, re-exported
+here.
 
 Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
@@ -26,12 +25,8 @@ critical checks pass, 1 otherwise. --watch never returns by
 itself; exits 0 on Ctrl-C.
 
 Check membership and order are owned by the registry
-(:mod:`~jasper.cli.doctor._registry`): each check is registered
-with an explicit ``order=`` equal to its index in the original
-hand-ordered list, and :func:`run_async` rebuilds the exact same
-``DoctorCheck`` sequence from it (bare callables vs.
-``(label, lambda: fn(cfg))`` tuples preserved), so displayed
-order, labels, and crash-path labels are unchanged."""
+(:mod:`~jasper.cli.doctor._registry`); :func:`run_async` builds
+the ``DoctorCheck`` sequence from it."""
 from __future__ import annotations
 
 import argparse
@@ -69,6 +64,10 @@ from ._shared import (
     DIM,
     DoctorCheck,
     GREEN,
+    REASON_CHECK_TIMED_OUT,
+    REASON_CONFIG_ERROR,
+    REASON_DOCTOR_CRASHED,
+    REASON_NOT_INSTALLED,
     RED,
     RESET,
     YELLOW,
@@ -90,6 +89,8 @@ from ._shared import (
     _service_runtime_states,
     _sha256_file,
     _systemctl_show_property,
+    check_row,
+    summarize,
 )
 from . import env as env
 from .env import (
@@ -373,11 +374,16 @@ def _registered_check_name(entry) -> str:
     return entry.label or _check_name(entry.func)
 
 
-def _profile_skip_result(entry, *, reason: str) -> CheckResult:
-    return CheckResult(_registered_check_name(entry), "skipped", reason)
+def _profile_skip_result(entry, *, detail: str) -> CheckResult:
+    return CheckResult(
+        _registered_check_name(entry),
+        "skipped",
+        detail,
+        reason=REASON_NOT_INSTALLED,
+    )
 
 
-def _doctor_skip_reason(entry, install_profile: str) -> str:
+def _doctor_skip_detail(entry, install_profile: str) -> str:
     role = install_role_for_profile(install_profile)
     if role == STREAMBOX_INSTALL_PROFILE and (
         entry.group in _STREAMBOX_OMITTED_DOCTOR_GROUPS
@@ -396,6 +402,10 @@ __all__ = [
     "DIM",
     "DoctorCheck",
     "GREEN",
+    "REASON_CHECK_TIMED_OUT",
+    "REASON_CONFIG_ERROR",
+    "REASON_DOCTOR_CRASHED",
+    "REASON_NOT_INSTALLED",
     "RED",
     "RESET",
     "YELLOW",
@@ -688,11 +698,6 @@ def render(results: list[CheckResult]) -> int:
         elif r.status == "skipped":
             color, mark = DIM, "-"
         else:
-            # Read inside this arm, so an `ok` result's `speaker_silent` is
-            # never read at all. That makes the field's warn/fail scope true by
-            # construction rather than by convention: a check returning `ok`
-            # while asserting silence contradicts itself, and the summary must
-            # not repeat the contradiction.
             silent = silent or r.speaker_silent
             if r.status == "warn":
                 color, mark = YELLOW, "!"
@@ -729,28 +734,23 @@ def _json_payload(
 ) -> dict:
     """The flat /system-dashboard schema — one row per check."""
     payload = {
-        "fails": sum(1 for r in results if r.status == "fail"),
-        "warns": sum(1 for r in results if r.status == "warn"),
-        # Same warn/fail-only scope `render` reads it in: an `ok` result
-        # asserting silence contradicts itself, so it never contributes.
-        "speaker_silent": any(
-            r.speaker_silent for r in results if r.status in ("warn", "fail")
-        ),
+        **summarize(results),
         "generated_at_epoch": time.time(),
-        "results": [
-            {
-                "name": r.name,
-                "status": r.status,
-                "detail": r.detail,
-                "reason": r.reason,
-                "speaker_silent": r.speaker_silent,
-            }
-            for r in results
-        ],
+        "results": [check_row(r) for r in results],
     }
     if duration_sec is not None:
         payload["duration_sec"] = round(duration_sec, 3)
     return payload
+
+
+def _error_payload(error: str, *, detail: str, reason: str) -> dict:
+    """The payload for a run that produced no results at all (config error,
+    doctor crash). One row, shaped like every row `_json_payload` emits, so
+    the dashboard has a single row shape to render."""
+    return {
+        "error": error,
+        **_json_payload([CheckResult("jasper-doctor", "fail", detail, reason=reason)]),
+    }
 
 
 def _emit_json(payload: dict, out_path: str | None) -> None:
@@ -943,9 +943,9 @@ def _build_doctor_checks(
     checks: list[_RunnableDoctorCheck] = []
     for entry in registered_checks():
         name = _registered_check_name(entry)
-        skip_reason = _doctor_skip_reason(entry, install_profile)
-        if skip_reason:
-            skipped = _profile_skip_result(entry, reason=skip_reason)
+        skip_detail = _doctor_skip_detail(entry, install_profile)
+        if skip_detail:
+            skipped = _profile_skip_result(entry, detail=skip_detail)
             checks.append(
                 _RunnableDoctorCheck(
                     name, (name, lambda skipped=skipped: skipped)
@@ -1001,6 +1001,7 @@ async def _run_runnable_with_timeout(
             runnable.name,
             "fail",
             f"check timed out after {timeout:g}s",
+            reason=REASON_CHECK_TIMED_OUT,
         )
 
 
@@ -1061,7 +1062,11 @@ def main() -> None:
     except (RuntimeError, ValueError) as e:
         if args.json:
             _emit_json(
-                {"error": f"config: {e}", "fails": 1, "warns": 0, "results": []},
+                _error_payload(
+                    f"config: {e}",
+                    detail=_exception_detail(e),
+                    reason=REASON_CONFIG_ERROR,
+                ),
                 args.out,
             )
             sys.exit(0 if args.out else 1)
@@ -1081,16 +1086,11 @@ def main() -> None:
         if args.json:
             detail = _exception_detail(e)
             _emit_json(
-                {
-                    "error": f"doctor crashed: {detail}",
-                    "fails": 1,
-                    "warns": 0,
-                    "results": [{
-                        "name": "jasper-doctor",
-                        "status": "fail",
-                        "detail": detail,
-                    }],
-                },
+                _error_payload(
+                    f"doctor crashed: {detail}",
+                    detail=detail,
+                    reason=REASON_DOCTOR_CRASHED,
+                ),
                 args.out,
             )
             sys.exit(0 if args.out else 1)

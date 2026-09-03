@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from jasper.bass_extension import profile as profile_mod
 from jasper.bass_extension.profile import BassExtensionEvaluation, BassExtensionRefusal
+from jasper.cli.doctor import audio as doctor_audio
 from jasper.cli.doctor.audio import check_bass_extension_profile
 from jasper.control import state_aggregate
 
@@ -37,7 +38,7 @@ def test_doctor_missing_profile_is_ok(monkeypatch):
         BassExtensionEvaluation("missing", (), None, "profile is absent"),
     )
     assert result.status == "ok"
-    assert "not commissioned" in result.detail
+    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_NOT_COMMISSIONED
 
 
 def test_doctor_malformed_profile_is_fail(monkeypatch):
@@ -46,8 +47,7 @@ def test_doctor_malformed_profile_is_fail(monkeypatch):
         BassExtensionEvaluation("malformed", (), None, "invalid JSON at byte 4"),
     )
     assert result.status == "fail"
-    assert "malformed" in result.detail
-    assert "invalid JSON" in result.detail
+    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_MALFORMED
 
 
 def test_doctor_stale_profile_is_warn(monkeypatch):
@@ -64,14 +64,7 @@ def test_doctor_stale_profile_is_warn(monkeypatch):
         ),
     )
     assert result.status == "warn"
-    assert "baseline fingerprint mismatch" in result.detail
-    assert "algorithm version mismatch" in result.detail
-    # The refusal enum values are surfaced in the detail string so an
-    # operator (or a log grep) can see exactly which contract check failed,
-    # not just the free-text explanation.
-    assert "[bass_extension_baseline_not_applied,bass_extension_profile_stale]" in (
-        result.detail
-    )
+    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_STALE
 
 
 def test_doctor_accepted_profile_is_ok_with_corners(monkeypatch):
@@ -83,8 +76,6 @@ def test_doctor_accepted_profile_is_ok_with_corners(monkeypatch):
         BassExtensionEvaluation("accepted", (), profile, "profile is accepted"),
     )
     assert result.status == "ok"
-    assert "deepest=31Hz" in result.detail
-    assert "natural=61.2Hz" in result.detail
 
 
 def test_doctor_bypassed_profile_is_ok(monkeypatch):
@@ -93,7 +84,7 @@ def test_doctor_bypassed_profile_is_ok(monkeypatch):
         BassExtensionEvaluation("bypassed", (), SimpleNamespace(), "bypassed"),
     )
     assert result.status == "ok"
-    assert "bypassed" in result.detail
+    assert result.reason == doctor_audio.REASON_BASS_EXTENSION_BYPASSED
 
 
 class _FakeCamillaController:

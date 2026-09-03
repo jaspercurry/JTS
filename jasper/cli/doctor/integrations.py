@@ -16,6 +16,31 @@ from ...config import Config
 from ._registry import doctor_check
 from ._shared import CheckResult
 
+# Machine-stable codes naming which branch of an integrations check produced
+# a result (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_GOOGLE_TOKENS_NOT_CONFIGURED = "google_tokens_not_configured"
+REASON_GOOGLE_TOKENS_IMPORT_FAILED = "google_tokens_import_failed"
+REASON_GOOGLE_TOKENS_NO_ACCOUNTS = "google_tokens_no_accounts_linked"
+REASON_GOOGLE_TOKENS_REFRESH_FAILED = "google_tokens_refresh_failed"
+
+REASON_GOOGLE_ROUTES_NOT_CONFIGURED = "google_routes_not_configured"
+REASON_GOOGLE_ROUTES_MISSING_SETUP = "google_routes_missing_setup"
+REASON_GOOGLE_ROUTES_INVALID_MODE = "google_routes_invalid_travel_mode"
+REASON_GOOGLE_ROUTES_CONFIGURED = "google_routes_configured"
+
+REASON_HOME_ASSISTANT_NOT_CONFIGURED = "home_assistant_not_configured"
+REASON_HOME_ASSISTANT_IMPORT_FAILED = "home_assistant_import_failed"
+REASON_HOME_ASSISTANT_PROBE_RAISED = "home_assistant_probe_raised"
+REASON_HOME_ASSISTANT_UNREACHABLE = "home_assistant_unreachable"
+REASON_HOME_ASSISTANT_CONNECTED = "home_assistant_connected"
+
+REASON_CITIBIKE_NOT_CONFIGURED = "citibike_not_configured"
+REASON_CITIBIKE_IMPORT_FAILED = "citibike_import_failed"
+REASON_CITIBIKE_GBFS_UNREACHABLE = "citibike_gbfs_unreachable"
+REASON_CITIBIKE_STATIONS_RETIRED = "citibike_stations_retired"
+REASON_CITIBIKE_CONNECTED = "citibike_connected"
+REASON_CITIBIKE_CONNECTED_EBIKE_ONLY = "citibike_connected_ebike_only"
+
 @doctor_check(order=17, group="integrations", label="Google OAuth", needs_cfg=True)
 def check_google_tokens(cfg: Config) -> CheckResult:
     """Verify Google OAuth state is healthy.
@@ -30,9 +55,10 @@ def check_google_tokens(cfg: Config) -> CheckResult:
     label = "Google OAuth"
     if not cfg.google_enabled:
         return CheckResult(
-            label, "ok",
-            f"not configured (skipped — visit {cfg.google_setup_url} "
-            f"to enable Calendar + Gmail tools)",
+            label, "skipped",
+            f"not configured — visit {cfg.google_setup_url} "
+            f"to enable Calendar + Gmail tools",
+            reason=REASON_GOOGLE_TOKENS_NOT_CONFIGURED,
         )
     try:
         from ...google_creds import GoogleRegistry, valid_access_token
@@ -40,6 +66,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
         return CheckResult(
             label, "fail",
             f"google-auth import failed: {e}. Re-run install.sh.",
+            reason=REASON_GOOGLE_TOKENS_IMPORT_FAILED,
         )
     registry = GoogleRegistry.load(cfg.google_accounts_path)
     if not registry.accounts:
@@ -48,6 +75,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
             f"CLIENT_ID/SECRET set but no accounts linked. Visit "
             f"{cfg.google_setup_url} to link a household member's "
             f"Calendar + Gmail.",
+            reason=REASON_GOOGLE_TOKENS_NO_ACCOUNTS,
         )
     healthy: list[str] = []
     broken: list[str] = []
@@ -66,6 +94,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
             label, "warn",
             f"refresh failed for {broken}; healthy: {healthy or 'none'}. "
             f"Re-link the broken account(s) at {cfg.google_setup_url}.",
+            reason=REASON_GOOGLE_TOKENS_REFRESH_FAILED,
         )
     return CheckResult(
         label, "ok",
@@ -83,8 +112,9 @@ def check_google_routes(cfg: Config) -> CheckResult:
     if not status.api_key_present and not status.origin_present:
         return CheckResult(
             label,
-            "ok",
-            f"not configured (skipped — visit {setup_url} to enable travel time)",
+            "skipped",
+            f"not configured — visit {setup_url} to enable travel time",
+            reason=REASON_GOOGLE_ROUTES_NOT_CONFIGURED,
         )
     problems: list[str] = []
     if not status.origin_present:
@@ -96,6 +126,7 @@ def check_google_routes(cfg: Config) -> CheckResult:
             label,
             "warn",
             f"{'; '.join(problems)}. Visit {setup_url} to finish setup.",
+            reason=REASON_GOOGLE_ROUTES_MISSING_SETUP,
         )
     if not status.default_mode_valid:
         return CheckResult(
@@ -104,12 +135,14 @@ def check_google_routes(cfg: Config) -> CheckResult:
             "configured, but JASPER_TRAVEL_DEFAULT_MODE is invalid; runtime "
             f"falls back to {google_routes.DEFAULT_TRAVEL_MODE}. Fix it at "
             f"{setup_url}.",
+            reason=REASON_GOOGLE_ROUTES_INVALID_MODE,
         )
     return CheckResult(
         label,
         "ok",
         f"configured for {status.default_mode}; live API probe skipped to avoid "
         "spending Routes quota. Restrict the key to the Google Routes API.",
+        reason=REASON_GOOGLE_ROUTES_CONFIGURED,
     )
 
 
@@ -134,14 +167,17 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     setup_url = f"http://{cfg.hostname}/ha"
     if not cfg.ha_enabled:
         return CheckResult(
-            label, "ok",
-            f"not configured (skipped — visit {setup_url} to enable "
-            f"smart-home control)",
+            label, "skipped",
+            f"not configured — visit {setup_url} to enable smart-home control",
+            reason=REASON_HOME_ASSISTANT_NOT_CONFIGURED,
         )
     try:
         from ...home_assistant import probe_status
     except ImportError as e:
-        return CheckResult(label, "fail", f"home_assistant import failed: {e}")
+        return CheckResult(
+            label, "fail", f"home_assistant import failed: {e}",
+            reason=REASON_HOME_ASSISTANT_IMPORT_FAILED,
+        )
     try:
         # force=True bypasses probe_status's 15s cache — the doctor is
         # an ad-hoc diagnostic, not a polling consumer, and the user
@@ -152,19 +188,24 @@ def check_home_assistant(cfg: Config) -> CheckResult:
             verify_ssl=cfg.ha_verify_ssl,
         ))
     except Exception as e:  # noqa: BLE001
-        return CheckResult(label, "fail", f"probe raised: {e}")
+        return CheckResult(
+            label, "fail", f"probe raised: {e}",
+            reason=REASON_HOME_ASSISTANT_PROBE_RAISED,
+        )
     if not result.get("connected"):
         return CheckResult(
             label, "fail",
             f"configured but unreachable at {result.get('url') or cfg.ha_url}: "
             f"{result.get('error') or 'unknown error'}. Re-check the URL "
             f"and token at {setup_url}.",
+            reason=REASON_HOME_ASSISTANT_UNREACHABLE,
         )
     name = result.get("instance_name") or "Home Assistant"
     version = result.get("version") or "?"
     return CheckResult(
         label, "ok",
         f"connected to {name} ({version}) at {result.get('url')}",
+        reason=REASON_HOME_ASSISTANT_CONNECTED,
     )
 
 @doctor_check(order=19.5, group="integrations", label="Citi Bike", needs_cfg=True)
@@ -193,8 +234,9 @@ def check_citibike(cfg: Config) -> CheckResult:
     saved = list(parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")))
     if not saved:
         return CheckResult(
-            label, "ok",
-            f"not configured (skipped — visit {setup_url} to enable)",
+            label, "skipped",
+            f"not configured — visit {setup_url} to enable",
+            reason=REASON_CITIBIKE_NOT_CONFIGURED,
         )
     try:
         from ...citibike import (
@@ -203,7 +245,10 @@ def check_citibike(cfg: Config) -> CheckResult:
             fetch_feed,
         )
     except ImportError as e:
-        return CheckResult(label, "fail", f"citibike module import failed: {e}")
+        return CheckResult(
+            label, "fail", f"citibike module import failed: {e}",
+            reason=REASON_CITIBIKE_IMPORT_FAILED,
+        )
     try:
         info = fetch_feed(STATION_INFO_URL, INFO_TTL_SECONDS)
     except Exception as e:  # noqa: BLE001
@@ -212,6 +257,7 @@ def check_citibike(cfg: Config) -> CheckResult:
             f"GBFS unreachable: {e}. Saved-station drift cannot be "
             f"validated; voice tool will degrade to cached data or "
             f"return {{error}} at runtime.",
+            reason=REASON_CITIBIKE_GBFS_UNREACHABLE,
         )
     known_ids = {
         s.get("station_id")
@@ -227,6 +273,7 @@ def check_citibike(cfg: Config) -> CheckResult:
             f"{len(missing)}/{len(saved)} saved station(s) no longer in "
             f"GBFS — Lyft retired them: {names}{suffix}. "
             f"Re-pick at {setup_url}.",
+            reason=REASON_CITIBIKE_STATIONS_RETIRED,
         )
     ebike_only = (
         os.environ.get("JASPER_CITIBIKE_EBIKE_ONLY", "").strip().lower()
@@ -237,4 +284,8 @@ def check_citibike(cfg: Config) -> CheckResult:
         label, "ok",
         f"connected — {len(saved)} saved station"
         f"{'s' if len(saved) != 1 else ''}{extra}",
+        reason=(
+            REASON_CITIBIKE_CONNECTED_EBIKE_ONLY if ebike_only
+            else REASON_CITIBIKE_CONNECTED
+        ),
     )

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import peering
 
 _TWO_SIBLINGS = (
     "+ eth0 IPv4 JTSpeer_alice _jasper-peer._udp local\n"
@@ -24,22 +25,23 @@ _TWO_SIBLINGS = (
 
 
 @pytest.mark.parametrize(
-    "body, status, must_name",
+    "body, status, reason",
     [
         # Absent file: peering is off by design, the default.
-        (None, "ok", "off"),
-        ("JASPER_PEERING=off\n", "ok", "off"),
-        ("JASPER_PEERING=on\nJASPER_PEER_ROOM=kitchen\n", "ok", "on"),
-        # A typo (JASPER_PEERING=onn) resolves to off; silence would leave the
-        # operator believing peering is on.
-        ("JASPER_PEERING=banana\n", "warn", "banana"),
-        # Unbalanced quote: only a matching pair is stripped, so the doctor
-        # reports the same value peering.config.load_config resolves.
-        ("JASPER_PEERING='on\n", "warn", "'on"),
+        (None, "ok", peering.REASON_PEERING_OFF),
+        ("JASPER_PEERING=off\n", "ok", peering.REASON_PEERING_OFF),
+        (
+            "JASPER_PEERING=on\nJASPER_PEER_ROOM=kitchen\n",
+            "ok",
+            peering.REASON_PEERING_ON,
+        ),
+        # A typo (JASPER_PEERING=banana) resolves to off; silence would leave
+        # the operator believing peering is on.
+        ("JASPER_PEERING=banana\n", "warn", peering.REASON_PEERING_MODE_UNKNOWN),
     ],
     ids=["absent", "off", "on", "malformed", "unbalanced-quote"],
 )
-def test_check_peering_mode_verdicts(monkeypatch, tmp_path, body, status, must_name):
+def test_check_peering_mode_verdicts(monkeypatch, tmp_path, body, status, reason):
     env = tmp_path / "peering.env"
     if body is not None:
         env.write_text(body)
@@ -51,7 +53,22 @@ def test_check_peering_mode_verdicts(monkeypatch, tmp_path, body, status, must_n
     r = doctor.check_peering_mode()
 
     assert r.status == status
-    assert must_name in r.detail.lower()
+    assert r.reason == reason
+
+
+def test_check_peering_mode_reports_unreadable_env(monkeypatch, tmp_path):
+    env = tmp_path / "peering.env"
+    env.mkdir()  # reading a directory as text raises OSError
+
+    monkeypatch.setattr(
+        "jasper.cli.doctor.peering.Path",
+        lambda p: env if "peering.env" in p else Path(p),
+    )
+
+    r = doctor.check_peering_mode()
+
+    assert r.status == "warn"
+    assert r.reason == peering.REASON_PEERING_ENV_UNREADABLE
 
 
 @pytest.mark.parametrize(
@@ -66,6 +83,9 @@ def test_check_peering_mode_verdicts(monkeypatch, tmp_path, body, status, must_n
 def test_check_peering_discovery_counts_siblings_excluding_self(
     monkeypatch, output, local_peer_id, must_name
 ):
+    """The sibling count is a formatted number the reason vocabulary does not
+    carry — this is the pure-formatting exception AGENTS.md allows to keep a
+    `.detail` assertion."""
     monkeypatch.setattr(
         "jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse"
     )
@@ -88,4 +108,22 @@ def test_check_peering_discovery_warns_without_avahi_browse(monkeypatch):
     """avahi-browse is an optional dep — unverifiable, not broken."""
     monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: None)
 
-    assert doctor.check_peering_discovery().status == "warn"
+    r = doctor.check_peering_discovery()
+
+    assert r.status == "warn"
+    assert r.reason == peering.REASON_DISCOVERY_TOOL_MISSING
+
+
+def test_check_peering_discovery_warns_on_browse_failure(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse"
+    )
+    monkeypatch.setattr(
+        "jasper.cli.doctor.peering._run",
+        lambda *a, **kw: type("P", (), {"returncode": 1, "stdout": ""})(),
+    )
+
+    r = doctor.check_peering_discovery()
+
+    assert r.status == "warn"
+    assert r.reason == peering.REASON_DISCOVERY_BROWSE_FAILED

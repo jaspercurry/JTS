@@ -1752,8 +1752,11 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     # the doctor no longer reports "no cloud-measurement session recorded".
     monkeypatch.setattr(v2host, "load_v2_state", lambda: state)
     r = check_crossover_v2_cloud_pipeline()
-    assert "no cloud-measurement session" not in r.detail
-    assert f"{PHASE_CLOUD_MEASURE}: spec=fail" in r.detail
+    # A recorded cloud_measure entry means the check no longer takes its
+    # REASON_CLOUD_NOT_RUN "nothing recorded yet" branch; with no
+    # cloud_verify present the spec-fail does not gate, so this stays ok.
+    assert r.status == "ok"
+    assert r.reason == ""
 
 
 def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():

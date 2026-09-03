@@ -45,6 +45,7 @@ def test_json_mode_reports_unhandled_check_exception(monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["fails"] == 1
     assert payload["results"][0]["name"] == "jasper-doctor"
+    assert payload["results"][0]["reason"] == doctor.REASON_DOCTOR_CRASHED
     assert "synthetic failure" in payload["error"]
 
 
@@ -88,14 +89,8 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
     payload = json.loads(capsys.readouterr().out)
     assert payload["fails"] == 0
     assert payload["speaker_silent"] is False
-    assert payload["results"] == [
-        {
-            "name": "endpoint smoke",
-            "status": "ok",
-            "detail": "minimal cfg",
-            "reason": "",
-            "speaker_silent": False,
-        }
+    assert [(r["name"], r["status"]) for r in payload["results"]] == [
+        ("endpoint smoke", "ok")
     ]
 
 
@@ -208,28 +203,28 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
     by_name = {entry.func.__name__: entry for entry in doctor.registered_checks()}
 
     assert (
-        doctor._doctor_skip_reason(by_name["check_provider_key"], "streambox")
+        doctor._doctor_skip_detail(by_name["check_provider_key"], "streambox")
         == "not installed (streambox profile)"
     )
-    assert doctor._doctor_skip_reason(
+    assert doctor._doctor_skip_detail(
         by_name["check_openwakeword_model"],
         "streambox",
     )
-    assert doctor._doctor_skip_reason(
+    assert doctor._doctor_skip_detail(
         by_name["check_aec_bridge_running"],
         "streambox",
     )
-    assert doctor._doctor_skip_reason(by_name["check_mic_capture"], "streambox")
-    assert doctor._doctor_skip_reason(by_name["check_tts_open"], "streambox")
-    assert not doctor._doctor_skip_reason(
+    assert doctor._doctor_skip_detail(by_name["check_mic_capture"], "streambox")
+    assert doctor._doctor_skip_detail(by_name["check_tts_open"], "streambox")
+    assert not doctor._doctor_skip_detail(
         by_name["check_camilla_websocket"],
         "streambox",
     )
-    assert not doctor._doctor_skip_reason(
+    assert not doctor._doctor_skip_detail(
         by_name["check_librespot_running"],
         "streambox",
     )
-    assert not doctor._doctor_skip_reason(
+    assert not doctor._doctor_skip_detail(
         by_name["check_correction_web_service"],
         "streambox",
     )
@@ -408,12 +403,13 @@ def test_summary_never_calls_a_silent_speaker_non_critical(capsys):
 
     exit_code, line = _summary_line(
         [
-            doctor.CheckResult("transit", "warn", "no MTA key"),
+            doctor.CheckResult("transit", "warn", "no MTA key", reason="mta_key_missing"),
             doctor.CheckResult(
                 "active speaker runtime graph",
                 "warn",
                 "parked silent",
                 speaker_silent=True,
+                reason="graph_parked",
             ),
         ],
         capsys,
@@ -429,7 +425,8 @@ def test_summary_still_calls_cosmetic_warnings_non_critical(capsys):
     """The inverse half: with nothing silent, the old wording is correct."""
 
     exit_code, line = _summary_line(
-        [doctor.CheckResult("transit", "warn", "no MTA key")], capsys
+        [doctor.CheckResult("transit", "warn", "no MTA key", reason="mta_key_missing")],
+        capsys,
     )
 
     assert exit_code == 0
@@ -442,8 +439,11 @@ def test_summary_names_the_silence_alongside_a_failure(capsys):
 
     exit_code, line = _summary_line(
         [
-            doctor.CheckResult("nginx", "fail", "down"),
-            doctor.CheckResult("blockers", "warn", "parked", speaker_silent=True),
+            doctor.CheckResult("nginx", "fail", "down", reason="nginx_down"),
+            doctor.CheckResult(
+                "blockers", "warn", "parked",
+                speaker_silent=True, reason="blockers_parked",
+            ),
         ],
         capsys,
     )
@@ -476,7 +476,12 @@ def test_a_silent_failure_alone_does_not_count_itself_among_the_warnings(capsys)
     """
 
     exit_code, line = _summary_line(
-        [doctor.CheckResult("graph", "fail", "unsafe", speaker_silent=True)],
+        [
+            doctor.CheckResult(
+                "graph", "fail", "unsafe",
+                speaker_silent=True, reason="graph_unsafe",
+            )
+        ],
         capsys,
     )
 
@@ -497,8 +502,11 @@ def test_a_silent_failure_does_not_pin_its_silence_on_a_cosmetic_warning(capsys)
 
     exit_code, line = _summary_line(
         [
-            doctor.CheckResult("graph", "fail", "unsafe", speaker_silent=True),
-            doctor.CheckResult("transit", "warn", "no MTA key"),
+            doctor.CheckResult(
+                "graph", "fail", "unsafe",
+                speaker_silent=True, reason="graph_unsafe",
+            ),
+            doctor.CheckResult("transit", "warn", "no MTA key", reason="mta_key_missing"),
         ],
         capsys,
     )
@@ -510,44 +518,32 @@ def test_a_silent_failure_does_not_pin_its_silence_on_a_cosmetic_warning(capsys)
     assert "of them" not in line
 
 
-def test_an_ok_result_claiming_silence_is_ignored_rather_than_believed(capsys):
-    """`CheckResult` says the flag is read on warn/fail only — pin that.
+def test_an_ok_result_cannot_claim_the_speaker_is_silent():
+    """`speaker_silent` is warn/fail-only, enforced at construction.
 
-    A check that returned `ok` while asserting silence is contradicting
-    itself, and the summary must not repeat the contradiction. Previously this
-    was an argument in a comment with no test behind it.
-
-    The `ok` result is paired with a COSMETIC WARN on purpose. Alone it proves
-    nothing: with no warn and no fail the composer takes the all-passed branch,
-    which never reads the flag, so a version that counted `ok` results would
-    pass anyway — measured, by mutating the scoping and watching the
-    ok-only input survive. Only this pairing reaches the branch that reads it.
-    """
-
-    exit_code, line = _summary_line(
-        [
-            doctor.CheckResult("graph", "ok", "legal", speaker_silent=True),
-            doctor.CheckResult("transit", "warn", "no MTA key"),
-        ],
-        capsys,
-    )
-
-    assert exit_code == 0
-    assert line.endswith("1 warning(s) — non-critical.\x1b[0m")
-    assert "silent" not in line
+    A check returning `ok` while asserting silence contradicts itself. The
+    contract rejects the row rather than leaving every consumer to re-filter
+    on status (ADR-0228 rule 3)."""
+    with pytest.raises(ValueError):
+        CheckResult("graph", "ok", "legal", speaker_silent=True)
+    with pytest.raises(ValueError):
+        CheckResult("graph", "skipped", "not applicable", speaker_silent=True)
 
 
-def test_a_lone_ok_result_claiming_silence_still_reports_all_passed(capsys):
-    """The other half of the same contradiction: nothing to warn about."""
+def test_a_warn_or_fail_without_a_reason_is_rejected():
+    """Every warn/fail carries a machine-stable reason (ADR-0228 rule 3)."""
+    with pytest.raises(ValueError):
+        CheckResult("graph", "warn", "something")
+    with pytest.raises(ValueError):
+        CheckResult("graph", "fail", "something")
+    # ok/skipped rows may omit it.
+    assert CheckResult("graph", "ok", "fine").reason == ""
+    assert CheckResult("graph", "skipped", "n/a").reason == ""
 
-    exit_code, line = _summary_line(
-        [doctor.CheckResult("graph", "ok", "legal", speaker_silent=True)],
-        capsys,
-    )
 
-    assert exit_code == 0
-    assert line.endswith("all checks passed.\x1b[0m")
-    assert "silent" not in line
+def test_an_unknown_status_is_rejected():
+    with pytest.raises(ValueError):
+        CheckResult("graph", "green", "fine")
 
 
 # ================== the root-fidelity /system/diagnostics capture path ========
@@ -569,7 +565,7 @@ def test_render_json_out_writes_0640_and_returns_zero(tmp_path):
     `failed`, since the failures are inside the JSON."""
     results = [
         CheckResult("ok-check", "ok", "fine"),
-        CheckResult("bad-check", "fail", "broken"),
+        CheckResult("bad-check", "fail", "broken", reason="thing_broken"),
     ]
     out = tmp_path / "result.json"
     rc = render_json(results, out_path=str(out))
@@ -585,8 +581,8 @@ def test_render_json_out_writes_0640_and_returns_zero(tmp_path):
 
 def test_render_json_stdout_keeps_exit_semantics(capsys):
     """Without --out, the operator CLI contract is unchanged: exit 1 on a fail."""
-    assert render_json([CheckResult("x", "fail", "")]) == 1
-    assert render_json([CheckResult("x", "warn", "")]) == 0
+    assert render_json([CheckResult("x", "fail", "", reason="broke")]) == 1
+    assert render_json([CheckResult("x", "warn", "", reason="iffy")]) == 0
     assert render_json([CheckResult("x", "ok", "")]) == 0
 
 
@@ -612,8 +608,10 @@ def test_oneshot_unit_runs_doctor_with_out():
     assert settings["ExecStart"].endswith(
         f"jasper-doctor --json --out {_DIAGNOSTICS_RESULT_PATH}"
     )
-    # Bounded so a wedged probe cannot leave the oneshot activating forever.
+    # Bounded so a wedged probe cannot leave the oneshot activating forever,
+    # and capped so a runaway one cannot join a global OOM cascade.
     assert int(settings["TimeoutStartSec"]) > 0
+    assert settings["MemoryMax"].endswith("M")
     # On-demand only — never enabled (no [Install] section header).
     assert "[Install]" not in lines
 
@@ -647,7 +645,7 @@ def _cfg_attrs_read_by(func) -> set[str]:
     [
         entry
         for entry in doctor.registered_checks()
-        if entry.needs_cfg and not doctor._doctor_skip_reason(entry, "streambox")
+        if entry.needs_cfg and not doctor._doctor_skip_detail(entry, "streambox")
     ],
     ids=lambda entry: entry.func.__name__,
 )
@@ -663,7 +661,7 @@ def test_streambox_cfg_carries_every_attribute_its_checks_read(entry):
 
 
 def test_librespot_check_reports_ok_on_streambox_cfg(monkeypatch):
-    monkeypatch.setattr(doctor.renderers, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.renderers, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(doctor.renderers, "source_intent_enabled", lambda source: True)
     monkeypatch.setattr(doctor.renderers.os.path, "isfile", lambda p: True)
     monkeypatch.setattr(

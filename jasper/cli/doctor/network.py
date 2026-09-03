@@ -39,6 +39,85 @@ from jasper.wifi_guardian_persistence import (
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
+# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
+# pin status + reason, never `detail` prose). Named by the fact a consumer
+# would branch on; two branches meaning the same thing share one code.
+REASON_REGDOM_PROBE_FAILED = "regdom_probe_failed"
+REASON_REGDOM_UNPARSEABLE = "regdom_unparseable"
+REASON_REGDOM_UNSET = "regdom_unset"
+
+REASON_GUARDIAN_SKIPPED_NO_NMCLI = "guardian_skipped_no_nmcli"
+REASON_GUARDIAN_NOT_APPLICABLE = "guardian_not_applicable"
+REASON_GUARDIAN_STASH_MISSING = "guardian_stash_missing"
+REASON_GUARDIAN_NO_ACTIVE_WIFI = "guardian_no_active_wifi"
+REASON_GUARDIAN_SSID_DRIFT = "guardian_ssid_drift"
+
+REASON_IPV6_SKIPPED_NO_NMCLI = "ipv6_skipped_no_nmcli"
+REASON_IPV6_NOT_APPLICABLE = "ipv6_not_applicable"
+REASON_IPV6_METHOD_UNREADABLE = "ipv6_method_unreadable"
+REASON_IPV6_METHOD_DISABLED = "ipv6_method_disabled"
+REASON_IPV6_LINK_LOCAL_MISSING = "ipv6_link_local_missing"
+
+REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL = "recover_timer_skipped_no_systemctl"
+REASON_RECOVER_TIMER_NOT_INSTALLED = "recover_timer_not_installed"
+REASON_RECOVER_TIMER_DISABLED = "recover_timer_disabled"
+
+REASON_AVAHI_DAEMON_NOT_INSTALLED = "avahi_daemon_not_installed"
+REASON_AVAHI_DAEMON_INACTIVE = "avahi_daemon_inactive"
+
+REASON_HOSTNAME_UNREADABLE = "hostname_unreadable"
+REASON_AVAHI_RESOLVE_MISSING = "avahi_resolve_missing"
+REASON_AVAHI_RESOLVE_FAILED = "avahi_resolve_failed"
+REASON_AVAHI_RESOLVE_UNEXPECTED_OUTPUT = "avahi_resolve_unexpected_output"
+REASON_HOSTNAME_COLLISION = "hostname_collision"
+
+REASON_AVAHI_BROWSE_MISSING = "avahi_browse_missing"
+REASON_AVAHI_BROWSE_PARTIAL_TIMEOUT = "avahi_browse_partial_timeout"
+REASON_AVAHI_BROWSE_TIMEOUT = "avahi_browse_timeout"
+REASON_AVAHI_BROWSE_FAILED = "avahi_browse_failed"
+REASON_AVAHI_SERVICE_NOT_ADVERTISED = "avahi_service_not_advertised"
+
+REASON_IDENTITY_NOT_INSTALLED = "identity_not_installed"
+REASON_IDENTITY_FILE_MISSING = "identity_file_missing"
+REASON_IDENTITY_COLLISION = "identity_collision"
+REASON_IDENTITY_DRIFT = "identity_drift"
+REASON_IDENTITY_SNAPSHOT_STALE = "identity_snapshot_stale"
+
+REASON_USBNET_PLAN_INVALID = "usbnet_plan_invalid"
+REASON_USBNET_PLAN_PENDING = "usbnet_plan_pending"
+REASON_USBNET_PLAN_PROJECTION_UNREADABLE = "usbnet_plan_projection_unreadable"
+REASON_USBNET_PLAN_PROJECTION_DRIFT = "usbnet_plan_projection_drift"
+
+REASON_USBNET_NOT_APPLICABLE = "usbnet_not_applicable"
+REASON_USBNET_KILLSWITCHED = "usbnet_killswitched"
+REASON_USBNET_IFACE_KILLSWITCH_DRIFT = "usbnet_iface_killswitch_drift"
+REASON_USBNET_PLAN_UNAVAILABLE = "usbnet_plan_unavailable"
+REASON_USBNET_HARDWARE_MISMATCH = "usbnet_hardware_mismatch"
+REASON_USBNET_ROLE_CHANGE_PENDING = "usbnet_role_change_pending"
+REASON_USBNET_NO_UDC = "usbnet_no_udc"
+REASON_USBNET_BIND_FAILED = "usbnet_bind_failed"
+REASON_USBNET_ADDR_PROBE_FAILED = "usbnet_addr_probe_failed"
+REASON_USBNET_ADDR_MISSING = "usbnet_addr_missing"
+REASON_USBNET_ADDR_PENDING = "usbnet_addr_pending"
+
+REASON_USBNET_SKIPPED_NO_NMCLI = "usbnet_skipped_no_nmcli"
+REASON_USBNET_NM_QUERY_FAILED = "usbnet_nm_query_failed"
+REASON_USBNET_NM_PROFILE_MISSING = "usbnet_nm_profile_missing"
+REASON_USBNET_NM_PROFILE_MISMATCH = "usbnet_nm_profile_mismatch"
+
+REASON_USBNET_SKIPPED_NO_SYSTEMCTL = "usbnet_skipped_no_systemctl"
+REASON_USBNET_DHCP_NOT_INSTALLED = "usbnet_dhcp_not_installed"
+REASON_USBNET_DHCP_IDLE = "usbnet_dhcp_idle"
+REASON_USBNET_DHCP_NOT_SERVING = "usbnet_dhcp_not_serving"
+REASON_USBNET_DHCP_TEARDOWN_DRIFT = "usbnet_dhcp_teardown_drift"
+
+REASON_USBNET_NGINX_NOT_INSTALLED = "usbnet_nginx_not_installed"
+REASON_USBNET_PROBE_IPV4_UNREADABLE = "usbnet_probe_ipv4_unreadable"
+REASON_USBNET_PROBE_IFACE_VANISHED = "usbnet_probe_iface_vanished"
+REASON_USBNET_PROBE_NO_ADDRESS = "usbnet_probe_no_address"
+REASON_USBNET_PROBE_NO_ANSWER = "usbnet_probe_no_answer"
+REASON_USBNET_PROBE_HTTP_ERROR = "usbnet_probe_http_error"
+
 def _parse_iw_regdom(stdout: str) -> tuple[str | None, dict[str, str]]:
     """Return the global country plus per-phy countries from `iw reg get`.
 
@@ -120,6 +199,7 @@ def check_wifi_regdom() -> CheckResult:
         return CheckResult(
             "WiFi reg domain", "warn",
             "iw reg get failed; can't verify WLAN country configuration",
+            reason=REASON_REGDOM_PROBE_FAILED,
         )
 
     global_country, phy_countries = _parse_iw_regdom(proc.stdout)
@@ -128,6 +208,7 @@ def check_wifi_regdom() -> CheckResult:
             "WiFi reg domain", "warn",
             "could not parse global regdom from `iw reg get` "
             "(no WiFi adapter? Ethernet-only Pi is fine)",
+            reason=REASON_REGDOM_UNPARSEABLE,
         )
     phy_detail = _format_phy_regdom_detail(phy_countries)
     if global_country in ("99", "00"):
@@ -136,6 +217,7 @@ def check_wifi_regdom() -> CheckResult:
             f"global regdom is '{global_country}' (unset); set WLAN "
             "country with Pi Imager or `sudo raspi-config nonint "
             f"do_wifi_country <CC>`. {phy_detail}",
+            reason=REASON_REGDOM_UNSET,
         )
     return CheckResult(
         "WiFi reg domain", "ok",
@@ -172,7 +254,10 @@ def check_wifi_guardian() -> CheckResult:
     if nmcli is None:
         # No NetworkManager → guardian isn't applicable. Don't warn;
         # this is the headless-Ethernet-only Pi case.
-        return CheckResult(label, "ok", "skipped — no nmcli on PATH")
+        return CheckResult(
+            label, "skipped", "no nmcli on PATH",
+            reason=REASON_GUARDIAN_SKIPPED_NO_NMCLI,
+        )
 
     # Read the stash via the same module the wizard + tests use. We
     # never log the PSK from doctor; the SSID + key_mgmt are fine.
@@ -210,7 +295,10 @@ def check_wifi_guardian() -> CheckResult:
     if stash is None and active_ssid is None:
         # Both absent: fresh install on Ethernet, or WiFi off / never
         # configured. Nothing to recover from; nothing to warn about.
-        return CheckResult(label, "ok", "no stash and no active WiFi (Ethernet-only?)")
+        return CheckResult(
+            label, "skipped", "no stash and no active WiFi (Ethernet-only?)",
+            reason=REASON_GUARDIAN_NOT_APPLICABLE,
+        )
 
     if stash is None and active_ssid is not None:
         return CheckResult(
@@ -220,6 +308,7 @@ def check_wifi_guardian() -> CheckResult:
             f"{stash_path} — until then, a dirty-shutdown filesystem loss "
             f"of /etc/NetworkManager/system-connections/ would brick "
             f"network access.",
+            reason=REASON_GUARDIAN_STASH_MISSING,
         )
 
     if stash is not None and active_ssid is None:
@@ -229,6 +318,7 @@ def check_wifi_guardian() -> CheckResult:
             f"Run `sudo /usr/local/sbin/jasper-wifi-guardian --reason manual` "
             f"to retry, or check `journalctl -u jasper-wifi-guardian` for "
             f"the most recent recreate attempt.",
+            reason=REASON_GUARDIAN_NO_ACTIVE_WIFI,
         )
 
     # Both present: compare. Stash SSID drift from active SSID means the
@@ -247,6 +337,7 @@ def check_wifi_guardian() -> CheckResult:
         f"Re-save at http://jts.local/wifi/ to update the recovery stash; "
         f"otherwise a future dirty shutdown would recreate the wrong "
         f"network.",
+        reason=REASON_GUARDIAN_SSID_DRIFT,
     )
 
 @doctor_check(order=64.2, group="network")
@@ -262,11 +353,17 @@ def check_wifi_link_local_ipv6() -> CheckResult:
     label = "WiFi link-local IPv6"
     nmcli = shutil.which("nmcli")
     if nmcli is None:
-        return CheckResult(label, "ok", "skipped — no nmcli on PATH")
+        return CheckResult(
+            label, "skipped", "no nmcli on PATH",
+            reason=REASON_IPV6_SKIPPED_NO_NMCLI,
+        )
 
     profile, device = _active_wifi_connection(nmcli)
     if profile is None:
-        return CheckResult(label, "ok", "no active WiFi profile")
+        return CheckResult(
+            label, "skipped", "no active WiFi profile",
+            reason=REASON_IPV6_NOT_APPLICABLE,
+        )
     if device is None:
         device = "wlan0"
 
@@ -279,6 +376,7 @@ def check_wifi_link_local_ipv6() -> CheckResult:
         return CheckResult(
             label, "warn",
             f"could not read ipv6.method for active WiFi profile {profile!r}",
+            reason=REASON_IPV6_METHOD_UNREADABLE,
         )
     if method in {"ignore", "disabled"}:
         quoted_profile = shlex.quote(profile)
@@ -289,6 +387,7 @@ def check_wifi_link_local_ipv6() -> CheckResult:
             "Apple clients may stall resolving `<hostname>.local`. Fix: "
             f"`sudo nmcli connection modify {quoted_profile} ipv6.method link-local` "
             f"then `sudo nmcli dev reapply {quoted_device}`.",
+            reason=REASON_IPV6_METHOD_DISABLED,
         )
 
     addr_proc = _run(["ip", "-6", "addr", "show", "dev", device, "scope", "link"], timeout=5)
@@ -299,6 +398,7 @@ def check_wifi_link_local_ipv6() -> CheckResult:
             f"active WiFi profile {profile!r} uses ipv6.method={method}, but "
             f"{device} has no link-local IPv6 address; `.local` may resolve "
             f"slowly. Try `sudo nmcli dev reapply {quoted_device}`.",
+            reason=REASON_IPV6_LINK_LOCAL_MISSING,
         )
     return CheckResult(
         label, "ok",
@@ -320,7 +420,10 @@ def check_wifi_recover_timer() -> CheckResult:
     Skipped on dev hosts: no systemctl, or the unit was never installed."""
     label = "WiFi recover timer"
     if shutil.which("systemctl") is None:
-        return CheckResult(label, "ok", "skipped — no systemctl")
+        return CheckResult(
+            label, "skipped", "no systemctl",
+            reason=REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL,
+        )
     proc = _run(["systemctl", "is-enabled", "jasper-wifi-recover.timer"])
     state = proc.stdout.strip()
     if state == "enabled":
@@ -329,12 +432,16 @@ def check_wifi_recover_timer() -> CheckResult:
     # "could not be found" stderr) when the unit isn't installed — a dev box,
     # not a misconfigured Pi. Don't warn there.
     if state in ("", "not-found") or "could not be found" in (proc.stderr or "").lower():
-        return CheckResult(label, "ok", "skipped — timer not installed")
+        return CheckResult(
+            label, "skipped", "timer not installed",
+            reason=REASON_RECOVER_TIMER_NOT_INSTALLED,
+        )
     return CheckResult(
         label, "warn",
         f"jasper-wifi-recover.timer is '{state}', not enabled — Wi-Fi can't "
         f"auto-recover from a brcmfmac scan-suppression wedge until it is. "
         f"Fix: `sudo systemctl enable --now jasper-wifi-recover.timer`.",
+        reason=REASON_RECOVER_TIMER_DISABLED,
     )
 
 @doctor_check(order=65, group="network")
@@ -367,11 +474,13 @@ def check_avahi_daemon() -> CheckResult:
             "it now installs the package (2026-05-24+). Without it, "
             "`<hostname>.local` doesn't resolve and control clients can't "
             "discover this Pi.",
+            reason=REASON_AVAHI_DAEMON_NOT_INSTALLED,
         )
     return CheckResult(
         label, "fail",
         f"systemctl is-active = '{state}'. "
         "`sudo systemctl enable --now avahi-daemon` to fix.",
+        reason=REASON_AVAHI_DAEMON_INACTIVE,
     )
 
 @doctor_check(order=67, group="network")
@@ -396,12 +505,16 @@ def check_hostname_avahi_consistency() -> CheckResult:
     label = "hostname ↔ avahi consistency"
     sys_hostname = _run(["hostname", "-s"]).stdout.strip()
     if not sys_hostname:
-        return CheckResult(label, "warn", "could not read system hostname")
+        return CheckResult(
+            label, "warn", "could not read system hostname",
+            reason=REASON_HOSTNAME_UNREADABLE,
+        )
     bin_path = shutil.which("avahi-resolve-host-name")
     if bin_path is None:
         return CheckResult(
             label, "warn",
             "avahi-resolve-host-name missing (apt install avahi-utils)",
+            reason=REASON_AVAHI_RESOLVE_MISSING,
         )
     # -4: IPv4 only. Output is one line: `<hostname>.local <IP>`.
     proc = _run([bin_path, "-4", f"{sys_hostname}.local"], timeout=4.0)
@@ -413,12 +526,14 @@ def check_hostname_avahi_consistency() -> CheckResult:
             f"avahi-resolve-host-name {sys_hostname}.local exited "
             f"{proc.returncode}. Likely avahi-daemon not yet "
             f"advertising us — check_avahi_daemon reports the cause.",
+            reason=REASON_AVAHI_RESOLVE_FAILED,
         )
     parts = proc.stdout.strip().split()
     if len(parts) < 2:
         return CheckResult(
             label, "warn",
             f"unexpected avahi-resolve output: {proc.stdout.strip()!r}",
+            reason=REASON_AVAHI_RESOLVE_UNEXPECTED_OUTPUT,
         )
     resolved_ip = parts[1]
     # `hostname -I` prints space-separated IPs for all up interfaces.
@@ -435,6 +550,7 @@ def check_hostname_avahi_consistency() -> CheckResult:
         f"is using your hostname; Avahi suffix-resolved us to "
         f"`{sys_hostname}-N.local`. Pick a unique hostname: "
         f"`sudo hostnamectl set-hostname <new>` then reboot.",
+        reason=REASON_HOSTNAME_COLLISION,
     )
 
 @doctor_check(order=66, group="network")
@@ -450,6 +566,7 @@ def check_avahi_jasper_control() -> CheckResult:
             "avahi-browse missing (apt install avahi-utils) — can't "
             "verify the service is being advertised. Clients may still "
             "find us if avahi-daemon is publishing it.",
+            reason=REASON_AVAHI_BROWSE_MISSING,
         )
     try:
         proc = _run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
@@ -462,17 +579,20 @@ def check_avahi_jasper_control() -> CheckResult:
                 label, "ok",
                 "advertised — browse timed out resolving one or more stale "
                 "peer records, but a jasper-control service was visible",
+                reason=REASON_AVAHI_BROWSE_PARTIAL_TIMEOUT,
             )
         return CheckResult(
             label, "fail",
             "avahi-browse timed out before any `_jasper-control._tcp` "
             "service appeared. Check avahi-daemon and local service XML.",
+            reason=REASON_AVAHI_BROWSE_TIMEOUT,
         )
     if proc.returncode != 0:
         return CheckResult(
             label, "fail",
             f"avahi-browse exited {proc.returncode}. Is avahi-daemon "
             f"running? (`systemctl status avahi-daemon`).",
+            reason=REASON_AVAHI_BROWSE_FAILED,
         )
     if "_jasper-control._tcp" not in proc.stdout:
         return CheckResult(
@@ -481,6 +601,7 @@ def check_avahi_jasper_control() -> CheckResult:
             "/etc/avahi/services/jasper-control.service exists and "
             "avahi-daemon was reloaded — re-run install.sh, or "
             "`sudo systemctl reload avahi-daemon`.",
+            reason=REASON_AVAHI_SERVICE_NOT_ADVERTISED,
         )
     return CheckResult(
         label, "ok",
@@ -514,11 +635,15 @@ def check_identity_coherence() -> CheckResult:
         # Fresh checkout / pre-first-run. On a Pi the installer starts
         # the reconciler, so absent there means the unit never ran.
         if not os.path.exists("/usr/local/sbin/jasper-identity-reconcile"):
-            return CheckResult(label, "ok", "reconciler not installed (skipped)")
+            return CheckResult(
+                label, "skipped", "reconciler not installed",
+                reason=REASON_IDENTITY_NOT_INSTALLED,
+            )
         return CheckResult(
             label, "warn",
             "identity.env missing — run: "
             "sudo systemctl start jasper-identity-reconcile",
+            reason=REASON_IDENTITY_FILE_MISSING,
         )
     stale_note = ""
     raw_ts = snap.get("checked_at", "")
@@ -543,6 +668,7 @@ def check_identity_coherence() -> CheckResult:
             "LAN is using your hostname. The management UI stays "
             f"reachable at http://{snap['avahi_hostname']}/ ; pick a "
             "unique name with scripts/rename-speaker.sh." + stale_note,
+            reason=REASON_IDENTITY_COLLISION,
         )
     if snap["status"] == "drift":
         return CheckResult(
@@ -551,9 +677,12 @@ def check_identity_coherence() -> CheckResult:
             "Spoken URLs, OAuth bounce, and the TLS cert derive from "
             "JASPER_HOSTNAME — converge with scripts/rename-speaker.sh "
             "or update /etc/jasper/jasper.env." + stale_note,
+            reason=REASON_IDENTITY_DRIFT,
         )
     if stale_note:
-        return CheckResult(label, "warn", names + stale_note)
+        return CheckResult(
+            label, "warn", names + stale_note, reason=REASON_IDENTITY_SNAPSHOT_STALE
+        )
     return CheckResult(label, "ok", names)
 
 
@@ -627,6 +756,7 @@ def check_usbnet_address_plan() -> CheckResult:
             "fail",
             f"missing or invalid plan ({exc}); USB gadget start is blocked, "
             "while NetworkManager/Wi-Fi remain available. Re-run deploy/install.sh.",
+            reason=REASON_USBNET_PLAN_INVALID,
         )
     try:
         pending = DEFAULT_PENDING_PATH.exists()
@@ -639,6 +769,7 @@ def check_usbnet_address_plan() -> CheckResult:
             f"version={plan.version} fingerprint={plan.identity_fingerprint} "
             f"desired={plan.device_cidr}; legacy live generation is preserved "
             "until next boot",
+            reason=REASON_USBNET_PLAN_PENDING,
         )
     expected = (
         (DEFAULT_NM_PATH, render_nmconnection(plan)),
@@ -648,7 +779,10 @@ def check_usbnet_address_plan() -> CheckResult:
         try:
             observed = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return CheckResult(label, "fail", f"cannot read {path}: {exc}")
+            return CheckResult(
+                label, "fail", f"cannot read {path}: {exc}",
+                reason=REASON_USBNET_PLAN_PROJECTION_UNREADABLE,
+            )
         if observed != content:
             return CheckResult(
                 label,
@@ -656,6 +790,7 @@ def check_usbnet_address_plan() -> CheckResult:
                 f"{path} does not match plan version={plan.version} "
                 f"fingerprint={plan.identity_fingerprint}; the gadget boot "
                 "gate will refuse an incoherent projection. Re-run install.",
+                reason=REASON_USBNET_PLAN_PROJECTION_DRIFT,
             )
     return CheckResult(
         label,
@@ -689,8 +824,12 @@ def check_usbnet_interface() -> CheckResult:
                 f"{USBNET_IFACE} present but JASPER_USB_NETWORK=disabled — "
                 "restart jasper-usbgadget.service to recompose without the "
                 "network function.",
+                reason=REASON_USBNET_IFACE_KILLSWITCH_DRIFT,
             )
-        return CheckResult(label, "ok", "network kill-switched (disabled)")
+        return CheckResult(
+            label, "ok", "network kill-switched (disabled)",
+            reason=REASON_USBNET_KILLSWITCHED,
+        )
     try:
         plan = attest_usb_network_plan(load_usb_network_plan())
     except UsbNetworkPlanError as exc:
@@ -698,6 +837,7 @@ def check_usbnet_interface() -> CheckResult:
             label,
             "fail",
             f"cannot determine desired address from USB network plan: {exc}",
+            reason=REASON_USBNET_PLAN_UNAVAILABLE,
         )
     usb_role = current_usb_data_role()
     if not usb_role.management_transport_available:
@@ -708,13 +848,19 @@ def check_usbnet_interface() -> CheckResult:
                 f"{USBNET_IFACE} is present while the resolved USB hardware "
                 f"management transport is unavailable ({usb_role.reason}); stop "
                 "jasper-usbgadget.service.",
+                reason=REASON_USBNET_HARDWARE_MISMATCH,
             )
-        status = "warn" if usb_role.reboot_required else "ok"
-        return CheckResult(
-            label,
-            status,
+        detail = (
             f"{USBNET_IFACE} intentionally absent; USB management unavailable "
-            f"({usb_role.reason})",
+            f"({usb_role.reason})"
+        )
+        if usb_role.reboot_required:
+            return CheckResult(
+                label, "warn", detail,
+                reason=REASON_USBNET_ROLE_CHANGE_PENDING,
+            )
+        return CheckResult(
+            label, "skipped", detail, reason=REASON_USBNET_NOT_APPLICABLE,
         )
     if not _usbnet_iface_present():
         if not _udc_present():
@@ -724,9 +870,10 @@ def check_usbnet_interface() -> CheckResult:
             # check (jasper.cli.doctor.usbsink.check_usb_data_role) owns
             # that gap.
             return CheckResult(
-                label, "ok",
+                label, "skipped",
                 f"{USBNET_IFACE} absent, no UDC present — fresh install "
                 "pre-reboot or non-gadget hardware (see check_usb_data_role)",
+                reason=REASON_USBNET_NO_UDC,
             )
         # A UDC exists and the network is wanted, so the gadget should have
         # composed ncm.usb0 and bound → usb0 should exist. Its absence is a
@@ -738,6 +885,7 @@ def check_usbnet_interface() -> CheckResult:
             "`systemctl status jasper-usbgadget` and "
             "check_usbgadget_composition; the fallback management network is "
             "down until it composes.",
+            reason=REASON_USBNET_BIND_FAILED,
         )
     addr_proc = _run(["ip", "-4", "-o", "addr", "show", "dev", USBNET_IFACE])
     if addr_proc.returncode != 0:
@@ -745,6 +893,7 @@ def check_usbnet_interface() -> CheckResult:
             label, "warn",
             f"{USBNET_IFACE} present but `ip addr show` failed: "
             f"{addr_proc.stderr.strip() or 'no output'}",
+            reason=REASON_USBNET_ADDR_PROBE_FAILED,
         )
     if f"inet {plan.device_cidr}" not in addr_proc.stdout:
         try:
@@ -759,6 +908,7 @@ def check_usbnet_interface() -> CheckResult:
                 f"desired={plan.device_cidr}, observed: "
                 f"{addr_proc.stdout.strip() or '(no address)'}. Next boot "
                 "promotes both network projections before the gadget starts.",
+                reason=REASON_USBNET_ADDR_PENDING,
             )
         return CheckResult(
             label, "fail",
@@ -766,24 +916,23 @@ def check_usbnet_interface() -> CheckResult:
             f"observed: {addr_proc.stdout.strip() or '(no address)'}. Check "
             f"`nmcli connection show {USBNET_NM_PROFILE}` and "
             "check_usbnet_nm_profile.",
+            reason=REASON_USBNET_ADDR_MISSING,
         )
     carrier_path = USBNET_SYS_CLASS_NET / USBNET_IFACE / "carrier"
     try:
         carrier = carrier_path.read_text().strip() == "1"
     except OSError:
         carrier = None
-    status = "warn" if usb_role.reboot_required else "ok"
-    suffix = (
-        "; retained only until the pending host-role reboot"
-        if usb_role.reboot_required
-        else ""
+    detail = f"{USBNET_IFACE} has {plan.device_cidr}" + (
+        f" (carrier={'up' if carrier else 'down'})" if carrier is not None else ""
     )
-    return CheckResult(
-        label, status,
-        f"{USBNET_IFACE} has {plan.device_cidr}"
-        + (f" (carrier={'up' if carrier else 'down'})" if carrier is not None else "")
-        + suffix,
-    )
+    if usb_role.reboot_required:
+        return CheckResult(
+            label, "warn",
+            detail + "; retained only until the pending host-role reboot",
+            reason=REASON_USBNET_ROLE_CHANGE_PENDING,
+        )
+    return CheckResult(label, "ok", detail)
 
 
 @doctor_check(order=67.7, group="network")
@@ -799,10 +948,16 @@ def check_usbnet_nm_profile() -> CheckResult:
     usb0 doesn't exist yet or nmcli isn't on PATH (dev host)."""
     label = "USB network NM profile"
     if not _usbnet_iface_present():
-        return CheckResult(label, "ok", f"{USBNET_IFACE} not present (skipped)")
+        return CheckResult(
+            label, "skipped", f"{USBNET_IFACE} not present",
+            reason=REASON_USBNET_NOT_APPLICABLE,
+        )
     nmcli = shutil.which("nmcli")
     if nmcli is None:
-        return CheckResult(label, "ok", "skipped — no nmcli on PATH")
+        return CheckResult(
+            label, "skipped", "no nmcli on PATH",
+            reason=REASON_USBNET_SKIPPED_NO_NMCLI,
+        )
     proc = _run(
         [nmcli, "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
         timeout=5,
@@ -812,6 +967,7 @@ def check_usbnet_nm_profile() -> CheckResult:
             label, "warn",
             f"`nmcli connection show --active` failed: "
             f"{proc.stderr.strip() or 'no output'}",
+            reason=REASON_USBNET_NM_QUERY_FAILED,
         )
     active_on_usb0: str | None = None
     for raw in proc.stdout.splitlines():
@@ -825,6 +981,7 @@ def check_usbnet_nm_profile() -> CheckResult:
             f"{USBNET_IFACE} exists but NetworkManager has no active "
             f"connection on it — expected {USBNET_NM_PROFILE!r}. Check "
             f"`nmcli connection up {USBNET_NM_PROFILE}`.",
+            reason=REASON_USBNET_NM_PROFILE_MISSING,
         )
     if active_on_usb0 != USBNET_NM_PROFILE:
         return CheckResult(
@@ -833,6 +990,7 @@ def check_usbnet_nm_profile() -> CheckResult:
             f"shipped {USBNET_NM_PROFILE!r} profile — a manual override or "
             "install regression. The plan-derived address is not "
             "guaranteed under a different profile.",
+            reason=REASON_USBNET_NM_PROFILE_MISMATCH,
         )
     return CheckResult(label, "ok", f"{USBNET_NM_PROFILE} active on {USBNET_IFACE}")
 
@@ -852,11 +1010,17 @@ def check_usbnet_dhcp_unit() -> CheckResult:
     plug/unplug by treating a still-starting unit as ok)."""
     label = "USB network DHCP (jasper-usbnet-dhcp)"
     if shutil.which("systemctl") is None:
-        return CheckResult(label, "ok", "skipped — no systemctl")
+        return CheckResult(
+            label, "skipped", "no systemctl",
+            reason=REASON_USBNET_SKIPPED_NO_SYSTEMCTL,
+        )
     proc = _run(["systemctl", "is-active", USBNET_DHCP_UNIT])
     state = proc.stdout.strip()
     if state in ("", "not-found") or "could not be found" in (proc.stderr or "").lower():
-        return CheckResult(label, "ok", "skipped — unit not installed")
+        return CheckResult(
+            label, "skipped", "unit not installed",
+            reason=REASON_USBNET_DHCP_NOT_INSTALLED,
+        )
     iface_present = _usbnet_iface_present()
     if iface_present and state in ("active", "activating"):
         return CheckResult(label, "ok", f"{USBNET_DHCP_UNIT} {state}, {USBNET_IFACE} present")
@@ -865,6 +1029,7 @@ def check_usbnet_dhcp_unit() -> CheckResult:
             label, "ok",
             f"{USBNET_DHCP_UNIT} {state}, {USBNET_IFACE} absent — no cost "
             "while the NCM gadget is not composed (kill-switched or no UDC)",
+            reason=REASON_USBNET_DHCP_IDLE,
         )
     if iface_present:
         return CheckResult(
@@ -872,12 +1037,14 @@ def check_usbnet_dhcp_unit() -> CheckResult:
             f"{USBNET_IFACE} is present but {USBNET_DHCP_UNIT} is {state} — "
             "a plugged-in host won't get a DHCP lease. Check "
             f"`systemctl status {USBNET_DHCP_UNIT}`.",
+            reason=REASON_USBNET_DHCP_NOT_SERVING,
         )
     return CheckResult(
         label, "warn",
         f"{USBNET_IFACE} is absent but {USBNET_DHCP_UNIT} is {state} — "
         "device-activation binding may not have torn down cleanly "
         "(RAM drift, not a functional failure since nothing is plugged in).",
+        reason=REASON_USBNET_DHCP_TEARDOWN_DRIFT,
     )
 
 
@@ -902,9 +1069,15 @@ def check_usbnet_management_probe() -> CheckResult:
 
     label = "USB management network probe"
     if not _usbnet_iface_present():
-        return CheckResult(label, "ok", f"{USBNET_IFACE} not present (skipped)")
+        return CheckResult(
+            label, "skipped", f"{USBNET_IFACE} not present",
+            reason=REASON_USBNET_NOT_APPLICABLE,
+        )
     if not NGINX_SITE.exists():
-        return CheckResult(label, "ok", "nginx site not installed (skipped)")
+        return CheckResult(
+            label, "skipped", "nginx site not installed",
+            reason=REASON_USBNET_NGINX_NOT_INSTALLED,
+        )
     observation = observe_ipv4_cidr(USBNET_IFACE)
     if observation.state is IPv4ObservationState.ERROR:
         return CheckResult(
@@ -912,16 +1085,19 @@ def check_usbnet_management_probe() -> CheckResult:
             "fail",
             f"could not inspect {USBNET_IFACE}'s IPv4 address: "
             f"{observation.error}",
+            reason=REASON_USBNET_PROBE_IPV4_UNREADABLE,
         )
     if observation.state is IPv4ObservationState.ABSENT:
         return CheckResult(
             label,
             "warn",
             f"{USBNET_IFACE} disappeared while its IPv4 address was inspected",
+            reason=REASON_USBNET_PROBE_IFACE_VANISHED,
         )
     if observation.state is IPv4ObservationState.NO_ADDRESS:
         return CheckResult(
-            label, "fail", f"{USBNET_IFACE} is present but has no IPv4 address"
+            label, "fail", f"{USBNET_IFACE} is present but has no IPv4 address",
+            reason=REASON_USBNET_PROBE_NO_ADDRESS,
         )
     observed_cidr = observation.cidr
     assert observed_cidr is not None
@@ -941,6 +1117,7 @@ def check_usbnet_management_probe() -> CheckResult:
             label, "fail",
             f"no answer from nginx on {address} for Host: {host} "
             f"({e}) — is nginx bound to {USBNET_IFACE}?",
+            reason=REASON_USBNET_PROBE_NO_ANSWER,
         )
     if status == 200:
         return CheckResult(label, "ok", f"200 via {address} as Host: {host}")
@@ -955,4 +1132,7 @@ def check_usbnet_management_probe() -> CheckResult:
         hint = MANAGEMENT_502_HINT
     else:
         hint = ""
-    return CheckResult(label, "fail", f"HTTP {status} ({detail}){hint}")
+    return CheckResult(
+        label, "fail", f"HTTP {status} ({detail}){hint}",
+        reason=REASON_USBNET_PROBE_HTTP_ERROR,
+    )

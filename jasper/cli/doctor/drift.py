@@ -34,6 +34,10 @@ from ._shared import (
 
 _LABEL = "installed settings"
 
+# Machine-stable code naming the one branch that turns this check non-ok
+# (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_SETTINGS_DRIFTED = "settings_drifted"
+
 _INSTALL_FIX = "re-run install.sh"
 _RESTART_FIX = "`systemctl restart <unit>` to apply now"
 _SYSCTL_FIX = "`sudo sysctl --system`"
@@ -259,6 +263,7 @@ def _classify_drift(
             _LABEL, "warn",
             f"{len(drift)} installed setting(s) drifted: {named}. "
             f"Fix: {fixes}{suffix}",
+            reason=REASON_SETTINGS_DRIFTED,
         )
     return CheckResult(
         _LABEL, "ok", f"{checked} installed setting(s) match{suffix}",

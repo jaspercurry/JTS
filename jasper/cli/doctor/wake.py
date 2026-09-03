@@ -26,6 +26,22 @@ from .aec import (
     _wake_leg_setting,
 )
 
+# Machine-stable codes naming which branch of a wake check produced a result
+# (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_MODELS_DIR_MISSING = "models_dir_missing"
+REASON_REQUIRED_ASSET_MISSING = "required_asset_missing"
+REASON_REQUIRED_ASSET_HASH_MISMATCH = "required_asset_hash_mismatch"
+REASON_ACTIVE_MODEL_MISSING = "active_model_missing"
+REASON_ACTIVE_MODEL_HASH_MISMATCH = "active_model_hash_mismatch"
+REASON_MODEL_CHECK_CRASHED = "model_check_crashed"
+
+REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY = "wake_legs_push_to_talk_only"
+REASON_WAKE_LEGS_AEC_MODE_OFF = "wake_legs_aec_mode_off"
+REASON_WAKE_LEGS_INTENT_ONLY = "wake_legs_intent_only"
+REASON_WAKE_LEGS_MISSING = "wake_legs_not_armed"
+REASON_WAKE_LEGS_UNEXPECTED = "wake_legs_unexpected_armed"
+REASON_WAKE_LEGS_MATCH = "wake_legs_armed_matches_configured"
+
 @doctor_check(order=8, group="wake", label="openWakeWord models", needs_cfg=True)
 def check_openwakeword_model(cfg: Config) -> CheckResult:
     # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
@@ -46,6 +62,7 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                 "openWakeWord models", "fail",
                 f"{models_dir} missing — re-run deploy/install.sh to stage "
                 "JTS's hash-checked OpenWakeWord ONNX assets.",
+                reason=REASON_MODELS_DIR_MISSING,
             )
         missing_assets: list[str] = []
         mismatched_assets: list[str] = []
@@ -61,12 +78,14 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                 "openWakeWord models", "fail",
                 "missing package assets: "
                 f"{', '.join(sorted(missing_assets))}; re-run deploy/install.sh",
+                reason=REASON_REQUIRED_ASSET_MISSING,
             )
         if mismatched_assets:
             return CheckResult(
                 "openWakeWord models", "fail",
                 "package asset hash mismatch: "
                 f"{', '.join(sorted(mismatched_assets))}; re-run deploy/install.sh",
+                reason=REASON_REQUIRED_ASSET_HASH_MISMATCH,
             )
         wake_model = Path(cfg.wake_model)
         if wake_model.is_absolute():
@@ -81,11 +100,13 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                     "openWakeWord models", "fail",
                     f"active wake model path missing: {wake_model}; "
                     "restore the custom model or choose a registered model in /wake/",
+                    reason=REASON_ACTIVE_MODEL_MISSING,
                 )
             return CheckResult(
                 "openWakeWord models", "fail",
                 f"active wake model '{cfg.wake_model}' has no file in "
                 f"{models_dir}; re-run deploy/install.sh",
+                reason=REASON_ACTIVE_MODEL_MISSING,
             )
         active_candidate = candidates[0]
         expected_model_sha: str | None = None
@@ -113,13 +134,16 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                 "openWakeWord models", "fail",
                 "active wake model hash mismatch: "
                 f"{active_candidate.name}; re-run deploy/install.sh",
+                reason=REASON_ACTIVE_MODEL_HASH_MISMATCH,
             )
         return CheckResult(
             "openWakeWord models", "ok",
             f"{cfg.wake_model} → {active_candidate.name}",
         )
     except Exception as e:  # noqa: BLE001
-        return CheckResult("openWakeWord models", "fail", str(e))
+        return CheckResult(
+            "openWakeWord models", "fail", str(e), reason=REASON_MODEL_CHECK_CRASHED,
+        )
 
 def _voice_wake_legs_runtime() -> "set[str] | None":
     """Wake-leg tokens jasper-voice actually opened, from jasper-control's
@@ -199,15 +223,17 @@ def _assess_wake_legs(
     hint = "Toggle at http://jts.local/wake/ (Wake detection card)."
     if push_to_talk_only:
         return CheckResult(
-            "Wake legs", "ok",
-            "n/a — no local microphone and a push-to-talk accessory is "
+            "Wake legs", "skipped",
+            "no local microphone and a push-to-talk accessory is "
             "paired; jasper-voice arms no wake legs on this speaker and "
             "every turn is opened by the remote's button",
+            reason=REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY,
         )
     if aec_mode != "auto":
         return CheckResult(
-            "Wake legs", "ok",
-            f"n/a — AEC mode is {aec_mode}; additive legs require AEC on",
+            "Wake legs", "skipped",
+            f"AEC mode is {aec_mode}; additive legs require AEC on",
+            reason=REASON_WAKE_LEGS_AEC_MODE_OFF,
         )
     if chip_aec:
         configured = ["primary_chip_beam"]
@@ -231,6 +257,7 @@ def _assess_wake_legs(
             "Wake legs", "ok",
             f"{len(configured)} leg(s) configured: "
             f"{', '.join(configured)}. {hint}",
+            reason=REASON_WAKE_LEGS_INTENT_ONLY,
         )
     missing = expected - armed_runtime
     if missing:
@@ -240,6 +267,7 @@ def _assess_wake_legs(
             f"{sorted(armed_runtime)}; {sorted(missing)} not running "
             f"(bridge down, chip not on 6-ch firmware, or see `journalctl "
             f"-u jasper-voice | grep event=wake.leg_skipped`). {hint}",
+            reason=REASON_WAKE_LEGS_MISSING,
         )
     unexpected = armed_runtime - expected
     if unexpected:
@@ -249,11 +277,13 @@ def _assess_wake_legs(
             f"unexpected wake legs {sorted(unexpected)}; this usually means "
             f"stale runtime env or an old daemon is burning extra wake-word "
             f"instances. {hint}",
+            reason=REASON_WAKE_LEGS_UNEXPECTED,
         )
     return CheckResult(
         "Wake legs", "ok",
         f"{len(armed_runtime)} leg(s) armed: "
         f"{', '.join(sorted(armed_runtime))}. {hint}",
+        reason=REASON_WAKE_LEGS_MATCH,
     )
 
 @doctor_check(order=53, group="wake")

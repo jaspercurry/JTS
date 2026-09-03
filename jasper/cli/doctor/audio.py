@@ -37,10 +37,135 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _group_writable_dir,
-    _parked_as_bonded_follower,
+    _parked_follower_result,
     _run,
 )
-from .correction import _active_camilla_config_path
+from .correction import (
+    REASON_CAMILLA_CONFIG_MISSING,
+    REASON_CAMILLA_CONFIG_UNREADABLE,
+    REASON_CAMILLA_STATEFILE_UNREADABLE,
+    _active_camilla_config_path,
+)
+
+# Closed vocabulary for this module's `CheckResult.reason`: one snake_case
+# constant per distinct outcome branch below. Every `warn`/`fail` carries one;
+# an `ok` carries one only where the ok itself is a fact a consumer branches on
+# (not-applicable, skipped, an informational sub-state). `detail` stays the
+# human sentence and is free to reword; tests pin `status` and `reason`
+# (ADR-0228 rule 3).
+
+
+REASON_ALSA_TOOL_MISSING = "alsa_tool_missing"
+REASON_ALSA_CARD_ABSENT = "alsa_card_absent"
+
+REASON_MIC_ABSENT = "mic_absent"
+REASON_MIC_ABSENT_DEFERRED = "mic_absent_deferred"
+REASON_MIC_UDP_TRANSPORT = "mic_udp_transport"
+REASON_MIC_DEVICE_UNNAMED = "mic_device_unnamed"
+REASON_MIC_DEVICE_MALFORMED = "mic_device_malformed"
+REASON_MIC_CARD_ABSENT = "mic_card_absent"
+REASON_MIC_CAPTURE_SILENT = "mic_capture_silent"
+REASON_MIC_CAPTURE_LOW_SIGNAL = "mic_capture_low_signal"
+REASON_MIC_CAPTURE_OPEN_FAILED = "mic_capture_open_failed"
+REASON_MIC_HELD_BY_VOICE = "mic_held_by_voice"
+
+REASON_LOOPBACK_MISSING = "loopback_missing"
+
+REASON_CAMILLA_UNREACHABLE = "camilla_unreachable"
+REASON_CAMILLA_VOLUME_ABOVE_CEILING = "camilla_volume_above_ceiling"
+
+REASON_TTS_OUTPUTD_UNREACHABLE = "tts_outputd_unreachable"
+REASON_TTS_DEVICE_SHAPE_INVALID = "tts_device_shape_invalid"
+REASON_TTS_DEVICE_NO_OUTPUT_CHANNELS = "tts_device_no_output_channels"
+REASON_TTS_DEVICE_UNAVAILABLE = "tts_device_unavailable"
+
+REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE = "output_hardware_state_unavailable"
+REASON_OUTPUT_HARDWARE_BLOCKED = "output_hardware_blocked"
+REASON_OUTPUT_HARDWARE_MISMATCH = "output_hardware_mismatch"
+REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED = "output_hardware_clock_blocked"
+
+REASON_TOPOLOGY_UNREADABLE = "output_topology_unreadable"
+REASON_TOPOLOGY_NOT_CONFIGURED = "output_topology_not_configured"
+REASON_TOPOLOGY_NOT_ROLEFUL = "output_topology_not_roleful"
+REASON_TOPOLOGY_NO_BLOCKERS = "output_topology_no_blockers"
+REASON_TOPOLOGY_BLOCKERS_PROBE_FAILED = "topology_blockers_graph_probe_failed"
+REASON_TOPOLOGY_BLOCKERS_NOT_PARKED = "topology_blockers_not_parked"
+REASON_TOPOLOGY_BLOCKERS_PARKED = "topology_blockers_parked"
+
+REASON_CAMILLA_CONFIG_DIR_MISSING = "camilla_config_dir_missing"
+REASON_CAMILLA_CONFIG_DIR_UNREADABLE = "camilla_config_dir_unreadable"
+REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE = "camilla_config_dir_not_writable"
+
+REASON_DAC_SYNC_NOT_APPLICABLE = "dac_sync_not_applicable"
+REASON_DAC_SYNC_NO_PLAYBACK_CARDS = "dac_sync_no_playback_cards"
+REASON_DAC_SYNC_I2S = "dac_sync_i2s"
+REASON_DAC_SYNC_TAG_ABSENT = "dac_sync_tag_absent"
+REASON_DAC_SYNC_ASYNC = "dac_sync_async"
+
+REASON_APPLE_DONGLE_NOT_APPLICABLE = "apple_dongle_not_applicable"
+REASON_APPLE_DONGLE_ABSENT = "apple_dongle_absent"
+REASON_APPLE_DONGLE_NO_AUDIO_CARD = "apple_dongle_no_audio_card"
+REASON_APPLE_DONGLE_USB_MISSING = "apple_dongle_usb_missing"
+REASON_APPLE_DONGLE_CARDS_MISSING = "apple_dongle_cards_missing"
+
+REASON_DONGLE_GAIN_NOT_APPLICABLE = "dongle_gain_not_applicable"
+REASON_DONGLE_GAIN_NO_TARGET = "dongle_gain_no_target"
+REASON_DONGLE_GAIN_MIXER_UNAVAILABLE = "dongle_gain_mixer_unavailable"
+REASON_DONGLE_GAIN_UNPARSEABLE = "dongle_gain_unparseable"
+REASON_DONGLE_GAIN_BELOW_TARGET = "dongle_gain_below_target"
+
+REASON_VOLUME_LIMIT_INVALID = "volume_limit_invalid"
+REASON_VOLUME_LIMIT_ABSENT = "volume_limit_absent"
+REASON_VOLUME_LIMIT_ABOVE_CEILING = "volume_limit_above_ceiling"
+
+REASON_RING_CHUNK_NOT_APPLICABLE = "ring_chunk_not_applicable"
+REASON_RING_CHUNK_CLAMPED = "ring_chunk_clamped"
+REASON_RING_TARGET_LEVEL_ABOVE_CEILING = "ring_target_level_above_ceiling"
+REASON_RING_CHUNK_ABOVE_CAPACITY = "ring_chunk_above_capacity"
+
+REASON_GRAPH_PASSIVE_LAYOUT = "runtime_graph_passive_layout"
+REASON_GRAPH_PARKED_SILENT = "runtime_graph_parked_silent"
+REASON_GRAPH_LAYOUT_INCOMPLETE = "runtime_graph_layout_incomplete"
+REASON_GRAPH_UNCONFIGURED_NOT_PARKED = "runtime_graph_unconfigured_not_parked"
+REASON_GRAPH_UNSAFE = "runtime_graph_unsafe"
+
+REASON_SOUND_PROFILE_DEFAULT = "sound_profile_default"
+REASON_SOUND_PROFILE_UNREADABLE = "sound_profile_unreadable"
+REASON_SOUND_PROFILE_NOT_ACTIVE = "sound_profile_not_active"
+
+REASON_BASS_EXTENSION_NOT_COMMISSIONED = "bass_extension_not_commissioned"
+REASON_BASS_EXTENSION_MALFORMED = "bass_extension_malformed"
+REASON_BASS_EXTENSION_STALE = "bass_extension_stale"
+REASON_BASS_EXTENSION_BYPASSED = "bass_extension_bypassed"
+
+REASON_DSP_APPLY_NONE = "dsp_apply_none"
+REASON_DSP_APPLY_ROLLBACK_FAILED = "dsp_apply_rollback_failed"
+REASON_DSP_APPLY_UNSUCCESSFUL = "dsp_apply_unsuccessful"
+
+REASON_BASELINE_CANONICAL_NOT_APPLICABLE = "baseline_canonical_not_applicable"
+REASON_BASELINE_CANONICAL_MISSING = "baseline_canonical_missing"
+REASON_BASELINE_CANONICAL_LIVE_MISSING = "baseline_canonical_live_missing"
+REASON_BASELINE_CANONICAL_UNCOMPARABLE = "baseline_canonical_uncomparable"
+REASON_BASELINE_CANONICAL_STALE = "baseline_canonical_stale"
+
+REASON_SPEAKER_SETUP_UNREADABLE = "speaker_setup_unreadable"
+REASON_APPLIED_GRAPH_NO_PROFILE = "applied_graph_no_profile"
+REASON_APPLIED_GRAPH_STAGED_ANCHOR = "applied_graph_staged_anchor"
+REASON_APPLIED_GRAPH_NOT_EVALUATED = "applied_graph_not_evaluated"
+REASON_APPLIED_GRAPH_MISMATCH = "applied_graph_mismatch"
+
+REASON_STARTUP_HOLD_NONE = "startup_hold_none"
+REASON_STARTUP_HOLD_IN_FLIGHT = "startup_hold_in_flight"
+REASON_STARTUP_HOLD_STALE = "startup_hold_stale"
+
+REASON_ROOM_AUTHORITY_NO_DECISION = "room_authority_no_decision"
+REASON_ROOM_AUTHORITY_NOT_REQUIRED = "room_authority_not_required"
+REASON_ROOM_AUTHORITY_UNBANKED = "room_authority_unbanked"
+REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE = "room_authority_receipt_unreadable"
+REASON_ROOM_AUTHORITY_UNPROVEN = "room_authority_unproven"
+
+REASON_SETUP_NOTICES_NONE = "setup_notices_none"
+REASON_SETUP_NOTICES_STANDING = "setup_notices_standing"
 
 
 _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
@@ -82,7 +207,9 @@ def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
     """kind is 'aplay' (playback) or 'arecord' (capture)."""
     bin_path = shutil.which(kind)
     if bin_path is None:
-        return CheckResult(label, "fail", f"{kind} not in PATH")
+        return CheckResult(
+            label, "fail", f"{kind} not in PATH", reason=REASON_ALSA_TOOL_MISSING,
+        )
     proc = _run([bin_path, "-L"])
     if name in proc.stdout:
         return CheckResult(label, "ok", f"CARD={name}")
@@ -90,6 +217,7 @@ def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
         label, "fail",
         f"no ALSA device with CARD={name} found in `{kind} -L`. "
         f"Plug in the device or fix the configured name.",
+        reason=REASON_ALSA_CARD_ABSENT,
     )
 
 _HW_SHORTHAND_RE = re.compile(r"^(?:plug)?hw:(\d+),(\d+)$")
@@ -137,19 +265,11 @@ def _soften_for_push_to_talk(
     """Downgrade a *local* mic failure to an advisory when an accessory is paired.
 
     A speaker with no local microphone but a paired mic-bearing remote has its
-    voice-input gate legitimately open (issue #2205), so a red "your microphone
-    is missing" is the wrong register. These checks probe the local device, so
-    they are the surface that can tell "no local mic" from "local mic present";
-    the `microphone` headline cannot, because it reads the OR verdict. The
-    detail reports GATE state, never runtime state.
-
-    The local finding stays visible (``warn``, original detail appended); only
-    the register changes. A ``warn``/``ok`` result is returned untouched — this
-    never upgrades a status.
-
-    Applied only to *device-absent / cannot-open* failures. A mic that opens but
-    records silence is a present-and-broken local mic, not an absent one; that
-    stays a red failure regardless of what accessory is paired."""
+    voice-input gate legitimately open (issue #2205), so a red failure is the
+    wrong register. The local finding stays visible and only the register
+    changes; a ``warn``/``ok`` result is returned untouched. Applied to
+    device-absent / cannot-open failures only — a mic that opens but records
+    silence is present-and-broken, and stays red."""
     if result.status != "fail" or not presence.accessory_present:
         return result
     return CheckResult(
@@ -158,6 +278,7 @@ def _soften_for_push_to_talk(
         f"no local microphone; {presence.accessory_summary} — the voice-input "
         "gate is open for it (accessory-only voice input: issue #2205). "
         f"Local probe: {result.detail}",
+        reason=result.reason,
     )
 
 
@@ -165,26 +286,20 @@ def _soften_for_push_to_talk(
 def check_microphone() -> CheckResult:
     """Single headline for microphone presence.
 
-    Reads the reconciler's one canonical record via
-    ``jasper.mic_presence.read_mic_presence``; the downstream ``mic ALSA card``
-    / ``mic capture`` checks defer to the same verdict instead of re-probing
-    ALSA, so a missing mic is one advisory, not a scatter of contradicting
-    failures. Absent is ``warn``, never ``fail``: the reconciler parked voice
-    and it auto-starts when a mic is reconnected or an actionable profile
-    condition is resolved.
+    Reads the reconciler's one canonical record
+    (``jasper.mic_presence.read_mic_presence``); the ``mic ALSA card`` / ``mic
+    capture`` checks defer to the same verdict rather than re-probing ALSA.
+    Absent is ``warn``, never ``fail``: voice is parked and auto-starts when a
+    mic returns.
 
-    ``ok`` claims only that the voice-input start gate is open. Not that
-    jasper-voice is running, and not that a *local* microphone exists — the
-    record is the OR of the local and accessory halves and carries no local
-    probe (see ``jasper.mic_presence``). It therefore does NOT drop to ``warn``
-    for an accessory-satisfied gate: the identical record shape covers a
-    healthy non-XVF local mic (a custom ``JASPER_MIC_DEVICE``, a plain USB mic)
-    on a box with a remote paired. ``mic ALSA card`` and ``mic capture`` are
-    the surfaces that can tell those apart; they downgrade to ``warn`` naming
-    issue #2205 when the local mic is genuinely missing."""
+    ``ok`` claims only that the voice-input start gate is open — not that
+    jasper-voice is running, and not that a *local* mic exists (the record is
+    the OR of the local and accessory halves). ``mic ALSA card`` and ``mic
+    capture`` are the surfaces that can tell those apart (issue #2205)."""
     mp = read_mic_presence()
-    status = "warn" if mp.absent_confirmed else "ok"
-    return CheckResult("microphone", status, mp.summary)
+    if mp.absent_confirmed:
+        return CheckResult("microphone", "warn", mp.summary, reason=REASON_MIC_ABSENT)
+    return CheckResult("microphone", "ok", mp.summary)
 
 
 @doctor_check(order=4, group="audio", label="mic ALSA card", needs_cfg=True)
@@ -192,16 +307,12 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     """Validate the card configured in JASPER_MIC_DEVICE is actually present.
 
     Named cards (``Array``, ``CARD=UMIK-2``, ``plughw:CARD=Foo``) and the
-    positional shorthand (``hw:7,1``, ``plughw:0,0``) take different lookup
-    paths. install.sh autodetects on the Pi, so the literal may differ from
-    'Array' — e.g. when the AEC bridge is enabled the mic moves to a UDP-form
-    device (`udp:9876`) and this card check is skipped."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "mic ALSA card", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "voice + the AEC stack while paired; the leader owns the mic",
-        )
+    positional shorthand (``hw:7,1``) take different lookup paths. install.sh
+    autodetects on the Pi, and with the AEC bridge enabled the mic moves to a
+    UDP-form device (`udp:9876`), which skips the card check."""
+    parked = _parked_follower_result("mic ALSA card")
+    if parked is not None:
+        return parked
     # No usable mic: the reconciler's single source of truth already classified
     # this and parked voice, so defer to the `microphone` headline rather than
     # re-probing `arecord -L` for a red FAILURE on an expected, auto-recovering
@@ -209,9 +320,10 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     presence = read_mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
-            "mic ALSA card", "ok",
-            "no usable microphone input — see the `microphone` check "
-            "(voice is intentionally parked until its condition is resolved)",
+            "mic ALSA card", "skipped",
+            "no usable microphone input — see the `microphone` check, which "
+            "owns the verdict; voice stays parked until it is resolved",
+            reason=REASON_MIC_ABSENT_DEFERRED,
         )
     # UDP transport has no ALSA card to validate; `check_aec_bridge_running`
     # (jasper/cli/doctor/aec.py) covers transport liveness.
@@ -219,8 +331,9 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     try:
         if parse_udp_device(cfg.mic_device or ""):
             return CheckResult(
-                f"mic ALSA card ({cfg.mic_device})", "ok",
-                "skipped — UDP transport, no ALSA card to validate",
+                f"mic ALSA card ({cfg.mic_device})", "skipped",
+                "UDP transport, no ALSA card to validate",
+                reason=REASON_MIC_UDP_TRANSPORT,
             )
     except ValueError:
         pass  # `check_mic_capture` will report the malformed form.
@@ -238,6 +351,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
             f"LoopbackAEC card no longer exists — update "
             f"JASPER_MIC_DEVICE to `udp:9876` (or `Array` for chip-direct). "
             f"Verify with `systemctl status jasper-aec-bridge`.",
+            reason=REASON_MIC_CARD_ABSENT,
         ), presence)
     card = _extract_card_name(cfg.mic_device)
     if card is None:
@@ -246,6 +360,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
             "warn",
             f"JASPER_MIC_DEVICE='{cfg.mic_device}' is empty or numeric; "
             "skipping name check (open test will still run)",
+            reason=REASON_MIC_DEVICE_UNNAMED,
         )
     return _soften_for_push_to_talk(
         check_alsa_card(card, "arecord", f"mic ALSA card ({card})"), presence,
@@ -268,6 +383,7 @@ def check_loopback() -> CheckResult:
         "snd-aloop", "fail",
         "Loopback device missing. `sudo modprobe snd-aloop` or check "
         "/etc/modules-load.d/snd-aloop.conf",
+        reason=REASON_LOOPBACK_MISSING,
     )
 
 # order=79 stays AFTER resilience's fractional 78.5 insert — the registry
@@ -294,6 +410,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
                 f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB "
                 f"above {DEFAULT_VOLUME_LIMIT_DB:.1f} dB safety ceiling."
                 f"{clipped_msg}",
+                reason=REASON_CAMILLA_VOLUME_ABOVE_CEILING,
             )
         return CheckResult(
             "CamillaDSP websocket", "ok",
@@ -308,6 +425,7 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
             "CamillaDSP websocket", "fail",
             f"can't reach {cfg.camilla_host}:{cfg.camilla_port}: {e}. "
             f"Check `systemctl status jasper-camilla`.",
+            reason=REASON_CAMILLA_UNREACHABLE,
         )
     finally:
         if controller is not None:
@@ -327,23 +445,15 @@ def _jasper_voice_active() -> bool:
 def check_mic_capture(cfg: Config) -> CheckResult:
     """Probe-open the mic device to confirm it produces non-silent audio.
 
-    Caveat: when jasper-voice is already running, it holds the mic for
-    capture and snd-aloop's exclusive-capture variants refuse a second
-    opener. In that case the daemon's continued operation IS the
-    evidence the device works — fall back to checking that
-    jasper-voice is alive and report 'skipped' rather than spuriously
-    failing.
-
-    UDP devices (`udp:N` / `udp://HOST:N`, the AEC bridge transport)
-    aren't PortAudio devices — there's no `sd.rec` for them, so the
-    probe is skipped the same way.
+    When jasper-voice is running it holds the mic and snd-aloop's
+    exclusive-capture variants refuse a second opener; the daemon's continued
+    operation IS the evidence, so that case is skipped rather than failed. UDP
+    devices (the AEC bridge transport) are not PortAudio devices and skip the
+    same way.
     """
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "mic capture", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "voice + the AEC stack while paired; the leader owns the mic",
-        )
+    parked = _parked_follower_result("mic capture")
+    if parked is not None:
+        return parked
     # Intentionally idle, not broken: the reconciler's single source of truth
     # confirms no usable mic and parked jasper-voice, so defer to the
     # `microphone` headline. A genuine open failure (no absent verdict but the
@@ -352,9 +462,10 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     presence = read_mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
-            "mic capture", "ok",
-            "no usable microphone input (expected) — see the `microphone` "
-            "check; voice is intentionally parked until its condition is resolved",
+            "mic capture", "skipped",
+            "no usable microphone input — see the `microphone` check, which "
+            "owns the verdict; voice stays parked until it is resolved",
+            reason=REASON_MIC_ABSENT_DEFERRED,
         )
     # UDP transport: no PortAudio probe possible. `check_aec_bridge_running`
     # (jasper/cli/doctor/aec.py) already covers whether the transport is alive.
@@ -362,14 +473,16 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     try:
         if parse_udp_device(cfg.mic_device or ""):
             return CheckResult(
-                "mic capture", "ok",
-                f"skipped — UDP transport ({cfg.mic_device}); "
+                "mic capture", "skipped",
+                f"UDP transport ({cfg.mic_device}); "
                 "see `jasper-aec-bridge` for liveness",
+                reason=REASON_MIC_UDP_TRANSPORT,
             )
     except ValueError as e:
         return CheckResult(
             "mic capture", "fail",
             f"malformed UDP device {cfg.mic_device!r}: {e}",
+            reason=REASON_MIC_DEVICE_MALFORMED,
         )
     try:
         import numpy as np
@@ -391,31 +504,38 @@ def check_mic_capture(cfg: Config) -> CheckResult:
             return CheckResult(
                 "mic capture", "fail",
                 f"recorded silence from {cfg.mic_device} — wrong device or muted",
+                reason=REASON_MIC_CAPTURE_SILENT,
             )
         if peak < 100:
             return CheckResult(
                 "mic capture", "warn",
                 f"recording from {cfg.mic_device} but signal is very low (peak={peak})",
+                reason=REASON_MIC_CAPTURE_LOW_SIGNAL,
             )
         return CheckResult("mic capture", "ok", f"peak={peak} from {cfg.mic_device}")
     except (ImportError, OSError, RuntimeError, ValueError) as e:
         if _jasper_voice_active():
             return CheckResult(
-                "mic capture", "ok",
-                f"skipped — jasper-voice holds {cfg.mic_device} (probe error: {e})",
+                "mic capture", "skipped",
+                f"jasper-voice holds {cfg.mic_device} (probe error: {e})",
+                reason=REASON_MIC_HELD_BY_VOICE,
             )
         return _soften_for_push_to_talk(
-            CheckResult("mic capture", "fail", f"{cfg.mic_device}: {e}"), presence,
+            CheckResult(
+                "mic capture", "fail", f"{cfg.mic_device}: {e}",
+                reason=REASON_MIC_CAPTURE_OPEN_FAILED,
+            ),
+            presence,
         )
 
 @doctor_check(order=7, group="audio", label="tts output", needs_cfg=True)
 def check_tts_open(cfg: Config) -> CheckResult:
-    """Verify TTS output device is enumerable. Doesn't actually open the
-    stream — opening + starting a `sd.RawOutputStream` against a dmix
-    device races with the running jasper-voice (which holds a writer
-    open) and yields false-negative "can't open" errors while TTS is
-    working. `query_devices` is enough to confirm the device exists in
-    PortAudio's enumeration and has output channels available."""
+    """Verify the TTS output device is enumerable.
+
+    Does not open the stream: starting a `sd.RawOutputStream` against a dmix
+    device races the running jasper-voice writer and yields false "can't open"
+    errors while TTS works. `query_devices` confirms the device exists in
+    PortAudio's enumeration with output channels available."""
     if cfg.tts_transport == "outputd":
         socket_path = cfg.tts_outputd_socket
         sock: socket.socket | None = None
@@ -435,6 +555,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
                 f"JASPER_TTS_TRANSPORT=outputd but {socket_path} is not reachable: {e}. "
                 "Start jasper-outputd or deploy a pre-outputd rollback tree to return to the "
                 "sounddevice path.",
+                reason=REASON_TTS_OUTPUTD_UNREACHABLE,
             )
         finally:
             if sock is not None:
@@ -450,12 +571,14 @@ def check_tts_open(cfg: Config) -> CheckResult:
                 "tts output", "fail",
                 f"sd.query_devices({cfg.tts_device!r}) returned unexpected "
                 f"shape {type(info).__name__}",
+                reason=REASON_TTS_DEVICE_SHAPE_INVALID,
             )
         if int(info.get("max_output_channels", 0)) < 1:
             return CheckResult(
                 "tts output", "fail",
                 f"{cfg.tts_device} enumerated but reports 0 output channels. "
                 f"Check /etc/asound.conf and that jasper-camilla is running.",
+                reason=REASON_TTS_DEVICE_NO_OUTPUT_CHANNELS,
             )
         return CheckResult(
             "tts output", "ok",
@@ -468,6 +591,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
             "tts output", "fail",
             f"can't enumerate {cfg.tts_device}: {e}. "
             f"Check /etc/asound.conf and that jasper-camilla is running.",
+            reason=REASON_TTS_DEVICE_UNAVAILABLE,
         )
 
 @doctor_check(order=20, group="audio")
@@ -480,6 +604,7 @@ def check_output_hardware_state() -> CheckResult:
             "Output hardware state",
             "warn",
             "state file unavailable — run `sudo systemctl start jasper-audio-hardware-reconcile`",
+            reason=REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE,
         )
     blocker_codes = [
         str(item.get("code") or "unknown")
@@ -489,10 +614,8 @@ def check_output_hardware_state() -> CheckResult:
     # The reconciler-emitted final-edge format (JASPER_OUTPUTD_DAC_FORMAT in
     # /var/lib/jasper/outputd.env, which env_load sources). Read, never
     # re-derived from the registry: the emitted value is what outputd and the
-    # chip-AEC alignment identity actually see. Disclosure only — it prints one
-    # value and detects no drift on its own; registry-vs-emission drift is
-    # caught by tests/test_audio_hardware_reconcile.py. Unset/blank is the
-    # S16_LE edge (an unrecognized DAC, or a box predating the emit).
+    # chip-AEC alignment identity actually see. Unset/blank is the S16_LE edge
+    # (an unrecognized DAC, or a box predating the emit).
     final_edge = os.environ.get("JASPER_OUTPUTD_DAC_FORMAT", "").strip() or "S16_LE"
     detail = (
         f"profile={state.profile_id} status={state.status} "
@@ -504,6 +627,7 @@ def check_output_hardware_state() -> CheckResult:
             "Output hardware state",
             "fail",
             f"{detail} blocked={','.join(blocker_codes) or 'none'}",
+            reason=REASON_OUTPUT_HARDWARE_BLOCKED,
         )
     return CheckResult(
         "Output hardware state",
@@ -530,14 +654,16 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
             "active speaker output hardware",
             "fail",
             f"saved output topology is unavailable or invalid: {exc}",
+            reason=REASON_TOPOLOGY_UNREADABLE,
         )
 
     contract = classify_output_contract(topology)
     if not contract.topology_configured:
         return CheckResult(
             "active speaker output hardware",
-            "ok",
+            "skipped",
             "no saved speaker topology configured",
+            reason=REASON_TOPOLOGY_NOT_CONFIGURED,
         )
 
     observed = _load_output_hardware_state()
@@ -546,6 +672,7 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
             "active speaker output hardware",
             "warn",
             "current output hardware state unavailable; run `sudo systemctl start jasper-audio-hardware-reconcile`",
+            reason=REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE,
         )
 
     saved = topology.hardware
@@ -556,17 +683,16 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
         f"current={observed.profile_id} status={observed.status} "
         f"outputs={observed_count}"
     )
+    hardware_matches = (
+        saved.device_id == observed.profile_id and saved_count == observed_count
+    )
     clock_blockers: list[dict[str, object]] = []
-    if saved.device_id == observed.profile_id and saved_count == observed_count:
+    if hardware_matches:
         clock_blockers = _observed_output_hardware_clock_blockers(
             clock_domain_report(topology)
         )
-    if (
-        saved.device_id == observed.profile_id
-        and saved_count == observed_count
-        and not clock_blockers
-    ):
-        return CheckResult("active speaker output hardware", "ok", detail)
+        if not clock_blockers:
+            return CheckResult("active speaker output hardware", "ok", detail)
 
     status = "fail" if contract.requires_roleful_graph else "warn"
     blocker_detail = ""
@@ -586,11 +712,18 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
         if contract.requires_roleful_graph
         else "saved topology differs from currently attached hardware"
     )
-    return CheckResult(
-        "active speaker output hardware",
-        status,
+    text = (
         f"{detail}{blocker_detail}; {suffix}. "
-        "Basic output hardware is reported separately.",
+        "Basic output hardware is reported separately."
+    )
+    if hardware_matches:
+        return CheckResult(
+            "active speaker output hardware", status, text,
+            reason=REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED,
+        )
+    return CheckResult(
+        "active speaker output hardware", status, text,
+        reason=REASON_OUTPUT_HARDWARE_MISMATCH,
     )
 
 
@@ -635,21 +768,25 @@ def _camilla_configs_writable_result(
 ) -> CheckResult:
     """CheckResult for the CamillaDSP config dir's group-write posture.
 
-    ``jasper-web`` runs non-root and writes active-speaker staged/commissioning
-    configs and room-correction configs into this dir *atomically* (temp file
-    in-dir + rename), which needs directory group-write. install.sh's intended
-    posture is ``root:jasper 2775``; a deploy that lands it root-only (e.g. an
-    interrupted install before the widen step) makes non-root staging fail with
-    ``PermissionError`` and surfaces to the household as "could not load the
-    silent active-speaker setup". Catch that here instead of at the wizard."""
+    ``jasper-web`` runs non-root and writes staged/commissioning and
+    room-correction configs into this dir atomically (temp file in-dir +
+    rename), which needs directory group-write. install.sh's intended posture
+    is ``root:jasper 2775``; anything narrower fails staging with
+    ``PermissionError`` at the wizard instead of here."""
 
     label = "CamillaDSP config dir writable"
     try:
         st = path.stat()
     except FileNotFoundError:
-        return CheckResult(label, "warn", f"{path} missing — re-run install.sh")
+        return CheckResult(
+            label, "warn", f"{path} missing — re-run install.sh",
+            reason=REASON_CAMILLA_CONFIG_DIR_MISSING,
+        )
     except OSError as exc:
-        return CheckResult(label, "warn", f"{path}: {exc}")
+        return CheckResult(
+            label, "warn", f"{path}: {exc}",
+            reason=REASON_CAMILLA_CONFIG_DIR_UNREADABLE,
+        )
 
     writable, group_name = _group_writable_dir(st, expected_group=expected_group)
     mode = st.st_mode & 0o7777
@@ -662,6 +799,7 @@ def _camilla_configs_writable_result(
             f"configs; fix with `sudo install -d -m 2775 -g {expected_group} "
             f"{path}` and redeploy (active-speaker staging fails with "
             "PermissionError otherwise)",
+            reason=REASON_CAMILLA_CONFIG_DIR_NOT_WRITABLE,
         )
     return CheckResult(label, "ok", detail)
 
@@ -678,33 +816,24 @@ def check_dac_usb_sync_mode() -> CheckResult:
     """Classify the speaker DAC's USB sync mode as an advisory clock-coherence
     observation for chip-AEC.
 
-    This is NOT the chip-AEC gate: USB sync mode is *one* clock-coherence
-    signal, while the binding production gate is the fixed DAC-profile
-    qualification (`resolve_chip_aec_dac_gate` in jasper/chip_aec/policy.py).
-    An async-but-approved DAC still passes that gate. Read this check as an
-    observation that helps explain a chip-AEC verdict, never as an
-    enable/disable switch.
+    NOT the chip-AEC gate: the binding production gate is the fixed DAC-profile
+    qualification (`resolve_chip_aec_dac_gate`), and an async-but-approved DAC
+    still passes it. This is an observation that helps explain a chip-AEC
+    verdict, never an enable/disable switch.
 
-    Chip-AEC assumes the speaker output and the mic reference share a clock
-    domain. A USB Audio *playback* endpoint that is synchronous or adaptive
-    (host-paced) keeps the DAC on the host clock the chip references; an
-    *asynchronous* endpoint runs its own crystal and can drift against the
-    mic.
-
-    The endpoint sync tag is read once by the output-hardware reconciler from
-    /proc/asound/card<N>/stream0 and persisted into
-    OutputHardwareState.child_devices[*].endpoint_sync; this check only
-    classifies it, against the *selected output DAC's* card (never the XVF
-    mic's, which has its own stream0).
-
-    Skip-if-not-applicable: with no XVF3800 mic present, chip-AEC is
-    irrelevant and this reports 'skipped'. I2S/HAT DACs (no USB endpoint,
-    clock slave on the I2S bus) report 'n/a — I2S' as OK.
+    Chip-AEC assumes the output and the mic reference share a clock domain: a
+    synchronous or adaptive (host-paced) USB playback endpoint keeps the DAC on
+    the host clock; an asynchronous one runs its own crystal and can drift. The
+    tag is read once by the output-hardware reconciler from
+    /proc/asound/card<N>/stream0 into ``child_devices[*].endpoint_sync``; this
+    only classifies it, against the selected output DAC's card. I2S/HAT DACs
+    have no USB endpoint and are clock slaves on the I2S bus.
     """
     if not xvf3800.is_present():
         return CheckResult(
-            "DAC USB sync mode", "ok",
-            "skipped — no XVF3800 mic present, chip-AEC not applicable",
+            "DAC USB sync mode", "skipped",
+            "no XVF3800 mic present, chip-AEC not applicable",
+            reason=REASON_DAC_SYNC_NOT_APPLICABLE,
         )
 
     state = _output_hardware_state_or_none()
@@ -714,6 +843,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
             "DAC USB sync mode", "warn",
             "output hardware state unavailable — run "
             "`sudo systemctl start jasper-audio-hardware-reconcile`",
+            reason=REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE,
         )
 
     # Sync tags across the DAC's playback child cards (one for a single DAC,
@@ -727,6 +857,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
         return CheckResult(
             "DAC USB sync mode", "warn",
             f"no playback child cards in output state (profile={dac_id})",
+            reason=REASON_DAC_SYNC_NO_PLAYBACK_CARDS,
         )
 
     # I2S / HAT DAC: a known DAC profile with no USB endpoint sync tag — its
@@ -734,13 +865,15 @@ def check_dac_usb_sync_mode() -> CheckResult:
     if all(tag == "" for _card, tag in syncs):
         if dac_id not in {"", "unknown"}:
             return CheckResult(
-                "DAC USB sync mode", "ok",
-                f"n/a — {dac_id} is not a USB DAC (I2S clock slave); "
+                "DAC USB sync mode", "skipped",
+                f"{dac_id} is not a USB DAC (I2S clock slave); "
                 "USB sync mode does not gate chip-AEC",
+                reason=REASON_DAC_SYNC_I2S,
             )
         return CheckResult(
             "DAC USB sync mode", "warn",
             "no USB endpoint sync tag and DAC profile is unknown",
+            reason=REASON_DAC_SYNC_TAG_ABSENT,
         )
 
     async_cards = [card for card, tag in syncs if tag == "ASYNC"]
@@ -757,6 +890,7 @@ def check_dac_usb_sync_mode() -> CheckResult:
             "async USB playback endpoint — weak clock coherence; chip-AEC is "
             "still gated by fixed DAC-profile qualification "
             f"(async on {','.join(async_cards)}; profile={dac_id})",
+            reason=REASON_DAC_SYNC_ASYNC,
         )
     return CheckResult(
         "DAC USB sync mode", "ok",
@@ -768,22 +902,19 @@ def check_dac_usb_sync_mode() -> CheckResult:
 
 @doctor_check(order=21, group="audio")
 def check_apple_dongle_audio() -> CheckResult:
-    """Apple's USB-C → 3.5mm Headphone Jack Adapter only exposes its
-    USB Audio class interface when something is plugged into the analog
-    3.5mm jack. With no analog load lsusb sees the chip but no audio card
-    enumerates, so the reconciler's record names no DAC at all. Naming that
-    state gives the operator a clear signal instead of a generic ALSA error.
-
-    The record is read for OBSERVED hardware, not for whether the reconciler is
-    driving it, so a full complement of cards is ``ok`` whatever the record's
-    status.
+    """Apple's USB-C → 3.5mm adapter exposes its USB Audio class interface only
+    when something is plugged into the analog jack, so with no analog load
+    lsusb sees the chip while no audio card enumerates and the reconciler's
+    record names no DAC. The record is read for OBSERVED hardware, not for
+    whether the reconciler is driving it.
     """
     state = _output_hardware_state_or_none()
     dac_id = _observed_output_dac_id(state)
     if dac_id != "unknown" and not _apple_output_profile_active(dac_id):
         return CheckResult(
-            "Apple dongle", "ok",
-            f"skipped — active output DAC is {dac_id}",
+            "Apple dongle", "skipped",
+            f"active output DAC is {dac_id}",
+            reason=REASON_APPLE_DONGLE_NOT_APPLICABLE,
         )
 
     # With nothing in its 3.5mm jack the dongle enumerates no audio card, so a
@@ -800,8 +931,9 @@ def check_apple_dongle_audio() -> CheckResult:
     if dac_id == "unknown":
         if usb_count == 0:
             return CheckResult(
-                "Apple dongle", "ok",
-                "skipped — no active output DAC and no Apple dongle on USB",
+                "Apple dongle", "skipped",
+                "no active output DAC and no Apple dongle on USB",
+                reason=REASON_APPLE_DONGLE_ABSENT,
             )
         return CheckResult(
             "Apple dongle", "warn",
@@ -810,6 +942,7 @@ def check_apple_dongle_audio() -> CheckResult:
             "the dongle's 3.5mm jack — the chip stays in low-power mode without "
             "an analog load — then run "
             "`sudo systemctl start jasper-audio-hardware-reconcile`.",
+            reason=REASON_APPLE_DONGLE_NO_AUDIO_CARD,
         )
     expected_count = 2 if dac_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID else 1
     if usb_count < expected_count:
@@ -817,6 +950,7 @@ def check_apple_dongle_audio() -> CheckResult:
             "Apple dongle", "fail",
             f"expected {expected_count} Apple USB-C adapter(s), "
             f"but lsusb shows {usb_count}",
+            reason=REASON_APPLE_DONGLE_USB_MISSING,
         )
     cards = _apple_dongle_cards_from_state(state)
     if len(cards) >= expected_count:
@@ -830,26 +964,24 @@ def check_apple_dongle_audio() -> CheckResult:
         "warn",
         f"USB present but only {len(cards)} Apple audio card(s) enumerated; "
         "check analog loads on the 3.5mm jack(s).",
+        reason=REASON_APPLE_DONGLE_CARDS_MISSING,
     )
 
 @doctor_check(order=22, group="audio", exclusive_group="audio-probe")
 def check_dongle_headphone_at_max() -> CheckResult:
-    """The Apple dongle's analog Headphone control should be pinned at
-    100%. Anything lower throws away analog headroom that we'd rather
-    have available to the digital chain — main_volume in CamillaDSP is
-    the user-facing knob, the dongle is meant to be a pass-through
-    ceiling.
-
-    `jasper-dac-init.service` sets this on every boot; if it's drifted,
-    this check catches it — a Headphone control left low (e.g. 40%,
-    -36 dB) costs audible loudness with nothing else red."""
+    """The Apple dongle's analog Headphone control should be pinned at 100%:
+    main_volume in CamillaDSP is the user-facing knob and the dongle is a
+    pass-through ceiling, so anything lower throws away analog headroom.
+    `jasper-dac-init.service` sets it on every boot; drift costs audible
+    loudness with nothing else red."""
     state = _output_hardware_state_or_none()
     dac_id = _observed_output_dac_id(state)
     control_groups = _dac_mixer_control_groups_for(APPLE_USB_C_DONGLE_ID)
     if not _apple_output_profile_active(dac_id) or not control_groups:
         return CheckResult(
-            "Dongle headphone gain", "ok",
-            f"skipped — active output DAC is {dac_id}",
+            "Dongle headphone gain", "skipped",
+            f"active output DAC is {dac_id}",
+            reason=REASON_DONGLE_GAIN_NOT_APPLICABLE,
         )
     control = next(
         (
@@ -861,8 +993,9 @@ def check_dongle_headphone_at_max() -> CheckResult:
     if control is None:
         return CheckResult(
             "Dongle headphone gain",
-            "ok",
-            f"skipped — active output DAC profile {dac_id} has no Headphone target",
+            "skipped",
+            f"active output DAC profile {dac_id} has no Headphone target",
+            reason=REASON_DONGLE_GAIN_NO_TARGET,
         )
 
     target_pct = int(control.target_percent or 100)
@@ -875,6 +1008,7 @@ def check_dongle_headphone_at_max() -> CheckResult:
                 "Dongle headphone gain", "fail",
                 f"amixer -c {card_id} sget {control.name} failed — dongle not "
                 f"enumerated as card {card_id!r}?",
+                reason=REASON_DONGLE_GAIN_MIXER_UNAVAILABLE,
             )
         # amixer prints "Front Left: Playback NN [PP%] [-DD.DDdB] [on]";
         # we want PP. If both channels are present, expect them equal.
@@ -884,6 +1018,7 @@ def check_dongle_headphone_at_max() -> CheckResult:
                 "Dongle headphone gain", "warn",
                 f"Could not parse percent from amixer output for {card_id} "
                 "(format change?).",
+                reason=REASON_DONGLE_GAIN_UNPARSEABLE,
             )
         pct = int(pcts[0])
         if pct < target_pct:
@@ -893,6 +1028,7 @@ def check_dongle_headphone_at_max() -> CheckResult:
             "Dongle headphone gain", "warn",
             f"Headphone control below {target_pct}% ({', '.join(low_cards)}). "
             "Run `sudo systemctl start jasper-dac-init` to pin at 100%.",
+            reason=REASON_DONGLE_GAIN_BELOW_TARGET,
         )
     return CheckResult(
         "Dongle headphone gain", "ok",
@@ -964,12 +1100,14 @@ def check_camilla_volume_limit() -> CheckResult:
         return CheckResult(
             "CamillaDSP volume_limit", "warn",
             f"could not read config_path from {statefile}",
+            reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
     if not path.exists():
         return CheckResult(
             "CamillaDSP volume_limit", "fail",
             f"statefile points at missing config {config_path}",
+            reason=REASON_CAMILLA_CONFIG_MISSING,
         )
     try:
         limit = _devices_volume_limit_from_text(path.read_text())
@@ -977,23 +1115,27 @@ def check_camilla_volume_limit() -> CheckResult:
         return CheckResult(
             "CamillaDSP volume_limit", "fail",
             f"invalid devices.volume_limit in {config_path}: {e}",
+            reason=REASON_VOLUME_LIMIT_INVALID,
         )
     except OSError as e:
         return CheckResult(
             "CamillaDSP volume_limit", "fail",
             f"could not read {config_path}: {e}",
+            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
     if limit is None:
         return CheckResult(
             "CamillaDSP volume_limit", "fail",
             f"{config_path} omits devices.volume_limit; CamillaDSP "
             "defaults to +50 dB",
+            reason=REASON_VOLUME_LIMIT_ABSENT,
         )
     if limit > DEFAULT_VOLUME_LIMIT_DB:
         return CheckResult(
             "CamillaDSP volume_limit", "fail",
             f"{config_path} sets devices.volume_limit={limit:.1f} dB "
             f"(expected <= {DEFAULT_VOLUME_LIMIT_DB:.1f} dB)",
+            reason=REASON_VOLUME_LIMIT_ABOVE_CEILING,
         )
     return CheckResult(
         "CamillaDSP volume_limit", "ok",
@@ -1005,15 +1147,12 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     """Verify a ring-crossing Camilla config asks for a chunk the ring can hold.
 
     CamillaDSP sets ``avail_min`` to its chunksize and ALSA refuses an
-    ``avail_min`` above the device's buffer, so a config naming a ring PCM with
-    a chunk over the ring's capacity does not degrade — CamillaDSP exits at open
-    and systemd restart-loops it, and the speaker emits nothing at all.
-
-    The emitters cannot land that config any more
-    (``resolve_camilla_latency_for_devices`` clamps the resolved chunk), so this
-    is the standing surface for the one case the clamp cannot reach: a config
-    written by an OLDER build and still on disk, which has taken a box silent
-    through repeated restarts while every other check stayed green.
+    ``avail_min`` above the device's buffer, so a ring config with a chunk over
+    the ring's capacity does not degrade: CamillaDSP exits at open, systemd
+    restart-loops it, and the speaker emits nothing. The emitters clamp the
+    resolved chunk (``resolve_camilla_latency_for_devices``), so this covers the
+    one case the clamp cannot reach — a config written by an OLDER build and
+    still on disk.
 
     Removal condition: delete this check once no supported upgrade path can
     still carry a pre-clamp config onto a box.
@@ -1021,16 +1160,23 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     label = "camilla ring chunk"
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
-        return CheckResult(label, "warn", f"could not read config_path from {statefile}")
+        return CheckResult(
+            label, "warn", f"could not read config_path from {statefile}",
+            reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
+        )
     path = Path(config_path)
     if not path.exists():
         return CheckResult(
-            label, "fail", f"statefile points at missing config {config_path}"
+            label, "fail", f"statefile points at missing config {config_path}",
+            reason=REASON_CAMILLA_CONFIG_MISSING,
         )
     try:
         devices = parse_camilla_devices_config(path.read_text())
     except (OSError, ValueError) as e:
-        return CheckResult(label, "fail", f"could not read {config_path}: {e}")
+        return CheckResult(
+            label, "fail", f"could not read {config_path}: {e}",
+            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
+        )
 
     ring_ends = [
         name
@@ -1040,8 +1186,9 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     chunksize = devices.get("chunksize")
     if not ring_ends or chunksize is None:
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             f"{config_path} names no ring end (chunksize={chunksize})",
+            reason=REASON_RING_CHUNK_NOT_APPLICABLE,
         )
     # CamillaDSP's own ceiling on the pair: target_level <= chunksize *
     # (queuelimit + 4), measured against CamillaDSP 4.1.3 and exact across
@@ -1059,6 +1206,7 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
                 f"refuses a target above {ceiling} and will restart-loop. "
                 "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
                 speaker_silent=True,
+                reason=REASON_RING_TARGET_LEVEL_ABOVE_CEILING,
             )
 
     capacity = ring_capacity_frames()
@@ -1070,23 +1218,24 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             "CamillaDSP cannot open the ring with it and will restart-loop. "
             "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
             speaker_silent=True,
+            reason=REASON_RING_CHUNK_ABOVE_CAPACITY,
         )
     # Say so when the clamp is what put this number here; otherwise the box runs
     # a chunk its own DacProfile does not declare with no on-box explanation.
     # Asked of the SAME resolver the emitters fall back to, never of a second
-    # derivation of "which DAC is active" — a disclosure that re-derived it
-    # could name a floor no emitter used.
-    unclamped = resolve_camilla_chunksize()
-    clamped = (
-        f", clamped from the {unclamped} this box resolves to"
-        if unclamped > capacity
-        else ""
-    )
-    return CheckResult(
-        label, "ok",
+    # derivation of "which DAC is active".
+    fits = (
         f"chunksize={chunksize} fits the ring's {capacity}-frame capacity "
-        f"({'/'.join(ring_ends)}){clamped}",
+        f"({'/'.join(ring_ends)})"
     )
+    unclamped = resolve_camilla_chunksize()
+    if unclamped > capacity:
+        return CheckResult(
+            label, "ok",
+            f"{fits}, clamped from the {unclamped} this box resolves to",
+            reason=REASON_RING_CHUNK_CLAMPED,
+        )
+    return CheckResult(label, "ok", fits)
 
 
 @doctor_check(order=28.5, group="audio")
@@ -1109,6 +1258,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             "active speaker runtime graph",
             "fail",
             f"saved output topology is unavailable or invalid: {exc}",
+            reason=REASON_TOPOLOGY_UNREADABLE,
         )
     contract = classify_output_contract(topology)
     # The SSOT that authorizes a flat DAC graph is deliberately narrower than
@@ -1119,6 +1269,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             "active speaker runtime graph",
             "ok",
             f"{contract.classification}: explicit passive layout is valid",
+            reason=REASON_GRAPH_PASSIVE_LAYOUT,
         )
 
     statefile, config_path = _active_camilla_config_path()
@@ -1130,6 +1281,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
                 f"could not read config_path from {statefile}; saved topology "
                 "does not permit an unchecked flat fallback"
             ),
+            reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
     path = Path(config_path)
     if not path.exists():
@@ -1137,6 +1289,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             "active speaker runtime graph",
             "fail",
             f"statefile points at missing config {config_path}",
+            reason=REASON_CAMILLA_CONFIG_MISSING,
         )
     from ...active_speaker.state_paths import baseline_profile_state_path
     from ...active_speaker.staging import staged_metadata_path
@@ -1169,19 +1322,24 @@ def check_active_speaker_runtime_graph() -> CheckResult:
                     f"{parked_muted_exits(topology)}"
                 ),
                 speaker_silent=True,
+                reason=REASON_GRAPH_PARKED_SILENT,
             )
         detail = (
             contract.issues[0]["message"]
             if contract.issues
             else "saved layout is not a complete passive mono or stereo layout"
         )
-        return CheckResult("active speaker runtime graph", "fail", detail)
+        return CheckResult(
+            "active speaker runtime graph", "fail", detail,
+            reason=REASON_GRAPH_LAYOUT_INCOMPLETE,
+        )
     if graph.allowed:
         if contract.classification == CONTRACT_UNCONFIGURED:
             return CheckResult(
                 "active speaker runtime graph",
                 "fail",
                 "unconfigured topology must use the proved parked graph",
+                reason=REASON_GRAPH_UNCONFIGURED_NOT_PARKED,
             )
         if not contract.requires_roleful_graph:
             detail = (
@@ -1189,7 +1347,10 @@ def check_active_speaker_runtime_graph() -> CheckResult:
                 if contract.issues
                 else "saved layout is not a complete passive mono or stereo layout"
             )
-            return CheckResult("active speaker runtime graph", "fail", detail)
+            return CheckResult(
+                "active speaker runtime graph", "fail", detail,
+                reason=REASON_GRAPH_LAYOUT_INCOMPLETE,
+            )
         return CheckResult(
             "active speaker runtime graph",
             "ok",
@@ -1201,32 +1362,26 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         if graph.issues
         else "Camilla graph is unsafe for saved active speaker topology"
     )
-    return CheckResult("active speaker runtime graph", "fail", detail)
+    return CheckResult(
+        "active speaker runtime graph", "fail", detail,
+        reason=REASON_GRAPH_UNSAFE,
+    )
 
 
 @doctor_check(order=28.6, group="audio")
 def check_active_speaker_topology_blockers() -> CheckResult:
     """Name the saved layout's unresolved blockers on a parked speaker.
 
-    A blocker on a roleful topology no longer aborts the deploy (#2145): the
-    parked graph is structurally silent (File sink, every output hard-muted),
-    so a blocker that cannot make it unsafe no longer refuses it. This check is
-    the replacement signal at the household's own diagnostic surface.
-
-    The blockers and the way OUT of parked are stated as two facts, because
-    they are two: parking is gated on the absence of a staged startup graph, not
+    A blocker on a roleful topology no longer aborts the deploy (#2145), so
+    this is the replacement signal. The blockers and the way OUT of parked are
+    two facts: parking is gated on the absence of a staged startup graph, not
     on the blockers, so clearing them does not on its own restore sound. The
-    exits come from :func:`parked_muted_exits`, the owned capability-aware
-    helper the CLI and `/state` also use — it drops "finish crossover preview"
-    on a DAC that has no active outputd lane, where that action can never
-    succeed.
+    exits come from :func:`parked_muted_exits`, the capability-aware helper the
+    CLI and `/state` also use — it drops actions a DAC can never complete.
 
-    WARN, never FAIL: a parked speaker is silent, not broken — the state is
-    "commissioning is unfinished". `jasper-doctor` exits non-zero only on fails,
-    so warning keeps a mid-commission box deployable (#2145).
-
-    Scoped to the parked outcome on purpose: a blocker-bearing topology that
-    DOES have a staged graph still fails the deploy and is reported by
+    WARN, never FAIL: a parked speaker is silent, not broken, and warning keeps
+    a mid-commission box deployable (#2145). Scoped to the parked outcome: a
+    blocker-bearing topology that DOES have a staged graph is reported by
     `check_active_speaker_runtime_graph`.
     """
 
@@ -1255,18 +1410,21 @@ def check_active_speaker_topology_blockers() -> CheckResult:
                 "cannot be listed; the active speaker runtime graph check "
                 "reports the parse error"
             ),
+            reason=REASON_TOPOLOGY_UNREADABLE,
         )
 
     contract = classify_output_contract(topology)
     if not contract.requires_roleful_graph:
         return CheckResult(
             name,
-            "ok",
+            "skipped",
             f"{contract.classification}: no roleful/protected outputs configured",
+            reason=REASON_TOPOLOGY_NOT_ROLEFUL,
         )
     if not contract.issues:
         return CheckResult(
-            name, "ok", f"{contract.classification}: no topology blockers"
+            name, "ok", f"{contract.classification}: no topology blockers",
+            reason=REASON_TOPOLOGY_NO_BLOCKERS,
         )
 
     codes = ",".join(str(issue.get("code") or "") for issue in contract.issues)
@@ -1289,6 +1447,7 @@ def check_active_speaker_topology_blockers() -> CheckResult:
                 f"could not determine the selected runtime graph ({exc}). "
                 "Fix the speaker layout at http://<speaker>/sound/setup/"
             ),
+            reason=REASON_TOPOLOGY_BLOCKERS_PROBE_FAILED,
         )
 
     if decision.status != PARKED_MUTED_STATUS:
@@ -1300,6 +1459,7 @@ def check_active_speaker_topology_blockers() -> CheckResult:
                 f"parked (runtime graph: {decision.status}); reported by the "
                 "active speaker runtime graph check"
             ),
+            reason=REASON_TOPOLOGY_BLOCKERS_NOT_PARKED,
         )
 
     return CheckResult(
@@ -1317,6 +1477,7 @@ def check_active_speaker_topology_blockers() -> CheckResult:
         # PARKED_MUTED_STATUS, so the speaker is provably emitting nothing
         # (#2471). The two warn branches above are NOT silent.
         speaker_silent=True,
+        reason=REASON_TOPOLOGY_BLOCKERS_PARKED,
     )
 
 
@@ -1344,11 +1505,15 @@ def check_sound_profile() -> CheckResult:
             "sound profile",
             "ok",
             "default Flat profile (no saved preference EQ)",
+            reason=REASON_SOUND_PROFILE_DEFAULT,
         )
     try:
         raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as e:
-        return CheckResult("sound profile", "fail", f"could not read {path}: {e}")
+        return CheckResult(
+            "sound profile", "fail", f"could not read {path}: {e}",
+            reason=REASON_SOUND_PROFILE_UNREADABLE,
+        )
 
     profile = SoundProfile.from_mapping(raw)
     filter_count = len(build_sound_filters(profile))
@@ -1370,19 +1535,22 @@ def check_sound_profile() -> CheckResult:
         active_path,
         config_dir=Path(active_path).parent,
     ) if active_path else False
-    status = "ok"
-    drift = ""
-    if profile.enabled and filter_count and not active_generated:
-        status = "warn"
-        drift = " (saved profile not reflected in active generated config)"
+    drifted = bool(profile.enabled and filter_count and not active_generated)
 
     detail = (
         f"enabled={profile.enabled} curve={profile.curve_id} "
         f"filters={filter_count} headroom={headroom_db:.1f}dB "
         f"match_loudness={'on' if settings.match_loudness else 'off'} "
-        f"output_trim={trim:.1f}dB{drift}"
+        f"output_trim={trim:.1f}dB"
+        + (" (saved profile not reflected in active generated config)"
+           if drifted else "")
     )
-    return CheckResult("sound profile", status, detail)
+    if drifted:
+        return CheckResult(
+            "sound profile", "warn", detail,
+            reason=REASON_SOUND_PROFILE_NOT_ACTIVE,
+        )
+    return CheckResult("sound profile", "ok", detail)
 
 @doctor_check(order=30.5, group="audio")
 def check_bass_extension_profile() -> CheckResult:
@@ -1398,13 +1566,15 @@ def check_bass_extension_profile() -> CheckResult:
     )
     if evaluation.status == "missing":
         return CheckResult(
-            "bass extension profile", "ok", "bass extension: not commissioned"
+            "bass extension profile", "ok", "bass extension: not commissioned",
+            reason=REASON_BASS_EXTENSION_NOT_COMMISSIONED,
         )
     if evaluation.status == "malformed":
         return CheckResult(
             "bass extension profile",
             "fail",
             f"bass extension profile is malformed: {evaluation.detail}",
+            reason=REASON_BASS_EXTENSION_MALFORMED,
         )
     if evaluation.status == "stale":
         refusals = ",".join(refusal.value for refusal in evaluation.refusals)
@@ -1412,10 +1582,12 @@ def check_bass_extension_profile() -> CheckResult:
             "bass extension profile",
             "warn",
             f"bass extension profile is stale [{refusals}]: {evaluation.detail}",
+            reason=REASON_BASS_EXTENSION_STALE,
         )
     if evaluation.status == "bypassed":
         return CheckResult(
-            "bass extension profile", "ok", "bass extension profile is bypassed"
+            "bass extension profile", "ok", "bass extension profile is bypassed",
+            reason=REASON_BASS_EXTENSION_BYPASSED,
         )
     assert evaluation.profile is not None
     return CheckResult(
@@ -1435,6 +1607,7 @@ def check_dsp_apply_state() -> CheckResult:
             "DSP apply state",
             "ok",
             "no DSP apply attempts recorded yet",
+            reason=REASON_DSP_APPLY_NONE,
         )
 
     result = str(state.get("result") or "unknown")
@@ -1443,17 +1616,20 @@ def check_dsp_apply_state() -> CheckResult:
     candidate = state.get("candidate_config_path")
     op_id = str(state.get("op_id") or "")[:8]
 
-    if state.get("rollback_attempted") and state.get("rollback_succeeded") is False:
-        status = "fail"
-    elif result == "success":
-        status = "ok"
-    else:
-        status = "warn"
-
     detail = f"source={source} result={result} phase={phase} op={op_id}"
     if candidate:
         detail += f" config={candidate}"
-    return CheckResult("DSP apply state", status, detail)
+    if state.get("rollback_attempted") and state.get("rollback_succeeded") is False:
+        return CheckResult(
+            "DSP apply state", "fail", detail,
+            reason=REASON_DSP_APPLY_ROLLBACK_FAILED,
+        )
+    if result != "success":
+        return CheckResult(
+            "DSP apply state", "warn", detail,
+            reason=REASON_DSP_APPLY_UNSUCCESSFUL,
+        )
+    return CheckResult("DSP apply state", "ok", detail)
 
 def _is_baseline_candidate_sibling(live_path: Path, canonical: Path) -> bool:
     """True if ``live_path`` is a source-fingerprinted sibling of ``canonical``.
@@ -1477,15 +1653,12 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     """Canonical ``active_speaker_baseline.yml`` durability (issue #1666).
 
     ``build_baseline_profile_candidate`` never writes the canonical
-    ``baseline_config_path()`` name directly; every apply/restore promotes
-    the just-applied candidate's bytes onto it as a best-effort, fail-soft
-    copy after CamillaDSP already confirmed the candidate live. A promote
-    failure (disk full, permissions drift) leaves that copy stale without
-    affecting the audible graph — CamillaDSP's statefile self-persists the
-    running candidate path independently. This check surfaces that gap for the
-    other readers who trust the canonical name (the multiroom follower
-    fallback, operators, this doctor). WARN, never FAIL: the live graph is the
-    audible truth and is correct either way.
+    ``baseline_config_path()`` name directly; every apply/restore promotes the
+    applied candidate's bytes onto it fail-soft, after CamillaDSP confirmed the
+    candidate live. A failed promote leaves that copy stale without affecting
+    the audible graph, which the other readers of the canonical name (the
+    multiroom follower fallback, operators, this doctor) trust. WARN, never
+    FAIL: the live graph is the audible truth and is correct either way.
     """
     from jasper.active_speaker.baseline_profile import (
         active_layer_a_fingerprint,
@@ -1502,9 +1675,9 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         # canonical mirror the live baseline", which cannot be evaluated here —
         # not applicable, not a warning.
         return CheckResult(
-            label, "ok",
-            f"could not read config_path from {statefile}; canonical-file "
-            "check not applicable",
+            label, "skipped",
+            f"could not read config_path from {statefile}",
+            reason=REASON_BASELINE_CANONICAL_NOT_APPLICABLE,
         )
     live_path = Path(live_path_raw)
     canonical = baseline_config_path()
@@ -1514,9 +1687,10 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         )
     if not _is_baseline_candidate_sibling(live_path, canonical):
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             f"live config ({live_path}) is not an active-speaker baseline "
-            "candidate; canonical-file check not applicable",
+            "candidate",
+            reason=REASON_BASELINE_CANONICAL_NOT_APPLICABLE,
         )
     if not canonical.exists():
         return CheckResult(
@@ -1524,12 +1698,14 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
             f"canonical baseline file is missing ({canonical}) while the live "
             f"config is an applied baseline candidate ({live_path}); the next "
             "apply or restore re-promotes it",
+            reason=REASON_BASELINE_CANONICAL_MISSING,
         )
     if not live_path.exists():
         return CheckResult(
             label, "warn",
             f"live baseline candidate file is missing on disk ({live_path}); "
             f"cannot compare it against canonical ({canonical})",
+            reason=REASON_BASELINE_CANONICAL_LIVE_MISSING,
         )
     try:
         live_fingerprint = active_layer_a_fingerprint(
@@ -1541,6 +1717,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     except (OSError, ActiveSpeakerConfigError) as exc:
         return CheckResult(
             label, "warn", f"could not compare {live_path} to {canonical}: {exc}",
+            reason=REASON_BASELINE_CANONICAL_UNCOMPARABLE,
         )
     if live_fingerprint == canonical_fingerprint:
         return CheckResult(
@@ -1554,6 +1731,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
         f"applied config ({live_path}); the running graph is correct, but the "
         "canonical file is stale for other readers (multiroom follower "
         "fallback, operators)",
+        reason=REASON_BASELINE_CANONICAL_STALE,
     )
 
 
@@ -1561,23 +1739,19 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
 def check_active_speaker_applied_graph() -> CheckResult:
     """Is the durable graph the one the applied profile names?
 
-    A crossover-v2 round that ends on a verify rejection banks no adoption and
-    auto-restores nothing, but its apply has already repointed CamillaDSP's
-    persisted ``config_file_path`` at the rejected candidate — leaving the
-    anchor's per-driver values (delays, gains) disagreeing with the applied
-    profile's with no surface naming it. ``setup_status`` already binds the
-    two; this reads the binding out with the values.
+    A crossover-v2 round that ends on a verify rejection banks no adoption but
+    has already repointed CamillaDSP's persisted ``config_file_path`` at the
+    rejected candidate, leaving the anchor's per-driver values disagreeing with
+    the applied profile's. ``setup_status`` binds the two; this reads the
+    binding out.
 
-    **Compared at the DURABLE anchor, never at the running graph** — with no
-    readback argument the reader resolves its path from the CamillaDSP
-    statefile. Every runtime-only swap (audition, ADR-0193; the measurement
-    session graph; the per-driver commissioning load) installs through
-    ``set_active_config_raw``, which leaves that path and its bytes alone, so
-    none can read as drift here. A staged/commissioning anchor IS a durable
-    repoint, so it is excluded by name instead.
+    Compared at the DURABLE anchor, never at the running graph: runtime-only
+    swaps (audition, ADR-0193; the measurement session graph; the per-driver
+    commissioning load) install through ``set_active_config_raw`` and leave the
+    statefile alone, so none can read as drift. A staged/commissioning anchor
+    IS a durable repoint and is excluded by name instead.
 
-    WARN, never FAIL, and no new gate: the anchor is the audible truth either
-    way, and the choice of remedy is the operator's.
+    WARN, never FAIL: the anchor is the audible truth either way.
     """
 
     from ...active_speaker.setup_status import (
@@ -1589,11 +1763,17 @@ def check_active_speaker_applied_graph() -> CheckResult:
     try:
         status = read_active_speaker_setup_status()
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-        return CheckResult(label, "warn", f"could not read speaker setup: {exc}")
+        return CheckResult(
+            label, "warn", f"could not read speaker setup: {exc}",
+            reason=REASON_SPEAKER_SETUP_UNREADABLE,
+        )
     protected = status.get("protected_profile")
     binding = protected.get("layer_a_binding") if isinstance(protected, dict) else None
     if not isinstance(binding, dict):
-        return CheckResult(label, "ok", "no applied active-speaker profile to bind")
+        return CheckResult(
+            label, "skipped", "no applied active-speaker profile to bind",
+            reason=REASON_APPLIED_GRAPH_NO_PROFILE,
+        )
     issues = status.get("issues")
     if any(
         isinstance(issue, dict)
@@ -1601,9 +1781,9 @@ def check_active_speaker_applied_graph() -> CheckResult:
         for issue in (issues if isinstance(issues, list) else [])
     ):
         return CheckResult(
-            label, "ok",
-            "a commissioning/staged graph is the durable anchor by design; "
-            "applied-profile binding not applicable",
+            label, "skipped",
+            "a commissioning/staged graph is the durable anchor by design",
+            reason=REASON_APPLIED_GRAPH_STAGED_ANCHOR,
         )
     if binding.get("matches") is True:
         return CheckResult(
@@ -1613,9 +1793,10 @@ def check_active_speaker_applied_graph() -> CheckResult:
         )
     if binding.get("status") != "mismatch":
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             "applied-profile graph binding not evaluated "
             f"({binding.get('status') or 'absent'})",
+            reason=REASON_APPLIED_GRAPH_NOT_EVALUATED,
         )
     fields = "; ".join(
         f"{item.get('field')} profile={item.get('expected')} "
@@ -1632,6 +1813,7 @@ def check_active_speaker_applied_graph() -> CheckResult:
         + (f" [{fields}]" if fields else "")
         + " — apply that crossover again, or republish the banked candidate "
         "and apply it, to make the two agree",
+        reason=REASON_APPLIED_GRAPH_MISMATCH,
     )
 
 
@@ -1640,19 +1822,14 @@ def check_active_speaker_startup_hold() -> CheckResult:
     """A staged-startup hold marker with no startup load behind it is stale.
 
     ``load_protected_startup_config`` takes an ephemeral ``/run`` marker before
-    it applies the all-muted staged anchor, and while that marker is present
-    ``safe_graph_for_current_topology`` preserves the anchor instead of
-    restoring the saved baseline (``jasper.active_speaker.startup_hold``). A
-    marker left behind after the load it belonged to went away therefore keeps a
-    commissioned box on its SILENT anchor across the next reconcile — recoverable
-    (the marker is in ``/run``, so a reboot clears it, and a rollback clears it
-    sooner) but invisible without this line.
+    applying the all-muted staged anchor, and while it is present
+    ``safe_graph_for_current_topology`` preserves that anchor instead of
+    restoring the saved baseline. A marker outliving its load therefore keeps a
+    commissioned box SILENT across every reconcile — recoverable (a reboot or
+    rollback clears it) but invisible without this line. It is what the
+    household-facing ``staged_startup_hold_unavailable`` copy points at.
 
-    This is the surface the household-facing "Open System status" copy for
-    ``staged_startup_hold_unavailable`` points at, so it has to be able to say
-    something. WARN, never FAIL: preserving an all-muted anchor is the safe
-    direction — silent, never loud — and the load path's own blocker is what
-    fails closed.
+    WARN, never FAIL: preserving an all-muted anchor is the safe direction.
     """
 
     from ...active_speaker.startup_hold import (
@@ -1664,12 +1841,16 @@ def check_active_speaker_startup_hold() -> CheckResult:
     label = "active speaker startup hold"
     marker = startup_hold_marker_path()
     if not staged_startup_hold_active():
-        return CheckResult(label, "ok", f"no staged-startup hold in flight ({marker})")
+        return CheckResult(
+            label, "ok", f"no staged-startup hold in flight ({marker})",
+            reason=REASON_STARTUP_HOLD_NONE,
+        )
     status = str(load_startup_load_state().get("status") or "unknown")
     if status == "loaded":
         return CheckResult(
             label, "ok",
             f"staged-startup hold held by an in-flight protected load ({marker})",
+            reason=REASON_STARTUP_HOLD_IN_FLIGHT,
         )
     return CheckResult(
         label, "warn",
@@ -1678,6 +1859,7 @@ def check_active_speaker_startup_hold() -> CheckResult:
         "selector keeps preserving the silent all-muted anchor instead of "
         "restoring the saved baseline. Roll back the startup load from "
         "http://jts.local/sound/ or reboot to clear it (/run is tmpfs).",
+        reason=REASON_STARTUP_HOLD_STALE,
     )
 
 
@@ -1686,11 +1868,10 @@ def check_room_correction_authority() -> CheckResult:
     """Room correction runs unproven — this is the line that says so.
 
     Ruling S10 and ADR-0019: an unminted, stale or unreadable commissioning
-    receipt no longer refuses a room-correction run. The run proceeds on the
-    applied crossover and simply does not bank a verified result, which means
-    the only place a household can learn the difference is here. Never FAIL:
-    nothing is broken, and nothing is stopped. The denials do not share one
-    line, because they do not share a remedy — see ADR-0196.
+    receipt no longer refuses a room-correction run — it proceeds and simply
+    banks no verified result, so this is the only place a household learns the
+    difference. Never FAIL. The denials do not share one line because they do
+    not share a remedy (ADR-0196).
     """
 
     from ...active_speaker._common import (
@@ -1703,43 +1884,53 @@ def check_room_correction_authority() -> CheckResult:
     try:
         status = read_active_speaker_setup_status()
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-        return CheckResult(label, "warn", f"could not read speaker setup: {exc}")
+        return CheckResult(
+            label, "warn", f"could not read speaker setup: {exc}",
+            reason=REASON_SPEAKER_SETUP_UNREADABLE,
+        )
     acoustic = status.get("acoustic_commissioning")
     if not isinstance(acoustic, dict):
-        return CheckResult(label, "warn", "speaker setup published no room decision")
+        return CheckResult(
+            label, "warn", "speaker setup published no room decision",
+            reason=REASON_ROOM_AUTHORITY_NO_DECISION,
+        )
     if acoustic.get("required") is not True:
-        return CheckResult(label, "ok", "room correction needs no speaker authority")
+        return CheckResult(
+            label, "skipped", "room correction needs no speaker authority",
+            reason=REASON_ROOM_AUTHORITY_NOT_REQUIRED,
+        )
     if acoustic.get("allowed") is True:
         return CheckResult(
             label, "ok",
             f"room correction is banked under {acoustic.get('authority')}",
         )
-    reason = str(acoustic.get("reason") or "")
+    denial = str(acoustic.get("reason") or "")
     detail = str(acoustic.get("detail") or "")
     cause = str(acoustic.get("cause") or "")
-    if reason == ROOM_AUTHORITY_RECEIPT_ABSENT:
-        # The state every uncommissioned speaker is in, which is most of them —
-        # hence `ok`. But ABSENT is the module's catch-all default reason, so it
-        # also covers a receipt that VANISHED under a verified lifecycle, a
-        # genuine anomaly a bare "ok" would hide. Forwarding `cause` keeps that
-        # sub-state visible (a store code vs "lifecycle is not verified")
-        # without turning it into a nag.
+    if denial == ROOM_AUTHORITY_RECEIPT_ABSENT:
+        # The state every uncommissioned speaker is in, hence `ok`. ABSENT is
+        # also the module's catch-all default, so it covers a receipt that
+        # VANISHED under a verified lifecycle; forwarding `cause` keeps that
+        # sub-state visible without turning it into a nag.
         return CheckResult(
             label, "ok",
-            f"room correction runs unbanked ({reason})"
+            f"room correction runs unbanked ({denial})"
             + (f": {cause}" if cause else ""),
+            reason=REASON_ROOM_AUTHORITY_UNBANKED,
         )
-    if reason == ROOM_AUTHORITY_RECEIPT_UNREADABLE:
+    if denial == ROOM_AUTHORITY_RECEIPT_UNREADABLE:
         # A machine fault, not a verdict on the record: the file and errno are
         # the sentence that ends the incident. Without them an operator reads
         # "unproven" and goes looking for a mint that was never the problem.
         return CheckResult(
             label, "warn",
             "room correction cannot read its commissioning record "
-            f"({acoustic.get('cause') or reason}): {detail}",
+            f"({cause or denial}): {detail}",
+            reason=REASON_ROOM_AUTHORITY_RECEIPT_UNREADABLE,
         )
     return CheckResult(
-        label, "warn", f"room correction runs unproven ({reason}): {detail}"
+        label, "warn", f"room correction runs unproven ({denial}): {detail}",
+        reason=REASON_ROOM_AUTHORITY_UNPROVEN,
     )
 
 
@@ -1747,12 +1938,10 @@ def check_room_correction_authority() -> CheckResult:
 def check_active_speaker_setup_notices() -> CheckResult:
     """The standing home for setup facts that no longer stop anything.
 
-    Ruling S10 and ADR-0019 turn staleness and unproven-ness into loud
-    disclosures rather than blocks — a topology fingerprint that rotated on a
-    metadata edit being the worked example. Nothing else renders a non-blocker
-    setup issue, so without this line the demotion would be a silent one.
+    Ruling S10 and ADR-0019 turn staleness and unproven-ness into disclosures
+    rather than blocks; nothing else renders a non-blocker setup issue.
     Blockers keep their own surfaces (`/state`, the landing page, the volume
-    and grouping refusals) and are deliberately not repeated here.
+    and grouping refusals) and are not repeated here.
     """
 
     from ...active_speaker.setup_status import read_active_speaker_setup_status
@@ -1761,17 +1950,24 @@ def check_active_speaker_setup_notices() -> CheckResult:
     try:
         status = read_active_speaker_setup_status()
     except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-        return CheckResult(label, "warn", f"could not read speaker setup: {exc}")
+        return CheckResult(
+            label, "warn", f"could not read speaker setup: {exc}",
+            reason=REASON_SPEAKER_SETUP_UNREADABLE,
+        )
     issues = status.get("issues")
     notices = [
         issue for issue in (issues if isinstance(issues, list) else [])
         if isinstance(issue, dict) and issue.get("severity") != "blocker"
     ]
     if not notices:
-        return CheckResult(label, "ok", "no standing speaker setup notices")
+        return CheckResult(
+            label, "ok", "no standing speaker setup notices",
+            reason=REASON_SETUP_NOTICES_NONE,
+        )
     return CheckResult(
         label, "warn",
         "; ".join(
             f"{issue.get('code')}: {issue.get('message')}" for issue in notices
         ),
+        reason=REASON_SETUP_NOTICES_STANDING,
     )

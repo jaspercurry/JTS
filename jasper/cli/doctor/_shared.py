@@ -4,29 +4,29 @@
 
 """Shared primitives for the jasper-doctor check package.
 
-This is the base layer every per-domain check module imports
-from. It holds, **verbatim from the original**
-``jasper/cli/doctor.py``:
+The base layer every per-domain check module imports from:
 
-- the :class:`CheckResult` dataclass and the ``DoctorCheck``
-  type alias (the union that lets a list entry be either a bare
-  callable or a ``(label, callable)`` tuple);
+- the output contract re-exported from
+  :mod:`jasper.doctor_contract` (``CheckResult``, ``CHECK_STATUSES``,
+  ``check_row``, ``summarize``, and the harness ``REASON_*`` codes)
+  plus the ``DoctorCheck`` type alias (the union that lets a list
+  entry be either a bare callable or a ``(label, callable)`` tuple);
 - the crash-isolation harness (``_run_doctor_check`` /
   ``_run_async_doctor_check`` / ``_normalize_doctor_check`` /
   ``_check_name`` / ``_crashed_check_result`` and the
-  secret-redacting ``_exception_detail``), unchanged so one
-  crashing check still cannot abort the run;
+  secret-redacting ``_exception_detail``), so one crashing check
+  cannot abort the run;
 - ``_run`` (the subprocess wrapper) and ``_parse_env_file``;
 - ANSI colour constants and the chip-AEC passive check set;
-- the genuinely cross-cutting helpers used by more than one
-  domain (``_sha256_file``, ``_meminfo_kb``,
-  ``_systemctl_show_property``, ``_pid_of_unit``,
-  ``_service_runtime_states`` + ``_RUNTIME_STATE_UNITS``,
-  ``_loopback_playback_active``).
-
-No logic changed in the split. Names that tests patch (e.g.
-``_run``) stay importable here and are re-imported into each
-domain module, so a check reads them from its own namespace."""
+- the cross-cutting helpers used by more than one domain
+  (``_sha256_file``, ``_meminfo_kb``, ``_systemctl_show_property``,
+  ``_pid_of_unit``, ``_service_runtime_states`` +
+  ``_RUNTIME_STATE_UNITS``, ``_loopback_playback_active``,
+  ``_parked_follower_result``);
+- the reason codes more than one domain emits
+  (``REASON_SYSTEMCTL_UNAVAILABLE``, ``REASON_SOURCE_INTENT_INVALID``,
+  ``REASON_PARKED_BONDED_FOLLOWER``), each declared beside the helper
+  it belongs to."""
 from __future__ import annotations
 
 import grp
@@ -36,9 +36,19 @@ import re
 import shlex
 import stat as _stat
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
+from ...doctor_contract import (  # noqa: F401 — re-exported for the domain modules
+    CHECK_STATUSES,
+    CheckResult,
+    REASON_CHECK_CRASHED,
+    REASON_CHECK_TIMED_OUT,
+    REASON_CONFIG_ERROR,
+    REASON_DOCTOR_CRASHED,
+    REASON_NOT_INSTALLED,
+    check_row,
+    summarize,
+)
 from ...env_load import parse_env_file as _shared_parse_env_file
 from ...secret_redaction import redact_secrets
 
@@ -67,42 +77,9 @@ _CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
     "chip_convergence",
 })
 
-@dataclass
-class CheckResult:
-    name: str
-    # "skipped" is a check that never ran (a profile that does not install the
-    # subsystem). It is not "ok": nothing was observed, so it counts toward
-    # neither fails nor warns and renders dim.
-    status: str  # "ok" | "warn" | "fail" | "skipped"
-    detail: str = ""
-    # True when THIS result's meaning is "the speaker emits nothing right
-    # now". Only a check that can prove that sets it, because only the check
-    # knows: a name-matching renderer would have to re-derive the meaning of
-    # every branch of every check, which is the same fact in a second voice.
-    #
-    # `render` reads it on a `warn` or a `fail` and never reads it on an `ok`:
-    # a check returning `ok` while asserting silence contradicts itself. A
-    # `fail` may carry it — a silent speaker is no less silent for also being
-    # broken.
-    #
-    # It exists so `render`'s summary line can LEAD with the silence instead
-    # of ending a parked box's run on "N warning(s) - non-critical". It does
-    # NOT change severity or exit code: a parked box is silent, not broken,
-    # and `jasper-doctor` must stay exit-0 there so a mid-commission speaker
-    # keeps taking deploys (#2145). The wording carries the severity; the exit
-    # code keeps its one meaning.
-    speaker_silent: bool = False
-    # Machine-stable snake_case code naming WHICH branch of the check
-    # produced this result — e.g. "bridge_output_ref_silent". `detail` stays
-    # the human sentence (and may change wording freely); `reason` is what
-    # tests and other automation pin instead of `detail` prose (AGENTS.md:
-    # assert types/codes/structured fields, never prose). Default "" for
-    # every check that has not adopted a closed reason vocabulary yet — each
-    # domain that does defines its own closed set of constants (see
-    # `aec.py`'s `_AEC_REASONS` for the first one) rather than sharing one
-    # vocabulary across unrelated domains.
-    reason: str = ""
-
+# The row contract itself lives in `jasper.doctor_contract` (stdlib-only, so
+# jasper-control can build contract rows without importing this package).
+# Re-exported here so every domain check module keeps one import site.
 DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
 
 _EXCEPTION_DETAIL_LIMIT = 240
@@ -120,6 +97,7 @@ def _crashed_check_result(name: str, exc: BaseException) -> CheckResult:
         name,
         "fail",
         f"check crashed: {_exception_detail(exc)}",
+        reason=REASON_CHECK_CRASHED,
     )
 
 def _check_name(check: Callable[[], CheckResult]) -> str:
@@ -152,6 +130,11 @@ async def _run_async_doctor_check(
         return await check()
     except Exception as e:  # noqa: BLE001
         return _crashed_check_result(name, e)
+
+# systemd is absent (a dev laptop, a container): nothing was observed, so
+# every caller of the systemctl helpers below reports `skipped` with this.
+REASON_SYSTEMCTL_UNAVAILABLE = "systemctl_unavailable"
+
 
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -373,6 +356,14 @@ def _installed_units(units: list[str]) -> set[str] | None:
         if state.strip() not in ("not-found", "masked")
     }
 
+# `jasper.source_intent.source_intent_enabled` raised: the household's
+# per-source intent file is unreadable or malformed, so nothing downstream of
+# it can be judged. Shared by every domain that reads a source intent.
+REASON_SOURCE_INTENT_INVALID = "source_intent_invalid"
+
+REASON_PARKED_BONDED_FOLLOWER = "parked_bonded_follower"
+
+
 def _parked_as_bonded_follower() -> bool:
     """True when this speaker is an ACTIVE bonded multiroom FOLLOWER.
 
@@ -391,6 +382,21 @@ def _parked_as_bonded_follower() -> bool:
         return effective_local_sources_park_reason(load_config()) is not None
     except Exception:  # noqa: BLE001 — fail-open
         return False
+
+
+def _parked_follower_result(label: str) -> CheckResult | None:
+    """The `ok` row a liveness check returns while this speaker is parked as a
+    bonded follower, or None when it is not parked — so the caller falls
+    through to its real probe. The parked state is intended, and it was
+    observed, so it is `ok` with a reason rather than a warn or a skip."""
+    if not _parked_as_bonded_follower():
+        return None
+    return CheckResult(
+        label, "ok",
+        "parked (bonded follower) — the dumb-follower profile stops this "
+        "while paired; the pair leader owns playback + the mic",
+        reason=REASON_PARKED_BONDED_FOLLOWER,
+    )
 
 
 _RUNTIME_STATE_UNITS = (

@@ -103,13 +103,13 @@ def test_file_readable_by_member_on_0640(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 # _classify_compartment — aggregate verdict
 # --------------------------------------------------------------------------- #
-def test_absent_dir_is_ok_not_configured(tmp_path: Path):
+def test_absent_dir_is_skipped_not_configured(tmp_path: Path):
     comp = _comp(tmp_path / "jasper-secrets", "voice_keys.env")
     result = sc._classify_compartment(
         "secret compartment: jasper-secrets", comp, members=[], non_members=[]
     )
-    assert result.status == "ok"
-    assert "not present" in result.detail
+    assert result.status == "skipped"
+    assert result.reason == sc.REASON_COMPARTMENT_ABSENT
 
 
 def test_happy_path_passes(tmp_path: Path):
@@ -124,7 +124,6 @@ def test_happy_path_passes(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], [nonmember]
     )
     assert result.status == "ok", result.detail
-    assert "1 secret(s) readable only by jasper-voice" in result.detail
 
 
 def test_happy_path_deduplicates_shared_unix_user_members(tmp_path: Path):
@@ -146,6 +145,7 @@ def test_happy_path_deduplicates_shared_unix_user_members(tmp_path: Path):
     )
 
     assert result.status == "ok", result.detail
+    # Pure formatting behavior: repeated Unix-identity members dedupe by name.
     assert "readable only by jasper-web, jasper-voice" in result.detail
     assert "jasper-web, jasper-voice, jasper-web" not in result.detail
 
@@ -160,10 +160,7 @@ def test_world_readable_file_fails_over_exposure(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "fail", result.detail
-    assert "OVER-EXPOSED" in result.detail
-    assert "voice_keys.env" in result.detail
-    assert "0o644" in result.detail
-    assert "world" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
 
 
 def test_broad_group_file_fails_over_exposure(tmp_path: Path):
@@ -179,7 +176,7 @@ def test_broad_group_file_fails_over_exposure(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], [nonmember]
     )
     assert result.status == "fail", result.detail
-    assert "jasper-input" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
 
 
 def test_unreadable_secret_warns_availability(tmp_path: Path):
@@ -192,8 +189,7 @@ def test_unreadable_secret_warns_availability(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "warn", result.detail
-    assert "not readable by jasper-web" in result.detail
-    assert "re-deploy" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_UNDER_AVAILABLE
 
 
 def test_fail_outranks_warn(tmp_path: Path):
@@ -208,6 +204,8 @@ def test_fail_outranks_warn(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "fail", result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
+    # Fail still discloses the co-occurring availability warning count.
     assert "availability warning" in result.detail
 
 
@@ -220,7 +218,7 @@ def test_dir_missing_setgid_warns(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "warn", result.detail
-    assert "2770" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_UNDER_AVAILABLE
 
 
 def test_dir_world_traversable_fails(tmp_path: Path):
@@ -231,8 +229,7 @@ def test_dir_world_traversable_fails(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, members=[], non_members=[]
     )
     assert result.status == "fail", result.detail
-    assert "gate is open" in result.detail
-    assert "world" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
 
 
 def test_dir_traversable_by_nonmember_fails(tmp_path: Path):
@@ -244,7 +241,7 @@ def test_dir_traversable_by_nonmember_fails(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, members=[], non_members=[nonmember]
     )
     assert result.status == "fail", result.detail
-    assert "jasper-input" in result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
 
 
 def test_glob_files_classified(tmp_path: Path):
@@ -265,6 +262,8 @@ def test_glob_files_classified(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, [member], []
     )
     assert result.status == "fail", result.detail
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
+    # Pure formatting behavior: only the over-exposed glob member is named.
     assert "leaked.json" in result.detail
     assert "ok.json" not in result.detail
 
@@ -282,6 +281,8 @@ def test_overflow_truncates(tmp_path: Path):
         "secret compartment: jasper-secrets", comp, members=[], non_members=[]
     )
     assert result.status == "fail"
+    assert result.reason == sc.REASON_COMPARTMENT_OVER_EXPOSED
+    # Pure formatting behavior: the shown-list caps with an overflow marker.
     assert "more)" in result.detail
 
 
@@ -307,13 +308,13 @@ def test_decorated_checks_skip_without_systemctl(monkeypatch):
         sc.check_jasper_intsecrets_compartment,
     ):
         result = fn()
-        assert result.status == "ok"
-        assert "systemctl unavailable" in result.detail
+        assert result.status == "skipped"
+        assert result.reason == sc.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_decorated_checks_skip_absent_compartment(monkeypatch):
     """systemctl 'available' but the real compartment dirs don't exist on the test
-    host → ok 'not present' (the nothing-configured path), never a raise."""
+    host → skipped 'not present' (the nothing-configured path), never a raise."""
     monkeypatch.setattr(sc, "_systemctl_available", lambda: True)
     monkeypatch.setattr(
         sc,
@@ -325,8 +326,8 @@ def test_decorated_checks_skip_absent_compartment(monkeypatch):
         sc.check_jasper_intsecrets_compartment,
     ):
         result = fn()
-        assert result.status == "ok"
-        assert "not present" in result.detail
+        assert result.status == "skipped"
+        assert result.reason == sc.REASON_COMPARTMENT_ABSENT
 
 
 # --------------------------------------------------------------------------- #
@@ -390,12 +391,27 @@ def test_compartments_cover_exactly_the_two_phase4_groups():
     assert {c.group for c in COMPARTMENTS} == _EXPECTED_COMPARTMENT_GROUPS
 
 
+def _groupadd_names(script_text: str) -> set[str]:
+    """Every group name a ``groupadd`` invocation creates in a shell script,
+    parsed by structure (the command + its flags) rather than matched as a
+    literal substring, so the check survives a flag reorder."""
+    names: set[str] = set()
+    for line in script_text.splitlines():
+        tokens = line.strip().split()
+        if not tokens or tokens[0] != "groupadd":
+            continue
+        args = [t for t in tokens[1:] if not t.startswith("-")]
+        names.update(args)
+    return names
+
+
 def test_compartment_groups_are_created_by_install():
     sh = (ROOT / "deploy/lib/install/service-users.sh").read_text()
-    for group in _EXPECTED_COMPARTMENT_GROUPS:
-        assert f"groupadd -r {group}" in sh, (
-            f"service-users.sh must create the {group} compartment group"
-        )
+    created = _groupadd_names(sh)
+    missing = _EXPECTED_COMPARTMENT_GROUPS - created
+    assert not missing, (
+        f"service-users.sh must create the compartment group(s) {sorted(missing)}"
+    )
 
 
 def test_members_mirror_the_units_supplementary_groups():

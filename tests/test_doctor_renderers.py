@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import _shared, renderers
 from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.music_sources import MUSIC_SOURCES
 
@@ -57,8 +58,7 @@ def test_check_bluetooth_pairing_policy_ok(monkeypatch):
     r = doctor.check_bluetooth_pairing_policy()
 
     assert r.status == "ok"
-    assert "no-code agent active" in r.detail
-    assert "closed" in r.detail
+    assert r.reason == ""
 
 
 def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
@@ -79,7 +79,7 @@ def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
     r = doctor.check_bluetooth_pairing_policy()
 
     assert r.status == "fail"
-    assert "not the JTS no-code agent" in r.detail
+    assert r.reason == renderers.REASON_BT_PAIRING_WRONG_AGENT
 
 
 def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatch):
@@ -107,7 +107,7 @@ def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatc
     r = doctor.check_bluetooth_pairing_policy()
 
     assert r.status == "warn"
-    assert "Pairable=yes outside an open pairing window" in r.detail
+    assert r.reason == renderers.REASON_BT_PAIRING_PAIRABLE_WITHOUT_DISCOVERABLE
 
 
 def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypatch):
@@ -135,7 +135,7 @@ def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypat
     r = doctor.check_bluetooth_pairing_policy()
 
     assert r.status == "warn"
-    assert "pairing window open" in r.detail
+    assert r.reason == renderers.REASON_BT_PAIRING_WINDOW_OPEN
 
 
 def _patch_lane_map(monkeypatch, tmp_path: Path, armed):
@@ -166,7 +166,7 @@ def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
-    assert "shairport_substream" in r.detail
+    assert r.reason == renderers.REASON_SHAIRPORT_ALOOP_UNARMED_OK
 
 
 def test_shairport_check_ring_device_ok_when_armed(monkeypatch, tmp_path):
@@ -180,8 +180,7 @@ def test_shairport_check_ring_device_ok_when_armed(monkeypatch, tmp_path):
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
-    assert "shairport_ring_lane" in r.detail
-    assert "armed" in r.detail
+    assert r.reason == renderers.REASON_SHAIRPORT_RING_ARMED_OK
 
 
 def test_shairport_check_armed_but_conf_aloop_warns_restart(
@@ -200,8 +199,7 @@ def test_shairport_check_armed_but_conf_aloop_warns_restart(
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
-    assert "not restarted since the arm" in r.detail
-    assert "shairport-sync.service" in r.detail
+    assert r.reason == renderers.REASON_SHAIRPORT_ALOOP_ARMED_STALE
 
 
 def test_shairport_check_ring_conf_but_disarmed_warns(monkeypatch, tmp_path):
@@ -217,8 +215,7 @@ def test_shairport_check_ring_conf_but_disarmed_warns(monkeypatch, tmp_path):
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
-    assert "NOT armed" in r.detail
-    assert "shairport-sync.service" in r.detail
+    assert r.reason == renderers.REASON_SHAIRPORT_RING_DISARMED_STALE
 
 
 def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
@@ -231,7 +228,7 @@ def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "fail"
-    assert "retired dmix" in r.detail
+    assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_DMIX
 
 
 def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
@@ -249,8 +246,7 @@ def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
-    assert "plughw:Loopback" in r.detail
-    assert "redeploy" in r.detail.lower() or "deploy-to-pi" in r.detail
+    assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_PLUGHW
 
 
 def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
@@ -265,6 +261,7 @@ def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "fail"
+    assert r.reason == renderers.REASON_SHAIRPORT_RAW_HW_LOOPBACK
 
 
 @pytest.mark.parametrize(
@@ -305,7 +302,16 @@ def test_shairport_legacy_remediations_name_this_box_s_device(
 
     r = doctor.check_shairport_sync_loopback_plughw()
 
+    expected_reason = {
+        "jasper_renderer_in": renderers.REASON_SHAIRPORT_LEGACY_DMIX,
+        "plughw:Loopback,0,0": renderers.REASON_SHAIRPORT_LEGACY_PLUGHW,
+        "hw:Loopback,0,0": renderers.REASON_SHAIRPORT_RAW_HW_LOOPBACK,
+    }[stale_device]
     assert r.status in {"warn", "fail"}
+    assert r.reason == expected_reason
+    # The reason code is the same regardless of `armed` — the fact under
+    # test here is that the remediation's NAMED DEVICE still consults the
+    # lane map, which only `.detail` can pin.
     assert expected_device in r.detail
     assert forbidden_device not in r.detail
 
@@ -320,7 +326,7 @@ def test_shairport_check_missing_output_device_warns(monkeypatch, tmp_path):
     )
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "warn"
-    assert "no `output_device`" in r.detail
+    assert r.reason == renderers.REASON_SHAIRPORT_NO_OUTPUT_DEVICE
 
 
 def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
@@ -374,6 +380,11 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     )
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
+    assert r.reason == ""
+    # This check's entire contract is disclosing WHICH renderer resolved to
+    # WHICH device as WHICH user — a per-renderer summary the reason
+    # vocabulary (one code for the whole check) cannot carry, so `.detail`
+    # stays the pure-formatting-helper exception throughout this section.
     assert "shairport-sync(shairport-sync)→shairport_substream" in r.detail
     assert "librespot(pi)→librespot_substream" in r.detail
     assert "bluealsa-aplay(root)→bluealsa_substream" in r.detail
@@ -777,6 +788,7 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
 
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "fail"
+    assert r.reason == renderers.REASON_RENDERER_DEVICE_UNRESOLVABLE
     assert "shairport-sync" in r.detail
     assert "Unknown PCM" in r.detail
     # The actionable hint should mention the fix path.
@@ -804,6 +816,7 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
     )
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "fail"
+    assert r.reason == renderers.REASON_RENDERER_DEVICE_UNRESOLVABLE
     assert "(shairport-sync)" in r.detail
 
 
@@ -827,6 +840,7 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
     )
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
+    assert r.reason == ""
     assert "shairport-sync" in r.detail
     # Skipped renderers should be mentioned (informational).
     assert "skipped" in r.detail.lower()
@@ -840,6 +854,7 @@ def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
     monkeypatch.setattr(doctor.renderers, "_renderer_device_bluealsa", lambda: None)
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "warn"
+    assert r.reason == renderers.REASON_RENDERER_NONE_CONFIGURED
 
 
 def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
@@ -902,6 +917,7 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
 
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
+    assert r.reason == ""
     # Probe must have been called with the RESOLVED value, not the
     # literal ${VAR} string.
     assert "librespot_substream" in received
@@ -1050,7 +1066,7 @@ def test_renderer_checks_read_parked_on_bonded_follower(monkeypatch):
     for check in checks:
         r = check()
         assert r.status == "ok", r
-        assert "parked (bonded follower)" in r.detail
+        assert r.reason == _shared.REASON_PARKED_BONDED_FOLLOWER
 
 
 def test_renderer_checks_probe_normally_when_solo(monkeypatch):
@@ -1074,7 +1090,7 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
     from jasper.cli.doctor import renderers as rdoc
     from jasper.source_intent import BluetoothRfkillState
 
-    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
     monkeypatch.setattr(
         rdoc,
@@ -1102,13 +1118,13 @@ def test_renderer_checks_treat_household_source_off_as_healthy(monkeypatch):
     for check in checks:
         result = check()
         assert result.status == "ok", result
-        assert "intentionally off" in result.detail
+        assert result.reason == renderers.REASON_SOURCE_OFF
 
 
 def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
     from jasper.cli.doctor import renderers as rdoc
 
-    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(rdoc, "source_intent_enabled", lambda source: False)
     monkeypatch.setattr(
         rdoc,
@@ -1118,14 +1134,13 @@ def test_renderer_check_fails_when_household_off_runtime_is_active(monkeypatch):
     result = rdoc.check_librespot_running(None)
 
     assert result.status == "fail"
-    assert "intent is off" in result.detail
-    assert "librespot.service is still active" in result.detail
+    assert result.reason == renderers.REASON_SOURCE_OFF_DRIFT
 
 
 def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
     from jasper.cli.doctor import renderers as rdoc
 
-    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
 
     def invalid(_source):
         raise RuntimeError("bad source intent")
@@ -1134,7 +1149,7 @@ def test_renderer_check_fails_loud_on_invalid_source_intent(monkeypatch):
     result = rdoc.check_bluealsa()
 
     assert result.status == "fail"
-    assert "bad source intent" in result.detail
+    assert result.reason == renderers.REASON_SOURCE_INTENT_INVALID
 
 
 def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
@@ -1143,7 +1158,7 @@ def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
     from jasper.cli.doctor import renderers as rdoc
     from jasper.source_intent import BluetoothRfkillState
 
-    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(
         rdoc,
@@ -1163,16 +1178,14 @@ def test_bluealsa_desired_on_fails_when_radio_is_blocked_or_powered_off(
     result = rdoc.check_bluealsa()
 
     assert result.status == "fail"
-    assert "source intent is on" in result.detail
-    assert "soft blocked" in result.detail
-    assert "Powered: no" in result.detail
+    assert result.reason == renderers.REASON_BLUETOOTH_RADIO_NOT_READY
 
 
 def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
     from jasper.cli.doctor import renderers as rdoc
     from jasper.source_intent import BluetoothRfkillState
 
-    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(
         rdoc,
@@ -1189,13 +1202,13 @@ def test_bluealsa_desired_on_proves_radio_and_units(monkeypatch):
     result = rdoc.check_bluealsa()
 
     assert result.status == "ok"
-    assert "daemon + aplay active" in result.detail
+    assert result.reason == ""
 
 
 def test_bluealsa_desired_on_fails_when_rfkill_is_unreadable(monkeypatch):
     from jasper.cli.doctor import renderers as rdoc
 
-    monkeypatch.setattr(rdoc, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(rdoc, "_parked_follower_result", lambda _label: None)
     monkeypatch.setattr(rdoc, "source_intent_enabled", lambda _source: True)
 
     def unreadable_rfkill():
@@ -1206,8 +1219,7 @@ def test_bluealsa_desired_on_fails_when_rfkill_is_unreadable(monkeypatch):
     result = rdoc.check_bluealsa()
 
     assert result.status == "fail"
-    assert "cannot be verified" in result.detail
-    assert "rfkill unavailable" in result.detail
+    assert result.reason == renderers.REASON_BLUETOOTH_RADIO_UNVERIFIABLE
 
 
 def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
@@ -1248,7 +1260,9 @@ def test_voice_aec_checks_read_parked_on_bonded_follower(monkeypatch):
     for check in checks:
         r = check()
         assert r.status == "ok", r
-        assert "parked (bonded follower)" in r.detail
+        # Each domain module owns its own closed reason vocabulary, but all
+        # converged on the identical value for this shared fact.
+        assert r.reason == "parked_bonded_follower"
 
 
 # ---------------------------------------------------------------------------
@@ -1500,20 +1514,20 @@ def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path,
 
 
 @pytest.mark.parametrize(
-    "payload, status, must_name",
+    "payload, status, reason",
     [
-        (None, "ok", "auto"),
-        ("{ not json", "warn", "mux_mode.json"),
-        (json.dumps({"mode": "auto"}), "ok", "auto"),
+        (None, "ok", ""),
+        ("{ not json", "warn", renderers.REASON_MUX_MODE_CORRUPT),
+        (json.dumps({"mode": "auto"}), "ok", ""),
         (
             json.dumps({"mode": "manual", "selected_source": "betamax"}),
             "warn",
-            "betamax",
+            renderers.REASON_MUX_MODE_UNKNOWN_SOURCE,
         ),
     ],
     ids=["absent", "corrupt", "auto", "unknown-source"],
 )
-def test_classify_mux_mode_verdicts(tmp_path, payload, status, must_name):
+def test_classify_mux_mode_verdicts(tmp_path, payload, status, reason):
     p = tmp_path / "mux_mode.json"
     if payload is not None:
         p.write_text(payload, encoding="utf-8")
@@ -1521,7 +1535,7 @@ def test_classify_mux_mode_verdicts(tmp_path, payload, status, must_name):
     res = _classify_mux_mode(p)
 
     assert res.status == status
-    assert must_name in res.detail
+    assert res.reason == reason
 
 
 def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):
@@ -1535,4 +1549,4 @@ def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):
     res = _classify_mux_mode(p)
 
     assert res.status == "ok"
-    assert f"manual pin: {source.value}" in res.detail
+    assert res.reason == renderers.REASON_MUX_MODE_PINNED

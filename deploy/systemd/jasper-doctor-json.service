@@ -11,9 +11,15 @@ Type=oneshot
 # is group-readable by the non-root jasper-control without being
 # world-readable (the doctor JSON can name configured subsystems).
 Group=jasper
-# ~175 checks at concurrency 8 with a 15 s per-check ceiling. Without a bound,
-# a wedged probe leaves the oneshot activating forever.
-TimeoutStartSec=300
+# 175 checks / concurrency 8 = ~22 waves x the 15 s per-check ceiling ~= 330 s,
+# plus the exclusive-lane probes (audio-probe) which run serialized outside
+# that, so ~600 s leaves headroom on a Zero 2 W without letting a wedged probe
+# leave the oneshot activating forever.
+TimeoutStartSec=600
+# The doctor import is ~40 MB RSS and the voice provider-import probe forks a
+# child up to ~85 MB inside this cgroup. The bound stops a runaway probe from
+# joining a global OOM cascade on a 415 MB box.
+MemoryMax=256M
 # `--out` makes the doctor exit 0 even when checks fail (the failures are in
 # the JSON), so a "report with failures" never flips this unit to `failed`.
 ExecStart=/opt/jasper/.venv/bin/jasper-doctor --json --out /run/jasper-control/doctor-result.json

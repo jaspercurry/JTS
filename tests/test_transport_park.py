@@ -823,6 +823,7 @@ def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
     SENTENCE is the snapshot's own, carried through rather than re-composed,
     so this surface cannot describe it differently from `/state` and the card.
     """
+    from jasper.cli.doctor import audio_runtime
     from jasper.cli.doctor.audio_runtime import check_ring_transport_park
 
     state = {
@@ -836,7 +837,7 @@ def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
     result = check_ring_transport_park()
     assert result.status == expected
     if refusal:
-        assert refusal in result.detail
+        assert result.reason == audio_runtime.REASON_TRANSPORT_CONVERGE_REFUSED
     # Never a park: the graph it already had keeps playing.
     assert result.speaker_silent is False
 

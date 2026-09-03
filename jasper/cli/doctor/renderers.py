@@ -31,11 +31,76 @@ from ...source_intent import (
 )
 from ._registry import doctor_check
 from ._shared import (
+    REASON_SOURCE_INTENT_INVALID,
+    REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
-    _parked_as_bonded_follower,
+    _parked_follower_result,
     _parse_systemd_environment,
     _run,
 )
+
+# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
+# pin status + reason, never `detail` prose). Named by the fact a consumer
+# would branch on; two branches meaning the same thing share one code —
+# REASON_SOURCE_OFF is set from ONE shared helper and covers every renderer
+# check that calls it, and REASON_SPOTIFY_NOT_CONFIGURED covers both Spotify
+# checks below. The bonded-follower park code lives in `_shared.py`.
+REASON_SOURCE_OFF = "source_off"
+REASON_SOURCE_OFF_DRIFT = "source_off_drift"
+REASON_BLUETOOTH_RADIO_UNVERIFIABLE = "bluetooth_radio_unverifiable"
+REASON_BLUETOOTH_RADIO_NOT_READY = "bluetooth_radio_not_ready"
+
+REASON_LIBRESPOT_BINARY_MISSING = "librespot_binary_missing"
+REASON_LIBRESPOT_NOT_ACTIVE = "librespot_not_active"
+
+REASON_SHAIRPORT_BINARY_MISSING = "shairport_binary_missing"
+REASON_SHAIRPORT_NOT_AP2 = "shairport_not_ap2"
+REASON_SHAIRPORT_NOT_ACTIVE = "shairport_not_active"
+
+REASON_NQPTP_NOT_ACTIVE = "nqptp_not_active"
+
+REASON_MUX_NOT_ACTIVE = "mux_not_active"
+
+REASON_BLUEALSA_NOT_ACTIVE = "bluealsa_not_active"
+
+REASON_BT_PAIRING_SYSTEMCTL_SHOW_FAILED = "bt_pairing_systemctl_show_failed"
+REASON_BT_PAIRING_AGENT_NOT_RUNNING = "bt_pairing_agent_not_running"
+REASON_BT_PAIRING_WRONG_AGENT = "bt_pairing_wrong_agent"
+REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE = "bt_pairing_bluetoothctl_unavailable"
+REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN = "bt_pairing_adapter_state_unknown"
+REASON_BT_PAIRING_PAIRABLE_WITHOUT_DISCOVERABLE = (
+    "bt_pairing_pairable_without_discoverable"
+)
+REASON_BT_PAIRING_WINDOW_OPEN = "bt_pairing_window_open"
+
+REASON_SPOTIFY_NOT_CONFIGURED = "spotify_not_configured"
+REASON_SPOTIFY_CACHE_MISSING = "spotify_cache_missing"
+REASON_SPOTIFY_DEVICE_NAME_EMPTY = "spotify_device_name_empty"
+REASON_SPOTIFY_CLIENT_BUILD_FAILED = "spotify_client_build_failed"
+REASON_SPOTIFY_NO_TOKENS = "spotify_no_tokens"
+REASON_SPOTIFY_DEVICE_VISIBLE_TO_SOME = "spotify_device_visible_to_some"
+REASON_SPOTIFY_DEVICE_NOT_VISIBLE = "spotify_device_not_visible"
+
+REASON_SHAIRPORT_CONF_MISSING = "shairport_conf_missing"
+REASON_SHAIRPORT_CONF_UNREADABLE = "shairport_conf_unreadable"
+REASON_SHAIRPORT_NO_OUTPUT_DEVICE = "shairport_no_output_device"
+REASON_SHAIRPORT_LANE_REGISTRY_MISSING = "shairport_lane_registry_missing"
+REASON_SHAIRPORT_RING_DISARMED_STALE = "shairport_ring_disarmed_stale"
+REASON_SHAIRPORT_ALOOP_ARMED_STALE = "shairport_aloop_armed_stale"
+REASON_SHAIRPORT_LEGACY_DMIX = "shairport_legacy_dmix"
+REASON_SHAIRPORT_LEGACY_PLUGHW = "shairport_legacy_plughw"
+REASON_SHAIRPORT_RAW_HW_LOOPBACK = "shairport_raw_hw_loopback"
+REASON_SHAIRPORT_DEVICE_UNRECOGNIZED = "shairport_device_unrecognized"
+REASON_SHAIRPORT_RING_ARMED_OK = "shairport_ring_armed_ok"
+REASON_SHAIRPORT_ALOOP_UNARMED_OK = "shairport_aloop_unarmed_ok"
+
+REASON_RENDERER_DEVICE_UNRESOLVABLE = "renderer_device_unresolvable"
+REASON_RENDERER_NONE_CONFIGURED = "renderer_none_configured"
+
+REASON_MUX_MODE_UNREADABLE = "mux_mode_unreadable"
+REASON_MUX_MODE_CORRUPT = "mux_mode_corrupt"
+REASON_MUX_MODE_UNKNOWN_SOURCE = "mux_mode_unknown_source"
+REASON_MUX_MODE_PINNED = "mux_mode_pinned"
 
 # ----------------------------------------------------------------------
 # Per-renderer health: each daemon's own surface (HTTP / DBus / system).
@@ -57,6 +122,7 @@ def _intentional_source_off(
             label,
             "fail",
             f"source intent is invalid or unreadable: {exc}",
+            reason=REASON_SOURCE_INTENT_INVALID,
         )
     if not enabled:
         drift: list[str] = []
@@ -73,6 +139,7 @@ def _intentional_source_off(
                     "fail",
                     f"Bluetooth is intentionally off but RF-kill state "
                     f"cannot be verified: {exc}",
+                    reason=REASON_BLUETOOTH_RADIO_UNVERIFIABLE,
                 )
             if rfkill.present and not rfkill.fully_soft_blocked:
                 drift.append("Bluetooth radio is not RF-killed")
@@ -88,11 +155,13 @@ def _intentional_source_off(
                 "fail",
                 "source intent is off but derived state drifted: "
                 + "; ".join(drift),
+                reason=REASON_SOURCE_OFF_DRIFT,
             )
         return CheckResult(
             label,
             "ok",
             "intentionally off in Music sources (/sources/)",
+            reason=REASON_SOURCE_OFF,
         )
     return None
 
@@ -106,6 +175,7 @@ def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
             label,
             "fail",
             f"source intent is on but RF-kill state cannot be verified: {exc}",
+            reason=REASON_BLUETOOTH_RADIO_UNVERIFIABLE,
         )
 
     drift: list[str] = []
@@ -138,6 +208,7 @@ def _desired_bluetooth_radio_failure(label: str) -> CheckResult | None:
         "fail",
         "source intent is on but the Bluetooth radio is not ready: "
         + "; ".join(drift),
+        reason=REASON_BLUETOOTH_RADIO_NOT_READY,
     )
 
 
@@ -149,12 +220,9 @@ def check_librespot_running(cfg: Config) -> CheckResult:
     on 2026-05-07 specifically for the configurable volume curve
     (--volume-ctrl log over 60 dB range). It has no local control
     HTTP, so health is checked via systemd state + binary version."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "librespot.service", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "this unit while paired; it restores on unbond",
-        )
+    parked = _parked_follower_result("librespot.service")
+    if parked is not None:
+        return parked
     intentional_off = _intentional_source_off(
         Source.SPOTIFY,
         "librespot.service",
@@ -168,6 +236,7 @@ def check_librespot_running(cfg: Config) -> CheckResult:
             "librespot binary", "fail",
             f"{bin_path} not present. Install: "
             "apt install raspotify (provides librespot via .deb)",
+            reason=REASON_LIBRESPOT_BINARY_MISSING,
         )
     p = _run(["systemctl", "is-active", "librespot.service"])
     state = p.stdout.strip()
@@ -176,6 +245,7 @@ def check_librespot_running(cfg: Config) -> CheckResult:
             "librespot.service", "fail",
             f"systemctl is-active = '{state}'. Check: "
             "systemctl status librespot",
+            reason=REASON_LIBRESPOT_NOT_ACTIVE,
         )
     # Best-effort version line (librespot prints to stderr at startup)
     return CheckResult(
@@ -189,12 +259,9 @@ def check_shairport_sync_ap2() -> CheckResult:
     AND the systemd unit is active. The Debian Trixie apt package
     is AP1-only; the migration's source-build emits a binary whose
     `-V` output contains 'AirPlay2'."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "shairport-sync AP2", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "this unit while paired; it restores on unbond",
-        )
+    parked = _parked_follower_result("shairport-sync AP2")
+    if parked is not None:
+        return parked
     intentional_off = _intentional_source_off(
         Source.AIRPLAY,
         "shairport-sync AP2",
@@ -206,6 +273,7 @@ def check_shairport_sync_ap2() -> CheckResult:
         return CheckResult(
             "shairport-sync AP2", "fail",
             "binary not found. Source-build per deploy/debian-stack/README.md",
+            reason=REASON_SHAIRPORT_BINARY_MISSING,
         )
     p = _run(["shairport-sync", "-V"])
     out = (p.stdout + p.stderr).strip().split("\n")[0]
@@ -214,6 +282,7 @@ def check_shairport_sync_ap2() -> CheckResult:
             "shairport-sync AP2", "fail",
             f"binary lacks --with-airplay-2 (got: {out!r}). "
             f"Apt's package is AP1-only; rebuild from source.",
+            reason=REASON_SHAIRPORT_NOT_AP2,
         )
     p2 = _run(["systemctl", "is-active", "shairport-sync.service"])
     state = p2.stdout.strip()
@@ -222,6 +291,7 @@ def check_shairport_sync_ap2() -> CheckResult:
             "shairport-sync AP2", "fail",
             f"binary OK but systemd state={state}. "
             f"Check: journalctl -u shairport-sync",
+            reason=REASON_SHAIRPORT_NOT_ACTIVE,
         )
     return CheckResult("shairport-sync AP2", "ok", out)
 
@@ -229,12 +299,9 @@ def check_shairport_sync_ap2() -> CheckResult:
 def check_nqptp_running() -> CheckResult:
     """nqptp is required for AirPlay 2 timing. Without it,
     shairport-sync's AP2 path silently fails to handshake."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "nqptp.service", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "this unit while paired; it restores on unbond",
-        )
+    parked = _parked_follower_result("nqptp.service")
+    if parked is not None:
+        return parked
     intentional_off = _intentional_source_off(
         Source.AIRPLAY,
         "nqptp.service",
@@ -250,6 +317,7 @@ def check_nqptp_running() -> CheckResult:
         "nqptp", "fail",
         f"state={state}. shairport-sync AP2 will not handshake "
         f"without nqptp running.",
+        reason=REASON_NQPTP_NOT_ACTIVE,
     )
 
 @doctor_check(order=14, group="renderers")
@@ -257,12 +325,9 @@ def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
     source selection and guarded handoff stop working; if fan-in has
     restarted into its safe NONE state, music may stay silent."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "jasper-mux", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "this unit while paired; it restores on unbond",
-        )
+    parked = _parked_follower_result("jasper-mux")
+    if parked is not None:
+        return parked
     p = _run(["systemctl", "is-active", "jasper-mux.service"])
     state = p.stdout.strip()
     if state == "active":
@@ -274,6 +339,7 @@ def check_jasper_mux() -> CheckResult:
         "jasper-mux", "fail",
         f"state={state}. Source selection and guarded handoff are "
         f"unavailable; fan-in may remain silent until mux is restarted.",
+        reason=REASON_MUX_NOT_ACTIVE,
     )
 
 @doctor_check(order=12, group="renderers")
@@ -282,12 +348,9 @@ def check_bluealsa() -> CheckResult:
     bluealsa-aplay forwards incoming A2DP audio to ALSA. Both
     must be active for "phone-as-Bluetooth-source → speaker"
     to work end-to-end."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "bluealsa", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "this unit while paired; it restores on unbond",
-        )
+    parked = _parked_follower_result("bluealsa")
+    if parked is not None:
+        return parked
     intentional_off = _intentional_source_off(
         Source.BLUETOOTH,
         "bluealsa",
@@ -309,17 +372,15 @@ def check_bluealsa() -> CheckResult:
         "bluealsa", "fail",
         f"bluealsa={s1}, bluealsa-aplay={s2}. "
         f"Check: journalctl -u bluealsa",
+        reason=REASON_BLUEALSA_NOT_ACTIVE,
     )
 
 @doctor_check(order=13, group="renderers")
 def check_bluetooth_pairing_policy() -> CheckResult:
     """Verify the JTS no-code pairing agent is installed and idle-closed."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "Bluetooth pairing policy", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "this while paired; the pair leader owns playback + the mic",
-        )
+    parked = _parked_follower_result("Bluetooth pairing policy")
+    if parked is not None:
+        return parked
     intentional_off = _intentional_source_off(
         Source.BLUETOOTH,
         "Bluetooth pairing policy",
@@ -343,14 +404,16 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     except FileNotFoundError:
         return CheckResult(
             "Bluetooth pairing policy",
-            "warn",
+            "skipped",
             "systemctl unavailable — skipped",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
         )
     if p.returncode != 0:
         return CheckResult(
             "Bluetooth pairing policy",
             "fail",
             "systemctl show bt-agent.service failed",
+            reason=REASON_BT_PAIRING_SYSTEMCTL_SHOW_FAILED,
         )
     props = {}
     for line in p.stdout.splitlines():
@@ -364,6 +427,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             "Bluetooth pairing policy",
             "fail",
             f"bt-agent.service state={active}/{sub}; no-code default agent not running",
+            reason=REASON_BT_PAIRING_AGENT_NOT_RUNNING,
         )
     exec_start = props.get("ExecStart", "")
     if expected_exec not in exec_start:
@@ -371,6 +435,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             "Bluetooth pairing policy",
             "fail",
             f"bt-agent.service ExecStart is not the JTS no-code agent: {exec_start}",
+            reason=REASON_BT_PAIRING_WRONG_AGENT,
         )
 
     try:
@@ -380,12 +445,14 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             "Bluetooth pairing policy",
             "warn",
             "agent OK, but bluetoothctl unavailable — adapter gate not checked",
+            reason=REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE,
         )
     if bt.returncode != 0:
         return CheckResult(
             "Bluetooth pairing policy",
             "warn",
             "agent OK, but bluetoothctl show failed — adapter gate not checked",
+            reason=REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN,
         )
 
     values: dict[str, str] = {}
@@ -400,6 +467,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             "Bluetooth pairing policy",
             "warn",
             "agent OK, but adapter Discoverable/Pairable state was not reported",
+            reason=REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN,
         )
     if pairable == "yes" and discoverable != "yes":
         return CheckResult(
@@ -407,12 +475,14 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             "warn",
             "agent OK, but Pairable=yes outside an open pairing window; "
             "the runtime floor should close Pairable shortly",
+            reason=REASON_BT_PAIRING_PAIRABLE_WITHOUT_DISCOVERABLE,
         )
     if discoverable == "yes" or pairable == "yes":
         return CheckResult(
             "Bluetooth pairing policy",
             "warn",
             f"agent OK, pairing window open (Discoverable={discoverable}, Pairable={pairable})",
+            reason=REASON_BT_PAIRING_WINDOW_OPEN,
         )
     return CheckResult(
         "Bluetooth pairing policy",
@@ -428,7 +498,10 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
     refresh token. The earlier "cache missing" warning was a false
     positive on installs using only the multi-account setup."""
     if not cfg.spotify_enabled:
-        return CheckResult("Spotify auth", "ok", "not configured (skipped)")
+        return CheckResult(
+            "Spotify auth", "skipped", "not configured",
+            reason=REASON_SPOTIFY_NOT_CONFIGURED,
+        )
     # Modern path: per-account registry at spotify_accounts_path.
     try:
         from ...accounts import Registry
@@ -453,6 +526,7 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
             f"{len(registry.accounts)} account(s) registered but no token "
             f"caches found under {Path(cfg.spotify_accounts_path).parent}/"
             f"caches/. Visit {cfg.spotify_setup_url} to re-link.",
+            reason=REASON_SPOTIFY_CACHE_MISSING,
         )
     # Fall back to legacy single-account cache for installs that
     # haven't migrated to the multi-account registry.
@@ -463,6 +537,7 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
             f"no accounts registered ({cfg.spotify_accounts_path}) and "
             f"no legacy cache at {p}. Visit {cfg.spotify_setup_url} to "
             f"link an account.",
+            reason=REASON_SPOTIFY_CACHE_MISSING,
         )
     return CheckResult("Spotify auth", "ok", f"legacy cache at {p}")
 
@@ -479,12 +554,9 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     pattern doesn't match what librespot is broadcasting, every
     cold-start `play X` returns 'no spotify target device available'
     — a silent severe failure this check catches."""
-    if _parked_as_bonded_follower():
-        return CheckResult(
-            "Spotify Connect device", "ok",
-            "parked (bonded follower) — the dumb-follower profile stops "
-            "this while paired; the pair leader owns playback + the mic",
-        )
+    parked = _parked_follower_result("Spotify Connect device")
+    if parked is not None:
+        return parked
     label = "Spotify Connect device"
     intentional_off = _intentional_source_off(
         Source.SPOTIFY,
@@ -494,7 +566,10 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     if intentional_off is not None:
         return intentional_off
     if not cfg.spotify_enabled:
-        return CheckResult(label, "ok", "not configured (skipped)")
+        return CheckResult(
+            label, "skipped", "not configured",
+            reason=REASON_SPOTIFY_NOT_CONFIGURED,
+        )
 
     pattern = cfg.spotify_device_name.strip().lower()
     if not pattern:
@@ -502,6 +577,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
             label, "fail",
             "speaker name is empty. Visit http://jts.local/speaker/ "
             "and set a display name (default 'JTS').",
+            reason=REASON_SPOTIFY_DEVICE_NAME_EMPTY,
         )
 
     # Build clients and probe each account's sp.devices() for a match.
@@ -521,12 +597,14 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
             f"could not build Spotify clients: {e}. "
             f"This usually means no accounts have OAuth tokens — visit "
             f"{cfg.spotify_setup_url} to link an account.",
+            reason=REASON_SPOTIFY_CLIENT_BUILD_FAILED,
         )
     if not clients:
         return CheckResult(
             label, "warn",
             f"no accounts have OAuth tokens (visit {cfg.spotify_setup_url}). "
             f"Once linked, this check will verify librespot visibility.",
+            reason=REASON_SPOTIFY_NO_TOKENS,
         )
 
     matched_accounts: list[str] = []
@@ -558,6 +636,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
             f"but NOT {missed_accounts}. Cold-start `play X` will work "
             f"only for the matched account(s). Try opening Spotify on the "
             f"missing account and casting to the device once to register it.",
+            reason=REASON_SPOTIFY_DEVICE_VISIBLE_TO_SOME,
         )
     return CheckResult(
         label, "fail",
@@ -569,6 +648,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
         f"once to make it discoverable; or verify librespot is running "
         f"(`systemctl status librespot`) and broadcasting "
         f"(`avahi-browse -tr _spotify-connect._tcp`).",
+        reason=REASON_SPOTIFY_DEVICE_NOT_VISIBLE,
     )
 
 @doctor_check(order=72, group="renderers")
@@ -609,11 +689,15 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
         return CheckResult(
             label, "warn",
             f"{p} missing — shairport-sync may not be installed.",
+            reason=REASON_SHAIRPORT_CONF_MISSING,
         )
     try:
         text = p.read_text()
     except OSError as e:
-        return CheckResult(label, "warn", f"can't read {p}: {e}")
+        return CheckResult(
+            label, "warn", f"can't read {p}: {e}",
+            reason=REASON_SHAIRPORT_CONF_UNREADABLE,
+        )
     # Look for an active (non-comment) output_device line. Comments in
     # shairport-sync.conf use //; libconfig syntax. We tolerate the
     # value being quoted or unquoted, single or double quotes.
@@ -626,6 +710,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             label, "warn",
             "no `output_device` directive found in alsa block; relying "
             "on shairport-sync's default (probably wrong).",
+            reason=REASON_SHAIRPORT_NO_OUTPUT_DEVICE,
         )
     line = active_lines[0]
     lane = lane_by_label("airplay")
@@ -634,6 +719,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             label, "warn",
             "no `airplay` row in jasper.renderer_lanes.RENDERER_LANES — "
             "cannot judge the rendered device against the lane map",
+            reason=REASON_SHAIRPORT_LANE_REGISTRY_MISSING,
         )
     armed = lane.label in read_armed_labels()
     if lane.ring_device in line:
@@ -641,6 +727,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             return CheckResult(
                 label, "ok",
                 f"{lane.ring_device} (renderer ring lane, armed)",
+                reason=REASON_SHAIRPORT_RING_ARMED_OK,
             )
         return CheckResult(
             label, "warn",
@@ -649,6 +736,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             "and is writing a ring jasper-fanin no longer reads (silent "
             f"AirPlay). Restart {lane.unit} (its ExecStartPre re-renders "
             "the conf from the lane map).",
+            reason=REASON_SHAIRPORT_RING_DISARMED_STALE,
         )
     if lane.aloop_device in line:
         if armed:
@@ -660,10 +748,12 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
                 "jasper-fanin reads the ring (silent AirPlay). Restart "
                 f"{lane.unit} (its ExecStartPre re-renders the conf from "
                 "the lane map).",
+                reason=REASON_SHAIRPORT_ALOOP_ARMED_STALE,
             )
         return CheckResult(
             label, "ok",
             f"{lane.aloop_device} (fan-in private AirPlay lane)",
+            reason=REASON_SHAIRPORT_ALOOP_UNARMED_OK,
         )
     # One spelling of the armed→device rule, shared with the arm CLI and the
     # rendered map (jasper.renderer_lanes.device_for) rather than restated.
@@ -673,12 +763,14 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             label, "fail",
             "jasper_renderer_in — stale retired dmix path. Re-run "
             f"deploy/install.sh so shairport renders to {expected_device}.",
+            reason=REASON_SHAIRPORT_LEGACY_DMIX,
         )
     if 'plughw:Loopback' in line:
         return CheckResult(
             label, "warn",
             "plughw:Loopback,0,0 — stale pre-fan-in wiring. Redeploy "
             f"to render {expected_device}.",
+            reason=REASON_SHAIRPORT_LEGACY_PLUGHW,
         )
     if '"hw:Loopback' in line or "'hw:Loopback" in line:
         return CheckResult(
@@ -690,10 +782,12 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             f"Fix: redeploy via `bash scripts/deploy-to-pi.sh` (this box "
             f"renders {expected_device}). Source of truth: "
             "deploy/shairport-sync.conf.template.",
+            reason=REASON_SHAIRPORT_RAW_HW_LOOPBACK,
         )
     return CheckResult(
         label, "warn",
         f"output_device value not recognized: {line!r}",
+        reason=REASON_SHAIRPORT_DEVICE_UNRECOGNIZED,
     )
 
 # Renderer registry: (label_suffix, runtime_user, parse_function).
@@ -865,17 +959,14 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
     passing that to aplay would fail with "Unknown PCM ${VAR}" — a false
     positive.
 
-    **`systemctl show -p Environment` CANNOT answer this, and used to be the
-    only thing this function asked.** That property returns the unit's
-    `Environment=` directives ONLY — it does not include `EnvironmentFile=`
-    layers, which is exactly where every JTS runtime override lives.
-    Measured empirically on 2026-07-02: on jts.local `systemctl show` reported
-    PERIOD_FRAMES=1024 while the box actually ran 128, and on jts3 ACTIVE_LANE=1
-    was invisible to `systemctl show` — which is why this reads
-    `/proc/<MainPID>/environ` instead.
-    Confirmed again on jts.local hardware during the P6a review. Trusting the
-    old surface here would have made the doctor probe an ARMED box's *aloop*
-    device — reporting a lane healthy while the live ring lane went unprobed.
+    **`systemctl show -p Environment` CANNOT answer this.** That property
+    returns the unit's `Environment=` directives ONLY — it does not include
+    `EnvironmentFile=` layers, which is exactly where every JTS runtime
+    override lives: an armed box's real `PERIOD_FRAMES` / `ACTIVE_LANE`
+    values can be invisible to it entirely, which is why this reads
+    `/proc/<MainPID>/environ` instead. Trusting the old surface here would
+    have made the doctor probe an ARMED box's *aloop* device — reporting a
+    lane healthy while the live ring lane went unprobed.
 
     Three sources, most authoritative first:
 
@@ -1148,9 +1239,9 @@ def check_renderer_device_resolvable() -> CheckResult:
     """Verify each music renderer can actually open the ALSA device it is
     configured to write to, AS its runtime systemd User=.
 
-    The original bug this catches (PR #223, 2026-05-23): renderer users could
-    not read the asoundrc that defined the named ALSA PCMs, so snd_pcm_open()
-    returned "Unknown PCM" despite config strings looking right.
+    The original bug this catches: renderer users could not read the
+    asoundrc that defined the named ALSA PCMs, so snd_pcm_open() returned
+    "Unknown PCM" despite config strings looking right.
 
     Fan-in caveat: renderer lanes are intentionally private single-writer
     lanes, so probing one whose renderer is active is refused with EBUSY —
@@ -1222,6 +1313,7 @@ def check_renderer_device_resolvable() -> CheckResult:
             "0644 so non-root renderer users can resolve user-space "
             "ALSA PCM names. EBUSY is expected only for active fan-in "
             "private lanes; Unknown PCM is always a real failure.",
+            reason=REASON_RENDERER_DEVICE_UNRESOLVABLE,
         )
     if not successes:
         # All renderers were unknown — probably a stripped image.
@@ -1229,6 +1321,7 @@ def check_renderer_device_resolvable() -> CheckResult:
             label, "warn",
             "; ".join(incomplete) if incomplete
             else "no renderers configured",
+            reason=REASON_RENDERER_NONE_CONFIGURED,
         )
     detail = "; ".join(successes)
     if incomplete:
@@ -1256,6 +1349,7 @@ def _classify_mux_mode(path: Path) -> CheckResult:
             name, "warn",
             f"unreadable ({e.__class__.__name__}) — mux falls back to "
             f"auto. Check permissions on {path}",
+            reason=REASON_MUX_MODE_UNREADABLE,
         )
     try:
         data = json.loads(raw)
@@ -1264,6 +1358,7 @@ def _classify_mux_mode(path: Path) -> CheckResult:
             name, "warn",
             f"corrupt — mux falls back to auto (a manual source pin, if "
             f"one was set, is lost). Delete to clear: {path}",
+            reason=REASON_MUX_MODE_CORRUPT,
         )
     if not isinstance(data, dict) or data.get("mode") != "manual":
         return CheckResult(name, "ok", "auto (latest-source-wins)")
@@ -1277,8 +1372,11 @@ def _classify_mux_mode(path: Path) -> CheckResult:
             name, "warn",
             f"manual pin to unknown source {label!r} — ignored, mux runs "
             f"auto. Re-pin via the landing page or delete {path}",
+            reason=REASON_MUX_MODE_UNKNOWN_SOURCE,
         )
-    return CheckResult(name, "ok", f"manual pin: {source.value}")
+    return CheckResult(
+        name, "ok", f"manual pin: {source.value}", reason=REASON_MUX_MODE_PINNED
+    )
 
 
 @doctor_check(order=77, group="renderers")

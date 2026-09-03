@@ -18,33 +18,7 @@ import pytest
 from jasper.cli import doctor
 from jasper.cli.doctor import drift as doctor_drift
 
-
-def _make_systemctl_show_run(
-    property_maps: dict[str, dict[str, str]],
-    *,
-    defaults: dict[str, str],
-    load_map: dict[str, str] | None = None,
-):
-    """Double for the batched ``systemctl show --value`` wire format.
-
-    Real systemctl separates per-unit values with a blank line (``\n\n``)
-    when several units are requested with ``--value``.
-    """
-
-    def fake_run(cmd, **kwargs):
-        prop = cmd[3]
-        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
-        if prop == "LoadState":
-            values = [(load_map or {}).get(unit, "loaded") for unit in units]
-        else:
-            values_for_property = property_maps.get(prop, {})
-            default = defaults.get(prop, "")
-            values = [values_for_property.get(unit, default) for unit in units]
-        result = MagicMock()
-        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
-        return result
-
-    return fake_run
+from .doctor_test_support import _make_systemctl_show_run
 
 
 _OOM_WANT = doctor_drift._UNIT_DIRECTIVES["OOMScoreAdjust"]
@@ -363,7 +337,7 @@ def test_drift_verdict_is_warn_only_when_something_drifted():
         [doctor_drift.DriftItem("vm.swappiness", "60", "100", "fix")], 12, [],
     )
     assert drifted.status == "warn"
-    assert "vm.swappiness" in drifted.detail
+    assert drifted.reason == doctor_drift.REASON_SETTINGS_DRIFTED
 
 
 def test_systemctl_show_property_parses_double_newline_separator():

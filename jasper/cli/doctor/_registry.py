@@ -4,27 +4,18 @@
 
 """Ordered registry for jasper-doctor checks.
 
-This is the *re-homing* layer for ``jasper-doctor``'s decomposition: the
-checks themselves moved into per-domain modules
-(``jasper/cli/doctor/audio.py``, ``network.py``, …) but their
-membership, display order, and per-check calling convention used to be
-a single hand-ordered ``sync_checks`` literal inside ``run_async``.
-This module replaces that literal with an explicit registry so the
-order survives the split *byte-for-byte*.
+Checks live in per-domain modules (``jasper/cli/doctor/audio.py``,
+``network.py``, …) and declare their membership, display order, and
+calling convention here.
 
-Behaviour contract preserved from the old literal list:
+Contract:
 
-- **Order is a sparse sort KEY, not a contiguous index.** The current
-  ``order=`` values happen to be each entry's index in the original
-  ``sync_checks`` list, so the decomposition's run order is byte-for-byte
-  the original — but the registry only requires them to be UNIQUE, and
-  gaps are intentional. To insert a check between two existing ones, give
-  it any value strictly between their orders (e.g. ``20.5``); nothing else
-  renumbers. (The earlier "must be contiguous" rule was the thing that
-  forced a full renumber on every mid-list insert.) Registration happens
-  as each per-domain module is imported by the package ``__init__``;
-  sorting by ``order`` makes the final sequence independent of import
-  order.
+- **Order is a sparse sort KEY, not a contiguous index.** Orders must be
+  UNIQUE; gaps are intentional. To insert a check between two existing
+  ones, give it any value strictly between their orders (e.g. ``20.5``);
+  nothing else renumbers. Registration happens as each per-domain module
+  is imported by the package ``__init__``; sorting by ``order`` makes the
+  final sequence independent of import order.
 
 - **One naming rule for every entry.** A check's displayed name and its
   crash-path label are both ``entry.label or _check_name(entry.func)``
@@ -87,8 +78,7 @@ def doctor_check(
 
     The decorator is *additive* — it records metadata in the ordered
     registry and returns the original function object untouched, so the
-    function's identity, signature, and body are preserved (it stays
-    directly importable and unit-testable, exactly as before).
+    check stays directly importable and unit-testable.
 
     Args:
         order: sort key in the canonical run sequence — a sparse key, not
@@ -116,9 +106,8 @@ def doctor_check(
             raise ValueError(
                 f"doctor_check order={order} is already registered by "
                 f"{clash.func.__module__}.{clash.func.__name__}; check orders "
-                "must be unique — they pin the canonical run sequence that the "
-                "decomposition preserves, and a duplicate would silently fall "
-                "back to import-order tie-breaking. Conflicting check: "
+                "must be unique — a duplicate would silently fall back to "
+                "import-order tie-breaking. Conflicting check: "
                 f"{fn.__module__}.{fn.__name__}."
             )
         _REGISTRY.append(
@@ -138,10 +127,6 @@ def doctor_check(
 
 
 def registered_checks() -> list[RegisteredCheck]:
-    """All registered checks in canonical order (sorted by ``order``).
-
-    Sorting by the explicit ``order`` key makes the sequence independent
-    of the order in which the per-domain modules happened to be
-    imported, so it always equals the manifest order.
-    """
+    """All registered checks in canonical order (sorted by ``order``),
+    independent of the order the per-domain modules were imported in."""
     return sorted(_REGISTRY, key=lambda c: c.order)

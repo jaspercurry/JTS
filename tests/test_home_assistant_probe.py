@@ -379,6 +379,7 @@ async def test_no_log_when_state_unchanged(monkeypatch, caplog):
 
 def test_check_home_assistant_skip_when_not_enabled():
     from jasper.cli.doctor import check_home_assistant
+    from jasper.cli.doctor.integrations import REASON_HOME_ASSISTANT_NOT_CONFIGURED
 
     class _Cfg:
         ha_enabled = False
@@ -389,9 +390,8 @@ def test_check_home_assistant_skip_when_not_enabled():
         hostname = "jts.local"
 
     result = check_home_assistant(_Cfg())
-    assert result.status == "ok"
-    assert "not configured" in result.detail
-    assert "/ha" in result.detail  # actionable hint
+    assert result.status == "skipped"
+    assert result.reason == REASON_HOME_ASSISTANT_NOT_CONFIGURED
 
 
 def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):

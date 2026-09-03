@@ -28,6 +28,75 @@ from ._shared import (
     _run,
 )
 
+# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
+# pin status + reason, never `detail` prose). Named by the fact a consumer
+# would branch on; two branches meaning the same thing share one code —
+# REASON_GROUPING_OFF covers every "grouping is off, nothing to check" ok
+# across this module's checks, and REASON_NOT_APPLICABLE covers every
+# "this box's role/topology doesn't reach this check" ok.
+REASON_GROUPING_OFF = "grouping_off"
+REASON_NOT_APPLICABLE = "not_applicable"
+
+REASON_CONFIG_INVALID = "config_invalid"
+REASON_RUNTIME_DEGRADED = "runtime_degraded"
+REASON_PAIR_LOCK_DEGRADED = "pair_lock_degraded"
+REASON_PAIR_LOCK_UNKNOWN = "pair_lock_unknown"
+
+REASON_RING_CONFD_MISSING = "ring_confd_missing"
+REASON_RING_PROBE_UNAVAILABLE = "ring_probe_unavailable"
+REASON_RING_PCM_UNRESOLVED = "ring_pcm_unresolved"
+
+REASON_SNAPCAST_BINARY_MISSING = "snapcast_binary_missing"
+
+REASON_SNAPCAST_NOT_INSTALLED = "snapcast_not_installed"
+REASON_SNAPCAST_VERSION_UNKNOWN = "snapcast_version_unknown"
+REASON_SNAPCAST_VERSION_MATCH = "snapcast_version_match"
+REASON_SNAPCAST_VERSION_MISMATCH = "snapcast_version_mismatch"
+
+# check_grouping_rate_adjust and check_grouping_leader_pipe both read the
+# active CamillaDSP config; its three "nothing to read" codes are homed with
+# that reader in correction.py and imported below.
+REASON_RATE_ADJUST_ON = "rate_adjust_on"
+REASON_RATE_ADJUST_UNCONFIRMED = "rate_adjust_unconfirmed"
+
+REASON_LEADER_PIPE_NOT_WIRED = "leader_pipe_not_wired"
+
+REASON_CHANNEL_PICK_TOPOLOGY_UNKNOWN = "channel_pick_topology_unknown"
+REASON_CHANNEL_PICK_LANE_MISSING = "channel_pick_lane_missing"
+REASON_CHANNEL_PICK_ENV_UNREADABLE = "channel_pick_env_unreadable"
+REASON_CHANNEL_PICK_ACTIVE_ENDPOINT_LANE_ARMED = "channel_pick_active_endpoint_lane_armed"
+REASON_CHANNEL_PICK_PERIOD_MISMATCH = "channel_pick_period_mismatch"
+REASON_CHANNEL_PICK_FLAT_OUTPUT_DENIED = "channel_pick_flat_output_denied"
+REASON_CHANNEL_PICK_DRIFT = "channel_pick_drift"
+
+REASON_SUB_CORNER_LANE_MISSING = "sub_corner_lane_missing"
+REASON_SUB_CORNER_ENV_UNREADABLE = "sub_corner_env_unreadable"
+REASON_SUB_CORNER_MISSING = "sub_corner_missing"
+
+REASON_SUB_CONFLICT = "sub_conflict"
+REASON_LOCAL_SUB_ONLY = "local_sub_only"
+REASON_WIRELESS_SUB_ONLY = "wireless_sub_only"
+REASON_NO_SUB = "no_sub"
+
+REASON_TTS_VOICE_ENV_UNRESOLVED = "tts_voice_env_unresolved"
+REASON_TTS_SOCKET_DRIFT = "tts_socket_drift"
+REASON_TTS_PARK_FLAG_DRIFT = "tts_park_flag_drift"
+REASON_TTS_OUTPUTD_ENV_UNREADABLE = "tts_outputd_env_unreadable"
+REASON_TTS_OUTPUTD_LANE_ARMED = "tts_outputd_lane_armed"
+REASON_TTS_OUTPUTD_LANE_UNARMED = "tts_outputd_lane_unarmed"
+
+REASON_PAIR_CHANNELS_LEADER_UNREACHABLE = "pair_channels_leader_unreachable"
+REASON_PAIR_CHANNELS_BOND_MISMATCH = "pair_channels_bond_mismatch"
+REASON_PAIR_CHANNELS_SAME_CHANNEL = "pair_channels_same_channel"
+
+REASON_HOUSEHOLD_CREDENTIAL_MISSING = "household_credential_missing"
+
+REASON_AIRPLAY_LATENCY_TIGHT = "airplay_latency_tight"
+
+REASON_CROSSOVER_UNIT_MISSING = "crossover_unit_missing"
+REASON_CROSSOVER_UNIT_UNVERIFIED = "crossover_unit_unverified"
+REASON_CROSSOVER_UNIT_INVALID = "crossover_unit_invalid"
+
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
 
@@ -99,9 +168,11 @@ def check_grouping() -> CheckResult:
     label = "grouping: mode"
     cfg = _load_grouping_config()
     if not cfg.enabled:
-        return CheckResult(label, "ok", "single-speaker (grouping off)")
+        return CheckResult(
+            label, "ok", "single-speaker (grouping off)", reason=REASON_GROUPING_OFF
+        )
     if cfg.error is not None:
-        return CheckResult(label, "warn", cfg.error)
+        return CheckResult(label, "warn", cfg.error, reason=REASON_CONFIG_INVALID)
 
     # Enabled + valid: probe the units the plan wants running and derive
     # runtime health through the shared pure function.
@@ -147,8 +218,12 @@ def check_grouping() -> CheckResult:
     if cfg.role == "follower":
         base += f" leader_addr={cfg.leader_addr}"
 
-    status = "warn" if runtime["health"] == "degraded" else "ok"
-    return CheckResult(label, status, f"{base} — {runtime['detail']}")
+    detail = f"{base} — {runtime['detail']}"
+    if runtime["health"] == "degraded":
+        return CheckResult(
+            label, "warn", detail, reason=REASON_RUNTIME_DEGRADED,
+        )
+    return CheckResult(label, "ok", detail)
 
 
 @doctor_check(order=71.2, group="grouping")
@@ -173,9 +248,11 @@ def check_grouping_pair_lock() -> CheckResult:
     label = "grouping: pair lock"
     cfg = _load_grouping_config()
     if not cfg.enabled:
-        return CheckResult(label, "ok", "single-speaker (grouping off)")
+        return CheckResult(
+            label, "ok", "single-speaker (grouping off)", reason=REASON_GROUPING_OFF
+        )
     if cfg.error is not None:
-        return CheckResult(label, "warn", cfg.error)
+        return CheckResult(label, "warn", cfg.error, reason=REASON_CONFIG_INVALID)
 
     units = [it.unit for it in plan(cfg).intents]
     out = _run(["systemctl", "is-active", *units]).stdout.splitlines()
@@ -204,9 +281,9 @@ def check_grouping_pair_lock() -> CheckResult:
     status = str(pair_lock.get("status") or "unknown")
     detail = str(pair_lock.get("detail") or "pair-lock verdict unavailable")
     if status == "degraded":
-        return CheckResult(label, "warn", detail)
+        return CheckResult(label, "warn", detail, reason=REASON_PAIR_LOCK_DEGRADED)
     if status == "unknown":
-        return CheckResult(label, "warn", detail)
+        return CheckResult(label, "warn", detail, reason=REASON_PAIR_LOCK_UNKNOWN)
     return CheckResult(label, "ok", detail)
 
 
@@ -328,10 +405,13 @@ def check_grouping_ring_device() -> CheckResult:
             "fail",
             f"{GROUPING_RING_CONF_D} is not installed — pcm.{GROUPING_RING_PCM} "
             "cannot resolve; redeploy (bash scripts/deploy-to-pi.sh)",
+            reason=REASON_RING_CONFD_MISSING,
         )
-    rc, reason = _probe_grouping_pcm(GROUPING_RING_PCM)
+    rc, probe_detail = _probe_grouping_pcm(GROUPING_RING_PCM)
     if rc is None:
-        return CheckResult(label, "warn", reason)
+        return CheckResult(
+            label, "warn", probe_detail, reason=REASON_RING_PROBE_UNAVAILABLE
+        )
     if rc == 0:
         return CheckResult(
             label, "ok", f"pcm.{GROUPING_RING_PCM} resolves and the ioplug loads"
@@ -347,6 +427,7 @@ def check_grouping_ring_device() -> CheckResult:
         f"check that {RING_IOPLUG_SO} is present in {RING_ALSA_PLUGIN_DIR} and "
         "redeploy to rebuild it"
         + ("" if bonded else " (this box is not bonded, so nothing opens it yet)"),
+        reason=REASON_RING_PCM_UNRESOLVED,
     )
 
 
@@ -363,7 +444,10 @@ def check_grouping_snapcast_installed() -> CheckResult:
     label = "grouping: snapcast installed"
     cfg = _load_grouping_config()
     if not cfg.enabled:
-        return CheckResult(label, "ok", "grouping off (snapcast not required)")
+        return CheckResult(
+            label, "ok", "grouping off (snapcast not required)",
+            reason=REASON_GROUPING_OFF,
+        )
     missing = [b for b in ("snapserver", "snapclient") if shutil.which(b) is None]
     if missing:
         return CheckResult(
@@ -373,6 +457,7 @@ def check_grouping_snapcast_installed() -> CheckResult:
             "snap units fail on every start (grouping silently does nothing; on an "
             "active leader the reconciler fails closed to solo). Install with: "
             "sudo apt install snapserver snapclient",
+            reason=REASON_SNAPCAST_BINARY_MISSING,
         )
     return CheckResult(label, "ok", "snapserver + snapclient present")
 
@@ -408,31 +493,40 @@ def check_grouping_snapcast_version() -> CheckResult:
     label = "grouping: snapcast version"
     cfg = _load_grouping_config()
     if not cfg.enabled:
-        return CheckResult(label, "ok", "grouping off (snapcast not required)")
+        return CheckResult(
+            label, "ok", "grouping off (snapcast not required)",
+            reason=REASON_GROUPING_OFF,
+        )
     if shutil.which("snapclient") is None:
-        return CheckResult(label, "ok", "snapclient not installed (n/a)")
+        return CheckResult(
+            label, "skipped", "snapclient not installed",
+            reason=REASON_SNAPCAST_NOT_INSTALLED,
+        )
 
     try:
         proc = _run(["snapclient", "--version"])
     except (FileNotFoundError, subprocess.SubprocessError) as e:
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             f"could not determine the installed snapclient version: {e}",
+            reason=REASON_SNAPCAST_VERSION_UNKNOWN,
         )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()[-300:]
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             "could not determine the installed snapclient version: "
             f"snapclient exited {proc.returncode}"
             + (f": {detail}" if detail else ""),
+            reason=REASON_SNAPCAST_VERSION_UNKNOWN,
         )
     match = re.search(r"\d+\.\d+\.\d+", (proc.stdout or "") + (proc.stderr or ""))
     if match is None:
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             "could not determine the installed snapclient version from "
             "`snapclient --version` output",
+            reason=REASON_SNAPCAST_VERSION_UNKNOWN,
         )
     installed = match.group(0)
     if installed != VALIDATED_SNAPCAST_VERSION:
@@ -443,9 +537,11 @@ def check_grouping_snapcast_version() -> CheckResult:
             "not pinned by design (a pin would block security updates and "
             "fail installs on routine Trixie point releases); this is "
             "visibility only, not a fault",
+            reason=REASON_SNAPCAST_VERSION_MISMATCH,
         )
     return CheckResult(
         label, "ok", f"installed snapclient matches validated {installed}",
+        reason=REASON_SNAPCAST_VERSION_MATCH,
     )
 
 
@@ -485,7 +581,12 @@ def check_grouping_rate_adjust() -> CheckResult:
     form, so a warn here means that apply failed — check its journal)."""
     from ...multiroom.config import is_active_member, load_config
     from ...multiroom.reconcile import is_active_speaker_box
-    from .correction import _active_camilla_config_path
+    from .correction import (
+        REASON_CAMILLA_CONFIG_MISSING,
+        REASON_CAMILLA_CONFIG_UNREADABLE,
+        REASON_CAMILLA_STATEFILE_UNREADABLE,
+        _active_camilla_config_path,
+    )
 
     label = "grouping: rate_adjust"
     cfg = load_config()
@@ -502,19 +603,29 @@ def check_grouping_rate_adjust() -> CheckResult:
     )
     if not in_bonded_chain:
         return CheckResult(
-            label, "ok", "no local CamillaDSP in a bonded chain here (n/a)"
+            label, "skipped", "no local CamillaDSP in a bonded chain here",
+            reason=REASON_NOT_APPLICABLE,
         )
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
-        return CheckResult(label, "warn", f"could not read config_path from {statefile}")
+        return CheckResult(
+            label, "warn", f"could not read config_path from {statefile}",
+            reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
+        )
     path = Path(config_path)
     if not path.exists():
-        return CheckResult(label, "warn", f"active config missing: {config_path}")
+        return CheckResult(
+            label, "warn", f"active config missing: {config_path}",
+            reason=REASON_CAMILLA_CONFIG_MISSING,
+        )
     try:
         rate_adjust = _devices_rate_adjust_from_text(path.read_text())
     except OSError as e:
-        return CheckResult(label, "warn", f"could not read {config_path}: {e}")
+        return CheckResult(
+            label, "warn", f"could not read {config_path}: {e}",
+            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
+        )
 
     if rate_adjust is True:
         return CheckResult(
@@ -523,6 +634,7 @@ def check_grouping_rate_adjust() -> CheckResult:
             "bonded member — snapclient is the chain's only rate-tracker; "
             "the reconciler's bond apply did not land (check "
             "jasper-grouping-reconcile's journal, or re-save /sound)",
+            reason=REASON_RATE_ADJUST_ON,
         )
     if rate_adjust is None:
         # ``_devices_rate_adjust_from_text`` returns None for ABSENT *or*
@@ -534,6 +646,7 @@ def check_grouping_rate_adjust() -> CheckResult:
             f"could not confirm enable_rate_adjust in {config_path} — the "
             "devices block has no readable enable_rate_adjust key, so this "
             "bonded member's rate-tracking cannot be verified",
+            reason=REASON_RATE_ADJUST_UNCONFIRMED,
         )
     return CheckResult(label, "ok", f"rate_adjust off for bonded member ({config_path})")
 
@@ -548,23 +661,40 @@ def check_grouping_leader_pipe() -> CheckResult:
     from ...multiroom.config import is_active_leader, load_config
     from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
-    from .correction import _active_camilla_config_path
+    from .correction import (
+        REASON_CAMILLA_CONFIG_MISSING,
+        REASON_CAMILLA_CONFIG_UNREADABLE,
+        REASON_CAMILLA_STATEFILE_UNREADABLE,
+        _active_camilla_config_path,
+    )
 
     label = "grouping: leader pipe"
     cfg = load_config()
     if not is_active_leader(cfg):
-        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+        return CheckResult(
+            label, "skipped", "not an active bond leader",
+            reason=REASON_NOT_APPLICABLE,
+        )
 
     statefile, config_path = _active_camilla_config_path()
     if config_path is None:
-        return CheckResult(label, "warn", f"could not read config_path from {statefile}")
+        return CheckResult(
+            label, "warn", f"could not read config_path from {statefile}",
+            reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
+        )
     path = Path(config_path)
     if not path.exists():
-        return CheckResult(label, "warn", f"active config missing: {config_path}")
+        return CheckResult(
+            label, "warn", f"active config missing: {config_path}",
+            reason=REASON_CAMILLA_CONFIG_MISSING,
+        )
     try:
         is_pipe = playback_is_pipe(path.read_text(), SNAPFIFO)
     except OSError as e:
-        return CheckResult(label, "warn", f"could not read {config_path}: {e}")
+        return CheckResult(
+            label, "warn", f"could not read {config_path}: {e}",
+            reason=REASON_CAMILLA_CONFIG_UNREADABLE,
+        )
 
     if not is_pipe:
         return CheckResult(
@@ -573,6 +703,7 @@ def check_grouping_leader_pipe() -> CheckResult:
             "but this is an active bond leader — the stream is silent; the "
             "reconciler's bond apply did not land (check "
             "jasper-grouping-reconcile's journal)",
+            reason=REASON_LEADER_PIPE_NOT_WIRED,
         )
     return CheckResult(label, "ok", f"leader CamillaDSP writes {SNAPFIFO}")
 
@@ -655,7 +786,10 @@ def check_grouping_channel_pick() -> CheckResult:
     label = "grouping: channel pick"
     cfg = load_config()
     if not is_active_member(cfg):
-        return CheckResult(label, "ok", "solo / not an active bond member (n/a)")
+        return CheckResult(
+            label, "skipped", "solo / not an active bond member",
+            reason=REASON_NOT_APPLICABLE,
+        )
 
     # The reconciler's OWN rule, asked with the reconciler's own inputs, so this
     # check can never expect a lane the writer would not have armed.
@@ -670,6 +804,7 @@ def check_grouping_channel_pick() -> CheckResult:
             "this box's saved output topology could not be read, so the "
             "grouping reconciler preserved the running graph instead of wiring "
             "the round-trip lane (blocked_reason=active_speaker_topology_unknown)",
+            reason=REASON_CHANNEL_PICK_TOPOLOGY_UNKNOWN,
         )
     active_endpoint = active_box_state is True
     period = box_outputd_period_frames()
@@ -692,11 +827,15 @@ def check_grouping_channel_pick() -> CheckResult:
             f"{OUTPUTD_GROUPING_ENV_FILE} missing but this is an active bond "
             "member — outputd is not wired for the round-trip lane (run "
             "jasper-grouping-reconcile)",
+            reason=REASON_CHANNEL_PICK_LANE_MISSING,
         )
     try:
         env = _parse_env_file(path.read_text())
     except OSError as e:
-        return CheckResult(label, "warn", f"could not read {path}: {e}")
+        return CheckResult(
+            label, "warn", f"could not read {path}: {e}",
+            reason=REASON_CHANNEL_PICK_ENV_UNREADABLE,
+        )
 
     want_channel = cfg.channel or "stereo"
     # The lane is armed by a BARE marker, so this asks the same predicate
@@ -713,6 +852,7 @@ def check_grouping_channel_pick() -> CheckResult:
                 f"channel={channel or '(unset)'}) — active speakers receive the "
                 "round-trip through the grouping ring jts_ring_grouping; run "
                 "jasper-grouping-reconcile",
+                reason=REASON_CHANNEL_PICK_ACTIVE_ENDPOINT_LANE_ARMED,
             )
         return CheckResult(
             label, "ok",
@@ -727,6 +867,7 @@ def check_grouping_channel_pick() -> CheckResult:
             f"{period if period is not None else '(unresolved)'}, but the "
             f"dac-content return ring's slot is {DAC_CONTENT_RING_PERIOD_FRAMES}"
             " — outputd would refuse the pair, so this member stays solo",
+            reason=REASON_CHANNEL_PICK_PERIOD_MISMATCH,
         )
     if decision.reason == LANE_REFUSED_FLAT_OUTPUT_DENIED:
         return CheckResult(
@@ -734,6 +875,7 @@ def check_grouping_channel_pick() -> CheckResult:
             "this box's saved output topology does not permit a flat "
             "final-output graph, so the round-trip lane stays cleared and this "
             "member plays nothing from the bond",
+            reason=REASON_CHANNEL_PICK_FLAT_OUTPUT_DENIED,
         )
     if not lane_armed or channel != want_channel:
         return CheckResult(
@@ -743,6 +885,7 @@ def check_grouping_channel_pick() -> CheckResult:
             f"channel={channel or '(unset)'}, want lane=armed "
             f"channel={want_channel}) — this member would play the wrong "
             "channel; run jasper-grouping-reconcile",
+            reason=REASON_CHANNEL_PICK_DRIFT,
         )
     return CheckResult(label, "ok", f"outputd lane wired, channel={want_channel}")
 
@@ -765,7 +908,10 @@ def check_grouping_sub_corner() -> CheckResult:
     label = "grouping: sub corner"
     cfg = load_config()
     if not is_active_member(cfg) or cfg.channel != "sub":
-        return CheckResult(label, "ok", "not an active sub member (n/a)")
+        return CheckResult(
+            label, "skipped", "not an active sub member",
+            reason=REASON_NOT_APPLICABLE,
+        )
     # An active-speaker box bonds via CamillaDSP (the active-endpoint path),
     # which CLEARS the outputd dumb lane — JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ
     # lives only on the dumb-follower lane, so its absence here is correct, not
@@ -774,9 +920,10 @@ def check_grouping_sub_corner() -> CheckResult:
     # dumb-lane corner check does not apply.)
     if is_active_speaker_box():
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             "active-speaker box — a sub low-pass would ride CamillaDSP, not "
-            "the outputd dumb lane (n/a)",
+            "the outputd dumb lane",
+            reason=REASON_NOT_APPLICABLE,
         )
 
     path = Path(OUTPUTD_GROUPING_ENV_FILE)
@@ -786,11 +933,15 @@ def check_grouping_sub_corner() -> CheckResult:
             f"{OUTPUTD_GROUPING_ENV_FILE} missing but this is an active sub "
             "member — outputd is not wired with the low-pass corner (run "
             "jasper-grouping-reconcile)",
+            reason=REASON_SUB_CORNER_LANE_MISSING,
         )
     try:
         env = _parse_env_file(path.read_text())
     except OSError as e:
-        return CheckResult(label, "warn", f"could not read {path}: {e}")
+        return CheckResult(
+            label, "warn", f"could not read {path}: {e}",
+            reason=REASON_SUB_CORNER_ENV_UNREADABLE,
+        )
 
     corner = env.get(OUTPUTD_DAC_CONTENT_SUB_HZ_ENV, "")
     if not corner:
@@ -799,6 +950,7 @@ def check_grouping_sub_corner() -> CheckResult:
             f"{OUTPUTD_DAC_CONTENT_SUB_HZ_ENV} missing while channel=sub — "
             f"outputd would fall back to its safe default instead of the "
             f"configured {cfg.crossover_hz} Hz; run jasper-grouping-reconcile",
+            reason=REASON_SUB_CORNER_MISSING,
         )
     return CheckResult(label, "ok", f"sub low-pass corner wired, {corner} Hz")
 
@@ -848,12 +1000,19 @@ def check_grouping_local_vs_wireless_sub() -> CheckResult:
             "is a contradictory config (doubled / fighting low end). Remove one: "
             "drop the subwoofer group from the active-speaker topology, or "
             "un-pair the wireless sub from http://jts.local/rooms",
+            reason=REASON_SUB_CONFLICT,
         )
     if has_local_sub:
-        return CheckResult(label, "ok", "local sub only (no wireless sub)")
+        return CheckResult(
+            label, "ok", "local sub only (no wireless sub)",
+            reason=REASON_LOCAL_SUB_ONLY,
+        )
     if has_wireless_sub:
-        return CheckResult(label, "ok", "wireless sub only (no local sub)")
-    return CheckResult(label, "ok", "no local or wireless sub (n/a)")
+        return CheckResult(
+            label, "ok", "wireless sub only (no local sub)",
+            reason=REASON_WIRELESS_SUB_ONLY,
+        )
+    return CheckResult(label, "ok", "no local or wireless sub", reason=REASON_NO_SUB)
 
 
 @doctor_check(order=75.6, group="grouping")
@@ -911,6 +1070,7 @@ def check_grouping_tts_lane() -> CheckResult:
             "could not resolve jasper-voice's env from its unit directives "
             f"or {VOICE_GROUPING_ENV_FILE} ({voice_runtime_error}) — the "
             "grouped-voice guards cannot run",
+            reason=REASON_TTS_VOICE_ENV_UNRESOLVED,
         )
 
     if not active:
@@ -929,6 +1089,7 @@ def check_grouping_tts_lane() -> CheckResult:
                 f"instead of {FANIN_TTS_SOCKET} — assistant voice targets an "
                 "un-armed socket; run "
                 "jasper-grouping-reconcile",
+                reason=REASON_TTS_SOCKET_DRIFT,
             )
         if voice_parked:
             return CheckResult(
@@ -936,6 +1097,7 @@ def check_grouping_tts_lane() -> CheckResult:
                 f"solo but jasper-voice runtime env still carries "
                 f"{VOICE_PARK_ENV}=1 — voice may remain parked; run "
                 "jasper-grouping-reconcile",
+                reason=REASON_TTS_PARK_FLAG_DRIFT,
             )
         return CheckResult(label, "ok", route.ok_detail)
 
@@ -945,7 +1107,10 @@ def check_grouping_tts_lane() -> CheckResult:
         try:
             outputd_env = _parse_env_file(outputd_path.read_text())
         except OSError as e:
-            return CheckResult(label, "warn", f"could not read {outputd_path}: {e}")
+            return CheckResult(
+                label, "warn", f"could not read {outputd_path}: {e}",
+                reason=REASON_TTS_OUTPUTD_ENV_UNREADABLE,
+            )
     outputd_socket = outputd_env.get(OUTPUTD_TTS_SOCKET_ENV, "")
     lane_armed = bool(outputd_socket)
 
@@ -955,6 +1120,7 @@ def check_grouping_tts_lane() -> CheckResult:
             f"{route.kind} route expects {VOICE_PARK_ENV}=1, but "
             "jasper-voice runtime env does not carry the park flag; run "
             "jasper-grouping-reconcile",
+            reason=REASON_TTS_PARK_FLAG_DRIFT,
         )
     if not route.voice_parked and voice_parked:
         return CheckResult(
@@ -962,6 +1128,7 @@ def check_grouping_tts_lane() -> CheckResult:
             f"{route.kind} route should not park voice, but jasper-voice "
             f"runtime env still carries {VOICE_PARK_ENV}=1; run "
             "jasper-grouping-reconcile",
+            reason=REASON_TTS_PARK_FLAG_DRIFT,
         )
 
     if not route.outputd_tts_armed:
@@ -971,6 +1138,7 @@ def check_grouping_tts_lane() -> CheckResult:
                 f"{route.kind} route must keep outputd's TTS socket unarmed "
                 f"but {OUTPUTD_TTS_SOCKET_ENV}={outputd_socket!r}; run "
                 "jasper-grouping-reconcile",
+                reason=REASON_TTS_OUTPUTD_LANE_ARMED,
             )
         if (
             route.expected_voice_socket is not None
@@ -983,6 +1151,7 @@ def check_grouping_tts_lane() -> CheckResult:
                 f"{VOICE_TTS_SOCKET_ENV}={route.expected_voice_socket}, "
                 f"but it resolves to {voice_socket}; run "
                 "jasper-grouping-reconcile",
+                reason=REASON_TTS_SOCKET_DRIFT,
             )
         return CheckResult(label, "ok", route.ok_detail)
 
@@ -994,6 +1163,7 @@ def check_grouping_tts_lane() -> CheckResult:
             f"{OUTPUTD_TTS_SOCKET_ENV} — assistant voice is BROKEN "
             "(writing to a socket nobody serves); run "
             "jasper-grouping-reconcile",
+            reason=REASON_TTS_OUTPUTD_LANE_UNARMED,
         )
     if voice_socket != OUTPUTD_TTS_SOCKET:
         return CheckResult(
@@ -1004,6 +1174,7 @@ def check_grouping_tts_lane() -> CheckResult:
             f"voice rides the synced stream (delayed ~{cfg.buffer_ms} ms, "
             "plays on all bonded speakers); check "
             f"{VOICE_GROUPING_ENV_FILE} precedence and run jasper-grouping-reconcile",
+            reason=REASON_TTS_SOCKET_DRIFT,
         )
     return CheckResult(label, "ok", route.ok_detail)
 
@@ -1024,10 +1195,14 @@ def check_grouping_pair_channels() -> CheckResult:
     label = "grouping: pair channels"
     cfg = load_config()
     if not is_active_member(cfg) or cfg.role != "follower":
-        return CheckResult(label, "ok", "solo / not a bonded follower (n/a)")
+        return CheckResult(
+            label, "skipped", "solo / not a bonded follower",
+            reason=REASON_NOT_APPLICABLE,
+        )
     if cfg.channel not in ("left", "right"):
         return CheckResult(
-            label, "ok", f"channel={cfg.channel or '?'} (not an L/R pair, n/a)",
+            label, "skipped", f"channel={cfg.channel or '?'} (not an L/R pair, n/a)",
+            reason=REASON_NOT_APPLICABLE,
         )
     from ...control import client as control_client
     from ...multiroom.state import parse_grouping_response
@@ -1041,9 +1216,10 @@ def check_grouping_pair_channels() -> CheckResult:
         leader = parse_grouping_response(resp.json()) or {}
     except Exception as e:  # noqa: BLE001 — connectivity has its own check
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             f"could not compare (leader {cfg.leader_addr} unreachable: {e} "
             "— connectivity is covered by the grouping health check)",
+            reason=REASON_PAIR_CHANNELS_LEADER_UNREACHABLE,
         )
     leader_channel = str(leader.get("channel") or "")
     if str(leader.get("bond_id") or "") != cfg.bond_id:
@@ -1052,6 +1228,7 @@ def check_grouping_pair_channels() -> CheckResult:
             f"leader {cfg.leader_addr} reports bond "
             f"{leader.get('bond_id') or '(none)'} but this follower is in "
             f"{cfg.bond_id} — re-pair from /rooms",
+            reason=REASON_PAIR_CHANNELS_BOND_MISMATCH,
         )
     if leader_channel == cfg.channel:
         return CheckResult(
@@ -1059,6 +1236,7 @@ def check_grouping_pair_channels() -> CheckResult:
             f"BOTH speakers play the {cfg.channel} channel — an interrupted "
             "swap left the pair on one side; press Swap on /rooms (it "
             "repairs a same-channel pair to left/right)",
+            reason=REASON_PAIR_CHANNELS_SAME_CHANNEL,
         )
     return CheckResult(
         label, "ok",
@@ -1084,7 +1262,10 @@ def check_grouping_household_credential() -> CheckResult:
     label = "grouping: household credential"
     cfg = load_config()
     if not is_active_member(cfg):
-        return CheckResult(label, "ok", "solo / not a bonded member (n/a)")
+        return CheckResult(
+            label, "skipped", "solo / not a bonded member",
+            reason=REASON_NOT_APPLICABLE,
+        )
     if household_credential.is_paired():
         return CheckResult(
             label, "ok",
@@ -1095,6 +1276,7 @@ def check_grouping_household_credential() -> CheckResult:
         "bonded but the household credential is missing — cross-device "
         "/grouping/set is unauthenticated (fail-safe open) until this speaker "
         "re-pairs; re-save the bond from http://jts.local/rooms to restore it",
+        reason=REASON_HOUSEHOLD_CREDENTIAL_MISSING,
     )
 
 
@@ -1119,7 +1301,10 @@ def check_grouping_airplay_latency() -> CheckResult:
     label = "grouping: AirPlay latency fit"
     cfg = load_config()
     if not is_active_leader(cfg):
-        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+        return CheckResult(
+            label, "skipped", "not an active bond leader",
+            reason=REASON_NOT_APPLICABLE,
+        )
 
     from ...multiroom.airplay_latency import SHAIRPORT_BACKEND_BUFFER_SEC
 
@@ -1143,6 +1328,7 @@ def check_grouping_airplay_latency() -> CheckResult:
             "accommodate an offset'). The sender's budget can't be grown locally; "
             "if JASPER_GROUPING_BUFFER_MS (grouping.env, default 400) was raised, "
             "lowering it shrinks the need.",
+            reason=REASON_AIRPLAY_LATENCY_TIGHT,
         )
     return CheckResult(label, "ok", f"fits — {budget_desc}")
 
@@ -1177,7 +1363,10 @@ def check_crossover_unit_installed() -> CheckResult:
     label = "grouping: crossover unit"
     cfg = load_config()
     if not is_active_leader(cfg):
-        return CheckResult(label, "ok", "not an active bond leader (n/a)")
+        return CheckResult(
+            label, "skipped", "not an active bond leader",
+            reason=REASON_NOT_APPLICABLE,
+        )
 
     # Active/roleful topology is the second half of "active leader": only a
     # box that runs a per-driver crossover needs camilla#2. A passive leader
@@ -1193,9 +1382,15 @@ def check_crossover_unit_installed() -> CheckResult:
         # No usable topology means this is not a commissioned active speaker,
         # so camilla#2 is not its concern. Skip rather than warn — the active
         # speaker runtime graph check owns topology-validity reporting.
-        return CheckResult(label, "ok", "no active-speaker topology (n/a)")
+        return CheckResult(
+            label, "skipped", "no active-speaker topology",
+            reason=REASON_NOT_APPLICABLE,
+        )
     if not active_topology_requires_roleful_graph(topology):
-        return CheckResult(label, "ok", "passive leader — no crossover (n/a)")
+        return CheckResult(
+            label, "skipped", "passive leader — no crossover",
+            reason=REASON_NOT_APPLICABLE,
+        )
 
     unit = "jasper-camilla-crossover.service"
     # `systemctl cat` is the canonical "is the unit installed?" probe used
@@ -1208,6 +1403,7 @@ def check_crossover_unit_installed() -> CheckResult:
             f"active leader but {unit} is not installed — the endpoint-"
             "crossover instance cannot be armed; re-run the JTS installer "
             "(bash scripts/deploy-to-pi.sh)",
+            reason=REASON_CROSSOVER_UNIT_MISSING,
         )
 
     # `systemd-analyze verify` is the parse check. It is not always present
@@ -1216,8 +1412,9 @@ def check_crossover_unit_installed() -> CheckResult:
     # probe we cannot run must never produce a false warning.
     if shutil.which("systemd-analyze") is None:
         return CheckResult(
-            label, "ok",
+            label, "skipped",
             f"installed ({unit}); systemd-analyze unavailable, parse unchecked",
+            reason=REASON_CROSSOVER_UNIT_UNVERIFIED,
         )
     verify = _run(["systemd-analyze", "verify", unit])
     if verify.returncode != 0:
@@ -1225,16 +1422,8 @@ def check_crossover_unit_installed() -> CheckResult:
         return CheckResult(
             label, "warn",
             f"{unit} failed systemd-analyze verify: {detail[:200]}",
+            reason=REASON_CROSSOVER_UNIT_INVALID,
         )
     return CheckResult(
         label, "ok", f"installed + parseable ({unit}), INERT until armed",
     )
-
-
-# NOTE: the former ``check_grouping_tts_separation`` (order 78) was REMOVED
-# 2026-06-11 with the rest of the retired outputd-as-producer machinery
-# (`SnapfifoSink` / `SNAPFIFO_PRODUCER_WIRED` / the reconciler tap limb): the
-# canonical design feeds the snapserver pipe from the leader's CamillaDSP, so
-# the check's premise was dead. Its operator story now lives in
-# ``check_grouping``'s runtime detail — a bonded leader reads degraded with
-# "leader streaming is not built yet — no music producer feeds the snapfifo".

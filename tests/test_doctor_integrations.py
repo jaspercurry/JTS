@@ -34,10 +34,14 @@ def _routes_cfg(monkeypatch, **vars_) -> Config:
 
 
 @pytest.mark.parametrize(
-    "vars_, status, must_name",
+    "vars_, status, reason",
     [
-        ({}, "ok", "not configured"),
-        ({"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic"}, "warn", "speaker location"),
+        ({}, "skipped", "REASON_GOOGLE_ROUTES_NOT_CONFIGURED"),
+        (
+            {"GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic"},
+            "warn",
+            "REASON_GOOGLE_ROUTES_MISSING_SETUP",
+        ),
         (
             {
                 "GOOGLE_ROUTES_API_KEY": "AIzaSySynthetic",
@@ -45,7 +49,7 @@ def _routes_cfg(monkeypatch, **vars_) -> Config:
                 "JASPER_TRAVEL_DEFAULT_MODE": "hovercraft",
             },
             "warn",
-            "JASPER_TRAVEL_DEFAULT_MODE",
+            "REASON_GOOGLE_ROUTES_INVALID_MODE",
         ),
         (
             {
@@ -54,18 +58,18 @@ def _routes_cfg(monkeypatch, **vars_) -> Config:
                 "JASPER_TRAVEL_DEFAULT_MODE": "drive",
             },
             "ok",
-            "configured for drive",
+            "REASON_GOOGLE_ROUTES_CONFIGURED",
         ),
     ],
     ids=["unconfigured", "key-without-origin", "invalid-mode", "configured"],
 )
-def test_check_google_routes_verdicts(monkeypatch, vars_, status, must_name):
+def test_check_google_routes_verdicts(monkeypatch, vars_, status, reason):
     cfg = _routes_cfg(monkeypatch, **vars_)
 
     r = doctor.check_google_routes(cfg)
 
     assert r.status == status
-    assert must_name in r.detail
+    assert r.reason == getattr(doctor.integrations, reason)
 
 
 # ---------------------------------------------------------------- Citi Bike
@@ -86,19 +90,25 @@ def _gbfs(monkeypatch, station_ids):
 
 
 @pytest.mark.parametrize(
-    "stations, live_ids, status, must_name",
+    "stations, live_ids, status, reason",
     [
-        ("", (), "ok", "not configured"),
-        ("abc|9 Av,def|Atlantic", ("abc", "def"), "ok", "2 saved station"),
+        ("", (), "skipped", "REASON_CITIBIKE_NOT_CONFIGURED"),
+        (
+            "abc|9 Av,def|Atlantic", ("abc", "def"), "ok",
+            "REASON_CITIBIKE_CONNECTED",
+        ),
         # One station retired by Lyft: warn naming it, but the rest still work.
-        ("abc|9 Av,def|Gone Station", ("abc",), "warn", "Gone Station"),
-        # More than three missing: the detail stays scannable.
-        ("a|A,b|B,c|C,d|D,e|E", (), "warn", "+2 more"),
+        (
+            "abc|9 Av,def|Gone Station", ("abc",), "warn",
+            "REASON_CITIBIKE_STATIONS_RETIRED",
+        ),
+        # More than three missing: still the same retirement reason.
+        ("a|A,b|B,c|C,d|D,e|E", (), "warn", "REASON_CITIBIKE_STATIONS_RETIRED"),
     ],
     ids=["unconfigured", "all-resolve", "one-retired", "missing-list-capped"],
 )
 def test_check_citibike_verdicts(
-    monkeypatch, stations, live_ids, status, must_name
+    monkeypatch, stations, live_ids, status, reason
 ):
     _gbfs(monkeypatch, live_ids)
     cfg = _citibike_cfg(monkeypatch, stations=stations)
@@ -106,17 +116,24 @@ def test_check_citibike_verdicts(
     r = doctor.check_citibike(cfg)
 
     assert r.status == status
-    assert must_name in r.detail
+    assert r.reason == getattr(doctor.integrations, reason)
 
 
-@pytest.mark.parametrize("ebike_only", ["", "1"], ids=["mixed", "ebike-only"])
-def test_check_citibike_reports_the_ebike_only_mode(monkeypatch, ebike_only):
+@pytest.mark.parametrize(
+    "ebike_only, reason",
+    [
+        ("", "REASON_CITIBIKE_CONNECTED"),
+        ("1", "REASON_CITIBIKE_CONNECTED_EBIKE_ONLY"),
+    ],
+    ids=["mixed", "ebike-only"],
+)
+def test_check_citibike_reports_the_ebike_only_mode(monkeypatch, ebike_only, reason):
     _gbfs(monkeypatch, ("abc",))
     cfg = _citibike_cfg(monkeypatch, stations="abc|9 Av", ebike_only=ebike_only)
 
-    detail = doctor.check_citibike(cfg).detail
+    r = doctor.check_citibike(cfg)
 
-    assert ("e-bike-only mode" in detail) is bool(ebike_only)
+    assert r.reason == getattr(doctor.integrations, reason)
 
 
 def test_check_citibike_fails_when_gbfs_unreachable(monkeypatch):
@@ -126,4 +143,6 @@ def test_check_citibike_fails_when_gbfs_unreachable(monkeypatch):
     monkeypatch.setattr(citibike_mod, "fetch_feed", _raise)
     cfg = _citibike_cfg(monkeypatch, stations="abc|9 Av")
 
-    assert doctor.check_citibike(cfg).status == "fail"
+    r = doctor.check_citibike(cfg)
+    assert r.status == "fail"
+    assert r.reason == doctor.integrations.REASON_CITIBIKE_GBFS_UNREACHABLE

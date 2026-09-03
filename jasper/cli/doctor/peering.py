@@ -17,6 +17,19 @@ from ...peering.config import PEERING_OFF_VALUES, PEERING_ON_VALUES
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
+# Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
+# pin status + reason, never `detail` prose). Named by the fact a consumer
+# would branch on, not by which code path produced it — an absent env file
+# and an explicit `JASPER_PEERING=off` are the same fact (peering is off) and
+# share one code.
+REASON_PEERING_OFF = "peering_off"
+REASON_PEERING_ON = "peering_on"
+REASON_PEERING_ENV_UNREADABLE = "peering_env_unreadable"
+REASON_PEERING_MODE_UNKNOWN = "peering_mode_unknown"
+
+REASON_DISCOVERY_TOOL_MISSING = "discovery_tool_missing"
+REASON_DISCOVERY_BROWSE_FAILED = "discovery_browse_failed"
+
 @doctor_check(order=69, group="peering")
 def check_peering_mode() -> CheckResult:
     """Verify /var/lib/jasper/peering.env is parseable.
@@ -31,21 +44,27 @@ def check_peering_mode() -> CheckResult:
         return CheckResult(
             label, "ok",
             "off (default) — enable at http://<hostname>/rooms/",
+            reason=REASON_PEERING_OFF,
         )
     if env.status == "unreadable":
-        return CheckResult(label, "warn", f"can't read {p}: {env.error}")
+        return CheckResult(
+            label, "warn", f"can't read {p}: {env.error}",
+            reason=REASON_PEERING_ENV_UNREADABLE,
+        )
     raw = env.values.get("JASPER_PEERING", "").lower()
     if raw in PEERING_OFF_VALUES:
-        return CheckResult(label, "ok", "off (configured)")
+        return CheckResult(label, "ok", "off (configured)", reason=REASON_PEERING_OFF)
     if raw in PEERING_ON_VALUES:
         return CheckResult(
             label, "ok",
             "on — jasper-control runs the peering daemon",
+            reason=REASON_PEERING_ON,
         )
     return CheckResult(
         label, "warn",
         f"unknown JASPER_PEERING={raw!r}; defaults to off. "
         "Edit /var/lib/jasper/peering.env or use /rooms/.",
+        reason=REASON_PEERING_MODE_UNKNOWN,
     )
 
 @doctor_check(order=70, group="peering")
@@ -64,6 +83,7 @@ def check_peering_discovery() -> CheckResult:
             label, "warn",
             "avahi-browse missing (apt install avahi-utils) — can't "
             "verify peer discovery.",
+            reason=REASON_DISCOVERY_TOOL_MISSING,
         )
     proc = _run([bin_path, "-rt", "_jasper-peer._udp"], timeout=4.0)
     if proc.returncode != 0:
@@ -71,6 +91,7 @@ def check_peering_discovery() -> CheckResult:
             label, "warn",
             f"avahi-browse exited {proc.returncode}. Is avahi-daemon "
             "running? (`systemctl status avahi-daemon`).",
+            reason=REASON_DISCOVERY_BROWSE_FAILED,
         )
     # Count distinct peer_id TXT records.
     peer_ids: set[str] = set()

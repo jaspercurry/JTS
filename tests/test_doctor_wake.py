@@ -64,50 +64,45 @@ def _install_fake_openwakeword_package(
 
 
 @pytest.mark.parametrize(
-    "files, status, must_name, remediation",
+    "files, status, reason",
     [
-        (_ALL_PRESENT, "ok", "hey_jarvis_v0.1.onnx", ""),
+        (_ALL_PRESENT, "ok", ""),
         # A required asset absent from the package tree.
         (
             {k: v for k, v in _ALL_PRESENT.items() if k != "silero_vad.onnx"},
             "fail",
-            "silero_vad.onnx",
-            "deploy/install.sh",
+            "REASON_REQUIRED_ASSET_MISSING",
         ),
         # The ACTIVE bundled model absent, every required asset present.
         (
             {k: v for k, v in _ALL_PRESENT.items() if k != "hey_jarvis_v0.1.onnx"},
             "fail",
-            "active wake model",
-            "deploy/install.sh",
+            "REASON_ACTIVE_MODEL_MISSING",
         ),
         (
             {**_ALL_PRESENT, "silero_vad.onnx": b"wrong-model"},
             "fail",
-            "hash mismatch",
-            "deploy/install.sh",
+            "REASON_REQUIRED_ASSET_HASH_MISMATCH",
         ),
         (
             {**_ALL_PRESENT, "hey_jarvis_v0.1.onnx": b"wrong-model"},
             "fail",
-            "active wake model hash mismatch",
-            "hey_jarvis_v0.1.onnx",
+            "REASON_ACTIVE_MODEL_HASH_MISMATCH",
         ),
     ],
     ids=["healthy", "required-missing", "active-missing", "required-hash",
          "active-hash"],
 )
 def test_check_openwakeword_model_verdicts(
-    monkeypatch, tmp_path: Path, files, status, must_name, remediation
+    monkeypatch, tmp_path: Path, files, status, reason
 ):
     _install_fake_openwakeword_package(monkeypatch, tmp_path, files)
 
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model="hey_jarvis"))
 
     assert r.status == status
-    assert must_name in r.detail
-    if remediation:
-        assert remediation in r.detail
+    if reason:
+        assert r.reason == getattr(doctor.wake, reason)
 
 
 def test_check_openwakeword_model_missing_custom_model_points_at_the_path(
@@ -123,8 +118,7 @@ def test_check_openwakeword_model_missing_custom_model_points_at_the_path(
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model=str(missing)))
 
     assert r.status == "fail"
-    assert f"active wake model path missing: {missing}" in r.detail
-    assert "registered model in /wake/" in r.detail
+    assert r.reason == doctor.wake.REASON_ACTIVE_MODEL_MISSING
 
 
 def test_check_openwakeword_model_hashes_an_active_external_model(
@@ -150,8 +144,7 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
     r = doctor.check_openwakeword_model(SimpleNamespace(wake_model=str(active_model)))
 
     assert r.status == "fail"
-    assert "active wake model hash mismatch" in r.detail
-    assert "jarvis_v2.onnx" in r.detail
+    assert r.reason == doctor.wake.REASON_ACTIVE_MODEL_HASH_MISMATCH
 
 
 # ---------------------------------------------------------------------------
@@ -161,55 +154,55 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
 
 
 @pytest.mark.parametrize(
-    "kwargs, status, must_name, must_not_name",
+    "kwargs, status, reason",
     [
         # AEC off: nothing to arm.
         ({"aec_mode": "disabled", "raw": True, "dtln": False,
-          "armed_runtime": None}, "ok", "n/a", ""),
+          "armed_runtime": None}, "skipped", "REASON_WAKE_LEGS_AEC_MODE_OFF"),
         # jasper-control down: fall back to configured intent rather than
         # inventing a leg-skip warning.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
-          "armed_runtime": None}, "ok", "/wake/", ""),
+          "armed_runtime": None}, "ok", "REASON_WAKE_LEGS_INTENT_ONLY"),
         ({"aec_mode": "auto", "raw": True, "dtln": True,
-          "armed_runtime": {"on", "off", "dtln"}}, "ok", "3 leg(s) armed", ""),
+          "armed_runtime": {"on", "off", "dtln"}}, "ok", "REASON_WAKE_LEGS_MATCH"),
         # raw is configured on (it maps to the chip-direct "off" token) but the
         # daemon only opened the primary leg — a startup skip.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
-          "armed_runtime": {"on"}}, "warn", "wake.leg_skipped", ""),
+          "armed_runtime": {"on"}}, "warn", "REASON_WAKE_LEGS_MISSING"),
         # DTLN configured but not armed: model OOM, or the bridge is not
         # emitting on :9878.
         ({"aec_mode": "auto", "raw": True, "dtln": True,
-          "armed_runtime": {"on", "off"}}, "warn", "dtln", ""),
+          "armed_runtime": {"on", "off"}}, "warn", "REASON_WAKE_LEGS_MISSING"),
         # Chip-AEC mutual exclusion: the reconciler clears the raw/DTLN DEVICE
         # vars while preserving their booleans as wizard intent, so raw=True
         # coexists with chip_aec=True and the armed set is the primary beam
         # alone — no "off" leg, no extra beam detectors.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
           "armed_runtime": {"on"}, "chip_aec": True},
-         "ok", "1 leg(s) armed", "off"),
+         "ok", "REASON_WAKE_LEGS_MATCH"),
         ({"aec_mode": "auto", "raw": True, "dtln": False,
           "armed_runtime": {"on"}, "chip_aec": True, "chip_aec_150": True,
           "chip_aec_210": True},
-         "warn", "6-ch firmware", ""),
+         "warn", "REASON_WAKE_LEGS_MISSING"),
         # Default chip-AEC arms only the primary beam; extra armed beams are
         # resource burn.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
           "armed_runtime": {"on", "chip_aec_150"}, "chip_aec": True},
-         "warn", "unexpected wake legs", ""),
+         "warn", "REASON_WAKE_LEGS_UNEXPECTED"),
         ({"aec_mode": "auto", "raw": True, "dtln": False,
           "armed_runtime": None, "chip_aec": True},
-         "ok", "primary_chip_beam", "raw"),
+         "ok", "REASON_WAKE_LEGS_INTENT_ONLY"),
         # An EMPTY armed set is the design on a push-to-talk-only speaker
         # (#2205), not a fault: no room mic, a paired remote, therefore zero
         # armed legs. Pointing an operator at a bridge, firmware, or
         # wake.leg_skipped would name causes that cannot exist there.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
           "armed_runtime": set(), "push_to_talk_only": True},
-         "ok", "push-to-talk", "leg_skipped"),
+         "skipped", "REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY"),
         # The control: the same empty set on an ORDINARY speaker (a bridge
         # that died, a leg that failed to open) still warns.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
-          "armed_runtime": set()}, "warn", "wake.leg_skipped", ""),
+          "armed_runtime": set()}, "warn", "REASON_WAKE_LEGS_MISSING"),
     ],
     ids=[
         "aec-disabled",
@@ -225,13 +218,11 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
         "empty-armed-set",
     ],
 )
-def test_assess_wake_legs_verdicts(kwargs, status, must_name, must_not_name):
+def test_assess_wake_legs_verdicts(kwargs, status, reason):
     r = doctor._assess_wake_legs(**kwargs)
 
-    assert r.status == status, r.detail
-    assert must_name in r.detail
-    if must_not_name:
-        assert must_not_name not in r.detail
+    assert r.status == status
+    assert r.reason == getattr(doctor.wake, reason)
 
 
 @pytest.mark.parametrize(

@@ -100,6 +100,14 @@ from ..usb_mic import (  # noqa: F401 - route-mixin dependency exports
     write_usb_mic_leg,
 )
 from ..active_speaker.setup_status import read_active_speaker_setup_status
+from ..doctor_contract import (
+    REASON_REFRESH_FAILED,
+    REASON_SNAPSHOT_PENDING,
+    REASON_SNAPSHOT_UNAVAILABLE,  # noqa: F401 — read by handlers/system.py
+    CheckResult,
+    check_row,
+    summarize,
+)
 from ..audio_profile_state import (  # noqa: F401 - route-mixin dependency exports
     normalize_audio_input_profile,
 )
@@ -210,20 +218,19 @@ def _diagnostics_placeholder_result(
     *,
     detail: str,
     status: str = "warn",
+    reason: str = REASON_SNAPSHOT_PENDING,
 ) -> dict[str, Any]:
+    result = CheckResult("jasper-doctor", status, detail, reason=reason)
+    counts = summarize([result])
     return {
-        "fails": 1 if status == "fail" else 0,
-        "warns": 1 if status == "warn" else 0,
+        "fails": counts["fails"],
+        "warns": counts["warns"],
         "generated_at_epoch": None,
         "duration_sec": None,
         "cache_age_seconds": None,
         "stale": True,
         "refreshing": status != "fail",
-        "results": [{
-            "name": "jasper-doctor",
-            "status": status,
-            "detail": detail,
-        }],
+        "results": [check_row(result)],
     }
 
 
@@ -231,11 +238,12 @@ def _append_diagnostics_refresh_failure(
     body: dict[str, Any],
     refresh_error: str,
 ) -> None:
-    row = {
-        "name": "jasper-doctor refresh",
-        "status": "fail",
-        "detail": refresh_error,
-    }
+    row = check_row(CheckResult(
+        "jasper-doctor refresh",
+        "fail",
+        refresh_error,
+        reason=REASON_REFRESH_FAILED,
+    ))
     results = body.get("results")
     if isinstance(results, list):
         results.append(row)

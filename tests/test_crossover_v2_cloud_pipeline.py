@@ -782,9 +782,11 @@ def test_doctor_does_not_warn_on_the_real_s0_pre_apply_spec_failure(monkeypatch)
 
     r = check_crossover_v2_cloud_pipeline()
 
+    # The pre-apply cloud_measure fails by construction; only cloud_verify's
+    # spec gates the warn, so this stays ok (reason is only set on the warn
+    # and empty-corpus branches, not this one — see correction.py).
     assert r.status == "ok"
-    assert "cloud_measure: spec=fail" in r.detail
-    assert "cloud_verify: spec=pass" in r.detail
+    assert r.reason == ""
 
 
 # --------------------------------------------------------------------------- #

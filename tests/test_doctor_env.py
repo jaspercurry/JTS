@@ -154,16 +154,19 @@ def test_state_group_write_no_files_is_ok(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "name, mode, status",
+    "name, mode, status, reason",
     [
-        ("usage.db", 0o660, "ok"),
-        ("usage.db", 0o644, "warn"),
+        ("usage.db", 0o660, "ok", ""),
+        ("usage.db", 0o644, "warn", doctor.env.REASON_STATE_GROUP_WRITE_VIOLATION),
         # Readable by /chat but not writable by jasper-voice.
-        ("conversation_history.db", 0o640, "warn"),
+        (
+            "conversation_history.db", 0o640, "warn",
+            doctor.env.REASON_STATE_GROUP_WRITE_VIOLATION,
+        ),
     ],
     ids=["group-writable", "group-readonly", "history-group-readonly"],
 )
-def test_state_group_write_verdicts(monkeypatch, tmp_path, name, mode, status):
+def test_state_group_write_verdicts(monkeypatch, tmp_path, name, mode, status, reason):
     _pretend_group_is_jasper(monkeypatch)
     target = tmp_path / name
     target.write_text("x", encoding="utf-8")
@@ -172,9 +175,7 @@ def test_state_group_write_verdicts(monkeypatch, tmp_path, name, mode, status):
     res = _classify_state_group_write(tmp_path / "usage.db")
 
     assert res.status == status
-    # A warn must name the offending file so the operator knows what to chmod.
-    if status == "warn":
-        assert name in res.detail
+    assert res.reason == reason
 
 
 def test_state_group_write_check_is_registered():
@@ -201,6 +202,7 @@ def test_check_state_dir_warns_when_missing(monkeypatch, tmp_path):
     r = doctor.check_state_dir(cfg)
 
     assert r.status == "warn"
+    assert r.reason == doctor.env.REASON_STATE_DIR_MISSING
 
 
 def test_check_state_dir_ok_when_group_writable_without_setgid(monkeypatch, tmp_path):
@@ -236,3 +238,4 @@ def test_check_state_dir_fails_when_not_group_writable(monkeypatch, tmp_path):
     r = doctor.check_state_dir(cfg)
 
     assert r.status == "fail"
+    assert r.reason == doctor.env.REASON_STATE_DIR_NOT_WRITABLE

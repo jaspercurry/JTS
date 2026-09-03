@@ -8,6 +8,12 @@ from __future__ import annotations
 from ._registry import doctor_check
 from ._shared import CheckResult
 
+# Machine-stable codes naming which branch of check_research produced a
+# result (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_DISABLED = "research_disabled"
+REASON_STORE_UNAVAILABLE = "research_store_unavailable"
+REASON_COUNTS_UNAVAILABLE = "research_counts_unavailable"
+
 
 @doctor_check(order=24.85, group="research")
 def check_research() -> CheckResult:
@@ -18,7 +24,12 @@ def check_research() -> CheckResult:
     snap = snapshot()
     provider = snap.get("provider")
     if not isinstance(provider, dict) or provider.get("configured") is not True:
-        return CheckResult(label, "ok", "disabled (no provider configured)")
+        # No provider configured is the operator's own choice and it WAS
+        # observed — `ok` with a reason, not a skip (ADR-0228 rule 3).
+        return CheckResult(
+            label, "ok", "disabled (no provider configured)",
+            reason=REASON_DISABLED,
+        )
 
     provider_id = provider.get("id") or "unknown"
     model = provider.get("model") or "default"
@@ -31,6 +42,7 @@ def check_research() -> CheckResult:
             label,
             "warn",
             f"{provider_id} configured but research store unavailable at {path}{suffix}",
+            reason=REASON_STORE_UNAVAILABLE,
         )
 
     counts = snap.get("counts")
@@ -39,6 +51,7 @@ def check_research() -> CheckResult:
             label,
             "warn",
             f"{provider_id} configured but research store counts unavailable",
+            reason=REASON_COUNTS_UNAVAILABLE,
         )
     return CheckResult(
         label,

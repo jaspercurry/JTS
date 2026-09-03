@@ -5,10 +5,39 @@
 """Narrow shared helpers for the jasper-doctor domain test modules."""
 
 import os
+from unittest.mock import MagicMock
 
 from jasper.cli import doctor
 from jasper.config import Config
 from jasper.output_hardware import OutputCardFact, OutputHardwareState, write_state
+
+
+def _make_systemctl_show_run(
+    property_maps: dict[str, dict[str, str]],
+    *,
+    defaults: dict[str, str],
+    load_map: dict[str, str] | None = None,
+):
+    """Double for the batched ``systemctl show --value`` wire format.
+
+    Real systemctl separates per-unit values with a blank line (``\n\n``)
+    when several units are requested with ``--value``.
+    """
+
+    def fake_run(cmd, **kwargs):
+        prop = cmd[3]
+        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
+        if prop == "LoadState":
+            values = [(load_map or {}).get(unit, "loaded") for unit in units]
+        else:
+            values_for_property = property_maps.get(prop, {})
+            default = defaults.get(prop, "")
+            values = [values_for_property.get(unit, default) for unit in units]
+        result = MagicMock()
+        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
+        return result
+
+    return fake_run
 
 
 def _registered_check_names() -> set[str]:

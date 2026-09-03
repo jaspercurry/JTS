@@ -129,6 +129,8 @@ function renderDiagnostics(out, body) {
     h("tr", null,
       h("td.diag-mark", { style: { color: tone(c.status) } }, mark(c.status)),
       h(c.status === "skipped" ? "td.muted" : "td", null, c.name),
+      // The machine-stable reason code, next to the name it qualifies.
+      h("td.diag-reason", null, c.reason || ""),
       h("td.muted", null, c.detail || "")));
   const meta = [];
   if (typeof body.cache_age_seconds === "number") {
@@ -136,12 +138,18 @@ function renderDiagnostics(out, body) {
   }
   if (body.stale) meta.push("stale");
   if (body.refreshing) meta.push("refreshing");
-  out.replaceChildren(
+  const nodes = [];
+  // An `error` rides ALONGSIDE the rows, never instead of them: the payload
+  // that carries one still carries its own jasper-doctor row, and a stale
+  // snapshot plus a refresh failure carries every check as well.
+  if (body.error) nodes.push(h("p.muted.diag-error", null, "Error: " + body.error));
+  nodes.push(
     h("div.table-wrap", null, h("table.table.table--diag", null, h("tbody", null, ...rows))),
     h("p.info-card__note", null,
       (body.speaker_silent ? "the speaker is silent — " : "") +
       body.fails + " failed, " + body.warns + " warning(s)." +
       (meta.length ? " " + meta.join(" - ") + "." : "")));
+  out.replaceChildren(...nodes);
 }
 
 export async function runDiagnostics(btn, out) {
@@ -152,12 +160,8 @@ export async function runDiagnostics(btn, out) {
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const r = await fetch("/system/diagnostics.json", { cache: "no-store" });
       const body = await r.json();
-      if (body.error) {
-        out.replaceChildren(h("span.muted", null, "Error: " + body.error));
-        break;
-      }
       renderDiagnostics(out, body);
-      if (!body.refreshing) break;
+      if (body.error || !body.refreshing) break;
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   } catch (e) {

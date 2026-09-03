@@ -232,6 +232,7 @@ class SystemRoutes(ControlHandlerMixin):
                         f"{refresh_error}"
                     ),
                     status="fail",
+                    reason=_server.REASON_SNAPSHOT_UNAVAILABLE,
                 ),
             )
             return

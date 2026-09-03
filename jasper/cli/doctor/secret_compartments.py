@@ -21,16 +21,10 @@ it needs — and deliberately excludes the secret compartments because a secret 
    access satisfies "must be readable"), so it structurally cannot catch this. That is
    why this is a distinct check.
 
-WS1 Phase 4a/4b moved the real secrets into two sibling compartments OUTSIDE the
+WS1 Phase 4 moved the real secrets into two sibling compartments OUTSIDE the
 ``/var/lib/jasper`` StateDirectory (whose recursive chown would force them back to
-group ``jasper``):
-
-- ``/var/lib/jasper-secrets`` (group ``jasper-secrets``, members voice + web
-  surfaces) — the 3 LLM API keys (``voice_keys.env``),
-  ``google_credentials.env``, the Google OAuth token tree.
-- ``/var/lib/jasper-intsecrets`` (group ``jasper-intsecrets``, members voice + control
-  + mux + web surfaces) — ``home_assistant.env``, ``spotify_credentials.env``,
-  the Spotify token cache.
+group ``jasper``) — see :data:`COMPARTMENTS` for each compartment's group,
+directory, member units, and files.
 
 Static tests (``test_secret_env_modes``, ``test_install_secrets_migration``,
 ``test_systemd_hardening``) pin the install/writer *code*; nothing checked the **live
@@ -66,7 +60,13 @@ from dataclasses import dataclass, field
 
 from . import privsep
 from ._registry import doctor_check
-from ._shared import CheckResult
+from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult
+
+# Machine-stable codes naming which branch of a compartment check produced a
+# result (AGENTS.md: tests pin status + reason, never detail prose).
+REASON_COMPARTMENT_ABSENT = "compartment_absent"
+REASON_COMPARTMENT_OVER_EXPOSED = "compartment_over_exposed"
+REASON_COMPARTMENT_UNDER_AVAILABLE = "compartment_under_available"
 
 # Reuse privsep's read primitive + runtime identity resolution rather than
 # re-deriving them (the task's "reuse where it helps"). They are the single home
@@ -246,8 +246,9 @@ def _classify_compartment(
     except OSError:
         return CheckResult(
             label,
-            "ok",
+            "skipped",
             f"{comp.directory} absent — compartment not present (nothing configured)",
+            reason=REASON_COMPARTMENT_ABSENT,
         )
 
     try:
@@ -316,9 +317,12 @@ def _classify_compartment(
         detail = "OVER-EXPOSED (Phase 4 isolation regressed): " + "; ".join(shown)
         if warns:
             detail += f" (+{len(warns)} availability warning(s))"
-        return CheckResult(label, "fail", detail)
+        return CheckResult(label, "fail", detail, reason=REASON_COMPARTMENT_OVER_EXPOSED)
     if warns:
-        return CheckResult(label, "warn", "; ".join(_truncate(warns)))
+        return CheckResult(
+            label, "warn", "; ".join(_truncate(warns)),
+            reason=REASON_COMPARTMENT_UNDER_AVAILABLE,
+        )
     member_names = ", ".join(_unique_names([m.user for m in members]))
     member_names = member_names or "no members resolved"
     return CheckResult(
@@ -391,7 +395,10 @@ def _check_compartment(group: str) -> CheckResult:
     comp = _COMPARTMENT_BY_GROUP[group]
     label = f"secret compartment: {group}"
     if not _systemctl_available():
-        return CheckResult(label, "ok", "systemctl unavailable — skipped (not Linux?)")
+        return CheckResult(
+            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
+            reason=REASON_SYSTEMCTL_UNAVAILABLE,
+        )
     member_units = set(comp.member_units)
     members: list[_Identity] = []
     non_members: list[_Identity] = []
