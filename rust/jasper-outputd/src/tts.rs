@@ -251,6 +251,7 @@ pub fn spawn_tts_server(
     eprintln!("event=outputd.tts_socket.listening path={}", path.display());
     thread::Builder::new()
         .name("outputd-tts-ipc".to_string())
+        .stack_size(crate::HELPER_STACK_BYTES)
         .spawn(move || {
             for stream in listener.incoming() {
                 match stream {
@@ -284,6 +285,7 @@ fn spawn_tts_client(
 ) -> io::Result<()> {
     thread::Builder::new()
         .name("outputd-tts-client".to_string())
+        .stack_size(crate::HELPER_STACK_BYTES)
         .spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, metrics))
         .map(|_| ())
 }

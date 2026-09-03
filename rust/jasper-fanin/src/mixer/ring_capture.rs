@@ -375,12 +375,12 @@ enum RingAttachOutcome {
 /// latch; a shared worker would serialize four lanes' bounded waits behind one
 /// another, so a fourth lane could sit 1.5 s behind a first lane's slow attach.
 /// The threads block in `recv()` when idle and the rings they lock are different
-/// inodes, so they do not contend. The cost that is NOT free is MEMORY: up to
-/// four extra threads at Rust's 2 MiB default stack, and because they are spawned
-/// in `Mixer::new` — before `main` calls `lock_memory()` — their stacks are inside
-/// the `mlockall` and stay resident. Bounded and small against a 1 GB Pi, paid
-/// only on a box with armed ring lanes, and the reason this is a per-lane thread
-/// rather than a per-lane thread POOL.
+/// inodes, so they do not contend. The cost that is NOT free is MEMORY: one
+/// extra thread per armed ring lane at `crate::HELPER_STACK_BYTES`, and because
+/// they are spawned in `Mixer::new` — before `main` calls `lock_memory()` —
+/// their stacks are inside the `mlockall` and stay resident. Small against a
+/// 1 GB Pi, paid only on a box with armed ring lanes, and the reason this is a
+/// per-lane thread rather than a per-lane thread POOL.
 pub(super) struct RingAttacher {
     req_tx: Sender<RingAttachRequest>,
     res_rx: std::sync::mpsc::Receiver<RingAttachOutcome>,
@@ -407,6 +407,7 @@ impl RingAttacher {
             // succeeds and its debug-build assertion holds in a test binary too.
             // `fanin-direct-opener` is already over the limit the same way.
             .name(format!("fanin-ring-attacher-{label}"))
+            .stack_size(crate::HELPER_STACK_BYTES)
             .spawn(move || {
                 while let Ok(req) = req_rx.recv() {
                     let outcome = match attach_ring(&req.path, req.geometry) {

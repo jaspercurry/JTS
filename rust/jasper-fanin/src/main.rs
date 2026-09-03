@@ -53,6 +53,11 @@ use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
 use crate::watchdog::Heartbeat;
 use crate::xrun_log::XrunLog;
 
+/// Stack bytes for every helper thread here. `mlockall(MCL_CURRENT|MCL_FUTURE)`
+/// populates and pins a thread's WHOLE stack, so Rust's 2 MiB default costs
+/// 2 MiB of unswappable RAM per thread; the mixer loop runs on `main`, not here.
+pub(crate) const HELPER_STACK_BYTES: usize = 512 * 1024;
+
 /// Exit code for a CONFIG-validation failure (sysexits.h EX_CONFIG).
 /// The unit pairs it with `RestartPreventExitStatus=78`: a fail-closed config
 /// rejection PARKS the unit failed (visible on /state + doctor) instead of
@@ -199,6 +204,7 @@ fn run() -> Result<()> {
     let xrun_log_path = config.xrun_log_path.clone();
     let xrun_writer = std::thread::Builder::new()
         .name("fanin-xrun-writer".into())
+        .stack_size(HELPER_STACK_BYTES)
         .spawn(move || {
             let mut log = match XrunLog::new(&xrun_log_path) {
                 Ok(l) => l,
@@ -302,6 +308,7 @@ fn run() -> Result<()> {
     let tap_shutdown = Arc::clone(&shutdown);
     let tap_writer = std::thread::Builder::new()
         .name("fanin-tap-writer".into())
+        .stack_size(HELPER_STACK_BYTES)
         .spawn(move || {
             crate::impulse_tap::run_tap_writer(tap_receiver, tap_state, tap_config, tap_shutdown);
         })
@@ -317,6 +324,7 @@ fn run() -> Result<()> {
             let notify_shutdown = Arc::clone(&shutdown);
             std::thread::Builder::new()
                 .name("fanin-source-notify".into())
+                .stack_size(HELPER_STACK_BYTES)
                 .spawn(move || {
                     crate::source_notify::run(signals, &mux_socket, notify_shutdown);
                 })
@@ -392,6 +400,7 @@ fn run() -> Result<()> {
             Some(
                 std::thread::Builder::new()
                     .name("fanin-host-clock".into())
+                    .stack_size(HELPER_STACK_BYTES)
                     .spawn(move || {
                         crate::host_clock::run_host_clock_thread(
                             host_clock_config,
@@ -458,6 +467,7 @@ fn run() -> Result<()> {
     let state_server_shutdown = Arc::clone(&shutdown);
     let state_thread = std::thread::Builder::new()
         .name("fanin-state-server".into())
+        .stack_size(HELPER_STACK_BYTES)
         .spawn(move || {
             if let Err(e) = state_server.run(&state_server_shutdown) {
                 error!("event=fanin.state_server.failed detail={:#}", e);
