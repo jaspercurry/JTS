@@ -4,44 +4,13 @@
 
 """NBD and SM: Olive's published audibility-weighted deviation metrics.
 
-Olive, "A Multiple Regression Model for Predicting Loudspeaker Preference
-Using Objective Measurements," Part I, AES 116th Convention, preprint 6113
-(2004); Part II, AES 117th Convention, preprint 6190 (2004); embodied in
-US Patent 8,311,232 B2, "Method for predicting loudspeaker preference." The
-patent's Eq. 9 (verbatim, for provenance — NOT implemented here, see below):
-``Pref. Rating = 12.69 - 2.49*NBD_ON - 2.99*NBD_PIR - 4.31*LFX + 2.32*SM_PIR``,
-every term "smoothed in 1/20 octave bands." Reconciled in
-``docs/research/2026-08-31-tuning-methodology-deep-research/01-correction-granularity-and-audibility.md``.
-
-This module implements the two METRICS the patent's coefficients weight —
-:func:`nbd` (Narrow Band Deviation, "how bumpy") and :func:`sm` (Smoothness,
-the r² of a line fit to the curve) — never the preference regression itself,
-which is a *listening-test-fitted prediction*, not a measurement. Per
-ADR-0202 rule 2, both are co-metrics: they inform a graded round, and
-neither gates nor vetoes — ``jasper.active_speaker.flat_spec.SPEC_BANDS``
-stays the sole acceptance metric.
-
-Distinct from :func:`~jasper.audio_measurement.analysis.deviation_metrics`,
-which reads RMS/max deviation of a measured curve from an EXTERNAL target
-curve (room correction's before/after readout). NBD and SM have no external
-target — the reference each curve is judged against is its own local trend.
-
-Both functions run the caller's raw curve through
-:func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` at
-:data:`OLIVE_SMOOTHING_FRACTION` themselves — never a second smoother, and
-never a precondition on the caller.
-
-**Pre-smoothed inputs read flattering, and the results say so.** Olive's
-definitions assume the 1/20-octave pass is the ONLY smoothing between the
-measurement and the statistic. A caller whose curve was already smoothed
-coarser than 1/20 octave (a banked 1/6-octave position curve, say) hands
-this module a curve whose narrow-band ripple is pre-averaged away: the
-1/20 pass is then an identity and ``nbd_db`` reads low against Olive's
-published ranges. That input fact cannot be recovered from the samples, so
-the caller states it — ``input_smoothing_fraction`` — and every result
-echoes it beside the fraction this module applied. ``None`` means the
-caller did not say, which a reader must treat as "unknown", never as
-"raw".
+Olive, AES preprints 6113 (2004) and 6190 (2004); US Patent 8,311,232 B2. The
+two METRICS only -- never the preference regression, a listening-test-fitted
+prediction. Both are co-metrics (ADR-0202 rule 2): neither gates nor vetoes.
+Olive's definitions assume the 1/20-octave pass is the ONLY smoothing before
+the statistic, so a coarser input reads flattering -- unrecoverable from the
+samples, hence the caller-stated ``input_smoothing_fraction`` (``None`` =
+unknown) echoed in every result.
 """
 from __future__ import annotations
 
@@ -62,25 +31,17 @@ __all__ = [
     "sm",
 ]
 
-#: Olive 2004 / US 8,311,232 B2: every term is "smoothed in 1/20 octave
-#: bands" before any deviation or regression statistic is taken.
+#: Olive 2004 / US 8,311,232 B2: every term is smoothed in 1/20-octave bands.
 OLIVE_SMOOTHING_FRACTION = 20
 
-#: Olive 2004: NBD's narrow-band deviation is read off contiguous 1/2-octave
-#: bands of the 1/20-octave-smoothed curve.
+#: Olive 2004: NBD reads deviation off contiguous 1/2-octave bands.
 NBD_BAND_OCTAVES = 0.5
 
 #: Multiplicative half-octave-band edge step (2**0.5).
 _HALF_OCTAVE_FACTOR = 2.0 ** NBD_BAND_OCTAVES
 
-#: Below this SS_tot (dB^2, the smoothed curve's own variance in the graded
-#: band) a curve is flat to float noise, and the r^2 ratio is 0/0 rather than
-#: informative. Reported as a perfect fit (1.0) — a flat line through a flat
-#: curve has zero residual, which is exactly what r^2 = 1 means; the
-#: alternative (0.0, "no fit") would score a perfectly smooth curve as
-#: perfectly bumpy. 1e-18 dB^2 is ~20 orders below any real measurement
-#: curve's variance, so it only fires on curves that are flat in floating
-#: point, per the flat-curve test this constant is calibrated against.
+#: Below this SS_tot (dB^2) a curve is flat to float noise and r^2 is 0/0;
+#: reported as a perfect fit (1.0). ~20 orders below any real curve's variance.
 _SM_ZERO_VARIANCE_EPS_DB2 = 1e-18
 
 
@@ -89,31 +50,13 @@ class NBDResult:
     """Narrow Band Deviation (Olive 2004 / US 8,311,232 B2), in dB.
 
     The mean, over contiguous :data:`NBD_BAND_OCTAVES`-wide bands spanning
-    ``band_hz``, of each band's own mean absolute deviation from that
-    band's own mean — read off the curve after
-    :data:`OLIVE_SMOOTHING_FRACTION`-octave power smoothing. Lower is
-    smoother/flatter; a perfectly flat curve reads 0.0. A co-metric
-    (ADR-0202) — it never gates or vetoes a round.
-
-    Args:
-      nbd_db: the metric itself.
-      band_hz: the ``(lo, hi)`` band actually scored — the caller's
-        ``band_hz``, echoed for provenance.
-      smoothing_fraction: the 1/N-octave fraction THIS module applied
-        (:data:`OLIVE_SMOOTHING_FRACTION`), echoed rather than assumed.
-      input_smoothing_fraction: the 1/N-octave fraction the input curve
-        already carried before this module touched it, as stated by the
-        caller — the effective resolution is the coarser of the two, and a
-        coarser input reads flattering against Olive's published ranges
-        (see the module docstring). ``None`` = the caller did not say.
-      band_octaves: the band width actually used (:data:`NBD_BAND_OCTAVES`),
-        echoed for the same reason.
-      n_bands: how many half-octave bands contributed — fewer than the
-        geometric count when a trailing partial band still held at least
-        one sample, and short of the full geometric span when a band held
-        none (skipped, never fabricated as a zero deviation).
-      n_samples: total curve samples that fell inside ``band_hz`` and
-        contributed to some band's deviation.
+    ``band_hz``, of each band's own mean absolute deviation from that band's
+    own mean, after :data:`OLIVE_SMOOTHING_FRACTION`-octave power smoothing.
+    Lower is smoother; a perfectly flat curve reads 0.0. A band holding no
+    sample is skipped, never fabricated as a zero deviation, so ``n_bands`` can
+    fall short of the geometric count over ``band_hz``.
+    ``input_smoothing_fraction`` is the fraction the caller states its input
+    already carried; ``smoothing_fraction`` is the one THIS module applied.
     """
 
     nbd_db: float
@@ -140,19 +83,10 @@ class NBDResult:
 class SMResult:
     """Smoothness (Olive 2004 / US 8,311,232 B2): unitless, 0..1.
 
-    The r² goodness-of-fit of an ordinary-least-squares line, fit in
-    (log2(frequency), dB) space, to the curve after
-    :data:`OLIVE_SMOOTHING_FRACTION`-octave power smoothing, over
-    ``band_hz``. 1.0 is a perfectly line-shaped response (a flat curve
-    included — see :data:`_SM_ZERO_VARIANCE_EPS_DB2`); lower is bumpier. A
-    co-metric (ADR-0202) — it never gates or vetoes a round.
-
-    Args:
-      sm_r2: the metric itself.
-      band_hz: the ``(lo, hi)`` band actually scored.
-      smoothing_fraction: the 1/N-octave fraction actually applied.
-      n_samples: curve samples inside ``band_hz`` the regression was fit
-        over.
+    The r² of an ordinary-least-squares line fit in (log2(frequency), dB) space
+    to the :data:`OLIVE_SMOOTHING_FRACTION`-octave-smoothed curve over
+    ``band_hz``. 1.0 is perfectly line-shaped (a flat curve included, see
+    :data:`_SM_ZERO_VARIANCE_EPS_DB2`); lower is bumpier.
     """
 
     sm_r2: float
@@ -174,8 +108,7 @@ class SMResult:
 def _smoothed_curve(
     freqs_hz: np.ndarray, magnitude_db: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Validate shape, then the one shared :data:`OLIVE_SMOOTHING_FRACTION`
-    smoothing pass both :func:`nbd` and :func:`sm` score."""
+    """Validate shape, then the one smoothing pass both metrics score."""
 
     freqs = np.asarray(freqs_hz, dtype=float)
     magnitude = np.asarray(magnitude_db, dtype=float)
@@ -206,10 +139,10 @@ def _validated_band(band_hz: tuple[float, float]) -> tuple[float, float]:
 
 
 def _half_octave_edges(lo: float, hi: float) -> list[tuple[float, float]]:
-    """Contiguous :data:`NBD_BAND_OCTAVES`-wide band edges spanning
-    ``[lo, hi]``. The last band may be narrower when ``hi/lo`` is not an
-    exact power of :data:`_HALF_OCTAVE_FACTOR` — included at whatever width
-    it has rather than dropped, so the full caller-stated band is covered.
+    """Contiguous :data:`NBD_BAND_OCTAVES`-wide band edges spanning ``[lo, hi]``.
+
+    The last band may be narrower, and is included at whatever width it has so
+    the full caller-stated band is covered.
     """
 
     edges: list[tuple[float, float]] = []
@@ -230,18 +163,9 @@ def nbd(
 ) -> NBDResult:
     """Narrow Band Deviation over ``band_hz`` (Olive 2004 / US 8,311,232 B2).
 
-    Band-clamped to ``band_hz``: the smoothing pass runs on the full input
-    (so a caller supplying context either side of the band gets an unbiased
-    smoothed value at the band edges), but every sample outside
-    ``[band_hz[0], band_hz[1]]`` is excluded from the deviation itself.
-
-    ``input_smoothing_fraction`` is the caller's statement of any smoothing
-    the curve ALREADY carries, echoed into the result (module docstring).
-
-    Raises :class:`ValueError` for malformed input (see
-    :func:`_smoothed_curve` / :func:`_validated_band`) or a ``band_hz`` that
-    selects no sample from ``freqs_hz`` — a caller error, not a measurement
-    absence, so this raises rather than returning a fabricated 0.0.
+    Smoothing runs on the full input so the band edges are unbiased; only
+    samples inside ``band_hz`` enter the deviation. A ``band_hz`` selecting no
+    sample raises rather than returning a fabricated 0.0.
     """
 
     freqs, smoothed = _smoothed_curve(freqs_hz, magnitude_db)
@@ -297,14 +221,8 @@ def sm(
 ) -> SMResult:
     """Smoothness over ``band_hz`` (Olive 2004 / US 8,311,232 B2).
 
-    Band-clamped exactly as :func:`nbd` is: smoothed over the full input,
-    scored only over ``[band_hz[0], band_hz[1]]``.
-    ``input_smoothing_fraction`` as on :func:`nbd`.
-
-    Raises :class:`ValueError` for malformed input, a ``band_hz`` selecting
-    fewer than 2 samples (a line needs two points), or one selecting samples
-    at a single frequency (no spread to regress against) — all caller
-    errors, not measurement absences.
+    Band-clamped as :func:`nbd` is. A ``band_hz`` selecting fewer than two
+    samples, or samples at a single frequency, raises.
     """
 
     freqs, smoothed = _smoothed_curve(freqs_hz, magnitude_db)
@@ -341,9 +259,7 @@ def _sm_scored(
     y_centered = y - y_mean
     ss_tot = float(np.sum(y_centered ** 2))
     if ss_tot <= _SM_ZERO_VARIANCE_EPS_DB2:
-        # A curve flat to float noise: the best-fit line is that same flat
-        # value, so the residual is 0 too. 0/0 read as a perfect fit, not a
-        # failed one — see the constant's own docstring.
+        # 0/0 on a curve flat to float noise reads as a perfect fit.
         r2 = 1.0
     else:
         slope = float(np.sum(x_centered * y_centered) / np.sum(x_centered ** 2))
@@ -367,12 +283,7 @@ def nbd_and_sm(
     *,
     input_smoothing_fraction: int | None = None,
 ) -> tuple[NBDResult, SMResult]:
-    """Both metrics off ONE shared smoothing pass.
-
-    Identical results to calling :func:`nbd` and :func:`sm` separately —
-    the smoothing is deterministic — minus the second O(n) pass, which is
-    the whole reason this exists for a caller scoring both.
-    """
+    """Both metrics off ONE shared smoothing pass."""
 
     freqs, smoothed = _smoothed_curve(freqs_hz, magnitude_db)
     return (
