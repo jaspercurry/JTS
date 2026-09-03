@@ -377,7 +377,10 @@ PY
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
         -e '/^SPOTIPY_REDIRECT_URI=/d' \
         -e '/^JASPER_AEC_CHIP_AEC_DAC_AUTO=/d' \
-        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d'
+        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d' \
+        -e '/^JASPER_CAPTURE_RELAY_BASE=/d' \
+        -e '/^JASPER_CAPTURE_ORIGIN=/d' \
+        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
     migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         sed_inplace "${ENV_DIR}/jasper.env" '/^JASPER_AUDIO_DAC_ID=/d'
@@ -488,4 +491,11 @@ EOF
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: refreshed streambox defaults"
     fi
+    # Streambox writes its own env rather than seeding from .env.example, so
+    # it does not reach the full profile's retirement list. Drop the same dead
+    # keys here; the token line can hold a real self-hosted secret.
+    sed_inplace "${ENV_DIR}/jasper.env" \
+        -e '/^JASPER_CAPTURE_RELAY_BASE=/d' \
+        -e '/^JASPER_CAPTURE_ORIGIN=/d' \
+        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
 }
