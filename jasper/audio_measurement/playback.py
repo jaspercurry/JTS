@@ -1307,8 +1307,7 @@ def ensure_bandlimited_noise_wav(
 
     Band-limiting uses ``scipy.signal`` (Butterworth) rather than a hand-rolled
     FFT brick-wall mask: scipy is already a project dependency (pyproject
-    ``scipy>=1.13``, e.g. ``scipy.signal.iirpeak`` in the correction path), so
-    this adds NO new dependency.
+    ``scipy>=1.13``), so this adds NO new dependency.
     """
 
     if type(seed) is not int:

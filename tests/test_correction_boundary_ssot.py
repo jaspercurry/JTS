@@ -34,13 +34,12 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import flat_spec
-from jasper.audio_measurement import analysis, room_boundary, snr_policy
+from jasper.audio_measurement import analysis, peq, room_boundary, snr_policy
 from jasper.correction import (
     acceptance,
     acoustic_quality,
     confidence,
     evidence,
-    peq,
     status,
     strategy,
 )
@@ -62,7 +61,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # blanket scan would be mostly false positives, which is how guards get
 # disabled.
 ROUTED_FILES: tuple[str, ...] = (
-    "jasper/correction/peq.py",
+    "jasper/audio_measurement/peq.py",
     "jasper/correction/strategy.py",
     "jasper/correction/session.py",
     "jasper/correction/acceptance.py",

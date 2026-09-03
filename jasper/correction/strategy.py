@@ -17,13 +17,14 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement import peq
 from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_DEFAULT_HZ,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
 )
 
-from . import peq, spatial, target, variance_cap
+from . import spatial, target, variance_cap
 
 # Crossover-region no-boost half-width, in octaves. A BOOST centred within
 # ±(this) of the bass-management corner Fc is excluded: an LR4 sum is flat

@@ -18,7 +18,8 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from jasper.correction import peq, spatial, strategy, target, variance_cap
+from jasper.audio_measurement import peq
+from jasper.correction import spatial, strategy, target, variance_cap
 
 
 STABLE_HZ = 45.0
