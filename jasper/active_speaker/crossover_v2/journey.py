@@ -274,9 +274,8 @@ class CommissionJourney:
     def mark_restored(self) -> None:
         """The applied graph has been put back — disarms the VERIFY hold (#2616).
 
-        A durable-state writer that clears it holds no conductor, so a live
-        session's stale ``applied`` True would be written back on the next
-        persist. Unconditional, like its inverse: restoring a session that
+        A durable-state writer that clears ``applied`` holds no conductor, so
+        a live session's stale True would be written back on the next persist. Unconditional, like its inverse: restoring a session that
         never applied is a no-op rather than an error.
         """
         self._applied = False

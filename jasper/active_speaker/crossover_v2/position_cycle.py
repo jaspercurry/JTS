@@ -152,7 +152,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``bank_take`` serves both groups into the same directory, and this reader
     wants one of them.
 
-    **The rule is phase, not bearing presence** — since ADR-0012,
+    **The rule is phase, not bearing presence** —
     :func:`~.spatial.cloud_position_record` also stamps ``position_deg``, so a
     cloud seat would pass a bearing-shaped filter too. What separates them is
     what they ARE: a lateral pose is a per-driver measurement, a cloud seat is
