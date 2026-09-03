@@ -15,7 +15,11 @@ def write_runtime_safe_graph_script(
     success_status: str,
     ensure_config_path: bool = False,
 ) -> Path:
-    """Write the guard tests' small runtime-contract stand-in."""
+    """Write the guard tests' small runtime-contract stand-in.
+
+    Appends one line per invocation to ``$JASPER_FAKE_RUNTIME_CALLS`` when that
+    is set, so a test can count spawns.
+    """
 
     ensure_path = """
     if ! grep -q '^[[:space:]]*config_path:' "$tmp"; then
@@ -26,6 +30,9 @@ def write_runtime_safe_graph_script(
     script.write_text(
         f"""#!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${{JASPER_FAKE_RUNTIME_CALLS:-}}" ]]; then
+    printf 'call\\n' >> "$JASPER_FAKE_RUNTIME_CALLS"
+fi
 statefile=""
 flat=""
 while [[ $# -gt 0 ]]; do
