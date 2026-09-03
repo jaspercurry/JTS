@@ -11,7 +11,7 @@ cd "$W"
 # order: docs → deletions → prose → tests (branches listed explicitly; add new ones at the right tier)
 ORDER=(
   1-1a-doc-tier 1-1b-runbook-fixes 1-1d-adr-surfaced-rulings
-  1-2c-am-dead 1-2d-correction-dead 1-2e-cli-dups 1-6-ghosts 1-2a-as-dead 1-2b-runtime-severance
+  1-2c-am-dead 1-2d-correction-dead 1-2e-cli-dups 1-6-ghosts 1-2b-runtime-severance
   1-3-p1-flow 1-3-p2-spatial-plan-state 1-3-p3-packet-coord-refusal 1-3-p4-doors 1-3-p5-truth-layer
   1-3-p6-measure-half 1-3-p7-runtime-half 1-3-p8-verify-organs 1-3-p9a-records-rounds 1-3-p9b-capture-session
   1-3-p10-commissioning 1-3-p11-candidates-profile 1-3-p12a-audio-measurement 1-3-p12b-as-measurement-side 1-3-p12-substrate
