@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from jasper.cli import aec_bridge
+from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
 
 REPO = Path(__file__).resolve().parents[1]
 BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
@@ -126,12 +127,12 @@ def test_the_reference_geometry_matches_outputd_the_producer():
     """
     types_rs = (REPO / "rust" / "jasper-outputd" / "src" / "types.rs").read_text()
 
-    assert f"pub const SAMPLE_RATE: u32 = {aec_bridge.REF_RATE:_};" in types_rs, (
-        "aec_bridge.REF_RATE must equal jasper-outputd's core sample rate; "
+    assert f"pub const SAMPLE_RATE: u32 = {REF_RATE:_};" in types_rs, (
+        "REF_RATE must equal jasper-outputd's core sample rate; "
         "the reference datagrams are that daemon's playout periods"
     )
-    assert f"pub const CHANNELS: u16 = {aec_bridge.REF_CHANNELS};" in types_rs, (
-        "aec_bridge.REF_CHANNELS must equal jasper-outputd's channel count; "
+    assert f"pub const CHANNELS: u16 = {REF_CHANNELS};" in types_rs, (
+        "REF_CHANNELS must equal jasper-outputd's channel count; "
         "the reference is stereo whatever the sink's width"
     )
 

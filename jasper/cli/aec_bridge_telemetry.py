@@ -334,6 +334,31 @@ class _BridgeStats:
             logger.debug("bridge stats snapshot write failed: %s", e)
 
 
+@dataclass
+class DropLogDebouncer:
+    interval_sec: float = 1.0
+    drops_in_window: int = 0
+    last_log: float = 0.0
+
+    def record(self, now: float) -> tuple[int, float] | None:
+        return self.record_many(now, 1)
+
+    def record_many(self, now: float, drops: int) -> tuple[int, float] | None:
+        self.drops_in_window += max(0, drops)
+        return self.flush(now)
+
+    def flush(self, now: float) -> tuple[int, float] | None:
+        if self.drops_in_window <= 0:
+            return None
+        if self.last_log and now - self.last_log < self.interval_sec:
+            return None
+        window_sec = now - self.last_log if self.last_log else self.interval_sec
+        drops = self.drops_in_window
+        self.drops_in_window = 0
+        self.last_log = now
+        return drops, window_sec
+
+
 def _send_packet(
     *,
     stats: _BridgeStats,

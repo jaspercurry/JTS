@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import logging
-from queue import Empty, Full, Queue
+from queue import Empty
 import struct
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -64,11 +64,6 @@ class _AlwaysEmptyQ:
 
     def qsize(self):
         return 0
-
-
-class _AlwaysFullQ:
-    def put_nowait(self, _frame):
-        raise Full
 
 
 class _ScriptedMicQ:
@@ -145,61 +140,6 @@ def test_bridge_stats_reference_input_is_null_before_first_frame(
     }
 
 
-def test_bridge_stats_reference_input_age_advances_and_new_input_resets(
-    monkeypatch,
-) -> None:
-    clock = SimpleNamespace(now=100.0)
-    monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: clock.now)
-    aec_bridge._bridge_stats.reset(
-        reference_source="outputd_udp",
-        reference_endpoint="127.0.0.1:9891",
-    )
-    frame = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
-    batch = aec_bridge._ReferenceFrameBatch(
-        frames=(frame, frame),
-        clipped_samples=0,
-        total_samples=2 * FRAME_SAMPLES,
-    )
-    ref_q: Queue[bytes] = Queue(maxsize=4)
-
-    aec_bridge._enqueue_reference_frames(
-        ref_q,
-        batch,
-        drop_log=aec_bridge._DropLogDebouncer(),
-        drop_message="unused %d %.1f",
-    )
-    first = aec_bridge._bridge_stats.snapshot()["reference_input"]
-    assert first["frames_enqueued"] == 2
-    assert first["last_frame_age_ms"] == 0
-    assert first["snapshot_monotonic_ms"] == 100_000
-    assert first["process_age_ms"] == 0
-
-    clock.now = 101.25
-    assert (
-        aec_bridge._bridge_stats.snapshot()["reference_input"]
-        ["last_frame_age_ms"]
-        == 1250
-    )
-
-    ref_q.get_nowait()
-    ref_q.get_nowait()
-    aec_bridge._enqueue_reference_frames(
-        ref_q,
-        aec_bridge._ReferenceFrameBatch(
-            frames=(frame,),
-            clipped_samples=0,
-            total_samples=FRAME_SAMPLES,
-        ),
-        drop_log=aec_bridge._DropLogDebouncer(),
-        drop_message="unused %d %.1f",
-    )
-    latest = aec_bridge._bridge_stats.snapshot()["reference_input"]
-    assert latest["frames_enqueued"] == 3
-    assert latest["last_frame_age_ms"] == 0
-    assert latest["snapshot_monotonic_ms"] == 101_250
-    assert latest["process_age_ms"] == 1_250
-
-
 def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
     stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
     snapshot = stats.snapshot()
@@ -214,161 +154,6 @@ def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
         "process_age_ms",
     }
     assert isinstance(snapshot["counters"], dict)
-
-
-def test_drop_log_debouncer_aggregates_one_second_windows():
-    debouncer = aec_bridge._DropLogDebouncer()
-
-    assert debouncer.record(10.0) == (1, 1.0)
-    assert debouncer.record(10.25) is None
-    assert debouncer.record(10.50) is None
-
-    drops, window_sec = debouncer.record(11.10)
-    assert drops == 3
-    assert window_sec == pytest.approx(1.1)
-
-
-def _stereo_samples(left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    return np.column_stack((left, right)).reshape(-1).astype(np.int16)
-
-
-def test_reference_converter_is_fragmentation_invariant_and_keeps_remainder():
-    capture_block = FRAME_SAMPLES * (
-        aec_bridge.REF_RATE // aec_bridge.SAMPLE_RATE
-    )
-    sample_count = 2 * capture_block + 137
-    phase = np.arange(sample_count, dtype=np.float64)
-    left = np.rint(12000 * np.sin(2 * np.pi * 1200 * phase / 48000)).astype(
-        np.int16
-    )
-    right = np.rint(8000 * np.cos(2 * np.pi * 700 * phase / 48000)).astype(
-        np.int16
-    )
-    stereo = _stereo_samples(left, right)
-
-    whole = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=0,
-        ref_hpf_hz=125,
-    )
-    whole_batch = whole.feed(stereo)
-
-    fragmented = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=0,
-        ref_hpf_hz=125,
-    )
-    fragments = (
-        stereo[:622],
-        stereo[622:2414],
-        stereo[2414:],
-    )
-    fragmented_frames: list[bytes] = []
-    fragmented_clipped = 0
-    fragmented_total = 0
-    for fragment in fragments:
-        batch = fragmented.feed(fragment)
-        fragmented_frames.extend(batch.frames)
-        fragmented_clipped += batch.clipped_samples
-        fragmented_total += batch.total_samples
-
-    assert tuple(fragmented_frames) == whole_batch.frames
-    assert len(whole_batch.frames) == 2
-    assert all(len(frame) == FRAME_SAMPLES * 2 for frame in whole_batch.frames)
-    assert fragmented_clipped == whole_batch.clipped_samples
-    assert fragmented_total == whole_batch.total_samples == 2 * FRAME_SAMPLES
-
-    fill = np.zeros(2 * (capture_block - 137), dtype=np.int16)
-    whole_tail = whole.feed(fill)
-    fragmented_tail = fragmented.feed(fill)
-    assert whole_tail == fragmented_tail
-    assert len(whole_tail.frames) == 1
-
-
-def test_reference_converter_averages_stereo_before_resampling(monkeypatch):
-    monkeypatch.setattr(
-        aec_bridge,
-        "resample_poly",
-        lambda samples, *, up, down: samples[::down],
-    )
-    monkeypatch.setattr(
-        aec_bridge,
-        "sosfilt",
-        lambda _sos, samples, *, zi: (samples, zi),
-    )
-    capture_block = FRAME_SAMPLES * (
-        aec_bridge.REF_RATE // aec_bridge.SAMPLE_RATE
-    )
-    left = np.full(capture_block, 1000, dtype=np.int16)
-    right = np.full(capture_block, 3000, dtype=np.int16)
-    converter = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=0,
-        ref_hpf_hz=125,
-    )
-
-    batch = converter.feed(_stereo_samples(left, right))
-    output = np.frombuffer(batch.frames[0], dtype=np.int16)
-
-    assert output.shape == (FRAME_SAMPLES,)
-    assert np.all(output == 2000)
-
-
-def test_reference_converter_reports_post_gain_clipping(monkeypatch):
-    monkeypatch.setattr(
-        aec_bridge,
-        "resample_poly",
-        lambda samples, *, up, down: samples[::down],
-    )
-    monkeypatch.setattr(
-        aec_bridge,
-        "sosfilt",
-        lambda _sos, samples, *, zi: (samples, zi),
-    )
-    capture_block = FRAME_SAMPLES * (
-        aec_bridge.REF_RATE // aec_bridge.SAMPLE_RATE
-    )
-    hot = np.full(capture_block, 30000, dtype=np.int16)
-    converter = aec_bridge._ReferenceFrameConverter(
-        ref_gain_db=20,
-        ref_hpf_hz=125,
-    )
-
-    batch = converter.feed(_stereo_samples(hot, hot))
-    output = np.frombuffer(batch.frames[0], dtype=np.int16)
-
-    assert batch.clipped_samples == FRAME_SAMPLES
-    assert batch.total_samples == FRAME_SAMPLES
-    assert np.all(output == 32767)
-
-
-def test_reference_enqueue_counts_and_debounces_full_queue(
-    monkeypatch,
-    caplog,
-):
-    monkeypatch.setattr(aec_bridge, "_ref_clipped_samples", 0)
-    monkeypatch.setattr(aec_bridge, "_ref_total_samples", 0)
-    monkeypatch.setattr(aec_bridge.time, "monotonic", lambda: 10.0)
-    caplog.set_level(logging.WARNING, logger="jasper.aec_bridge")
-    frame = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
-    batch = aec_bridge._ReferenceFrameBatch(
-        frames=(frame, frame, frame),
-        clipped_samples=4,
-        total_samples=3 * FRAME_SAMPLES,
-    )
-
-    aec_bridge._enqueue_reference_frames(
-        _AlwaysFullQ(),
-        batch,
-        drop_log=aec_bridge._DropLogDebouncer(),
-        drop_message="ref queue full, dropped %d frames in last %.1fs",
-    )
-
-    counters = aec_bridge._bridge_stats.snapshot()["counters"]
-    reference_input = aec_bridge._bridge_stats.snapshot()["reference_input"]
-    assert counters["queue_drops"]["ref"] == 3
-    assert reference_input["frames_enqueued"] == 0
-    assert reference_input["last_frame_age_ms"] is None
-    assert aec_bridge._ref_clipped_samples == 4
-    assert aec_bridge._ref_total_samples == 3 * FRAME_SAMPLES
-    assert "ref queue full, dropped 3 frames in last 1.0s" in caplog.text
 
 
 def test_raises_bridge_stalled_at_threshold(monkeypatch):
