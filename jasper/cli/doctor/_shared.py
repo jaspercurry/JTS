@@ -4,32 +4,14 @@
 
 """Shared primitives for the jasper-doctor check package.
 
-This is the base layer every per-domain check module imports
-from. It holds, **verbatim from the original**
-``jasper/cli/doctor.py``:
+The base layer every per-domain check module imports from: the
+:class:`CheckResult` dataclass, the crash-isolation harness that keeps one
+crashing check from aborting a run, ``_run``, the JTS daemon ``STATUS``
+control-socket reader, and the helpers used by more than one domain.
 
-- the :class:`CheckResult` dataclass and the ``DoctorCheck``
-  type alias (the union that lets a list entry be either a bare
-  callable or a ``(label, callable)`` tuple);
-- the crash-isolation harness (``_run_doctor_check`` /
-  ``_run_async_doctor_check`` / ``_normalize_doctor_check`` /
-  ``_check_name`` / ``_crashed_check_result`` and the
-  secret-redacting ``_exception_detail``), unchanged so one
-  crashing check still cannot abort the run;
-- ``_run`` (the subprocess wrapper) and ``_parse_env_file``;
-- the JTS daemon ``STATUS`` control-socket reader
-  (``_read_status_socket_bytes`` / ``_read_status_socket``),
-  read by the fan-in, outputd and ring check modules;
-- ANSI colour constants and the chip-AEC passive check set;
-- the genuinely cross-cutting helpers used by more than one
-  domain (``_sha256_file``, ``_meminfo_kb``,
-  ``_systemctl_show_property``, ``_pid_of_unit``,
-  ``_service_runtime_states`` + ``_RUNTIME_STATE_UNITS``,
-  ``_loopback_playback_active``).
-
-No logic changed in the split. Names that tests patch (e.g.
-``_run``) stay importable here and are re-imported into each
-domain module, so a check reads them from its own namespace."""
+A name tests patch (``_run``, ``_read_status_socket_bytes``) is re-imported
+into each domain module, so a check reads it from its OWN namespace and a
+patch has to target that module rather than this one."""
 from __future__ import annotations
 
 import grp

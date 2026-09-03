@@ -154,7 +154,7 @@ def check_camilla_playback_format() -> CheckResult:
     coupling, so a box mid-arm reads as whatever the config in front of it says.
 
     THIS CHECK FAILS OPEN ON A CONFIG IT CANNOT READ (it is cited elsewhere as
-    the detector for a suppressed DSP reconcile, PR #2601): an unreadable/absent
+    the detector for a suppressed DSP reconcile): an unreadable/absent
     statefile, an unresolvable ``config_path``, or a missing
     ``devices.playback.format`` all return ``ok``. The unreadable half is owned
     by ``check_correction_current_config`` (``jasper/cli/doctor/correction.py``).

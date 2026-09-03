@@ -918,12 +918,6 @@ def check_fanin_coupling() -> CheckResult:
 # rather than reclaimed, per deploy/modprobe.d/snd-aloop.conf: pcm_substreams
 # stays 8 so no surviving pair renumbers.
 #
-# BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
-# small procfs files), plus one `comm`/`cgroup` read per offender, capped at
-# `_ALOOP_OFFENDER_DETAIL_CAP` offenders in the message.
-#
-# FAIL-SOFT. An unreadable /proc is `warn`, never an exception and never a FAIL.
-#
 # SERIALIZED. `exclusive_group="audio-probe"` shares a lane with
 # `check_renderer_device_resolvable` (renderers.py), which opens real PCMs with
 # `aplay`, so an unregistered pair briefly held open by that probe would read as
