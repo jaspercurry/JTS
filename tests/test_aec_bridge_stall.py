@@ -824,6 +824,62 @@ def test_aec_loop_chip_aec_mode_defaults_to_primary_only(monkeypatch):
     assert socket_factory.call_count == 3
 
 
+@pytest.mark.parametrize(
+    "raw0_supplied", [True, False],
+    ids=["raw0-drained", "window-drained-no-raw0"],
+)
+def test_chip_rms_window_reports_the_raw_capture_level(
+    monkeypatch, caplog, raw0_supplied,
+):
+    """The chip RMS line's `near`/`primary` legs are both chip-cancelled, so
+    doctor's near-end gate needs the uncancelled capture channel. A window
+    that drained no raw0 frames must omit the token rather than report zero,
+    so the gate falls back to `near` instead of reading a silent mic.
+    Renders the real format string and reads it back through the real
+    doctor parser."""
+    import socket as real_socket
+    from jasper.cli import doctor
+    from jasper.mics import xvf3800
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_150", raising=False)
+    monkeypatch.delenv("JASPER_MIC_DEVICE_CHIP_AEC_210", raising=False)
+    monkeypatch.setattr(
+        real_socket, "socket", MagicMock(side_effect=lambda *a, **k: _mock_socket()),
+    )
+
+    def _pcm(amplitude):
+        return np.full(FRAME_SAMPLES, amplitude, dtype=np.int16).tobytes()
+
+    # `last_log` starts at 0.0, so the first frame closes a window: each
+    # level below is the RMS of exactly one constant-amplitude frame.
+    near, raw0 = 800, 2_900
+    caplog.set_level(logging.INFO, logger="jasper.aec_bridge")
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ([_pcm(near)] * 4),
+        MagicMock(),
+        raw0_q=_ScriptedMicQ([_pcm(raw0)] * 4) if raw0_supplied else None,
+        chip_aec_qs={
+            "chip_aec_150": _ScriptedMicQ([_pcm(300)] * 4),
+            "chip_aec_210": _ScriptedMicQ([_pcm(near)] * 4),
+        },
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        production_chip_aec_enabled=True,
+        chip_aec_primary_leg="chip_aec_150",
+    )
+
+    rms_lines = [m for m in caplog.messages if m.startswith("chip_aec rms")]
+    windows = [w for w in map(doctor._parse_rms_window, rms_lines) if w]
+
+    assert len(windows) == len(rms_lines) > 0, caplog.messages
+    assert windows[0].chip
+    assert windows[0].mic == (raw0 if raw0_supplied else near)
+    assert raw0_supplied == all("raw0=" in m for m in rms_lines)
+
+
 def test_aec_loop_chip_aec_extra_beams_are_explicit_opt_in(monkeypatch):
     """The reconciler advertises optional chip-beam wake detector channels
     with JASPER_MIC_DEVICE_CHIP_AEC_*; only then does the bridge emit them."""

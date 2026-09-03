@@ -2016,6 +2016,10 @@ def _aec_loop(  # noqa: PLR0915
     sum_mic_sq = 0.0
     sum_ref_sq = 0.0
     sum_aec_sq = 0.0
+    # Counted separately: raw0 is drained opportunistically, so a
+    # window can hold fewer raw0 frames than mic frames.
+    raw0_window_frames = 0
+    sum_raw0_sq = 0.0
 
     try:
         while not _shutdown.is_set():
@@ -2356,6 +2360,12 @@ def _aec_loop(  # noqa: PLR0915
             sum_ref_sq += float(np.mean(ref_arr * ref_arr))
             sum_aec_sq += float(np.mean(aec_arr * aec_arr))
             rms_window_frames += 1
+            if raw0_bytes:
+                raw0_arr = np.frombuffer(
+                    raw0_bytes, dtype=np.int16,
+                ).astype(np.float32)
+                sum_raw0_sq += float(np.mean(raw0_arr * raw0_arr))
+                raw0_window_frames += 1
 
             now = time.monotonic()
             if now - last_log > 5.0:
@@ -2363,6 +2373,14 @@ def _aec_loop(  # noqa: PLR0915
                     mic_rms = math.sqrt(sum_mic_sq / rms_window_frames)
                     ref_rms = math.sqrt(sum_ref_sq / rms_window_frames)
                     aec_rms = math.sqrt(sum_aec_sq / rms_window_frames)
+                    # Omitted, not zeroed, when the window drained no raw0
+                    # frames: doctor reads a present `raw0` as the near-end
+                    # level, and `raw0=0` would pin its music gate off.
+                    raw0_token = (
+                        " raw0=%.0f"
+                        % math.sqrt(sum_raw0_sq / raw0_window_frames)
+                        if raw0_window_frames else ""
+                    )
                     if mic_rms > 1.0:
                         attn_db = 20.0 * math.log10(max(aec_rms, 1.0) / mic_rms)
                     else:
@@ -2378,12 +2396,12 @@ def _aec_loop(  # noqa: PLR0915
                     if production_chip_aec_enabled:
                         logger.info(
                             "chip_aec rms over %.1fs: ref=%.0f near=%s:%.0f "
-                            "primary=%s:%.0f level_delta=%.1f dB "
+                            "primary=%s:%.0f level_delta=%.1f dB%s "
                             "(frames=%d ref_q=%d mic_q=%d ref_starve=%d "
                             "ref_clip=%.2f%% out_clip=%.2f%%)",
                             rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
                             ref_rms, "chip_aec_210", mic_rms,
-                            chip_aec_primary_leg, aec_rms, attn_db,
+                            chip_aec_primary_leg, aec_rms, attn_db, raw0_token,
                             frames_processed, ref_q.qsize(), mic_q.qsize(),
                             _ref_starved_frames,
                             ref_clip_pct, out_clip_pct,
@@ -2402,6 +2420,8 @@ def _aec_loop(  # noqa: PLR0915
                 last_log = now
                 rms_window_frames = 0
                 sum_mic_sq = sum_ref_sq = sum_aec_sq = 0.0
+                raw0_window_frames = 0
+                sum_raw0_sq = 0.0
                 _ref_clipped_samples = _ref_total_samples = 0
                 _out_clipped_samples = _out_total_samples = 0
                 _ref_starved_frames = 0
