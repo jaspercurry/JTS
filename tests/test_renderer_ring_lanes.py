@@ -310,16 +310,21 @@ def test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire(label):
 
 def test_the_airplay_plug_conversion_story_matches_the_template():
     """The airplay plug block's comment states what shairport EMITS —
-    44.1 kHz S32, from the rendered conf's `output_rate` / `output_format`
+    48 kHz S32, from the rendered conf's `output_rate` / `output_format`
     — which is a cross-file claim about the template. Pin the template's
     side so the conversion story cannot silently drift out from under the
     conf.d comment (found unpinned by a P6d survive-shape mutation:
-    `output_rate = 88200` passed the whole suite)."""
+    `output_rate = 88200` passed the whole suite).
+
+    The rate must also equal the lane's slave rate: shairport 5.x probes
+    the device with resampling disabled and exact-rate matching, so any
+    other value is struck from its permissible rate set and every session
+    dies choosing an output bit depth."""
     template = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
-    assert re.search(r"^\s*output_rate = 44100;", template, re.M), (
-        "the airplay conf.d conversion story says shairport emits 44.1 kHz; "
-        "the template no longer sets output_rate = 44100 — update both "
-        "together"
+    assert re.search(r"^\s*output_rate = 48000;", template, re.M), (
+        "the airplay conf.d conversion story says shairport emits 48 kHz, "
+        "matching the lane's 48000 slave; the template no longer sets "
+        "output_rate = 48000 — update both together"
     )
     assert re.search(r'^\s*output_format = "S32";', template, re.M), (
         "the airplay conf.d conversion story says shairport emits S32; the "
