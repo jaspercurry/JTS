@@ -19,6 +19,7 @@ from ..chip_aec import record as commission_record
 from .. import enhanced_aec
 from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
+    AEC_MODE_ENV,
     AecIntent,
     DEFAULT_AEC_MODE_PATH,
     MicProbe,
@@ -104,7 +105,7 @@ def _read_aec_state() -> dict:
     (the reconciler's ensure_mode_file appends them on its next run)."""
     env_file = read_env_file_state(_AEC_MODE_FILE)
     values = env_file.values
-    state: dict[str, Any] = {"mode": values.get("JASPER_AEC_MODE") or "auto"}
+    state: dict[str, Any] = {"mode": values.get(AEC_MODE_ENV) or "auto"}
     for name, key, default in (
         ("leg_raw", "JASPER_WAKE_LEG_RAW", _LEG_DEFAULT_RAW),
         ("leg_dtln", "JASPER_WAKE_LEG_DTLN", _LEG_DEFAULT_DTLN),

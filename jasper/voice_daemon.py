@@ -17,6 +17,13 @@ from enum import Enum
 from inspect import isawaitable
 from types import SimpleNamespace
 
+from jasper.aec_sweep import (
+    AGC1_ENABLED_ENV,
+    AGC1_MAX_GAIN_DB_ENV,
+    AGC1_TARGET_DBFS_ENV,
+    NS_ENABLED_ENV,
+    NS_LEVEL_ENV,
+)
 from jasper.log_event import log_event
 
 from .audio_buffer import (
@@ -3552,11 +3559,11 @@ class WakeLoop:
             # is the source of truth, and the bridge is restarted after
             # any change to it.
             bridge_config = {
-                "ns_enabled": os.environ.get("JASPER_AEC_NS_ENABLED", "1"),
-                "ns_level": os.environ.get("JASPER_AEC_NS_LEVEL", "low"),
-                "agc1_enabled": os.environ.get("JASPER_AEC_AGC1_ENABLED", "0"),
-                "agc1_target_dbfs": os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"),
-                "agc1_max_gain_db": os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"),
+                "ns_enabled": os.environ.get(NS_ENABLED_ENV, "1"),
+                "ns_level": os.environ.get(NS_LEVEL_ENV, "low"),
+                "agc1_enabled": os.environ.get(AGC1_ENABLED_ENV, "0"),
+                "agc1_target_dbfs": os.environ.get(AGC1_TARGET_DBFS_ENV, "9"),
+                "agc1_max_gain_db": os.environ.get(AGC1_MAX_GAIN_DB_ENV, "18"),
                 "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"),
                 "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"),
                 "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"),

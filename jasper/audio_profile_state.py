@@ -27,12 +27,19 @@ from .chip_aec.health import (
 from .chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
-from .mics.xvf3800 import AEC_MIC_DEVICE_ENV, CHIP_AEC_ENABLED_ENV
+from .cli.aec_bridge_engines import DTLN_ENABLED_ENV
+from .mics.xvf3800 import (
+    AEC_MIC_DEVICE_ENV,
+    CHIP_AEC_ENABLED_ENV,
+    CHIP_AEC_PRIMARY_LEG_ENV,
+)
 
 
 # The operator's audio-input selection, written by the /aec wizard and read
 # back by every consumer of the vocabulary below.
 DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
+AEC_MODE_ENV = "JASPER_AEC_MODE"
+AEC_MODE_FILE_ENV = "JASPER_AEC_MODE_FILE"
 
 PROFILE_AUTO = "auto"
 PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"
@@ -186,7 +193,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
     updates = {"JASPER_AUDIO_INPUT_PROFILE": normalized}
     if normalized == PROFILE_AUTO:
         updates.update({
-            "JASPER_AEC_MODE": "auto",
+            AEC_MODE_ENV: "auto",
             "JASPER_WAKE_LEG_RAW": "1",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
@@ -195,7 +202,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
         })
     elif normalized in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
         updates.update({
-            "JASPER_AEC_MODE": "auto",
+            AEC_MODE_ENV: "auto",
             "JASPER_WAKE_LEG_RAW": "0",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "1",
@@ -204,7 +211,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
         })
     elif normalized == PROFILE_XVF_SOFTWARE_AEC3:
         updates.update({
-            "JASPER_AEC_MODE": "auto",
+            AEC_MODE_ENV: "auto",
             "JASPER_WAKE_LEG_RAW": "1",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
@@ -213,7 +220,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
         })
     elif normalized == PROFILE_DIRECT_MIC:
         updates.update({
-            "JASPER_AEC_MODE": "disabled",
+            AEC_MODE_ENV: "disabled",
             "JASPER_WAKE_LEG_RAW": "0",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
@@ -368,7 +375,7 @@ def runtime_env_from_mapping(
         ),
         chip_primary_leg=env_value(
             env,
-            "JASPER_AEC_CHIP_AEC_PRIMARY_LEG",
+            CHIP_AEC_PRIMARY_LEG_ENV,
             "chip_aec_150",
             process_env=process_env,
         ),
@@ -389,7 +396,7 @@ def runtime_env_from_mapping(
             process_env=process_env,
         ),
         dtln_enabled=parse_env_bool(
-            env_value(env, "JASPER_AEC_DTLN_ENABLED", "0", process_env=process_env),
+            env_value(env, DTLN_ENABLED_ENV, "0", process_env=process_env),
             default=False,
         ),
         chip_aec_150_device=env_value(

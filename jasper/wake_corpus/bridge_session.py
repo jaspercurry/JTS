@@ -34,6 +34,8 @@ from jasper import audio_validation, wake_legs
 from jasper.control import restart_broker
 from jasper.log_event import log_event
 from jasper.audio_profile_state import (
+    AEC_MODE_ENV,
+    AEC_MODE_FILE_ENV,
     AecIntent,
     MicProbe,
     PROFILE_XVF_CHIP_AEC,
@@ -46,7 +48,21 @@ from jasper.audio_profile_state import (
     runtime_env_from_mapping,
 )
 from jasper.chip_aec.policy import effective_chip_aec_dac_gate
-from jasper.mics.xvf3800 import AEC_MIC_DEVICE_ENV
+from jasper.cli.aec_bridge_config import (
+    OUTPUTD_REF_UDP_HOST_ENV,
+    OUTPUTD_REF_UDP_PORT_ENV,
+    REF_SOURCE_ENV,
+)
+from jasper.cli.aec_bridge_engines import (
+    CORPUS_USB_DTLN_ENABLED_ENV,
+    DTLN_ENABLED_ENV,
+)
+from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from jasper.mics.xvf3800 import (
+    AEC_MIC_DEVICE_ENV,
+    CHIP_AEC_PRIMARY_LEG_ENV,
+    CORPUS_CHIP_AEC_ENABLED_ENV,
+)
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
@@ -215,14 +231,14 @@ SYSTEM_ENV_PATH = Path(os.environ.get(
     "JASPER_SYSTEM_ENV_FILE", "/etc/jasper/jasper.env",
 ))
 AEC_MODE_PATH = Path(os.environ.get(
-    "JASPER_AEC_MODE_FILE", "/var/lib/jasper/aec_mode.env",
+    AEC_MODE_FILE_ENV, "/var/lib/jasper/aec_mode.env",
 ))
 BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "/var/lib/jasper/wake_corpus_bridge.env",
 ))
 BRIDGE_STATS_PATH = Path(os.environ.get(
-    "JASPER_AEC_BRIDGE_STATS_PATH",
+    BRIDGE_STATS_PATH_ENV,
     "/run/jasper/aec_bridge_stats.json",
 ))
 AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
@@ -255,16 +271,16 @@ BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 _UNIT_STATE_TIMEOUT_SEC = 1.5
 BRIDGE_CORPUS_OUTPUT_VARS = (
     *PLAN_ENV_VARS,
-    "JASPER_AEC_DTLN_ENABLED",
+    DTLN_ENABLED_ENV,
     "JASPER_AEC_CORPUS_REF_ENABLED",
     "JASPER_AEC_CORPUS_USB_ENABLED",
-    "JASPER_AEC_CORPUS_USB_DTLN_ENABLED",
-    "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
+    CORPUS_USB_DTLN_ENABLED_ENV,
+    CORPUS_CHIP_AEC_ENABLED_ENV,
     "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
     "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED",
-    "JASPER_AEC_REF_SOURCE",
-    "JASPER_AEC_OUTPUTD_REF_UDP_HOST",
-    "JASPER_AEC_OUTPUTD_REF_UDP_PORT",
+    REF_SOURCE_ENV,
+    OUTPUTD_REF_UDP_HOST_ENV,
+    OUTPUTD_REF_UDP_PORT_ENV,
     "JASPER_OUTPUTD_CHIP_REF_PCM",
     "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
     "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE",
@@ -425,11 +441,11 @@ def bridge_output_status() -> dict[str, Any]:
         )
         aec3_sweep_source = AEC3_SWEEP_SOURCE_XVF
     recorder_outputs = {
-        "dtln": _env_truthy(corpus_env.get("JASPER_AEC_DTLN_ENABLED")),
+        "dtln": _env_truthy(corpus_env.get(DTLN_ENABLED_ENV)),
         "ref": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
         "usb": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
-        "usb_dtln": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
-        "chip_aec": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")),
+        "usb_dtln": _env_truthy(corpus_env.get(CORPUS_USB_DTLN_ENABLED_ENV)),
+        "chip_aec": _env_truthy(corpus_env.get(CORPUS_CHIP_AEC_ENABLED_ENV)),
         "xvf_raw0_webrtc_aec3": _env_truthy(
             corpus_env.get("JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
         ),
@@ -442,11 +458,11 @@ def bridge_output_status() -> dict[str, Any]:
         "aec3_sweep_source": aec3_sweep_source,
     }
     status = {
-        "dtln": _env_truthy(env.get("JASPER_AEC_DTLN_ENABLED")),
+        "dtln": _env_truthy(env.get(DTLN_ENABLED_ENV)),
         "ref": _env_truthy(env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
         "usb": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
-        "usb_dtln": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
-        "chip_aec": _env_truthy(env.get("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")),
+        "usb_dtln": _env_truthy(env.get(CORPUS_USB_DTLN_ENABLED_ENV)),
+        "chip_aec": _env_truthy(env.get(CORPUS_CHIP_AEC_ENABLED_ENV)),
         "xvf_raw0_webrtc_aec3": _env_truthy(
             env.get("JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
         ),
@@ -613,7 +629,7 @@ def usb_mic_status() -> dict[str, Any]:
 def _read_aec_intent() -> AecIntent:
     """Read production wake/audio intent from the wizard-owned state file."""
     env = read_env_file(str(AEC_MODE_PATH))
-    mode = (env.get("JASPER_AEC_MODE") or "auto").strip().strip("'\"") or "auto"
+    mode = (env.get(AEC_MODE_ENV) or "auto").strip().strip("'\"") or "auto"
     return AecIntent(
         mode=mode,
         raw_enabled=parse_env_bool(
@@ -833,7 +849,7 @@ def _dac_reference_context(
         "reference": {
             "source": env_value(
                 env,
-                "JASPER_AEC_REF_SOURCE",
+                REF_SOURCE_ENV,
                 # Matches the bridge's own default (aec_bridge.REF_SOURCE).
                 # A corpus session must not record a source nothing can read.
                 "outputd_udp",
@@ -1438,7 +1454,7 @@ def set_bridge_outputs_for_plan(
     had_chip_profile = any(
         old_values.get(key)
         for key in (
-            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
+            CORPUS_CHIP_AEC_ENABLED_ENV,
             "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
             "JASPER_OUTPUTD_CHIP_REF_PCM",
             "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
@@ -1492,7 +1508,7 @@ def disable_bridge_corpus_outputs() -> bool:
     had_chip_profile = any(
         old_values.get(key)
         for key in (
-            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",
+            CORPUS_CHIP_AEC_ENABLED_ENV,
             "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
             "JASPER_OUTPUTD_CHIP_REF_PCM",
             "JASPER_OUTPUTD_REFERENCE_UDP_TARGET",
@@ -1958,7 +1974,7 @@ def _capture_plan_runtime_snapshot() -> dict[str, Any]:
         ).get("capture_channels"),
         "selected_xvf_mic_device": merged_env.get(AEC_MIC_DEVICE_ENV, ""),
         "selected_usb_mic_device": selected_usb_mic,
-        "chip_primary_leg": merged_env.get("JASPER_AEC_CHIP_AEC_PRIMARY_LEG", ""),
+        "chip_primary_leg": merged_env.get(CHIP_AEC_PRIMARY_LEG_ENV, ""),
     }
     dac_reference_fingerprint_source = {
         "audio_dac_id": published_dac_id(system_env),
@@ -2042,7 +2058,7 @@ def _capture_plan_snapshot_for_desired_env(
             "JASPER_AEC_USB_MIC_DEVICE", DEFAULT_USB_MIC_DEVICE
         ),
         "chip_primary_leg": desired_env.get(
-            "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", ""
+            CHIP_AEC_PRIMARY_LEG_ENV, ""
         ),
     })
 
@@ -2093,13 +2109,13 @@ def _bridge_env_overrides_for_request(
     aec3_sweep_source: str,
 ) -> dict[str, str]:
     values: dict[str, str] = {}
-    if include_dtln and not _env_truthy(system_env.get("JASPER_AEC_DTLN_ENABLED")):
-        values["JASPER_AEC_DTLN_ENABLED"] = "1"
+    if include_dtln and not _env_truthy(system_env.get(DTLN_ENABLED_ENV)):
+        values[DTLN_ENABLED_ENV] = "1"
     elif (
         (include_aec3_sweep or corpus_profile == PROFILE_CHIP_AEC_COMPARISON)
         and not include_dtln
     ):
-        values["JASPER_AEC_DTLN_ENABLED"] = "0"
+        values[DTLN_ENABLED_ENV] = "0"
 
     sweep_needs_usb = (
         include_aec3_sweep and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB
@@ -2116,13 +2132,13 @@ def _bridge_env_overrides_for_request(
                 DEFAULT_USB_MIC_DEVICE,
             )
     if include_usb_dtln:
-        values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
+        values[CORPUS_USB_DTLN_ENABLED_ENV] = "1"
     if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
-        values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] = "1"
+        values[CORPUS_CHIP_AEC_ENABLED_ENV] = "1"
         values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] = "1"
-        values["JASPER_AEC_REF_SOURCE"] = "outputd_udp"
-        values["JASPER_AEC_OUTPUTD_REF_UDP_HOST"] = "127.0.0.1"
-        values["JASPER_AEC_OUTPUTD_REF_UDP_PORT"] = OUTPUTD_REF_UDP_PORT
+        values[REF_SOURCE_ENV] = "outputd_udp"
+        values[OUTPUTD_REF_UDP_HOST_ENV] = "127.0.0.1"
+        values[OUTPUTD_REF_UDP_PORT_ENV] = OUTPUTD_REF_UDP_PORT
         values["JASPER_OUTPUTD_CHIP_REF_PCM"] = chip_ref_pcm_for_env(system_env)
         values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] = OUTPUTD_REF_UDP_TARGET
         values["JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE"] = DEFAULT_CHIP_REF_SAMPLE_RATE

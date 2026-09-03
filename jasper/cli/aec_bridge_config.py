@@ -39,7 +39,11 @@ from jasper.wake_corpus.capture_plan import (
     PLAN_ID_ENV,
 )
 from jasper.log_event import log_event
-from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH, logger
+from jasper.cli.aec_bridge_telemetry import (
+    BRIDGE_STATS_PATH,
+    BRIDGE_STATS_PATH_ENV,
+    logger,
+)
 from jasper.usb_mic import (
     INTENT_PATH as USB_MIC_INTENT_PATH,
     USB_HOST_MIC_UDP_PORT,
@@ -66,6 +70,12 @@ OUTPUTD_REF_UDP_PORT = 9891
 # and diagnostics all consume outputd's final speaker monitor, so they
 # all see the same reference contract.
 REF_SOURCE = "outputd_udp"
+
+# The env keys the reconciler writes for the above; this bridge is the
+# only reader, so the value defaults and the key names live in one place.
+OUTPUTD_REF_UDP_HOST_ENV = "JASPER_AEC_OUTPUTD_REF_UDP_HOST"
+OUTPUTD_REF_UDP_PORT_ENV = "JASPER_AEC_OUTPUTD_REF_UDP_PORT"
+REF_SOURCE_ENV = "JASPER_AEC_REF_SOURCE"
 # Retired reference source: the summed snd-aloop tap, whose path and tap are
 # both deleted. A box whose /etc/jasper/jasper.env still carries this value
 # converges on the next `jasper-aec-reconcile` run, so the bridge warns and
@@ -151,7 +161,7 @@ class BridgeConfig:
             return int(os.environ.get(env_var, str(leg_default_port(token))))
 
         corpus_chip_aec_enabled = env_bool(
-            "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0",
+            _mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV, "0",
         )
         capture_latency = os.environ.get("JASPER_AEC_CAPTURE_LATENCY", "").strip()
         if capture_latency and capture_latency.lower() != "low":
@@ -237,17 +247,17 @@ class BridgeConfig:
                 or USB_MIC_PRIMARY_LEG
             ),
             outputd_ref_udp_host=os.environ.get(
-                "JASPER_AEC_OUTPUTD_REF_UDP_HOST",
+                OUTPUTD_REF_UDP_HOST_ENV,
                 OUTPUTD_REF_UDP_HOST,
             ),
             outputd_ref_udp_port=int(
                 os.environ.get(
-                    "JASPER_AEC_OUTPUTD_REF_UDP_PORT",
+                    OUTPUTD_REF_UDP_PORT_ENV,
                     str(OUTPUTD_REF_UDP_PORT),
                 )
             ),
             ref_source=os.environ.get(
-                "JASPER_AEC_REF_SOURCE",
+                REF_SOURCE_ENV,
                 REF_SOURCE,
             ).strip().lower(),
             out_port_aec3_sweep={
@@ -263,7 +273,7 @@ class BridgeConfig:
                 str(USB_MIC_RATE),
             ))),
             bridge_stats_path=Path(os.environ.get(
-                "JASPER_AEC_BRIDGE_STATS_PATH",
+                BRIDGE_STATS_PATH_ENV,
                 str(BRIDGE_STATS_PATH),
             )),
             aec3_sweep_config=sweep_config,
@@ -312,7 +322,7 @@ def _chip_aec_primary_leg(
     allowed = set(plan.leg_tokens if plan else ("chip_aec_150", "chip_aec_210"))
     fallback = next(iter(plan.leg_tokens), "chip_aec_150") if plan else "chip_aec_150"
     value = os.environ.get(
-        "JASPER_AEC_CHIP_AEC_PRIMARY_LEG", fallback,
+        _mic_profile.CHIP_AEC_PRIMARY_LEG_ENV, fallback,
     ).strip()
     if value in allowed:
         return value

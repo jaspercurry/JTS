@@ -29,12 +29,13 @@ from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_profile_state import (
+    AEC_MODE_FILE_ENV,
     DEFAULT_AEC_MODE_PATH,
     PROFILE_CUSTOM,
     normalize_audio_input_profile,
 )
 from jasper.env_load import parse_env_file
-from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV
+from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV, CORPUS_CHIP_AEC_ENABLED_ENV
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output
 # contract: sink, backend, active width, final-edge format). Imported, never
@@ -1083,7 +1084,7 @@ def alignment_selection(env: Mapping[str, str] | None = None) -> str:
     """
 
     source = os.environ if env is None else env
-    path = source.get("JASPER_AEC_MODE_FILE") or str(DEFAULT_AEC_MODE_PATH)
+    path = source.get(AEC_MODE_FILE_ENV) or str(DEFAULT_AEC_MODE_PATH)
     raw = parse_env_file(path).get("JASPER_AUDIO_INPUT_PROFILE", "")
     return normalize_audio_input_profile(raw, default="") or PROFILE_CUSTOM
 
@@ -1120,7 +1121,7 @@ def publish_alignment_record(
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s aec-init %(levelname)s %(message)s")
-    corpus = _truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")
+    corpus = _truthy(CORPUS_CHIP_AEC_ENABLED_ENV)
     mode = (
         "corpus"
         if corpus

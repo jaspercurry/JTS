@@ -15,16 +15,16 @@ import shlex
 import sys
 
 from ..audio_profile_state import (
-    ALL_PROFILES, PROFILE_AUTO, PROFILE_CUSTOM, PROFILE_XVF_CHIP_AEC,
-    PROFILE_XVF_CHIP_AEC_TESTING, AecIntent, infer_audio_input_profile,
-    normalize_audio_input_profile, parse_env_bool, profile_env_updates,
-    resolve_profile_wake_legs,
+    ALL_PROFILES, AEC_MODE_ENV, PROFILE_AUTO, PROFILE_CUSTOM,
+    PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING, AecIntent,
+    infer_audio_input_profile, normalize_audio_input_profile, parse_env_bool,
+    profile_env_updates, resolve_profile_wake_legs,
 )
 
 
 # Env key -> the shell variable deploy/bin/jasper-aec-reconcile evals it into.
 SHELL_VARS = {
-    "JASPER_AEC_MODE": "AEC_MODE",
+    AEC_MODE_ENV: "AEC_MODE",
     "JASPER_WAKE_LEG_RAW": "LEG_RAW",
     "JASPER_WAKE_LEG_DTLN": "LEG_DTLN",
     "JASPER_WAKE_LEG_CHIP_AEC": "LEG_CHIP_AEC",

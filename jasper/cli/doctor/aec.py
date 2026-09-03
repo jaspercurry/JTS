@@ -15,6 +15,7 @@ from typing import NamedTuple
 from ... import enhanced_aec
 from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
 from ...audio_profile_state import (
+    AEC_MODE_ENV,
     AecIntent,
     DEFAULT_AEC_MODE_PATH,
     MicProbe,
@@ -39,6 +40,13 @@ from ...chip_aec.policy import (
     resolve_chip_aec_dac_gate,
 )
 from ...env_load import parse_env_file as _shared_parse_env_file
+from ..aec_bridge_config import (
+    OUTPUTD_REF_UDP_HOST_ENV,
+    OUTPUTD_REF_UDP_PORT_ENV,
+    REF_SOURCE_ENV,
+)
+from ..aec_bridge_engines import DTLN_ENABLED_ENV
+from ..aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -217,7 +225,7 @@ def _aec_mode_env() -> dict[str, str]:
 
 
 def _aec_mode_setting() -> str:
-    return _aec_mode_env().get("JASPER_AEC_MODE") or "auto"
+    return _aec_mode_env().get(AEC_MODE_ENV) or "auto"
 
 
 def _aec_profile_setting() -> str:
@@ -1323,11 +1331,11 @@ def check_aec_bridge_output_health() -> CheckResult:
         )
 
     env_source = os.environ.get(
-        "JASPER_AEC_REF_SOURCE", "outputd_udp",
+        REF_SOURCE_ENV, "outputd_udp",
     ).strip().lower()
     expected_endpoint = (
-        f"{os.environ.get('JASPER_AEC_OUTPUTD_REF_UDP_HOST', '127.0.0.1').strip()}:"
-        f"{os.environ.get('JASPER_AEC_OUTPUTD_REF_UDP_PORT', '9891').strip()}"
+        f"{os.environ.get(OUTPUTD_REF_UDP_HOST_ENV, '127.0.0.1').strip()}:"
+        f"{os.environ.get(OUTPUTD_REF_UDP_PORT_ENV, '9891').strip()}"
     )
     bridge_stats = _read_bridge_stats_snapshot()
     # Which route this box is on decides whether the authoritative v4
@@ -1452,7 +1460,7 @@ def check_aec_bridge_output_health() -> CheckResult:
 def _read_bridge_stats_snapshot() -> dict | None:
     """Read the bridge's one live stats snapshot source."""
     stats_path = Path(os.environ.get(
-        "JASPER_AEC_BRIDGE_STATS_PATH",
+        BRIDGE_STATS_PATH_ENV,
         "/run/jasper/aec_bridge_stats.json",
     ))
     try:
@@ -1749,7 +1757,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
             "voice + the AEC stack while paired; the leader owns the mic",
             reason=REASON_PARKED_BONDED_FOLLOWER,
         )
-    enabled = os.environ.get("JASPER_AEC_DTLN_ENABLED", "0").strip().lower()
+    enabled = os.environ.get(DTLN_ENABLED_ENV, "0").strip().lower()
     if enabled not in ("1", "true", "yes", "on"):
         return CheckResult(
             "DTLN-aec engine", "ok",

@@ -15,6 +15,13 @@ from __future__ import annotations
 import os
 from typing import Protocol
 
+from jasper.aec_sweep import (
+    AGC1_ENABLED_ENV,
+    AGC1_MAX_GAIN_DB_ENV,
+    AGC1_TARGET_DBFS_ENV,
+    NS_ENABLED_ENV,
+    NS_LEVEL_ENV,
+)
 from jasper.cli.aec_bridge_telemetry import logger
 
 # 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
@@ -22,6 +29,12 @@ from jasper.cli.aec_bridge_telemetry import logger
 # the AEC3 API contract.
 FRAME_SAMPLES = 320
 SAMPLE_RATE = 16000
+
+# DTLN engine-selection env keys: not sweep knobs, so aec_sweep doesn't carry
+# them, but read here and by wake_corpus/cli callers that report the same
+# flags.
+DTLN_ENABLED_ENV = "JASPER_AEC_DTLN_ENABLED"
+CORPUS_USB_DTLN_ENABLED_ENV = "JASPER_AEC_CORPUS_USB_DTLN_ENABLED"
 
 
 class Aec3Engine(Protocol):
@@ -79,14 +92,14 @@ class Aec3V1Engine:
     ) -> None:
         from jasper_aec3 import Aec3
 
-        ns_enabled = _cfg_bool("JASPER_AEC_NS_ENABLED", "1", overrides)
-        ns_level = _cfg_value("JASPER_AEC_NS_LEVEL", "low", overrides).strip().lower()
-        agc1_enabled = _cfg_bool("JASPER_AEC_AGC1_ENABLED", "0", overrides)
+        ns_enabled = _cfg_bool(NS_ENABLED_ENV, "1", overrides)
+        ns_level = _cfg_value(NS_LEVEL_ENV, "low", overrides).strip().lower()
+        agc1_enabled = _cfg_bool(AGC1_ENABLED_ENV, "0", overrides)
         agc1_target_dbfs = int(_cfg_value(
-            "JASPER_AEC_AGC1_TARGET_DBFS", "9", overrides,
+            AGC1_TARGET_DBFS_ENV, "9", overrides,
         ))
         agc1_max_gain_db = int(_cfg_value(
-            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18", overrides,
+            AGC1_MAX_GAIN_DB_ENV, "18", overrides,
         ))
         enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
         stream_delay_ms = int(_cfg_value(
@@ -139,14 +152,14 @@ class Aec3V2Engine:
         from jasper_aec3 import Aec3V2
 
         # Top-level, shared with v1
-        ns_enabled = _cfg_bool("JASPER_AEC_NS_ENABLED", "1", overrides)
-        ns_level = _cfg_value("JASPER_AEC_NS_LEVEL", "low", overrides).strip().lower()
-        agc1_enabled = _cfg_bool("JASPER_AEC_AGC1_ENABLED", "1", overrides)
+        ns_enabled = _cfg_bool(NS_ENABLED_ENV, "1", overrides)
+        ns_level = _cfg_value(NS_LEVEL_ENV, "low", overrides).strip().lower()
+        agc1_enabled = _cfg_bool(AGC1_ENABLED_ENV, "1", overrides)
         agc1_target_dbfs = int(_cfg_value(
-            "JASPER_AEC_AGC1_TARGET_DBFS", "9", overrides,
+            AGC1_TARGET_DBFS_ENV, "9", overrides,
         ))
         agc1_max_gain_db = int(_cfg_value(
-            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18", overrides,
+            AGC1_MAX_GAIN_DB_ENV, "18", overrides,
         ))
         enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
 

@@ -12,6 +12,24 @@ from pathlib import Path
 
 import pytest
 
+from jasper.aec_sweep import (
+    AGC1_ENABLED_ENV,
+    AGC1_MAX_GAIN_DB_ENV,
+    AGC1_TARGET_DBFS_ENV,
+    NS_ENABLED_ENV,
+    NS_LEVEL_ENV,
+)
+from jasper.audio_profile_state import AEC_MODE_ENV, AEC_MODE_FILE_ENV
+from jasper.cli.aec_bridge_config import (
+    OUTPUTD_REF_UDP_HOST_ENV,
+    OUTPUTD_REF_UDP_PORT_ENV,
+    REF_SOURCE_ENV,
+)
+from jasper.cli.aec_bridge_engines import (
+    CORPUS_USB_DTLN_ENABLED_ENV,
+    DTLN_ENABLED_ENV,
+)
+from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.mics import xvf3800
 
 RECONCILER = Path(__file__).resolve().parents[1] / "deploy" / "bin" / "jasper-aec-reconcile"
@@ -190,8 +208,42 @@ def _reconciler_written_aec_keys() -> frozenset[str]:
 
 @pytest.mark.parametrize(
     "constant",
-    [xvf3800.AEC_MIC_DEVICE_ENV, xvf3800.CHIP_AEC_ENABLED_ENV],
+    [
+        xvf3800.AEC_MIC_DEVICE_ENV,
+        xvf3800.CHIP_AEC_ENABLED_ENV,
+        DTLN_ENABLED_ENV,
+        REF_SOURCE_ENV,
+        OUTPUTD_REF_UDP_HOST_ENV,
+        OUTPUTD_REF_UDP_PORT_ENV,
+    ],
 )
 def test_env_key_constant_is_a_key_the_reconciler_writes(constant: str) -> None:
     # A rename on either side of the bash/Python edge fails here.
     assert constant in _reconciler_written_aec_keys()
+
+
+@pytest.mark.parametrize(
+    ("constant", "literal"),
+    [
+        (xvf3800.CORPUS_CHIP_AEC_ENABLED_ENV, "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"),
+        (xvf3800.CHIP_AEC_PRIMARY_LEG_ENV, "JASPER_AEC_CHIP_AEC_PRIMARY_LEG"),
+        (BRIDGE_STATS_PATH_ENV, "JASPER_AEC_BRIDGE_STATS_PATH"),
+        (CORPUS_USB_DTLN_ENABLED_ENV, "JASPER_AEC_CORPUS_USB_DTLN_ENABLED"),
+        (NS_ENABLED_ENV, "JASPER_AEC_NS_ENABLED"),
+        (NS_LEVEL_ENV, "JASPER_AEC_NS_LEVEL"),
+        (AGC1_ENABLED_ENV, "JASPER_AEC_AGC1_ENABLED"),
+        (AGC1_TARGET_DBFS_ENV, "JASPER_AEC_AGC1_TARGET_DBFS"),
+        (AGC1_MAX_GAIN_DB_ENV, "JASPER_AEC_AGC1_MAX_GAIN_DB"),
+        (AEC_MODE_ENV, "JASPER_AEC_MODE"),
+        (AEC_MODE_FILE_ENV, "JASPER_AEC_MODE_FILE"),
+    ],
+)
+def test_env_key_constant_not_written_by_reconciler_keeps_its_name(
+    constant: str, literal: str,
+) -> None:
+    # These keys are set by callers other than the reconciler (wake_corpus,
+    # the /aec wizard, engine tuning). Not in _reconciler_written_aec_keys(),
+    # so pinned directly: a rename here is still observable behavior for
+    # every reader of /etc/jasper/jasper.env or /var/lib/jasper/aec_mode.env.
+    assert constant == literal
+    assert constant not in _reconciler_written_aec_keys()
