@@ -193,7 +193,7 @@ def _every_screen_envelope() -> dict[str, dict]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -238,7 +238,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = _build_envelope_logged(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert env["flow"] == "v2"
 
 
@@ -2591,7 +2591,7 @@ def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert "headroom_cost" in env["candidate_review"]
 
 
@@ -5607,16 +5607,12 @@ def test_the_before_tuning_scope_clause_renders_once_the_check_has_passed():
            "at the mark only" in combined
 
 
-def test_the_review_screen_moved_the_schema_version():
-    """PR-T2's bump (9 → 10): the screen vocabulary gained ``review`` and the
-    envelope gained ``prediction``. PR-T3's (10 → 11): the vocabulary gained
-    ``closing`` and the envelope gained ``busy``. CC1's (11 → 12): the envelope
-    gained ``findings``. #2881's (14 → 15): the ``relay`` block gained
-    ``source`` and its hold gained ``prompt``/``hand_released``. All additive —
-    no key removed or re-typed — so an unredeployed page ignores the new keys
-    rather than refusing the envelope, the same property the 8 → 9 bump had."""
+def test_the_review_screen_stamps_the_schema_version():
+    """The review envelope carries the current schema version and the keys an
+    external driver reads off it, each present on every screen so a renderer
+    never has to branch on the screen to know whether to look."""
     env = build_crossover_envelope_v2(_review_status())
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert "prediction" in env
     assert env["busy"] is False  # present on every screen, true on one
     # Present on EVERY screen, populated on two — the key's absence would make

@@ -546,7 +546,7 @@ class CaptureKind:
     Each measurement flow injects only what is flow-specific — how to mint its
     capture session, and how to run it + consume the recorded WAV (play its
     stimulus, then analyze). The orchestrator owns everything common: the
-    single-slot re-entrancy guard, the `/status.relay` holder, and the
+    single-slot re-entrancy guard, the `/status.capture` holder, and the
     background-task lifecycle. Adding a kind is a descriptor, not a second copy
     of the handler.
 
@@ -699,7 +699,7 @@ def _run_capture(
                     kind=kind.label,
                 )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
-                # This outer net flips /status.relay to failed and carries the
+                # This outer net flips /status.capture to failed and carries the
                 # household-facing reason (see _capture_failure_message) so the
                 # status page can show why.
                 log_event(
@@ -2966,7 +2966,7 @@ def _handle_crossover_v2_position_ready(
 ) -> dict[str, Any]:
     """POST /crossover/v2/position-ready — a GATED session's position release.
 
-    Whoever moved the microphone read ``relay.position_pending`` off the
+    Whoever moved the microphone read ``capture.position_pending`` off the
     envelope, went to the stated angle, waited their own settle time, and is now
     saying so. Releasing admits the held ``begin_capture`` and the capture
     starts. Two shapes reach here and the verb does not care which: the remote
@@ -3011,8 +3011,7 @@ def _handle_crossover_v2_complete(
     complete-capture-set event (#2662 W2b): the driver (or the W3 wizard
     surface) says the household is done measuring, the held pre-apply group
     closes, and the fit runs. Only a live WIRED session holds the signal — a
-    relay session's completion rides the relay protocol, and a finished
-    session drops it with the slot — so "nothing waiting" is a conflict
+    a finished session drops it with the slot — so "nothing waiting" is a conflict
     (stale caller), the position-ready shape.
     """
     _read_json_body(handler)  # no fields consumed; drains the request body
@@ -3036,10 +3035,10 @@ def _handle_crossover_v2_retake(
     household (or the W3 wizard surface) says the take that just completed
     should be measured again. The walk re-opens THAT slot the next time it is
     waiting on a person — a held begin, or the held-set window — on the
-    relay's own §2.6 terms.
+    same terms.
 
     **No ``index``, and that is the contract rather than a shortcut.** The
-    relay's own rule is that a retake names the slot which JUST COMPLETED
+    rule is that a retake names the slot which JUST COMPLETED
     (``retakes_the_just_accepted_slot``: ``index == accepted_count``), and the
     walk is the only thing that knows that number — it is a worker-thread
     local, not a published one. Accepting an index here would mint a second
@@ -3047,9 +3046,8 @@ def _handle_crossover_v2_retake(
     disagree. The signal says WHAT the household wants; WHICH slot stays the
     walk's own fact.
 
-    Only a live WIRED session holds the signal — a relay session's retake
-    rides its own begin, and a finished session drops the signal with the
-    slot — so "nothing waiting" is a conflict (stale caller), the
+    Only a live session holds the signal, and a finished session drops it
+    with the slot, so "nothing waiting" is a conflict (stale caller), the
     position-ready shape. Whether the retake is then ADMISSIBLE (a take exists
     to replace, the plan's attempts are not spent, the slot's extras ledger
     still has room) is the walk's decision, journalled as
@@ -3078,12 +3076,12 @@ def _handle_crossover_v2_capture(
 
     Thin dispatch over :mod:`jasper.web.correction_crossover_v2` — the v2 host
     module owns gating, conductor construction, seam bindings, and the plan
-    runner; this bridges it into the shared relay slot/lifecycle machinery
-    (``_run_capture``) exactly as the other relay-hosted crossover
+    runner; this bridges it into the shared capture slot/lifecycle machinery
+    (``_run_capture``) exactly as the other hosted crossover
     captures do.
 
     ``idle_hold`` covers the one background lifetime a v2 session still owns:
-    the relay runner (through ``_run_capture``). It serves no HTTP
+    the capture runner (through ``_run_capture``). It serves no HTTP
     request, and it is the flow the 600 s idle exit actually killed (issue
     #1854). It used to reach a SECOND lifetime — the auto-apply worker thread
     the runner spawned — which the two-stage split removed: the apply is now a
@@ -3145,7 +3143,7 @@ def _handle_crossover_v2_republish(
 ) -> dict[str, Any]:
     """POST /crossover/v2/republish: re-publish a banked candidate by fingerprint.
 
-    Touches no DSP and holds no relay — it replaces the durable session
+    Touches no DSP and holds no capture — it replaces the durable session
     document around the published-candidate slot (host-owned apply keys
     carried forward) and moves no graph — so unlike its apply sibling it
     needs neither ``_run_async`` nor ``_camilla`` nor the stage-2
@@ -3164,9 +3162,9 @@ def _handle_crossover_v2_decline(
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/v2/decline: the review screen's "Keep current sound".
 
-    Touches no DSP and holds no relay, so unlike its apply/restore siblings it
+    Touches no DSP and holds no capture, so unlike its apply/restore siblings it
     needs neither ``_run_async`` nor ``_camilla`` — it records a decision and
-    re-renders. The relay snapshot rides the response for the same reason
+    re-renders. The capture snapshot rides the response for the same reason
     ``/crossover/reset``'s does: the page renders one envelope per round trip.
     """
     raw = _read_json_body(handler)
@@ -3182,10 +3180,10 @@ def _handle_crossover_v2_decline(
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/reset: in-flow "start over" for the crossover flow.
 
-    Unlike ``_handle_crossover_capture_cancel``, an unstarted relay is the
+    Unlike ``_handle_crossover_capture_cancel``, an unstarted capture is the
     COMMON case here (most Start-over clicks happen between measurements,
     not mid-capture), so a "nothing to stop" ``ValueError`` is swallowed
-    rather than surfaced. Any crossover-owned relay or level-match ramp is
+    rather than surfaced. Any crossover-owned capture or level-match ramp is
     requested to stop first; the actual state clear
     (``correction_crossover_flow.handle_reset``) fails closed if that stop
     has not finished draining yet, rather than racing it.
@@ -3243,7 +3241,7 @@ def _maybe_restore_main_volume(sess, cam) -> None:
 
             if _run_async(_restore_level_match(), timeout=5.0):
                 logger.info(
-                    "restored main_volume after relay level-match workflow"
+                    "restored main_volume after the level-match workflow"
                 )
                 return
 
@@ -4074,7 +4072,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
                 # v2 commission sessions (Wave 5a). ValueError covers both the
                 # host's typed CrossoverV2Refused (a subclass) and shared
-                # precondition refusals — same contract as relay-capture.
+                # precondition refusals — same contract as the capture routes.
                 try:
                     self._send_json(
                         _handle_crossover_v2_capture(
@@ -4209,7 +4207,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     payload = _handle_crossover_v2_apply(self)
                     # Finding N: a blocked apply must not read as success — the
                     # same "compute status from payload contents" shape
-                    # /crossover/relay-capture already uses above.
+                    # the capture routes already use above.
                     self._send_json(
                         payload,
                         status=(
@@ -5164,8 +5162,8 @@ def main(argv: list[str] | None = None) -> int:
     # next service-start claim boundary.
     #
     # The tracker is built BEFORE the server so `tracker.hold` can ride the
-    # handler cfg: a route that spawns background work (the phone-relay
-    # measurement sessions) holds it for that work's whole lifetime, which is
+    # handler cfg: a route that spawns background work (the measurement
+    # sessions) holds it for that work's whole lifetime, which is
     # what makes "idle" mean abandoned again (issue #1854).
     tracker = _systemd.IdleShutdownTracker(
         on_idle_exit=_idle_exit_restore_capture_entry,

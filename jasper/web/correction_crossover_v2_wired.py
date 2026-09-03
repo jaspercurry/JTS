@@ -203,7 +203,7 @@ def resolve_v2_wired_mic(
 class WiredCaptureSession:
     """One wired session's identity + plan — the ``pi_session`` stand-in.
 
-    Carries exactly what the shared hosting reads off a relay
+    Carries exactly what the shared hosting reads off a
     ``PiCaptureSession``: the provider-minted ``session_id`` (the seam's
     identity rule) and the validated ``spec`` whose ``capture_plan`` the walk
     follows and whose ``sample_rate_hz`` (pinned to 48 kHz by
@@ -247,7 +247,7 @@ def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
 @dataclass(frozen=True)
 class WiredCaptureAnswer:
     """The seam's :class:`CaptureAnswer`, minted by the wired source —
-    exactly the contract's four fields, nothing relay-shaped."""
+    exactly the contract's four fields, nothing more."""
 
     wav: bytes
     device: Mapping[str, Any] | None = None
@@ -535,7 +535,7 @@ def build_v2_wired_run_and_consume(
 
     1. **authorize** — stop check, then the position gate AHEAD of the
        conductor (a hold is not an admission decision — the same ordering the
-       relay states), then ``conductor.authorize_begin``. A gate deferral
+       same ordering), then ``conductor.authorize_begin``. A gate deferral
        becomes a local retry loop at :data:`WIRED_HOLD_POLL_S`; the gate's own
        hold/ceiling budgets bound it, exactly as they bound the phone's
        re-posts.
@@ -545,11 +545,11 @@ def build_v2_wired_run_and_consume(
        real DSP chain; the recorder keeps rolling for
        :data:`WIRED_POST_ROLL_S` after the play returns. A local-seam
        ``OSError`` is wrapped in ``CrossoverV2LocalSeamError`` exactly as the
-       relay wraps it (W6 finding G), so it lands in the internal-error arm,
+       (W6 finding G), so it lands in the internal-error arm,
        never a transport arm.
     3. **consume** — the minted :class:`WiredCaptureAnswer` goes to
        ``conductor.consume_capture``; the verdict is persisted and the
-       eager-fit trigger honored, byte-for-byte the relay's consume policy.
+       eager-fit trigger honored.
 
     Rejected verdicts auto-retry the same index on the next attempt (the
     remote tier's auto-advance shape; a gated session re-confirms the
@@ -557,7 +557,7 @@ def build_v2_wired_run_and_consume(
     :data:`WIRED_RETRY_SETTLE_S` first), bounded by the plan's own
     ``max_attempts``; ``terminal`` verdicts end the walk immediately.
 
-    **The held set (work order D1)** works exactly as the relay's: when the
+    **The held set (work order D1)**: when the
     target is met and the host still holds the pre-apply group open, the walk
     waits for ``complete_event`` (the host's ``request_complete`` seam — the
     wired stand-in for the phone's authenticated completion event) and then
@@ -568,7 +568,7 @@ def build_v2_wired_run_and_consume(
 
     **A per-take RETAKE (``retake_event``, the host's ``request_retake`` seam)
     is honoured wherever the walk is WAITING ON A PERSON**, which is the
-    relay's own window ("only while the begin for the next entry has not been
+    window ("only while the begin for the next entry has not been
     seen yet") expressed locally: a HELD BEGIN, and the held-set window above.
     Nowhere else — between an accepted capture and the next begin nothing here
     pauses, so there is no moment to interject in that a hold does not already
@@ -656,7 +656,7 @@ def build_v2_wired_run_and_consume(
             next hold, and by then "the slot that just completed" may not be
             the capture they were watching.** If that in-flight capture is
             REJECTED, ``accepted`` never advanced, so the retake re-opens the
-            slot accepted BEFORE it. That is faithful to the relay rule this
+            slot accepted BEFORE it. That is faithful to the rule this
             mirrors — a retake names ``accepted_count``, and a rejected capture
             does not change it — and it is also not obviously what a person
             tapping mid-capture meant. It is written down rather than guessed
@@ -674,7 +674,7 @@ def build_v2_wired_run_and_consume(
             while True:
                 _raise_if_stopped()
                 try:
-                    # The position gate AHEAD of the conductor, the relay's
+                    # The position gate AHEAD of the conductor, the same
                     # ordering: a hold is not an admission decision, and the
                     # gate's own budgets (per-hold + session ceiling) bound
                     # this loop exactly as they bound the phone's re-posts.
@@ -705,7 +705,7 @@ def build_v2_wired_run_and_consume(
                         )
                     if stop_event.wait(poll_s):
                         raise CaptureStopped("capture stopped") from None
-                    # A HELD begin is exactly the relay's retake window: the
+                    # A HELD begin is exactly the retake window: the
                     # previous slot is accepted and this one has not started,
                     # so replacing the previous take is still meaningful. The
                     # walk decides what to do about it — this loop only stops
@@ -800,7 +800,7 @@ def build_v2_wired_run_and_consume(
                 failure_code=code if not verdict.get("accepted") else None,
                 evidence=evidence_refs,
             )
-            # The eager-fit trigger, byte-for-byte the relay consume's policy
+            # The eager-fit trigger
             # (owner UX direction 2026-07-30).
             if verdict.get("awaiting_confirm"):
                 _host._start_speculative_group_close(conductor)
@@ -941,7 +941,7 @@ def build_v2_wired_run_and_consume(
                     accepted += 1
                 if verdict.get("terminal") is True:
                     # The host decided no later capture can make the set
-                    # usable — same immediate end the relay runner takes.
+                    # usable, so end immediately.
                     return
                 if not verdict.get("accepted") and position_gate is None:
                     # Gateless auto-retry gets a settle beat (module
@@ -976,7 +976,7 @@ def build_v2_wired_run_and_consume(
                     # `drive_group_close` says why PR-L4 no longer makes one.
                     _host.drive_group_close(conductor, evidence=evidence_refs)
                     continue
-                # The set is held open, which the relay states is exactly when
+                # The set is held open, which is exactly when
                 # the just-accepted slot is still retakeable. Asked AFTER the
                 # completion wait above so a household that said "done" is
                 # never asked to say it twice.
@@ -1010,7 +1010,7 @@ def build_v2_wired_run_and_consume(
             try:
                 await asyncio.shield(walk_task)
             except asyncio.CancelledError:
-                # Stop drains the walk before cleanup, the relay's shape: the
+                # Stop drains the walk before cleanup: the
                 # worker owns a live recorder and a DSP graph load, so
                 # cleanup must not race it.
                 stop_event.set()
@@ -1032,14 +1032,14 @@ def build_v2_wired_run_and_consume(
             # THE REFUSAL'S OWN registered code wins (gate fix round S1): the
             # exception that ended the session is the freshest fact, while
             # ``last_failure_code`` is whatever the LAST REJECTED CAPTURE
-            # stamped — so the relay's precedence would let a prior
+            # stamped — so the opposite precedence would let a prior
             # rejection's code shadow a later ceiling expiry (a
             # capture-quality claim persisted over a clock that ran out).
             # The conductor's stamp is the fallback for refusals that carry
             # no registered code of their own (the admission arms raise with
-            # a rendered MESSAGE and stamp the code separately). The relay's
+            # a rendered MESSAGE and stamp the code separately).
             # REASON_CAPTURE_TIMEOUT fallback is deliberately NOT mirrored —
-            # there is no link here to blame — and the relay runner's own
+            # and the runner's own
             # inverted precedence is flagged (PR body) but out of scope: its
             # gate refusals reach a different arm shape via the phone.
             refusal_code = str(getattr(refusal, "code", "") or "")
@@ -1059,7 +1059,7 @@ def build_v2_wired_run_and_consume(
             finally:
                 await _abandon_best_effort(session_id, volume)
             raise
-        except Exception as exc:  # noqa: BLE001 — cleanup-and-reraise, the relay's arm
+        except Exception as exc:  # noqa: BLE001 — cleanup-and-reraise
             # The catch-all cleanup arm (W6.1 gate ruling), minus the phone:
             # the seams raise open-endedly, and a wired capture-chain fault
             # (WiredCaptureError) lands here too — the honest persisted code
@@ -1120,7 +1120,7 @@ def build_v2_wired_run_and_consume(
 
 
 async def _abandon_best_effort(session_id: str, volume: Any) -> None:
-    """Drain the walked-away volume — the §5.5 guarantee, the relay's copy of
+    """Drain the walked-away volume — the §5.5 guarantee, its copy of
     record (same events, same CRITICAL on failure)."""
     try:
         await volume.abandon()

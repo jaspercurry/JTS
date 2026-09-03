@@ -23,7 +23,7 @@ that flow, reached directly or via
 ``jasper.web.correction_crossover_flow._build_envelope_logged`` (this call
 plus a serve log) — the only crossover flow since W5b retired the legacy schema-6 envelope and the ``JASPER_CROSSOVER_FLOW`` selector. It emits the envelope dict shape the
 generic data-driven JS renderer consumes (``schema_version`` / ``screen`` / ``steps`` / ``verdict_text`` /
-``nudges`` / ``relay`` / ``next_action`` / ``alternate_actions`` / ``progress``
+``nudges`` / ``capture`` / ``next_action`` / ``alternate_actions`` / ``progress``
 / ``applied``) so the generic data-driven JS renderer needs no v2-specific code.
 
 **Owner ruling (2026-07-20), SUPERSEDED.** It removed the human mid-flow Apply
@@ -137,13 +137,17 @@ from .delta_probe import (
 
 logger = logging.getLogger(__name__)
 
-# Bumped whenever the envelope's contract changes. Every bump so far has been
-# ADDITIVE — no key removed or re-typed — and the crossover wizard's own module
-# is data-driven and does not gate on the version, so an unredeployed page is
-# unaffected. The version exists for the EXTERNAL DRIVER chaining rounds, which
-# needs a stable way to know a contract is present rather than probing for a key
-# that is ``null`` on every screen before VERIFY completes.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 15
+# Bumped whenever the envelope's contract changes. The crossover wizard's own
+# module is data-driven and does not gate on the version; it exists for the
+# EXTERNAL DRIVER chaining rounds, which needs a stable way to know a contract
+# is present rather than probing for a key that is ``null`` on every screen
+# before VERIFY completes.
+#
+# 15 -> 16 is the first bump that is NOT additive: the in-flight block is
+# ``capture`` and an action's render-while-live flag is ``show_during_capture``.
+# Both rename a key 15 carried, so a driver pinned to 15 must be updated rather
+# than left to read a missing key as "no session is holding".
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 16
 
 # The v2 step tuple (§5.9): these five are the whole journey.
 _STEP_IDS = (
@@ -1124,7 +1128,7 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     that nothing had been produced over a measurement that was still running.
 
     **No SCREEN-LEVEL actions**: every action this screen could offer of its own
-    is destructive of work in progress. Stop rides the relay block.
+    is destructive of work in progress. Stop rides the capture block.
 
     **The confirm itself belongs to the household, here** (#2881): the screen
     mints Save / Record-again against the endpoints the runner already listens
@@ -1345,8 +1349,8 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "endpoint": "/correction/crossover/v2/apply",
             "body": {"expected_candidate_fingerprint": fingerprint},
             "enabled": apply_enabled,
-        # The ``show_during_capture`` primary is what keeps Apply visible (and owns
-        # the phone affordance) while the just-closed relay winds down.
+        # The ``show_during_capture`` primary is what keeps Apply visible
+        # while the just-closed capture winds down.
             "show_during_capture": True,
         } if has_candidate else None,
         alternate_actions=alternate_actions,
@@ -1949,7 +1953,7 @@ def _attempt_sitting_sentence(decision: Mapping[str, Any]) -> str:
     of ENGINE words ("floor", "scope", "sitting"), which ride in the decision's
     notes instead; and the actor is **the microphone, never "the phone"**
     (#1941 R4, guarded by ``tests/test_measurement_vocabulary.py``) — the
-    instrument a household holds is whatever browser reaches the relay.
+    instrument a household holds is whatever browser reaches the wizard.
     """
     return (
         "The previous result was measured with the microphone in a different "
@@ -2403,8 +2407,8 @@ def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
 #:
 #: A clock rather than a structural signal because every structural fact in the
 #: durable state is frozen by the last persist and reads identically a second
-#: later and a week later, and the one that does change — relay liveness —
-#: changes the WRONG WAY: a terminal failure purges its own relay within 3 s, so
+#: later and a week later, and the one that does change — capture liveness —
+#: changes the WRONG WAY: a terminal failure purges its own capture within 3 s, so
 #: keying on it would age out a screen the household is actively reading.
 #:
 #: 30 minutes: these screens are read with a microphone in hand and acted on in
@@ -2412,8 +2416,8 @@ def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
 #: to days. Erring long is the conservative direction — every realistic
 #: in-session case keeps the shipped screen byte for byte.
 #:
-#: Not borrowed from the relay's ``DEFAULT_TTL_S``, which is the lifetime of a
-#: link already dead by the time this is asked.
+#: Not borrowed from ``DEFAULT_TTL_S``, which is the lifetime of a session
+#: already over by the time this is asked.
 SESSION_FRESH_WINDOW_S = 30 * 60.0
 
 # The one-line history note's reason clause, keyed on the reason's TEMPLATE
@@ -2461,7 +2465,7 @@ def _session_is_live(status: Mapping[str, Any]) -> bool:
     GET. The clock is the state file's own ``updated_at``, whose every write
     site is a session transition.
 
-    A NON-TERMINAL relay block short-circuits the clock, and this is the one
+    A NON-TERMINAL capture block short-circuits the clock, and this is the one
     place that signal is sound: there is no failure and no purge, so a slot the
     wizard still holds is proof the session is not over — and it has to win,
     because a commission's own wall-clock ceiling is 3600 s, double this window,
@@ -2470,8 +2474,8 @@ def _session_is_live(status: Mapping[str, Any]) -> bool:
     """
     from .arm_walk import SESSION_ENDED_STATUSES
 
-    relay_status = str(_mapping(status.get("capture")).get("status") or "")
-    if relay_status and relay_status not in SESSION_ENDED_STATUSES:
+    capture_status = str(_mapping(status.get("capture")).get("status") or "")
+    if capture_status and capture_status not in SESSION_ENDED_STATUSES:
         return True
     return _record_is_fresh({"at": _v2(status).get("updated_at")})
 
@@ -2686,7 +2690,7 @@ def _verify_fail_envelope(
     here. Both halves are load-bearing: a budget-0 code reaching this screen
     through the ``applied`` override says nothing about the VERIFY check (its
     zero budget means no extra CAPTURE can help, and "Try again" here is a fresh
-    ``/v2/verify`` session, which for a dead relay is precisely the fix). Only a
+    ``/v2/verify`` session, which for a dead capture is precisely the fix). Only a
     row whose own template is ``verify_fail`` is a verdict ABOUT the check.
 
     ``republish_previous`` and ``verify_remeasure`` carry ``show_during_capture``
@@ -2700,7 +2704,7 @@ def _verify_fail_envelope(
     brand-new session, and doing that while the prior one is still tearing
     down is exactly the race the gate exists to prevent — the way back and
     Re-measure are the "get me out of this" affordances that must stay
-    reachable regardless — "regardless" of the RELAY gate, that is, not a
+    reachable regardless — "regardless" of the CAPTURE gate, that is, not a
     claim both are always offered (the way back needs a prior banked
     candidate; #1873 omits a promoted Re-measure from the alternates).
     """
@@ -2734,8 +2738,9 @@ def _verify_fail_envelope(
             #
             # ``show_during_capture`` is KEPT, and on a primary it does a second
             # thing: the wizard reads it as ``suppressConnectAffordance`` and
-            # hides the phone connect link/QR. That is wanted here — this verdict
-            # ENDS the capture session — and without the flag the relay-in-flight
+            # stands the capture block's own controls down. That is wanted here —
+            # this verdict ENDS the capture session — and without the flag the
+            # capture-in-flight
             # gate would hide this primary in that window, leaving the household
             # with the way back alone, or with NOTHING on a first-ever apply.
             **{k: v for k, v in remeasure.items() if k != "expert"},
@@ -2815,7 +2820,7 @@ def _reason_message(
 
     WHICH sentence a fact produces belongs to
     :func:`~jasper.active_speaker.crossover_v2.refusal_copy.reason_message`,
-    which the relay verdict and the budget refusal also call. Both facts are
+    which the capture verdict and the budget refusal also call. Both facts are
     extracted unconditionally: branching here on which code needs which would
     put a second copy of that knowledge next to the one that owns it.
     """
@@ -2887,9 +2892,8 @@ def _failure_envelope(
             status=status,
         )
     if template == TEMPLATE_HARD_STOP:
-        # hard_stop keeps the relay block (Finding D contract): the failure copy
-        # and the phone's stopped/failed status stay visible together, and the
-        # renderer only shows the QR for an IN-FLIGHT relay.
+        # hard_stop keeps the capture block (Finding D contract): the failure
+        # copy and the stopped/failed status stay visible together.
         # A hard-stop reason that knows the exact place explaining it (#1820)
         # declares that destination on its own ReasonSpec and wins over this
         # screen's generic one, so the verdict text and the action can never
@@ -3177,12 +3181,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             verdict=verdict,
             # STAGE 2's entry point (D2, PR-T3). The measuring session ended at
             # the review screen, so the post-apply check is a NEW session somebody
-            # has to start — deliberately, because the relay TTL begins ticking at
-            # open while the household is still walking back to fetch the phone.
+            # has to start — deliberately, because the session TTL begins
+            # ticking at open while the household is still walking back to the
+            # microphone.
             #
-            # No ``show_during_capture``: while stage 2's own relay IS in flight
+            # No ``show_during_capture``: while stage 2's own capture IS in flight
             # this screen renders the same copy with the action suppressed by the
-            # shared relay gate — one button to start it, none to start it twice.
+            # shared capture gate — one button to start it, none to start it twice.
             next_action={
                 "id": "verify_start",
                 "label": "Check the result",
