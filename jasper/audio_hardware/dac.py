@@ -168,7 +168,6 @@ class DacProfile:
     supports_active_crossover_commissioning: bool = False
     dac_channel_map: tuple[ChannelMapEntry, ...] | None = None
     mixer_controls: tuple[MixerControl, ...] = ()
-    headphone_pinned_100: bool = False
     validation_profile: str | None = None
     chip_aec_qualification: ChipAecQualification = "needs_calibration"
     chip_aec_detail: str = ""
@@ -372,9 +371,11 @@ APPLE_HEADPHONE_CONTROL = MixerControl(
 # The Studio driver (sound/soc/bcm/hifiberry_studio_dac8x.c) exposes a hardware
 # gain stage and writes NO defaults into it: the level after a boot is whatever
 # the board's MCU happens to hold, and "Master Playback Volume" reaches +24 dB.
-# JTS owns gain in CamillaDSP, so every stage on this board is pinned at unity
-# and unmuted. Names are the driver's kcontrol names verbatim (what
-# `amixer -c0 contents` prints), one Output Ch control per physical channel.
+# JTS owns gain in CamillaDSP, so this profile pins its stages at unity and
+# unmuted. Names are the driver's kcontrol names verbatim (what
+# `amixer -c0 contents` prints). The driver registers one Output Ch control per
+# output channel the board's EEPROM reports, so these eight are this profile's
+# board, not a driver constant.
 HIFIBERRY_STUDIO_MIXER_CONTROLS = (
     MixerControl(name="Master Playback Volume", target_db=0.0),
     *(
@@ -396,7 +397,6 @@ APPLE_USB_C_DONGLE = DacProfile(
     supported_card_matches=("usb-c to 3.5mm",),
     usb_ids=("05ac:110a",),
     mixer_controls=(APPLE_HEADPHONE_CONTROL,),
-    headphone_pinned_100=True,
     # A single Apple dongle can carry a mono active 2-way graph over the same
     # width-aware single-ALSA active lane used by wider coherent DACs.
     supports_active_outputd_lane=True,
@@ -759,7 +759,6 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     requires_same_usb_bus=True,
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=4,
-    headphone_pinned_100=True,
     chip_aec_detail=(
         "dual Apple dongle profile has a measured-sync contract and needs "
         "calibration before arming production chip AEC"

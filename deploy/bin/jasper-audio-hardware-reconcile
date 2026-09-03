@@ -370,7 +370,15 @@ observe_output_hardware_state() {
     local should_write="${1:-0}"
     local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason blocker_codes
     local action="observed" write_arg=""
+    local previous_profile_id="" previous_card_id=""
     OBSERVED_OUTPUT_VALID=0
+    # Read BEFORE the write below replaces the record: the identity the mixer
+    # pin depends on (which profile, on which card). An absent record reads as
+    # empty, so a first write counts as a change.
+    if [[ "$should_write" == "1" && -f "$OUTPUT_HARDWARE_STATE_PATH" ]]; then
+        previous_profile_id="$(sed -n 's/.*"profile_id": *"\([^"]*\)".*/\1/p' "$OUTPUT_HARDWARE_STATE_PATH" 2>/dev/null || true)"
+        previous_card_id="$(sed -n 's/.*"selected_card_id": *"\([^"]*\)".*/\1/p' "$OUTPUT_HARDWARE_STATE_PATH" 2>/dev/null || true)"
+    fi
     if [[ "$should_write" == "1" ]]; then
         write_arg="--write"
         action="written"
@@ -413,6 +421,11 @@ print(",".join(
     fi
     OBSERVED_OUTPUT_BLOCKER_CODES="$blocker_codes"
     OBSERVED_OUTPUT_VALID=1
+    if [[ "$should_write" == "1" ]] &&
+        [[ "$profile_id" != "$previous_profile_id" ||
+           "$selected_card_id" != "$previous_card_id" ]]; then
+        OUTPUT_HARDWARE_RECORD_CHANGED=1
+    fi
     OBSERVED_OUTPUT_PAYLOAD="$payload"
     OBSERVED_OUTPUT_PROFILE_ID="$profile_id"
     OBSERVED_OUTPUT_PROFILE_STATUS="$profile_status"
@@ -848,6 +861,10 @@ OBSERVED_OUTPUT_PROFILE_ID=""
 OBSERVED_OUTPUT_PROFILE_STATUS=""
 OBSERVED_OUTPUT_SELECTED_CARD_ID=""
 OBSERVED_OUTPUT_PAYLOAD=""
+# Set when this pass WROTE a record naming a different profile or card than the
+# one it replaced. The mixer pin reads that record, so it is the one thing that
+# has to re-run it.
+OUTPUT_HARDWARE_RECORD_CHANGED=0
 # Blocker codes from the observed record, comma-joined. The record is where a
 # park's reason is written, so this is what lets `output_parked` name WHY
 # instead of only reporting `recognized=0`.
@@ -1574,58 +1591,26 @@ render_ring_conf_if_needed() {
         "result=${result:-unknown} output_dac_id=${OUTPUT_DAC_ID} period_frames=${period:-none} previous_period_frames=${previous:-none} sample_format=${sample_format:-none} ring_a_channels=${channels_a:-none} ring_b_channels=${channels_b:-none} ring_active_channels=${channels_active:-none} topology=${topology:-none} reason=${reason:-none} ring_conf=$(jasper_asound_log_token "$conf")"
 }
 
-# True when the recognized DAC's profile declares mixer controls to pin, so the
-# boot pin is gated on the registry rather than on a hardcoded id list.
-dac_declares_mixer_pins() {
-    local dac_id="$1" answer
-    if [[ -z "$dac_id" ]] || ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
-        return 1
-    fi
-    answer="$(JASPER_DAC_ID_QUERY="$dac_id" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
-import os
-
-from jasper.audio_hardware.dac import mixer_control_groups_for
-
-groups = mixer_control_groups_for(os.environ["JASPER_DAC_ID_QUERY"]) or ()
-if any(groups):
-    print("pinned")
-PY
-)"
-    [[ "$answer" == "pinned" ]]
-}
-
 gate_role_services() {
-    local apple_output=0 pin_dac_init=0
-    if [[ "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ]]; then
-        # An Apple record can name a dongle that is no longer plugged in, so
-        # this arm keeps its own presence condition; every other DAC is pinned
-        # on the registry's answer alone, and asking it here costs a Python
-        # spawn the Apple boxes never pay.
-        if [[ "$APPLE_DONGLE_PRESENT" == "1" ]]; then
-            apple_output=1
-        fi
-        pin_dac_init="$apple_output"
-    elif dac_declares_mixer_pins "$OUTPUT_DAC_ID"; then
-        pin_dac_init=1
+    local apple_output=0
+    if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+        apple_output=1
     fi
-    # The pin is RESTARTED, not started: this one-shot's RemainAfterExit makes a
-    # `start` a no-op once it has run, and at boot it can run BEFORE the record
-    # it reads exists. reset-failed first keeps a deploy's several passes inside
-    # StartLimitIntervalSec from parking the unit (same bite as the monitor
-    # below). --no-block because the unit is ordered Before= camilla and the
-    # renderers: a blocking job would make this pass wait on whatever else is
-    # moving in that part of the graph.
-    local pin_state="disabled"
-    if [[ "$pin_dac_init" == "1" ]]; then
-        pin_state="enabled"
-        "$SYSTEMCTL" enable jasper-dac-init.service
-        "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
+    # The mixer pin is enabled on every box: which controls a DAC pins is the
+    # registry's answer, and jasper-dac-init is where it is asked. It re-runs
+    # only when the record it reads CHANGED — including the boot where it ran
+    # before any record existed — because RemainAfterExit makes `start` a no-op
+    # otherwise, and a restart per pass would spawn an interpreter on every
+    # udev sound event (ADR-0226). --no-block: the unit is ordered Before=
+    # camilla and the renderers, and a blocking job would make this pass wait
+    # on whatever else is moving there.
+    "$SYSTEMCTL" enable jasper-dac-init.service
+    "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
+    if [[ "$OUTPUT_HARDWARE_RECORD_CHANGED" == "1" ]]; then
         "$SYSTEMCTL" --no-block restart jasper-dac-init.service || true
     else
-        "$SYSTEMCTL" disable --now jasper-dac-init.service 2>/dev/null || true
-        "$SYSTEMCTL" reset-failed jasper-dac-init.service 2>/dev/null || true
+        "$SYSTEMCTL" start jasper-dac-init.service || true
     fi
-    log_event "dac_mixer_pin" "state=${pin_state} output_dac_id=${OUTPUT_DAC_ID}"
     if [[ "$apple_output" == "1" ]]; then
         "$SYSTEMCTL" enable jasper-headphone-monitor.service
         # Ensure the monitor is running idempotently — do NOT restart it. This

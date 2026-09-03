@@ -909,9 +909,10 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     _assert_states(template, "pcm.outputd_dac", "type hw", "card sndrpihifiberry")
     _assert_no_empty_alsa_card(template)
     commands = _systemctl_log(tmp_path)
-    assert "disable --now jasper-dac-init.service" in commands
+    # The pin is enabled on every box — a DAC that declares no mixer controls
+    # is jasper-dac-init's own clean exit, not a unit to disable.
+    assert "enable jasper-dac-init.service" in commands
     assert "disable --now jasper-headphone-monitor.service" in commands
-    assert "enable jasper-dac-init.service" not in commands
     assert "stop jasper-voice.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
@@ -934,6 +935,21 @@ def test_reconcile_studio_role_enables_the_mixer_pin_without_the_apple_monitor(
     assert "disable --now jasper-headphone-monitor.service" in commands
 
 
+def test_reconcile_leaves_an_unchanged_record_pin_alone(tmp_path: Path):
+    """The pin reads the record, so only a record that CHANGED has to re-run
+    it. A restart per pass would spawn an interpreter on every udev sound
+    event (ADR-0226); `start` is a no-op under RemainAfterExit."""
+    _run_reconcile(tmp_path, DAC8X_STUDIO_LISTING, "--reason", "test")
+    first = _systemctl_log(tmp_path)
+    assert "--no-block restart jasper-dac-init.service" in first.splitlines()
+
+    _run_reconcile(tmp_path, DAC8X_STUDIO_LISTING, "--reason", "test")
+    second = _systemctl_log(tmp_path)[len(first):].splitlines()
+
+    assert "start jasper-dac-init.service" in second
+    assert "--no-block restart jasper-dac-init.service" not in second
+
+
 def test_reconcile_unknown_role_renders_null_outputd_dac(tmp_path: Path):
     result = _run_reconcile(tmp_path, "", "--reason", "test")
 
@@ -943,7 +959,6 @@ def test_reconcile_unknown_role_renders_null_outputd_dac(tmp_path: Path):
     _assert_parked_outputd_dac_template(_template(tmp_path))
     assert _render_log(tmp_path) == "render\n"
     commands = _systemctl_log(tmp_path)
-    assert "disable --now jasper-dac-init.service" in commands
     assert "disable --now jasper-headphone-monitor.service" in commands
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "reset-failed jasper-voice.service jasper-outputd.service" in commands

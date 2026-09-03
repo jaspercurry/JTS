@@ -91,7 +91,6 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.usb_ids == ("05ac:110a",)
     assert APPLE_USB_C_DONGLE.connection == "usb"
     assert APPLE_USB_C_DONGLE.supported_card_matches == ("usb-c to 3.5mm",)
-    assert APPLE_USB_C_DONGLE.headphone_pinned_100 is True
     assert APPLE_USB_C_DONGLE.mixer_controls[0].name == "Headphone"
     assert APPLE_USB_C_DONGLE.mixer_controls[0].target_percent == 100
     assert APPLE_USB_C_DONGLE.mixer_controls[0].unmute is True
@@ -407,7 +406,6 @@ def test_dual_apple_profile_is_first_class_composite_four_output_dac() -> None:
         APPLE_USB_C_DONGLE.mixer_controls,
         APPLE_USB_C_DONGLE.mixer_controls,
     )
-    assert DUAL_APPLE_USB_C_DAC_4CH.headphone_pinned_100 is True
 
 
 def test_profile_validation_rejects_bad_static_shapes() -> None:

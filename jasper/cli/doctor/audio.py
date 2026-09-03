@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import shutil
@@ -31,6 +30,7 @@ from ...output_hardware import (
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputHardwareState,
     load_state as _load_output_hardware_state,
+    mixer_index_for_db as _mixer_index_for_db,
     mixer_pins_for_state as _mixer_pins_for_state,
 )
 from ...mic_presence import MicPresence, read_mic_presence
@@ -834,42 +834,8 @@ def check_apple_dongle_audio() -> CheckResult:
     )
 
 _AMIXER_PERCENT_RE = re.compile(r"\[(\d+)%\]")
-# `amixer cget` prints an integer control's own range, then its value, then the
-# TLV it publishes:
-#     ; type=INTEGER,access=rw---R--,values=1,min=0,max=254,step=1
-#     : values=206
-#     | dBminmax-min=-103.00dB,max=24.00dB
-_CGET_RANGE_RE = re.compile(
-    r"^\s*;\s*type=INTEGER,[^\n]*\bmin=(-?\d+),max=(-?\d+)", re.M
-)
-_CGET_TLV_MINMAX_RE = re.compile(
-    r"dBminmax(?:mute)?-min=(-?[\d.]+)dB,max=(-?[\d.]+)dB"
-)
 _CGET_VALUE_RE = re.compile(r"^\s*:\s*values=([^,\s]+)", re.M)
 _CGET_ITEM_RE = re.compile(r"^\s*;\s*Item #(\d+) '(.*)'\s*$", re.M)
-
-
-def _cget_db_index(text: str, target_db: float) -> int | None:
-    """The control index a dB target lands on, or None if the TLV cannot say.
-
-    SNDRV_CTL_TLVT_DB_MINMAX maps a control's own value range linearly onto
-    [min_db, max_db]. This is the same conversion `deploy/bin/jasper-dac-init`
-    applies when it writes the pin, down to the rounding; any other TLV form
-    is unreadable to both.
-    """
-
-    span = _CGET_RANGE_RE.search(text)
-    tlv = _CGET_TLV_MINMAX_RE.search(text)
-    if span is None or tlv is None:
-        return None
-    value_min, value_max = int(span.group(1)), int(span.group(2))
-    db_min, db_max = float(tlv.group(1)), float(tlv.group(2))
-    if value_max <= value_min or db_max <= db_min:
-        return None
-    scaled = value_min + (target_db - db_min) * (value_max - value_min) / (
-        db_max - db_min
-    )
-    return math.floor(min(max(scaled, value_min), value_max) + 0.5)
 
 
 def _mixer_pin_problem(card_id: str, control: MixerControl) -> str | None:
@@ -886,8 +852,11 @@ def _mixer_pin_problem(card_id: str, control: MixerControl) -> str | None:
         percents = _AMIXER_PERCENT_RE.findall(probe.stdout)
         if not percents:
             return f"{card_id}:{control.name}=unparsed"
-        if int(percents[0]) != control.target_percent:
-            return f"{card_id}:{control.name}={percents[0]}%"
+        # Every channel amixer prints, not just the first: one leg of a stereo
+        # pair left low is the same lost loudness as both.
+        off = [pct for pct in percents if int(pct) != control.target_percent]
+        if off:
+            return f"{card_id}:{control.name}={','.join(off)}%"
         if control.unmute and "[off]" in probe.stdout:
             return f"{card_id}:{control.name}=muted"
         return None
@@ -899,12 +868,10 @@ def _mixer_pin_problem(card_id: str, control: MixerControl) -> str | None:
         return f"{card_id}:{control.name}=unparsed"
     observed = int(match.group(1))
     if control.target_db is not None:
-        expected = _cget_db_index(probe.stdout, control.target_db)
+        expected = _mixer_index_for_db(probe.stdout, control.target_db)
         if expected is None:
             return f"{card_id}:{control.name}=no_db_scale"
-        # One index is the control's own resolution, and the applier writes a
-        # rounded index, so a single step apart is agreement, not drift.
-        if abs(observed - expected) > 1:
+        if observed != expected:
             return f"{card_id}:{control.name}={observed}!={expected}"
         return None
     items = {name: int(index) for index, name in _CGET_ITEM_RE.findall(probe.stdout)}

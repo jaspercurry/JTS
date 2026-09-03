@@ -1,17 +1,15 @@
 [Unit]
 Description=Pin the classified output DAC's declared mixer controls
 # JTS owns gain in CamillaDSP (main_volume), so every hardware stage in front
-# of the speaker is pinned to what the DacProfile registry declares: the Apple
-# dongle's analog Headphone attenuator at 100%, the HiFiBerry Studio DAC8x's
-# master and per-channel volumes at 0 dB and its DAC Mute unmuted. The Studio
-# driver writes no defaults at all, so an unpinned board boots at whatever its
-# MCU holds — up to +24 dB on the master control.
+# of the speaker holds what the DacProfile registry declares. The HiFiBerry
+# Studio driver writes no defaults at all: an unpinned board boots at whatever
+# its MCU holds, up to +24 dB on its master control.
 #
 # Ordered after alsa-restore so a restored snapshot cannot outrun the pin, and
-# before the renderers so the output path is at declared gain by the time
-# anything opens it. jasper-audio-hardware-reconcile restarts this unit after
-# every record it writes, which is what covers a boot where this ran before
-# the record existed and every later hotplug.
+# before the renderers so the path is at declared gain when anything opens it.
+# jasper-audio-hardware-reconcile restarts this unit whenever it writes a
+# record naming a different DAC or card, which covers a boot where this ran
+# before any record existed, and every later hotplug.
 After=sound.target alsa-restore.service
 Before=jasper-camilla.service shairport-sync.service librespot.service
 Requires=sound.target

@@ -4,16 +4,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Apply the mixer pins the classified output DAC profile declares.
+# Apply the mixer pins the classified output DAC profile declares, so neither
+# an `alsactl restore` nor a driver that writes no defaults of its own leaves a
+# hardware gain stage anywhere but its pin.
 #
-# The DacProfile registry owns WHICH controls are pinned and to what; the
-# audio-hardware reconciler's /run record owns WHICH CARD carries them. This
-# script only applies that pairing, and re-applies it on every reconcile pass,
-# so neither an `alsactl restore` nor a driver that writes no defaults of its
-# own can leave a hardware gain stage anywhere but its declared pin.
-#
-# A record that names no pinned DAC is a clean exit, not a failure: the
-# reconciler restarts this unit once it has written a fresh one.
+# The registry owns WHICH controls are pinned and to what, the reconciler's
+# /run record owns WHICH CARD carries them: one interpreter resolves both into
+# ready-made `amixer` arguments — dB targets through the same
+# jasper.output_hardware conversion the doctor verifies with — and this script
+# only runs them.
 
 set -uo pipefail
 
@@ -29,153 +28,94 @@ log() {
     printf 'event=dac_init.%s %s\n' "$1" "$2"
 }
 
-# `amixer cget` prints, for a TLV-readable integer control:
-#     ; type=INTEGER,access=rw---R--,values=1,min=0,max=254,step=1
-#     : values=206
-#     | dBminmax-min=-103.00dB,max=24.00dB
-# SNDRV_CTL_TLVT_DB_MINMAX maps the control's OWN value range linearly onto
-# [min_db, max_db], so a dB target lands at
-#     vmin + (target - min_db) * (vmax - vmin) / (max_db - min_db)
-# rounded to nearest and clamped to the range. Any other TLV form prints
-# nothing, and the caller fails the pin rather than writing a guessed gain.
-db_index_for() {
-    awk -v target="$1" '
-        # Both bounds of a scale come out of ONE match: half a scale read as a
-        # whole one pins the wrong gain, and the wrong gain here is +24 dB.
-        /^[[:space:]]*;[[:space:]]*type=INTEGER,/ {
-            if (match($0, /,min=-?[0-9]+,max=-?[0-9]+,/)) {
-                split(substr($0, RSTART + 5, RLENGTH - 6), range, ",max=")
-                vmin = range[1] + 0
-                vmax = range[2] + 0
-                have_range = 1
-            }
-        }
-        index($0, "dBminmax") > 0 {
-            if (match($0, /-min=-?[0-9.]+dB,max=-?[0-9.]+dB/)) {
-                scale = substr($0, RSTART + 5, RLENGTH - 5)
-                sub(/dB$/, "", scale)
-                split(scale, bounds, "dB,max=")
-                dbmin = bounds[1] + 0
-                dbmax = bounds[2] + 0
-                have_tlv = 1
-            }
-        }
-        END {
-            if (!have_range || !have_tlv || vmax <= vmin || dbmax <= dbmin)
-                exit 0
-            index_value = vmin + (target - dbmin) * (vmax - vmin) / (dbmax - dbmin)
-            if (index_value < vmin) index_value = vmin
-            if (index_value > vmax) index_value = vmax
-            printf "%d\n", index_value + 0.5
-        }
-    '
-}
-
-# The item index `amixer cset` takes for an enumerated control, from the
-# `; Item #N 'name'` lines `cget` prints. Empty when the driver has no such
-# item, which fails the pin.
-enum_index_for() {
-    awk -v want="$1" -v q="'" '
-        index($0, "; Item #") > 0 {
-            item = $0
-            sub(/^[^#]*#/, "", item)
-            sub(/[^0-9].*$/, "", item)
-            name = $0
-            sub("^[^" q "]*" q, "", name)
-            sub(q "[^" q "]*$", "", name)
-            if (name == want) { print item; exit }
-        }
-    '
-}
-
-observed_value_of() {
-    awk -F= '/^[[:space:]]*: values=/ { print $2; exit }'
-}
-
-pin_failed() {
-    log failed "card=${1} control=${2// /_} reason=${3}" >&2
-    failed=1
-}
-
-apply_percent() {
-    local card="$1" name="$2" percent="$3" unmute="$4"
-    local args=("${percent}%")
-    if [[ "$unmute" == "1" ]]; then
-        args+=("unmute")
-    fi
-    if amixer -c "$card" -- sset "$name" "${args[@]}" >/dev/null 2>&1; then
-        log pinned "card=${card} control=${name// /_} kind=percent target=${percent}"
-    else
-        pin_failed "$card" "$name" amixer_nonzero
-    fi
-}
-
-apply_kcontrol() {
-    local card="$1" name="$2" kind="$3" target="$4" info value observed
-    if ! info="$(amixer -c "$card" cget "name=$name" 2>/dev/null)"; then
-        pin_failed "$card" "$name" control_unreadable
-        return
-    fi
-    if [[ "$kind" == "db" ]]; then
-        value="$(printf '%s\n' "$info" | db_index_for "$target")"
-        if [[ -z "$value" ]]; then
-            pin_failed "$card" "$name" unsupported_tlv
-            return
-        fi
-    else
-        value="$(printf '%s\n' "$info" | enum_index_for "$target")"
-        if [[ -z "$value" ]]; then
-            pin_failed "$card" "$name" unknown_enum_item
-            return
-        fi
-    fi
-    # What the control held BEFORE the write: the journal is where a board that
-    # boots hot or muted is seen.
-    observed="$(printf '%s\n' "$info" | observed_value_of)"
-    if amixer -c "$card" cset "name=$name" "$value" >/dev/null 2>&1; then
-        log pinned \
-            "card=${card} control=${name// /_} kind=${kind} target=${target// /_} value=${value} observed=${observed:-none}"
-    else
-        pin_failed "$card" "$name" amixer_nonzero
-    fi
-}
-
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
     log skip "reason=python_unavailable"
     exit 0
 fi
 
-# A probe that RAN and failed leaves the declared pins unknown, which on a
-# board whose driver ships no mixer defaults is not a state to exit 0 on.
-if ! pins="$("$PYTHON" - <<'PY' 2>/dev/null
-from jasper.output_hardware import load_state, mixer_pins_for_state
+# One tab-separated line per pin: card, control name, then the `amixer`
+# arguments. The resolver names its own skip/failure reasons on stderr, which
+# is why that stream is deliberately not swallowed.
+pins="$("$PYTHON" - <<'PY'
+import subprocess
+import sys
 
-for card, control in mixer_pins_for_state(load_state()):
+from jasper.output_hardware import (
+    load_state,
+    mixer_index_for_db,
+    mixer_pins_for_state,
+    state_path,
+)
+
+
+def event(kind: str, detail: str) -> None:
+    print(f"event=dac_init.{kind} {detail}", file=sys.stderr)
+
+
+# A record that is ABSENT is a boot that has not reconciled yet, and the
+# reconciler restarts this unit once it writes one. A record that is present
+# but unreadable is an unknown gain stage, which is not a state to succeed on.
+if not state_path().exists():
+    event("skip", "reason=no_record")
+    raise SystemExit(0)
+state = load_state()
+if state is None:
+    event("failed", "reason=record_unusable")
+    raise SystemExit(1)
+
+pins = mixer_pins_for_state(state)
+if not pins:
+    event("skip", "reason=no_declared_pins")
+    raise SystemExit(0)
+
+unresolved = False
+for card, control in pins:
     if control.target_percent is not None:
-        kind, target = "percent", str(control.target_percent)
-    elif control.target_db is not None:
-        kind, target = "db", repr(control.target_db)
+        args = ["--", "sset", control.name, f"{control.target_percent}%"]
+        if control.unmute:
+            args.append("unmute")
+    elif control.target_enum is not None:
+        # `amixer cset` resolves an enumerated control by item name.
+        args = ["cset", f"name={control.name}", control.target_enum]
     else:
-        kind, target = "enum", str(control.target_enum)
-    print("\t".join((card, kind, target, "1" if control.unmute else "0", control.name)))
+        probe = subprocess.run(
+            ["amixer", "-c", card, "cget", f"name={control.name}"],
+            capture_output=True,
+            text=True,
+        )
+        index = (
+            mixer_index_for_db(probe.stdout, control.target_db)
+            if probe.returncode == 0
+            else None
+        )
+        if index is None:
+            event(
+                "failed",
+                f"card={card} control={control.name.replace(' ', '_')} "
+                "reason=scale_unreadable",
+            )
+            unresolved = True
+            continue
+        args = ["cset", f"name={control.name}", str(index)]
+    print("\t".join([card, control.name, *args]))
+raise SystemExit(1 if unresolved else 0)
 PY
-)"; then
-    log failed "reason=registry_unreadable" >&2
-    exit 1
-fi
+)"
+resolve_status=$?
 
-if [[ -z "$pins" ]]; then
-    log skip "reason=no_declared_pins"
-    exit 0
-fi
-
-while IFS=$'\t' read -r card kind target unmute name; do
-    [[ -n "${card:-}" && -n "${name:-}" ]] || continue
-    if [[ "$kind" == "percent" ]]; then
-        apply_percent "$card" "$name" "$target" "$unmute"
+while IFS=$'\t' read -r -a pin; do
+    [[ "${#pin[@]}" -ge 3 ]] || continue
+    applied="${pin[*]:2}"
+    if amixer -c "${pin[0]}" "${pin[@]:2}" >/dev/null 2>&1; then
+        log pinned "card=${pin[0]} control=${pin[1]// /_} applied=${applied// /_}"
     else
-        apply_kcontrol "$card" "$name" "$kind" "$target"
+        log failed "card=${pin[0]} control=${pin[1]// /_} reason=amixer_nonzero" >&2
+        failed=1
     fi
 done <<<"$pins"
+
+if [[ "$resolve_status" != "0" ]]; then
+    failed=1
+fi
 
 exit "$failed"

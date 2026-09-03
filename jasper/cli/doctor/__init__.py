@@ -151,7 +151,6 @@ from .audio import (
     check_active_speaker_output_hardware_match,
     check_dac_usb_sync_mode,
     check_apple_dongle_audio,
-    check_dongle_headphone_at_max,
     check_dac_mixer_pins,
     _devices_volume_limit_from_text,
     check_camilla_volume_limit,

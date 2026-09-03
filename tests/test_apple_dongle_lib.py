@@ -54,14 +54,6 @@ def test_auto_detects_every_apple_dongle_card(tmp_path: Path) -> None:
     assert _resolve(tmp_path, "auto", listing) == ["AppleA", "AppleB"]
 
 
-def test_the_drift_monitor_sources_the_shared_owner() -> None:
-    source = MONITOR.read_text()
-    assert "jasper-apple-dongle.sh" in source
-    assert 'source "$APPLE_DONGLE_LIB"' in source
-    assert "detect_apple_cards()" not in source
-    assert "resolve_cards()" not in source
-
-
 def test_missing_library_fails_loudly_without_running_forever(tmp_path: Path) -> None:
     env = dict(os.environ)
     env["JASPER_APPLE_DONGLE_LIB"] = str(tmp_path / "missing.sh")

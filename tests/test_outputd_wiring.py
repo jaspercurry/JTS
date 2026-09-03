@@ -210,7 +210,6 @@ def _bash_function(path: Path, name: str) -> str:
 
 # The role gate that enables/disables these two units is covered end to end by
 # tests/test_audio_hardware_reconcile.py, which also proves it is CALLED.
-APPLE_DONGLE_LISTING = "hw:CARD=AppleA,DEV=0\n    USB-C to 3.5mm Headphone Jack\n"
 NO_APPLE_DONGLE_LISTING = "hw:CARD=Other,DEV=0\n  Other DAC\n"
 
 

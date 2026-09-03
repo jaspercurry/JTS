@@ -21,6 +21,7 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.cli import doctor
 from jasper.cli.doctor import audio
+from jasper import output_hardware
 from jasper.output_hardware import (
     OutputCardFact,
     OutputHardwareState,
@@ -100,6 +101,7 @@ def studio_cget(
         for name, (value_min, value_max, db_min, db_max, _) in
         STUDIO_VOLUME_FACTS.items()
     }
+    # Only the doctor reads this one back; the applier writes the item by name.
     canned["DAC Mute"] = cget_enum(mute_item, STUDIO_MUTE_ITEMS)
     return canned
 
@@ -170,16 +172,13 @@ def test_studio_profile_declares_a_pin_for_every_hardware_gain_stage() -> None:
         {},
         {"target_percent": 100, "target_db": 0.0},
         {"target_db": 0.0, "target_enum": "unmuted"},
+        # unmute is a simple-mixer switch, so it only rides with a percent.
+        {"target_enum": "unmuted", "unmute": True},
     ],
 )
-def test_a_mixer_control_declares_exactly_one_target(kwargs) -> None:
+def test_a_control_the_applier_could_not_apply_is_refused(kwargs) -> None:
     with pytest.raises(ValueError):
         MixerControl(name="Master Playback Volume", **kwargs)
-
-
-def test_unmute_only_rides_with_a_simple_mixer_percent_target() -> None:
-    with pytest.raises(ValueError):
-        MixerControl(name="DAC Mute", target_enum="unmuted", unmute=True)
 
 
 @pytest.mark.parametrize("name,facts", sorted(STUDIO_VOLUME_FACTS.items()))
@@ -193,7 +192,7 @@ def test_unity_gain_lands_on_the_driver_derived_index(name, facts) -> None:
         == STUDIO_UNITY_INDEX
     )
     assert (
-        audio._cget_db_index(
+        output_hardware.mixer_index_for_db(
             cget_integer(0, value_min, value_max, db_min, db_max), 0.0
         )
         == STUDIO_UNITY_INDEX
@@ -212,7 +211,7 @@ def test_the_applier_pins_every_studio_control_at_unity(tmp_path) -> None:
     assert writes == [
         ["-c", "Studio", "cset", f"name={name}", str(STUDIO_UNITY_INDEX)]
         for name in STUDIO_VOLUME_FACTS
-    ] + [["-c", "Studio", "cset", "name=DAC Mute", "0"]]
+    ] + [["-c", "Studio", "cset", "name=DAC Mute", "unmuted"]]
 
 
 def test_applying_the_pins_twice_writes_the_same_commands(tmp_path) -> None:
@@ -269,6 +268,19 @@ def test_a_scale_that_cannot_be_read_whole_fails_instead_of_guessing(
     ]
 
 
+def test_an_absent_record_is_a_skip_but_an_unreadable_one_fails(tmp_path) -> None:
+    """`load_state` answers None for both; only one of them is a box that has
+    simply not reconciled yet, and the other leaves the gain stage unknown."""
+
+    record = Path(os.environ["JASPER_OUTPUT_HARDWARE_STATE_PATH"])
+    assert not record.exists()
+    assert run_dac_init(tmp_path, {}) == (0, [])
+
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{ not json")
+    assert run_dac_init(tmp_path, {}) == (1, [])
+
+
 def test_declared_pins_that_cannot_be_resolved_fail_rather_than_pass(tmp_path) -> None:
     """A registry probe that ran and failed leaves the pins unknown; the unit
     fails instead of reporting a boot that pinned nothing."""
@@ -299,21 +311,16 @@ def _doctor_amixer(canned: dict[str, str], sget: str = ""):
     return fake_run
 
 
-def test_doctor_passes_when_every_declared_pin_holds(monkeypatch) -> None:
-    record_dac(HIFIBERRY_DAC8X_STUDIO_ID, "Studio")
-    monkeypatch.setattr(audio, "_run", _doctor_amixer(studio_cget()))
-
-    result = doctor.check_dac_mixer_pins()
-
-    assert (result.name, result.status) == ("DAC mixer pins", "ok")
-
-
 @pytest.mark.parametrize(
     "canned,expected",
     [
         (studio_cget(), "ok"),
-        # One index is the control's own resolution, not drift.
-        (studio_cget(volumes={"Master Playback Volume": STUDIO_UNITY_INDEX - 1}), "ok"),
+        # One index below unity on the master is -0.5 dB, which is a pin that
+        # did not hold like any other.
+        (
+            studio_cget(volumes={"Master Playback Volume": STUDIO_UNITY_INDEX - 1}),
+            "fail",
+        ),
         (studio_cget(volumes={"Master Playback Volume": 180}), "fail"),
         (studio_cget(volumes={"Output Ch5 Playback Volume": 0}), "fail"),
         (studio_cget(mute_item=1), "fail"),
@@ -326,7 +333,9 @@ def test_doctor_fails_on_any_deviation_from_a_declared_pin(
     record_dac(HIFIBERRY_DAC8X_STUDIO_ID, "Studio")
     monkeypatch.setattr(audio, "_run", _doctor_amixer(canned))
 
-    assert doctor.check_dac_mixer_pins().status == expected
+    result = doctor.check_dac_mixer_pins()
+
+    assert (result.name, result.status) == ("DAC mixer pins", expected)
 
 
 @pytest.mark.parametrize(
@@ -352,6 +361,16 @@ def test_doctor_reads_a_percent_pin_through_the_simple_mixer(
 
     assert doctor.check_dac_mixer_pins().status == expected
     assert calls == [["amixer", "-c", "AppleA", "sget", "Headphone"]]
+
+
+def test_a_composite_missing_a_card_is_never_half_pinned() -> None:
+    """Pairing a composite's control groups with fewer cards than it declares
+    children would pin part of the pair and report success for the rest."""
+
+    record_dac(DUAL_APPLE_USB_C_DAC_4CH_ID, "Apple", children=1)
+
+    with pytest.raises(ValueError):
+        output_hardware.mixer_pins_for_state(output_hardware.load_state())
 
 
 def test_doctor_checks_every_card_of_a_composite_dac(monkeypatch) -> None:
@@ -386,7 +405,4 @@ def test_doctor_skips_a_dac_that_declares_no_pins(monkeypatch) -> None:
     record_dac("hifiberry_dac8x", "Card")
     monkeypatch.setattr(audio, "_run", fail_probe)
 
-    result = doctor.check_dac_mixer_pins()
-
-    assert (result.name, result.status) == ("DAC mixer pins", "ok")
-    assert "hifiberry_dac8x" in result.detail
+    assert doctor.check_dac_mixer_pins().status == "ok"

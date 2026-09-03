@@ -110,7 +110,6 @@ class DacProfile:
     active_outputd_lane_channels: int | None = None
     supports_active_crossover_commissioning: bool = False
     mixer_controls: tuple[MixerControl, ...] = ()
-    headphone_pinned_100: bool = False
     validation_profile: str | None = None
     udev_rule: str | None = None
     dtoverlay: str | None = None
