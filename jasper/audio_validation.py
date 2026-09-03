@@ -522,6 +522,7 @@ def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
         "variant_id": mic.variant_id,
         "geometry": mic.geometry,
         "chip_beam_plan": mic.chip_beam_plan,
+        "chip_aec_supported": mic.chip_aec_supported,
         "probe_error": mic.probe_error,
     }
 
