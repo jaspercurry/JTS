@@ -107,7 +107,7 @@ def _resolve_room() -> str:
         return ""
 
 
-def _resolve_hostname() -> str:
+def resolve_hostname() -> str:
     """mDNS hostname with process-env-wins precedence (never raises).
 
       1. JASPER_HOSTNAME in the process environment
@@ -116,8 +116,7 @@ def _resolve_hostname() -> str:
 
     Step 2 is what makes a CLI honest. ``JASPER_HOSTNAME`` reaches a daemon
     through its unit's ``EnvironmentFile=``; a command run over ssh gets no
-    such file, so env-or-literal alone printed ``jts.local`` on every box —
-    ``jasper-crossover-prescriber status`` did exactly that on jts3.
+    such file, so env-or-literal alone printed ``jts.local`` on every box.
     ``identity.env`` is the one file a bare shell can reach that records the
     same intent, because ``jasper-identity-reconcile`` snapshots
     ``JASPER_HOSTNAME`` into it (deploy/bin/jasper-identity-reconcile,
@@ -164,10 +163,8 @@ def read_identity() -> SpeakerIdentity:
     """Resolve this speaker's identity. TOTAL — never raises.
 
     name     — jasper.speaker_name.runtime_name() (env → state → "JTS")
-    room     — identity home wins, then legacy JASPER_PEER_ROOM, then
-               peering.config.default_room() (see _resolve_room)
-    hostname — JASPER_HOSTNAME, then identity.env's recorded configured
-               hostname, then "jts.local" (see _resolve_hostname)
+    room     — see _resolve_room
+    hostname — see resolve_hostname
     peer_id  — /var/lib/jasper/peer_id stripped, "" on any failure
     """
     try:
@@ -177,7 +174,7 @@ def read_identity() -> SpeakerIdentity:
         name = speaker_name.DEFAULT_SPEAKER_NAME
 
     room = _resolve_room()
-    hostname = _resolve_hostname()
+    hostname = resolve_hostname()
     peer_id = _read_peer_id()
 
     return SpeakerIdentity(name=name, room=room, hostname=hostname, peer_id=peer_id)
