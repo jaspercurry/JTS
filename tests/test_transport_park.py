@@ -870,6 +870,48 @@ def test_the_remedy_converges_the_marker_it_reads():
     assert "jasper-audio-hardware-reconcile" in transport_park.ACTIVE_ENDPOINT_REMEDY
 
 
+@pytest.mark.parametrize(
+    "dac_id,expect_remedy_named,expect_overlay_check_named",
+    [
+        pytest.param("hifiberry_dac8x", True, False, id="dac_recognized"),
+        pytest.param(None, False, True, id="dac_not_recognized"),
+    ],
+)
+def test_doctor_swaps_the_remedy_when_no_dac_is_recognized(
+    monkeypatch, dac_id, expect_remedy_named, expect_overlay_check_named
+):
+    """A remedy that re-emits onto a ring endpoint and converges it cannot do
+    either while no DAC is recognized (#2575): naming it would send the
+    household to run a command that cannot work yet, so the doctor points at
+    the boot-config check instead."""
+    from jasper.cli.doctor import audio_runtime
+    from jasper.cli.doctor.boot_config import CHECK_NAME
+
+    park = {
+        "park_class": PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
+        "issue": None,
+        "remedy": transport_park.ACTIVE_ENDPOINT_REMEDY,
+        "detail": "d",
+    }
+    monkeypatch.setattr(
+        transport_park,
+        "snapshot",
+        lambda *a, **k: {
+            "status": "parked",
+            "parked": True,
+            "parks": [park],
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(audio_runtime, "active_dac_profile_id", lambda: dac_id)
+
+    result = audio_runtime.check_ring_transport_park()
+
+    assert result.status == "fail"
+    assert (transport_park.ACTIVE_ENDPOINT_REMEDY in result.detail) is expect_remedy_named
+    assert (CHECK_NAME in result.detail) is expect_overlay_check_named
+
+
 def test_state_resilience_carries_the_park_reader():
     from jasper.control import state_aggregate
 

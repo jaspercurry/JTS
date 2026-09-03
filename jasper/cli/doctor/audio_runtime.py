@@ -22,6 +22,7 @@ from ...fanin_coupling import RING_SLOT_FRAMES, read_declared_ring_wire_format
 from ._registry import doctor_check
 from ...output_hardware import active_dac_profile_id
 from ._shared import CheckResult, _run
+from .boot_config import CHECK_NAME as _OVERLAY_CHECK_NAME
 from .correction import _active_camilla_config_path
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
@@ -3415,7 +3416,19 @@ def check_ring_transport_park() -> CheckResult:
         if issue:
             part = f"{part}. TRACKED: {issue}"
         remedy = park.get("remedy")
-        if remedy:
+        if (
+            park.get("park_class") == transport_park.PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED
+            and active_dac_profile_id() is None
+        ):
+            # The remedy re-emits the baseline onto a ring endpoint and asks
+            # the reconciler to converge it — neither step has a DAC to drive
+            # while none is recognized (#2575), so naming that command would
+            # send the household to run something that cannot work yet.
+            part = (
+                f"{part}. no recognized DAC; the remedy cannot converge — see "
+                f'jasper-doctor\'s "{_OVERLAY_CHECK_NAME}" check'
+            )
+        elif remedy:
             part = f"{part}. REMEDY: {remedy}"
         named.append(part)
 
