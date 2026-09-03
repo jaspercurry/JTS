@@ -62,29 +62,25 @@ def _frame() -> np.ndarray:
 
 
 def _shipped_idle_timeout_default() -> int:
-    """The `JASPER_IDLE_TIMEOUT_SEC` default, read out of `Config.from_env`
-    rather than restated here — the same trick the wake-leg tests use for
-    `Heartbeat`'s stale threshold. A duplicated literal is exactly how the
-    ordering these tests pin would silently stop holding.
+    """The `JASPER_IDLE_TIMEOUT_SEC` default, taken from a real
+    `Config.from_env` with the knob unset rather than restated here — a
+    duplicated literal is exactly how the ordering these tests pin would
+    silently stop holding.
     """
-    import ast
-    import inspect
-    import textwrap
+    import os
+    from unittest import mock
 
-    from jasper import config as config_mod
+    from jasper.config import Config
 
-    tree = ast.parse(
-        textwrap.dedent(inspect.getsource(config_mod.Config.from_env)),
-    )
-    for call in ast.walk(tree):
-        if (
-            isinstance(call, ast.Call)
-            and getattr(call.func, "id", None) == "_env_int"
-            and call.args
-            and getattr(call.args[0], "value", None) == "JASPER_IDLE_TIMEOUT_SEC"
-        ):
-            return int(call.args[1].value)
-    raise AssertionError("JASPER_IDLE_TIMEOUT_SEC default not found in Config")
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"JASPER_IDLE_TIMEOUT_SEC", "JASPER_VOICE_PROVIDER"}
+    }
+    env["JASPER_VOICE_PROVIDER"] = "gemini"
+    env.setdefault("GEMINI_API_KEY", "test-key")
+    with mock.patch.dict(os.environ, env, clear=True):
+        return Config.from_env().idle_timeout_sec
 
 
 def _session_loop(*, manual: bool, elapsed: float = 1.0, idle_timeout: int = 20):

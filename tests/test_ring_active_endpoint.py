@@ -1807,11 +1807,13 @@ def test_the_parked_emitter_keeps_its_own_literals():
     """The deliberate exclusion, pinned so it reads as a choice, not an omission."""
     import inspect
 
+    import yaml
+
     parked = active_camilla_yaml.emit_active_speaker_parked_config
     assert "queuelimit" not in inspect.signature(parked).parameters
-    source = inspect.getsource(parked)
-    assert "queuelimit: 4" in source
-    assert "enable_rate_adjust: false" in source
+    devices = yaml.safe_load(parked(output_count=2))["devices"]
+    assert devices["queuelimit"] == 4
+    assert devices["enable_rate_adjust"] is False
 
 
 def test_the_ring_geometry_reaches_the_emitted_yaml():

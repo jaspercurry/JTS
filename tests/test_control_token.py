@@ -14,7 +14,7 @@ in test_control_server.py against the real ThreadingHTTPServer.
 """
 from __future__ import annotations
 
-import inspect
+import hmac
 import os
 import stat
 
@@ -70,12 +70,20 @@ def test_verify_enforced_mismatch_and_missing_header(monkeypatch, tmp_path):
     assert control_token.verify("") is False
 
 
-def test_verify_uses_constant_time_compare():
-    """The compare must be hmac.compare_digest, never ==, so the token's
-    length/prefix doesn't leak through timing."""
-    src = inspect.getsource(control_token.verify)
-    assert "compare_digest" in src
-    assert "==" not in src.replace("!=", "")  # no equality compare of the secret
+def test_verify_uses_constant_time_compare(monkeypatch, tmp_path):
+    """The compare must go through hmac.compare_digest, never ==, so the
+    token's length/prefix doesn't leak through timing."""
+    path = tmp_path / "control_token"
+    path.write_text("the-token-value")
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+    calls: list[tuple[str, str]] = []
+    real = hmac.compare_digest
+    monkeypatch.setattr(
+        hmac, "compare_digest", lambda a, b: calls.append((a, b)) or real(a, b)
+    )
+
+    assert control_token.verify("wrong") is False
+    assert calls == [("wrong", "the-token-value")]
 
 
 # --- CLI: enable / show / disable -----------------------------------------
