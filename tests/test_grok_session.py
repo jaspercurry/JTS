@@ -199,3 +199,23 @@ def test_flat_rate_provider_without_meter_hook_warns(tmp_path, caplog) -> None:
         and "provider=future-flat" in r.getMessage()
         for r in caplog.records
     )
+
+
+async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:
+    """Every journal line from a Grok connection must identify Grok.
+
+    The adapter inherits OpenAI's logging wholesale, so a Grok outage
+    used to read as ``openai connection: ...`` — unattributable when
+    both providers are configured. See issue #3855.
+    """
+    conn, _factory = _make_grok_conn()
+    registry = ToolRegistry()
+    with caplog.at_level(logging.INFO, logger="jasper.voice.openai_session"):
+        await conn.start(registry, "")
+        await conn.stop()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages
+    tag = f"{conn.PROVIDER_NAME} connection:"
+    assert any(m.startswith(tag) for m in messages)
+    assert not any(m.startswith("openai connection:") for m in messages)

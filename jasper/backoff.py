@@ -27,3 +27,24 @@ def reconnect_backoff_delay(attempt: int) -> float:
     )
     jitter = base * RECONNECT_BACKOFF_JITTER_FRACTION
     return base + random.uniform(-jitter, jitter)
+
+
+# A terminal failure (revoked key, blocked account, missing model) cannot
+# be fixed by retrying, so hammering the 60 s cap only burns the provider's
+# rate budget — jts.local logged 1000+ such attempts over 36 h. Poll slowly
+# instead of parking: an operator who adds credit or fixes the key recovers
+# within one interval, with no restart. See issue #3855.
+TERMINAL_POLL_INTERVAL_SEC = 900.0
+
+
+def reconnect_delay(attempt: int, *, transient: bool) -> float:
+    """Return the delay before the next reconnect attempt.
+
+    ``transient`` is the classification of the failure that ended the
+    previous attempt (:func:`jasper.voice._supervisor.is_transient`).
+    Transient keeps the exponential schedule; terminal drops to the
+    fixed slow poll.
+    """
+    if not transient:
+        return TERMINAL_POLL_INTERVAL_SEC
+    return reconnect_backoff_delay(attempt)

@@ -12,13 +12,14 @@ from typing import AsyncIterator, Callable
 from google import genai
 from google.genai import types
 
-from jasper.backoff import reconnect_backoff_delay
+from jasper.backoff import reconnect_delay
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
     Deferred,
     OutageTracker,
     http_status,
+    is_transient,
     survive_terminal_initial_connect,
 )
 from .session import (
@@ -526,8 +527,9 @@ class GeminiLiveConnection:
         context_reset_sec: float = 0.0,
         keepalive_period_sec: float = KEEPALIVE_PERIOD_SEC,
         # Production: leave None → supervisor reconnects FOREVER with
-        # `reconnect_backoff_delay(attempt)` (1, 2, 4, 8, 16, 32, 60,
-        # 60, …s with ±25% jitter). Tests pass a bounded tuple to make
+        # `reconnect_delay()` (1, 2, 4, 8, 16, 32, 60, 60, …s with ±25%
+        # jitter while the failure is transient; a fixed slow poll once
+        # it is terminal). Tests pass a bounded tuple to make
         # exhaustion observable and runs fast.
         backoff_schedule: tuple[float, ...] | None = None,
         # Test seam: replace `client.aio.live.connect` so unit tests can
@@ -1236,6 +1238,9 @@ class GeminiLiveConnection:
 
         last_exc: Exception | None = None
         handle_dropped = False
+        # Seeds the first delay; the previous failure's classification
+        # picks every one after that.
+        last_transient = True
         attempt = 0
         # Production: `self._backoff_schedule is None` → infinite loop.
         # Tests pass a bounded tuple to make exhaustion observable.
@@ -1248,7 +1253,7 @@ class GeminiLiveConnection:
             delay = (
                 self._backoff_schedule[attempt - 1]
                 if bounded
-                else reconnect_backoff_delay(attempt)
+                else reconnect_delay(attempt, transient=last_transient)
             )
             async with self._state_lock:
                 self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
@@ -1270,6 +1275,7 @@ class GeminiLiveConnection:
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
+                last_transient = is_transient(e)
                 is_409, status = _is_409_conflict(e)
                 handle_short = (
                     (self._resumption_handle or "")[:8]

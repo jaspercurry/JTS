@@ -24,7 +24,10 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
-from jasper.voice._supervisor import NEEDS_ATTENTION_CUE_SLUG
+from jasper.voice._supervisor import (
+    NEEDS_ATTENTION_CUE_SLUG,
+    OUT_OF_CREDIT_CUE_SLUG,
+)
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
@@ -2678,3 +2681,100 @@ async def test_no_activity_meter_by_default_is_safe():
     registry = ToolRegistry()
     await conn.start(registry, "")
     await conn.stop()  # must not raise with no meter set
+
+
+# ---------------------------------------------------------------------------
+# Post-connect reconnect cadence (issue #3855).
+# ---------------------------------------------------------------------------
+
+
+async def _reconnect_delays(exc: Exception, count: int = 4):
+    """Drive the PRODUCTION (unbounded) reconnect loop against a connect
+    factory that always raises ``exc``.
+
+    Returns the connection and the delays the loop actually slept for.
+    ``backoff_schedule=None`` is the production wiring — the bounded
+    test schedule other tests pass would mask the classification.
+    """
+    delays: list[float] = []
+    holder: dict = {}
+
+    async def _sleep(seconds: float) -> None:
+        delays.append(seconds)
+        if len(delays) >= count:
+            holder["conn"]._stopping.set()
+
+    def _factory(*, model: str):
+        raise exc
+
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        backoff_schedule=None,
+        connect_factory=_factory,
+        sleep=_sleep,
+    )
+    holder["conn"] = conn
+    await conn._reconnect_with_backoff()
+    return conn, delays
+
+
+class _TerminalRejection(Exception):
+    status_code = 403
+
+    def __str__(self) -> str:
+        return "403 Forbidden: account has no credits"
+
+
+async def test_terminal_reconnect_failure_drops_to_slow_poll():
+    """A rejection retrying cannot fix must stop hammering the cap.
+
+    jts.local logged 1000+ reconnect attempts at the 60 s cap over 36 h
+    of an xAI 403 credit block because this loop never classified its
+    failures. Everything after the first (still-unclassified) delay
+    must be the fixed slow poll.
+    """
+    from jasper.backoff import (
+        RECONNECT_MAX_BACKOFF_SEC,
+        TERMINAL_POLL_INTERVAL_SEC,
+    )
+
+    conn, delays = await _reconnect_delays(_TerminalRejection())
+    assert len(delays) == 4
+    assert delays[1:] == [TERMINAL_POLL_INTERVAL_SEC] * 3
+    assert TERMINAL_POLL_INTERVAL_SEC > RECONNECT_MAX_BACKOFF_SEC
+    # A slow poll, never a park: the loop is still retrying, so an
+    # operator who restores the key recovers without a restart.
+    assert conn._state is ConnectionState.PAUSED_FOR_BACKOFF
+
+
+async def test_transient_reconnect_failure_keeps_exponential_backoff():
+    """A network blip keeps the 1 s → 60 s ramp it always had."""
+    from jasper.backoff import (
+        RECONNECT_BACKOFF_JITTER_FRACTION,
+        RECONNECT_INITIAL_BACKOFF_SEC,
+        RECONNECT_MAX_BACKOFF_SEC,
+    )
+
+    # OSError carries no status, so `is_transient` returns True.
+    conn, delays = await _reconnect_delays(
+        OSError(-3, "Temporary failure in name resolution"), count=6,
+    )
+    lo = 1.0 - RECONNECT_BACKOFF_JITTER_FRACTION
+    hi = 1.0 + RECONNECT_BACKOFF_JITTER_FRACTION
+    for attempt, delay in enumerate(delays, start=1):
+        base = min(
+            RECONNECT_INITIAL_BACKOFF_SEC * 2 ** (attempt - 1),
+            RECONNECT_MAX_BACKOFF_SEC,
+        )
+        assert base * lo <= delay <= base * hi
+
+
+async def test_terminal_reconnect_stays_paused_and_audible():
+    """Slow-polling must not go quiet: the outage stays observable at
+    ``/state`` and a wake during it still names a remedy cue."""
+    conn, _delays = await _reconnect_delays(_TerminalRejection(), count=2)
+    assert conn.is_paused() is True
+    assert conn.last_failure_detail() is not None
+    assert conn.wake_cue() in (
+        OUT_OF_CREDIT_CUE_SLUG, NEEDS_ATTENTION_CUE_SLUG,
+    )

@@ -61,7 +61,7 @@ import os
 import time as _time
 from typing import AsyncIterator, Callable
 
-from jasper.backoff import reconnect_backoff_delay
+from jasper.backoff import reconnect_backoff_delay, reconnect_delay
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
@@ -894,6 +894,9 @@ class OpenAIRealtimeConnection:
         self._monotonic = clock if clock is not None else _time.monotonic
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._base_url = base_url
+        # Journal prefix. Reads the class attribute so a subclass
+        # (GrokRealtimeConnection) names itself instead of "openai".
+        self._log_tag = f"{self.PROVIDER_NAME} connection:"
         # Lazy SDK client — only built when ``connect_factory`` is None.
         # We do this lazily so test setups can construct the connection
         # object without the openai package installed.
@@ -1036,9 +1039,9 @@ class OpenAIRealtimeConnection:
 
     async def acquire_turn(self) -> LiveTurn:
         if self._state is ConnectionState.FAILED:
-            raise RuntimeError("openai connection: in FAILED state; daemon paused")
+            raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
         if self._state is ConnectionState.CLOSED:
-            raise RuntimeError("openai connection: closed")
+            raise RuntimeError(f"{self._log_tag} closed")
 
         if not self._connected_event.is_set():
             timeout = (
@@ -1052,14 +1055,14 @@ class OpenAIRealtimeConnection:
                 )
             except asyncio.TimeoutError:
                 raise RuntimeError(
-                    "openai connection: not connected after backoff window"
+                    f"{self._log_tag} not connected after backoff window"
                 )
 
         await self._maybe_reset_context()
 
         async with self._turn_lock:
             if self._active_turn is not None:
-                raise RuntimeError("openai connection: a turn is already active")
+                raise RuntimeError(f"{self._log_tag} a turn is already active")
             now_loop = asyncio.get_event_loop().time()
             turn = OpenAIRealtimeTurn(self, started_at=now_loop)
             turn._started_at_monotonic = _time.monotonic()
@@ -1110,7 +1113,7 @@ class OpenAIRealtimeConnection:
         (audio-frame send vs. tool-result send) can't interleave at the
         WebSocket frame boundary."""
         if self._conn is None:
-            raise RuntimeError("openai connection: no active session")
+            raise RuntimeError(f"{self._log_tag} no active session")
         async with self._send_lock:
             await self._conn.send(event)
 
@@ -1216,7 +1219,7 @@ class OpenAIRealtimeConnection:
         try:
             await self._send_event({"type": "response.cancel"})
         except Exception as e:  # noqa: BLE001
-            logger.debug("openai connection: cancel ignored (%s)", e)
+            logger.debug(f"{self._log_tag} cancel ignored (%s)", e)
 
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
         if self._server_vad_active:
@@ -1224,7 +1227,7 @@ class OpenAIRealtimeConnection:
                 await self.set_turn_detection(None)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "openai connection: failed to restore manual VAD "
+                    f"{self._log_tag} failed to restore manual VAD "
                     "after turn (%s: %s); next turn's session.update "
                     "will correct",
                     type(e).__name__, e,
@@ -1240,7 +1243,7 @@ class OpenAIRealtimeConnection:
         # Fire any reconnect the proactive watchdog deferred for this turn.
         if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
             logger.info(
-                "openai connection: proactive reconnect — turn just ended, "
+                f"{self._log_tag} proactive reconnect — turn just ended, "
                 "firing the watchdog-deferred reconnect",
             )
 
@@ -1449,7 +1452,7 @@ class OpenAIRealtimeConnection:
                         level=logging.ERROR,
                     )
                     raise RuntimeError(
-                        f"openai connection: {phase} budget of "
+                        f"{self._log_tag} {phase} budget of "
                         f"{budget_sec:.0f}s exhausted after {attempt} "
                         f"attempt(s); last error: {e}"
                     )
@@ -1526,7 +1529,7 @@ class OpenAIRealtimeConnection:
         self._conn = conn
         connect_ms = (_time.monotonic() - t0) * 1000
         logger.info(
-            "openai connection: connect ok in %.0fms (model=%s)",
+            f"{self._log_tag} connect ok in %.0fms (model=%s)",
             connect_ms, self._model,
         )
         # Send session.update immediately so subsequent turns inherit
@@ -1542,7 +1545,7 @@ class OpenAIRealtimeConnection:
             # unconfigured. Tear down so the supervisor can retry from
             # a clean slate.
             logger.warning(
-                "openai connection: session.update failed (%s: %s); "
+                f"{self._log_tag} session.update failed (%s: %s); "
                 "closing and re-raising for supervisor retry",
                 type(e).__name__, e,
             )
@@ -1582,14 +1585,14 @@ class OpenAIRealtimeConnection:
             try:
                 await asyncio.wait_for(self._conn.close(), timeout=3.0)
             except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug("openai connection: close error (ignored): %s", e)
+                logger.debug(f"{self._log_tag} close error (ignored): %s", e)
         if self._conn_cm is not None:
             try:
                 await asyncio.wait_for(
                     self._conn_cm.__aexit__(None, None, None), timeout=3.0,
                 )
             except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug("openai connection: __aexit__ error (ignored): %s", e)
+                logger.debug(f"{self._log_tag} __aexit__ error (ignored): %s", e)
         self._conn_cm = None
         self._conn = None
         self._connected_event.clear()
@@ -1597,7 +1600,7 @@ class OpenAIRealtimeConnection:
         # providers). Idle WebSocket lifetime is not counted.
         self._mark_billable_activity_ended()
         teardown_ms = (_time.monotonic() - t0) * 1000
-        logger.info("openai connection: session torn down in %.0fms", teardown_ms)
+        logger.info(f"{self._log_tag} session torn down in %.0fms", teardown_ms)
 
     def _start_proactive_watchdog(self) -> None:
         """Schedule the proactive pre-cap reconnect for the just-opened
@@ -1623,7 +1626,7 @@ class OpenAIRealtimeConnection:
             # reconnect, which is a worse failure than just not doing
             # the proactive reconnect at all.
             logger.warning(
-                "openai connection: proactive watchdog disabled — "
+                f"{self._log_tag} proactive watchdog disabled — "
                 "session_max_sec=%.0f ≤ proactive_buffer_sec=%.0f",
                 self._session_max_sec, self._proactive_buffer_sec,
             )
@@ -1658,7 +1661,7 @@ class OpenAIRealtimeConnection:
             return
         if self._active_turn is not None:
             logger.info(
-                "openai connection: proactive watchdog fired mid-turn — "
+                f"{self._log_tag} proactive watchdog fired mid-turn — "
                 "deferring reconnect until turn release "
                 "(uptime≈%.0fs, buffer=%.0fs)",
                 delay_sec, self._proactive_buffer_sec,
@@ -1666,7 +1669,7 @@ class OpenAIRealtimeConnection:
             self._deferred_reconnect.request()
             return
         logger.info(
-            "openai connection: proactive reconnect — preempting "
+            f"{self._log_tag} proactive reconnect — preempting "
             "%.0f-min cap (firing at %.0fs uptime, %.0fs buffer)",
             self._session_max_sec / 60.0, delay_sec,
             self._proactive_buffer_sec,
@@ -1694,6 +1697,9 @@ class OpenAIRealtimeConnection:
                 self._active_turn = None
 
         last_exc: Exception | None = None
+        # Seeds the first delay; the previous failure's classification
+        # picks every one after that.
+        last_transient = True
         attempt = 0
         bounded = self._backoff_schedule is not None
         max_attempts = len(self._backoff_schedule) if bounded else None
@@ -1704,15 +1710,15 @@ class OpenAIRealtimeConnection:
             delay = (
                 self._backoff_schedule[attempt - 1]
                 if bounded
-                else reconnect_backoff_delay(attempt)
+                else reconnect_delay(attempt, transient=last_transient)
             )
             async with self._state_lock:
                 self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
             logger.info(
-                "openai connection: reconnect attempt %d after %.1fs backoff",
+                f"{self._log_tag} reconnect attempt %d after %.1fs backoff",
                 attempt, delay,
             )
-            await asyncio.sleep(delay)
+            await self._sleep(delay)
             if self._stopping.is_set():
                 return
             try:
@@ -1720,16 +1726,19 @@ class OpenAIRealtimeConnection:
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
+                last_transient = is_transient(e)
                 logger.warning(
-                    "openai connection: reconnect attempt %d failed (%s: %s)",
+                    f"{self._log_tag} reconnect attempt %d failed "
+                    "(%s: %s, transient=%s)",
                     attempt, type(e).__name__, self._outage.detail,
+                    last_transient,
                 )
 
         if bounded and not self._stopping.is_set():
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
             logger.error(
-                "openai connection: bounded test schedule exhausted after %d "
+                f"{self._log_tag} bounded test schedule exhausted after %d "
                 "retries. Last error: %s", attempt - 1, last_exc,
             )
 
@@ -1762,19 +1771,19 @@ class OpenAIRealtimeConnection:
             close_reason = getattr(getattr(e, "rcvd", None), "reason", None)
             if close_code is not None:
                 logger.warning(
-                    "openai connection: disconnected (code=%s reason=%r), reconnecting",
+                    f"{self._log_tag} disconnected (code=%s reason=%r), reconnecting",
                     close_code, close_reason,
                 )
             else:
                 logger.warning(
-                    "openai connection: receive loop error (%s: %s), reconnecting",
+                    f"{self._log_tag} receive loop error (%s: %s), reconnecting",
                     type(e).__name__, e,
                 )
             self._reconnect_event.set()
             return
         if not self._stopping.is_set():
             logger.warning(
-                "openai connection: receive iteration ended cleanly "
+                f"{self._log_tag} receive iteration ended cleanly "
                 "(server closed, likely the 60-minute hard cap); reconnecting",
             )
             self._reconnect_event.set()
@@ -1784,7 +1793,7 @@ class OpenAIRealtimeConnection:
 
         if etype == "error":
             err = _event_field(event, "error") or {}
-            logger.warning("openai connection: server error: %s", err)
+            logger.warning(f"{self._log_tag} server error: %s", err)
             return
 
         if etype == "session.created" or etype == "session.updated":
@@ -1897,24 +1906,24 @@ class OpenAIRealtimeConnection:
             if self._server_vad_active and turn is not None:
                 turn._on_speech_started()
             else:
-                logger.debug("openai connection: VAD event %s (no server_vad turn)", etype)
+                logger.debug(f"{self._log_tag} VAD event %s (no server_vad turn)", etype)
             return
 
         if etype == "input_audio_buffer.speech_stopped":
             if self._server_vad_active and turn is not None:
                 turn._on_speech_stopped()
             else:
-                logger.debug("openai connection: VAD event %s (no server_vad turn)", etype)
+                logger.debug(f"{self._log_tag} VAD event %s (no server_vad turn)", etype)
             return
 
         if etype == "input_audio_buffer.committed":
             if self._server_vad_active and turn is not None:
                 turn._on_server_committed()
             else:
-                logger.debug("openai connection: event %s", etype)
+                logger.debug(f"{self._log_tag} event %s", etype)
             return
 
-        logger.debug("openai connection: event %s", etype)
+        logger.debug(f"{self._log_tag} event %s", etype)
 
     async def _maybe_reset_context(self) -> None:
         """OpenAI Realtime has no resumption handle, so 'context reset'
@@ -1943,7 +1952,7 @@ class OpenAIRealtimeConnection:
             await self._open_session_with_retry(phase="context-reset-reopen")
         except Exception as e:  # noqa: BLE001
             logger.error(
-                "openai connection: context-reset reopen failed (%s: %s); "
+                f"{self._log_tag} context-reset reopen failed (%s: %s); "
                 "triggering supervisor reconnect",
                 type(e).__name__, e,
             )
@@ -2090,7 +2099,7 @@ class OpenAIRealtimeConnection:
                 await self._send_event({"type": "response.create"})
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "openai connection: response.create after tool round "
+                    f"{self._log_tag} response.create after tool round "
                     "failed (%s: %s); turn may stall",
                     type(e).__name__, e,
                 )

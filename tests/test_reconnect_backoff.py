@@ -60,3 +60,25 @@ def test_caps_at_max_backoff():
     for attempt in (100, 1000, 10_000):
         for _ in range(10):
             assert fn(attempt) <= cap * 1.25
+
+
+def test_terminal_failure_polls_slower_than_the_transient_cap():
+    """A failure retrying cannot fix drops to a fixed slow poll.
+
+    The classification, not the attempt number, picks the schedule —
+    so a terminal outage never climbs back onto the exponential ramp
+    however long it lasts. See issue #3855."""
+    from jasper.backoff import (
+        RECONNECT_MAX_BACKOFF_SEC,
+        TERMINAL_POLL_INTERVAL_SEC,
+        reconnect_delay,
+    )
+
+    assert TERMINAL_POLL_INTERVAL_SEC > RECONNECT_MAX_BACKOFF_SEC
+    for attempt in (1, 2, 7, 1000):
+        assert reconnect_delay(attempt, transient=False) == (
+            TERMINAL_POLL_INTERVAL_SEC
+        )
+        assert reconnect_delay(attempt, transient=True) <= (
+            RECONNECT_MAX_BACKOFF_SEC * 1.25
+        )
