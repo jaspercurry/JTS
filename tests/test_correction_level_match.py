@@ -34,7 +34,7 @@ from jasper.correction.level_match import (
     LevelMatchSession,
     MeasurementLevelLock,
     MicGeometry,
-    RelayLevelFeed,
+    LevelStatusFeed,
     describe_ramp_refusal,
     parse_level_batch,
     phone_reported_abort,
@@ -227,7 +227,7 @@ class Clock:
 
 def _feed(status_ref, clock, **kw):
     kw.setdefault("min_read_interval_s", 0.0)
-    return RelayLevelFeed(
+    return LevelStatusFeed(
         read_status=lambda: status_ref["status"],
         monotonic=clock.now,
         **kw,
@@ -294,7 +294,7 @@ async def test_relay_feed_rate_limits_reads():
         calls["n"] += 1
         return {"event": {}}
 
-    feed = RelayLevelFeed(
+    feed = LevelStatusFeed(
         read_status=read_status, monotonic=clock.now, min_read_interval_s=0.25
     )
     # 100 calls over 1 s of fake time → at most ~5 HTTP reads.
@@ -312,7 +312,7 @@ async def test_relay_feed_latches_read_failure_warning(caplog):
         calls["n"] += 1
         raise RuntimeError("relay down")
 
-    feed = RelayLevelFeed(
+    feed = LevelStatusFeed(
         read_status=read_status, monotonic=clock.now, min_read_interval_s=0.0
     )
     with caplog.at_level(logging.WARNING, logger="jasper.correction.level_match"):
