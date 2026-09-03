@@ -595,7 +595,11 @@ def test_oneshot_unit_runs_doctor_with_out():
         ln.strip().startswith("User=") for ln in text.splitlines()
     ), "the doctor oneshot must run as root (no User=) for full-fidelity checks"
     assert "Group=jasper" in text
-    assert "jasper-doctor --json --out /run/jasper-control/doctor-result.json" in text
+    # The writer's --out and the reader's default are one path: rename one
+    # only and /system/diagnostics stats a file nothing writes.
+    from jasper.control.server import _DIAGNOSTICS_RESULT_PATH
+
+    assert f"jasper-doctor --json --out {_DIAGNOSTICS_RESULT_PATH}" in text
     # On-demand only — never enabled (no [Install] section header).
     assert "[Install]" not in [ln.strip() for ln in text.splitlines()]
 
@@ -605,15 +609,3 @@ def test_oneshot_in_managed_units_and_polkit_allowlist():
     in MANAGED_UNITS (and therefore the polkit allowlist, pinned set-equal by
     test_polkit_jasper_control)."""
     assert "jasper-doctor-json.service" in MANAGED_UNITS
-
-
-def test_endpoint_uses_cached_oneshot_not_inprocess_doctor():
-    """The /system/diagnostics handler must schedule the root oneshot + read the
-    cached result file — NOT spawn jasper-doctor in-process (which would run
-    non-root and report false failures)."""
-    server = (ROOT / "jasper/control/server.py").read_text(encoding="utf-8")
-    assert "jasper-doctor-json.service" in server
-    assert '"--no-block"' in server
-    assert "/run/jasper-control/doctor-result.json" in server
-    # The old in-process spawn must be gone.
-    assert '"/opt/jasper/.venv/bin/jasper-doctor", "--json"' not in server

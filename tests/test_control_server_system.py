@@ -256,27 +256,56 @@ def test_state_resilience_wires_active_speaker_parked_snapshot() -> None:
     assert "active_config_path" not in snapshot_src
 
 
-def test_diagnostics_serves_fresh_cached_result_without_start(
+def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    """A fresh root-fidelity snapshot should return immediately without
-    starting the root oneshot again."""
-    import jasper.control.server as srv_mod
+    """A fresh snapshot is served verbatim and nothing runs the doctor here.
 
+    jasper-control is non-root; the report is the ROOT
+    jasper-doctor-json.service oneshot's. A doctor run from this process —
+    in-process or by spawning the binary — reports ~7 permission failures as
+    real ones.
+    """
+    import jasper.control.server as srv_mod
+    from jasper.cli import doctor as doctor_mod
+
+    cached = {
+        "fails": 2,
+        "warns": 1,
+        "results": [
+            {"name": "renderer alsa device", "status": "fail", "detail": "d1"},
+            {"name": "camilla config", "status": "fail", "detail": "d2"},
+            {"name": "journal", "status": "warn", "detail": "d3"},
+        ],
+    }
     result = tmp_path / "doctor-result.json"
-    result.write_text('{"fails":0,"warns":1,"results":[{"name":"x","status":"warn","detail":"d"}]}')
+    result.write_text(json.dumps(cached), encoding="utf-8")
     monkeypatch.setenv("JASPER_DIAGNOSTICS_RESULT_PATH", str(result))
 
-    def fake_run(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("fresh diagnostics cache should not refresh")
+    ran: list[str] = []
 
-    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _record(name: str):
+        def _spy(*_args: object, **_kwargs: object) -> _Completed:
+            ran.append(name)
+            return _Completed()
+        return _spy
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", _record("subprocess.run"))
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", _record("subprocess.Popen"))
+    for name in ("main", "render_json", "_build_doctor_checks"):
+        monkeypatch.setattr(doctor_mod, name, _record(f"doctor.{name}"))
 
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/system/diagnostics")
 
     assert status == 200
-    assert body["warns"] == 1
+    assert ran == []
+    assert {key: body[key] for key in cached} == cached
     assert body["stale"] is False
     assert body["refreshing"] is False
 
