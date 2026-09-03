@@ -27,9 +27,8 @@ Why this can fail to fit (the "Stage D" gap deferred):
 
 This surface is deliberately quiet (warns only when the budget genuinely
 does not fit) and cheap (the journal is read only when this speaker is
-actually a bonded leader). The authoritative *reactive* signal — shairport's
-own "stream latency too short to accommodate an offset" warning — is
-surfaced separately through the AirPlay health sampler's event ring
+actually a bonded leader). The authoritative *reactive* signal is surfaced
+separately through the AirPlay health sampler's event ring
 (:func:`jasper.control.airplay_health.classify_journal_line`).
 
 Pure/IO split mirrors the rest of the multiroom package
@@ -143,8 +142,7 @@ def assess_fit(buffer_ms: int, notified_frames: int | None) -> BondedAirplayLate
     The tight condition mirrors shairport's own (verified against
     rtp.c ``rtp_ap2_control_receiver``): shairport applies the negative
     backend offset only while ``budget >= |offset| + backend_buffer``; below
-    that it logs "stream latency too short to accommodate an offset" and
-    DROPS the offset entirely. So this surface flags tight at
+    that it DROPS the offset entirely. So this surface flags tight at
     ``budget < need + SHAIRPORT_BACKEND_BUFFER_SEC`` and, because the offset
     is dropped wholesale when that happens, reports the realized lag as the
     FULL ``need`` (the whole pipeline+buffer delay goes uncompensated), not
