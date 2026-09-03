@@ -720,7 +720,12 @@ def _json_payload(
         "warns": sum(1 for r in results if r.status == "warn"),
         "generated_at_epoch": time.time(),
         "results": [
-            {"name": r.name, "status": r.status, "detail": r.detail}
+            {
+                "name": r.name,
+                "status": r.status,
+                "detail": r.detail,
+                "reason": r.reason,
+            }
             for r in results
         ],
     }

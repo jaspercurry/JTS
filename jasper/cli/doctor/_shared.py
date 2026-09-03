@@ -87,6 +87,16 @@ class CheckResult:
     # keeps taking deploys (#2145). The wording carries the severity; the exit
     # code keeps its one meaning.
     speaker_silent: bool = False
+    # Machine-stable snake_case code naming WHICH branch of the check
+    # produced this result — e.g. "bridge_output_ref_silent". `detail` stays
+    # the human sentence (and may change wording freely); `reason` is what
+    # tests and other automation pin instead of `detail` prose (AGENTS.md:
+    # assert types/codes/structured fields, never prose). Default "" for
+    # every check that has not adopted a closed reason vocabulary yet — each
+    # domain that does defines its own closed set of constants (see
+    # `aec.py`'s `_AEC_REASONS` for the first one) rather than sharing one
+    # vocabulary across unrelated domains.
+    reason: str = ""
 
 DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
 

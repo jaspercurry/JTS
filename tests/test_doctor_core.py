@@ -90,6 +90,7 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
             "name": "endpoint smoke",
             "status": "ok",
             "detail": "minimal cfg",
+            "reason": "",
         }
     ]
 
