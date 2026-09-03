@@ -28,13 +28,19 @@ and persist their own accounting under
   A candidate that is cheap, safe, and reversible is measured without ceremony,
   and every mic movement gathers the maximum information it can support, not
   the minimum that answers one question.
+  Tool: `jasper-round open` / `wait`.
 - **analyze** — the evidence is read: what the capture says, and what this
   session did not separate.
+  Tool: `jasper-crossover-prescriber packet`.
 - **recommend** — pre-registered expectations are stated and the next thing to
   try is named. Proposing, prescribing and recommending are one act; a final
   call is that same act with more information behind it.
+  Tool: `jasper-crossover-prescriber propose`.
 - **loop** — checking that a recommendation held is measuring again (§3).
+  Tool: `jasper-round-views frozen`, the re-measure graded against the round it
+  is checking.
 - **save** — the result is banked.
+  Tool: `jasper-round-bank`.
 
 ### 1a. The layering rule — what a measurement plays through
 
