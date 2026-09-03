@@ -63,8 +63,7 @@ while the result is still getting flatter.
   `POST /correction/crossover/v2/session {"tier": "remote"}`.
 - **It is the only flow.** The legacy per-driver near-field procedure, its
   `JASPER_CROSSOVER_FLOW` selector, and the `build_crossover_envelope` shim are
-  gone: callers reach `build_crossover_envelope_v2` directly, or
-  `crossover_envelope.build_crossover_envelope_logged`.
+  gone: callers reach `build_crossover_envelope_v2` directly.
 - **Nothing applies inside a capture session.** A session produces a proposal;
   the household applies it from the `review` screen.
 - **The candidate cycle is a round.** `jasper-angle-capture stage --program

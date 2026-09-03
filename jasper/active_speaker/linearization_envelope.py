@@ -18,7 +18,7 @@ term as a change to a live correction profile
 (docs/active-speaker-tuning-layers-design.md "Layer 1a concretely").
 
 Not to be confused with :mod:`jasper.correction.envelope` or
-:mod:`jasper.active_speaker.crossover_envelope`/``_v2``: those are *screen*
+:mod:`jasper.active_speaker.crossover_envelope_v2`: those are *screen*
 envelopes (wizard UI state), and none of them computes a correction depth.
 
 See docs/active-speaker-tuning-layers-design.md "The correction envelope"

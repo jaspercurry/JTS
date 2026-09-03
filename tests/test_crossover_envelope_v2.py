@@ -231,15 +231,13 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
     path. Nothing reads that variable any more, so setting it must be inert.
 
     This used to run through a ``build_crossover_envelope`` compatibility
-    dispatcher in ``crossover_envelope``. That dispatcher only forwarded to v2
-    and has been deleted; the web flow's entry point is the logged wrapper
-    below, so the contract is pinned there instead."""
-    from jasper.active_speaker.crossover_envelope import (
-        build_crossover_envelope_logged,
-    )
+    dispatcher. That dispatcher only forwarded to v2 and has been deleted; the
+    web flow's entry point is the logged wrapper below, so the contract is
+    pinned there instead."""
+    from jasper.web.correction_crossover_flow import _build_envelope_logged
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
-    env = build_crossover_envelope_logged(_status(phase="check"))
+    env = _build_envelope_logged(_status(phase="check"))
     assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
     assert env["flow"] == "v2"
 

@@ -126,9 +126,9 @@ def test_no_production_site_restates_the_commissioning_stop() -> None:
 
 
 def test_every_bundled_preset_declares_the_ruled_stop() -> None:
-    """Both shipped presets state the ruled stop — no per-preset asymmetry.
+    """Every shipped preset states the ruled stop — no per-preset asymmetry.
 
-    Floor: the two files under ``jasper/active_speaker/presets/``.
+    Floor: whatever is under ``jasper/active_speaker/presets/``.
     """
     declared = {
         path.name: json.loads(path.read_text(encoding="utf-8"))["safety"][_STOP_KWARG]
@@ -136,7 +136,6 @@ def test_every_bundled_preset_declares_the_ruled_stop() -> None:
     }
 
     assert declared == {
-        "bc_de250_dayton_e150he44_v1.json": 85,
         "epique_e150he44_eminence_f110m8_safe_v1.json": 85,
     }
 

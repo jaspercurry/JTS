@@ -870,23 +870,3 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
         )
     except DelayGraphProofError as exc:
         _refuse("delay_graph_proof_failed", f"{exc.code}: {exc}")
-
-
-def build_and_prove_candidate_config(
-    candidate: MeasuredCrossoverCandidate,
-    *,
-    playback_device: str,
-    **emit_kwargs: Any,
-) -> str:
-    """Compile the candidate, prove it, and return the proven YAML text.
-
-    Fails closed: a failed proof raises before returning anything, exactly
-    like the existing safety refusals elsewhere in the active-speaker apply
-    path — the caller never receives a graph this function could not prove.
-    """
-
-    yaml_text = compile_candidate_config(
-        candidate, playback_device=playback_device, **emit_kwargs
-    )
-    prove_candidate_config(candidate, yaml_text)
-    return yaml_text

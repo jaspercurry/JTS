@@ -15,10 +15,9 @@ failure-screen TEMPLATES the flow
 renders (silent auto-retry banner / fix-and-retry / hard stop / session
 restart), plus the two special screens (``volume_recovery`` and the VERIFY-fail
 one-default screen). This module is the pure ``status → envelope`` function for
-that flow, reached directly or via ``crossover_envelope``'s
-``build_crossover_envelope_logged`` (this call plus a serve log; its
-``build_crossover_envelope`` shim was deleted as pure indirection) —
-the only crossover flow since W5b retired the legacy schema-6 envelope and the ``JASPER_CROSSOVER_FLOW`` selector. It emits the envelope dict shape the
+that flow, reached directly or via
+``jasper.web.correction_crossover_flow._build_envelope_logged`` (this call
+plus a serve log) — the only crossover flow since W5b retired the legacy schema-6 envelope and the ``JASPER_CROSSOVER_FLOW`` selector. It emits the envelope dict shape the
 generic data-driven JS renderer consumes (``schema_version`` / ``screen`` / ``steps`` / ``verdict_text`` /
 ``nudges`` / ``relay`` / ``next_action`` / ``alternate_actions`` / ``progress``
 / ``applied``) so the generic data-driven JS renderer needs no v2-specific code.

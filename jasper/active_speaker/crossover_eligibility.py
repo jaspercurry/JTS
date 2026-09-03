@@ -104,14 +104,6 @@ def repeat_progress(repeats: Any, target_id: str) -> RepeatProgress:
     return RepeatProgress(attempts, accepted, target, failure, completed, last_result)
 
 
-def render_repeat_progress(progress: RepeatProgress) -> str:
-    """Render the shared near/fixed stationary-repeat status sentence."""
-
-    if progress.attempts:
-        return f" {progress.accepted} of {progress.target} measurements accepted."
-    return f" JTS takes {progress.target} stationary repeats."
-
-
 @dataclass(frozen=True)
 class AutomaticMeasurementEligibility:
     """One fail-closed automatic measurement decision."""
