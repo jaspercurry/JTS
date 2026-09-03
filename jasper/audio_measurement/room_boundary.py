@@ -18,11 +18,11 @@ finding and editing all ten by hand, and two of them
 silently capped a raised ceiling rather than failing loudly.
 
 Why this module lives in ``audio_measurement`` and not ``correction``:
-``correction`` and ``active_speaker`` import **each other** (for example
-``active_speaker.seat_level_ramp`` imports ``correction.coordinator``, while
-``correction.runtime_safety`` imports ``active_speaker.runtime_contract``), so
-neither one is "below" the other and homing a shared constant in either would
-be an arbitrary pick that some consumer has to reach sideways for.
+``correction`` sits ABOVE ``active_speaker`` (``correction.runtime_safety``
+imports ``active_speaker.runtime_contract``) and ``active_speaker`` reaches
+back for nothing, so homing a shared constant in ``correction`` would force
+``active_speaker`` to import upward — which
+``test_correction_boundary_ssot.test_package_boundary_holds`` forbids.
 ``audio_measurement`` is different, and this is the precise property the
 placement rests on: **it is imported by both and imports neither** — it has
 zero imports of ``jasper.correction`` and zero of ``jasper.active_speaker``.

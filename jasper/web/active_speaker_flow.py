@@ -7,7 +7,7 @@
 The active-crossover commission flow (the per-driver ramp + near-field
 level-match capture) plays sweeps/tones through the production CamillaDSP graph.
 Room correction, pair balance, and pair sync do the same and open
-``correction.coordinator.measurement_window``. Two running at once corrupt each
+``jasper.measurement_window.measurement_window``. Two running at once corrupt each
 other's captures, so this module keeps them apart.
 
 This is DEFENSE-IN-DEPTH, not the only thing standing between the flows. A

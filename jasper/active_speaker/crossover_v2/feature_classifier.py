@@ -39,7 +39,7 @@ a DIFFERENT graph, and pooling the two would classify a mixture.
 
 It lives here rather than under :mod:`jasper.audio_measurement` because
 ``tests/test_correction_boundary_ssot.py``'s
-``test_audio_measurement_imports_neither_consumer_package`` forbids that
+``test_package_boundary_holds`` forbids that
 package importing ``jasper.active_speaker``, which this module does for the
 verdict register and the phase names. **If you are about to move this
 module, read that test first.**

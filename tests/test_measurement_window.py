@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 import jasper.mux as mux_module
-from jasper.correction import coordinator
-from jasper.correction.coordinator import (
+from jasper import measurement_window as coordinator
+from jasper.measurement_window import (
     MeasurementWindowError,
     measurement_window,
 )
@@ -550,7 +550,7 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
 
     assert hold_task, (
         "the volume-hold refresh coroutine was not recognised, so its sleeps "
-        "were charged to the gate ladder's clock — rename in coordinator.py?"
+        "were charged to the gate ladder's clock — rename in measurement_window.py?"
     )
     assert aborted, "the ladder never aborted"
     return aborted[0]
@@ -1223,3 +1223,36 @@ async def test_voice_uds_command_answers_cancellation_racing_the_reply(monkeypat
         "immortal and wedges measurement_window() teardown (#1952)"
     )
     assert task.cancelled()
+
+
+def test_every_deferred_relative_import_resolves():
+    """The jasper-control reads are deferred, so nothing executes them here.
+
+    A relative level means a different package at a different module depth, and
+    every other test in this file stubs `_measurement_hold_command` out, so a
+    wrong level survives the suite and fails first on hardware, inside
+    `measurement_window()`'s entry, as an `ImportError` no caller classifies.
+    """
+    import ast
+    import importlib.util
+    from pathlib import Path
+
+    source = Path(coordinator.__file__)
+    package = coordinator.__name__.rpartition(".")[0]
+    unresolved = []
+    for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.ImportFrom) or not node.level:
+            continue
+        base = package.split(".")[: len(package.split(".")) - node.level + 1]
+        dotted = ".".join([*base, *([node.module] if node.module else [])])
+        try:
+            found = importlib.util.find_spec(dotted) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            unresolved.append(f"line {node.lineno}: {dotted}")
+
+    assert not unresolved, (
+        "relative import does not resolve from this module's depth: "
+        + "; ".join(unresolved)
+    )

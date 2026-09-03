@@ -22,8 +22,8 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
-from ..control.uds import _mux_socket_command
-from ..log_event import log_event
+from .control.uds import _mux_socket_command
+from .log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +242,8 @@ async def _measurement_hold_command(path: str, body: dict) -> tuple[int, dict]:
     file and presented as ``X-JTS-Token``; ``current_token()`` returns ``""``
     when the gate is off or the file is unreadable, and the header is omitted.
     """
-    from ..control import control_token
-    from ..control.client import AsyncControlClient
+    from .control import control_token
+    from .control.client import AsyncControlClient
 
     headers: dict[str, str] = {}
     token = control_token.current_token()
@@ -367,7 +367,7 @@ async def _stop_lease_refresh(
 
 def _measurement_hold_ttl_sec() -> float:
     """The registrar's TTL, read from its owner so the log cannot drift."""
-    from ..control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
+    from .control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
 
     return MEASUREMENT_HOLD_TTL_SEC
 

@@ -279,7 +279,7 @@ plus the compile-time `CHANNELS`/`FORMAT` constants cited below:
 (i) **Isolation.** Mux STATUS reports `test_source == active_source ==` the
 measurement fan-in label and `test_owner ==` the bench gate owner for the
 whole pass (the `_measurement_gate_held` predicate,
-`jasper/correction/coordinator.py`). This is a selected-input gate, not a
+`jasper/measurement_window.py`). This is a selected-input gate, not a
 per-lane mute: other lanes legitimately remain `muted:false` and MUST NOT be
 required muted.
 

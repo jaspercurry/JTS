@@ -1202,14 +1202,15 @@ async def _run_session_background_audio(
 
 def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
     """Start the next normal measurement sweep and wait for visible progress."""
-    from jasper.correction import coordinator, playback
+    from jasper.correction import playback
+    from jasper.measurement_window import measurement_window
 
     async def _run_sweep() -> None:
         async def _runtime_probe() -> dict[str, Any] | None:
             return await cam.get_runtime_status(best_effort=True)
 
         try:
-            async with coordinator.measurement_window():
+            async with measurement_window():
                 await sess.prepare_and_play_sweep(
                     playback.play_sweep,
                     runtime_probe_async=_runtime_probe,
@@ -1228,14 +1229,15 @@ def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None
 
 def _schedule_repeat_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
     """Start the optional main-seat repeat sweep."""
-    from jasper.correction import coordinator, playback
+    from jasper.correction import playback
+    from jasper.measurement_window import measurement_window
 
     async def _run_sweep() -> None:
         async def _runtime_probe() -> dict[str, Any] | None:
             return await cam.get_runtime_status(best_effort=True)
 
         try:
-            async with coordinator.measurement_window():
+            async with measurement_window():
                 await sess.prepare_and_play_repeat_sweep(
                     playback.play_sweep,
                     runtime_probe_async=_runtime_probe,
@@ -2230,7 +2232,8 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     of the correction. One-position only; result lands in
     verify_curve / verify_metrics. Same stale-state-avoidance wait
     as /next-position."""
-    from jasper.correction import coordinator, playback
+    from jasper.correction import playback
+    from jasper.measurement_window import measurement_window
     from jasper.correction.session import SessionState
 
     sess = _get_or_create_session()
@@ -2241,7 +2244,7 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             return await cam.get_runtime_status(best_effort=True)
 
         try:
-            async with coordinator.measurement_window():
+            async with measurement_window():
                 await sess.start_verify_sweep(
                     playback.play_sweep,
                     runtime_probe_async=_runtime_probe,
@@ -2304,7 +2307,8 @@ def _handle_autolevel_start(
       4. Poll GET /status; `autolevel.status` becomes `locked`,
          `maxed_out`, `cancelled`, or `error`.
     """
-    from jasper.correction import coordinator, playback
+    from jasper.correction import playback
+    from jasper.measurement_window import measurement_window
     from jasper.correction.session import AutolevelStatus, SessionState
 
     sess = _get_or_create_session()
@@ -2341,7 +2345,7 @@ def _handle_autolevel_start(
 
     async def _run_autolevel() -> None:
         try:
-            async with coordinator.measurement_window():
+            async with measurement_window():
                 # Tone source amplitude = -12 dBFS, matching the sweep
                 # amplitude. Earlier this was -6 dBFS — 6 dB louder
                 # than the actual sweep, which made the autolevel
@@ -2451,13 +2455,14 @@ def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     tone has finished playing) so the polling state machine doesn't
     have to track a "test tone in progress" sub-state.
     """
-    from jasper.correction import coordinator, playback
+    from jasper.correction import playback
+    from jasper.measurement_window import measurement_window
 
     body = _read_json_body(handler)
     duration_s = max(1.0, min(15.0, float(body.get("duration_s", 5.0))))
 
     async def _run_test_tone() -> None:
-        async with coordinator.measurement_window():
+        async with measurement_window():
             await playback.play_test_tone(duration_s=duration_s)
 
     _run_async(_run_test_tone(), timeout=duration_s + 30.0)

@@ -4,7 +4,7 @@
 
 """jasper-control's copy of the open measurement window — the third lease.
 
-``jasper.correction.coordinator.measurement_window()`` is the one writer of
+``jasper.measurement_window.measurement_window()`` is the one writer of
 "a measurement is live". It already holds two self-expiring copies of that
 fact — jasper-voice's ``_measurement_active`` and jasper-mux's diagnostic-gate
 lease — and this module is the third: the copy jasper-control needs so it can
@@ -32,8 +32,9 @@ Contract:
 * The hold **self-expires** after :data:`MEASUREMENT_HOLD_TTL_SEC`. There is no
   reaper: expiry is evaluated lazily on every read, so a holder that is
   ``kill -9``'d frees the speaker with no process surviving to clean up. The
-  window renews every ``coordinator.MEASUREMENT_LEASE_REFRESH_SEC`` (60 s),
-  which leaves room for one failed renewal plus a retry inside the 120 s TTL;
+  window renews every ``measurement_window.MEASUREMENT_LEASE_REFRESH_SEC``
+  (60 s), which leaves room for one failed renewal plus a retry inside the
+  120 s TTL;
   ``tests/test_measurement_hold.py`` pins that arithmetic.
 * Nothing is persisted. A reboot mid-measurement drops every copy, which is
   the intended crash-safety property — see the design brief's §4. Closing the
@@ -77,8 +78,8 @@ __all__ = [
 # voice_daemon.MEASUREMENT_AUTOCLEAR_SEC so the two copies of the same fact
 # lapse together rather than leaving one enforcement point armed after the
 # other has let go. Must stay comfortably above the window's renewal cadence
-# (coordinator.MEASUREMENT_LEASE_REFRESH_SEC) with room for one failed renewal
-# and its MEASUREMENT_LEASE_RETRY_SEC back-off; a test pins the triple.
+# (measurement_window.MEASUREMENT_LEASE_REFRESH_SEC) with room for one failed
+# renewal and its MEASUREMENT_LEASE_RETRY_SEC back-off; a test pins the triple.
 MEASUREMENT_HOLD_TTL_SEC = 120.0
 
 # The isolation modes this registrar honours. See the module docstring: a mode

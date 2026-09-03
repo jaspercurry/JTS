@@ -266,7 +266,7 @@ def speaker(tmp_path, monkeypatch):
     """A whole measurable speaker: real everything but the DSP and the audio."""
     from jasper.active_speaker import bundles
     from jasper.active_speaker.crossover_v2 import program_transaction
-    from jasper.correction import coordinator
+    from jasper import measurement_window as coordinator
     from jasper.volume_owner import VolumeOwner, install_volume_owner
     from jasper.web import correction_crossover_v2_wired as wired
 

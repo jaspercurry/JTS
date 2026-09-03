@@ -5295,7 +5295,7 @@ class _FakeWindow:
 
 
 def _patch_measurement_window(monkeypatch, log: list) -> None:
-    from jasper.correction import coordinator
+    from jasper import measurement_window as coordinator
 
     monkeypatch.setattr(
         coordinator, "measurement_window", lambda **kw: _FakeWindow(log)
@@ -5699,7 +5699,7 @@ def test_gate_abort_mid_play_cancels_the_play_and_names_the_error(monkeypatch):
     """Renew failure mid-play: the coordinator's abort cancels the REGISTERED
     play task (not the session task) and the cancellation surfaces as a named
     MeasurementWindowError so the cleanup arm persists it honestly."""
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     log: list = []
     _patch_measurement_window(monkeypatch, log)
@@ -5730,7 +5730,7 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
     """Renew failure between plays: the latched failed flag refuses the NEXT
     play with a named error before any audio — never a silent nest-skip into an
     unconfirmed music-isolation gate."""
-    from jasper.correction.coordinator import MeasurementWindowError
+    from jasper.measurement_window import MeasurementWindowError
 
     log: list = []
     _patch_measurement_window(monkeypatch, log)

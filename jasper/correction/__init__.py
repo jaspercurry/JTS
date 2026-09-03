@@ -26,6 +26,5 @@ Public surface (everything else is implementation detail):
     .reemit(profile, room_peqs=..., out_path=..., profile_id=...) — what
     session.py emits before reloading CamillaDSP, width-matched to the
     loaded graph.
-  - coordinator.measurement_window() — async context manager
   - session.MeasurementSession — state machine for the multi-step flow
 """

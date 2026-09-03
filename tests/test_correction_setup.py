@@ -3982,7 +3982,7 @@ def test_the_autolevel_ramp_holds_one_claim_and_moves_it(monkeypatch):
     asyncio.run(owner.declare_household_level_db(-15.0))
     writes.clear()
 
-    from jasper.correction import coordinator as coordinator_module
+    from jasper import measurement_window as coordinator_module
     from jasper.correction import playback as playback_module
 
     monkeypatch.setattr(

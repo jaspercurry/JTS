@@ -42,7 +42,7 @@ import threading
 
 import pytest
 
-from jasper.correction.coordinator import (
+from jasper.measurement_window import (
     MEASUREMENT_LEASE_REFRESH_SEC,
     MEASUREMENT_LEASE_RETRY_SEC,
     VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
@@ -2320,7 +2320,7 @@ def test_lease_refresh_fits_under_the_daemon_measurement_auto_clear() -> None:
     more than the retry delay. The failed attempt waits up to
     VOICE_MEASURE_PAUSE_TIMEOUT_SEC for a reply BEFORE the loop switches to
     the retry interval, and the retry then waits that long again — see
-    `_refresh_voice_lease` in correction/coordinator.py. Budget only the retry
+    `_refresh_voice_lease` in measurement_window.py. Budget only the retry
     delay and you green-light a refresh interval whose retry is still in
     flight when the backstop fires."""
     assert 0 < MEASUREMENT_LEASE_REFRESH_SEC < MEASUREMENT_AUTOCLEAR_SEC
