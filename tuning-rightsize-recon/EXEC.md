@@ -5,6 +5,13 @@ first. Plan context: scratchpad/PLAN.md §3 (phases) and §7 (bottom-up check);
 recon evidence in scratchpad/recon/ and scratchpad/bottomup/.
 
 ## Branch and PR mechanics
+- Temp files: the scratchpad is SHARED by every agent and files get clobbered.
+  Put logs, commit messages and scratch scripts in `mktemp -d` (or your own
+  worktree's untracked dir), never at the scratchpad root.
+- Load: the container runs many agents at once. Do not run test-fast's
+  changed-file lane; run `ruff check` on touched files and
+  `python3 -m pytest <touched modules' tests> -q -p no:cacheprovider`; state in
+  the PR that CI is the authority for the full lane.
 - `git fetch origin main` then `git checkout -b claude/tuning-rightsize/<slug> origin/main`
   (slug given in your task). Never commit to any other branch. Never push to main.
 - One concern per PR. If your task lists two concerns, make two branches/PRs.
@@ -40,18 +47,22 @@ recon evidence in scratchpad/recon/ and scratchpad/bottomup/.
 - Do NOT merge. Do NOT create ADRs. Do NOT add config knobs, guards, or
   scripts. Do NOT touch files outside your assignment.
 
-## Files you must not touch (in-flight PR #3724 and its stacked follow-ups)
-jasper/active_speaker/angle_capture.py · jasper/active_speaker/crossover_v2/capture_source.py ·
-jasper/audio_measurement/wired_capture.py · jasper/correction/envelope.py ·
-jasper/web/correction_crossover_v2.py · jasper/web/correction_crossover_v2_wired.py ·
-jasper/web/correction_crossover_v2_relay.py · jasper/web/correction_room_flow.py ·
-jasper/web/correction_setup.py · jasper/capture_relay/** · deploy/assets/shared/js/qr.js ·
-and their test files (tests/test_correction_crossover_v2_*.py, tests/test_correction_setup.py,
-tests/test_correction_envelope.py, tests/test_angle_capture_take.py,
-tests/test_crossover_v2_stage_bridge.py, tests/test_crossover_v2_remote_tier.py,
-tests/test_crossover_v2_profile_not_confirmed.py, tests/test_measurement_vocabulary.py,
-tests/crossover_v2_fixtures.py). The docs agent may edit docs/tuning-operator-runbook.md
-but must keep its hunks away from the JASPER_CAPTURE_SOURCE / capture-source text #3724 removes.
+## Files you must not touch (in-flight PRs)
+- #3724 has MERGED (main bcf56117+). Its stacked follow-ups (the relay routes PR
+  and the deploy PR) have not landed, so still do not touch:
+  jasper/web/correction_crossover_v2_relay.py · jasper/capture_relay/** ·
+  deploy/assets/shared/js/qr.js · deploy/assets/correction/js/main.js ·
+  jasper/web/correction_setup.py · jasper/web/correction_crossover_v2.py ·
+  jasper/web/correction_crossover_v2_wired.py · jasper/web/correction_room_flow.py
+  and their tests (tests/test_correction_setup.py, tests/test_correction_crossover_v2_*.py).
+- #3766 (branch claude/active-speaker-lazy-init) rewrites
+  jasper/active_speaker/__init__.py (PEP 562 lazy names) and touches
+  jasper/cli/active_speaker.py, jasper/cli/seat_level.py, jasper/multiroom/*,
+  tests/test_active_speaker_package.py, tests/test_lazy_imports.py. Do not edit
+  jasper/active_speaker/__init__.py; keep hunks in the other files away from its.
+- #3768 rewrites jasper/cli/aec_bridge.py (not tuning scope; do not touch).
+- Before pushing, `git fetch origin` and check `git log --oneline origin/main -20`
+  for anything that touched your files; rebase onto origin/main if so.
 
 ## The prose bar (for prose PRs) — AGENTS.md, applied fully
 KEEP a comment or docstring line only if it is one of:
@@ -79,7 +90,12 @@ defs, 1 inside; no runs of 3+).
 Before deleting a docstring, check nothing pins it:
 `grep -n "<module>" tests/*.py | grep -E "__doc__|getsource|read_text|ast\.parse"`.
 If a test pins prose, leave that block untouched and name it in the PR body.
-Work file by file, by reading. No scripts that strip comments. Target ≈ 10-12 %
+Work file by file, by reading. No scripts that strip comments. When you
+SHORTEN a sentence, re-read the code it describes: compression has turned
+correct counterfactuals ("forgetting X costs no error") into false claims about
+current code (X was keyword-only with no default). /code-review catches some;
+do not rely on it. If the container's test-fast changed-file lane is killed by
+memory pressure (exit 144), run the touched modules' tests directly and say so. Target ≈ 10-12 %
 prose for the file when done; report before/after prose lines per file
 (count docstring+comment lines with tokenize/ast; recon/census/metrics.py works).
 

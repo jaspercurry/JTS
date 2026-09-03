@@ -301,6 +301,25 @@ See `tuning-rightsize-recon/EXEC.md` on the evidence branch — branch/PR
 mechanics, the exclusion list, the prose bar, deletion rules, report format.
 
 ## 9. Current state (update this section as waves land)
-- 2026-09-03: wave 1 dispatched — 1.1a, 1.1b, 1.2a, 1.2b, 1.2c, 1.2d, 1.2e,
-  1.6, and prose p1–p7. Eleven agents; ~18 PRs expected.
-- Not started: 1.1c (D2), 1.4, 1.5, wave-2 prose, Phases 2–5.
+- 2026-09-03 11:45Z: wave 1 executed across two rate-limit interruptions. 26
+  branches pushed with PRs (#3794 #3797 #3823 #3796 #3800 #3802 #3812 #3836
+  #3807 #3809 #3833 #3808 #3799 #3813 #3815 #3822 #3824 #3830 #3817 #3814
+  #3819 #3831 #3832 #3821 #3834 #3835). Integration branch
+  `claude/tuning-rightsize/wave-1-integration` = all 26 merged onto main,
+  conflicts resolved (prose/test branches -X ours, deletions -X theirs, main's
+  lazy `active_speaker/__init__` kept): single PR **#3837** (draft until the
+  full lane and the review lane report). Net −65,066 / +20,231, 293 files.
+- Partial lanes (resume in wave 2, same branches): p12b (1 of ~40 files),
+  p13a (3 CLI files), t1 (pins; `test_angle_capture_take.py` reverted), t2
+  (spatial_combine only), p5 second pass landed.
+- Not started: 1.1c REFACTOR-TUNING/CUTOVER retirement (D2), t3 test
+  docstrings, 1-2b runtime severance (façade now owned by #3766, merged;
+  remaining moves: state_paths leaf, LEVEL_MATCH_AXIS leaf, TYPE_CHECKING
+  DriverResponse, import-closure test), second prose passes where the first
+  landed above ~35% (p2 37%, p5 46%→?, p6 39%).
+- Held for the owner: see WAVE-LOG.md (D1, D2 partial, D12/directivity_table,
+  preset move in #3802, `restore_pending_candidate_apply` doctrine line).
+- Lessons: agents share the scratchpad (use mktemp); do not run the full
+  test-fast lane with >6 agents on the box; commit with explicit paths, never
+  `git add -A` in an agent worktree; strip-and-diff ASTs is the proof for
+  prose PRs; compression can falsify counterfactual comments.
