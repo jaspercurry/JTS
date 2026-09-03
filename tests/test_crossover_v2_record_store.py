@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
@@ -26,7 +27,7 @@ from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStoreError,
     CommissioningEvidenceStoreErrorCode,
 )
-from jasper.active_speaker.crossover_v2 import position_cycle
+from jasper.active_speaker.crossover_v2 import position_cycle, spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
@@ -169,6 +170,73 @@ async def test_a_banked_block_is_in_the_file_and_still_indexes(real_store):
         assert banked[name] == block
     found = bundle_measurements(real_store.evidence.bundle_dir)
     assert [row.path for row in found] == [record_id]
+
+
+def _measure_analysis(*, floors_hz: tuple[float, ...]):
+    """One role's MEASURE analysis, and the program that declares its band.
+
+    ``floors_hz`` is the primary's gate floor followed by each repeat's own —
+    a DIFFERENT value each, because ``_gate_floor_hz`` resolves per occurrence
+    and ``compose_envelope`` takes the max across them, so a producer that
+    stamped the primary's floor onto every repeat would hand an offline re-fit
+    a floor that is too low.
+    """
+    import numpy as np
+
+    from jasper.audio_measurement.program import KIND_SWEEP
+    from jasper.audio_measurement.program_analysis import DriverResponse
+
+    freqs = np.geomspace(20.0, 20_000.0, 256)
+
+    def occurrence(level_db: float, floor_hz: float, repeats=()) -> DriverResponse:
+        return DriverResponse(
+            role="woofer", freqs_hz=freqs,
+            magnitude_db=np.full(freqs.shape, level_db),
+            complex_tf=np.full(freqs.shape, 10.0 ** (level_db / 20.0), dtype=complex),
+            gating={}, snr=None, validity_floor_hz=floor_hz,
+            repeat_responses=repeats,
+        )
+
+    primary = occurrence(0.0, floors_hz[0], tuple(
+        occurrence(float(n + 1), floor)
+        for n, floor in enumerate(floors_hz[1:])
+    ))
+    return (
+        SimpleNamespace(driver_responses=(primary,), summed_response=None),
+        SimpleNamespace(segments=[SimpleNamespace(
+            kind=KIND_SWEEP, role="woofer", f1_hz=150.0, f2_hz=4000.0,
+        )]),
+    )
+
+
+async def test_a_measure_takes_fit_inputs_reach_the_bytes_on_disk(real_store):
+    """The two inputs a re-fit needs, banked with the curve they belong to.
+
+    ``compose_envelope`` takes the conservative validity floor ACROSS
+    occurrences and its sigma term reads the repeats, so a take carrying only
+    each role's primary curve cannot be re-fitted offline at all — the
+    envelope's in-band mask comes back empty. Driven through
+    ``analysis_curve_records`` rather than a hand-built dict, so the pin fails
+    if the producer stops filling either.
+
+    The repeats ride NESTED on their primary, so a reader counting curves
+    still counts roles; each carries its own floor and its own level, which a
+    record that banked the primary three times would fail on either.
+    """
+    analysis, program = _measure_analysis(floors_hz=(142.5, 160.0, 175.0))
+
+    record_id = await real_store.bank({
+        **_take(kind=MEASURE_KIND_CANDIDATE),
+        "curves": spatial.analysis_curve_records(analysis, program),
+    })
+
+    (curve,) = _banked_file(real_store, record_id)["curves"]
+    repeats = curve["repeat_curves"]
+    assert curve["validity_floor_hz"] == 142.5
+    assert curve["magnitude_db"][0] == pytest.approx(0.0)
+    assert [r["validity_floor_hz"] for r in repeats] == [160.0, 175.0]
+    assert [r["magnitude_db"][0] for r in repeats] == pytest.approx([1.0, 2.0])
+    assert [r["repeat_curves"] for r in repeats] == [[], []]
 
 
 async def test_a_banked_walk_returns_a_usable_id_for_every_take(real_store):

@@ -476,12 +476,20 @@ class LateralPoseCurve:
     frequencies actually sampled ride along. ``band_hz`` is the role's driven
     sweep band — outside it the samples are noise and a consumer must bound
     itself with this.
+
+    ``repeat_curves`` holds this driver's other located occurrences, in
+    occurrence order; a repeat's own ``repeat_curves`` is empty, mirroring
+    ``DriverResponse.repeat_responses``.
     """
 
     role: str
     freqs_hz: np.ndarray
     complex_tf: np.ndarray
     band_hz: tuple[float, float]
+    #: The gate's trusted floor for THIS occurrence, Hz. ``None`` is "no floor
+    #: was resolved", never 0 Hz.
+    validity_floor_hz: float | None = None
+    repeat_curves: tuple["LateralPoseCurve", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -576,6 +584,11 @@ def lateral_pose_curve(
         freqs_hz=freqs[take],
         complex_tf=tf[take],
         band_hz=(float(band_hz[0]), float(band_hz[1])),
+        validity_floor_hz=response.validity_floor_hz,
+        repeat_curves=tuple(
+            lateral_pose_curve(occurrence, band_hz)
+            for occurrence in response.repeat_responses
+        ),
     )
 
 
@@ -938,6 +951,12 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
     calibration here is magnitude-only: common-mode across the roles of one
     capture, so self-cancelling for relative cross-driver work. Not a claim
     about the driver's absolute phase.
+
+    ``repeat_curves`` carries each sibling occurrence in this same shape, so a
+    reader has one thing to parse at either level. Its ``validity_floor_hz`` is
+    that OCCURRENCE's own gate floor, which is a narrower quantity than the
+    take-level field of the same name (:func:`lateral_pose_record`, one
+    response for the whole take).
     """
     tf = np.asarray(curve.complex_tf, dtype=np.complex128)
     magnitude = np.maximum(np.abs(tf), _POSE_MAGNITUDE_FLOOR)
@@ -947,6 +966,15 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         "freqs_hz": [float(hz) for hz in curve.freqs_hz],
         "magnitude_db": [float(db) for db in 20.0 * np.log10(magnitude)],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
+        # Ruling S3 one field further (ADR-0228 entry 2): the
+        # linearization envelope reads the conservative floor ACROSS
+        # occurrences and its sigma term reads the repeats, so a round banked
+        # without these two cannot be re-fitted offline. Additive: a round
+        # banked before this carries neither key.
+        "validity_floor_hz": curve.validity_floor_hz,
+        "repeat_curves": [
+            pose_curve_record(repeat) for repeat in curve.repeat_curves
+        ],
     }
 
 
@@ -961,12 +989,13 @@ def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
     analysis fills ``summed_response``. A union rather than a branch, so an
     analysis that grows the other half starts banking it. CHECK fills neither.
 
-    PRIMARY responses only: a MEASURE analysis also deconvolves each role's
-    repeat occurrences, which are diagnostic and feed no candidate/trim/
-    alignment math. A role whose band the program does not declare is SKIPPED
-    rather than banked on a guessed band, since outside the driven band the
-    samples are noise. An empty list therefore means NO CURVE WAS BANKED, never
-    "this capture was clean".
+    One record per PRIMARY response; a role's repeat occurrences ride nested on
+    their own primary (:func:`pose_curve_record`) rather than as rows of their
+    own, so a reader counting curves still counts roles. They remain diagnostic
+    and feed no candidate/trim/alignment math. A role whose band the
+    program does not declare is SKIPPED rather than banked on a guessed band,
+    since outside the driven band the samples are noise. An empty list
+    therefore means NO CURVE WAS BANKED, never "this capture was clean".
     """
     bands = _primary_sweep_bands(program)
     records = [
@@ -1016,7 +1045,10 @@ def lateral_pose_record(
 
     Refuses nothing. ``curves`` is empty only for a directly constructed pose —
     :func:`lateral_curves_sufficient` rejects a thin capture before any record
-    is built.
+    is built. A curve inside ``curves`` carries its OWN ``validity_floor_hz``,
+    per role and per occurrence; a take-level field of that name is one
+    response's floor for the whole take, so the two must not be flattened
+    together.
 
     Separate from :func:`cloud_position_record` rather than a widened one: a
     cloud position is a summed sweep judged by gating and ripple, and those

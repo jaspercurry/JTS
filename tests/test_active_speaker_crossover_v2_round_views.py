@@ -34,10 +34,14 @@ from jasper.active_speaker.crossover_v2.forward_model import (
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_views import (
+    CLOUD_BINDING_FIT_INPUTS_NOT_BANKED,
     ENTRY_STATE_UNREADABLE,
+    REFIT_TOLERANCE_DB,
+    SEVERED_CLOUD_INPUTS,
     RoundViewsError,
     agreement_table,
     audibility_co_metrics,
+    cloud_binding_view,
     entry_state_grade,
     forward_model_verify_delta,
     frozen_reference_grade,
@@ -2164,3 +2168,284 @@ def test_cli_spec_sweep_writes_the_verdict_carrying_its_gate_read(tmp_path):
     assert spec["overall_passed"] == banked.overall_passed
     assert low["max_deviation_hz"] == banked.bands[0].max_deviation_hz
     assert low["passed"] == banked.bands[0].passed
+
+
+# --------------------------------------------------------------------------- #
+# cloud-binding: did the cloud's null evidence bind the fit?
+# --------------------------------------------------------------------------- #
+
+#: The bands, classes and corner the fixture round measured through. Values,
+#: not the shipped defaults: the view reads every one of them off the round.
+_FIT_BANDS_HZ = {"woofer": (150.0, 4000.0), "tweeter": (1600.0, 20000.0)}
+_FIT_CLASSES = {"woofer": "unknown", "tweeter": "soft_dome"}
+_FIT_REGION = {
+    "id": "w-t", "lower_driver": "woofer", "upper_driver": "tweeter",
+    "fc_hz": 2400.0, "order": 4,
+}
+#: The analysis grid the session fitted on, an order of magnitude finer than
+#: the 12/octave basis a take banks its curves at — so the refit below crosses
+#: the same decimation a real round does.
+_FIT_NATIVE_HZ = np.geomspace(100.0, 22_000.0, 2048)
+_FIT_VALIDITY_FLOOR_HZ = 145.0
+
+
+def _fit_shape_db(role: str, freqs_hz: np.ndarray) -> np.ndarray:
+    """A driver's measured deviation: one bump the fit will correct, plus a
+    dip for the woofer so the null below lands on something."""
+    def bell(center_hz: float, height_db: float, width_oct: float) -> np.ndarray:
+        return height_db * np.exp(
+            -0.5 * ((np.log2(freqs_hz / center_hz) / width_oct) ** 2)
+        )
+
+    if role == "woofer":
+        return bell(700.0, 7.0, 0.18) + bell(2000.0, -4.0, 0.2)
+    return bell(5000.0, 6.0, 0.2)
+
+
+def _fit_response(role: str, freqs_hz: np.ndarray):
+    """One role's MEASURE response, with the two repeats the pair gate needs."""
+    from jasper.audio_measurement.program_analysis import DriverResponse
+
+    magnitude_db = _fit_shape_db(role, freqs_hz)
+
+    def occurrence(repeats=()):
+        return DriverResponse(
+            role=role, freqs_hz=freqs_hz, magnitude_db=magnitude_db,
+            complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
+            gating={}, snr=None, validity_floor_hz=_FIT_VALIDITY_FLOOR_HZ,
+            repeat_responses=repeats,
+        )
+
+    return occurrence((occurrence(), occurrence()))
+
+
+def _fit_pair(responses, *, cloud):
+    """Both branches through the SHIPPED fit path, composed before either is
+    fitted — what ``intervention.plan_linearization`` does, so the fixture's
+    banked fit is a real one rather than a shape typed to match."""
+    from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
+    from jasper.active_speaker.branch_target import branch_target
+    from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db
+    from jasper.active_speaker.linearization_envelope import compose_envelope
+    from jasper.active_speaker.linearization_fit import (
+        FitVocabulary,
+        core_level_band_hz,
+        fit_driver_linearization,
+        measurement_hole_bands_hz,
+    )
+    from jasper.active_speaker.profile import CrossoverRegion
+
+    roles = tuple(sorted(_FIT_BANDS_HZ))
+    envelopes = {
+        role: compose_envelope(
+            role, responses[role], excited_band_hz=_FIT_BANDS_HZ[role],
+            mic_tier="reference", driver_class=_FIT_CLASSES[role],
+            sigma_db=compose_sigma_db(
+                responses[role],
+                responses[next(o for o in roles if o != role)],
+                tier="reference", valid_band_hz=_FIT_BANDS_HZ[role],
+            ),
+            excluded_bands_hz=None if cloud is None else cloud[0],
+            band_spread=None if cloud is None else cloud[1],
+            n_positions=None if cloud is None else cloud[2],
+        )
+        for role in roles
+    }
+    sections = sections_by_role([CrossoverRegion.from_mapping(_FIT_REGION)])
+    role_sections = {role: sections.get(role, ()) for role in roles}
+    radiating = {role: radiating_band_hz(role_sections[role]) for role in roles}
+    blind = measurement_hole_bands_hz([
+        core_level_band_hz(envelopes[role], radiating_band_hz=radiating[role])
+        for role in roles
+    ])
+    return {
+        role: fit_driver_linearization(
+            responses[role], envelopes[role],
+            vocabulary=FitVocabulary(allow_boost=True),
+            radiating_band_hz=radiating[role], blind_bands_hz=blind,
+            target=branch_target(role_sections[role], envelopes[role].freqs_hz),
+        )
+        for role in roles
+    }
+
+
+def _cloud_evidence(nulls_hz):
+    """One round's banked cloud inputs, in ``planning.exclusion_evidence_json``'s
+    shape. The spread is flat and small, so the position-stability term is
+    behaviourally inert and the exclusion mask is the only cloud term with
+    anything to say."""
+    from jasper.audio_measurement.spatial_combine import OCTAVE_BAND_CENTERS_HZ
+
+    return {
+        "phase": "cloud_measure",
+        "excluded_bands_hz": [list(band) for band in nulls_hz],
+        "n_positions": 5,
+        "band_spread": [
+            {
+                "center_hz": center, "f_lo": center / 1.414, "f_hi": center * 1.414,
+                "sigma_db": 0.05, "max_sigma_db": 0.05, "n_bins": 20,
+            }
+            for center in OCTAVE_BAND_CENTERS_HZ
+        ],
+    }
+
+
+def _bank_fitted_round(tmp_path: Path, name: str, *, nulls_hz) -> Path:
+    """A banked round that FITTED a linearization against ``nulls_hz``.
+
+    The fit is computed at full analysis resolution and banked as
+    ``candidate.json``; the responses it was computed from are banked as a
+    MEASURE take through the product's own writer
+    (:func:`~.spatial.analysis_curve_records`), which decimates them onto the
+    12/octave basis. The view therefore refits from a coarser curve than the
+    fixture fitted, exactly as it does on a real round.
+    """
+    from types import SimpleNamespace
+
+    from jasper.active_speaker.crossover_v2 import spatial
+    from jasper.audio_measurement.program import KIND_SWEEP
+
+    round_dir = _make_round_dir(
+        tmp_path, name,
+        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    relay_dir = (
+        round_dir / "bundle" / "sess1" / "evidence/v1/artifacts"
+        / "crossover_v2" / "cap1"
+    )
+    evidence = _cloud_evidence(nulls_hz)
+    responses = {
+        role: _fit_response(role, _FIT_NATIVE_HZ) for role in _FIT_BANDS_HZ
+    }
+    fits = _fit_pair(responses, cloud=(
+        tuple(tuple(band) for band in nulls_hz),
+        tuple(
+            SimpleNamespace(**row) for row in evidence["band_spread"]
+        ),
+        evidence["n_positions"],
+    ))
+    (relay_dir / "candidate.json").write_text(json.dumps({
+        "kind": "jts_measured_crossover_candidate",
+        "source_preset": {"crossover_regions": [_FIT_REGION]},
+        "exclusion_evidence": evidence,
+        "linearization": {
+            role: fit.to_dict() for role, fit in fits.items()
+        },
+    }))
+
+    program = SimpleNamespace(segments=[
+        SimpleNamespace(kind=KIND_SWEEP, role=role, f1_hz=lo, f2_hz=hi)
+        for role, (lo, hi) in _FIT_BANDS_HZ.items()
+    ])
+    take_id = "measure_00_a01"
+    positions = relay_dir / "positions"
+    positions.mkdir(parents=True, exist_ok=True)
+    (positions / f"{take_id}.json").write_text(json.dumps({
+        "kind": POSITION_EVIDENCE_KIND,
+        "schema_version": 1,
+        "session_id": "cap1",
+        "measure_kind": "candidate",
+        "phase": "measure",
+        "take_id": take_id,
+        "position_id": take_id,
+        "index": 0,
+        "attempt": 1,
+        "position_deg": 0,
+        "vertical_deg": 0,
+        "captured_at": "2026-08-30T00:00:00Z",
+        "curves": spatial.analysis_curve_records(
+            SimpleNamespace(
+                driver_responses=tuple(responses.values()), summed_response=None,
+            ),
+            program,
+        ),
+    }))
+    return round_dir
+
+
+@pytest.mark.parametrize(
+    "nulls_hz,expected_bound",
+    [
+        # Below both driven bands, so the mask reaches no bin either fit acts
+        # on: evidence the round HELD and the fit never used.
+        (((30.0, 40.0),), False),
+        # Over the woofer's own 700 Hz bump: the wired fit may not correct
+        # there and the severed one does.
+        (((600.0, 820.0),), True),
+    ],
+)
+def test_cloud_binding_reports_whether_the_null_evidence_bound_the_fit(
+    tmp_path, nulls_hz, expected_bound,
+):
+    """The one question the severed-twin replay answered, on a banked round.
+
+    Severing the cloud's three envelope inputs together — the production
+    ``cloud is None`` branch — either moves the fitted prescription or does
+    not, and ``bound`` is that answer. An inert null is not a defect: it is
+    the round having measured evidence its own fit had no use for.
+
+    The refit is checked against the banked fit FIRST, so a ``bound`` either
+    way is only reported over a reconstruction that reproduces; that check
+    crosses the take's 12/octave decimation, which is the residue
+    ``REFIT_TOLERANCE_DB`` is sized for.
+    """
+    view = cloud_binding_view(
+        load_banked_round(_bank_fitted_round(tmp_path, "r1", nulls_hz=nulls_hz))
+    )
+
+    assert view.evaluable
+    assert view.not_evaluated_reason == ""
+    assert view.refit_matches_banked
+    assert view.refit_vs_banked_db < REFIT_TOLERANCE_DB
+    assert view.severed_inputs == SEVERED_CLOUD_INPUTS
+    assert view.bound is expected_bound
+    woofer = next(role for role in view.roles if role.role == "woofer")
+    assert (woofer.max_delta_db > woofer.refit_vs_banked_db) is expected_bound
+    # Whichever way it went, every octave band the grid covers is answered.
+    assert {band.center_hz for band in woofer.bands}
+
+
+def test_cloud_binding_refuses_a_round_banked_before_the_fit_inputs_rode(tmp_path):
+    """The honest answer for the corpus this view cannot reach.
+
+    A take banked before ``validity_floor_hz`` and ``repeat_curves`` rode on
+    its curves cannot rebuild the envelope's floor or its sigma term, and a
+    refit from what such a round DOES hold comes back an empty fit — which
+    would read as "the cloud bound everything". It is named as unevaluable
+    instead.
+    """
+    round_dir = _bank_fitted_round(tmp_path, "r1", nulls_hz=((600.0, 820.0),))
+    take = (
+        round_dir / "bundle" / "sess1" / "evidence/v1/artifacts"
+        / "crossover_v2" / "cap1" / "positions" / "measure_00_a01.json"
+    )
+    record = json.loads(take.read_text())
+    for curve in record["curves"]:
+        del curve["validity_floor_hz"], curve["repeat_curves"]
+    take.write_text(json.dumps(record))
+
+    view = cloud_binding_view(load_banked_round(round_dir))
+
+    assert not view.evaluable
+    assert view.not_evaluated_reason == CLOUD_BINDING_FIT_INPUTS_NOT_BANKED
+    assert view.bound is None
+    assert view.roles == ()
+
+
+def test_cli_cloud_binding_writes_the_view_into_the_round_dir(tmp_path, capsys):
+    """The subcommand's own contract: exit 0, and the artifact lands beside the
+    round's other views under the name the runbook's menu names."""
+    from jasper.cli.round_views import main
+
+    round_dir = _bank_fitted_round(tmp_path, "r1", nulls_hz=((600.0, 820.0),))
+
+    rc = main(["cloud-binding", str(round_dir)])
+
+    assert rc == 0
+    payload = json.loads((round_dir / "cloud_binding.json").read_text())
+    assert payload["evaluable"] is True
+    assert payload["bound"] is True
+    assert payload["severed_inputs"] == list(SEVERED_CLOUD_INPUTS)
+    assert payload["refit_vs_banked_db"] < payload["tolerance_db"]
+    woofer = next(r for r in payload["roles"] if r["role"] == "woofer")
+    assert any(b["cloud_excluded"] and b["delta_db"] > 1.0 for b in woofer["bands"])

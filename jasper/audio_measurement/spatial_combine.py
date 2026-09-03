@@ -1360,6 +1360,26 @@ def assess_geometry(
 # --------------------------------------------------------------------------- #
 
 
+def octave_bands_hz(
+    grid_lo_hz: float, grid_hi_hz: float,
+) -> tuple[tuple[float, float, float], ...]:
+    """``(center, lo, hi)`` for every :data:`OCTAVE_BAND_CENTERS_HZ` band a grid
+    spanning ``grid_lo_hz``..``grid_hi_hz`` reaches, clamped to that span.
+
+    Edges are ``center / sqrt(2) .. center * sqrt(2)``, and a band the grid does
+    not reach at all is omitted rather than returned empty. Public because the
+    cross-position spread below and every reader that bands an answer AGAINST
+    that spread must cut the spectrum at the same places.
+    """
+    bands = []
+    for center in OCTAVE_BAND_CENTERS_HZ:
+        lo = max(center / math.sqrt(2.0), grid_lo_hz)
+        hi = min(center * math.sqrt(2.0), grid_hi_hz)
+        if lo < hi:
+            bands.append((float(center), float(lo), float(hi)))
+    return tuple(bands)
+
+
 def _band_spread(freqs: np.ndarray, stacked: np.ndarray) -> tuple[BandSpread, ...]:
     """Octave-band cross-position spread from raw per-position curves. Deliberately
     **unsmoothed**: a band-power average gives the same statistic directly, without one
@@ -1368,13 +1388,8 @@ def _band_spread(freqs: np.ndarray, stacked: np.ndarray) -> tuple[BandSpread, ..
         return ()
     power = 10.0 ** (stacked / 10.0)
     per_bin_sigma = np.std(stacked, axis=0, ddof=1)
-    grid_lo, grid_hi = float(freqs[0]), float(freqs[-1])
     bands: list[BandSpread] = []
-    for center in OCTAVE_BAND_CENTERS_HZ:
-        lo = max(center / np.sqrt(2.0), grid_lo)
-        hi = min(center * np.sqrt(2.0), grid_hi)
-        if hi <= lo:
-            continue
+    for center, lo, hi in octave_bands_hz(float(freqs[0]), float(freqs[-1])):
         mask = (freqs >= lo) & (freqs <= hi)
         n_bins = int(np.count_nonzero(mask))
         if n_bins < MIN_BAND_BINS:
