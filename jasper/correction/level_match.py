@@ -43,20 +43,13 @@ that the kernel deliberately does not know about:
     reported as "consistent").
 
 Everything here is host-mediated (docs/extensibility.md §1) and hardware-free:
-inject a fake relay reader + fake clock and the whole path is synthetically
-testable. The on-device settle-cadence and iOS/Android AGC-freeze tuning are H1.
+inject a fake reader + fake clock and the whole path is synthetically testable.
 
-P3b wiring notes (deliberate, so they are not forgotten):
-  * ``read_status`` at production must be a CACHED background poller snapshot —
-    never a blocking ``RelayClient.status()`` per call (the feed rate-limits to
-    ``min_read_interval_s``, but a sync 15 s-timeout HTTP call inside the
-    kernel's event loop is still the wrong shape; poll on a thread, share a
-    dict). Same for ``post_host_event``.
-  * A cap result satisfying the kernel's strict evidence policy is stored as an
-    explicitly labeled ``bounded_low_level`` lock, never a normal in-window
-    lock. A cap result without that proof stays MAXED_OUT, whose UI copy must
-    branch on ``ramp.agc_frozen``: with ``agc_frozen=False`` the evidence is
-    AGC-compressed and "raise your analog amp" may be wrong.
+A cap result satisfying the kernel's strict evidence policy is stored as an
+explicitly labeled ``bounded_low_level`` lock, never a normal in-window lock.
+A cap result without that proof stays MAXED_OUT, whose UI copy must branch on
+``ramp.agc_frozen``: with ``agc_frozen=False`` the evidence is AGC-compressed
+and "raise your analog amp" may be wrong.
 """
 
 from __future__ import annotations
@@ -704,14 +697,11 @@ class LevelMatchOutcome:
 # --- ramp terminal refusal copy -----------------------------------------------
 #
 # The 2026-07-16 jts3 finding: a level-match ramp terminal that didn't lock
-# (``agc_suspected`` and friends) reached the phone terminal and the
-# ``capture_relay.adapter_failed`` log as a bare ``ValueError`` carrying the
-# ramp's raw code — never translated, never explaining anything. Every
-# refusal now names its reason (the project rule): this is the single place
-# a ramp terminal's ``(error, error_detail)`` pair becomes homeowner copy.
-# Both the relay web adapter (``jasper.web.correction_setup``) and the Room
-# envelope (``jasper.correction.envelope``) call ``describe_ramp_refusal`` —
-# neither hand-rolls its own copy.
+# (``agc_suspected`` and friends) surfaced as a bare ``ValueError`` carrying
+# the ramp's raw code — never translated, never explaining anything.
+# ``describe_ramp_refusal`` is where a ramp terminal's ``(error,
+# error_detail)`` pair becomes homeowner copy, so a refusal names its reason
+# (the project rule) rather than leaking a code.
 
 
 @dataclass(frozen=True)
@@ -731,11 +721,11 @@ class RampRefusal:
 class LevelMatchRefused(RuntimeError):
     """The level-match ramp ended without a lock; carries the homeowner copy.
 
-    Raised by the relay web adapter instead of a bare ``ValueError(detail)``
-    (see the module docstring above). ``str(exc)`` is the homeowner message,
+    Raised instead of a bare ``ValueError(detail)`` (see the comment block
+    above). ``str(exc)`` is the homeowner message,
     so an unmigrated ``str(exc)`` caller still reads sensibly; ``.code`` and
     ``.user_message`` are the structured pair for callers that want them
-    (log ``reason=``, the phone terminal's ``error`` field).
+    (a log ``reason=``, a terminal's ``error`` field).
     """
 
     def __init__(self, refusal: RampRefusal) -> None:

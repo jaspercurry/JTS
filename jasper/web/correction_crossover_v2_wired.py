@@ -217,23 +217,16 @@ class WiredCaptureSession:
 
 @dataclass(frozen=True)
 class WiredOpened:
-    """The mint result, shaped like ``correction_adapter.RelayCapture``.
-
-    ``tap_link`` is empty by construction: there is no phone to hand a link
-    to. The shared status holder publishes it as-is; the wired wizard surface
-    (W3) is what will render this state.
-    """
+    """The mint result the shared capture slot is handed."""
 
     pi_session: WiredCaptureSession
-    tap_link: str = ""
 
 
 def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
     """Mint the wired session: validate the spec, mint the identity.
 
-    ``spec.validate()`` is the same gate relay registration runs — it is what
-    pins the 48 kHz rate for the wired path too. No network, no relay: the
-    session exists the moment this returns.
+    ``spec.validate()`` is what pins the 48 kHz rate for the capture path.
+    The session exists the moment this returns.
     """
     validated = spec.validate()
     session = WiredCaptureSession(
@@ -521,15 +514,12 @@ def build_v2_wired_run_and_consume(
     recorder_factory: Callable[[float], Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     capture_stimulus: Callable[[int, int, Any], Any] | None = None,
-) -> Callable[[Any, Any], Awaitable[Any]]:
-    """The async ``run_and_consume(client, pi_session)`` for one WIRED session.
+) -> Callable[[Any], Awaitable[Any]]:
+    """The async ``run_and_consume(pi_session)`` for one measurement session.
 
-    Mirrors the relay runner's thread model — the walk runs on a worker
-    thread (``asyncio.to_thread``), the awaiting task shields it through
-    cancellation so Stop drains the walk before cleanup — and the relay
-    runner's host-owned error mapping, minus everything phone-shaped (host
-    events, purge, TTLs). ``client`` is accepted and ignored: the shared
-    hosting passes ``None`` for a local kind.
+    The walk runs on a worker thread (``asyncio.to_thread``) and the awaiting
+    task shields it through cancellation, so Stop drains the walk before
+    cleanup.
 
     ``capture_stimulus`` is the host's ENGINE MEASURE LEG: a synchronous
     ``(index, attempt, entry) -> CaptureAnswer | None`` that, for the indices
@@ -601,8 +591,7 @@ def build_v2_wired_run_and_consume(
 
     poll_s = WIRED_HOLD_POLL_S if poll_interval_s is None else float(poll_interval_s)
 
-    async def _run_and_consume(client: Any, pi_session: Any) -> None:
-        del client  # local provider: no relay client exists
+    async def _run_and_consume(pi_session: Any) -> None:
         from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
         from jasper.active_speaker.crossover_v2.refusal_copy import (
             REASON_INTERNAL_ERROR,

@@ -75,7 +75,6 @@ from typing import Any, Optional
 
 import numpy as np
 import sounddevice as sd
-from scipy.signal import butter, resample_poly, sosfilt
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
@@ -88,6 +87,7 @@ from jasper.aec_sweep import (
     current_aec3_sweep_source,
     load_aec3_sweep_config,
 )
+from jasper.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
 from jasper.watchdog import Heartbeat
 from jasper import wake_legs
 from jasper.wake_corpus.capture_plan import (
@@ -127,6 +127,14 @@ from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
 AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
+
+# Above this, `jasper.dsp_numpy.resample_poly` runs one Python-level polyphase
+# branch per unit of `max(up, down)` and stops fitting a capture callback: a
+# 44.1 kHz card reduces to 160/441 and costs ~2 ms per block on a laptop
+# against a 20 ms budget, where scipy's C `upfirdn` costs 0.7 ms. Every
+# integer-ratio card (32/48/96 kHz -> 1/2, 1/3, 1/6) stays well under 8 and is
+# 3-5x *faster* in numpy, so only the 44.1 kHz family reaches for scipy.
+MAX_NUMPY_POLYPHASE_BRANCHES = 8
 
 # Wire geometry of the far-end reference. outputd sends its final speaker
 # monitor at this rate/channel count; `_ReferenceFrameConverter` folds it to
@@ -713,13 +721,7 @@ class _ReferenceFrameConverter:
         self.ref_hpf_hz = float(ref_hpf_hz)
         self.capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
         self._ref_gain_lin = 10.0 ** (self.ref_gain_db / 20.0)
-        self._hpf_sos = butter(
-            2,
-            self.ref_hpf_hz,
-            btype="highpass",
-            fs=SAMPLE_RATE,
-            output="sos",
-        )
+        self._hpf_sos = butter2_highpass_sos(self.ref_hpf_hz, SAMPLE_RATE)
         self._hpf_zi = np.zeros((self._hpf_sos.shape[0], 2), dtype=np.float64)
         self._accum_48 = np.empty(0, dtype=np.float32)
 
@@ -939,6 +941,34 @@ def _mic_thread(
         _shutdown.wait()
 
 
+def _usb_resampler(usb_rate: int) -> tuple[Any, int, int]:
+    """Pick the corpus USB mic's resampler and its rational ratio.
+
+    Returns `(None, 1, 1)` when the card already runs at `SAMPLE_RATE`.
+    """
+    gcd = math.gcd(usb_rate, SAMPLE_RATE)
+    up = SAMPLE_RATE // gcd
+    down = usb_rate // gcd
+    if up == down == 1:
+        return None, 1, 1
+    if max(up, down) <= MAX_NUMPY_POLYPHASE_BRANCHES:
+        return resample_poly, up, down
+    try:
+        # Imported here, never at module scope, so the resident daemon's
+        # steady-state import graph stays scipy-free.
+        from scipy.signal import resample_poly as scipy_resample_poly
+    except ImportError:
+        logger.error(
+            "scipy missing; resampling the corpus USB mic %d->%d Hz with %d "
+            "numpy polyphase branches, which may overrun the %d ms capture "
+            "callback and drop corpus frames",
+            usb_rate, SAMPLE_RATE, up,
+            round(1000 * FRAME_SAMPLES / SAMPLE_RATE),
+        )
+        return resample_poly, up, down
+    return scipy_resample_poly, up, down
+
+
 def _usb_mic_thread(
     usb_q: Queue,
     config: BridgeConfig | None = None,
@@ -950,14 +980,10 @@ def _usb_mic_thread(
     JASPER_AEC_CORPUS_USB_ENABLED=1.
     """
 
-    import math
-
     config = config or BridgeConfig.from_env()
     usb_rate = _usb_capture_rate(config)
     capture_block = max(1, round(FRAME_SAMPLES * usb_rate / SAMPLE_RATE))
-    gcd = math.gcd(usb_rate, SAMPLE_RATE)
-    up = SAMPLE_RATE // gcd
-    down = usb_rate // gcd
+    resample, up, down = _usb_resampler(usb_rate)
     accum_16 = np.empty(0, dtype=np.float32)
 
     def cb(indata, frames, time_info, status):
@@ -967,8 +993,12 @@ def _usb_mic_thread(
         if _shutdown.is_set():
             return
         mono = indata[:, 0].astype(np.float32, copy=True)
-        if usb_rate != SAMPLE_RATE:
-            mono = resample_poly(mono, up=up, down=down)
+        if resample is not None:
+            # float32 back: dsp_numpy returns float64 and would silently
+            # promote the accumulator, scipy returns the input dtype.
+            mono = resample(mono, up=up, down=down).astype(
+                np.float32, copy=False,
+            )
         accum_16 = np.concatenate([accum_16, mono])
         while accum_16.size >= FRAME_SAMPLES:
             chunk = accum_16[:FRAME_SAMPLES]

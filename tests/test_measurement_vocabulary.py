@@ -91,15 +91,13 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/web/correction_room_flow.py",
     "jasper/web/balance_flow.py",
     "jasper/web/sync_flow.py",
-    # Cluster 3 — relay hand-off chrome (the speaker-side pages that hand the
-    # household off to the measurement page, and the shared QR affordance).
-    # The landing page is the ENTRY POINT to /correction/room/, so its row label
-    # and that page's subtitle have to agree; they did not until #1959.
+    # Cluster 3 — the measurement pages' own chrome. The landing page is the
+    # ENTRY POINT to /correction/room/, so its row label and that page's
+    # subtitle have to agree; they did not until #1959.
     "deploy/index.html",
     "jasper/web/correction_crossover_flow.py",
     "deploy/assets/correction/js/main.js",
     "deploy/assets/correction/js/crossover/main.js",
-    "deploy/assets/shared/js/qr.js",
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",
     "deploy/assets/sound-profile/js/active-speaker-ui.js",
@@ -125,7 +123,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # --- Wire / protocol vocabulary. Renaming these is a relay protocol change,
     # not a copy change, and both sides of the transport already agree on them.
     "awaiting_phone": "relay session state on the wire",
-    "phone_capture_unavailable": "failure code in the /correction/ code table",
     "phone_feed_lost": "canonical snake_case refusal code (reason= log key)",
     "phone_never_armed": "canonical snake_case refusal code",
     "cancelled_before_phone_armed": "canonical snake_case refusal code",
@@ -141,34 +138,14 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # FRAGMENT_REACH_EXCEPTIONS and the test that pins it.
     "phone never armed": "raw ramp error string (refusal-table key)",
     "phone feed lost": "raw ramp error string (refusal-table-prefix key)",
-    # --- Diagnostic detail on CaptureTimeout / CaptureFailed, and internal
-    # guard messages. These ride logs and support reads, not a household screen;
-    # the household-facing sentence for the same conditions is
-    # CAPTURE_INCOMPATIBLE_USER_MESSAGE and the §5.10 reason registry.
+    # --- Diagnostic detail on CaptureTimeout / CaptureFailed. These ride logs
+    # and support reads, not a household screen; the household-facing sentence
+    # for the same conditions is CAPTURE_INCOMPATIBLE_USER_MESSAGE and the
+    # §5.10 reason registry.
     "phone aborted the capture (": "CaptureTimeout/CaptureFailed detail prefix",
     "phone never uploaded within ": "CaptureTimeout detail prefix",
     "phone never began the next capture within ": "CaptureTimeout detail prefix",
     "their phone ended the walk": "CaptureTimeout detail (same expression)",
-    "phone capture ownership changed during registration": "internal guard message",
-    "phone capture ownership changed before evidence commit": "internal guard message",
-    "phone capture ownership changed before upload": "internal guard message",
-    "no matching phone capture is running": "internal guard message",
-    "this phone capture cannot be stopped safely": "internal guard message",
-    "phone capture is not ready to commit evidence": "internal guard message",
-    "phone capture is not ready to finish": "internal guard message",
-    "a phone-mic relay capture is already in progress": "internal guard message",
-    "phone capture failed": "console.warn diagnostic in the /correction/ module",
-    # --- Operator-facing configuration text naming the subsystem by its name.
-    "phone-mic relay capture is not configured": "operator remediation, names the "
-    "subsystem",
-    # --- The TWO deliberate household-facing exceptions, both argued where they
-    # live. Each names a real phone-shaped affordance, not the instrument.
-    "Scan with your phone's camera": "a QR code's only affordance is a camera — a "
-    "laptop or UMIK-2 host clicks the link beside it; the canvas aria-label "
-    "carries the device-agnostic noun",
-    "If it's a phone, lay it flat screen up, point the bottom edge toward the "
-    "speakers, and remove its case.": "a CONDITIONAL form-factor tip after the "
-    "actor is already named as the microphone (#1941 R5/R7 territory)",
 }
 
 
@@ -383,7 +360,6 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
         REASON_VERIFY_LEVEL_SHIFT,
     )
     from jasper.capture_relay.session import CAPTURE_INCOMPATIBLE_USER_MESSAGE
-    from jasper.correction.failures import PHONE_CAPTURE_UNAVAILABLE, public_failure
 
     assert "microphone" in REASON_REGISTRY[REASON_SNR_FLOOR].message
     # R4 owns the noun here; #1924's routing half (the remedy clause) landed
@@ -391,7 +367,6 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
     # halves of the sentence have to survive, so this keeps asserting the noun.
     assert "microphone" in REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
     assert "measurement page" in CAPTURE_INCOMPATIBLE_USER_MESSAGE
-    assert "measurement page" in public_failure(PHONE_CAPTURE_UNAVAILABLE)["text"]
 
 
 def test_the_fixed_axis_placement_copy_keeps_the_conditional_aim():

@@ -19,7 +19,6 @@ MEASUREMENT_IN_PROGRESS = "measurement_in_progress"
 MEASUREMENT_SETUP_INVALID = "measurement_setup_invalid"
 SPEAKER_MEASUREMENT_UNSAFE = "speaker_measurement_unsafe"
 MICROPHONE_SETUP_UNAVAILABLE = "microphone_setup_unavailable"
-PHONE_CAPTURE_UNAVAILABLE = "phone_capture_unavailable"
 MEASUREMENT_STOPPED = "measurement_stopped"
 TEST_SIGNAL_UNAVAILABLE = "test_signal_unavailable"
 MEASUREMENT_ANALYSIS_FAILED = "measurement_analysis_failed"
@@ -66,10 +65,6 @@ _FAILURE_COPY: dict[str, tuple[str, bool]] = {
     MICROPHONE_SETUP_UNAVAILABLE: (
         "The saved microphone setup is unavailable. Choose the microphone "
         "again.",
-        True,
-    ),
-    PHONE_CAPTURE_UNAVAILABLE: (
-        "The measurement page could not be opened. Try again or use this device.",
         True,
     ),
     MEASUREMENT_STOPPED: ("Measurement stopped.", True),

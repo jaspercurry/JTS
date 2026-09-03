@@ -101,7 +101,6 @@ SCREEN_RESULT = "result"
 SECTION_CURRENT_CORRECTION = "current-correction"
 SECTION_RUN_DEFAULTS = "run-defaults"
 SECTION_READINESS_BLOCKER = "readiness-blocker"
-SECTION_CAPTURE_HANDOFF = "capture-handoff"
 SECTION_PLACEMENT = "placement"
 SECTION_CAPTURE_SETUP = "capture-setup"
 SECTION_LOCAL_CERTIFICATE_WARNING = "local-certificate-warning"
@@ -118,7 +117,6 @@ SECTION_VOCABULARY = frozenset({
     SECTION_CURRENT_CORRECTION,
     SECTION_RUN_DEFAULTS,
     SECTION_READINESS_BLOCKER,
-    SECTION_CAPTURE_HANDOFF,
     SECTION_PLACEMENT,
     SECTION_CAPTURE_SETUP,
     SECTION_LOCAL_CERTIFICATE_WARNING,
@@ -139,23 +137,19 @@ _SCREEN_SECTIONS: dict[str, tuple[str, ...]] = {
     ),
     SCREEN_MIC: (
         SECTION_RUN_DEFAULTS,
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
     ),
     SCREEN_LEVEL: (
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
         SECTION_LEVEL_CHECK,
     ),
     SCREEN_SWEEP: (
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
         SECTION_POSITION_CAPTURE,
     ),
     SCREEN_REVIEW: (SECTION_MEASUREMENT_REVIEW,),
     SCREEN_APPLY: (SECTION_APPLY_STATUS,),
     SCREEN_VERIFY: (
-        SECTION_CAPTURE_HANDOFF,
         SECTION_PLACEMENT,
         SECTION_VERIFICATION,
     ),
@@ -1184,9 +1178,6 @@ def _run_defaults(session: Any, *, screen: str) -> dict[str, Any]:
         },
         "repeat_main_position": repeat_main_position,
         "repeat_disclosure": repeat_disclosure,
-        "capture_transport": str(
-            getattr(session, "capture_transport", "local")
-        ),
         "change_allowed": (
             screen == SCREEN_IDLE and session.state.value == "idle"
         ),
@@ -1244,8 +1235,6 @@ def build_envelope(
             failure = public_failure(CORRECTION_AUTO_REVERT_FAILED)
         else:
             failure = session_failure(getattr(session, "error", None))
-    if failure is not None and session.state.value != "failed":
-        next_action = None
     tuning_llm = _tuning_llm(screen)
     if failure is not None or session.state.value == "analyzing":
         tuning_llm["offered"] = False

@@ -127,7 +127,6 @@ def _real_verify_spec():
 def test_open_wired_capture_mints_identity_and_validates_the_spec():
     opened = v2wired.open_wired_capture(_real_verify_spec(), device=_device())
     assert opened.pi_session.session_id.startswith("wired-")
-    assert opened.tap_link == ""
     # The 48 kHz pin reaches the wired path through the same validate the
     # relay registration runs.
     assert opened.pi_session.spec.sample_rate_hz == RATE
@@ -429,7 +428,7 @@ def _build(conductor, volume, *, plan=None, monkeypatch=None, persists=None,
 
 def _run(runner, plan=None):
     session = _wired_session(plan if plan is not None else _plan())
-    return asyncio.run(runner(None, session))
+    return asyncio.run(runner(session))
 
 
 def test_happy_walk_drives_the_conversation_in_order(monkeypatch):
@@ -746,7 +745,7 @@ def test_held_set_waits_for_the_completion_signal_then_closes(monkeypatch):
 
     async def _drive():
         session = _wired_session(_plan())
-        task = asyncio.create_task(runner(None, session))
+        task = asyncio.create_task(runner(session))
         # Let the walk reach the confirm hold, then send the signal.
         await asyncio.sleep(0.15)
         complete_event.set()
@@ -837,7 +836,7 @@ def test_cancellation_drains_the_walk_before_cleanup(monkeypatch):
 
     async def _drive():
         session = _wired_session(_plan())
-        task = asyncio.create_task(runner(None, session))
+        task = asyncio.create_task(runner(session))
         await asyncio.to_thread(started.wait, 5)
         task.cancel()
         await asyncio.sleep(0.05)
@@ -1010,7 +1009,7 @@ def test_a_retake_past_the_plans_attempt_budget_is_refused_not_fatal(
 
     async def _drive():
         session = _wired_session(_plan(target=1, max_attempts=1))
-        task = asyncio.create_task(runner(None, session))
+        task = asyncio.create_task(runner(session))
         await asyncio.sleep(0.15)
         retake.set()
         await asyncio.sleep(0.15)
@@ -1041,7 +1040,7 @@ def test_a_retake_inside_the_held_set_window_re_opens_the_last_slot(monkeypatch)
 
     async def _drive():
         session = _wired_session(_plan(target=1, max_attempts=4))
-        task = asyncio.create_task(runner(None, session))
+        task = asyncio.create_task(runner(session))
         await asyncio.sleep(0.15)
         retake.set()
         await asyncio.sleep(0.2)
@@ -1312,7 +1311,7 @@ def test_end_to_end_wired_session_through_the_real_host_consume_path(
         recorder_factory=_recorder_factory(),
         poll_interval_s=0.01,
     )
-    asyncio.run(runner(None, session))
+    asyncio.run(runner(session))
 
     # The program actually played while the recorder rolled.
     assert played == ["verify"]
@@ -1370,55 +1369,6 @@ def test_wired_setup_reference_is_none_when_unresolvable(monkeypatch):
 # --------------------------------------------------------------------------- #
 # 5. hosting: the local kind + the completion endpoint
 # --------------------------------------------------------------------------- #
-
-
-def test_local_kind_never_constructs_a_relay_client(monkeypatch):
-    from jasper.web import correction_setup
-    from jasper.web._systemd import no_hold
-    import jasper.capture_relay.client as relay_client_mod
-
-    class Bomb:
-        def __init__(self, *a, **k):
-            raise AssertionError("a local kind must not build a RelayClient")
-
-    monkeypatch.setattr(relay_client_mod, "RelayClient", Bomb)
-    monkeypatch.setattr(correction_setup, "_ensure_loop", lambda: object())
-
-    def _fake_run_coroutine_threadsafe(coro, loop):
-        coro.close()
-        return object()
-
-    monkeypatch.setattr(
-        correction_setup.asyncio,
-        "run_coroutine_threadsafe",
-        _fake_run_coroutine_threadsafe,
-    )
-    seen = {}
-
-    def _open(client, relay_base, capture_origin, return_url):
-        seen["client"] = client
-        return SimpleNamespace(tap_link="", pi_session=object())
-
-    async def _run_and_consume(client, pi_session):
-        raise AssertionError("stubbed")
-
-    correction_setup._set_relay_capture(None)
-    try:
-        result = correction_setup._run_relay_capture(
-            correction_setup.RelayCaptureKind(
-                label="crossover_v2:session",
-                open=_open,
-                run_and_consume=_run_and_consume,
-                local=True,
-            ),
-            "",
-            return_url="http://jts.local/correction/crossover/",
-            idle_hold=no_hold,
-        )
-    finally:
-        correction_setup._set_relay_capture(None)
-    assert seen["client"] is None
-    assert result["status"] == "awaiting_phone"
 
 
 def _fake_handler(body: bytes = b"{}"):

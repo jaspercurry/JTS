@@ -22,8 +22,6 @@ const ids = [
   "crossover-action",
   "crossover-relay",
   "crossover-relay-status",
-  "crossover-relay-link",
-  "crossover-relay-qr",
   "crossover-relay-stop",
   "capture-status",
 ];
@@ -50,17 +48,12 @@ globalThis.clearTimeout = (id) => {
 
 globalThis.__getJSON = async () => ({});
 globalThis.__postJSON = async () => ({});
-// deploy/assets/shared/js/qr.js's renderRelayQr is exercised elsewhere
-// (tests/js/qr_harness.mjs for the encoder/DOM, crossover_stop_render_test.mjs
-// for the wiring) — this file only drives schedulePoll(), so a no-op stands
-// in purely so the module (which imports it) loads without a real DOM.
-globalThis.__renderRelayQr = () => {};
 
 const { schedulePoll } = await loadEsm(
   repoPath("deploy/assets/correction/js/crossover/main.js"),
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
-    prelude: aliasGlobals(["getJSON", "postJSON", "renderRelayQr"]),
+    prelude: aliasGlobals(["getJSON", "postJSON"]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["schedulePoll"],
   },

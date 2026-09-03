@@ -2,17 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// 2026-07-16 hardware-confirmed bug: runAction()'s finally re-rendered
-// envelope.next_action with no relay gate, so a primary action button could
-// appear beside the "Open phone capture" relay link (jasper/web/
-// correction_crossover_flow.py hardcodes that link as btn--primary and
-// unhides it while a relay is in flight) — two green buttons, no way to
-// tell which one to press. The fix made renderActionRow() the sole
-// authority for the action row across every call-site (render(), stopRelay()'s
-// finally, and both of runAction()'s relay touch-points); this harness pins
-// the invariant it restores: at most one primary control (the action row's
-// button/link, or the relay link) is visible at any time, across all four
-// call-site shapes.
+// renderActionRow() is the SOLE authority for the action row across every
+// call-site (render(), stopRelay()'s finally, and both of runAction()'s
+// capture touch-points). This harness pins what each of those four shapes
+// leaves in the row: nothing while a capture is in flight, the envelope's
+// own next_action once it is terminal, and a show_during_relay action
+// throughout a hold.
 
 import assert from "node:assert/strict";
 import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
@@ -26,10 +21,8 @@ let nextEnvelope = null;
 let postResponse = { status: "ok" };
 globalThis.__getJSON = async () => nextEnvelope;
 globalThis.__postJSON = async () => postResponse;
-globalThis.__renderRelayQr = () => {};
 // PR-7's before/after visualization (./cloud.js) is out of scope for this
 // harness — it only pins the action-row authority — so a no-op stands in,
-// same shape as the __renderRelayQr stub above.
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
@@ -38,7 +31,7 @@ const { render, runAction, stopRelay } = await loadEsm(
   {
     rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
     prelude: aliasGlobals([
-      "getJSON", "postJSON", "renderRelayQr", "renderCloud", "redrawCloudChart",
+      "getJSON", "postJSON", "renderCloud", "redrawCloudChart",
     ]),
     truncateBefore: "\nrefresh().catch((error) => {",
     exportNames: ["render", "runAction", "stopRelay"],
@@ -54,26 +47,6 @@ const nextAction = {
 };
 
 function actionRowChildren() { return elements.get("crossover-action").children; }
-function relayLinkVisible() {
-  // The page's only hiding mechanism is the native `hidden` attribute
-  // (app.css defines `[hidden] { display: none !important; }` and no
-  // `.hidden` class rule) — assert the property the CSS actually implements,
-  // not a classList token the stylesheet never wired up.
-  return !elements.get("crossover-relay-link").hidden;
-}
-
-// Only one of {action-row primary, relay link} may be visible at once — the
-// invariant the whole fix exists to restore.
-function assertSinglePrimary(label) {
-  const primaries = actionRowChildren().filter(
-    (child) => String(child.className || "").includes("btn--primary"),
-  );
-  assert.ok(
-    !(primaries.length > 0 && relayLinkVisible()),
-    `${label}: action-row primary and relay link must not both be visible`,
-  );
-}
-
 let passed = 0;
 function check(condition, message) {
   assert.ok(condition, message);
@@ -85,13 +58,11 @@ render({
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=a" },
+  relay: { status: "awaiting_phone" },
   next_action: nextAction,
   alternate_actions: [],
 });
-check(actionRowChildren().length === 0, "(a) relay in flight: action row is empty");
-check(relayLinkVisible(), "(a) relay in flight: relay link is visible");
-assertSinglePrimary("(a) relay in flight");
+check(actionRowChildren().length === 0, "(a) capture in flight: action row is empty");
 
 // --- (b) relay terminal: the first next_action is the primary -------------
 render({
@@ -111,8 +82,6 @@ check(
   actionRowChildren()[0].textContent === "Continue",
   "(b) relay terminal: renders the envelope's next_action",
 );
-check(!relayLinkVisible(), "(b) relay terminal: relay link is hidden");
-assertSinglePrimary("(b) relay terminal");
 
 // --- (c) action completes and its own response started a relay ------------
 // runAction()'s optimistic hide (using response.relay) and its finally
@@ -127,13 +96,13 @@ render({
   alternate_actions: [],
 });
 postResponse = {
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=c" },
+  relay: { status: "awaiting_phone" },
 };
 nextEnvelope = {
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=c" },
+  relay: { status: "awaiting_phone" },
   next_action: nextAction,
   alternate_actions: [],
 };
@@ -142,8 +111,6 @@ check(
   actionRowChildren().length === 0,
   "(c) action started a relay: action row stays empty after completion",
 );
-check(relayLinkVisible(), "(c) action started a relay: relay link is visible");
-assertSinglePrimary("(c) action started a relay");
 
 // --- (d) action completes with no relay: the fresh next_action shows ------
 // This is also the exact historical bug shape: the action's own response
@@ -159,7 +126,7 @@ nextEnvelope = {
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=d1" },
+  relay: { status: "awaiting_phone" },
   next_action: nextAction,
   alternate_actions: [],
 };
@@ -171,8 +138,6 @@ check(
   actionRowChildren().length === 0,
   "(d1) no relay from this action, but envelope reports one active: action row stays empty",
 );
-check(relayLinkVisible(), "(d1) no relay from this action, envelope active: relay link visible");
-assertSinglePrimary("(d1) no relay from this action, envelope active");
 
 // The ordinary (non-buggy) shape of (d): no relay anywhere. The action row
 // must NOT stay stuck hidden — the fresh next_action renders normally.
@@ -196,8 +161,6 @@ check(
   String(actionRowChildren()[0].className).includes("btn--primary"),
   "(d2) no relay anywhere: the rendered action is primary",
 );
-check(!relayLinkVisible(), "(d2) no relay anywhere: relay link stays hidden");
-assertSinglePrimary("(d2) no relay anywhere");
 
 // --- stopRelay()'s finally also routes through the single authority -------
 nextEnvelope = {
@@ -212,7 +175,7 @@ render({
   verdict_text: "Awaiting phone",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=stop" },
+  relay: { status: "awaiting_phone" },
   next_action: null,
   alternate_actions: [],
 });
@@ -222,8 +185,6 @@ check(
   actionRowChildren().length === 1 && actionRowChildren()[0].textContent === "Continue",
   "stopRelay finally: renders the post-stop envelope's next_action via the shared authority",
 );
-check(!relayLinkVisible(), "stopRelay finally: relay link is hidden once terminal");
-assertSinglePrimary("stopRelay finally");
 
 // --- (e) a show_during_relay PRIMARY renders alone during a live relay -----
 // W6.10 blocker #2's general mechanism: a next_action marked show_during_relay
@@ -249,7 +210,7 @@ render({
   verdict_text: "Something to review while the phone holds",
   steps: [],
   nudges: [],
-  relay: { status: "awaiting_phone", tap_link: "https://capture.test/#s=e" },
+  relay: { status: "awaiting_phone" },
   next_action: holdPrimaryAction,
   alternate_actions: [],
   candidate_review: {
@@ -266,24 +227,22 @@ check(
     && actionRowChildren()[0].textContent === "Primary action during hold",
   "(e) show_during_relay: the primary renders during the hold",
 );
-check(!relayLinkVisible(), "(e) show_during_relay: the connect link/QR is suppressed");
 check(
   !elements.get("crossover-review").hidden,
   "(e) show_during_relay: the candidate card is shown",
 );
-assertSinglePrimary("(e) show_during_relay primary during hold");
 
 // --- (f) verify_fail during a live relay: Undo + Re-measure show, Try again gated -
 // W6.12 P0-adjacent fix: right after a failed VERIFY capture the relay object
-// can still be transitioning ("finishing" while the phone uploads, or
-// "committing"/"stopping") for a real window before it settles. Before this
+// can still be transitioning ("stopping" while the walk drains) for a real
+// window before it settles. Before this
 // fix the relay gate blanket-cleared EVERY alternate action during that
 // window, so the household saw NO buttons at all on the verify_fail screen
 // and had no obvious reason to guess "hit Stop" to make them reappear.
 // The way back and verify_remeasure carry show_during_relay (the same
 // escape hatch (e) uses for Apply); verify_retry ("Try again") deliberately
-// does not, since it starts a brand-new relay session and racing the one
-// still tearing down is exactly what the gate exists to prevent.
+// does not, since it starts a brand-new session and racing the one still
+// tearing down is exactly what the gate exists to prevent.
 const verifyRetryAction = {
   id: "verify_retry",
   label: "Try again",
@@ -309,7 +268,7 @@ render({
   verdict_text: "That measurement didn't check out.",
   steps: [],
   nudges: [{ code: "verify_out_of_tolerance", severity: "warn", text: "x" }],
-  relay: { status: "finishing" },
+  relay: { status: "stopping" },
   next_action: verifyRetryAction,
   alternate_actions: [wayBackAction, verifyRemeasureAction],
 });
@@ -330,8 +289,6 @@ check(
   !fLabels.includes("Try again"),
   "(f) verify_fail during a live relay: Try again stays gated until Stop",
 );
-check(!relayLinkVisible(), "(f) verify_fail during a live relay: relay link stays hidden");
-assertSinglePrimary("(f) verify_fail during a live relay");
 
 // --- (g) click-swallowing: an unchanged envelope must not replace the row --
 // W6.12: renderActions() used to call els.action.replaceChildren() on EVERY
@@ -478,7 +435,6 @@ check(
     && otherButton.className === primaryButton.className,
   "(h) tier chooser: the non-recommended action's button matches the recommended one's class — badge is the only differentiator",
 );
-check(!relayLinkVisible(), "(h) tier chooser: no relay in flight, nothing to hide");
 
 // Every earlier scenario's actions had no `description` — confirm those
 // still render as bare buttons (no .tier-choices/.measurement-row wrapper

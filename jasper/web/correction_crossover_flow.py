@@ -105,8 +105,6 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
         <div id="crossover-walk-action" class="measurement-row__actions"></div>
       </div>
       <p id="crossover-relay-status" class="form-hint"></p>
-      <a id="crossover-relay-link" class="btn btn--primary" href="#" target="_blank" rel="noopener" hidden>Open measurement page</a>
-      <div id="crossover-relay-qr" class="relay-qr"></div>
       <button id="crossover-relay-stop" class="btn btn--danger" type="button" hidden>Stop measurement</button>
     </div>
     <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
