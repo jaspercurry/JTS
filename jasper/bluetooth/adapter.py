@@ -93,13 +93,61 @@ async def _adapter(bus: MessageBus, adapter: str = DEFAULT_ADAPTER):
     )
 
 
-async def state(adapter: str = DEFAULT_ADAPTER) -> dict[str, Any]:
+class BluezSession:
+    """One already-connected system bus plus the proxies built from it.
+
+    Every helper here otherwise opens its own bus and introspects again on
+    every call. A long-lived caller (the pairing agent's floor watch) pays
+    that per iteration forever; handing it a session makes the steady state
+    zero new connections and zero repeated introspection. The session does
+    NOT own the bus — whoever connected it disconnects it.
+    """
+
+    def __init__(self, bus: MessageBus) -> None:
+        self.bus = bus
+        self._adapter_props: dict[str, Any] = {}
+        self._object_manager: Any = None
+
+    async def adapter_props(self, adapter: str = DEFAULT_ADAPTER) -> Any:
+        props = self._adapter_props.get(adapter)
+        if props is None:
+            _, props = await _adapter(self.bus, adapter)
+            self._adapter_props[adapter] = props
+        return props
+
+    async def object_manager(self) -> Any:
+        if self._object_manager is None:
+            intro = await self.bus.introspect(BLUEZ_BUS, "/")
+            self._object_manager = self.bus.get_proxy_object(
+                BLUEZ_BUS, "/", intro,
+            ).get_interface("org.freedesktop.DBus.ObjectManager")
+        return self._object_manager
+
+
+@asynccontextmanager
+async def _session(
+    session: BluezSession | None = None,
+) -> AsyncIterator[BluezSession]:
+    """The caller's session, or a throwaway one for this call alone."""
+
+    if session is not None:
+        yield session
+        return
+    async with _system_bus() as bus:
+        yield BluezSession(bus)
+
+
+async def state(
+    adapter: str = DEFAULT_ADAPTER,
+    *,
+    session: BluezSession | None = None,
+) -> dict[str, Any]:
     """Snapshot the adapter state: powered, discoverable, pairable,
     discovering, plus our name/alias. Returns a flat JSON-able dict.
     Raises DBusError if bluez itself is unreachable; caller decides
     whether to surface "Bluetooth daemon not running" in the UI."""
-    async with _system_bus() as bus:
-        _, props = await _adapter(bus, adapter)
+    async with _session(session) as sess:
+        props = await sess.adapter_props(adapter)
         all_props = await props.call_get_all("org.bluez.Adapter1")
         def _v(k, d=None):
             v = all_props.get(k)
@@ -139,6 +187,7 @@ async def set_discoverable(
     adapter: str = DEFAULT_ADAPTER,
     *,
     timeout_sec: int = DISCOVERABLE_AUTO_OFF_SEC,
+    session: BluezSession | None = None,
 ) -> None:
     """Open or close the JTS pairing window.
 
@@ -156,8 +205,8 @@ async def set_discoverable(
     Anything initiating a pair must therefore raise it first -- see
     `set_pairable`.
     """
-    async with _system_bus() as bus:
-        _, props = await _adapter(bus, adapter)
+    async with _session(session) as sess:
+        props = await sess.adapter_props(adapter)
         if value:
             try:
                 await props.call_set(
@@ -198,11 +247,8 @@ async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
     host. Cheap: one ObjectManager.GetManagedObjects round-trip."""
     from .models import is_hid_uuids
 
-    async with _system_bus() as bus:
-        intro = await bus.introspect(BLUEZ_BUS, "/")
-        om = bus.get_proxy_object(
-            BLUEZ_BUS, "/", intro,
-        ).get_interface("org.freedesktop.DBus.ObjectManager")
+    async with _session() as sess:
+        om = await sess.object_manager()
         managed = await om.call_get_managed_objects()
         for _path, ifaces in managed.items():
             dev = ifaces.get("org.bluez.Device1")
@@ -243,7 +289,11 @@ async def set_pairable(value: bool, adapter: str = DEFAULT_ADAPTER) -> None:
         )
 
 
-async def untrust_unbonded(adapter: str = DEFAULT_ADAPTER) -> tuple[str, ...]:
+async def untrust_unbonded(
+    adapter: str = DEFAULT_ADAPTER,
+    *,
+    session: BluezSession | None = None,
+) -> tuple[str, ...]:
     """Drop Trusted from every device on this adapter that is not Paired.
 
     Trust is what makes BlueZ auto-reconnect a device on every advertisement.
@@ -263,11 +313,8 @@ async def untrust_unbonded(adapter: str = DEFAULT_ADAPTER) -> tuple[str, ...]:
     """
     prefix = f"/org/bluez/{adapter}/"
     untrusted: list[str] = []
-    async with _system_bus() as bus:
-        intro = await bus.introspect(BLUEZ_BUS, "/")
-        om = bus.get_proxy_object(
-            BLUEZ_BUS, "/", intro,
-        ).get_interface("org.freedesktop.DBus.ObjectManager")
+    async with _session(session) as sess:
+        om = await sess.object_manager()
         managed = await om.call_get_managed_objects()
         for path, ifaces in managed.items():
             dev = ifaces.get("org.bluez.Device1")
@@ -283,8 +330,8 @@ async def untrust_unbonded(adapter: str = DEFAULT_ADAPTER) -> tuple[str, ...]:
             address = dev.get("Address")
             address = str(getattr(address, "value", address) or path)
             try:
-                dev_intro = await bus.introspect(BLUEZ_BUS, path)
-                props = bus.get_proxy_object(
+                dev_intro = await sess.bus.introspect(BLUEZ_BUS, path)
+                props = sess.bus.get_proxy_object(
                     BLUEZ_BUS, path, dev_intro,
                 ).get_interface("org.freedesktop.DBus.Properties")
                 await props.call_set(

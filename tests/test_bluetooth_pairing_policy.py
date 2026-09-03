@@ -490,6 +490,118 @@ def test_floor_needs_two_observations_before_closing_a_window():
     assert closes == [False], "second consecutive observation must close"
 
 
+class _AgentManagerStub:
+    async def call_register_agent(self, _path: str, _capability: str) -> None:
+        return None
+
+    async def call_request_default_agent(self, _path: str) -> None:
+        return None
+
+    async def call_unregister_agent(self, _path: str) -> None:
+        return None
+
+
+class _CountingBus:
+    """One system bus that records what a long-lived agent costs BlueZ.
+
+    Counts the two recurring costs the floor watch used to pay per pass: a
+    fresh bus connection (counted by the caller's MessageBus factory) and an
+    introspection per object path.
+    """
+
+    def __init__(self, stop_after: int) -> None:
+        self.introspects: list[str] = []
+        self.sweeps = 0
+        self.sets: list[tuple[str, object]] = []
+        self.disconnected = False
+        self._stop_after = stop_after
+        self.done = asyncio.Event()
+
+    async def connect(self):
+        return self
+
+    def export(self, _path: str, _agent) -> None:
+        return None
+
+    def unexport(self, _path: str) -> None:
+        return None
+
+    async def introspect(self, _service: str, path: str):
+        self.introspects.append(path)
+        return object()
+
+    def get_proxy_object(self, _service: str, _path: str, _intro):
+        return self
+
+    def disconnect(self) -> None:
+        self.disconnected = True
+
+    # -- proxy-object surface ------------------------------------------
+    def get_interface(self, name: str):
+        if name == "org.bluez.AgentManager1":
+            return _AgentManagerStub()
+        return self
+
+    async def call_get_all(self, _iface: str) -> dict:
+        return {
+            "Powered": Variant("b", True),
+            "Pairable": Variant("b", False),
+            "Discoverable": Variant("b", False),
+        }
+
+    async def call_set(self, _iface: str, key: str, value) -> None:
+        self.sets.append((key, value.value))
+
+    async def call_get_managed_objects(self) -> dict:
+        self.sweeps += 1
+        if self.sweeps >= self._stop_after:
+            self.done.set()
+        return {}
+
+
+def test_agent_lifetime_opens_one_bus_connection(monkeypatch):
+    """Steady-state idle must cost zero new connections and zero re-probing.
+
+    The watch used to call two adapter helpers that each opened their own
+    system bus and introspected BlueZ again, so an idle speaker paid
+    2 connections + 2 introspections per pass forever.
+    """
+    monkeypatch.setattr(no_code_agent, "PAIRABLE_FLOOR_POLL_SEC", 0.01)
+    bus = _CountingBus(stop_after=4)
+    connections = 0
+
+    def _factory(*_args, **_kwargs):
+        nonlocal connections
+        connections += 1
+        return bus
+
+    monkeypatch.setattr(no_code_agent, "MessageBus", _factory)
+    monkeypatch.setattr(adapter, "MessageBus", _factory)
+
+    stop_agent: list = []
+    real_agent = no_code_agent.NoCodeAgent
+
+    def _capture(bus_, on_release=None):
+        stop_agent.append(on_release)
+        return real_agent(bus_, on_release=on_release)
+
+    monkeypatch.setattr(no_code_agent, "NoCodeAgent", _capture)
+
+    async def scenario():
+        run = asyncio.create_task(no_code_agent._run())
+        await asyncio.wait_for(bus.done.wait(), timeout=5.0)
+        stop_agent[0]()
+        await asyncio.wait_for(run, timeout=5.0)
+
+    asyncio.run(scenario())
+
+    assert bus.sweeps >= 4
+    assert connections == 1
+    assert bus.introspects.count("/org/bluez/hci0") == 1
+    assert bus.introspects.count("/") == 1
+    assert bus.disconnected is True
+
+
 def test_no_code_agent_release_notifies_owner():
     released = False
 

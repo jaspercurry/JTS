@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import logging
 import signal
 
@@ -17,6 +18,7 @@ from dbus_next.aio import MessageBus  # type: ignore
 from jasper.log_event import log_event
 
 from .adapter import (
+    BluezSession,
     set_discoverable,
     state as adapter_state,
     untrust_unbonded,
@@ -25,7 +27,10 @@ from .agent import NoCodeAgent, register_agent, unregister_agent
 
 logger = logging.getLogger(__name__)
 
-PAIRABLE_FLOOR_POLL_SEC = 15.0
+# The floor closes on two observations at this interval, so the interval must
+# outlast an outbound Pair() -- up to a 60 s timeout on a remote that needs a
+# button press -- or the floor lowers the bondable flag mid-pair.
+PAIRABLE_FLOOR_POLL_SEC = 60.0
 
 
 async def _close_pairing_window_floor(
@@ -124,19 +129,28 @@ async def _pairable_outside_window(*, read_state=adapter_state) -> bool:
 async def _pairable_floor_watch(
     stop: asyncio.Event,
     *,
-    interval: float = PAIRABLE_FLOOR_POLL_SEC,
-    read_state=adapter_state,
+    interval: float | None = None,
+    session: BluezSession | None = None,
+    read_state=None,
     close_pairing_window=set_discoverable,
-    sweep=untrust_unbonded,
+    sweep=None,
 ) -> None:
+    # Both probes run on the caller's connected bus and its cached proxies:
+    # unbound, each iteration would open and tear down a system-bus
+    # connection per probe and introspect BlueZ again, forever.
+    interval = PAIRABLE_FLOOR_POLL_SEC if interval is None else interval
+    read_state = read_state or functools.partial(adapter_state, session=session)
+    sweep = sweep or functools.partial(untrust_unbonded, session=session)
     # Two consecutive observations before closing. An outbound pair raises the
     # bondable flag for the whole Pair() call -- up to its 60 s timeout on a
     # remote that needs a button press -- from a DIFFERENT process, and it is
     # pairable-without-discoverable the entire time. A single-observation
     # floor lowers the flag mid-pair and the bond silently does not form,
     # which is the defect this watch would otherwise cause rather than catch.
-    # Costs one extra interval of exposure against BlueZ's own 300 s
-    # PairableTimeout backstop.
+    # Costs one extra interval of exposure, and nothing else backstops it:
+    # `_close_pairing_window` zeroes PairableTimeout, which BlueZ reads as no
+    # timeout at all, so this watch is what lowers a Pairable that a caller
+    # raised for an outbound pair and then died before restoring.
     armed = False
     while not stop.is_set():
         if await _pairable_outside_window(read_state=read_state):
@@ -159,6 +173,8 @@ async def _pairable_floor_watch(
 
 async def _run() -> None:
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    session = BluezSession(bus)
+    close_window = functools.partial(set_discoverable, session=session)
     stop = asyncio.Event()
     agent = NoCodeAgent(bus, on_release=stop.set)
     floor_task: asyncio.Task[None] | None = None
@@ -172,8 +188,14 @@ async def _run() -> None:
 
     await register_agent(bus, agent)
     try:
-        await _close_pairing_window_floor("startup")
-        floor_task = asyncio.create_task(_pairable_floor_watch(stop))
+        await _close_pairing_window_floor(
+            "startup", close_pairing_window=close_window,
+        )
+        floor_task = asyncio.create_task(
+            _pairable_floor_watch(
+                stop, session=session, close_pairing_window=close_window,
+            ),
+        )
         log_event(
             logger,
             "bluetooth_agent.ready",
@@ -186,7 +208,9 @@ async def _run() -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await floor_task
         log_event(logger, "bluetooth_agent.stopping")
-        await _close_pairing_window_floor("stopping")
+        await _close_pairing_window_floor(
+            "stopping", close_pairing_window=close_window,
+        )
         await unregister_agent(bus)
         bus.disconnect()
 
