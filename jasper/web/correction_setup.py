@@ -703,11 +703,15 @@ def _run_relay_capture(
         request_complete=kind.request_complete,
         request_retake=kind.request_retake,
     ):
+        # Name the ACTUAL holder when it is still readable. A race between
+        # this read and the failed claim above can only widen to the generic
+        # wording, never misreport which measurement is in the way.
         holder = _get_relay_capture()
+        held_by = str(holder.get("kind") or "") if holder else ""
         raise ValueError(
-            f"a capture ({holder.get('kind') if holder else 'unknown'}) already "
-            "holds the measurement slot; finish or cancel it before starting "
-            "another"
+            (f"a capture ({held_by})" if held_by else "another capture")
+            + " already holds the measurement slot; finish or cancel it"
+            " before starting another"
         )
     spawned = False
     session_hold = ExitStack()

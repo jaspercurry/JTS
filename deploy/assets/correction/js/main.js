@@ -322,14 +322,16 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // The same page over HTTPS, where the browser will hand over the
   // microphone: install.sh provisions the speaker's own certificate for this
   // host (provision_correction_tls) and nginx serves /correction/ on 443.
+  // `hostname`, not `host`: nginx listens on the default port for each
+  // scheme, so carrying this page's port across would name a closed one.
   function secureCorrectionUrl() {
-    return 'https://' + window.location.host + '/correction/';
+    return 'https://' + window.location.hostname + '/correction/';
   }
 
   // The speaker's private CA, served over plain HTTP because a browser that
   // will not accept the certificate cannot fetch it over HTTPS either.
   function rootCaUrl() {
-    return 'http://' + window.location.host + '/jts-root-ca.crt';
+    return 'http://' + window.location.hostname + '/jts-root-ca.crt';
   }
 
   function hideEl(el, hidden) {
