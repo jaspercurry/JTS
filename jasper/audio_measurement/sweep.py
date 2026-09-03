@@ -4,25 +4,11 @@
 
 """Synchronized swept-sine (ESS) generation per Novak et al. 2015.
 
-Why synchronized rather than vanilla Farina ESS: with a synchronized
-sweep, harmonic-distortion impulses fall at integer-fraction offsets
-of the linear IR location, making them trivial to discard during
-deconvolution. Same number of lines as the vanilla form; uniformly
-better. See `JAES 61(7) — Synchronized Swept-Sine: Theory,
-Application, and Implementation` (Novak, Lotton, Simon).
-
-The sweep is generated on the Pi at the playback sample rate
-(48 kHz, matching CamillaDSP). Saved as 16-bit S16_LE WAV so
-`aplay -D correction_substream` can consume it directly. Stored to
-disk because the sweep is deterministic per (f1, f2, duration,
-sample_rate) tuple — no point regenerating on every measurement.
-
-The deconvolution path (jasper.audio_measurement.deconv) does NOT require a
-separately-generated inverse filter. We do FFT-based regularized
-inversion of the sweep at IR-extract time, which is more
-numerically stable than a precomputed inverse and avoids the
-amplitude-normalization gymnastics. So this module emits the sweep
-only, plus its metadata.
+Synchronized rather than vanilla Farina ESS: harmonic-distortion impulses fall
+at integer-fraction offsets of the linear IR, so deconvolution can discard them
+(JAES 61(7), Novak, Lotton, Simon). Generated at the playback rate (48 kHz, to
+match CamillaDSP) and saved as 16-bit S16_LE WAV so ``aplay`` can consume it.
+The sweep only, no inverse filter: :mod:`.deconv` inverts at IR-extract time.
 """
 from __future__ import annotations
 
@@ -41,10 +27,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SweepMeta:
-    """Everything the deconvolution path needs to recover the IR plus
-    everything a future analyst would want to know about the sweep
-    that produced their data. Persisted alongside the sweep WAV in
-    the same directory."""
+    """What deconvolution needs to recover the IR, persisted beside the sweep WAV."""
     f1: float
     f2: float
     L: float
@@ -136,23 +119,11 @@ def synchronized_swept_sine(
 ) -> tuple[np.ndarray, SweepMeta]:
     """Generate a synchronized exponential swept-sine.
 
-    Args:
-      f1: start frequency (Hz). Default 20 — anything lower wastes
-        sweep duration on inaudible content.
-      f2: end frequency (Hz). Default 20000 (Nyquist at 48 kHz with
-        0.83x margin). f2 must be < sample_rate / 2.
-      duration_approx_s: target sweep duration. The actual duration
-        is rounded slightly so the sweep has an integer number of
-        cycles at f1 (Novak's "synchronization" condition).
-      sample_rate: playback rate. Pin 48 kHz to match CamillaDSP.
-      amplitude_dbfs: peak amplitude (dBFS). -12 keeps headroom for
-        the renderer / DSP chain and avoids any clipping at the
-        loudest peaks of the sweep window.
-
-    Returns:
-      (sweep, meta). `sweep` is float32 in [-amp, amp] where
-      amp = 10**(amplitude_dbfs/20). `meta` carries the exact
-      duration / L / etc. needed by deconvolution.
+    ``f2`` must be < ``sample_rate`` / 2; pin ``sample_rate`` to 48 kHz to match
+    CamillaDSP. ``duration_approx_s`` is rounded so the sweep holds an integer
+    number of cycles at ``f1`` (Novak's synchronization condition). Returns
+    float32 in [-amp, amp], amp = 10**(amplitude_dbfs/20), plus the metadata
+    deconvolution needs.
     """
     meta = synchronized_sweep_metadata(
         f1=f1,
@@ -167,10 +138,8 @@ def synchronized_swept_sine(
     phase = 2 * np.pi * meta.f1 * meta.L * (np.exp(t / meta.L) - 1)
     sweep = amp * np.sin(phase)
 
-    # Light fade-in/out — eliminates the click from a sweep that
-    # doesn't quite end at a zero-crossing in float32 precision, and
-    # masks any DC offset on the playback chain. 5 ms fade at 48 kHz =
-    # 240 samples; trivially short relative to 10-second sweep.
+    # 5 ms fade at 48 kHz: removes the click from a sweep that does not end at a
+    # zero crossing in float32, and masks DC offset on the playback chain.
     fade_samples = max(8, int(0.005 * meta.sample_rate))
     if fade_samples * 2 < meta.n_samples:
         fade_in = np.linspace(0.0, 1.0, fade_samples) ** 2
@@ -190,10 +159,8 @@ def synchronized_sweep_metadata(
 ) -> SweepMeta:
     """Return exact synchronized-sweep metadata without allocating PCM.
 
-    Automatic excitation admission must bind the realized, phase-rounded
-    duration before it is allowed to generate a signal.  Keeping the Novak
-    synchronization calculation here gives planning and generation one source
-    of truth while avoiding a multi-megabyte allocation before admission.
+    Excitation admission must bind the realized, phase-rounded duration before a
+    signal may be generated.
     """
 
     if (
@@ -214,14 +181,9 @@ def synchronized_sweep_metadata(
             f"increase sample_rate or lower f2"
         )
 
-    # Novak's synchronization condition. Choose L (rate constant)
-    # such that the sweep starts at a zero-crossing of f1 and the
-    # number of cycles at f1 is an integer. This makes harmonic-
-    # impulse offsets predictable. Derivation: integrate
-    # phase(t) = 2π f1 L (exp(t/L) - 1) over t ∈ [0, T] where
-    # T = L * ln(f2/f1) — choose L so that T is an integer
-    # multiple of 1/f1. Equivalently, n_cycles_at_f1 = T*f1 must be
-    # an integer.
+    # Novak's synchronization condition: choose L (rate constant) so the cycle
+    # count at f1 (T*f1, with T = L*ln(f2/f1)) is an integer, which makes the
+    # harmonic-impulse offsets predictable.
     L_initial = duration_approx_s / math.log(f2 / f1)
     n_cycles_at_f1 = round(L_initial * f1)
     if n_cycles_at_f1 < 1:
@@ -249,26 +211,14 @@ def phase_closing_duration_s(
     at_or_below_s: float,
     sample_rate: int = 48000,
 ) -> float:
-    """The LONGEST synchronized-sweep duration over ``[f1, f2]`` that closes
-    its phase and is at or below ``at_or_below_s``.
+    """The longest phase-closing sweep over ``[f1, f2]`` within ``at_or_below_s``.
 
-    :func:`synchronized_sweep_metadata` rounds a requested duration to the
-    NEAREST phase-closing length (``round(L_initial * f1)``), so a request that
-    equals a ceiling can realize just above it — 150–4000 Hz asked for 4.0 s
-    realizes 4.00577 s. A caller that must stay under a hard ceiling asks here
-    instead, and gets a length the round-trip reproduces exactly: feeding the
-    returned value back as ``duration_approx_s`` recovers the same cycle count.
-
-    The realized duration is quantized to whole cycles at ``f1``
-    (``duration = n * ln(f2/f1) / f1``), so the step down from a length that
-    overshoots is exactly one cycle — expressed here from the returned
-    metadata's own ``L`` rather than by restating that identity, which is why
-    this and the kernel above cannot drift apart. One step is normally enough:
-    ``round`` can only overshoot by half a cycle.
-
-    Raises :class:`ValueError` when no phase-closing sweep of this band fits —
-    a band whose first cycle already outlasts the ceiling is unmeasurable at
-    that ceiling, which is a refusal and not a shorter sweep.
+    :func:`synchronized_sweep_metadata` rounds to the NEAREST phase-closing
+    length, so a request equal to a ceiling can realize just above it (150-4000
+    Hz asked for 4.0 s realizes 4.00577 s). The realized duration is quantized
+    to whole cycles at ``f1``, so the step down from a length that overshoots is
+    exactly one cycle, and ``round`` can only overshoot by half a cycle. Raises
+    :class:`ValueError` when no phase-closing sweep of this band fits.
     """
     if not math.isfinite(at_or_below_s) or at_or_below_s <= 0.0:
         raise ValueError(
@@ -298,14 +248,7 @@ def write_sweep_wav(
     sweep: np.ndarray,
     sample_rate: int,
 ) -> None:
-    """Write a mono float32 sweep as 16-bit PCM WAV (S16_LE).
-
-    Why 16-bit not 32-bit float: the playback chain accepts S16_LE
-    fine and the file is half the size, which matters at install
-    time when we cache the sweep on disk. The 96 dB dynamic range
-    of 16-bit is far more than the sweep itself spans (the sweep
-    sits at -12 dBFS, the room dynamic range we measure is ~70 dB).
-    """
+    """Write a mono float32 sweep as 16-bit PCM WAV (S16_LE)."""
     from scipy.io import wavfile
 
     if sweep.ndim != 1:
@@ -320,28 +263,19 @@ def write_sweep_wav(
 def read_wav_mono(
     path: str | Path,
 ) -> tuple[np.ndarray, int]:
-    """Read a WAV file as mono float32 in [-1, 1].
+    """Read a WAV file as mono float32 in [-1, 1]; stereo downmixed by average.
 
-    Used for both ingesting the captured sweep from the iPhone
-    upload AND for unit tests on synthesized fixtures. Auto-handles
-    16-bit and 32-bit-float WAVs (the only formats we expect — iOS
-    Safari capture is float32, our sweep cache is int16). Stereo
-    inputs are downmixed to mono by averaging.
+    Accepts 16-bit and 32-bit-float WAVs.
     """
     from scipy.io import wavfile
 
     sr, data = wavfile.read(str(path))
-    # Capture the source dtype BEFORE downmixing: np.mean promotes an
-    # integer array to float, so keying the normalization off data.dtype
-    # after a stereo mean would skip the integer scaling and leave the
+    # Capture the source dtype BEFORE downmixing: np.mean promotes an integer
+    # array to float, so keying normalization off it afterwards would leave the
     # signal at ±32767 instead of ±1.0.
     source_dtype = data.dtype
     if data.ndim == 2:
-        # Downmix stereo → mono by simple average. We expect mono
-        # capture from iOS (channelCount: 1 in getUserMedia), but
-        # accept stereo defensively.
         data = data.mean(axis=1)
-    # Convert to float32 in [-1, 1] based on the source dtype.
     if np.issubdtype(source_dtype, np.integer):
         max_val = float(np.iinfo(source_dtype).max)
         signal = data.astype(np.float32) / max_val
