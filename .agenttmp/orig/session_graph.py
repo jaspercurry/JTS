@@ -4,16 +4,61 @@
 
 """One measurement graph per session — the real filler for the graph seam.
 
-The graph routed stimuli play through is already a session constant, so it is
-installed once. :meth:`install` is idempotent and that IS the whole health
-check: it proves the running graph is still the one it submitted and reloads
-only when it is not (rulings S6 and S10 — a graph that can be put back is put
-back and disclosed, never a refusal to play). A summed sweep steps it aside
-rather than sharing it. Neither swap ducks the fader (wave 6d): the session
-already holds the fader at its declared measurement level inside the
-measurement window and nothing is playing, so there is no household programme
-for a gain step to be loud against. Async for the reason the seam is: CamillaDSP
-over a websocket (ADR-0179).
+:class:`~.session_seams.SessionGraph` declares what a session's graph owes;
+this is the implementation the crossover-v2 measure stage runs. It exists
+because the graph the routed stimuli play through is **already a session
+constant**: every argument
+``camilla_yaml.emit_active_speaker_program_config`` takes at the production
+call site is a bind-time closure variable, so the per-stimulus path was
+emitting, loading and restoring identical bytes for every capture — two config
+swaps, two ducks and at least five CamillaDSP round-trips each
+(``08 §Test 2``: ``Δ1 ≈ 489 ms + Δ2 ≈ 454 ms ≈ 0.94 s`` of pure duck ramp per
+swapping stimulus).
+
+**Install is idempotent, and that is the whole health check.** The one entry is
+:meth:`install`: it emits once, then on every call proves the running graph is
+still the one it submitted and reloads only when it is not. First stimulus and
+stomped-by-a-concurrent-writer are therefore the same code path, not two. Ruling
+S6 pre-authorises exactly this — *"a simple pipeline-health check may remain"* —
+and ruling S10 fixes its shape: a graph that can be put back is put back and
+disclosed, never a refusal to play.
+
+**The graph itself does not change, so neither do its proofs.** This installs
+the same emitter's output the per-stimulus path installed, so MS-1 (every
+``ActiveEmitDevices`` field derived and forwarded), MS-2, MS-3, MS-5 and MS-13's
+``_assert_program_graph_proven`` return contract are satisfied by the emit this
+class is handed, unchanged — and MS-13's *"once, before the first stimulus"*
+clause is satisfied by construction, because there is now exactly one emit per
+session. MS-4 holds for the same reason: the stimulus still enters on the
+renderer-lane ring the emitter was already given.
+
+**A summed sweep steps it aside rather than sharing it.** ``SUMMED_SWEEP_PHASES``
+measure the standing production graph deliberately — the applied system is the
+thing under test — so the caller restores before one and installs again after.
+That is what keeps the swap count at two for an all-routed walk and bounded by
+the routed/summed transitions otherwise, instead of two per stimulus.
+
+**It banks what it entered on, and says when that moved.** Every entry-graph
+take is also a content fingerprint of the layers a round measures through
+(:mod:`.tuning_scope`), so a round anchored to one candidate NAME can still
+tell that the bytes underneath it changed between two of its own captures. It
+is a disclosure, never a gate, and it is scoped: a household preference-EQ
+save is above everything under tune and deliberately does not trip it (#3489).
+
+**Neither swap ducks the fader** (wave 6d). The ``GRAPH_SWAP_DUCK_DB`` /
+``MAIN_VOLUME_RAMP_SETTLE_S`` bracket exists because replacing the pipeline
+under live household audio can step the graph's own gain by tens of dB at an
+unchanged volume. Neither condition holds here: the session has already
+claimed the fader at its declared measurement level and holds the measurement
+window, so there is no household programme for a step to be loud against,
+and the install happens once with nothing playing. Both swaps keep the
+writer lock. Every other ``set_active_config_raw`` caller replaces the
+pipeline under live audio and still ducks.
+
+**Async, like the seam.** :class:`~.session_seams.SessionGraph` declares its
+three verbs ``async`` for the reason this implementation is: the transport
+underneath is CamillaDSP over a websocket and every production caller is already
+on the event loop. See ADR-0179.
 """
 
 from __future__ import annotations
@@ -31,7 +76,8 @@ logger = logging.getLogger(__name__)
 __all__ = ["MeasurementSessionGraph", "SessionGraphError"]
 
 #: ``(inverted_roles, measurement_delays_us, level_trims_db) -> yaml``. The
-#: three axes of the measurement VARIANT: each makes a different graph with a
+#: three axes of the measurement VARIANT: a sign-flipped branch, a candidate
+#: delay and a per-driver level match each make a different graph with a
 #: different fingerprint.
 EmitYaml = Callable[
     [tuple[str, ...], Mapping[str, float], Mapping[str, float]], str
@@ -53,9 +99,10 @@ class SessionGraphError(RuntimeError):
 def _fingerprint(yaml_text: str) -> str:
     """Name the SUBMITTED graph.
 
-    Taken from the text this class submitted, never from a readback: a
-    normalized readback is a default-filled superset and would name a different
-    thing on every CamillaDSP version.
+    Provenance a record carries — which graph the evidence was measured
+    through — never a gate, so it is taken from the text this class submitted
+    rather than from a readback: a normalized readback is a default-filled
+    superset and would name a different thing on every CamillaDSP version.
     """
     return hashlib.sha256(yaml_text.encode("utf-8")).hexdigest()[:16]
 
@@ -64,7 +111,8 @@ class MeasurementSessionGraph:
     """The measure stage's graph: installed once, proven per stimulus, put back.
 
     Every side effect is injected, so the orchestration is exercised without
-    CamillaDSP or ALSA.
+    CamillaDSP or ALSA — the same shape ``bind_program_playback_seams`` uses for
+    the play transaction.
     """
 
     def __init__(
@@ -94,8 +142,9 @@ class MeasurementSessionGraph:
     def entry_scope_fingerprint(self) -> str:
         """The tuning-scope hash of the graph this session ENTERED on (#3489).
 
-        Banked once, at the first entry graph this session took, and kept across
-        every restore/re-install afterwards. ``""`` when it could not be named.
+        Banked once, at the first entry graph this session took, and kept
+        across every restore/re-install afterwards — a round keeps its entry
+        graph. ``""`` when the entry graph could not be named.
         """
         return self._entry_scope_fingerprint or ""
 
@@ -103,10 +152,13 @@ class MeasurementSessionGraph:
     def comparability_boundary(self) -> bool:
         """Has the graph under this session's captures changed since entry?
 
-        Latched, never cleared: two captures that went through different tuning
-        layers are not comparable, and a later re-entry that happens to match
-        again does not repair the pair already banked. Provenance for the round
-        to disclose, never a gate.
+        Latched, never cleared: once two captures in one round went through
+        different tuning layers they are not comparable, and a later re-entry
+        that happens to match again does not repair the pair already banked.
+        Provenance for the round to disclose, never a gate.
+
+        No production reader today — the WARNING this property is set beside is
+        the whole disclosure surface until a round banks it.
         """
         return self._comparability_boundary
 
@@ -120,17 +172,27 @@ class MeasurementSessionGraph:
 
         The emitter runs its fail-closed proofs on every call
         (``_assert_program_graph_proven``), so caching the text is what turns
-        MS-13's *"once, before the first stimulus"* into a structural fact. R-1
-        makes that once per VARIANT: a sign-flipped branch, a candidate delay and
-        a per-driver level match are three different graphs with three
-        fingerprints, and every variant pays the same proofs.
+        MS-13's *"once, before the first stimulus"* from a scheduling promise
+        into a structural fact.
+
+        R-1 makes that *once per variant* rather than once outright: a
+        reverse-null walk asks for a graph whose named driver branch is
+        sign-flipped, and that is a different graph with a different
+        fingerprint. A candidate delay and a per-driver level match are the
+        other two axes of the same thing. It is still one emit per variant,
+        and every variant pays the same proofs — a flipped, delayed or
+        levelled branch is not a way past them.
         """
         delays = dict(measurement_delays_us or {})
         trims = dict(level_trims_db or {})
-        # The delay and the trims are part of the variant KEY, not just the
-        # payload: a level-matched capture and its unmatched twin differ ONLY in
-        # these gains, so a cache that did not key on them would serve the
-        # untrimmed graph and bank a record claiming a level match.
+        # The delay is part of the variant KEY, not just the payload: a walk
+        # stepping coordinates asks for a different graph at every step, and a
+        # cache keyed on polarity alone would hand back the previous
+        # coordinate's graph and measure the wrong delay. The level match joins
+        # it for the same reason and one sharper: a level-matched capture and
+        # its unmatched twin differ ONLY in these gains, so a cache that did
+        # not key on them would serve the untrimmed graph and bank a record
+        # claiming a level match that never played.
         key = (
             inverted_roles,
             tuple(sorted(delays.items())),
@@ -154,11 +216,19 @@ class MeasurementSessionGraph:
         through. Idempotent: called before every routed stimulus, it costs a
         liveness proof when nothing moved and a reload when something did.
 
-        ``inverted_roles`` picks the polarity VARIANT (R-1). A swap this session
-        asked for and a stomp by a concurrent DSP writer are independent facts
-        and are logged apart, so a walk alternating normal and inverted captures
-        does not report a concurrent writer on every stimulus. A swap therefore
-        still asks the liveness question rather than assuming the answer.
+        ``inverted_roles`` picks the polarity VARIANT (R-1). Asking for one the
+        box is not running is a deliberate swap, not a stomp, and the two are
+        logged apart: a walk alternating normal and inverted captures would
+        otherwise report a concurrent DSP writer on every stimulus.
+
+        **A swap still asks whether we were stomped.** The two facts are
+        independent — a concurrent writer can replace the graph between two
+        stimuli of an alternating walk — and on that walk EVERY install is a
+        variant change, so deciding the level from "the text differs" alone
+        would repair a stomp silently for the whole walk and lose ruling S10's
+        disclosure. The liveness read below is the symmetric counterpart of the
+        fast path's: same question, asked about the graph this session last
+        submitted rather than about the one it is about to.
 
         **May raise** :class:`SessionGraphError`, and the caller treats that as
         "nothing new was installed" — :meth:`restore` stays able to put back
@@ -193,7 +263,9 @@ class MeasurementSessionGraph:
                 result=result,
                 # A stomp means the running graph stopped being the one this
                 # session submitted — a concurrent DSP writer, disclosed rather
-                # than silently measured through (ruling S10).
+                # than silently measured through (ruling S10). A variant swap
+                # this session asked for is not that, and only the stomp is
+                # loud.
                 level=logging.WARNING if stomped else logging.INFO,
                 fingerprint=_fingerprint(yaml_text),
                 inverted_roles=",".join(inverted_roles),
@@ -202,7 +274,9 @@ class MeasurementSessionGraph:
                     for role, us in sorted((measurement_delays_us or {}).items())
                 ),
                 # Named on the line that says which graph went in, because a
-                # level match is otherwise invisible in a fingerprint.
+                # level match is otherwise invisible in a fingerprint: two
+                # takes of one walk differing only in these numbers would
+                # read as the same install to anyone reading the journal.
                 measurement_level_trims_db=",".join(
                     f"{role}:{db:g}"
                     for role, db in sorted((level_trims_db or {}).items())
@@ -217,10 +291,15 @@ class MeasurementSessionGraph:
     ) -> tuple[str, bool]:
         """Why this load is happening, and whether it is somebody else's doing.
 
-        ``stomped`` is the ONE input to the journal line's level: a reinstall is
-        always a stomp (the fast path already read liveness and got ``False``), a
-        swap is one only when the previous variant is gone, and a first install
-        displaced nothing of ours.
+        Three arms, and the middle one is R-1's: the graph this session last
+        submitted may have been replaced by a concurrent DSP writer whether or
+        not the next stimulus wants a different polarity variant, so a swap
+        asks the liveness question rather than assuming the answer.
+
+        ``stomped`` is what makes the journal line loud, and it is the ONE
+        input to that: a reinstall is always a stomp (the fast path already
+        read liveness and got ``False``), a swap is one only when the previous
+        variant is gone, and a first install displaced nothing of ours.
         """
         previous = self._installed_yaml
         if previous is None:
@@ -234,22 +313,36 @@ class MeasurementSessionGraph:
     def _observe_entry_graph(self, path: str) -> None:
         """Bank this session's entry tuning scope, or disclose that it moved.
 
-        Runs at every ENTRY-graph take: the first install, and each install after
-        a summed sweep put the household's graph back (:meth:`restore` clears the
-        path, so the next install re-reads it). The first take is the anchor;
-        every later one is the comparison, and a mismatch is
-        :data:`~.tuning_scope.COMPARABILITY_BOUNDARY`.
+        Runs at every ENTRY-graph take: the first install, and each install
+        after a summed sweep put the household's graph back — :meth:`restore`
+        clears the path, so the next install re-reads it, and that is the one
+        moment in a session where the graph a round is anchored to is standing
+        in front of us again. The first take is the anchor; every later one is
+        the comparison, and a mismatch is
+        :data:`~.tuning_scope.COMPARABILITY_BOUNDARY`: the round's captures
+        either side of it went through different tuning layers.
 
-        SCOPED, which is what keeps it quiet (#3489): a household ``/sound/``
-        save rewrites this file and moves its whole-graph content hash, but
-        preference EQ sits above everything a round measures through and is
-        excluded.
+        **SCOPED, which is what keeps it quiet** (#3489). A household
+        ``/sound/`` save rewrites this file and moves its whole-graph content
+        hash, but preference EQ sits above everything a round measures through
+        and is excluded — so an EQ save is not a boundary, and a change to any
+        tuning layer is.
 
         Never raises, and the install never depends on it. An unreadable or
         unparseable entry graph costs the fingerprint, not the capture: the
-        session anchors on the first entry graph it CAN name. The hash is taken
-        from the entry config FILE — the text :meth:`restore` will put back — so
-        a live-only graph change that left the statefile alone is invisible here.
+        session then makes no comparison at all rather than a false one, and
+        anchors on the first entry graph it CAN name. A late anchor is still a
+        real one; refusing to anchor at all would cost the round every later
+        disclosure as well as the one it could not make.
+
+        The hash is taken from the entry config FILE — the text :meth:`restore`
+        will put back — not from a readback, so a live-only graph change that
+        left the statefile alone is invisible here. That is the same document
+        this class already treats as the thing it entered on.
+
+        A boundary re-disclosed on every later re-entry is deliberate: each one
+        brackets different captures, and a reader has to be able to tell which
+        of them fell after it.
         """
         from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 
@@ -291,7 +384,8 @@ class MeasurementSessionGraph:
     async def patch(self, changes: Mapping[str, Any]) -> None:
         """Change what one candidate needs, without re-installing.
 
-        Refuses before there is a graph to patch rather than patching whatever
+        The cheap half of *"structural swap once, patch per candidate"*. It
+        refuses before there is a graph to patch rather than patching whatever
         the box happens to be running.
         """
         if self._entry_config_path is None:
@@ -305,12 +399,13 @@ class MeasurementSessionGraph:
         """Put the entry graph back. Idempotent, and safe after a failed install.
 
         A no-op when nothing is installed, so every drain path can call it
-        without asking first, and a second call after one that raised does not
-        double-restore.
+        without asking first, and so a second call after a first that raised
+        does not double-restore.
         """
-        # The one restore verdict, shared with the commissioning swap paths.
-        # Its catch set is what keeps ``CamillaUnavailable`` — a bare
-        # ``Exception`` subclass — from escaping as an unlogged raise.
+        # The one restore verdict, shared with the commissioning swap paths
+        # (wave 6a). Its catch set is what keeps ``CamillaUnavailable`` — a bare
+        # ``Exception`` subclass, and the likeliest failure here — from escaping
+        # as an unlogged raise.
         from jasper.active_speaker.web_commissioning import attempt_graph_restore
 
         entry = self._entry_config_path
@@ -364,9 +459,11 @@ class MeasurementSessionGraph:
         """Fail-closed: an unanswerable question is never a yes.
 
         ``CamillaUnavailable`` is named because it is a bare ``Exception``
-        subclass and is exactly what ``confirm_graph_is_live``'s strict reads
-        raise when the websocket is gone. Treating unreadable as "still live"
-        would measure the next stimulus through a graph nobody proved.
+        subclass and is exactly what ``confirm_graph_is_live``'s two strict
+        reads raise when the websocket is gone. Treating unreadable as "still
+        live" would measure the next stimulus through a graph nobody proved;
+        answering ``False`` re-installs, and if that fails too the load raises
+        where the caller can see it.
         """
         try:
             await self._confirm_live(cam, yaml_text)

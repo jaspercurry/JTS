@@ -4,13 +4,46 @@
 
 """The kernel path onto a held speaker: consult, claim, install, yield, restore.
 
-One linear ``async with``, spelled once so two operator doors cannot disagree
-about the give-back. ``coordinator.measurement_window`` wraps the WHOLE session:
-without it jasper-voice's idle reconciler reverts the opened measurement volume
-toward the household level within ~200 ms (W6.1 hardware run 2), and cap
-enforcement then silently understates. The install is ``set_active_config_raw``,
-so a restart or ``kill -9`` restores the applied graph by doing nothing
-(ADR-0193).
+One linear ``async with``. ``jasper-measure`` rides it onto
+:class:`~.session.TuningSession`. It is a shared helper rather than inlined
+code because what an operator door does BEFORE it plays anything is the same
+whatever it plays, and two spellings of this order would be free to disagree
+about the give-back.
+
+**Linear, and deliberately nothing else.** No phase vocabulary, no registry, no
+journey, no retry ledger. Every step below already has an owner elsewhere in
+this package; this module is the ORDER they run in and the give-back that
+mirrors it, spelled once so two doors cannot disagree about it:
+
+1. :func:`~..session_volume_plan.live_measurement_session` — the repo's one
+   answer to *"may an operator door act right now"*, and the only interlock.
+2. :func:`~jasper.correction.coordinator.measurement_window` for the WHOLE
+   session. Not decoration: without it jasper-voice's idle reconciler reverts
+   the opened measurement volume toward the household level within ~200 ms
+   (W6.1 hardware run 2), and cap enforcement then silently understates —
+   programs play hotter than admission assumed.
+3. :class:`~..session_volume_plan.SessionVolumePlan` open, through
+   :class:`~.volume_claim.OwnerVolumeDoor`, so the fader is written by the
+   process's one :class:`~jasper.volume_owner.VolumeOwner` at
+   ``SESSION_MEASUREMENT`` rank rather than by a second authority.
+4. :class:`~.session_graph.MeasurementSessionGraph` install — the emitter's
+   own proofs, unchanged, on
+   :func:`~..measurement_emit.emit_measurement_graph`.
+
+**The restore is structural before it is explicit.** The install is
+``set_active_config_raw``, which leaves CamillaDSP's persisted
+``config_file_path`` alone, so a restart, a reboot or a ``kill -9`` of this
+process puts the applied graph back by doing nothing — the audition door's
+argument (ADR-0193), and it holds here for the same reason. The explicit
+give-back on exit is what makes an ORDINARY exit clean: graph back first, then
+the claim, then the plan's durable snapshot last, which is the order that makes
+one authority out of two definitions of *"where the fader belongs"* (see
+:class:`~.volume_claim.OwnerVolumeDoor`).
+
+**The volume is an INPUT, not a derivation.** ``measurement_volume_db`` is what
+:func:`~..session_volume_plan.session_measurement_volume_db` derived from the
+profile's declared caps — one definition path, so admission still enforces every
+driver's cap against the same number this door opened at.
 """
 
 from __future__ import annotations
@@ -41,8 +74,9 @@ __all__ = [
 #: Another measurement holds the speaker, or a previous one left its volume
 #: unresolved. The interlock's own sentence rides in ``detail``.
 REFUSE_SESSION_LIVE = "measurement_door_session_live"
-#: This process registered no :class:`~jasper.volume_owner.VolumeOwner`. A
-#: wiring defect in the door's ``main``, not a state the speaker can be in.
+#: This process registered no :class:`~jasper.volume_owner.VolumeOwner`, so
+#: there is no ranked authority to claim the fader through. A wiring defect in
+#: the door's ``main``, not a state the speaker can be in.
 REFUSE_NO_VOLUME_OWNER = "measurement_door_no_volume_owner"
 #: The plan could not establish the declared measurement volume. The speaker was
 #: put back by the plan's own drain before this refusal was raised.
@@ -62,10 +96,18 @@ class MeasurementDoorRefused(RuntimeError):
 class OpenMeasurementDoor:
     """What a held speaker hands the body of the ``async with``.
 
-    Re-taking the claim or the install through :class:`~.session.TuningSession`
-    is not double work: the claim is contracted idempotent for the SAME level,
-    and the install is contracted idempotent and costs one liveness read when
-    nothing moved.
+    The three lifetimes the door took, so a caller can compose the engine over
+    them without reaching for a second copy of any of them:
+    :class:`~.session_graph.MeasurementSessionGraph` is what
+    :func:`~.composition.bind_engine_seams` binds as its graph seam, and
+    ``claim``/``plan`` are the pair
+    :class:`~.session.TuningSession` needs — the first as its volume seam, the
+    second as what ``play_program`` asserts against.
+
+    Re-taking either through :class:`~.session.TuningSession` is not double
+    work: the claim is contracted idempotent for the SAME level and answers from
+    the handle already held, and the install is contracted idempotent and costs
+    one liveness read when nothing moved.
     """
 
     graph: Any
@@ -77,7 +119,10 @@ class OpenMeasurementDoor:
     #: comparability anchor, banked at entry (#3489). Distinct from
     #: ``graph_fingerprint``, which names the MEASUREMENT graph the door then
     #: installed. ``""`` when the entry graph could not be named; the live
-    #: verdict is ``graph.comparability_boundary``.
+    #: verdict is ``graph.comparability_boundary``, which latches when a later
+    #: re-entry finds a different one. Nothing in the flow reads either yet —
+    #: the session graph's WARNING is the whole disclosure surface until a
+    #: round banks this beside its entry baseline.
     entry_scope_fingerprint: str = ""
 
 
@@ -95,7 +140,8 @@ async def measurement_door(
 ) -> AsyncIterator[OpenMeasurementDoor]:
     """Hold this speaker for one measurement session, and give it back.
 
-    ``action`` closes the interlock's refusal sentence (*"…before <action>"*).
+    ``action`` closes the interlock's refusal sentence (*"…before <action>"*),
+    so an operator reads what they were about to do rather than a module name.
 
     ``config_dir`` defaults to the SAME
     :data:`~..staging.DEFAULT_CAMILLA_CONFIG_DIR` every sibling DSP writer locks
@@ -105,8 +151,11 @@ async def measurement_door(
     ``gate_owner`` is this door's identity on the mux diagnostic gate.
     ``mux.FANIN_TEST_OWNERS`` is a CLOSED allowlist, so an owner missing from it
     is refused the gate, the correction lane never carries, and the door
-    measures silence with every daemon healthy. ``None`` keeps
-    ``coordinator.MEASUREMENT_GATE_OWNER``, the wizard's.
+    measures silence with every daemon healthy — which is why a caller states
+    its own rather than inheriting one. ``None`` keeps
+    ``coordinator.MEASUREMENT_GATE_OWNER``, the wizard's, so every existing
+    caller is unchanged; ``seat_level_ramp`` and the doctor's AEC probe each
+    pass their own for the same reason a CLI door should.
 
     Raises :class:`MeasurementDoorRefused` before yielding when the door cannot
     open, and leaves the speaker as it found it on every such path.
@@ -145,7 +194,7 @@ async def measurement_door(
     )
 
     # The window wraps the open, because the latch's first write is a fader
-    # write like any other.
+    # write like any other — the shape `seat_level_ramp` already keeps.
     async with coordinator.measurement_window(
         gate_owner=(
             coordinator.MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner
@@ -153,8 +202,9 @@ async def measurement_door(
     ):
         # A leftover ACTIVE record past its own wall-clock ceiling is a crashed
         # run, not a live one: `live_measurement_session` deliberately lets it
-        # through, and `plan.open` then refuses over it. A no-op when nothing
-        # is stale.
+        # through (a crash must not be permanently un-openable), and `plan.open`
+        # then refuses over it. Force-draining it here is what the wizard's own
+        # new-session reconcile does, and it is a no-op when nothing is stale.
         await plan.enforce_ceiling(volume_door)
         body_error: BaseException | None = None
         volume_open = False
@@ -191,20 +241,27 @@ async def measurement_door(
             )
         except BaseException as raised:  # noqa: BLE001 - CancelledError is the point
             # Held so the give-back can ATTACH its own failures to it rather
-            # than raise over it. ``BaseException`` and not ``Exception``: a
+            # than raise over it — the rule
+            # :meth:`~.session.TuningSession._give_back_held` keeps, where a
+            # cleanup failure never replaces the failure that caused the
+            # cleanup. ``BaseException`` and not ``Exception``: a
             # ``CancelledError`` is the commonest arrival here and is not an
-            # ``Exception``.
+            # ``Exception``, so narrowing the catch would drop the very case
+            # this guard exists for.
             body_error = raised
             raise
         finally:
-            # ``plan.open`` is INSIDE this guard: it persists its durable
-            # ``active`` intent before the first volume mutation, so a
-            # cancellation landing in that gap would otherwise leave a record no
-            # later process drains, and every operator door would read a live
-            # measurement for the whole wall-clock ceiling. A ``finally`` on a
-            # flag rather than an ``except``, because a ``CancelledError`` is not
-            # an ``Exception``. SHIELDED: a cancel inside the give-back would
-            # strand the fader at measurement level with nothing latched.
+            # **`plan.open` IS inside this guard, and that is the whole of the
+            # B1 fix.** It persists its durable ``active`` intent BEFORE the
+            # first volume mutation, so a cancellation landing in that gap —
+            # Ctrl-C, or the coordinator's isolation-loss abort — leaves a
+            # record no later process drains, and every operator door then
+            # reads a live measurement for the whole wall-clock ceiling. A
+            # ``finally`` on a flag rather than an ``except``, because a
+            # ``CancelledError`` is not an ``Exception``.
+            #
+            # SHIELDED: a cancel landing inside the give-back would abort it
+            # and strand the fader at measurement level with nothing latched.
             await resilient_restore(
                 _give_back(
                     graph, claim, plan, volume_door,
@@ -228,13 +285,17 @@ async def _give_back(
 ) -> None:
     """Graph, then claim, then the plan's snapshot — reverse order of taking.
 
-    Every step runs even when an earlier one raises: a graph that will not come
-    back must not strand the fader at measurement level. All three are
-    idempotent and safe against nothing-held.
+    Every step runs even when an earlier one raises, for the reason
+    :meth:`~.session.TuningSession._give_back_held` gives: a graph that will not
+    come back must not strand the fader at measurement level. All three are
+    idempotent and safe against nothing-held, so a body that already closed a
+    :class:`~.session.TuningSession` over them reaches three no-ops, and a
+    failed open reaches three that give back whatever half it took.
 
     ``body_error`` is the exception already in flight, if any. A cleanup failure
-    is ATTACHED to it rather than raised over it, because an ``__aexit__`` that
-    raised would demote the real cause to ``__context__`` and report the
+    is ATTACHED to it rather than raised over it — the same rule
+    :func:`~.session._attach_cleanup_failure` states, because an ``__aexit__``
+    that raised would demote the real cause to ``__context__`` and report the
     symptom. With nothing in flight a give-back failure IS the failure and
     propagates.
     """
@@ -247,9 +308,10 @@ async def _give_back(
         try:
             await step()
         except BaseException as failure:  # noqa: BLE001 - see the docstring
-            # EVERY step still runs: a graph that will not come back must not
-            # stop the fader coming down. The FIRST failure is the one kept, as
-            # it is the one nearest the cause.
+            # EVERY step still runs. A graph that will not come back must not
+            # stop the fader coming down, which is the one give-back order
+            # failure that is audible. The FIRST failure is the one kept: it is
+            # the one nearest the cause, which is ``_attach_first``'s rule.
             if first is None:
                 first = failure
     if first is None:
@@ -264,7 +326,8 @@ def _measurement_claim() -> tuple[Any, Any]:
     """The process's owner and this session's ONE claim at ``SESSION_MEASUREMENT``.
 
     Minted once and injected into both things that hold it — the plan's door and
-    the engine's volume seam — because they are one claim, not two.
+    the engine's volume seam — because they are one claim, not two. The owner
+    travels beside it so the pair cannot be resolved twice and disagree.
     """
     from jasper.volume_owner import volume_owner
 
@@ -286,7 +349,8 @@ def _volume_door(
     """The plan's door onto the same owner the claim is taken through.
 
     The read is the PHYSICAL fader, which is what makes the snapshot every drain
-    restores toward a state rather than an intent.
+    restores toward a state rather than an intent — see
+    :meth:`~.volume_claim.OwnerVolumeDoor.read_household_level_db`.
     """
     from jasper.camilla import CamillaUnavailable
 

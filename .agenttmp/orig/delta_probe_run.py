@@ -6,10 +6,13 @@
 
 :mod:`jasper.active_speaker.delta_probe` classifies; this module is what a
 commissioning round hands it. It assembles the CHANGE and STATE axes and the
-four optional accounting terms, chooses which axis to grade on, and writes the
-journal line the verdict is read off. Every session value arrives as an
-argument and the verdict is returned rather than stamped: this module owns no
-state.
+four optional accounting terms (the apply's declared level move, the graph's
+declared transfer on the probe's grid, the entry-capture anchor and the
+spatial cost), chooses which axis to grade on, and writes the journal line the
+verdict is read off.
+
+Every session value arrives as an argument, and the verdict is returned rather
+than stamped: the session owns its own state, and this module owns none.
 """
 
 from __future__ import annotations
@@ -39,10 +42,11 @@ from jasper.log_event import log_event
 def applied_offset_db(seam: Callable[[], float] | None) -> float:
     """The apply's own declared whole-band level move, dB (#1811).
 
-    Fail-soft to ``0.0``: an unbound seam, an unreadable durable state or a
-    non-finite value all mean "nothing known", and ``classify_delta_probe`` then
-    leaves the entire shift visible as ``residual_offset_db`` rather than
-    absorbing it.
+    Read through the optional seam, fail-soft to ``0.0``: an unbound seam,
+    an unreadable durable state, or a non-finite value all mean "nothing
+    known", and ``classify_delta_probe`` then leaves the entire shift
+    visible as ``residual_offset_db`` rather than absorbing it. Claiming an
+    offset we cannot read would be the one dishonest option here.
     """
     if seam is None:
         return 0.0
@@ -63,14 +67,16 @@ def declared_transfer_db(
     """The applied graph's own declared transfer, on the VERIFY grid (#2614).
 
     The delta probe's STATE axis — what the graph on the speaker declares it
-    does against the uncorrected crossover — interpolated onto the probe's grid
-    exactly as ``commanded_db`` is beside the call, so the two masks the probe
-    builds from them are bin-for-bin comparable.
+    does against the uncorrected crossover — interpolated onto the probe's
+    grid exactly as ``commanded_db`` is beside the call, so the two masks the
+    probe builds from them are bin-for-bin comparable.
 
-    ``None`` when the axis never crossed into this stage or cannot be put on the
-    grid, said on the journal rather than degraded quietly: the probe then falls
-    back to the CHANGE axis alone for its two directional safety rules, which on
-    a repeat round stops watching every band the apply left alone.
+    Returns ``None`` when the axis never crossed into this stage or cannot
+    be put on the grid, and says so on the journal rather than degrading
+    quietly: the probe then falls back to the CHANGE axis alone for its two
+    directional safety rules, which on a repeat round stops watching every
+    band the apply left alone. That is a real narrowing of a hearing-safety
+    finding, so it belongs in front of whoever reads the round.
     """
     if declared is None:
         log_event(
@@ -106,35 +112,52 @@ def entry_delta_db(
 ) -> Any | None:
     """This round's PRE-apply capture, in the realized curve's frame (#2533).
 
-    ``measured_pre − predicted_previous``, on the VERIFY grid, with the entry
-    baseline's magnitude in place of the post-apply one, so
+    ``measured_pre − predicted_previous``, on the VERIFY grid — the exact
+    counterpart of the ``realized_db`` reconstruction beside the call, with
+    the entry baseline's magnitude in place of the post-apply one, so
     ``classify_delta_probe`` can measure its residual as a CHANGE across the
     apply instead of as an absolute disagreement with the model. The
-    previous-graph prediction is recovered as ``predicted_post − commanded``,
-    which since #2611 models the graph the entry capture ACTUALLY went through —
-    so this term and ``commanded`` share one reference.
+    previous-graph prediction is recovered the same way that reconstruction
+    recovers it: ``predicted_previous == predicted_post − commanded``.
 
-    The curve is #2291's ``verify_priors.entry_baseline``, already retained and
-    already rehydrated into stage 2: nothing new is captured, persisted, or
-    asked of the household for this.
+    Since #2611 that recovered curve is a model of the graph the entry
+    capture ACTUALLY went through, so this term and ``commanded`` share one
+    reference and the probe's residual is a measurement-minus-measurement
+    difference. It used to be the raw crossover, which is what put an
+    unbounded chained-round contaminant in the residual (see
+    :func:`~jasper.active_speaker.delta_probe.classify_delta_probe`).
 
-    Bins the entry capture EXCLUDED become NaN, not values, and the probe drops
-    non-finite anchor bins rather than anchoring a level claim on them.
-    Interpolation spreads each NaN to its two neighbours, the conservative
-    direction.
+    The curve is #2291's ``verify_priors.entry_baseline``, already retained
+    and already rehydrated into stage 2 — nothing new is captured, persisted,
+    or asked of the household for this.
 
-    Returns ``None`` — "no comparable before" — for a round with no entry
-    baseline, and for any arithmetic this cannot complete. Fail-soft on the same
-    terms as :func:`applied_offset_db`.
+    **Bins the entry capture EXCLUDED become NaN, not values.** They are the
+    bins that capture could not trust, and the probe drops non-finite anchor
+    bins rather than anchoring a level claim on them. Interpolation spreads
+    each NaN to its two neighbours, which is the conservative direction.
+
+    Returns ``None`` — "no comparable before", which leaves the probe
+    measuring exactly what it measured before this existed — for a round with
+    no entry baseline, and for any arithmetic this cannot complete. Fail-soft
+    on the same terms as :func:`applied_offset_db`: an unusable optional
+    accounting term is nothing known, never a lost verdict.
     """
     if baseline is None:
-        # NAMED, not silent: since D1 this arm decides whether the
-        # realized-energy half of the safety axis runs, so a reader asking "why
-        # did nothing check the driver" finds an answer here. A first-ever round
-        # never arrives — it has no nameable previous graph, so no commanded
-        # axis, and the caller takes the ``state_axis_only`` branch. What
-        # reaches this arm is a round WITH a commanded axis and no usable
-        # baseline record, which is exceptional, hence WARNING.
+        # NAMED, not silent (series-2 D1 fix round). Since D1 this arm
+        # decides whether the realized-energy half of the safety axis runs,
+        # so a reader asking "why did nothing check the driver" must find an
+        # answer here rather than infer it from an absent field.
+        #
+        # **Not a first-ever round** — that one never arrives here at all.
+        # It has no nameable previous graph, so its commanded axis is
+        # absent, and the caller takes the ``state_axis_only`` branch below
+        # without ever calling this function. What reaches this arm is a round
+        # that HAS a commanded axis and no usable baseline record: the three
+        # cases ``correction_crossover_v2.entry_baseline_prior_from_state``
+        # enumerates — a state file written before that key shipped, a
+        # stage 1 whose baseline capture never landed, and a truncated or
+        # hand-edited record. All three are exceptional, which is why this
+        # is WARNING.
         log_event(
             logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
             level=logging.WARNING, session_id=session_id,
@@ -142,16 +165,27 @@ def entry_delta_db(
         )
         return None
     try:
-        # COMPARABLE, or it is not an anchor. An anchor is a subtraction, so a
-        # curve measured through another program, or from another mic position,
-        # cancels a real finding as readily as a phantom — and since D1 the
-        # subtrahend feeds a hard stop rather than only the disclosed residual.
-        # BOTH identity fields, asked through the rule's own owner
-        # (``verification.identity_mismatch``). The MARK earns the second
-        # clause: a baseline captured at another position is the same program on
-        # the same grid and subtracts a different room bin by bin, which nothing
-        # else on this path would catch. Unknown on either side is "nothing
-        # known" and does not refuse.
+        # COMPARABLE, or it is not an anchor. An anchor is a subtraction, so
+        # a curve measured through another program, or from another mic
+        # position, cancels a real finding as readily as a phantom — and
+        # since D1 the subtrahend feeds a hard stop rather than only the
+        # disclosed residual.
+        #
+        # BOTH identity fields, asked through the rule's own owner:
+        # ``verification.identity_mismatch`` is the identity half of
+        # ``_comparability_mismatch``, so the order and the two reason
+        # constants live in one place rather than in a parallel spelling
+        # here. The MARK is the field that earned the second clause — a
+        # program mismatch usually changes the grid and surfaces in the
+        # arithmetic below, while a baseline captured at another position is
+        # the same program on the same grid and subtracts a different room
+        # bin by bin, which nothing else on this path would catch.
+        #
+        # Unknown on either side is "nothing known" and does not refuse —
+        # the module's rule everywhere. A MAGNITUDE bound is deliberately
+        # not added: identity is answerable from the record, plausibility is
+        # not, and a curve that is comparable and merely wrong is what
+        # capture integrity screens for.
         want_program = str(
             getattr(
                 program_for_phase(PHASE_VERIFY), "program_id", "",
@@ -191,8 +225,11 @@ def entry_delta_db(
         return (measured_pre - predicted_s) + commanded_db
     except (ValueError, TypeError, IndexError, AttributeError) as exc:
         # One arm for the whole body, and the identity read is INSIDE it on
-        # purpose: a fail-soft function that computes anything outside its own
-        # guard is one refactor from losing a verdict to an accounting term.
+        # purpose: ``program_for_phase`` is bound at construction and cannot
+        # raise today, but a fail-soft function that computes anything outside
+        # its own guard is one refactor from losing a verdict to an
+        # accounting term. The reason names the record, not the curve,
+        # because the arm now covers both.
         log_event(
             logger, "correction.crossover_v2_delta_probe_no_entry_anchor",
             level=logging.WARNING, session_id=session_id,
@@ -218,32 +255,47 @@ def run_delta_probe(
 ) -> DeltaProbeMap | None:
     """Classify what the speaker actually did against what was commanded.
 
-    The ERROR classified is ``measured − predicted``, exactly the residual
-    VERIFY's tracking check already computes, and it is read off
-    ``ProgramAnalysis.verify_tracking_curve`` — the same smoothed pair the
-    tracking scalars were reduced from — rather than re-derived here. What the
-    delta framing adds is the commanded curve, the axis the
-    shortfall-vs-model-error discriminator needs, and a band that on this
-    speaker reaches an octave and a half above the ``[Fc/2, 2·Fc]`` window
-    tracking looks at.
+    The arithmetic, stated plainly because it matters (see
+    :mod:`jasper.active_speaker.delta_probe`): the ERROR this classifies is
+    ``measured − predicted``, exactly the residual VERIFY's tracking check
+    already computes — and it is read off
+    ``ProgramAnalysis.verify_tracking_curve``, the very smoothed pair the
+    tracking scalars were reduced from, rather than re-derived here. One
+    comparison, two consumers. What the delta framing adds is the commanded
+    curve — the axis the shortfall-vs-model-error discriminator needs — and
+    a band. The band is the one the correction actually commands something
+    in, which on this speaker reaches an octave and a half above the
+    ``[Fc/2, 2·Fc]`` window tracking looks at, and is where the 2026-07-27
+    shelf-realization defect lived.
 
-    **The band is the capture's own trusted band, and there is no fallback**
-    (#2521): this capture's gate-derived trusted floor intersected with the band
-    its stimulus actually radiated. The raw grid edges this used to pass instead
-    were wider at both ends, and once rolled a correction back on a headline at
-    ``worst_hz=21,266`` — above the disclosed 20,000 Hz ceiling, at a frequency
-    nothing had measured. A capture with no trusted band leaves the probe
-    unavailable.
+    **The band is the capture's own trusted band, and there is no
+    fallback** (#2521). It comes from the gate disclosure
+    (:func:`_gate_trusted_band_hz`) — this capture's gate-derived trusted
+    floor intersected with the band its stimulus actually radiated — and
+    the raw grid edges this used to pass instead were wider at BOTH ends:
+    on the first remote JTS3 session the disclosure said 357-20,000 Hz and
+    the probe graded 325-22,480, then rolled the correction back with its
+    whole headline — ``worst_hz=21,266``, ``max_error_db=23.4`` — sitting
+    above that ceiling, at a frequency nothing had measured. A capture with no
+    trusted band leaves the probe unavailable, which is the same answer
+    ``_verify_absolute_result`` gives (``no_trusted_crossover_region``) for
+    the same missing fact.
 
     **A missing CHANGE axis leaves the STATE axis, and only the MODEL's own
-    departure is graded on it** (#2614, narrowed by series-2 D1). The STATE axis
-    needs no corner match, so the probe reports
-    :data:`~jasper.active_speaker.delta_probe.VERDICT_SAFETY_ONLY` — not a pass,
-    no shape grade, and no directional safety finding either, since those are
-    differenced against a pre-apply capture this path has none of.
+    departure is graded on it** (#2614, narrowed by series-2 D1). A round
+    whose branches are composed through a crossover the applied graph never
+    ran has no nameable previous graph — an operator's topology pin is the
+    live producer of that shape, and a first-ever round reaches it with no
+    applied graph at all — so the commanded delta is absent, and before
+    #2614 the whole probe was absent with it. The STATE axis needs no corner
+    match, so when it is present the probe reports
+    :data:`~jasper.active_speaker.delta_probe.VERDICT_SAFETY_ONLY` — not a
+    pass, no shape grade, and no directional safety finding either: those
+    are differenced against a pre-apply capture this path has none of, so
+    ``safety_anchored`` is False and the record says which half did not run.
 
-    Returns ``None`` when the tracking curve, the trusted band, or BOTH axes are
-    missing — the same thing
+    Returns ``None`` when the tracking curve, the trusted band, or BOTH
+    axes are missing. ``None`` is the same thing
     :data:`~jasper.active_speaker.delta_probe.VERDICT_UNAVAILABLE` is: no
     evidence to refuse on, and no permission granted either.
     """
@@ -286,8 +338,9 @@ def run_delta_probe(
             return None
         # The STATE axis in the commanded slot, and the classifier told so.
         # ``realized − commanded`` is still ``measured − predicted``, which
-        # grades the MODEL's departure; no entry anchor goes with it, since that
-        # is a change measurement and shares no reference with a state axis.
+        # grades the MODEL's departure; the two directional findings are not
+        # measured here at all, and no entry anchor goes with it — that is a
+        # change measurement, sharing no reference with a state axis.
         probe = classify_delta_probe(
             freqs, (measured_s - predicted_s) + declared_db, declared_db,
             band_hz=band_hz, spatial=spatial,
@@ -315,10 +368,12 @@ def run_delta_probe(
         )
     log_event(
         logger, "correction.crossover_v2_delta_probe",
-        # The two non-rollback findings produce no refusal by design, so WARNING
-        # is the only thing that puts them in front of anyone reading the journal
-        # for a session that otherwise "passed". ``safety_only`` joins them for
-        # the same reason: the round passed, and the shape check never ran.
+        # The two non-rollback findings produce no refusal by design, so
+        # WARNING is the only thing that puts them in front of anyone
+        # reading the journal for a session that otherwise "passed"
+        # (#1811, #2521). ``safety_only`` joins them for the same reason
+        # one layer over (#2614): the round passed, and the shape check
+        # never ran.
         level=(
             logging.WARNING
             if probe.rollback
@@ -332,9 +387,11 @@ def run_delta_probe(
         verdict=probe.verdict,
         reason=probe.reason,
         rollback=probe.rollback,
-        # Both bands, because they answer different questions: the trusted one
-        # is what this capture supports, the probe one is what cleared the
-        # commanded floor inside it (#2521).
+        # Both bands, because they answer different questions: the trusted
+        # one is what this capture supports, the probe one is what cleared
+        # the commanded floor inside it. A disputed verdict should not need
+        # a second session to establish which bins it was reached over
+        # (#2521).
         trusted_band_hz=tuple(round(v, 1) for v in probe.requested_band_hz),
         probe_band_hz=tuple(round(v, 1) for v in probe.probe_band_hz),
         n_bins=probe.n_bins,
@@ -354,20 +411,27 @@ def run_delta_probe(
             None if probe.frame.tilt_db_per_octave is None
             else round(probe.frame.tilt_db_per_octave, 4)
         ),
-        # ``frame_fit``'s own ill-conditioning defence, travelling with the two
-        # terms it qualifies: a tilt fitted over a narrow quiet span is free to
-        # be large and mean nothing (measured over 200 seeds of a 10-bin quiet
-        # region, p95 |tilt| 10.5 dB/octave).
+        # ``frame_fit``'s own ill-conditioning defence, and it has to travel
+        # with the two terms it qualifies: a tilt fitted over a narrow quiet
+        # span is free to be large and mean nothing (measured over 200 seeds
+        # of a 10-bin quiet region, p95 |tilt| 10.5 dB/octave). It cannot
+        # wrongly demote — the gate only narrows — but it does set the
+        # ``frame_removed_*`` numbers a reader quotes, so the span they were
+        # taken over belongs beside them.
         frame_n_bins=probe.frame.n_bins,
         frame_band_hz=(
             None if probe.frame.band_hz is None
             else tuple(round(v, 1) for v in probe.frame.band_hz)
         ),
-        # Whether the realized-energy half ran at all (series-2 D1):
-        # ``boost_over_declared_bound=false`` reads as "measured, nothing found"
-        # and is "not measured" whenever this is false. A first-ever round
-        # reaches that through the state-axis branch above; an ordinary round
-        # reaches it with a missing or incomparable entry baseline, which
+        # Whether the realized-energy half ran at all (series-2 D1). The
+        # forensic surface an operator greps, beside the numbers it governs:
+        # ``boost_over_declared_bound=false`` reads as "measured, nothing
+        # found" and is "not measured" whenever this is false. Two routes
+        # reach that, and a first-ever round takes the FIRST: no nameable
+        # previous graph, so no commanded axis, so the state-axis branch
+        # above — which has no change reference to anchor against by
+        # construction. The second is an ordinary round whose banked entry
+        # baseline is missing or incomparable, which
         # ``…delta_probe_no_entry_anchor`` names on its own line.
         safety_anchored=probe.safety_anchored,
         frame_removed_max_db=(
@@ -395,11 +459,15 @@ def run_delta_probe(
             None if probe.residual_offset_db is None
             else round(probe.residual_offset_db, 3)
         ),
-        # WHAT the residual removed and WHERE it was measured (#2533). ``None``
-        # means it was not measured and therefore not removed. The quiet terms
-        # bound the residual's claim as ``frame_n_bins``/``frame_band_hz`` bound
-        # the frame's: ``quiet_core_band_hz`` is the INTERQUARTILE span
-        # (``frame_band_hz`` is the min/max, which two stray bins defeat).
+        # WHAT the residual removed and WHERE it was measured (#2533). The
+        # anchor is the standing pre-apply disagreement the residual is no
+        # longer reporting as a level move, and ``None`` means it was not
+        # measured and therefore not removed. The quiet terms bound the
+        # residual's claim exactly as ``frame_n_bins``/``frame_band_hz``
+        # bound the frame's: ``quiet_core_band_hz`` is the INTERQUARTILE span
+        # (``frame_band_hz`` is the min/max, which two stray bins defeat) and
+        # the coverage is what decides between a whole-band reason and a
+        # band-scoped one.
         entry_anchor_offset_db=(
             None if probe.entry_anchor_offset_db is None
             else round(probe.entry_anchor_offset_db, 3)
