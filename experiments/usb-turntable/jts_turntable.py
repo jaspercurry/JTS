@@ -560,13 +560,18 @@ def _run_hotplug_stop(
         return 1
 
     last_error = "not attempted"
+    synced = False
+    unexplained_open_failure = False
     for attempt in range(1, AUTOSTOP_ATTEMPTS + 1):
+        attempt_synced = False
         try:
             with api.controller.open(
                 port=args.port,
                 response_timeout=AUTOSTOP_IO_TIMEOUT,
                 startup_timeout=AUTOSTOP_IO_TIMEOUT,
             ) as controller:
+                attempt_synced = True
+                synced = True
                 probe = controller.probe()
                 product = getattr(probe, "product", None)
                 if getattr(probe, "connected", False) and product == AUTOSTOP_PRODUCT:
@@ -596,6 +601,25 @@ def _run_hotplug_stop(
                     last_error = "turntable identity probe did not complete"
         except Exception as exc:  # noqa: BLE001 - bounded hardware boundary
             last_error = f"{type(exc).__name__}: {exc}"
+            if not attempt_synced and not isinstance(exc, api.protocol_error):
+                # open() itself failed for a reason other than the vendored
+                # protocol layer's own sync-failure type -- e.g. a
+                # permissions or OS-level fault -- which is a real
+                # infrastructure problem, not "nothing answered on the
+                # line." Never downgrade that to `no_response` below.
+                #
+                # isinstance (not the exact-type check `_run_with_session_
+                # retry` uses) is deliberate and safe here: vendor
+                # `TurntableController.open()`/`ProtocolSession.synchronize()`
+                # (usb_turntable/protocol.py) only ever raise the bare
+                # `ProtocolError` or its `StartupSynchronizationError`
+                # subclass before a session is synchronized. The "real
+                # command outcome" subclasses that retry logic guards against
+                # (`CommandRejected`, `CommunicationTimeout`,
+                # `CompletionTimeout`) are raised only from command-execution
+                # paths that require an already-synchronized session, so they
+                # cannot reach this branch.
+                unexplained_open_failure = True
 
         if attempt < AUTOSTOP_ATTEMPTS:
             _emit_autostop(
@@ -607,6 +631,26 @@ def _run_hotplug_stop(
                 retry_seconds=AUTOSTOP_RETRY_SECONDS,
             )
             sleep(AUTOSTOP_RETRY_SECONDS)
+
+    if not synced and not unexplained_open_failure:
+        # The udev rule matches on USB vendor/product + physical port, not
+        # turntable identity (CH340 is a generic serial chip), so this port
+        # can hot-plug a cable with nothing driving its TX line. That reads
+        # as a startup handshake that never once completes -- a different
+        # garbage byte every attempt (observed on jts3: 0xfa, 0xd4, 0xf8,
+        # 0xdd) -- which is line noise, not a real device's framed response,
+        # even a wrong one. Treat it the same as an identified non-turntable:
+        # nothing to stop, not a failure worth a permanently-failed unit.
+        # Gated on the vendored protocol-layer error type so an unrelated
+        # open() fault (permissions, OS-level I/O) still surfaces as failed.
+        _emit_autostop(
+            args,
+            "no_response",
+            ok=True,
+            attempts=AUTOSTOP_ATTEMPTS,
+            error=last_error,
+        )
+        return 0
 
     _emit_autostop(
         args,

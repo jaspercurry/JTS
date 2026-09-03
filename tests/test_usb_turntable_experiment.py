@@ -517,6 +517,88 @@ def test_hotplug_stop_retry_budget_is_bounded(turntable, capsys) -> None:
     assert len(factory.open_calls) == turntable.AUTOSTOP_ATTEMPTS
 
 
+def test_hotplug_stop_treats_a_port_that_never_syncs_as_no_turntable(
+    turntable, capsys
+) -> None:
+    """The udev rule matches USB vendor/product + physical port, not
+    turntable identity, so this port can hot-plug a cable with nothing
+    driving its TX line -- a startup handshake that never once completes,
+    raising the vendored protocol layer's own sync-failure type (a
+    `ProtocolError` subclass, e.g. real `StartupSynchronizationError`) on
+    every attempt. That must not leave a permanently-failed unit (AGENTS.md:
+    a permanently-failed unit hides real failures in `systemctl
+    list-units --state=failed`)."""
+    factory = FakeControllerFactory(
+        [
+            FakeProtocolError(
+                "StartupSynchronizationError: startup returned unapproved byte 0xfa"
+            )
+            for _ in range(turntable.AUTOSTOP_ATTEMPTS)
+        ]
+    )
+    api = turntable.TurntableApi(
+        discover_devices=lambda: [],
+        controller=factory,
+        protocol_error=FakeProtocolError,
+    )
+    sleeps = []
+
+    assert turntable.main(
+        ["--json", "--port", "/dev/ttyUSB0", "hotplug-stop"],
+        api=api,
+        sleep=sleeps.append,
+    ) == 0
+
+    output = parse_json_lines(capsys)
+    assert [record["event"] for record in output] == [
+        "turntable_autostop.retry",
+        "turntable_autostop.retry",
+        "turntable_autostop.retry",
+        "turntable_autostop.no_response",
+    ]
+    assert output[-1]["ok"] is True
+    assert output[-1]["attempts"] == turntable.AUTOSTOP_ATTEMPTS
+    assert sleeps == [turntable.AUTOSTOP_RETRY_SECONDS] * 3
+    assert len(factory.open_calls) == turntable.AUTOSTOP_ATTEMPTS
+
+
+def test_hotplug_stop_keeps_failing_for_a_non_protocol_open_fault(
+    turntable, capsys
+) -> None:
+    """A never-synced port is only downgraded to `no_response` when every
+    open() failure is the vendored protocol layer's own sync-failure type.
+    An unrelated fault (permissions, OS-level I/O) must still surface as a
+    real failure -- it is not evidence of "no turntable", and silently
+    exiting 0 would hide an actual infrastructure problem."""
+    factory = FakeControllerFactory(
+        [
+            PermissionError("could not open /dev/ttyUSB0")
+            for _ in range(turntable.AUTOSTOP_ATTEMPTS)
+        ]
+    )
+    api = turntable.TurntableApi(
+        discover_devices=lambda: [],
+        controller=factory,
+        protocol_error=FakeProtocolError,
+    )
+    sleeps = []
+
+    assert turntable.main(
+        ["--json", "--port", "/dev/ttyUSB0", "hotplug-stop"],
+        api=api,
+        sleep=sleeps.append,
+    ) == 1
+
+    output = parse_json_lines(capsys)
+    assert [record["event"] for record in output] == [
+        "turntable_autostop.retry",
+        "turntable_autostop.retry",
+        "turntable_autostop.retry",
+        "turntable_autostop.exhausted",
+    ]
+    assert output[-1]["ok"] is False
+
+
 def test_hotplug_stop_ignores_other_ch340_product(turntable, capsys) -> None:
     api, factory, controller = fake_api(turntable)
     controller.probe_result.product = "unrelated-device"
