@@ -21,9 +21,10 @@ Three rules govern this door.
 * Every admission bar is SHAPE. The classification vouch is DISCLOSED, never
   refused (#2863): a vouch is a prediction about whether a filter will help,
   and the measurement decides. A hard bound here is for hearing or hardware
-  and nothing else, which is why the cut ceilings and the min-Q floor are gone
-  (ADR-0207) — a cut cannot clip, and the round's own measured verify with
-  auto-restore is the net.
+  and nothing else, which is why the cut depth ceilings and the POLICY min-Q
+  floor are gone (ADR-0207) — a cut cannot clip, and the round's own measured
+  verify with auto-restore is the net. What still bounds a cut's width is the
+  evaluator's own :data:`~jasper.sound.profile.EVALUABLE_Q_MIN`/``_MAX``.
 
 A boost's whole cost is MAXIMUM SPL: it is charged by
 ``camilla_yaml.linearization_headroom_db`` and absorbed by
