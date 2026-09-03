@@ -43,6 +43,9 @@ round's receipts.
   rows arrive pre-analyzed. Everything deeper is its own verb in the
   runbook's menu, run when a question warrants it. Read the packet first;
   open one verb per question; do not try to hold every analysis at once.
+  Which of those verbs a round has already been through is itself a read:
+  `jasper-round-views inventory <round-dir>` lists the artifacts banked
+  beside it and names the subcommand for each one it is missing.
 
 ## 0. DECLARE before you measure
 

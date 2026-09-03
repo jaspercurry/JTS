@@ -4,7 +4,7 @@
 
 """Operator entry point for the round-grading comparison views (issue #2769).
 
-One console script, eleven subcommands — each a thin argparse wrapper over
+One console script, twelve subcommands — each a thin argparse wrapper over
 :mod:`jasper.active_speaker.crossover_v2.round_views`, which owns every
 number this tool prints. A round directory is EITHER a banked round tree or
 a live session bundle still on the speaker
@@ -79,6 +79,12 @@ Subcommands:
   answer. Observed only: no grade moves, and it says nothing about whether
   the wired answer was RIGHT — nothing banked is ground truth for that.
   Writes ``cloud_binding.json``.
+* ``inventory <round-dir>`` — which of the named artifacts above this round
+  already has, and the subcommand that produces each one it is missing, so
+  "was this round ever analysed for X" is read rather than re-run. Presence
+  is read at the path each view writes with no ``--out``, so a LIVE session
+  bundle's artifacts are looked for beside the caller, not in the bundle
+  (:func:`_default_out`). Writes ``inventory.json``.
 
 Every subcommand accepts ``--out PATH`` to write somewhere else instead
 (``-`` for stdout, except ``repeat-floor``, whose record is published by
@@ -149,6 +155,29 @@ AUTHORITY_TIER = "advisory"
 #: in the order an operator meets them: the live one is what a round leaves on
 #: the speaker, the banked one is what ``bank-crossover-round.sh`` made of it.
 _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
+
+PROG = "jasper-round-views"
+
+#: The artifact each view writes beside the round, declared once: the
+#: subcommands take their default output path from this table and
+#: ``inventory`` names each missing artifact's producer from the same one, so
+#: there is no second list to drift. ``repeat-floor`` is absent because it
+#: publishes to a required ``--out`` instead of beside the round.
+ARTIFACT_BY_VIEW: dict[str, str] = {
+    "entry": "entry_state_grade.json",
+    "frozen": "frozen_reference.json",
+    "per-seat": "per_seat.json",
+    "repeat": "repeatability.json",
+    "agreement": "agreement.json",
+    "co-metrics": "audibility_co_metrics.json",
+    "directivity": "directivity.json",
+    "cloud-binding": "cloud_binding.json",
+    "spec-sweep": "spec_gate_sensitivity.json",
+    "frequency": "frequency_view.json",
+}
+
+#: ``inventory``'s own report, named apart from the views it reports on.
+INVENTORY_ARTIFACT = "inventory.json"
 
 #: A round directory is operator-pulled evidence, not a validated
 #: input — the documented failure shapes it can hand back are broader than
@@ -246,17 +275,23 @@ def _default_out(round_: BankedRound, name: str) -> Path:
     return Path.cwd() / f"{round_.session_dir.name}-{name}"
 
 
+def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:
+    """This subcommand's own artifact path, from :data:`ARTIFACT_BY_VIEW`."""
+    return _default_out(round_, ARTIFACT_BY_VIEW[args.command])
+
+
 def _frequency_default_out(source: Path) -> Path:
     """:func:`_cmd_frequency`'s own default: it takes sources the round
     resolver does not (a JSON document, a bundle that banked no round), so it
     reads the live shape directly — under the same rule as
     :func:`_default_out`, never inside a daemon-owned session bundle.
     """
+    name = ARTIFACT_BY_VIEW["frequency"]
     if not source.is_dir():
-        return source.parent / "frequency_view.json"
+        return source.parent / name
     if (source / "info.json").is_file():
-        return Path.cwd() / f"{source.name}-frequency_view.json"
-    return source / "frequency_view.json"
+        return Path.cwd() / f"{source.name}-{name}"
+    return source / name
 
 
 def _cmd_entry(args: argparse.Namespace) -> int:
@@ -264,9 +299,7 @@ def _cmd_entry(args: argparse.Namespace) -> int:
     # A packet missing `entry_baseline` is a corrupt packet, which this grade's
     # own docstring puts in the unreadable arm — not a view declining a round.
     grade = _stage(EXIT_UNREADABLE, (KeyError, TypeError), entry_state_grade, banked)
-    written = _write(
-        grade.to_dict(), args.out, _default_out(banked, "entry_state_grade.json")
-    )
+    written = _write(grade.to_dict(), args.out, _view_out(args, banked))
     report = grade.report
     # ``report is None`` IS ``not available`` — the two move together on
     # ``EntryStateGrade`` — and testing the report narrows it for the summary
@@ -302,9 +335,7 @@ def _cmd_frozen(args: argparse.Namespace) -> int:
     baseline = _load_round(args.baseline_dir)
     target = _load_round(args.target_dir)
     result = frozen_reference_grade(baseline, target)
-    written = _write(
-        result.to_dict(), args.out, _default_out(target, "frozen_reference.json")
-    )
+    written = _write(result.to_dict(), args.out, _view_out(args, target))
     print(
         f"frozen-reference: shipped={result.shipped} frozen={result.frozen}"
         f"{f' -> {written}' if written else ''}",
@@ -337,7 +368,7 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
             for seat in seats
         ],
     }
-    written = _write(payload, args.out, _default_out(banked, "per_seat.json"))
+    written = _write(payload, args.out, _view_out(args, banked))
     print(
         f"per-seat: {len(seats)} seat(s) ({', '.join(s.position_id for s in seats)}); "
         f"verify pose {'included' if verify.curve is not None else f'ABSENT ({verify.reason})'}"
@@ -356,9 +387,7 @@ def _load_rounds(round_dirs: Sequence[str]) -> list[tuple[str, BankedRound]]:
 def _cmd_repeat(args: argparse.Namespace) -> int:
     rounds = _load_rounds(args.round_dirs)
     result = repeatability_spread(rounds)
-    written = _write(
-        result.to_dict(), args.out, _default_out(rounds[0][1], "repeatability.json")
-    )
+    written = _write(result.to_dict(), args.out, _view_out(args, rounds[0][1]))
     shipped = next((m for m in result.metrics if m.name == SHIPPED_POOL_METRIC), None)
     spread = shipped.spread() if shipped else None
     print(
@@ -421,7 +450,7 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
         "testify_db": args.testify_db,
         "features": [feature.to_dict() for feature in features],
     }
-    written = _write(payload, args.out, _default_out(banked, "agreement.json"))
+    written = _write(payload, args.out, _view_out(args, banked))
     # `common_mode is True`, never a bare truthiness test: `None` (not
     # evaluable, below AGREEMENT_TESTIFY_MIN seats) must not be silently
     # counted alongside `False` (evaluated and failed the bar).
@@ -439,9 +468,7 @@ def _cmd_agreement(args: argparse.Namespace) -> int:
 def _cmd_co_metrics(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
     result = audibility_co_metrics(banked)
-    written = _write(
-        result.to_dict(), args.out, _default_out(banked, "audibility_co_metrics.json")
-    )
+    written = _write(result.to_dict(), args.out, _view_out(args, banked))
     on_axis = (
         f"NBD={result.on_axis.nbd_db:.3f} dB SM={result.on_axis.sm_r2:.3f}"
         if result.on_axis is not None else f"NOT AVAILABLE ({result.on_axis_reason})"
@@ -469,7 +496,7 @@ def _cmd_directivity(args: argparse.Namespace) -> int:
         "banked": banked.inputs.banked,
         "directivity": table.to_dict(),
     }
-    written = _write(payload, args.out, _default_out(banked, "directivity.json"))
+    written = _write(payload, args.out, _view_out(args, banked))
     # Both clauses only inside the evaluable arm: an absent reference forces
     # `angles_recorded` false whatever the round banked, so reading it out
     # there would tell an operator their bearings are missing when they are not.
@@ -496,9 +523,7 @@ def _cmd_directivity(args: argparse.Namespace) -> int:
 def _cmd_cloud_binding(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
     view = cloud_binding_view(banked)
-    written = _write(
-        view.to_dict(), args.out, _default_out(banked, "cloud_binding.json")
-    )
+    written = _write(view.to_dict(), args.out, _view_out(args, banked))
     if not view.evaluable:
         summary = f"NOT EVALUATED ({view.not_evaluated_reason})"
     else:
@@ -543,9 +568,7 @@ def _cmd_spec_sweep(args: argparse.Namespace) -> int:
     banked = _load_round(args.round_dir)
     report = spec_with_gate_sensitivity(banked, rungs_ms=args.rungs_ms)
     payload = {"round_dir": str(banked.round_dir), "spec": report.to_dict()}
-    written = _write(
-        payload, args.out, _default_out(banked, "spec_gate_sensitivity.json"),
-    )
+    written = _write(payload, args.out, _view_out(args, banked))
     print(
         "spec-sweep [disclosure only, no grade moves]: "
         + "; ".join(_band_sweep_line(band) for band in report.bands)
@@ -604,6 +627,34 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_inventory(args: argparse.Namespace) -> int:
+    banked = _load_round(args.round_dir)
+    artifacts: list[dict[str, Any]] = []
+    for view, artifact in ARTIFACT_BY_VIEW.items():
+        path = _default_out(banked, artifact)
+        artifacts.append({
+            "artifact": artifact,
+            "path": str(path),
+            "present": path.is_file(),
+            "produced_by": f"{PROG} {view}",
+        })
+    payload = {
+        "round_dir": str(banked.round_dir),
+        "banked": banked.inputs.banked,
+        "artifacts": artifacts,
+    }
+    written = _write(payload, args.out, _default_out(banked, INVENTORY_ARTIFACT))
+    missing = [row["produced_by"] for row in artifacts if not row["present"]]
+    print(
+        f"inventory: {len(artifacts) - len(missing)}/{len(artifacts)} "
+        f"artifact(s) present"
+        + (f"; missing: {', '.join(missing)}" if missing else "")
+        + (f" -> {written}" if written else ""),
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
 def _add_norm_band_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--norm-lo", type=float, default=400.0, help="normalisation band low edge, Hz (default 400)")
     parser.add_argument("--norm-hi", type=float, default=8000.0, help="normalisation band high edge, Hz (default 8000)")
@@ -611,15 +662,16 @@ def _add_norm_band_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="jasper-round-views",
+        prog=PROG,
         description=(
             "The round-grading comparison views: entry-state grading, "
             "frozen-reference grading, per-seat curves, session-to-session "
             "repeatability and the banked repeat floor, per-seat agreement, "
             "audibility co-metrics, measured per-angle directivity, whether "
             "the cloud's null evidence bound the linearization fit, the gate "
-            "sweep read onto the spec verdict, and the shared frequency view "
-            "— over banked rounds and live sessions."
+            "sweep read onto the spec verdict, the shared frequency view, and "
+            "an inventory of which of those a round already carries — over "
+            "banked rounds and live sessions."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -750,6 +802,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     frequency.add_argument("--out", default=None, help="write the result here (- for stdout)")
     frequency.set_defaults(func=_cmd_frequency)
+
+    inventory = sub.add_parser(
+        "inventory",
+        help="which view artifacts this round has, and what produces each missing one",
+    )
+    inventory.add_argument("round_dir", help=_ROUND_DIR_HELP)
+    inventory.add_argument("--out", default=None, help="write the result here (- for stdout)")
+    inventory.set_defaults(func=_cmd_inventory)
 
     return parser
 
