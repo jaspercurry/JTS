@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from jasper.audio_hardware import dac
+from jasper.audio_hardware.hat_eeprom import HatEeprom
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 import jasper.output_hardware as output_hardware
 from jasper.output_hardware import (
@@ -224,6 +226,60 @@ def test_probe_system_cards_classifies_non_usb_hifiberry_from_proc_cards(
     assert state.profile_id == HIFIBERRY_DAC8X_DEVICE_ID
     assert state.status == "ready"
     assert state.physical_output_count == 8
+
+
+def test_hat_eeprom_routes_the_shared_studio_card_name_and_reaches_the_record(
+    tmp_path: Path,
+) -> None:
+    """rpi-6.18.y names every Studio-family card alike, so the EEPROM decides.
+
+    The observable is both halves at once: the probe classifies the shared
+    name only because a HAT product was supplied, and the published record
+    carries the evidence it routed on (#2258).
+    """
+    sys_class = tmp_path / "sys" / "class" / "sound"
+    proc_asound = tmp_path / "proc" / "asound"
+    card_dir = tmp_path / "sys" / "devices" / "platform" / "soc" / "sound" / "card1"
+    sys_class.mkdir(parents=True)
+    proc_asound.mkdir(parents=True)
+    card_dir.mkdir(parents=True)
+    (sys_class / "card1").symlink_to(card_dir)
+    proc_card = proc_asound / "card1"
+    proc_card.mkdir()
+    (proc_card / "id").write_text("HiFiBerryStudio", encoding="utf-8")
+    (proc_card / "pcm0p").mkdir()
+    (proc_asound / "cards").write_text(
+        " 1 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard\n"
+        "                      Hifiberry Studio Soundcard\n",
+        encoding="utf-8",
+    )
+    hat = HatEeprom(
+        vendor="HiFiBerry",
+        product="StudioDAC8x",
+        uuid="be3b8164-dd7b-48fc-ab27-79dd7c641980",
+    )
+
+    (unrouted,) = probe_system_cards(
+        sys_class_sound=sys_class,
+        proc_asound=proc_asound,
+    )
+    (routed,) = probe_system_cards(
+        sys_class_sound=sys_class,
+        proc_asound=proc_asound,
+        hat=hat,
+    )
+    state = replace(classify_output_cards([routed]), hat_eeprom=hat)
+
+    assert unrouted.device_id == "unknown"
+    assert routed.device_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
+    assert state.profile_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
+    assert state.to_dict()["hat_eeprom"] == {
+        "vendor": "HiFiBerry",
+        "product": "StudioDAC8x",
+        "uuid": "be3b8164-dd7b-48fc-ab27-79dd7c641980",
+    }
+    assert OutputHardwareState.from_mapping(state.to_dict()).hat_eeprom == hat
+    assert OutputHardwareState.from_mapping({"profile_id": "unknown"}).hat_eeprom is None
 
 
 def test_output_hardware_state_from_mapping_preserves_zero_apple_dac_count() -> None:

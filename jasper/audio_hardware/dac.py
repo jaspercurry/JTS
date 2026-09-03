@@ -18,6 +18,8 @@ from typing import Literal
 
 from jasper.camilla_config_contract import CamillaFloor
 
+from .hat_eeprom import HatEeprom
+
 
 APPLE_USB_C_DONGLE_ID = "apple_usb_c_dongle"
 HIFIBERRY_DAC8X_ID = "hifiberry_dac8x"
@@ -129,6 +131,15 @@ class DacProfile:
     clock_domain_contract: ClockDomainContract
     outputd_sink: str
     supported_card_matches: tuple[str, ...]
+    # Card labels a driver emits for MORE THAN ONE board, routable only when
+    # the fitted HAT's EEPROM product is one of `hat_products`. Kept apart
+    # from `supported_card_matches` so the label-only path can never route on
+    # an ambiguous name (#2258).
+    eeprom_gated_card_matches: tuple[str, ...] = ()
+    # HAT ID EEPROM `product` strings this profile accepts, compared whole and
+    # case-insensitively — a substring test would let "StudioDAC8xPro" satisfy
+    # "StudioDAC8x".
+    hat_products: tuple[str, ...] = ()
     # Physical host interface consumed by the final-output DAC. USB-role
     # resolution reads this declaration; it must not infer I2S from the
     # temporary absence of a USB device.
@@ -239,6 +250,12 @@ class DacProfile:
             )
         for pattern in self.supported_card_matches:
             re.compile(pattern, re.IGNORECASE)
+        for pattern in self.eeprom_gated_card_matches:
+            re.compile(pattern, re.IGNORECASE)
+        if self.eeprom_gated_card_matches and not self.hat_products:
+            raise ValueError(
+                f"{self.id}: eeprom_gated_card_matches requires hat_products"
+            )
         if self.kind == "single" and self.child_profile_ids:
             raise ValueError(f"{self.id}: single DAC profile cannot have children")
         if self.kind == "composite" and len(self.child_profile_ids) < 2:
@@ -536,6 +553,14 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
         r"^(?!.*pro).*studio.*dac8x",
         r"^(?!.*pro).*dac8x.*studio",
     ),
+    # rpi-6.18.y's `hifiberry_studio.c` names EVERY Studio-family card
+    # "Hifiberry Studio Soundcard" — the DAC8x token and the width are both
+    # gone from the label, so a 2-channel Studio Digi presents the same string
+    # as this 8-channel board. That name is claimable only alongside the HAT
+    # EEPROM product below, which does carry the board identity; with no
+    # EEPROM it stays unroutable and the speaker parks (#2258).
+    eeprom_gated_card_matches=(r"^(?!.*pro).*hifiberry.*studio.*soundcard",),
+    hat_products=("StudioDAC8x",),
     # Same active-lane shape as the base DAC8x: a coherent 8-channel single
     # device on the DAC-agnostic transport (Stage 1). dac_channel_map None =>
     # identity map.
@@ -882,8 +907,31 @@ def clock_domain_contract_for(profile_id: str) -> ClockDomainContract | None:
     return profile.clock_domain_contract
 
 
-def profile_for_card_label(label: str) -> DacProfile | None:
-    """Return the first single-device profile matching an ALSA/sysfs label."""
+def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _hat_product_accepted(profile: DacProfile, hat: HatEeprom | None) -> bool:
+    if hat is None:
+        return False
+    product = hat.product.strip().casefold()
+    return any(product == declared.casefold() for declared in profile.hat_products)
+
+
+def profile_for_card_label(
+    label: str,
+    *,
+    hat: HatEeprom | None = None,
+) -> DacProfile | None:
+    """Return the first single-device profile matching an ALSA/sysfs label.
+
+    ``hat`` is the fitted HAT's EEPROM identity when one was read. It unlocks
+    nothing but ``eeprom_gated_card_matches``, and only after every unambiguous
+    label pattern in the registry has already failed — so a label a driver
+    emits for exactly one board keeps routing by label alone, EEPROM or not,
+    and an EEPROM can never redirect a card away from the profile its own
+    driver stack names.
+    """
 
     text = label.strip()
     if not text:
@@ -891,10 +939,12 @@ def profile_for_card_label(label: str) -> DacProfile | None:
     for profile in REGISTRY:
         if profile.kind != "single":
             continue
-        if any(
-            re.search(pattern, text, re.IGNORECASE)
-            for pattern in profile.supported_card_matches
-        ):
+        if _matches_any(profile.supported_card_matches, text):
+            return profile
+    for profile in REGISTRY:
+        if profile.kind != "single" or not _hat_product_accepted(profile, hat):
+            continue
+        if _matches_any(profile.eeprom_gated_card_matches, text):
             return profile
     return None
 

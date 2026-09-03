@@ -36,6 +36,7 @@ from .audio_hardware.dac import (
     by_id as _dac_profile_by_id,
     profile_for_card_label as _dac_profile_for_card_label,
 )
+from .audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
 from .audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
@@ -216,6 +217,7 @@ class OutputHardwareState:
     issues: tuple[dict[str, str], ...] = field(default_factory=tuple)
     observed_at: str | None = None
     usb_data_role: UsbPortRoleState | None = None
+    hat_eeprom: HatEeprom | None = None
 
     @property
     def observed_profile_id(self) -> str | None:
@@ -279,6 +281,12 @@ class OutputHardwareState:
             if isinstance(raw_usb_data_role, Mapping)
             else None
         )
+        raw_hat_eeprom = raw.get("hat_eeprom")
+        hat_eeprom = (
+            HatEeprom.from_mapping(raw_hat_eeprom)
+            if isinstance(raw_hat_eeprom, Mapping)
+            else None
+        )
         return cls(
             profile_id=profile_id,
             profile_label=_text(raw.get("profile_label"))
@@ -294,6 +302,7 @@ class OutputHardwareState:
             issues=issues,
             observed_at=_text(raw.get("observed_at")),
             usb_data_role=usb_data_role,
+            hat_eeprom=hat_eeprom,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -307,6 +316,9 @@ class OutputHardwareState:
             "apple_dac_count": self.apple_dac_count,
             "child_devices": [child.to_dict() for child in self.child_devices],
             "issues": list(self.issues),
+            "hat_eeprom": (
+                self.hat_eeprom.to_dict() if self.hat_eeprom is not None else None
+            ),
         }
         if self.selected_card_id:
             out["selected_card_id"] = self.selected_card_id
@@ -599,7 +611,11 @@ def classify_output_cards(
     )
 
 
-def parse_aplay_listing(listing: str) -> tuple[OutputCardFact, ...]:
+def parse_aplay_listing(
+    listing: str,
+    *,
+    hat: HatEeprom | None = None,
+) -> tuple[OutputCardFact, ...]:
     """Best-effort parser for ``aplay -L`` used by shell reconcile tests."""
 
     cards: list[OutputCardFact] = []
@@ -610,7 +626,7 @@ def parse_aplay_listing(listing: str) -> tuple[OutputCardFact, ...]:
             continue
         card_id = match.group(1)
         label = lines[index + 1].strip() if index + 1 < len(lines) else ""
-        profile = _dac_profile_for_card_label(label)
+        profile = _dac_profile_for_card_label(label, hat=hat)
         if profile is APPLE_USB_C_DONGLE or (
             profile is None
             and "apple" in label.lower()
@@ -703,6 +719,7 @@ def probe_system_cards(
     *,
     sys_class_sound: str | Path = "/sys/class/sound",
     proc_asound: str | Path = "/proc/asound",
+    hat: HatEeprom | None = None,
 ) -> tuple[OutputCardFact, ...]:
     """Probe Linux ALSA/sysfs card facts without opening audio streams."""
 
@@ -737,7 +754,7 @@ def probe_system_cards(
         ):
             device_id = APPLE_USB_C_DONGLE_DEVICE_ID
         else:
-            profile = _dac_profile_for_card_label(label)
+            profile = _dac_profile_for_card_label(label, hat=hat)
             device_id = profile.id if profile is not None else "unknown"
         cards.append(OutputCardFact(
             card_id=card_id,
@@ -1230,16 +1247,19 @@ def topology_hardware_from_state(state: OutputHardwareState) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv or [])
+    hat = read_hat_eeprom()
     cards = probe_system_cards(
         sys_class_sound=os.environ.get("JASPER_SYS_CLASS_SOUND", "/sys/class/sound"),
         proc_asound=os.environ.get("JASPER_PROC_ASOUND", "/proc/asound"),
+        hat=hat,
     )
     if not cards:
         listing = probe_aplay_listing(os.environ.get("JASPER_APLAY", "aplay"))
-        cards = parse_aplay_listing(listing)
+        cards = parse_aplay_listing(listing, hat=hat)
     state = apply_saved_topology_policy(classify_output_cards(cards), cards)
     state = replace(
         state,
+        hat_eeprom=hat,
         usb_data_role=resolve_system_usb_port_role(
             observed_output_profile_id=state.profile_id,
         ),
