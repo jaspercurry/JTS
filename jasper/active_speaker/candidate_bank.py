@@ -2,55 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Find a previously-minted measured candidate in the on-box bundle store.
+"""Find a previously-minted candidate in the on-box bundle store, by fingerprint.
 
-The v2 apply door is single-slot, but every published candidate is durable, so
-this is the read half: locate a banked candidate by its own fingerprint. This
-module owns the fingerprint SCAN — :mod:`jasper.correction.applied_speaker_evidence`
-delegates here rather than restating the glob. Not the only place production
-spells that path: ``correction_crossover_v2._reopen_candidate_artifact`` builds
-it too, resolving an already-known session id rather than searching.
-
-**One owner for the fingerprint SCAN.** The glob below describes the on-disk
-shape
-(``<bundle>/evidence/v1/artifacts/crossover_v2/<relay_session_id>/candidate.json``).
-A second reader of that shape must read it from here rather than keep a copy,
-because a shape restated in two places drifts on the first layout change and
-both readers then disagree about what is missing.
-
-Scoped honestly: this is not the only place production spells that path.
-``correction_crossover_v2._reopen_candidate_artifact`` builds it too, and is
-deliberately left alone — it resolves an ALREADY-KNOWN session id rather than
-searching by fingerprint, and it sits on the apply path. Unifying the two is a
-follow-up, not a claim this module already makes.
-
-**Integrity is the candidate model's, never a second hasher.**
-:meth:`~jasper.active_speaker.measured_crossover_candidate.MeasuredCrossoverCandidate.from_mapping`
-recomputes the fingerprint from the artifact's own ``_core()`` and refuses
-``candidate_tampered`` when the stored value disagrees, so a byte edited on
-disk cannot survive a load. This module adds bounds (how many artifacts, how
-many bytes) and identity resolution (which bundle, which relay session); it
-computes nothing about the candidate itself. Both the mint path
-(``bind_evidence_publishers.publish_candidate``) and the apply path
-(``handle_v2_apply``) verify through that same ``from_mapping``, so reusing it
-here introduces no second hasher rather than merely matching one.
-
-**Lineage is part of the answer.** A banked candidate is only re-applyable if
-the apply path can find its artifact again, and that lookup is keyed on the
-bundle id *and* the minting relay session id together. Both ride on
-:class:`BankedCandidate` for that reason, not as provenance decoration.
-
-**Why it sits here and not under ``crossover_v2/``.** Its two collaborators —
-:mod:`jasper.active_speaker.bundles` and
-:mod:`jasper.active_speaker.measured_crossover_candidate` — are both at this
-level, and importing the ``crossover_v2`` package runs its ``__init__`` →
-``contracts`` → **numpy**. Filing the bank under ``crossover_v2/`` made it pull
-numpy (measured, not assumed), spending a budget its consumers never agreed to;
-this module stays import-light for the same reason, lazy-importing the candidate
-model *inside* its loader rather than at the top. Keep it out — and note the
-same rule pointed the other way for
-``correction_crossover_v2``, which imports this lazily at the call site because
-it is a wizard-hosted module.
+Owns the fingerprint SCAN glob; a second reader should import it from here, not restate
+it. Integrity is the candidate model's alone
+(:meth:`MeasuredCrossoverCandidate.from_mapping`) -- this module adds only bounds and
+identity resolution, no second hasher. Lookup is keyed on bundle id *and* minting relay
+session id together, both carried on :class:`BankedCandidate`. Kept out of
+``crossover_v2/`` to avoid that package's numpy-pulling ``__init__``; lazy-imports the
+candidate model instead.
 """
 
 from __future__ import annotations
@@ -65,28 +25,23 @@ from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-#: Where a published crossover-v2 candidate artifact lives, relative to the
-#: bundle root. ``*`` one is the bundle id (``bundles.open_bundle``'s 12-hex
-#: session id, which is also the directory name); ``*`` two is the MINTING
-#: relay session id. The two namespaces are distinct on disk and conflating
-#: them joins the wrong round to the wrong bundle.
+#: Published candidate artifact path, relative to bundle root. First ``*`` is the bundle
+#: id (``bundles.open_bundle``'s 12-hex session id); second is the MINTING relay session
+#: id -- distinct namespaces, do not conflate.
 CANDIDATE_ARTIFACT_GLOB = "*/evidence/v1/artifacts/crossover_v2/*/candidate.json"
 
-#: How many candidate artifacts to PARSE before giving up, bounding the
-#: expensive half (up to 4 MB of JSON plus a fingerprint recompute each) on a
-#: 1 GB Pi. It does NOT bound the fixed-depth directory walk.
+#: Candidate artifacts to PARSE before giving up (bounds ~4 MB JSON + a fingerprint
+#: recompute each on a 1 GB Pi); does NOT bound the directory walk.
 MAX_CANDIDATE_ARTIFACTS_SCANNED = 64
 
-#: Largest candidate.json this reader will parse: a ceiling on input size, not
-#: a contract — the publisher's own artifact budget is smaller.
+#: Largest candidate.json this reader will parse (input ceiling, not a contract -- the
+#: publisher's own artifact budget is smaller).
 MAX_CANDIDATE_BYTES = 4 * 1024 * 1024
 
 
 class CandidateBankRefusal(LookupError):
-    """No single trustworthy banked candidate answers this fingerprint.
-
-    Carries a machine ``code`` beside the household sentence so a door maps it
-    to its own response contract without parsing prose.
+    """No single trustworthy banked candidate answers this fingerprint. Carries a machine
+    ``code`` so a door can map it without parsing prose.
     """
 
     def __init__(self, code: str, detail: str) -> None:
@@ -97,12 +52,8 @@ class CandidateBankRefusal(LookupError):
 
 @dataclass(frozen=True)
 class BankedCandidate:
-    """One banked candidate plus the identity needed to re-open it later.
-
-    ``bundle_session_id`` and ``relay_session_id`` together are the ONLY way
-    back to this artifact: the apply path rebuilds the path from a state's
-    ``evidence.bundle_session_id`` and ``session_id``, so a republish that
-    dropped either would publish a candidate whose artifact nothing can find.
+    """One banked candidate plus the identity needed to re-open it later. ``bundle_session_id``
+    and ``relay_session_id`` together are the ONLY way back to this artifact.
     """
 
     candidate: Any
@@ -116,14 +67,9 @@ class BankedCandidate:
 
 
 def candidate_artifact_paths(root: Path) -> list[Path]:
-    """Every published candidate.json under the bundle root, in a stable order.
-
-    Sorted for determinism only, NOT chronological: the bundle directory is
-    named ``uuid4().hex[:12]``, so path order carries no time information.
-    :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` therefore bounds work rather than
-    selecting recent history, and which end it truncates is arbitrary — a root
-    that overran the cap could drop an artifact that is on disk and report it
-    missing. The bundle root's own retention cap keeps a healthy box far under.
+    """Every published candidate.json under the bundle root, in a stable order. Sorted for
+    determinism only, NOT chronological (bundle dirs are ``uuid4().hex[:12]``);
+    :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` bounds work, not recent history.
     """
     try:
         found = sorted(Path(root).glob(CANDIDATE_ARTIFACT_GLOB))
@@ -133,11 +79,9 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
 
 
 def _identity_from_path(path: Path) -> tuple[str, str]:
-    """``(bundle_session_id, relay_session_id)`` for one artifact path.
-
-    Positional rather than parsed: the glob fixes the depth, so the minting
-    relay session is the artifact's own directory and the bundle is five levels
-    above it.
+    """``(bundle_session_id, relay_session_id)`` for one artifact path. Positional, not parsed:
+    the glob fixes the depth (relay session is the artifact's own directory, bundle is
+    five levels above).
     """
     parents = path.parents
     relay_session_id = parents[0].name
@@ -146,11 +90,8 @@ def _identity_from_path(path: Path) -> tuple[str, str]:
 
 
 def load_candidate_artifact(path: Path) -> Any | None:
-    """Parse and integrity-check one candidate artifact, or ``None``.
-
-    ``None`` covers an unreadable file, an oversized one, malformed JSON, and a
-    payload whose recomputed fingerprint disagrees with the one it declares. A
-    candidate that cannot survive an exact reopen must never become applyable.
+    """Parse and integrity-check one candidate artifact, or ``None`` (unreadable, oversized,
+    malformed JSON, or a fingerprint mismatch).
     """
     from jasper.active_speaker.measured_crossover_candidate import (
         MeasuredCrossoverCandidate,
@@ -172,13 +113,9 @@ def load_candidate_artifact(path: Path) -> Any | None:
 def find_banked_candidate(
     fingerprint: str, *, root: Path | None = None
 ) -> BankedCandidate:
-    """The one banked candidate with this fingerprint, or a typed refusal.
-
-    Fail-closed three ways: ``fingerprint_required`` (nothing was asked for),
-    ``not_found`` (no artifact both matches and verifies — the detail separates
-    "none matched" from "the match would not verify", different problems with
-    different fixes), and ``ambiguous`` (two DIFFERENT minting lineages carry
-    this fingerprint; guessing which round to credit is what this must not do).
+    """The one banked candidate with this fingerprint, or a typed refusal:
+    ``fingerprint_required``, ``not_found`` (no artifact both matches and verifies), or
+    ``ambiguous`` (two lineages carry this fingerprint).
     """
     from jasper.active_speaker.bundles import sessions_dir
 
@@ -221,9 +158,6 @@ def find_banked_candidate(
         unverified = len(paths) - verified
         detail = f"no banked candidate matches this fingerprint ({verified} examined)"
         if unverified:
-            # An artifact IS there and failed its own integrity check; without
-            # this the operator reads "not found" and hunts for a measurement
-            # that is on disk, corrupted.
             detail += f"; {unverified} could not be verified"
         raise CandidateBankRefusal("not_found", detail)
 
