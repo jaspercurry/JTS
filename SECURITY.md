@@ -113,6 +113,10 @@ automatically (embedded in each page behind the read guard, read by
   source on the attached USB host.
 - `POST /aec/usb-mic-leg` — chooses which server-advertised
   computer-microphone source reaches the attached USB host.
+- `POST /aec/firmware/update` — downloads and flashes microphone firmware
+  over DFU.
+- `POST /aec/enhanced-aec/install` — installs the optional enhanced WebRTC
+  AEC build.
 - `POST /aec/commission` — starts the audible chip-AEC re-measurement
   oneshot, which stops voice and the AEC stack for minutes.
 - `POST /grouping/set` — rewires multiroom output routing. This route

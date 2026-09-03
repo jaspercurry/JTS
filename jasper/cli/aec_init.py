@@ -512,9 +512,9 @@ def require_outputd_env_loaded(
     loaded the declaration on disk — the old process stays up, healthy, and
     answering with the PREVIOUS geometry and final-edge format.
 
-    Binding (or rejecting) a commissioning identity against that is the debt the
-    2026-08-05 final-edge-format PR-2 panel named.  Wait a bounded while for the
-    queued restart to land, then fail rather than commission.
+    Binding (or rejecting) a commissioning identity against that is the debt
+    ADR-0169 closes.  Wait a bounded while for the queued restart to land,
+    then fail rather than commission.
 
     The deadline is monotonic on purpose: it is a DURATION, so it wants the clock
     that cannot step.  The staleness verdict itself compares realtime instants —
