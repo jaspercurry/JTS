@@ -16,6 +16,7 @@ from ... import enhanced_aec
 from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
 from ...audio_profile_state import (
     AecIntent,
+    DEFAULT_AEC_MODE_PATH,
     MicProbe,
     PROFILE_CUSTOM,
     PROFILE_XVF_CHIP_AEC,
@@ -24,6 +25,7 @@ from ...audio_profile_state import (
     build_audio_profile_status,
     infer_audio_input_profile,
     normalize_audio_input_profile,
+    parse_env_bool,
     runtime_env_from_mapping,
     validation_profile as _audio_validation_profile,
 )
@@ -208,64 +210,30 @@ _AEC_REASONS = (
 )
 
 
+def _aec_mode_env() -> dict[str, str]:
+    """The wizard-owned mode file, read fresh on every call (one-shot CLI).
+
+    Missing or unreadable reads as empty, so each setting below falls back
+    to install.sh's reconcile_aec_state seed."""
+
+    return _shared_parse_env_file(str(DEFAULT_AEC_MODE_PATH))
+
+
 def _aec_mode_setting() -> str:
-    """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
-    'auto' (the install.sh default) when the file is missing or
-    unreadable, matching the reconciler's behaviour."""
-    p = Path("/var/lib/jasper/aec_mode.env")
-    if not p.exists():
-        return "auto"
-    try:
-        for line in p.read_text().split("\n"):
-            line = line.strip()
-            if line.startswith("JASPER_AEC_MODE="):
-                return line.split("=", 1)[1].strip().strip("'\"") or "auto"
-    except OSError:
-        pass
-    return "auto"
+    return _aec_mode_env().get("JASPER_AEC_MODE") or "auto"
+
 
 def _aec_profile_setting() -> str:
-    """Read JASPER_AUDIO_INPUT_PROFILE from aec_mode.env.
+    """Empty string means pre-profile config; audio_profile_state infers the
+    nearest legacy profile from JASPER_AEC_MODE + leg booleans."""
 
-    Empty string means pre-profile config; audio_profile_state infers the
-    nearest legacy profile from JASPER_AEC_MODE + leg booleans.
-    """
+    return _aec_mode_env().get("JASPER_AUDIO_INPUT_PROFILE", "")
 
-    p = Path("/var/lib/jasper/aec_mode.env")
-    if not p.exists():
-        return ""
-    try:
-        for line in p.read_text().split("\n"):
-            line = line.strip()
-            if line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
-                return line.split("=", 1)[1].strip().strip("'\"")
-    except OSError:
-        pass
-    return ""
 
 def _wake_leg_setting(key: str, default: bool) -> bool:
-    """Read a JASPER_WAKE_LEG_* boolean from aec_mode.env, with the
-    same normalization the bash reconciler does. Defaults applied when
-    the file is missing, the key is missing, or the value is malformed
-    — matches install.sh's reconcile_aec_state seeds."""
-    p = Path("/var/lib/jasper/aec_mode.env")
-    if not p.exists():
-        return default
-    try:
-        for line in p.read_text().split("\n"):
-            line = line.strip()
-            if line.startswith(f"{key}="):
-                val = line.split("=", 1)[1].strip().strip("'\"").lower()
-                if val in ("1", "on", "true", "yes", "y",
-                           "enabled", "enable"):
-                    return True
-                if val in ("0", "off", "false", "no", "n",
-                           "disabled", "disable", ""):
-                    return False
-                return default
-    except OSError:
-        pass
-    return default
+    raw = _aec_mode_env().get(key)
+    return default if raw is None else parse_env_bool(raw, default)
+
 
 def _doctor_env_file() -> dict[str, str]:
     """Parse the reconciler-applied runtime env fresh.

@@ -16,21 +16,12 @@ import pytest
 from jasper.chip_aec import health as chip_aec_health
 from jasper.audio_profile_state import MicProbe, RuntimeAecEnv
 from jasper.cli import doctor
+from jasper.control import aec_endpoints
+from tests._aec_bridge_helpers import _rms_log_line
 
 
 # --------------------------------------------- AEC bridge output assessment
 
-
-def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
-    """Synthesize one bridge `rms over` log line in the journal `--output=cat`
-    format the parser sees. Helper for the _assess_aec_bridge_output tests
-    below."""
-    return (
-        f"2026-05-16 17:00:00,000 aec-bridge INFO "
-        f"rms over 5.0s: ref={ref} mic={mic} aec={aec} → "
-        f"attenuation={attn_db:.1f} dB (frames=1 ref_q=0 mic_q=0 "
-        f"ref_clip=0.00% out_clip=0.00%)"
-    )
 
 
 def _chip_rms_log_line(
@@ -1717,6 +1708,64 @@ def test_chip_aec_alignment_row_serves_only_the_stamped_selection(
         else doctor.aec.REASON_ALIGNMENT_NO_VERDICT
     )
     assert (chip_aec_health.ACTION_RECOMMISSION in result.detail) is owned
+
+
+# ---------------------------------------------------------------------------
+# aec_mode.env — one parser (env_load.parse_env_file) behind the doctor
+# helpers and /aec's _read_aec_state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param(None, ("auto", "", True), id="missing_file"),
+        pytest.param("", ("auto", "", True), id="empty_file"),
+        pytest.param(
+            "JASPER_AEC_MODE=\"disabled\"\nJASPER_WAKE_LEG_RAW='0'\n"
+            "JASPER_AUDIO_INPUT_PROFILE=\"xvf_chip_aec\"\n",
+            ("disabled", "xvf_chip_aec", False),
+            id="quoted_values",
+        ),
+        pytest.param(
+            "export JASPER_AEC_MODE=disabled\nexport JASPER_WAKE_LEG_RAW=0\n",
+            ("auto", "", True),
+            id="export_lines_ignored",
+        ),
+        pytest.param(
+            "JASPER_AEC_MODE=disabled # note\nJASPER_WAKE_LEG_RAW=0 # note\n",
+            ("disabled # note", "", True),
+            id="trailing_comment_kept_malformed_bool_defaults",
+        ),
+        pytest.param(
+            "JASPER_AEC_MODE=disabled\nJASPER_WAKE_LEG_RAW=0\n"
+            "JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\n",
+            ("auto", "", True),
+            id="duplicate_key_last_wins",
+        ),
+        pytest.param(
+            "JASPER_AEC_MODE=\nJASPER_WAKE_LEG_RAW=\n",
+            ("auto", "", False),
+            id="empty_value",
+        ),
+    ],
+)
+def test_aec_mode_file_readers_share_one_parser(
+    tmp_path, monkeypatch, body, expected,
+):
+    path = tmp_path / "aec_mode.env"
+    if body is not None:
+        path.write_text(body)
+    monkeypatch.setattr(doctor.aec, "DEFAULT_AEC_MODE_PATH", path)
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(path))
+
+    assert (
+        doctor.aec._aec_mode_setting(),
+        doctor.aec._aec_profile_setting(),
+        doctor.aec._wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
+    ) == expected
+    state = aec_endpoints._read_aec_state()
+    assert (state["mode"], state["leg_raw"]) == (expected[0], expected[2])
 
 
 # ---------------------------------------------------------------------------

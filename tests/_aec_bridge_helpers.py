@@ -14,3 +14,14 @@ IDENTITY = StatsIdentity(
     reference_source="outputd_udp",
     reference_endpoint="127.0.0.1:9891",
 )
+
+
+def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
+    """Synthesize one bridge `rms over` log line in the journal `--output=cat`
+    format the parser sees."""
+    return (
+        f"2026-05-16 17:00:00,000 aec-bridge INFO "
+        f"rms over 5.0s: ref={ref} mic={mic} aec={aec} → "
+        f"attenuation={attn_db:.1f} dB (frames=1 ref_q=0 mic_q=0 "
+        f"ref_clip=0.00% out_clip=0.00%)"
+    )

@@ -20,6 +20,7 @@ from .. import enhanced_aec
 from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
     AecIntent,
+    DEFAULT_AEC_MODE_PATH,
     MicProbe,
     PROFILE_DIRECT_MIC,
     PROFILE_XVF_CHIP_AEC,
@@ -36,6 +37,7 @@ from ..audio_profile_state import (
 )
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
+from ..env_load import read_env_file_state
 from ..usb_mic import (
     build_usb_mic_status,
     read_usb_mic_leg,
@@ -47,7 +49,7 @@ from ..chip_aec.policy import (
 )
 from ..wake_models import WAKE_MODEL_FILE
 
-_AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
+_AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
@@ -97,72 +99,43 @@ def _parse_env_bool(raw: str, default: bool) -> bool:
 
 
 def _read_aec_state() -> dict:
-    """Full /var/lib/jasper/aec_mode.env state — mode + both leg
-    booleans. Missing keys fall back to the documented defaults so a
-    partial file from a pre-leg-toggle deploy still parses sanely.
+    """Full aec_mode.env state — mode + every leg boolean + profile.
+    Missing keys fall back to the documented defaults so a partial file
+    from a pre-leg-toggle deploy still parses sanely.
 
     The reconciler's ensure_mode_file appends any missing keys on its
     next run, so this fallback is a one-pass deal — but it must be
     correct for the GET that races that first reconcile."""
-    state = {
-        "mode": "auto",
-        "leg_raw": _LEG_DEFAULT_RAW,
-        "leg_dtln": _LEG_DEFAULT_DTLN,
-        "leg_chip_aec": _LEG_DEFAULT_CHIP_AEC,
-        "leg_chip_aec_150": _LEG_DEFAULT_CHIP_AEC_150,
-        "leg_chip_aec_210": _LEG_DEFAULT_CHIP_AEC_210,
-        "profile": "",
-    }
-    file_found = False
-    try:
-        with open(_AEC_MODE_FILE) as f:
-            file_found = True
-            for line in f:
-                line = line.strip()
-                if line.startswith("JASPER_AEC_MODE="):
-                    val = line.split("=", 1)[1].strip().strip("'\"") or "auto"
-                    state["mode"] = val
-                elif line.startswith("JASPER_WAKE_LEG_RAW="):
-                    state["leg_raw"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_RAW,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_DTLN="):
-                    state["leg_dtln"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_DTLN,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC="):
-                    state["leg_chip_aec"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC_150="):
-                    state["leg_chip_aec_150"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC_150,
-                    )
-                elif line.startswith("JASPER_WAKE_LEG_CHIP_AEC_210="):
-                    state["leg_chip_aec_210"] = _parse_env_bool(
-                        line.split("=", 1)[1], _LEG_DEFAULT_CHIP_AEC_210,
-                    )
-                elif line.startswith("JASPER_AUDIO_INPUT_PROFILE="):
-                    state["profile"] = normalize_audio_input_profile(
-                        line.split("=", 1)[1],
-                        default=_PROFILE_DEFAULT,
-                    )
-    except OSError:
-        pass
-    if not state["profile"]:
-        if file_found:
-            state["profile"] = infer_audio_input_profile(
-                AecIntent(
-                    mode=state["mode"],
-                    raw_enabled=bool(state["leg_raw"]),
-                    dtln_enabled=bool(state["leg_dtln"]),
-                    chip_aec_enabled=bool(state["leg_chip_aec"]),
-                    chip_aec_150_enabled=bool(state["leg_chip_aec_150"]),
-                    chip_aec_210_enabled=bool(state["leg_chip_aec_210"]),
-                ),
-            )
-        else:
-            state["profile"] = "auto"
+    env_file = read_env_file_state(_AEC_MODE_FILE)
+    values = env_file.values
+    state: dict[str, Any] = {"mode": values.get("JASPER_AEC_MODE") or "auto"}
+    for name, key, default in (
+        ("leg_raw", "JASPER_WAKE_LEG_RAW", _LEG_DEFAULT_RAW),
+        ("leg_dtln", "JASPER_WAKE_LEG_DTLN", _LEG_DEFAULT_DTLN),
+        ("leg_chip_aec", "JASPER_WAKE_LEG_CHIP_AEC", _LEG_DEFAULT_CHIP_AEC),
+        ("leg_chip_aec_150", "JASPER_WAKE_LEG_CHIP_AEC_150", _LEG_DEFAULT_CHIP_AEC_150),
+        ("leg_chip_aec_210", "JASPER_WAKE_LEG_CHIP_AEC_210", _LEG_DEFAULT_CHIP_AEC_210),
+    ):
+        raw = values.get(key)
+        state[name] = default if raw is None else _parse_env_bool(raw, default)
+    profile = values.get("JASPER_AUDIO_INPUT_PROFILE")
+    if profile is not None:
+        state["profile"] = normalize_audio_input_profile(
+            profile, default=_PROFILE_DEFAULT,
+        )
+    elif env_file.status == "loaded":
+        state["profile"] = infer_audio_input_profile(
+            AecIntent(
+                mode=state["mode"],
+                raw_enabled=state["leg_raw"],
+                dtln_enabled=state["leg_dtln"],
+                chip_aec_enabled=state["leg_chip_aec"],
+                chip_aec_150_enabled=state["leg_chip_aec_150"],
+                chip_aec_210_enabled=state["leg_chip_aec_210"],
+            ),
+        )
+    else:
+        state["profile"] = "auto"
     return state
 
 
