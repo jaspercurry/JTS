@@ -36,7 +36,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
-from urllib.parse import urlsplit
 
 from jasper.capture_protocol import (
     MAX_CAPTURE_PLAN_ATTEMPTS,
@@ -69,10 +68,6 @@ CAPTURE_PROTOCOL_VERSION = 3
 # (`jasper/web/correction_setup.py`: REQUIRED_SAMPLE_RATE, MAX_WAV_BODY_BYTES).
 REQUIRED_SAMPLE_RATE_HZ = 48000
 REQUIRED_CHANNELS = 1
-DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024  # 32 MiB; matches MAX_WAV_BODY_BYTES
-# A hard validation ceiling well above the default so a builder bug cannot mint
-# a spec that admits a capture of unbounded size.
-HARD_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 # Theme is a TOKEN allowlist: a renderer maps each token to a fixed value and
 # never interprets one as raw CSS.
@@ -85,7 +80,6 @@ DEFAULT_THEME = {"accent": "sage", "font": "figtree"}
 UI_COMPONENT_TYPES = ("heading", "steps", "level_meter", "button", "note")
 UI_BUTTON_ACTIONS = ("begin_capture", "retry", "stop")
 UI_METER_SOURCES = ("mic",)
-CALIBRATION_MODEL_KEYS = ("key", "label", "aliases")
 
 # Per-kind measurement-validity policy vocabulary.
 CLEAN_CAPTURE_POLICIES = ("refuse", "warn")
@@ -105,7 +99,6 @@ DEFAULT_SETUP_CALIBRATION_KEYS = (
 STIMULUS_PLAYERS = ("pi",)
 
 OUTPUT_FORMATS = ("wav",)
-RETURN_URL_SCHEMES = ("http", "https")
 
 
 # --- Sub-records --------------------------------------------------------------
@@ -309,9 +302,9 @@ class DefaultSetupCalibration:
 # re-derive one from the other.
 CAPTURE_PLAN_SCHEMA_VERSIONS = (1, 2)
 CAPTURE_PLAN_ENTRIES_SCHEMA_VERSION = 2
-# Per-entry presentation copy is OPAQUE like `presentation_variant` — the
-# schema bounds its size and value types, never its keys/vocabulary — but a
-# size ceiling keeps a spec from carrying an oversized payload.
+# Per-entry presentation copy is OPAQUE — the schema bounds its size and
+# value types, never its keys/vocabulary — but a size ceiling keeps a spec
+# from carrying an oversized payload.
 MAX_CAPTURE_PLAN_ENTRY_SCREEN_BYTES = 4096
 
 
@@ -365,33 +358,10 @@ class CaptureSpec:
     validity: CaptureValidity = field(default_factory=CaptureValidity)
     theme: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME))
     screen: tuple[Mapping[str, Any], ...] = ()
-    calibration_models: tuple[Mapping[str, Any], ...] = ()
     sample_rate_hz: int = REQUIRED_SAMPLE_RATE_HZ
     channels: int = REQUIRED_CHANNELS
     output_format: str = "wav"
-    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
-    return_url: str = ""
-    # Whether the guided setup preflights (notably vendor mic serial lookup)
-    # before advancing to the Start step.
-    setup_validation: bool = False
-    # Opaque setup binding used by flows that retain a setup identity across
-    # captures (notably Active crossover).
-    setup_binding_id: str = ""
-    # Whether the guided setup asks for the room position count. Crossover level
-    # matching uses the same setup flow without that room-only question.
-    setup_collect_positions: bool = False
-    # Optional placement progress, carried on the spec so position authority
-    # stays on the speaker.
-    position: int | None = None
-    total_positions: int | None = None
-    # Optional kind-owned presentation variant. It may change consent copy only;
-    # the owning flow still controls sequencing, timeouts, and admission. The
-    # shared schema validates its shape without enumerating per-kind values.
-    presentation_variant: str = ""
     acknowledgement: CaptureAcknowledgement | None = None
-    # Optional per-run nonce (additive, empty for kinds that don't use it), so
-    # a feed can distinguish THIS run's events from a previous run's.
-    run_token: str = ""
     # Optional household-mic prefill hint. See `DefaultSetupCalibration` —
     # never binding.
     default_setup_calibration: DefaultSetupCalibration | None = None
@@ -399,25 +369,6 @@ class CaptureSpec:
     # SET. Presence — and ONLY presence — selects the plan loop over the
     # single-capture path.
     capture_plan: CapturePlan | None = None
-    # The two clocks a household can run out of, in seconds, so a surface can
-    # say which one is running and which one expired (issue #1807). NOT a new
-    # budget and NOT enforced here: both numbers are owned elsewhere and this
-    # field only PUBLISHES them. ``None`` renders nothing; a surface must not
-    # invent a number it was not told.
-    time_budget: Mapping[str, int] | None = None
-    # How long to wait for one capture to be answered, in seconds, minted by
-    # whichever flow knows what its own analysis costs.
-    #
-    # **A sibling of ``time_budget`` rather than a third key inside it**:
-    # ``time_budget`` is a CLOSED, all-keys-required set of the two clocks a
-    # HOUSEHOLD races and is spent on one rendered sentence, where this is a
-    # machine deadline, per-capture rather than per-session, and nameable only
-    # by the flows that run an expensive post-capture analysis. Folding it in
-    # would have made a required key of a number most kinds cannot compute.
-    #
-    # ``None`` — every kind that does not set it — means the reader keeps its
-    # own conservative floor.
-    result_wait_s: int | None = None
     capture_protocol_version: int = CAPTURE_PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
@@ -437,39 +388,13 @@ class CaptureSpec:
             "constraints": self.constraints.to_dict(),
             "stimulus": self.stimulus.to_dict() if self.stimulus else None,
             "validity": self.validity.to_dict(),
-            "calibration_models": [
-                {
-                    "key": str(model["key"]),
-                    "label": str(model["label"]),
-                    "aliases": [str(alias) for alias in model.get("aliases", ())],
-                }
-                for model in self.calibration_models
-            ],
             "ui": {
                 "theme": dict(self.theme),
                 "screen": [dict(component) for component in self.screen],
             },
-            "return_url": self.return_url,
-            "setup_validation": self.setup_validation,
-            "setup_binding_id": self.setup_binding_id,
-            "setup_collect_positions": self.setup_collect_positions,
-            **(
-                {
-                    "position": self.position,
-                    "total_positions": self.total_positions,
-                }
-                if self.position is not None
-                else {}
-            ),
-            **(
-                {"presentation_variant": self.presentation_variant}
-                if self.presentation_variant
-                else {}
-            ),
             "acknowledgement": (
                 self.acknowledgement.to_dict() if self.acknowledgement else None
             ),
-            "run_token": self.run_token,
             **(
                 {
                     "default_setup": {
@@ -484,18 +409,7 @@ class CaptureSpec:
                 if self.capture_plan is not None
                 else {}
             ),
-            **(
-                {"time_budget": dict(self.time_budget)}
-                if self.time_budget is not None
-                else {}
-            ),
-            **(
-                {"result_wait_s": int(self.result_wait_s)}
-                if self.result_wait_s is not None
-                else {}
-            ),
             "output": {"format": self.output_format},
-            "max_upload_bytes": self.max_upload_bytes,
         }
 
     @classmethod
@@ -515,12 +429,6 @@ class CaptureSpec:
         output = data.get("output") or {}
         if not isinstance(output, Mapping):
             raise CaptureSpecError("output must be an object")
-        calibration_models = data.get("calibration_models") or []
-        if not isinstance(calibration_models, Sequence) or isinstance(
-            calibration_models, (str, bytes)
-        ):
-            raise CaptureSpecError("calibration_models must be a list")
-        setup_validation = data.get("setup_validation", False)
         stimulus_raw = data.get("stimulus")
         acknowledgement_raw = data.get("acknowledgement")
         if acknowledgement_raw is not None and not isinstance(
@@ -543,7 +451,6 @@ class CaptureSpec:
                     calibration_raw
                 )
         capture_plan_raw = data.get("capture_plan")
-        time_budget_raw = data.get("time_budget")
         if capture_plan_raw is not None and not isinstance(capture_plan_raw, Mapping):
             raise CaptureSpecError("capture_plan must be an object or null")
         spec = cls(
@@ -564,57 +471,18 @@ class CaptureSpec:
                 for component in screen
                 if isinstance(component, Mapping)
             ),
-            calibration_models=tuple(
-                dict(model)
-                for model in calibration_models
-                if isinstance(model, Mapping)
-            ),
             sample_rate_hz=_as_int(data, "sample_rate_hz", default=REQUIRED_SAMPLE_RATE_HZ),
             channels=_as_int(data, "channels", default=REQUIRED_CHANNELS),
             output_format=str(output.get("format", "wav")),
-            max_upload_bytes=_as_int(
-                data, "max_upload_bytes", default=DEFAULT_MAX_UPLOAD_BYTES
-            ),
-            return_url=str(data.get("return_url") or ""),
-            setup_validation=setup_validation,
-            setup_binding_id=str(data.get("setup_binding_id") or ""),
-            setup_collect_positions=_as_bool(
-                data, "setup_collect_positions", default=False
-            ),
-            position=(
-                _as_int(data, "position")
-                if data.get("position") is not None
-                else None
-            ),
-            total_positions=(
-                _as_int(data, "total_positions")
-                if data.get("total_positions") is not None
-                else None
-            ),
-            presentation_variant=data.get("presentation_variant", ""),
             acknowledgement=(
                 CaptureAcknowledgement.from_dict(acknowledgement_raw)
                 if isinstance(acknowledgement_raw, Mapping)
                 else None
             ),
-            run_token=str(data.get("run_token") or ""),
             default_setup_calibration=default_setup_calibration,
             capture_plan=(
                 CapturePlan.from_dict(capture_plan_raw)
                 if isinstance(capture_plan_raw, Mapping)
-                else None
-            ),
-            time_budget=(
-                {str(k): _as_int(time_budget_raw, str(k)) for k in time_budget_raw}
-                if isinstance(time_budget_raw, Mapping)
-                else None
-            ),
-            # Absent stays absent: a spec that published no wait is not the
-            # same as one that published a default, and the reader's own
-            # fallback is the only honest answer for it.
-            result_wait_s=(
-                _as_int(data, "result_wait_s")
-                if data.get("result_wait_s") is not None
                 else None
             ),
             # REQUIRED on the wire, with no default — a spec that states no
@@ -627,8 +495,6 @@ class CaptureSpec:
         # Guard against a screen entry that was not a Mapping (dropped above).
         if len(spec.screen) != len(screen):
             raise CaptureSpecError("every ui.screen entry must be an object")
-        if len(spec.calibration_models) != len(calibration_models):
-            raise CaptureSpecError("every calibration_models entry must be an object")
         spec.validate()
         return spec
 
@@ -676,71 +542,14 @@ class CaptureSpec:
                 f"output.format must be one of {OUTPUT_FORMATS}, "
                 f"got {self.output_format!r}"
             )
-        if not isinstance(self.setup_validation, bool):
-            raise CaptureSpecError("setup_validation must be a boolean")
-        if not isinstance(self.setup_collect_positions, bool):
-            raise CaptureSpecError("setup_collect_positions must be a boolean")
-        _validate_run_token(self.run_token)
         _validate_acknowledgement(self.acknowledgement)
         _validate_capture_plan(self.capture_plan)
-        if self.setup_binding_id and not re.fullmatch(
-            r"[A-Za-z0-9_-]{12,160}", self.setup_binding_id
-        ):
-            raise CaptureSpecError(
-                "setup_binding_id must be 12..160 URL-safe characters"
-            )
-        if self.setup_collect_positions and not self.setup_validation:
-            raise CaptureSpecError(
-                "setup_collect_positions requires setup_validation=true"
-            )
-        if (self.position is None) != (self.total_positions is None):
-            raise CaptureSpecError(
-                "position and total_positions must be supplied together"
-            )
-        if self.position is not None:
-            if (
-                not isinstance(self.position, int)
-                or isinstance(self.position, bool)
-                or not isinstance(self.total_positions, int)
-                or isinstance(self.total_positions, bool)
-            ):
-                raise CaptureSpecError(
-                    "position and total_positions must be integers"
-                )
-            if (
-                self.position <= 0
-                or self.total_positions <= 0
-                or self.position > self.total_positions
-            ):
-                raise CaptureSpecError(
-                    "position must be within 1..total_positions"
-                )
-        if not isinstance(self.presentation_variant, str) or (
-            self.presentation_variant
-            and not re.fullmatch(
-                r"[a-z][a-z0-9_-]{0,63}", self.presentation_variant
-            )
-        ):
-            raise CaptureSpecError(
-                "presentation_variant must be an empty or 1..64-character slug"
-            )
-        if (
-            not isinstance(self.max_upload_bytes, int)
-            or isinstance(self.max_upload_bytes, bool)
-            or self.max_upload_bytes <= 0
-            or self.max_upload_bytes > HARD_MAX_UPLOAD_BYTES
-        ):
-            raise CaptureSpecError(
-                f"max_upload_bytes must be in 1..{HARD_MAX_UPLOAD_BYTES}, "
-                f"got {self.max_upload_bytes}"
-            )
         if self.stimulus is not None and self.stimulus.played_by not in STIMULUS_PLAYERS:
             raise CaptureSpecError(
                 f"stimulus.played_by must be one of {STIMULUS_PLAYERS}, "
                 f"got {self.stimulus.played_by!r}"
             )
         _validate_validity(self.validity)
-        _validate_calibration_models(self.calibration_models)
         _validate_default_setup_calibration(self.default_setup_calibration)
         _validate_theme(self.theme)
         _validate_screen(self.screen)
@@ -752,75 +561,14 @@ class CaptureSpec:
             raise CaptureSpecError(
                 "acknowledgement requires a begin_capture button"
             )
-        _validate_return_url(self.return_url)
-        _validate_time_budget(self.time_budget)
-        _validate_result_wait(self.result_wait_s)
         return self
 
     def with_screen(self, *components: Mapping[str, Any]) -> CaptureSpec:
         """Return a copy whose `screen` is the given components (validated)."""
         return replace(self, screen=tuple(components)).validate()
 
-    def with_return_url(self, return_url: str) -> CaptureSpec:
-        """Return a copy carrying the URL the capture surface returns to."""
-        return replace(self, return_url=str(return_url or "")).validate()
-
-    def with_time_budget(self, *, step_s: int, session_s: int) -> CaptureSpec:
-        """Return a copy publishing the two clocks this session actually runs.
-
-        Set at MINT time rather than by a spec builder, for the same reason
-        :meth:`with_return_url` is: a builder does not know which session its
-        spec ends up in, and ``session_s`` has to be the ceiling the session is
-        genuinely minted with or the quoted number is one nothing enforces.
-        """
-        return replace(
-            self, time_budget={"step_s": int(step_s), "session_s": int(session_s)}
-        ).validate()
-
-    def with_result_wait(self, result_wait_s: int) -> CaptureSpec:
-        """Return a copy publishing how long one capture may take to answer.
-
-        Set at MINT time by the flow that knows its own post-capture cost, for
-        the same reason :meth:`with_time_budget` is set there: a reader cannot
-        derive it, and a reader-side constant is a second copy of a number that
-        drifts the moment the analysis changes.
-        """
-        return replace(self, result_wait_s=int(result_wait_s)).validate()
-
 
 # --- Validation helpers -------------------------------------------------------
-
-# The clocks ``CaptureSpec.time_budget`` may name. A CLOSED set, like every
-# other spec vocabulary: exactly these two are rendered, so an unknown key is
-# drift to catch here rather than a sentence nobody wrote.
-TIME_BUDGET_KEYS = ("step_s", "session_s")
-
-
-def _validate_time_budget(time_budget: Mapping[str, int] | None) -> None:
-    if time_budget is None:
-        return
-    if not isinstance(time_budget, Mapping):
-        raise CaptureSpecError("time_budget must be an object or null")
-    extra = set(time_budget) - set(TIME_BUDGET_KEYS)
-    if extra:
-        raise CaptureSpecError(f"time_budget has unknown keys: {sorted(extra)}")
-    for key in TIME_BUDGET_KEYS:
-        if key not in time_budget:
-            raise CaptureSpecError(f"time_budget.{key} is required")
-        value = time_budget[key]
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise CaptureSpecError(f"time_budget.{key} must be a positive integer")
-
-
-def _validate_result_wait(result_wait_s: int | None) -> None:
-    if result_wait_s is None:
-        return
-    if (
-        not isinstance(result_wait_s, int)
-        or isinstance(result_wait_s, bool)
-        or result_wait_s <= 0
-    ):
-        raise CaptureSpecError("result_wait_s must be a positive integer or null")
 
 
 def _validate_validity(validity: CaptureValidity) -> None:
@@ -838,40 +586,6 @@ def _validate_validity(validity: CaptureValidity) -> None:
         raise CaptureSpecError("validity.allow_capability_fallback must be a bool")
     if not isinstance(validity.require_alignment, bool):
         raise CaptureSpecError("validity.require_alignment must be a bool")
-
-
-def _validate_calibration_models(models: Sequence[Mapping[str, Any]]) -> None:
-    if not isinstance(models, Sequence) or isinstance(models, (str, bytes)):
-        raise CaptureSpecError("calibration_models must be a list")
-    seen: set[str] = set()
-    for index, model in enumerate(models):
-        if not isinstance(model, Mapping):
-            raise CaptureSpecError(f"calibration_models[{index}] must be an object")
-        extra = set(model) - set(CALIBRATION_MODEL_KEYS)
-        if extra:
-            raise CaptureSpecError(
-                f"calibration_models[{index}] has unknown keys: {sorted(extra)}"
-            )
-        key = model.get("key")
-        label = model.get("label")
-        aliases = model.get("aliases", ())
-        if not isinstance(key, str) or not key:
-            raise CaptureSpecError(f"calibration_models[{index}].key must be a string")
-        if key in seen:
-            raise CaptureSpecError(f"duplicate calibration model key: {key}")
-        seen.add(key)
-        if not isinstance(label, str) or not label:
-            raise CaptureSpecError(
-                f"calibration_models[{index}].label must be a string"
-            )
-        if not isinstance(aliases, Sequence) or isinstance(aliases, (str, bytes)):
-            raise CaptureSpecError(
-                f"calibration_models[{index}].aliases must be a list"
-            )
-        if not all(isinstance(alias, str) for alias in aliases):
-            raise CaptureSpecError(
-                f"calibration_models[{index}].aliases must be a list of strings"
-            )
 
 
 def _validate_default_setup_calibration(
@@ -945,19 +659,6 @@ def _validate_screen(screen: Sequence[Mapping[str, Any]]) -> None:
                     f"ui.screen[{index}].action must be one of {UI_BUTTON_ACTIONS}, "
                     f"got {component.get('action')!r}"
                 )
-
-
-def _validate_run_token(run_token: str) -> None:
-    if not isinstance(run_token, str):
-        raise CaptureSpecError("run_token must be a string")
-    if not run_token:
-        return
-    if len(run_token) > 64 or not all(
-        ch.isalnum() or ch in "-_" for ch in run_token
-    ):
-        raise CaptureSpecError(
-            "run_token must be <= 64 URL-safe characters (alnum, '-', '_')"
-        )
 
 
 def _validate_acknowledgement(
@@ -1095,28 +796,6 @@ def _validate_capture_plan_entry_screen(
         )
 
 
-def _validate_return_url(return_url: str) -> None:
-    if not isinstance(return_url, str):
-        raise CaptureSpecError("return_url must be a string")
-    if not return_url:
-        return
-    if len(return_url) > 2048 or any(
-        ord(ch) < 32 or ord(ch) == 127 for ch in return_url
-    ):
-        raise CaptureSpecError("return_url must be a clean absolute URL")
-    parsed = urlsplit(return_url)
-    if parsed.scheme not in RETURN_URL_SCHEMES:
-        raise CaptureSpecError(
-            f"return_url scheme must be one of {RETURN_URL_SCHEMES}"
-        )
-    if not parsed.netloc or not parsed.hostname:
-        raise CaptureSpecError("return_url must include a host")
-    if parsed.username or parsed.password:
-        raise CaptureSpecError("return_url must not include credentials")
-    if parsed.fragment:
-        raise CaptureSpecError("return_url must not include a URL fragment")
-
-
 def _as_bool(data: Mapping[str, Any], key: str, *, default: bool = False) -> bool:
     value = data.get(key, default)
     if not isinstance(value, bool):
@@ -1231,7 +910,6 @@ def build_crossover_sweep_spec(
     hard_timeout_ms: int = 30000,
     accent: str = "sage",
     font: str = "figtree",
-    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ambient_duration_ms: int = 0,
     capture_plan: CapturePlan | None = None,
     guided_captures: int = 0,
@@ -1568,7 +1246,6 @@ def build_crossover_sweep_spec(
             ui_button("Stop", action="stop"),
             ui_note("Keep the screen on — leaving this page stops the recording."),
         ),
-        max_upload_bytes=max_upload_bytes,
         acknowledgement=acknowledgement,
         capture_plan=capture_plan,
         default_setup_calibration=default_setup_calibration,
