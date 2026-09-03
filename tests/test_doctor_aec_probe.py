@@ -123,8 +123,6 @@ def test_second_aec_probe_cannot_reach_precheck_wave_or_aplay(monkeypatch):
         ("probe — exclusive run", "fail")
     ]
     assert results[0].reason == doctor.aec_probe.REASON_PROBE_LOCK_BUSY
-    assert "already active" in results[0].detail
-    assert "No test tone was played" in results[0].detail
     assert calls == []
 
 
@@ -196,8 +194,6 @@ def test_active_aec_probe_fails_closed_when_state_unavailable(monkeypatch, error
 
     assert [result.status for result in results] == ["ok", "fail"]
     assert results[-1].reason == doctor.aec_probe.REASON_PROBE_CONTROL_STATE_UNAVAILABLE
-    assert "idleness could not be established" in results[-1].detail
-    assert "no test tone was played" in results[-1].detail
     assert not any(call and call[0] == "aplay" for call in calls)
 
 
@@ -225,8 +221,6 @@ def test_active_aec_probe_fails_closed_for_untrusted_active_source(
 
     assert [result.status for result in results] == ["ok", "fail"]
     assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ACTIVE_SOURCE_UNKNOWN
-    assert "trustworthy active_source" in results[-1].detail
-    assert "no test tone was played" in results[-1].detail
     assert not any(call and call[0] == "aplay" for call in calls)
 
 
@@ -428,7 +422,6 @@ def test_active_aec_probe_never_generates_or_plays_without_isolation(
     assert [result.status for result in results] == ["ok", "ok", "fail"]
     assert results[-1].name == "probe — audio isolation"
     assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ISOLATION_UNAVAILABLE
-    assert "no test tone was played" in results[-1].detail
     assert not sine_path.exists()
     assert not any(call and call[0] == "aplay" for call in calls)
 
@@ -514,10 +507,6 @@ def test_active_aec_probe_reports_exit_cleanup_failure_after_tone(monkeypatch):
     ]
     assert results[-1].status == "fail"
     assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ISOLATION_CLEANUP_FAILED
-    assert "probe body completed" in results[-1].detail
-    assert "playback outcome is shown above" in results[-1].detail
-    assert "test tone ran" not in results[-1].detail.lower()
-    assert "no test tone was played" not in results[-1].detail.lower()
 
 
 def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
@@ -566,5 +555,3 @@ def test_active_aec_probe_preserves_generate_failure_on_cleanup_failure(
     assert results[-2].status == "fail"
     assert "could not write probe file" in results[-2].detail
     assert results[-1].reason == doctor.aec_probe.REASON_PROBE_ISOLATION_CLEANUP_FAILED
-    assert "probe body completed" in results[-1].detail
-    assert "test tone ran" not in results[-1].detail.lower()

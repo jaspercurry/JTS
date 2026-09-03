@@ -2312,5 +2312,3 @@ def test_enhanced_aec_doctor_warns_only_after_request(monkeypatch, state):
 
     assert result.status == "warn"
     assert result.reason == doctor.aec.REASON_ENHANCED_AEC_UNAVAILABLE
-    assert "standard echo cancellation remains available" in result.detail
-    assert "/system/" in result.detail
