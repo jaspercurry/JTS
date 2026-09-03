@@ -689,6 +689,8 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
             "jasper.control.server",
             (
                 "dbus_next",
+                "jasper.active_speaker.baseline_profile",
+                "jasper.active_speaker.design_draft",
                 "jasper.multiroom.reconcile",
                 "numpy",
                 "scipy",
@@ -727,7 +729,9 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
     belong behind function-local imports. The measurement stack
     (``numpy``/``scipy``/``sounddevice``) belongs to the oneshot commissioners;
     jasper-control reaches their persisted state through stdlib-only record
-    modules instead. jasper-voice touches ``jasper.active_speaker`` only for
+    modules instead. ``setup_status`` answers a streambox or passive box from
+    the topology alone, so the baseline/design candidate stack stays behind
+    its active-speaker branch. jasper-voice touches ``jasper.active_speaker`` only for
     the ``volume_latch`` leaf, which its package ``__getattr__`` keeps
     separable from the commissioning submodules. ``scipy`` is the same
     bargain at a much larger price (``jasper.dsp_numpy`` owns that figure):
