@@ -2,7 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""CLI shim for chip-AEC policy decisions used by shell reconcilers."""
+"""CLI shim for chip-AEC policy decisions used by shell reconcilers.
+
+`--alignment` answers the second question `deploy/bin/jasper-aec-reconcile`
+asks: what the alignment record says for a disposition only the shell can see.
+`jasper-aec-init` publishes its own pass's record directly; every other
+disposition comes through here, so no alignment string is typed in shell.
+"""
 from __future__ import annotations
 
 import argparse
@@ -11,6 +17,7 @@ import shlex
 import sys
 from typing import Any
 
+from ..chip_aec_health import alignment_health
 from ..chip_aec_policy import resolve_chip_aec_dac_gate
 from ..route_latency.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
 
@@ -41,11 +48,30 @@ def _shell_assignments(gate, *, testing_requested: bool) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dac-id", required=True)
+    parser.add_argument("--dac-id")
     parser.add_argument("--outputd-socket", default="")
     parser.add_argument("--testing-requested", action="store_true")
     parser.add_argument("--shell-env", action="store_true")
+    parser.add_argument("--alignment")
+    parser.add_argument("--selection", default="")
+    parser.add_argument("--reason", default="")
+    parser.add_argument("--action", default="")
     args = parser.parse_args(argv)
+
+    if args.alignment:
+        try:
+            health = alignment_health(
+                args.alignment,
+                selection=args.selection,
+                reason=args.reason,
+                action=args.action,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(health.to_shell(), end="")
+        return 0
+    if not args.dac_id:
+        parser.error("--dac-id is required")
 
     outputd_status = None
     outputd_error = ""

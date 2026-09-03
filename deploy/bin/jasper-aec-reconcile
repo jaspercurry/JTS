@@ -33,12 +33,11 @@ VOICE_PROVIDER_IDS_FILE="${JASPER_VOICE_PROVIDER_IDS_FILE:-/var/lib/jasper/voice
 # accessory_mic_present below). This script stays the single writer of the
 # derived AND; the accessory owner asks it to re-derive by starting this unit.
 VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/voice-input-absent}"
-# One line of text jasper-aec-init leaves when it applied a commissioned
-# alignment whose proof no longer describes this box; absent means the
-# alignment is fully ready (ADR-0101). aec_init.py owns the path literal
-# (DISCLOSURE_PATH) and is its only writer; this script is its only reader.
-ALIGNMENT_DISCLOSURE_FILE="${JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE:-/run/jasper-aec-init/alignment-disclosure}"
-ALIGNMENT_RECOMMISSION_ACTION="Run sudo jasper-aec-commission"
+# The chip_aec_health record jasper-aec-init publishes for the pass it ran, as
+# shell assignments. aec_init.py owns the path literal (ALIGNMENT_RECORD_PATH)
+# and is its only writer; this script is its only reader. Absent means the run
+# reached no verdict, which for a zero exit is a fully applied alignment.
+ALIGNMENT_RECORD_FILE="${JASPER_AEC_ALIGNMENT_RECORD_FILE:-/run/jasper-aec-init/alignment}"
 # A 2-channel XVF is still a microphone (ADR-0101): the box captures from it
 # directly and says what the flash would buy. Same remedy the doctor's
 # check_xvf_firmware_6ch names, in the same vocabulary.
@@ -898,7 +897,9 @@ apply_audio_input_profile() {
     local chip_available=0
     MANAGED_XVF_PARK_REASON=""
     MANAGED_XVF_DISCLOSURE=""
-    MANAGED_XVF_DISCLOSURE_ACTION=""
+    # The publish_alignment_record disposition (and, where the remedy is this
+    # script's own firmware vocabulary, the action) for MANAGED_XVF_DISCLOSURE.
+    MANAGED_XVF_DISCLOSURE_ARGS=(disclosed)
     if managed_xvf_policy_applies; then
         AEC_MODE="auto"
         LEG_RAW="0"
@@ -917,7 +918,7 @@ apply_audio_input_profile() {
             # measurement-class instrument (protected driver) parks.
             if voice_mic_present "$AEC_MIC_DEVICE"; then
                 MANAGED_XVF_DISCLOSURE="$XVF_2CH_DISCLOSURE"
-                MANAGED_XVF_DISCLOSURE_ACTION="$XVF_2CH_ACTION"
+                MANAGED_XVF_DISCLOSURE_ARGS=(disclosed --action "$XVF_2CH_ACTION")
             else
                 MANAGED_XVF_PARK_REASON="no usable managed XVF capture device present"
             fi
@@ -926,7 +927,7 @@ apply_audio_input_profile() {
             # carries the software AEC3 leg the non-managed `auto` path uses.
             LEG_RAW="1"
             MANAGED_XVF_DISCLOSURE="$(chip_aec_block_detail "$AUDIO_DAC_ID" "0")"
-            MANAGED_XVF_DISCLOSURE_ACTION="$ALIGNMENT_RECOMMISSION_ACTION"
+            MANAGED_XVF_DISCLOSURE_ARGS=(dac_uncalibrated)
         fi
         return
     fi
@@ -1708,63 +1709,85 @@ park_managed_xvf() {
 # publishes the all-zero vector and leaves voice's gate alone, which is the
 # direct-mic/disabled resting state, not a park.
 park_to_reference_leg() {
-    local status_reason="$1" action="$2" park_reason="$3"
+    local disposition="$1" park_reason="$2"
     # FIRST, ahead of the env writes and the blocking outputd bounce below:
     # this is reached from a bridge restart that just failed for real, so
     # Restart=on-failure is re-arming every 2 s and the ~6-8 s those steps take
     # is enough standing marker to spend the rest of StartLimitBurst.
     # park_managed_xvf withdraws again; the call is idempotent.
     revoke_aec_bridge_ready
-    write_alignment_env "fault" "$status_reason" "$action"
+    publish_alignment_record "$disposition" || true
     write_leg_env "reference" "0" "0" "1" "0" "0"
     restart_outputd_if_needed
     park_managed_xvf "$park_reason"
 }
 
-# Every write is stamped with the selection it was written under, the same way
-# write_chip_aec_gate_env stamps the DAC record with the identity + selection
-# it was resolved for. Every call site is guarded on a non-custom
-# AUDIO_INPUT_PROFILE — the xvf_*-only branch tests it directly, the rest
-# inherit it from managed_xvf_policy_applies — so a custom profile never writes
-# these keys AND never clears them, and the stamp is never `custom`. That is
-# what leaves a leftover for a consumer with no stamp to check.
+# Copy the record now in the JASPER_AEC_CHIP_AEC_ALIGNMENT_* variables into
+# $ENV_FILE. Every call site is guarded on a non-custom AUDIO_INPUT_PROFILE — the
+# xvf_*-only branch tests it directly, the rest inherit it from
+# managed_xvf_policy_applies — so a custom profile never writes these keys AND
+# never clears them, and the stamp is never `custom`. That is what leaves a
+# leftover for a consumer with no stamp to check.
 # jasper.chip_aec_policy's module docstring owns the reading rule, for this
 # record and the DAC one alike; jasper.audio_profile_state applies it here.
-write_alignment_env() {
-    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS "$1"
-    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON "$2"
-    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION "$3"
-    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION \
-        "$AUDIO_INPUT_PROFILE"
-}
-
-# jasper-aec-init's one-line disclosure, or nothing when the alignment it
-# applied is fully ready. Bounded read: the file is /run text, not a contract.
 #
-# Apostrophes are STRIPPED, not quoted. This reason is the only free text this
-# script routes into $ENV_FILE, and deploy/lib/jasper-env-file.sh's header
+# Apostrophes are STRIPPED from the reason, not quoted. It is the only free text
+# this script routes into $ENV_FILE, and deploy/lib/jasper-env-file.sh's header
 # forbids apostrophe-bearing values in a file systemd reads through
 # EnvironmentFile=: bash `source` and systemd's parser disagree on the '\''
 # idiom the writer would emit, so the daemons and this script would read
 # different values.
-alignment_disclosure() {
-    local reason=""
-    [[ -r "$ALIGNMENT_DISCLOSURE_FILE" ]] || return 1
-    IFS= read -r reason 2>/dev/null < "$ALIGNMENT_DISCLOSURE_FILE" || true
+commit_alignment_record() {
+    local reason="${JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON:-}"
     reason="${reason//\'/}"
-    reason="${reason:0:400}"
-    [[ -n "$reason" ]] || return 1
-    printf '%s\n' "$reason"
+    JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON="${reason:0:400}"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON "${JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON:-}"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION "${JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION:-}"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION "${JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION:-}"
+}
+
+# Publish jasper.chip_aec_health's record for a disposition token, plus
+# --reason/--action for the dispositions whose text this script measured itself.
+# ADR-0101: an unresolvable vocabulary is unmeasured, not a demotion — with no
+# interpreter the last record stands, as carry_chip_aec_dac_gate carries the
+# last DAC verdict, rather than this script keeping a second copy of the strings.
+publish_alignment_record() {
+    local payload=""
+    if command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
+        # Output is produced by jasper.chip_aec_health with shlex.quote.
+        payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.chip_aec_policy \
+            --alignment "$@" --selection "$AUDIO_INPUT_PROFILE" || true)"
+    fi
+    if [[ "$payload" != *"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS="* ]]; then
+        log "chip-AEC alignment vocabulary unavailable at ${MIC_PROFILE_PYTHON}; carrying the last record"
+        return 1
+    fi
+    eval "$payload"
+    commit_alignment_record
+}
+
+# The record jasper-aec-init published for the pass that just ran. Bounded read
+# of the four keys it owns; anything else in the file is not this contract.
+publish_init_alignment_record() {
+    local payload
+    [[ -r "$ALIGNMENT_RECORD_FILE" ]] || return 1
+    payload="$(head -c 4096 "$ALIGNMENT_RECORD_FILE" \
+        | grep -E "^JASPER_AEC_CHIP_AEC_ALIGNMENT_[A-Z]+=" || true)"
+    [[ "$payload" == *"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS="* ]] || return 1
+    eval "$payload"
+    commit_alignment_record
 }
 
 # ADR-0101: a chip-AEC path that cannot be armed leaves the box running and
 # complaining, never deaf. It falls back to the best leg the mic can carry —
 # the software AEC3 leg the non-managed `auto` path already uses, or the chip's
 # plain capture when the bridge cannot run — and discloses what it lost.
+# The caller publishes the `disclosed_stale` record first; this runs the
+# fallback and reports the reason that record carries.
 disclose_stale_chip_aec() {
-    local reason="$1" action="$2"
+    local reason="${JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON:-}"
     local bridge_up=0
-    write_alignment_env "disclosed_stale" "$reason" "$action"
     # Software AEC3 reads the 6-channel capture endpoint; on anything else
     # there is no bridge to run and the direct handover below is the only leg.
     if aec_ready "$AEC_MIC_DEVICE"; then
@@ -1822,7 +1845,6 @@ disclose_stale_chip_aec() {
 }
 
 activate_managed_chip_aec() {
-    local init_status disclosure
     # The expensive bounce: this stops voice AND the bridge, blocking-restarts
     # jasper-aec-init, and only then brings voice back — the ~8 s of deafness
     # a measurement-mic hotplug cost on jts3. A pass that changed nothing would
@@ -1848,16 +1870,14 @@ activate_managed_chip_aec() {
     # Past this point the sequence stops voice, so the restart_voice at the end
     # must not be able to gate itself off.
     VOICE_RESTART_NEEDED=1
-    write_alignment_env "checking" "validating commissioned alignment" ""
+    publish_alignment_record checking || true
     mark_voice_input_absent "validating commissioned chip-AEC alignment"
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
     reset_failed_units jasper-voice.service jasper-aec-bridge.service
     # Init must sample outputd's final writer; bridge/voice stay parked.
     write_leg_env "1" "0" "0" "1" "0" "0"
     if ! restart_outputd_if_needed "strict"; then
-        park_to_reference_leg \
-            "final chip-reference producer failed to start" \
-            "Inspect jasper-outputd, then run the reconciler" \
+        park_to_reference_leg reference_producer_down \
             "chip-reference producer failed; inspect jasper-outputd"
         return 1
     fi
@@ -1865,18 +1885,12 @@ activate_managed_chip_aec() {
     set_voice_bridge_want on
     reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
     if "$SYSTEMCTL" restart jasper-aec-init.service; then
-        if disclosure="$(alignment_disclosure)"; then
-            # The commissioned K was applied and the chip is armed; its proof
-            # simply stopped describing this box (ADR-0101).
-            write_alignment_env "disclosed_stale" "$disclosure" \
-                "$ALIGNMENT_RECOMMISSION_ACTION"
-            log "chip-AEC alignment disclosed stale: ${disclosure}"
-        else
-            write_alignment_env "ready" "commissioned alignment applied and verified" ""
-        fi
-        # Both branches are running states (ADR-0101) and aec-init just applied
-        # the alignment, so the verdict is settled before the bridge is asked
-        # to start — its condition is read from the marker.
+        # A zero exit that published no record applied its alignment cleanly.
+        publish_init_alignment_record || publish_alignment_record applied || true
+        log "chip-AEC alignment ${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-unknown}: ${JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON:-}"
+        # `ready` and `disclosed_stale` are both running states (ADR-0101) and
+        # aec-init just applied the alignment, so the verdict is settled before
+        # the bridge is asked to start — its condition is read from the marker.
         publish_aec_bridge_ready
         # The restart's own status is necessary but not sufficient, for the
         # reason disclose_stale_chip_aec names: it also exits 0 when a start
@@ -1886,41 +1900,25 @@ activate_managed_chip_aec() {
         # feeds. Ask the unit too.
         if ! "$SYSTEMCTL" restart jasper-aec-bridge.service \
             || ! "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service; then
-            park_to_reference_leg \
-                "chip-AEC bridge failed after alignment reapply" \
-                "Inspect jasper-aec-bridge, then run the reconciler" \
+            park_to_reference_leg bridge_failed \
                 "chip-AEC bridge failed; inspect jasper-aec-bridge"
             return 1
         fi
         restart_voice
         return 0
     fi
-    init_status="$("$SYSTEMCTL" show -p ExecMainStatus --value jasper-aec-init.service 2>/dev/null || true)"
-    if [[ "$init_status" == "2" ]]; then
-        # aec-init's COMMISSION_REQUIRED_EXIT: there is no banked K to arm the
-        # chip with. Nothing else about this box is broken, so it runs software
-        # AEC3 and asks for the commissioner.
-        disclose_stale_chip_aec \
-            "chip-AEC alignment is not commissioned for this hardware/output identity" \
-            "$ALIGNMENT_RECOMMISSION_ACTION"
+    # ADR-0101: aec-init's own record decides what a failed run costs.
+    # `disclosed_stale` says nothing observably broke — no banked K to arm the
+    # chip with, or a jasper-outputd that has not loaded the current output
+    # declaration — so the box keeps hearing on software AEC3 and carries the
+    # remedy the record names. Anything else, a run that published nothing
+    # included, is a fault.
+    if publish_init_alignment_record \
+        && [[ "$JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS" == "disclosed_stale" ]]; then
+        disclose_stale_chip_aec
         return 0
     fi
-    if [[ "$init_status" == "3" ]]; then
-        # aec-init's OUTPUTD_ENV_STALE_EXIT: the live jasper-outputd predates
-        # /var/lib/jasper/outputd.env, so its STATUS describes an output edge
-        # nobody is running and no identity may be bound against it. Nothing is
-        # broken and the artifact is not suspect — do NOT send the household to
-        # the commissioner. jasper-audio-hardware-reconcile kicks outputd and
-        # this reconciler as two separate --no-block transactions, so the fix is
-        # simply a later reconcile once outputd has restarted.
-        disclose_stale_chip_aec \
-            "jasper-outputd has not loaded the current output declaration" \
-            "Wait for jasper-outputd to restart, then run the reconciler"
-        return 0
-    fi
-    park_to_reference_leg \
-        "silent chip-AEC alignment reapply failed" \
-        "Inspect jasper-aec-init and jasper-outputd, then run the reconciler" \
+    park_to_reference_leg reapply_failed \
         "chip-AEC alignment reapply failed; inspect jasper-aec-init"
     return 1
 }
@@ -2153,10 +2151,7 @@ if [[ "$MIC_PROFILE_RESOLUTION_STATUS" == "resolved" \
     && "$AUDIO_INPUT_PROFILE" != "custom" \
     && "$AUDIO_INPUT_PROFILE" == xvf_* ]] \
     && ! managed_xvf_card_present; then
-    write_alignment_env \
-        "unavailable" \
-        "managed XVF is not present" \
-        "Reconnect the managed XVF3800 microphone"
+    publish_alignment_record xvf_absent || true
 fi
 
 if grouping_voice_parked; then
@@ -2184,10 +2179,8 @@ if managed_xvf_policy_applies; then
     fi
     if [[ "$LEG_CHIP_AEC" != "1" ]]; then
         if [[ -n "${MANAGED_XVF_PARK_REASON:-}" ]]; then
-            write_alignment_env \
-                "unavailable" \
-                "$MANAGED_XVF_PARK_REASON" \
-                "Connect a supported XVF microphone"
+            publish_alignment_record xvf_unusable \
+                --reason "$MANAGED_XVF_PARK_REASON" || true
             # Park first: the marker has to exist before the bridge goes down
             # (see mark_voice_input_absent). stop_aec_and_clear_legs then
             # disables the bridge and publishes the resting leg vector.
@@ -2197,9 +2190,10 @@ if managed_xvf_policy_applies; then
         fi
         # ADR-0101: the capability gate is a quality signal, not an admission
         # gate — the mic is usable, so the box keeps hearing and discloses.
-        disclose_stale_chip_aec \
-            "${MANAGED_XVF_DISCLOSURE:-managed XVF chip-AEC is unavailable}" \
-            "$MANAGED_XVF_DISCLOSURE_ACTION"
+        publish_alignment_record "${MANAGED_XVF_DISCLOSURE_ARGS[@]}" \
+            --reason "${MANAGED_XVF_DISCLOSURE:-managed XVF chip-AEC is unavailable}" \
+            || true
+        disclose_stale_chip_aec
         exit 0
     fi
     set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"

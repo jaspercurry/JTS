@@ -28,6 +28,9 @@ from jasper import chip_aec_shipped_alignment as shipped_alignment
 from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
+from jasper.audio_profile_state import PROFILE_CUSTOM, normalize_audio_input_profile
+from jasper.audio_validation import DEFAULT_AEC_MODE_PATH
+from jasper.env_load import parse_env_file
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output
 # contract: sink, backend, active width, final-edge format). Imported, never
@@ -55,13 +58,12 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_statu
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
-# Where an applied-but-disclosed alignment leaves its reason for
-# jasper-aec-reconcile, which owns the household-facing status vocabulary. One
-# line of text, no schema; absent means the alignment is fully ready. The
-# reconciler pairs it with the fixed jasper-aec-commission action (ADR-0101).
-DISCLOSURE_PATH = "/run/jasper-aec-init/alignment-disclosure"
-# Kept in step with the `init_status` branch in jasper-aec-reconcile's
-# activate_managed_chip_aec by tests/test_aec_reconcile.py.
+# Where this run publishes its `jasper.chip_aec_health` verdict, as the shell
+# assignments jasper-aec-reconcile evals and copies into /etc/jasper/jasper.env.
+# Absent means this run reached no verdict (a bypass/corpus run, or one killed
+# before it finished); the reconciler reads that as a fully applied alignment,
+# which is what a zero exit without a record means.
+ALIGNMENT_RECORD_PATH = "/run/jasper-aec-init/alignment"
 OUTPUTD_ENV_STALE_EXIT = 3
 OUTPUTD_UNIT = "jasper-outputd.service"
 # How long to let a queued outputd restart land before refusing to commission.
@@ -1061,26 +1063,44 @@ def resolve_banked_alignment(
     )
 
 
-def publish_disclosure(reason: str, *, env: Mapping[str, str] | None = None) -> None:
-    """Publish why this run's alignment is disclosed-stale, or clear it.
+def alignment_selection(env: Mapping[str, str] | None = None) -> str:
+    """The audio-input profile this alignment pass ran under.
 
-    Best-effort: the profile is applied and the box is hearing by the time this
-    runs, so a failed ``/run`` write must not turn a disclosure back into a
-    park.  `main` calls it exactly once per successful run, so the file cannot
-    outlive the condition it names.
+    The init unit does not load the operator's mode file, so read it here: the
+    record it stamps is what tells a consumer whether the verdict describes the
+    selection now in force.
     """
 
     source = os.environ if env is None else env
-    path = source.get("JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE") or DISCLOSURE_PATH
+    path = source.get("JASPER_AEC_MODE_FILE") or str(DEFAULT_AEC_MODE_PATH)
+    raw = parse_env_file(path).get("JASPER_AUDIO_INPUT_PROFILE", "")
+    return normalize_audio_input_profile(raw, default="") or PROFILE_CUSTOM
+
+
+def publish_alignment_record(
+    health: chip_aec_health.AlignmentHealth | None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Publish this run's verdict for jasper-aec-reconcile, or clear it.
+
+    Best-effort: on a disclosed pass the profile is applied and the box is
+    hearing by the time this runs, so a failed ``/run`` write must not turn a
+    disclosure back into a park.  `main` calls it exactly once per run, so the
+    record cannot outlive the pass it describes.
+    """
+
+    source = os.environ if env is None else env
+    path = source.get("JASPER_AEC_ALIGNMENT_RECORD_FILE") or ALIGNMENT_RECORD_PATH
     try:
-        if reason:
-            atomic_write_text(path, " ".join(reason.split()) + "\n")
-        else:
+        if health is None:
             Path(path).unlink(missing_ok=True)
+        else:
+            atomic_write_text(path, health.to_shell())
     except OSError as exc:
         log_event(
             logger,
-            "chip_aec_init.disclosure_unpublished",
+            "chip_aec_init.alignment_record_unpublished",
             path=path,
             reason=str(exc),
             level=logging.WARNING,
@@ -1098,7 +1118,8 @@ def main() -> int:
         else "lab_bypass"
     )
     dev = None
-    disclosure = ""
+    selection = alignment_selection()
+    record: chip_aec_health.AlignmentHealth | None = None
     try:
         from jasper.xvf import xvf_host
 
@@ -1112,22 +1133,21 @@ def main() -> int:
                 )
             banked = resolve_banked_alignment(dev, plan, card=card)
             apply_profile(dev, plan, banked.sys_delay, card=card)
-            health = chip_aec_health.alignment_health(
+            record = chip_aec_health.alignment_health(
                 chip_aec_health.APPLIED,
+                selection=selection,
                 shipped_label=banked.shipped_label,
                 identity_diff=banked.identity_diff,
             )
-            # The /run file carries the disclosure alone; a fully ready
-            # alignment clears it.
             disclosure = (
-                "" if health.status == chip_aec_health.STATUS_READY
-                else health.reason
+                "" if record.status == chip_aec_health.STATUS_READY
+                else record.reason
             )
             log_event(
                 logger,
                 "chip_aec_init",
                 level=logging.WARNING if disclosure else logging.INFO,
-                outcome=health.status,
+                outcome=record.status,
                 sys_delay=banked.sys_delay,
                 commissioned_sys_delay=banked.commissioned_sys_delay,
                 k_samples=banked.k_samples,
@@ -1155,13 +1175,15 @@ def main() -> int:
             # Only explicit custom/lab routing reaches this path.
             apply_bypass_profile(dev, card=card)
             log_event(logger, "chip_aec_init", outcome="bypassed", mode=mode)
-        publish_disclosure(disclosure)
         return 0
     except OutputdEnvStale as exc:
         # Distinct from a fault: nothing is broken, the output declaration just
         # has not reached the running daemon yet. Keep it a separate exit code so
         # the reconciler's disposition (and /state) names the ordering problem
         # instead of sending a household at the commissioner.
+        record = chip_aec_health.alignment_health(
+            chip_aec_health.OUTPUTD_ENV_STALE, selection=selection
+        )
         if dev is not None:
             _safe_bypass(dev)
         log_event(
@@ -1172,6 +1194,9 @@ def main() -> int:
         )
         return OUTPUTD_ENV_STALE_EXIT
     except CommissionRequired as exc:
+        record = chip_aec_health.alignment_health(
+            chip_aec_health.COMMISSION_REQUIRED, selection=selection
+        )
         if dev is not None:
             _safe_bypass(dev)
         log_event(
@@ -1180,6 +1205,9 @@ def main() -> int:
         )
         return COMMISSION_REQUIRED_EXIT
     except Exception as exc:  # noqa: BLE001
+        record = chip_aec_health.alignment_health(
+            chip_aec_health.REAPPLY_FAILED, selection=selection
+        )
         if dev is not None:
             _safe_bypass(dev)
         log_event(
@@ -1188,6 +1216,9 @@ def main() -> int:
         )
         return 1
     finally:
+        # Only a chip-AEC pass reaches a verdict; a corpus/bypass run clears the
+        # record rather than leaving the previous pass's standing.
+        publish_alignment_record(record if mode == "chip_aec" else None)
         if dev is not None:
             try:
                 if hasattr(dev, "close"):
