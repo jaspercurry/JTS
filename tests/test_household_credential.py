@@ -21,11 +21,11 @@ test_control_server.py against the real ThreadingHTTPServer.
 """
 from __future__ import annotations
 
-import hmac
 import os
 import stat
 
 from jasper.control import household_credential as hc
+from tests._web_test_helpers import assert_verify_uses_constant_time_compare
 
 
 # --- verify: FAIL-SAFE direction (the invariant the self-heal path needs) ---
@@ -72,19 +72,10 @@ def test_verify_requires_exact_match_when_present(monkeypatch, tmp_path):
 
 
 def test_verify_uses_constant_time_compare(monkeypatch, tmp_path):
-    """compare_digest, never ==, so the secret's length/prefix doesn't leak via
-    timing (mirrors control_token.verify)."""
-    path = tmp_path / "household_secret"
-    path.write_text("the-secret-value")
-    monkeypatch.setattr(hc, "SECRET_FILE", str(path))
-    calls: list[tuple[str, str]] = []
-    real = hmac.compare_digest
-    monkeypatch.setattr(
-        hmac, "compare_digest", lambda a, b: calls.append((a, b)) or real(a, b)
+    """compare_digest, never ==, so the secret length/prefix cannot leak via timing."""
+    assert_verify_uses_constant_time_compare(
+        monkeypatch, tmp_path, hc, "SECRET_FILE", "the-secret-value"
     )
-
-    assert hc.verify("wrong") is False
-    assert calls == [("wrong", "the-secret-value")]
 
 
 # --- is_paired / current ---------------------------------------------------

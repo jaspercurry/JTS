@@ -23,6 +23,7 @@ that call a handler class's ``do_GET`` / ``do_POST`` methods directly.
 """
 from __future__ import annotations
 
+import hmac
 import http.cookiejar
 import json
 import urllib.error
@@ -317,3 +318,17 @@ def json_post_with_csrf(
         session=session,
         expect_status=expect_status,
     )
+
+
+def assert_verify_uses_constant_time_compare(monkeypatch, tmp_path, module, file_attr, secret):
+    """``module.verify`` must compare through ``hmac.compare_digest``, never ``==``."""
+    path = tmp_path / "secret"
+    path.write_text(secret)
+    monkeypatch.setattr(module, file_attr, str(path))
+    calls: list[tuple[str, str]] = []
+    real = hmac.compare_digest
+    monkeypatch.setattr(
+        hmac, "compare_digest", lambda a, b: calls.append((a, b)) or real(a, b)
+    )
+    assert module.verify("wrong") is False
+    assert calls == [("wrong", secret)]
