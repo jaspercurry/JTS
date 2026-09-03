@@ -19,23 +19,13 @@ import numpy as np
 import pytest
 
 from jasper.cli import aec_bridge_reference
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
 from jasper.cli.aec_bridge_reference import (
     ReferenceFrameBatch,
     enqueue_reference_frames,
 )
-from jasper.cli.aec_bridge_telemetry import (
-    DropLogDebouncer,
-    StatsIdentity,
-    _BridgeStats,
-)
-
-IDENTITY = StatsIdentity(
-    sample_rate_hz=SAMPLE_RATE,
-    frame_samples=FRAME_SAMPLES,
-    reference_source="outputd_udp",
-    reference_endpoint="127.0.0.1:9891",
-)
+from jasper.cli.aec_bridge_telemetry import DropLogDebouncer, _BridgeStats
+from tests._aec_bridge_helpers import IDENTITY
 
 
 class _AlwaysFullQ:

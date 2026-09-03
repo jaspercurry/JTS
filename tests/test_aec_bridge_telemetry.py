@@ -20,7 +20,6 @@ import pytest
 from jasper.cli.aec_bridge_telemetry import (
     DropLogDebouncer,
     LegEmitter,
-    StatsIdentity,
     TimestampedLegEmitter,
     _BridgeStats,
 )
@@ -30,13 +29,8 @@ from jasper.usb_mic import (
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
 )
+from tests._aec_bridge_helpers import IDENTITY
 
-IDENTITY = StatsIdentity(
-    sample_rate_hz=16000,
-    frame_samples=320,
-    reference_source="outputd_udp",
-    reference_endpoint="127.0.0.1:9891",
-)
 ON_DEST = ("127.0.0.1", 9876)
 USB_DEST = ("127.0.0.1", 9894)
 FRAMES = [
