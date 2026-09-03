@@ -45,14 +45,14 @@ from typing import Any, Callable
 
 from ..ring_assets import RingFlowState, ring_flow_state
 from . import config
-from .config import GROUPING_ENV_FILE, GroupingConfig
+from .config import GROUPING_ENV_FILE, SNAP_STREAM_ID, GroupingConfig
 from .effective_role import read_effective_role_status
 from .grouping_ring import GROUPING_RING_FILE, GROUPING_RING_PCM
-from .reconcile import (
-    SNAP_STREAM_ID,
-    desired_snapfifo_path,
-    plan,
-)
+
+# `.reconcile` is imported inside the two bonded-only branches below, never
+# here: every box imports this module to build /state, but only a bonded one
+# needs the reconciler's plan, and jasper-control would otherwise carry that
+# oneshot for the life of the process (#3697).
 
 # How long to wait on the `systemctl is-active` probe before giving up
 # and reporting "unknown". Bounded so a wedged systemd can't stall the
@@ -431,6 +431,8 @@ def derive_grouping_runtime(
             cfg,
         )
 
+    from .reconcile import desired_snapfifo_path, plan
+
     expected = {it.unit: it.desired for it in plan(cfg).intents}
     units: dict[str, dict[str, str]] = {}
     down: list[str] = []
@@ -732,6 +734,8 @@ def read_grouping_state(
         stream_clients: Any = None
         local_outputd_status: Any = None
         if cfg.error is None:
+            from .reconcile import plan
+
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])
             if local_outputd_reader is not None:

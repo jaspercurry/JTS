@@ -395,6 +395,12 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
         output_rate=48000,
         gain_db=OutputdTtsPlayout.MIN_TTS_GAIN_DB,
         drain_tail_sec=0.0,
+        # STATED, not inherited. The byte-level expectations below are S16, and
+        # what the box the suite runs on RESOLVES is not this test's subject —
+        # tests/test_tts_wire_width.py owns that question. An undeclared box now
+        # resolves WIDE (ADR-0100: undeclared is the ring), so leaving this to
+        # the resolver made these assertions depend on the host's /var/lib state.
+        wire_wide=False,
     )
     stream = _CaptureOutputdStream()
     p._stream = stream  # type: ignore[assignment]
@@ -419,6 +425,8 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
         output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
+        # S16 frame bytes are what the chunk boundaries below are counted in.
+        wire_wide=False,
     )
     stream = _CaptureOutputdStream()
     p._stream = stream  # type: ignore[assignment]

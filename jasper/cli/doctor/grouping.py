@@ -121,8 +121,8 @@ def check_grouping() -> CheckResult:
     # group→stream binding / muted client / leader's own client absent);
     # RPC failure maps to an explicit unreachable verdict, same as
     # /state — the doctor and the dashboard must tell one story.
+    from ...multiroom.config import SNAP_STREAM_ID
     from ...multiroom.leader_config import active_leader_pipe_path
-    from ...multiroom.reconcile import SNAP_STREAM_ID
     from ...multiroom.snapcast_rpc import read_stream_clients
     from ...multiroom.state import _self_client_name
 
@@ -161,9 +161,12 @@ def check_grouping_pair_lock() -> CheckResult:
     observable today, but follower buffer-fill/drift/time-lock are not
     exposed by Snapcast's documented JSON-RPC surface.
     """
-    from ...multiroom.config import load_config as _load_grouping_config
+    from ...multiroom.config import (
+        SNAP_STREAM_ID,
+        load_config as _load_grouping_config,
+    )
     from ...multiroom.leader_config import active_leader_pipe_path
-    from ...multiroom.reconcile import SNAP_STREAM_ID, plan
+    from ...multiroom.reconcile import plan
     from ...multiroom.snapcast_rpc import read_stream_clients
     from ...multiroom.state import derive_grouping_runtime, _self_client_name
 

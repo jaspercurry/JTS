@@ -419,9 +419,9 @@ the wizard first retains one bounded diagnostic sidecar at
 records user choices, not capture blobs, applied DSP authority, or another tab's
 state.
 
-## Relay-first capture and one phone handoff
+## One capture session, single handoff
 
-One Room run has one capture-page session. The handoff is opened once and stays
+One Room run has one capture session. The handoff is opened once and stays
 bound to the run through:
 
 1. device/calibration setup;
@@ -430,22 +430,15 @@ bound to the run through:
 4. any Room-owned trust repeat; and
 5. post-apply verification from the main seat.
 
-The Pi remains the product-policy owner. It sends versioned opaque capture specs
-and stage transitions; the relay transports encrypted events and blobs without
-learning what a listening position, target curve, or acceptance verdict means.
-Run token, setup digest, device/calibration identity, event sequencing, timeout,
-abort, purge, and volume restoration remain fail-closed.
+The Pi remains the product-policy owner. Run token, setup digest,
+device/calibration identity, event sequencing, timeout, abort, purge, and
+volume restoration remain fail-closed.
 
-Same-device HTTPS capture uses the same envelope and stages. It does not grow a
+HTTPS capture uses one envelope and stage sequence. It does not grow a
 parallel local state machine. Its only extra product copy is:
 
 > Your browser will warn about the speaker's local certificate — continue past
 > it.
-
-The in-repo `capture-page/` source and its version gate are part of the software
-contract. Publishing a matching `capture.jasper.tech` artifact is an external
-release action and requires explicit coordination; a merged Room change must
-name the required artifact/version without claiming it has been published.
 
 ## Target, filter, headroom, phase, and latency policy
 
@@ -536,10 +529,9 @@ web handler, Room session host, Active host, or CamillaDSP controller.
 | Neutral content identities | `jasper.audio_measurement.evidence_identity` | Runtime capabilities, authority issuance, or persisted-bundle migration |
 | Bundle and playback neutral migration | Shared lane's selected `jasper.audio_measurement` homes | Room racing `correction/bundles.py` or `correction/playback.py` during migration |
 | Level ramp kernel | `jasper.audio_measurement.ramp` | Room/Active product policy |
-| Room level adapters | `jasper.correction.level_match`; local fallback in `jasper.correction.autolevel` | Relay session minting or HTTP responses |
+| Room level adapters | `jasper.correction.level_match`; local fallback in `jasper.correction.autolevel` | Capture session minting or HTTP responses |
 | Tuning paid call and spend cap | `jasper.web.correction_tuning` | Acceptance authority or live apply |
-| Capture transport | `jasper.capture_relay.spec.CaptureSpec` and relay client/session | Position, target, or verdict semantics |
-| Capture-page stage UX | `capture-page/`, driven by Pi-authored specs | Room policy or analysis |
+| Capture transport | `jasper.active_speaker.crossover_v2.sweep_spec.CaptureSpec` | Position, target, or verdict semantics |
 | Target and filter policy | `jasper.correction.strategy` / `jasper.correction.peq` | Browser-selected unbounded values |
 | Positive-boost accounting | `jasper.camilla_config_contract.total_positive_boost_db` | Product sequencing |
 | Bass-management corner | `jasper.camilla_emit`, read through bass-management adapters | Room-owned duplicate constants |
@@ -644,14 +636,13 @@ browser/microphone/acoustic experience.
 
 The serialized hardware track must still perform:
 
-- the real-device Room browser pass for relay and local backup;
+- the real-device Room browser pass;
 - six-position duration and interaction checks;
 - phone-vs-calibrated-mic evidence before publishing any accuracy claim;
 - H1 settle-cadence tuning, AGC-freeze confirmation, and measured retuning of
   placeholder `JASPER_ACCEPT_*` / `JASPER_RAMP_*` thresholds;
 - audible apply/verify/restore evidence on the production chain;
-- exact automatic Active receipt issuance/consumption on an active topology;
-- capture-page artifact publication/version coordination.
+- exact automatic Active receipt issuance/consumption on an active topology.
 
 No Pi deployment, microphone use, phone publication, or audible acceptance is
 implied by a hardware-free merge.

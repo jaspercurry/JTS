@@ -19,7 +19,7 @@ from collections.abc import Iterator
 
 import pytest
 
-__all__ = ["event_fields", "event_records", "parse_event"]
+__all__ = ["event_field_maps", "event_fields", "event_records", "parse_event"]
 
 _ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
 
@@ -110,3 +110,21 @@ def event_fields(
     parsed = parse_event(records[0].getMessage())
     assert parsed is not None
     return parsed[1]
+
+
+def event_field_maps(
+    caplog: pytest.LogCaptureFixture, event: str, **where: str
+) -> list[dict[str, str]]:
+    """Field maps of every record named ``event``, in emission order.
+
+    ``where`` narrows to the records carrying those exact field values, so a
+    per-source pin can name its record without counting the others; unpacking
+    the result (``(fields,) = ...``) is how a call site says "exactly one".
+    """
+    maps: list[dict[str, str]] = []
+    for record in event_records(caplog, event):
+        parsed = parse_event(record.getMessage())
+        assert parsed is not None
+        if all(parsed[1].get(key) == value for key, value in where.items()):
+            maps.append(parsed[1])
+    return maps

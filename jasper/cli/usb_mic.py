@@ -17,7 +17,6 @@ import re
 import signal
 import socket
 import struct
-import subprocess
 import threading
 import time
 from types import ModuleType
@@ -27,8 +26,6 @@ from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 from jasper.percentiles import nearest_rank_percentile
 from jasper.usb_mic import (
-    GADGET_PATH,
-    INTENT_PATH,
     RELAY_STATUS_PATH,
     USB_HOST_MIC_UDP_PORT,
     USB_MIC_HEADER_BYTES,
@@ -38,7 +35,6 @@ from jasper.usb_mic import (
     USB_MIC_SOURCE_AGE_SCOPE,
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
-    usb_mic_enabled,
 )
 
 logger = logging.getLogger("jasper.usb_mic")
@@ -1031,36 +1027,6 @@ def _audio_health_snapshot(
     }
 
 
-def _ready(
-    *,
-    intent_path: str = INTENT_PATH,
-    gadget_path: str = GADGET_PATH,
-) -> tuple[bool, str]:
-    if not usb_mic_enabled(intent_path):
-        return False, "intent_off_or_invalid"
-    function = Path(gadget_path) / "functions/uac2.usb0"
-    try:
-        p_chmask = (function / "p_chmask").read_text(encoding="utf-8").strip()
-    except OSError:
-        return False, "uac2_missing"
-    if p_chmask != "1":
-        return False, f"p_chmask_{p_chmask or 'missing'}"
-    try:
-        active = (
-            subprocess.run(
-                ["systemctl", "is-active", "--quiet", "jasper-aec-bridge.service"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=2.0,
-            ).returncode
-            == 0
-        )
-    except (OSError, subprocess.SubprocessError):
-        active = False
-    return (True, "ready") if active else (False, "aec_bridge_inactive")
-
-
 def _write_status(path: str, payload: dict[str, Any]) -> None:
     payload = {
         **payload,
@@ -1335,15 +1301,9 @@ def run_relay(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-ready", action="store_true")
     parser.add_argument("--udp-port", type=int, default=USB_HOST_MIC_UDP_PORT)
     parser.add_argument("--status-path", default=RELAY_STATUS_PATH)
     args = parser.parse_args(argv)
-    if args.check_ready:
-        ready, reason = _ready()
-        if not ready:
-            log_event(logger, "usb_mic.skip", reason=reason)
-        return 0 if ready else 1
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s usb-mic %(levelname)s %(message)s",

@@ -502,7 +502,7 @@ def _assert_unitless_writer_group_facts():
       wizard aplay children, and both running as the same `jasper-web`
       account, so each unit must carry jts-ring.
     * The streambox variant — root (no `User=`), exempt.
-    * Root operator CLIs (aec_tune / aec_commission / doctor aec_probe) —
+    * Root operator CLIs (aec_commission / doctor aec_probe) —
       root by the doctor/CLI contract and unit-less by nature, exempt the
       same way.
     """

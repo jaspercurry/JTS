@@ -1091,6 +1091,102 @@ def crossover_controller() -> CamillaController:
     return CamillaController(host, port)
 
 
+class CamillaVolumeError(RuntimeError):
+    """A main-fader read or write could not be completed and verified."""
+
+
+async def _with_primary_controller(
+    work: Callable[[CamillaController], Awaitable[float | None]],
+) -> float | None:
+    """Run one fader operation on a short-lived primary controller.
+
+    :class:`CamillaController` brings its own bounds — a 2 s socket timeout per
+    exchange, a 5 s composite attempt budget that aborts a wedged websocket,
+    and one transparent retry — so a synchronous caller needs no watchdog of
+    its own.
+    """
+    controller = primary_controller()
+    try:
+        return await work(controller)
+    except CamillaUnavailable as exc:
+        raise CamillaVolumeError(f"CamillaDSP is unreachable: {exc}") from exc
+    finally:
+        await controller.close()
+
+
+def read_main_volume_db() -> float:
+    """Read the main fader, for a synchronous one-shot CLI.
+
+    Raises :class:`CamillaVolumeError` rather than returning a sentinel: a
+    caller bracketing an audible measurement needs the exact number it saw or
+    a refusal, never a guess.
+    """
+
+    async def read(controller: CamillaController) -> float | None:
+        return await controller.get_volume_db()
+
+    volume = asyncio.run(_with_primary_controller(read))
+    if volume is None or not math.isfinite(volume):
+        raise CamillaVolumeError(f"Camilla main_volume is not finite: {volume!r}")
+    return float(volume)
+
+
+def declare_main_volume_db(db: float) -> None:
+    """Declare the main fader's level through the tree's one owner, then
+    confirm it by readback.
+
+    The write goes through :meth:`VolumeOwner.declare_household_level_db`,
+    which lands on :meth:`CamillaController.set_volume_db` and therefore on
+    :func:`_coerce_main_volume_db`'s ceiling clamp — this is not a second
+    write door. A request above the ceiling lands AT the ceiling and the
+    confirm below then refuses, rather than the caller believing a level the
+    speaker never played.
+
+    A DECLARATION rather than a claim because the callers are one-shot
+    operator CLIs whose duck and restore straddle two separate
+    ``asyncio.run`` calls: a claim held between them would outlive the loop it
+    was taken on, and nothing else writes the fader in such a process.
+
+    The owner must already be registered in this process
+    (``install_env_canonical_target_provider``); without it this refuses.
+    """
+    if not math.isfinite(db):
+        raise CamillaVolumeError(f"refusing non-finite Camilla volume: {db!r}")
+
+    # Deferred, like the `volume_owner` imports elsewhere in this module:
+    # `jasper.camilla` is imported by every daemon, and `volume_latch` sits
+    # behind the `jasper.active_speaker` package __init__ (~120 modules) that
+    # only this operator path needs.
+    from .active_speaker.volume_latch import READBACK_TOLERANCE_DB, fader_matches
+    from .volume_owner import volume_owner
+
+    owner = volume_owner()
+    if owner is None:
+        raise CamillaVolumeError(
+            "the speaker volume owner is not registered in this process"
+        )
+
+    async def read_back(controller: CamillaController) -> float | None:
+        return await controller.get_volume_db()
+
+    async def write() -> float | None:
+        # The write is the owner's; the readback stays a direct read, because
+        # a read is not a writer and this function's contract is to name the
+        # exact number it saw.
+        await owner.declare_household_level_db(db)
+        return await _with_primary_controller(read_back)
+
+    actual = asyncio.run(write())
+    if actual is None or not math.isfinite(actual):
+        raise CamillaVolumeError(
+            f"Camilla volume readback is not finite after setting {db:.2f} dB"
+        )
+    if not fader_matches(actual, db, tolerance_db=READBACK_TOLERANCE_DB):
+        raise CamillaVolumeError(
+            f"Camilla volume readback mismatch: wrote {db:.2f} dB, read {actual:.2f} dB"
+        )
+
+
 class CueDuck:
     """Transient-duck claim for brief cue playback.
 

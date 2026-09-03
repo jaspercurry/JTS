@@ -15,7 +15,6 @@
 # routing map; this list retains the few top-level snapshots that still
 # have active links or near-term reference value.
 session_artifacts = [
-  "docs/AEC-DIAG-01-baseline.md",
   # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
   # historical decision archaeology, no longer a scan target; current truth
   # is tuning-operator-runbook.md.)
@@ -436,7 +435,6 @@ code = [
 docs = [
   "docs/AEC-DIAG-02-observability.md",
   "docs/AEC-DIAG-03-timing-probe.md",
-  "docs/AEC-DIAG-04-timing-results.md",
   "docs/AEC-DIAG-06-xvf-format-level-profile.md",
 ]
 requires_docs_when = [
@@ -521,7 +519,6 @@ code = [
 ]
 docs = [
   "docs/audio-paths.md",
-  "docs/phone-mic-relay-plan.md",
 ]
 requires_docs_when = [
   "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",

@@ -12,6 +12,11 @@ Pi 5, the savings these guards protect are:
   jasper/openwakeword_guard.py, which owns that figure; don't restate it here)
 - gemini_session lazy → google.genai doesn't load unless provider=gemini (~49 MB)
 - openai_session lazy → openai SDK doesn't load unless provider=openai (~11 MB)
+- resident daemons lazy → dbus_next and the oneshot
+  jasper.multiroom.reconcile stay out of jasper-control, jasper-usbmic and
+  jasper-aec-bridge (31-49 fewer modules each; -0.8 to -2.6 MB on x86_64 —
+  jasper-control and the grouping supervisor drop reconcile.py's whole
+  transitive graph, not just dbus_next, so they save the most)
 
 A regression in any of these would silently re-inflate jasper-voice's
 RSS by tens of MB. CI catches the import-graph change, not the bytes,
@@ -672,6 +677,52 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
     )
     result = _run_probe(probe)
     assert result.get("voice_daemon_imported") is True
+
+
+@pytest.mark.parametrize(
+    ("module_to_import", "modules_that_must_stay_out"),
+    [
+        pytest.param(
+            "jasper.control.server",
+            ("dbus_next", "jasper.multiroom.reconcile"),
+            id="jasper-control",
+        ),
+        pytest.param(
+            "jasper.control.grouping_supervisor",
+            ("dbus_next", "jasper.multiroom.reconcile"),
+            id="grouping-supervisor",
+        ),
+        pytest.param("jasper.cli.usb_mic", ("dbus_next",), id="jasper-usbmic"),
+        pytest.param(
+            "jasper.cli.aec_bridge", ("dbus_next",), id="jasper-aec-bridge",
+        ),
+    ],
+)
+def test_resident_daemon_import_leaves_oneshot_subsystems_out(
+    module_to_import: str, modules_that_must_stay_out: tuple[str, ...],
+) -> None:
+    """A resident daemon must not pay import cost for a oneshot subsystem.
+
+    These daemons name ``dbus_next`` only inside ``except`` tuples, and
+    ``jasper.multiroom.reconcile`` only behind a bonded-box branch, so both
+    belong behind function-local imports. The smallest supported box is a
+    415 MB Pi Zero 2 W (issue #3697).
+    """
+    probe = (
+        "import sys\n"
+        f"import {module_to_import}  # noqa: F401\n"
+        f"for name in {tuple(modules_that_must_stay_out)!r}:\n"
+        "    hit = any(m == name or m.startswith(name + '.')"
+        " for m in sys.modules)\n"
+        "    print(name + '=' + str(hit).lower())\n"
+    )
+    result = _run_probe(probe)
+    leaked = [n for n in modules_that_must_stay_out if result.get(n) is not False]
+    assert not leaked, (
+        f"importing {module_to_import} pulled {', '.join(leaked)} into "
+        "sys.modules; a resident daemon pays that RSS for the life of the "
+        "process. Keep the import inside the function that needs it."
+    )
 
 
 def _is_sys_modules(node: ast.AST) -> bool:

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import types
 from contextlib import nullcontext
@@ -808,3 +809,120 @@ def test_sandboxed_unit_keeps_the_reconciler_leg_env_path_writable() -> None:
             "is missing ReadWritePaths=/etc/jasper, which the arm reconcile "
             "needs writable for its leg-env writes"
         )
+
+
+def _stateful_camilladsp(
+    monkeypatch, *, level_db: float, freeze_readback: bool = False
+) -> dict[str, float]:
+    """Install a fake `camilladsp` whose main volume remembers what was set.
+
+    Returned so a test can read what actually LANDED at the fake hardware —
+    the clamped value, when a caller asks above the ceiling.
+    ``freeze_readback`` pins what `main_volume` reports regardless of writes,
+    which is how a readback that never agrees is simulated.
+    """
+    state = {"db": level_db}
+    client = types.SimpleNamespace(
+        volume=types.SimpleNamespace(
+            set_main_volume=lambda db: state.__setitem__("db", db),
+            main_volume=lambda: level_db if freeze_readback else state["db"],
+        ),
+        connect=lambda: None,
+        disconnect=lambda: None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "camilladsp",
+        types.SimpleNamespace(CamillaClient=lambda _host, _port: client),
+    )
+    return state
+
+
+def _commissioning_io(monkeypatch) -> aec_commission.SystemIO:
+    """The real `SystemIO` with only the audio-idle probe and the volume-ramp
+    sleep stubbed; the fader path itself stays production. The owner install
+    is the shape `main()` registers through
+    `install_env_canonical_target_provider`."""
+    from jasper.camilla import primary_controller
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    fader = primary_controller()
+    install_volume_owner(
+        VolumeOwner(
+            set_fader_db=lambda db: fader.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: fader.get_volume_db(best_effort=True),
+        )
+    )
+    io = aec_commission.SystemIO()
+    monkeypatch.setattr(io, "assert_audio_idle", lambda: None)
+    monkeypatch.setattr(aec_commission.time, "sleep", lambda _seconds: None)
+    return io
+
+
+def test_commissioning_volume_round_trips_through_the_camilla_helper(
+    monkeypatch,
+) -> None:
+    """`prepare_volume` ducks to the measurement level and hands back the
+    household level; `restore_volume` puts that level back.
+
+    Driven through the real `camilla.declare_main_volume_db` /
+    `read_main_volume_db`, so this covers the helpers' move out of the retired
+    `jasper-aec-tune` as well as the round trip.
+    """
+    state = _stateful_camilladsp(monkeypatch, level_db=-18.0)
+    io = _commissioning_io(monkeypatch)
+
+    original = io.prepare_volume()
+    assert original == -18.0
+    assert state["db"] == pytest.approx(aec_commission.MEASUREMENT_VOLUME_DB)
+
+    io.restore_volume(original)
+    assert state["db"] == pytest.approx(-18.0)
+
+
+def test_a_commissioning_volume_above_the_ceiling_lands_clamped_and_refuses(
+    monkeypatch,
+) -> None:
+    """One hardware door: the write reaches `_coerce_main_volume_db`, so a
+    request above 0 dB lands AT 0 dB and the readback confirm then refuses,
+    rather than the caller believing a level the speaker never played."""
+    from jasper.camilla import CamillaVolumeError
+
+    state = _stateful_camilladsp(monkeypatch, level_db=-18.0)
+    io = _commissioning_io(monkeypatch)
+
+    with pytest.raises(CamillaVolumeError):
+        io.set_volume(6.0)
+
+    assert state["db"] == 0.0
+
+
+def test_a_non_finite_commissioning_fader_value_is_refused(monkeypatch) -> None:
+    """No commissioning capture may start against a fader nobody can name.
+
+    All three of the helpers' refusals, which is one behaviour at one
+    altitude: the READ that comes back non-finite, the REQUEST that is
+    non-finite, and the READBACK that stays non-finite after a write. Each
+    raises rather than letting a run proceed at an unknown level.
+    """
+    from jasper.camilla import (
+        CamillaVolumeError,
+        declare_main_volume_db,
+        read_main_volume_db,
+    )
+
+    _stateful_camilladsp(monkeypatch, level_db=math.nan, freeze_readback=True)
+    io = _commissioning_io(monkeypatch)
+
+    # The READ: what `prepare_volume` calls to learn the household level.
+    with pytest.raises(CamillaVolumeError):
+        read_main_volume_db()
+
+    # The REQUEST: a caller asking for a level that is not a number.
+    with pytest.raises(CamillaVolumeError):
+        declare_main_volume_db(math.nan)
+
+    # The READBACK, through the commissioning path: the write is accepted but
+    # the fader never reports a level anyone can name.
+    with pytest.raises(CamillaVolumeError):
+        io.set_volume(-20.0)

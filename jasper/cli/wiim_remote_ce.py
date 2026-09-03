@@ -107,8 +107,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from dbus_next.errors import DBusError  # type: ignore
-
 from jasper.accessories.constants import WIIM_REMOTE_2_NAME_RE
 from jasper.log_event import log_event
 
@@ -525,6 +523,8 @@ def run(
     anomaly worth reading: in production this only runs *after* the adapter
     subscribed to a live, name-matched LE link.
     """
+    from dbus_next.errors import DBusError  # type: ignore
+
     try:
         # TimeoutError covers asyncio.wait_for on 3.11+ (they are the same
         # class); DBusError is what a missing/wedged BlueZ raises.
