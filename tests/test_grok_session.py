@@ -207,11 +207,10 @@ async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:
 
     The adapter inherits OpenAI's logging wholesale, so a Grok outage
     used to read as ``openai ...`` — unattributable when both providers
-    are configured. The match is deliberately the whole leading word,
-    not one hard-coded prefix: an earlier version of this test looked
-    for ``"openai connection:"`` and sailed past ``"openai connection
-    state:"``. Structured ``event=`` names are provider-independent
-    grep strings and are correctly excluded. See issue #3855.
+    are configured. The match is the whole leading word, not one
+    hard-coded prefix, so no ``openai ...`` variant slips past.
+    Structured ``event=`` names are provider-independent grep strings
+    and are correctly excluded. See issue #3855.
     """
     conn, _factory = _make_grok_conn()
     registry = ToolRegistry()

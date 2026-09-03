@@ -353,11 +353,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
     # ADR-0215: a TERMINAL outage names its remedy instead — "I'll keep
     # trying" is a false promise when retrying cannot help. Pinned at the
     # wake gate (conn_paused), the path the household actually hits.
-    #
-    # The refused wake ALSO asks the supervisor to retry now (issue
-    # #3855): a terminal outage slow-polls every 15 minutes, and the
-    # wake word is the household asking whether it is fixed. The cue is
-    # unchanged — they are still told the provider is unavailable.
+    # The refused wake also asks the supervisor to retry now (#3855).
     assert await _drive(
         paused=True, conn_paused=True, cue="provider_out_of_credit",
     ) == (["provider_out_of_credit"], 1)

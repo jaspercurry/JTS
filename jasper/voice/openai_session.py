@@ -65,6 +65,7 @@ from jasper.backoff import (
     ReconnectNudge,
     reconnect_backoff_delay,
     reconnect_delay,
+    sleep_or_nudge,
 )
 from jasper.log_event import log_event
 
@@ -898,8 +899,6 @@ class OpenAIRealtimeConnection:
         self._monotonic = clock if clock is not None else _time.monotonic
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._base_url = base_url
-        # Journal prefix. Reads the class attribute so a subclass
-        # (GrokRealtimeConnection) names itself instead of "openai".
         self._log_tag = f"{self.PROVIDER_NAME} connection:"
         # Lazy SDK client — only built when ``connect_factory`` is None.
         # We do this lazily so test setups can construct the connection
@@ -934,6 +933,9 @@ class OpenAIRealtimeConnection:
 
         self._receive_task: asyncio.Task | None = None
         self._reconnect_event: asyncio.Event = asyncio.Event()
+        # Separate from `_reconnect_event` (which means "the session
+        # dropped"): this one only shortens an in-flight backoff wait.
+        self._nudge_event: asyncio.Event = asyncio.Event()
         self._supervisor_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
         self._connected_event: asyncio.Event = asyncio.Event()
@@ -1111,7 +1113,7 @@ class OpenAIRealtimeConnection:
             return False
         if not self._reconnect_nudge.allow():
             return False
-        self._reconnect_event.set()
+        self._nudge_event.set()
         return True
 
     def supports_server_vad(self) -> bool:
@@ -1721,6 +1723,7 @@ class OpenAIRealtimeConnection:
         # Seeds the first delay; the previous failure's classification
         # picks every one after that.
         last_transient = True
+        self._nudge_event.clear()
         attempt = 0
         bounded = self._backoff_schedule is not None
         max_attempts = len(self._backoff_schedule) if bounded else None
@@ -1742,25 +1745,31 @@ class OpenAIRealtimeConnection:
             await self._backoff_sleep(delay)
             if self._stopping.is_set():
                 return
+            # This attempt answers every nudge raised so far, including
+            # any raised during the previous attempt. Clearing here (not
+            # inside the wait) is what keeps those from being discarded.
+            self._nudge_event.clear()
             try:
                 await self._open_session()
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
                 transient = is_transient(e)
-                if transient and not last_transient:
-                    # The provider stopped rejecting us outright and is
-                    # only failing normally now, so it is recovering.
-                    # Restart the ramp at 1 s instead of resuming
-                    # wherever the slow poll left the counter.
-                    attempt = 0
-                last_transient = transient
                 logger.warning(
                     f"{self._log_tag} reconnect attempt %d failed "
                     "(%s: %s, transient=%s)",
                     attempt, type(e).__name__, self._outage.detail,
-                    last_transient,
+                    transient,
                 )
+                if transient and not last_transient and not bounded:
+                    # The provider stopped rejecting us outright and is
+                    # only failing normally now, so it is recovering.
+                    # Restart the ramp at 1 s instead of resuming
+                    # wherever the slow poll left the counter. Bounded
+                    # (test) schedules index by `attempt`, so resetting
+                    # one would replay the schedule forever.
+                    attempt = 0
+                last_transient = transient
 
         if bounded and not self._stopping.is_set():
             async with self._state_lock:
@@ -1771,25 +1780,13 @@ class OpenAIRealtimeConnection:
             )
 
     async def _backoff_sleep(self, delay: float) -> None:
-        """Wait ``delay`` seconds, or until someone asks for an
-        immediate reconnect — whichever comes first.
+        """Wait out the backoff, unless a caller asks to retry now.
 
         A bare sleep here is uninterruptible, so the 15-minute terminal
         poll would ignore `request_reconnect_now` for up to 15 minutes.
-        The event is cleared first so one request buys one early retry
-        rather than spinning the loop. `stop()` cancels the supervisor
-        task, which unwinds through here and cancels both waiters."""
-        self._reconnect_event.clear()
-        sleeper = asyncio.ensure_future(self._sleep(delay))
-        waiter = asyncio.ensure_future(self._reconnect_event.wait())
-        try:
-            await asyncio.wait(
-                (sleeper, waiter), return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            sleeper.cancel()
-            waiter.cancel()
-            await asyncio.gather(sleeper, waiter, return_exceptions=True)
+        `stop()` cancels the supervisor task, which unwinds through here
+        and cancels both waiters."""
+        await sleep_or_nudge(delay, self._nudge_event, sleep=self._sleep)
 
     async def _receive_loop(self, conn) -> None:
         """Iterate the SDK connection's event stream and route events.

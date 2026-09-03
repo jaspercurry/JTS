@@ -5,9 +5,10 @@
 """Small, dependency-free retry schedules shared across subsystems."""
 from __future__ import annotations
 
+import asyncio
 import random
 import time
-from typing import Callable
+from typing import Awaitable, Callable
 
 
 RECONNECT_INITIAL_BACKOFF_SEC = 1.0
@@ -42,9 +43,9 @@ def _jittered(base: float) -> float:
 
 # A terminal failure (revoked key, blocked account, missing model) cannot
 # be fixed by retrying, so hammering the 60 s cap only burns the provider's
-# rate budget — jts.local logged 1000+ such attempts over 36 h. Poll slowly
-# instead of parking: an operator who adds credit or fixes the key recovers
-# within one interval, with no restart. See issue #3855.
+# rate budget. Poll slowly instead of parking: an operator who adds credit
+# or fixes the key recovers within one interval, with no restart.
+# See issue #3855.
 TERMINAL_POLL_INTERVAL_SEC = 900.0
 
 
@@ -84,3 +85,27 @@ class ReconnectNudge:
             return False
         self._last = now
         return True
+
+
+async def sleep_or_nudge(
+    delay: float,
+    nudge: asyncio.Event,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Wait ``delay`` seconds, or until ``nudge`` is set — first wins.
+
+    The caller owns clearing ``nudge``: clearing it here would drop a
+    request that arrived while the caller was between waits, which is
+    exactly when a long connect attempt is in flight.
+    """
+    sleeper = asyncio.ensure_future(sleep(delay))
+    waiter = asyncio.ensure_future(nudge.wait())
+    try:
+        await asyncio.wait(
+            (sleeper, waiter), return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        sleeper.cancel()
+        waiter.cancel()
+        await asyncio.gather(sleeper, waiter, return_exceptions=True)
