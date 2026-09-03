@@ -91,7 +91,6 @@ class CrossoverLevelRunDisposition(str, Enum):
 class CrossoverLevelRunFailure(str, Enum):
     """Stable terminal reasons accepted from the Room transport adapter."""
 
-    RELAY_REGISTRATION_FAILED = "relay_registration_failed"
     PHONE_ABORTED = "phone_aborted"
     LEVEL_MATCH_ACTION_FAILED = "level_match_action_failed"
     FINALIZATION_FAILED = "finalization_failed"

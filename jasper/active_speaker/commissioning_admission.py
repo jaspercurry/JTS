@@ -99,13 +99,13 @@ ACTIVE_DRIVER_CAPTURE_REPEAT_COUNT = 1
 # interval, longest protected sweep, graph load/readback/restore, and relay
 # posts, so the budget is explicit rather than a profile cooldown that can only
 # time out after the phone starts recording.
-ACTIVE_DRIVER_CAPTURE_GRAPH_AND_RELAY_BUDGET_S = 9.0
+ACTIVE_DRIVER_CAPTURE_GRAPH_AND_STATUS_BUDGET_S = 9.0
 MAX_AUTOMATIC_DRIVER_COOLDOWN_S = max(
     0.0,
     CROSSOVER_CAPTURE_PLAY_DEADLINE_S
     - CROSSOVER_AMBIENT_DURATION_S
     - max(DRIVER_SWEEP_DURATIONS_S.values())
-    - ACTIVE_DRIVER_CAPTURE_GRAPH_AND_RELAY_BUDGET_S,
+    - ACTIVE_DRIVER_CAPTURE_GRAPH_AND_STATUS_BUDGET_S,
 )
 ACTIVE_COMMISSIONING_PLAYBACK_FAILURE_REASONS = frozenset({
     "main_volume_drift",

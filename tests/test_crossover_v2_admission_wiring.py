@@ -768,8 +768,8 @@ def test_a_non_retriable_capture_verdict_rides_out_terminal(code):
     # so "JTS measured this spot N times" would be a false claim about a
     # position that was rejected on its first take.
     assert settled.code == code
-    assert "JTS measured this spot" not in settled.to_relay_dict()["reason"]
-    assert settled.to_relay_dict()["reason"] == flow.reason_message(
+    assert "JTS measured this spot" not in settled.to_capture_dict()["reason"]
+    assert settled.to_capture_dict()["reason"] == flow.reason_message(
         code, flow.REASON_REGISTRY[code],
     )
     # Nothing was charged and no position was dropped: the condition closed the

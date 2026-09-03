@@ -1038,7 +1038,7 @@ def build_v2_wired_run_and_consume(
             # The conductor's stamp is the fallback for refusals that carry
             # no registered code of their own (the admission arms raise with
             # a rendered MESSAGE and stamp the code separately). The relay's
-            # REASON_RELAY_TIMEOUT fallback is deliberately NOT mirrored —
+            # REASON_CAPTURE_TIMEOUT fallback is deliberately NOT mirrored —
             # there is no link here to blame — and the relay runner's own
             # inverted precedence is flagged (PR body) but out of scope: its
             # gate refusals reach a different arm shape via the phone.

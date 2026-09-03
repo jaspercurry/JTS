@@ -94,7 +94,7 @@ __all__ = [
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
-    "WALK_OVER_RELAY_CAPACITY",
+    "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
     "WALK_DELAY_NOT_ACCEPTED",
@@ -761,7 +761,7 @@ WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
 #: The composed session would need more relay blob indexes than exist.
-WALK_OVER_RELAY_CAPACITY = "walk_over_relay_capacity"
+WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
 
 #: The session already plans a lateral group. Declared here so the vocabulary
 #: has one home; raised by the CALLER, since this module does not read session
@@ -818,7 +818,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
-    WALK_OVER_RELAY_CAPACITY,
+    WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
     WALK_POLARITY_NOT_ACCEPTED,
@@ -928,7 +928,7 @@ def session_lateral_walk(
     caller tags indexes.
 
     Raises :class:`LateralWalkRefused` with :data:`WALK_REGIME_UNSUPPORTED`,
-    :data:`WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_RELAY_CAPACITY`. All three
+    :data:`WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_CAPTURE_CAPACITY`. All three
     are properties of the PAIR (this walk, this session), which is why the
     spool's own document validation cannot make them.
 
@@ -961,7 +961,7 @@ def session_lateral_walk(
     )
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise LateralWalkRefused(
-            WALK_OVER_RELAY_CAPACITY,
+            WALK_OVER_CAPTURE_CAPACITY,
             f"{base_entries} session captures + {len(request.stops)} stops = "
             f"{entries} entries, needing {attempts} relay blob indexes over a "
             f"ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",

@@ -73,11 +73,11 @@ REASON_CLIPPED = "clipped"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
-REASON_RELAY_TIMEOUT = "relay_timeout"
+REASON_CAPTURE_TIMEOUT = "capture_timeout"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 # The play seam refused or failed the program (safety re-admission over-cap, a
 # graph-restore failure, a session program error) — distinct from a relay
-# transport death (``relay_timeout``). Terminal: a play-time refusal is a bug,
+# transport death (``capture_timeout``). Terminal: a play-time refusal is a bug,
 # a tampered readback, or a genuinely infeasible profile.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
 # The main fader was not at the volume this session declared when a stimulus
@@ -160,7 +160,7 @@ REASON_APPLY_FAILED = "apply_failed"
 REASON_USER_STOPPED = "user_stopped"
 # The deferred apply/"review" hold (CaptureBeginDeferred "awaiting_apply")
 # expired before an apply completed. Distinct from a relay-transport death
-# (relay_timeout) and a deliberate phone Stop (user_stopped). Retained but
+# (capture_timeout) and a deliberate phone Stop (user_stopped). Retained but
 # unreached: no shipped session holds for an apply.
 REASON_REVIEW_HOLD_TIMEOUT = "review_hold_timeout"
 # The position gate's three refusals, reachable by EITHER gated shape
@@ -574,8 +574,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "Check the volume and the microphone, then try again.",
         ),
     ),
-    REASON_RELAY_TIMEOUT: ReasonSpec(
-        REASON_RELAY_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
+    REASON_CAPTURE_TIMEOUT: ReasonSpec(
+        REASON_CAPTURE_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
         # The old link is dead once the session collapses, so the copy must not
         # say "open the link again" — that link and its QR are gone. Start
         # over mints a FRESH session from this page.
@@ -995,7 +995,7 @@ def reason_message(
     """The household sentence for ``code``, given what the capture measured.
 
     THE single copy selector: one failure is narrated on surfaces that never
-    see each other — the relay verdict (:meth:`PhaseVerdict.to_relay_dict`),
+    see each other — the relay verdict (:meth:`PhaseVerdict.to_capture_dict`),
     the envelope (``crossover_envelope_v2._reason_message``), and the
     apply-seam refusal — and a household looking at two of them after ONE
     failure must not be handed two accounts of it. Adding a third
@@ -1079,7 +1079,7 @@ class PhaseVerdict:
     # diagnosis, not the registry's evidence-unknown fallback.
     reflection_measured: bool | None = None
 
-    def to_relay_dict(self) -> dict[str, Any]:
+    def to_capture_dict(self) -> dict[str, Any]:
         """The mapping ``consume_capture`` returns to ``run_capture_plan``.
 
         Always carries ``accepted``; a rejection adds the reason code,

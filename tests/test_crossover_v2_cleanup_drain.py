@@ -64,7 +64,7 @@ class _Conductor:
     def __init__(self, *, done: bool = False, awaiting: Any = False) -> None:
         self.session_id = "drain-test"
         self.last_failure_code = None
-        self.relay_published_refusal = False
+        self.capture_published_refusal = False
         self.armed_capture = None
         self.accepted_phases: set[str] = set()
         self._done = done

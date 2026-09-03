@@ -73,7 +73,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_DELAY_IMPLAUSIBLE,
     REASON_NOISY_ROOM_LINEARITY,
-    REASON_RELAY_TIMEOUT,
+    REASON_CAPTURE_TIMEOUT,
     REASON_SNR_FLOOR,
     REASON_USER_STOPPED,
     REASON_VERIFY_CROSSOVER_REGION,
@@ -1921,7 +1921,7 @@ def test_a_session_restart_on_an_applied_speaker_still_discloses_the_apply():
     envelope must still tell the household the crossover landed, without
     promising a control the flow no longer has.
     """
-    restart = {"code": REASON_RELAY_TIMEOUT}
+    restart = {"code": REASON_CAPTURE_TIMEOUT}
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, failure=restart,
     ))
@@ -2664,7 +2664,7 @@ def test_hard_stop_template():
 
 def test_session_restart_template():
     env = build_crossover_envelope_v2(_status(
-        phase="measure", failure={"code": REASON_RELAY_TIMEOUT},
+        phase="measure", failure={"code": REASON_CAPTURE_TIMEOUT},
     ))
     assert env["screen"] == "session_restart"
     assert env["next_action"]["id"] == "restart_session"
@@ -4176,13 +4176,13 @@ def test_a_budget_zero_code_reaching_this_screen_by_the_applied_override_keeps_r
     """The swap is keyed on the code's OWN registry row — verify_fail template
     AND budget 0 — never on budget alone, and this is why.
 
-    ``relay_timeout`` and ``user_stopped`` are budget-0 ``session_restart``
+    ``capture_timeout`` and ``user_stopped`` are budget-0 ``session_restart``
     rows that land on this screen only because something is applied (W6.7
     ruling 3). Their zero budget says no further CAPTURE of what failed can
     help; it says nothing about the VERIFY check, and here "Try again" means a
     fresh /v2/verify session — which for a dead relay is precisely the fix.
     Keying on budget alone would have taken the working button away."""
-    for code in (REASON_RELAY_TIMEOUT, REASON_USER_STOPPED):
+    for code in (REASON_CAPTURE_TIMEOUT, REASON_USER_STOPPED):
         assert REASON_REGISTRY[code].retry_budget == 0, code
         env = build_crossover_envelope_v2(_status(
             phase="verify", applied=True, failure={"code": code},
@@ -4297,11 +4297,11 @@ def test_check_phase_agc_failure_still_renders_its_normal_template():
 
 
 def test_verify_phase_relay_timeout_also_renders_verify_fail():
-    """A non-agc code (REASON_RELAY_TIMEOUT's own template is
+    """A non-agc code (REASON_CAPTURE_TIMEOUT's own template is
     session_restart) gets the same applied override -- ANY failure code
     surfacing once genuinely applied is entitled to the route out."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, failure={"code": REASON_RELAY_TIMEOUT},
+        phase="verify", applied=True, failure={"code": REASON_CAPTURE_TIMEOUT},
     ))
     assert env["screen"] == "verify_fail"
 
@@ -4446,7 +4446,7 @@ def test_aged_failure_greets_with_the_entry_screen_not_the_terminal_one():
     """The headline acceptance: a day-old failure over an APPLIED crossover
     renders the entry / tier-choice screen, not verify_fail."""
     env = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
         verify=_PRIOR_SESSION_EVIDENCE,
     ))
     assert env["screen"] == "microphone_check"
@@ -4511,7 +4511,7 @@ _WAY_BACK_FP = "b" * 64
             previous_candidate_fingerprint=_WAY_BACK_FP,
         )),
         ("microphone_check", _aged_status(
-            REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+            REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
             previous_candidate_fingerprint=_WAY_BACK_FP,
         )),
     ],
@@ -4548,7 +4548,7 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
         phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
     ),
     _aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
     ),
 ], ids=["done", "verify_fail", "aged_entry"])
 def test_no_way_back_is_minted_without_a_prior_candidate_fingerprint(screen_status):
@@ -4575,7 +4575,7 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
     clean = build_crossover_envelope_v2(_status(phase="check"))
     aged = build_crossover_envelope_v2(
         _stale_measurement_status(
-            REASON_RELAY_TIMEOUT, phase="verify",
+            REASON_CAPTURE_TIMEOUT, phase="verify",
             previous_candidate_fingerprint=_WAY_BACK_FP,
         ),
     )
@@ -4607,7 +4607,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
     dict copied shallowly, every envelope this process ever served would share
     that dict — one mutation would poison the daemon for its whole life."""
     first = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
         previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
     way_back = [
@@ -4616,7 +4616,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
     way_back["body"]["poisoned"] = True
 
     second = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
         previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
     assert [a for a in second["alternate_actions"]
@@ -4679,7 +4679,7 @@ def test_aged_failure_note_dates_a_previous_year_explicitly():
     dates already follow elsewhere in the tree (jasper.tools.gmail)."""
     stamp = time.localtime(time.time() - 400 * _DAY_S)
     env = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, age_s=400 * _DAY_S, phase="check",
+        REASON_CAPTURE_TIMEOUT, age_s=400 * _DAY_S, phase="check",
     ))
     assert str(stamp.tm_year) in _history_note(env)
 
@@ -4689,7 +4689,7 @@ def test_aged_failure_note_dates_a_previous_year_explicitly():
 
 @pytest.mark.parametrize("code,expected", [
     (REASON_VERIFY_OUT_OF_TOLERANCE, "it wasn't confirmed"),
-    (REASON_RELAY_TIMEOUT, "it stopped before finishing"),
+    (REASON_CAPTURE_TIMEOUT, "it stopped before finishing"),
     (REASON_USER_STOPPED, "it stopped before finishing"),
     (REASON_CHANNEL_MAP_MISMATCH, "it couldn't continue"),
     # The one code that used to keep a durable-fact sentence through aging;
@@ -4774,7 +4774,7 @@ def test_unreadable_timestamp_reads_as_aged_and_never_raises(stamp):
         "active": True,
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
-            "phase": "check", "failure": {"code": REASON_RELAY_TIMEOUT, "at": stamp},
+            "phase": "check", "failure": {"code": REASON_CAPTURE_TIMEOUT, "at": stamp},
         },
     })
     assert env["screen"] == "microphone_check"
@@ -4790,7 +4790,7 @@ def test_fresh_failure_still_renders_todays_terminal_screen_exactly():
     """No regression to the live path. A failure the household is looking at
     right now renders the screen it renders today, numbers and all — this is
     the case the recency check must leave completely alone."""
-    fresh = {"code": REASON_RELAY_TIMEOUT, "at": time.time()}
+    fresh = {"code": REASON_CAPTURE_TIMEOUT, "at": time.time()}
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, failure=fresh,
         previous_candidate_fingerprint=_WAY_BACK_FP,
@@ -4982,7 +4982,7 @@ def test_failed_post_apply_walk_names_what_survived():
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, tier="full", session_id="cap_live",
         verify={"outcome": "pass"},
-        failure={"code": REASON_RELAY_TIMEOUT},
+        failure={"code": REASON_CAPTURE_TIMEOUT},
     ))
     banked = [n for n in env["nudges"] if n["code"] == "crossover_v2_banked_progress"]
     assert len(banked) == 1
@@ -5000,7 +5000,7 @@ def test_failed_post_apply_walk_names_what_survived():
 def test_banked_progress_line_is_silent_when_state_cannot_support_it(v2):
     env = build_crossover_envelope_v2(_status(
         phase="verify", session_id="cap_live",
-        failure={"code": REASON_RELAY_TIMEOUT}, **v2,
+        failure={"code": REASON_CAPTURE_TIMEOUT}, **v2,
     ))
     assert [n for n in env["nudges"]
             if n["code"] == "crossover_v2_banked_progress"] == []
@@ -5848,7 +5848,7 @@ def test_an_aged_resume_stays_one_quiet_line_and_carries_no_finding():
     accident.
     """
     env = build_crossover_envelope_v2(_status(
-        failure={"code": REASON_RELAY_TIMEOUT, "at": time.time() - _DAY_S},
+        failure={"code": REASON_CAPTURE_TIMEOUT, "at": time.time() - _DAY_S},
         phase="verify", applied=True, findings=_banked_finding(age_s=_DAY_S),
     ))
     assert env["screen"] == "microphone_check"

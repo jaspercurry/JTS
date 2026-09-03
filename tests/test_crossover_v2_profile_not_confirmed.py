@@ -640,7 +640,7 @@ def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):
     prepared = v2host.prepare_v2_session(
         {}, status=env.status, run_async=None, camilla_factory=None
     )
-    assert prepared.label == v2host.V2_RELAY_KIND_SESSION
+    assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
     assert env.calls["evidence_store"] != []
 
 

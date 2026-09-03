@@ -972,7 +972,7 @@ class CrossoverV2Session:
         # True once ``authorize_begin`` has refused: the relay writes its own
         # capture_refused into a last-write-wins slot the terminal rider
         # must not clobber.
-        self.relay_published_refusal = False
+        self.capture_published_refusal = False
         self._measurement_protection_sections_by_role = None
         if measurement_protection_sections_by_role is not None:
             self._measurement_protection_sections_by_role = {
@@ -1953,13 +1953,13 @@ class CrossoverV2Session:
             message = (
                 reason_message(decision.code, spec) if spec else decision.code
             )
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(decision.code, message)
         if decision.kind == _admission.DEFER_AWAITING_APPLY:
             raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 spec.code,
                 reason_message(
@@ -1982,7 +1982,7 @@ class CrossoverV2Session:
                     code, slot=slot,
                 ),
             )
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 # The code the household is told about is the condition actually
                 # observed here, never a generic exhaustion code.
@@ -2001,7 +2001,7 @@ class CrossoverV2Session:
                 level=logging.ERROR, session_id=self.session_id,
                 phase=phase, index=index, kind=str(decision.kind),
             )
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 REASON_LOCATE_FAILED,
                 reason_message(
@@ -2185,7 +2185,7 @@ class CrossoverV2Session:
             # without it four ``code=locate_failed`` lines are indistinguishable.
             pilot_heard=verdict.pilot_heard,
         )
-        return verdict.to_relay_dict()
+        return verdict.to_capture_dict()
 
     def _with_attempt_payload(
         self, slot: str, verdict: PhaseVerdict
@@ -2343,7 +2343,7 @@ class CrossoverV2Session:
             verdict,
             payload={
                 **verdict.payload,
-                # Overrides ``to_relay_dict``'s retryable reason; the same observed
+                # Overrides ``to_capture_dict``'s retryable reason; the same observed
                 # code still selects the diagnosis.
                 "reason": self._extras_spent_message(
                     ledger,

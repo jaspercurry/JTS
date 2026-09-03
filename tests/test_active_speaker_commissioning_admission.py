@@ -375,7 +375,7 @@ def test_prepare_capture_plan_refuses_unbounded_cooldown(tmp_path, monkeypatch):
 
 def test_automatic_cooldown_ceiling_fits_relay_recording_budget():
     from jasper.active_speaker.commissioning_admission import (
-        ACTIVE_DRIVER_CAPTURE_GRAPH_AND_RELAY_BUDGET_S,
+        ACTIVE_DRIVER_CAPTURE_GRAPH_AND_STATUS_BUDGET_S,
     )
     from jasper.active_speaker.test_signal_plan import (
         CROSSOVER_AMBIENT_DURATION_S,
@@ -387,7 +387,7 @@ def test_automatic_cooldown_ceiling_fits_relay_recording_budget():
         MAX_AUTOMATIC_DRIVER_COOLDOWN_S
         + CROSSOVER_AMBIENT_DURATION_S
         + max(DRIVER_SWEEP_DURATIONS_S.values())
-        + ACTIVE_DRIVER_CAPTURE_GRAPH_AND_RELAY_BUDGET_S
+        + ACTIVE_DRIVER_CAPTURE_GRAPH_AND_STATUS_BUDGET_S
     )
     assert MAX_AUTOMATIC_DRIVER_COOLDOWN_S == 5.0
     assert occupied_s <= CROSSOVER_CAPTURE_PLAY_DEADLINE_S

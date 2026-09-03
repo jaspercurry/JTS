@@ -1055,7 +1055,7 @@ def test_the_take_reads_the_sessions_own_cloud_shape(slot):
     assert _take(base_entries=11, plans_cloud_group=False) is not None
 
     spool.stage_angle_request(ac.per_driver_at(stops))
-    assert ac.WALK_OVER_RELAY_CAPACITY in _refused(
+    assert ac.WALK_OVER_CAPTURE_CAPACITY in _refused(
         base_entries=11, plans_cloud_group=True,
     )
 

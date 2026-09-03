@@ -1101,7 +1101,7 @@ jasper-angle-capture withdraw
 session in its ordinary shape: `walk_regime_unsupported`,
 `walk_mover_mismatch`, `walk_over_mover_envelope` (arm ±45°, person ±80° —
 normally refused at the door, so reaching the take means a hand-edited or
-pre-bound document), `walk_over_relay_capacity`,
+pre-bound document), `walk_over_capture_capacity`,
 `walk_lateral_group_already_planned`, `walk_stop_no_longer_valid`,
 `walk_polarity_not_accepted` and `walk_polarity_needs_wired`. The document is
 consumed except on the spool's two unreadable arms, so a permissions mistake

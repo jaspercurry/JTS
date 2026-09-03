@@ -639,7 +639,7 @@ def test_a_refusal_persists_the_conductors_own_code(monkeypatch):
 
 
 def test_a_wired_death_never_persists_a_transport_claim(monkeypatch):
-    """The relay's REASON_RELAY_TIMEOUT fallback is deliberately not
+    """The relay's REASON_CAPTURE_TIMEOUT fallback is deliberately not
     mirrored: an unregistered refusal with no conductor code degrades to
     internal_error — there is no link to blame."""
     terminal = []

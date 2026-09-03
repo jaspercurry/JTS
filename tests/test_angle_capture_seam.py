@@ -712,7 +712,7 @@ def test_a_legal_staged_walk_is_never_refused_for_capacity() -> None:
             base_entries=base_entries,
             plans_cloud_group=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
         )
-    assert excinfo.value.reason == ac.WALK_OVER_RELAY_CAPACITY
+    assert excinfo.value.reason == ac.WALK_OVER_CAPTURE_CAPACITY
     # The arithmetic rides in the message: the operator's only lever is to stage
     # fewer stops, and they need the numbers to pick a count.
     detail = excinfo.value.detail
@@ -756,7 +756,7 @@ def test_a_cloud_bearing_session_is_where_the_capacity_gate_bites() -> None:
             base_entries=base_entries,
             plans_cloud_group=True,
         )
-    assert excinfo.value.reason == ac.WALK_OVER_RELAY_CAPACITY
+    assert excinfo.value.reason == ac.WALK_OVER_CAPTURE_CAPACITY
 
 
 def test_the_pose_record_states_the_seams_own_regime_word() -> None:

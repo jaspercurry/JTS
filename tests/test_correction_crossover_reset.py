@@ -223,7 +223,7 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
             "accepted_phases": ["check", "measure"],
             "applied": False,
             "candidate": {"fingerprint": "fp"},
-            "failure": {"code": "relay_timeout"},
+            "failure": {"code": "capture_timeout"},
         })
         assert v2.load_v2_state() is not None
         _reset_scaffold(monkeypatch)

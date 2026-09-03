@@ -529,7 +529,7 @@ def test_a_walk_that_outlives_its_ceiling_is_named_rather_than_left_generic():
     catch one that answers every position too slowly to finish: stage 1 gates
     nine begins under a 2520 s ceiling, so ~280 s a move exhausts the session
     with no single hold anywhere near 600 s. That death used to limp on to the
-    relay link's own expiry and reach the household as ``relay_timeout`` — a
+    relay link's own expiry and reach the household as ``capture_timeout`` — a
     claim about a transport that never failed. It ends here instead, by name.
     """
     now = {"t": 0.0}
@@ -714,7 +714,7 @@ def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
     """Both halves of what makes a gate refusal honest, for the new code.
 
     The teardown arm trusts a gate refusal's own code only when the registry
-    knows it (else it degrades to ``relay_timeout``), and re-posts a terminal
+    knows it (else it degrades to ``capture_timeout``), and re-posts a terminal
     host event only for codes the runner has NOT already published — so a code
     missing from either set reaches the household as the transport lie the
     other two gate codes exist to avoid.

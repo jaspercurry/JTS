@@ -1531,7 +1531,7 @@ def test_crossover_envelope_surfaces_the_v2_capture_slot(monkeypatch):
     v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
     correction_setup._set_capture_slot({
         "status": "waiting",
-        "kind": v2host.V2_RELAY_KIND_SESSION,
+        "kind": v2host.V2_CAPTURE_KIND_SESSION,
     })
     try:
         resp = _drive("/crossover/envelope")

@@ -1063,7 +1063,7 @@ def build_conductor_state(
     measure_sweep_durations_s = getattr(snap, "measure_sweep_durations_s", None)
     # GATED ON THE CODE BEING PERSISTED, not on the conductor's own: several
     # terminal arms supply a ``failure_code`` the capture loop never produced
-    # (the relay-death arm persists ``relay_timeout`` over whatever the last
+    # (the relay-death arm persists ``capture_timeout`` over whatever the last
     # capture failed on), and ungated this would pair one failure's code with
     # another's evidence.
     failure_pilot_heard = (

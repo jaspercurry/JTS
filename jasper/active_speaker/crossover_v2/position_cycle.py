@@ -156,7 +156,7 @@ def expand_angle_spec(angles: str, per_position: int) -> str:
     Raises :class:`PositionCycleError` for ``per_position < 1``. There is
     deliberately no upper bound: how many stops a session can carry is the
     relay's own ceiling (``angle_capture.session_lateral_walk``'s
-    ``WALK_OVER_RELAY_CAPACITY``), and a second, lower bound invented on the
+    ``WALK_OVER_CAPTURE_CAPACITY``), and a second, lower bound invented on the
     laptop would refuse walks the speaker would have taken.
     """
     if per_position < 1:

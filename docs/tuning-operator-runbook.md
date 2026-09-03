@@ -396,7 +396,7 @@ checked **after** the per-hold budget so a genuine stall keeps the more
 actionable sentence. It introduces no new budget: past the ceiling
 `SessionVolumePlan.assert_ready` already refuses a stale-active plan, so every
 capture after it was doomed; what changed is that the session says so instead of
-reporting `relay_timeout`, a claim about a transport that never failed.
+reporting `capture_timeout`, a claim about a transport that never failed.
 
 **What a remote walk cannot say.** It samples one axis, so its post-apply group
 carries no `xovr` role at all. The done screen discloses that once

@@ -455,8 +455,8 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
             # The real preparer's own line, so the label this route surfaces is
             # the stage the route asked for rather than one the stub chose.
             label=(
-                v2host.V2_RELAY_KIND_VERIFY if verify_only
-                else v2host.V2_RELAY_KIND_SESSION
+                v2host.V2_CAPTURE_KIND_VERIFY if verify_only
+                else v2host.V2_CAPTURE_KIND_SESSION
             ),
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,

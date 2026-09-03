@@ -26,7 +26,7 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
   hosting, the capture choreography, and the translation of its internal
   deaths into the flow's reason vocabulary. It is reached LAZILY. This host
   stays the single writer of the persisted failure state those reasons land in
-  (``status["crossover_v2"]["failure"]`` — ``relay_timeout``,
+  (``status["crossover_v2"]["failure"]`` — ``capture_timeout``,
   ``user_stopped``, …), and of the walked-away volume guarantee the provider
   drives through ``V2VolumeHooks``.
 
@@ -133,8 +133,8 @@ STATE_KIND = "jts_crossover_v2_flow_state"
 # The wizard-facing relay kind label (mirrors the legacy
 # "crossover_sweep:<kind>" labels so /status.relay consumers need no new
 # vocabulary beyond the prefix).
-V2_RELAY_KIND_SESSION = "crossover_v2:session"
-V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
+V2_CAPTURE_KIND_SESSION = "crossover_v2:session"
+V2_CAPTURE_KIND_VERIFY = "crossover_v2:verify"
 
 # The durable v2 state document's own vocabulary, its schema, and its one
 # on-Pi path live in :mod:`jasper.active_speaker.crossover_v2.durable_state`,
@@ -852,7 +852,7 @@ def _apply_failure_gate() -> str:
     ``persist_conductor_state`` path every other capture failure uses — see
     ``jasper.active_speaker.crossover_v2_flow.CrossoverV2Session.authorize_begin``,
     which refuses the deferred VERIFY hold outright once this names a code
-    rather than holding it toward a dishonest relay_timeout. Retained with
+    rather than holding it toward a dishonest capture_timeout. Retained with
     that hold and, like it, unreached by any shipped session since the
     two-stage split (D10) — the writer it was built for was the auto-apply
     worker thread, which is gone.
@@ -6813,7 +6813,7 @@ def prepare_v2_session(
             stop_event.set()
 
     return V2PreparedSession(
-        label=V2_RELAY_KIND_VERIFY if verify_only else V2_RELAY_KIND_SESSION,
+        label=V2_CAPTURE_KIND_VERIFY if verify_only else V2_CAPTURE_KIND_SESSION,
         open=_open,
         run_and_consume=_run,
         request_stop=_request_stop,
