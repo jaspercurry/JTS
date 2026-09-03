@@ -688,13 +688,13 @@ async def test_get_weather_no_default_error_includes_setup_url():
     weather = WeatherClient(
         default_location="",
         http=httpx.AsyncClient(),
-        setup_url="http://jts4.local/weather",
+        setup_url="jts4.local/weather",
     )
     try:
         result = await weather.get_weather()
         assert result["error"] == (
             "no location specified and no weather default configured "
-            "(visit http://jts4.local/weather to set one)"
+            "(visit jts4.local/weather to set one)"
         )
     finally:
         await weather.aclose()
