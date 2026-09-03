@@ -129,11 +129,11 @@ from jasper.cli.aec_bridge_telemetry import (
     StatsIdentity,
     TimestampedLegEmitter,
     _BridgeStats,
+    logger,
 )
 from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
 
-logger = logging.getLogger("jasper.aec_bridge")
 AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
 
 OUT_PORT = leg_default_port("on")
@@ -398,8 +398,6 @@ def _aec_loop(  # noqa: PLR0915
         ),
     )
     import wave
-    if production_chip_aec_enabled and (not chip_aec_qs or not chip_beam_plan):
-        raise RuntimeError("chip-AEC mode requires a validated chip beam plan")
     usb_mic_choice_plan = chip_beam_plan or _mic_profile.chip_beam_plan_from_env(
         os.environ,
     )
@@ -773,8 +771,7 @@ def _aec_loop(  # noqa: PLR0915
                         )
                     continue
             else:
-                if engine is None:
-                    raise RuntimeError("AEC3 engine missing outside chip-AEC mode")
+                assert engine is not None  # main() sets it unless chip-AEC
                 clean = engine.process(mic_bytes, ref_bytes)
             # Pre-gain output for the RMS metric: "attenuation" must reflect
             # what the AEC accomplished, not how much the post-gain stage

@@ -429,11 +429,7 @@ def outputd_main_start_realtime(
     if not digits.isdigit():
         _log_ordering_probe_anomaly("unparseable", returncode=0, value=raw)
         return None
-    seconds = int(digits)
-    # A literal zero is not what systemd 257 prints for never-run (it prints
-    # empty, probed) — kept as defence against another version rendering it that
-    # way, and treated as the same "nothing has run" case.
-    return float(seconds) if seconds else None
+    return float(digits)
 
 
 def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
