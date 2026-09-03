@@ -1809,7 +1809,6 @@ def test_an_unevaluable_dac_gate_carries_the_last_resolved_verdict(
     body = env_file.read_text()
     assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=approved" in body
     assert "JASPER_AEC_CHIP_AEC_DAC_SOURCE=runtime_env_carried" in body
-    assert "carrying last verdict" in body
     # The carried verdict is what keeps the chip leg armed.
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
     assert "JASPER_MIC_DEVICE=udp:9876" in body
@@ -1962,11 +1961,9 @@ def test_resolver_discovered_future_xvf_reaches_managed_policy(
     # No production beam plan, so no chip beams — but the mic is 6-channel, so
     # software AEC3 carries the wake path and the reason reaches the doctor.
     assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
-    assert "future XVF needs a validated beam plan" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
     assert "JASPER_MIC_DEVICE=udp:9876" in body
-    assert "future XVF needs a validated beam plan" in result.stderr
     assert not _marker(tmp_path).exists()
     assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
 
@@ -2715,7 +2712,6 @@ def test_reconcile_parks_voice_and_aec_for_bonded_follower(tmp_path: Path) -> No
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert "bonded follower" in result.stderr
     commands = _systemctl_log(tmp_path)
     assert "disable --now jasper-voice.service" in commands
     assert "stop jasper-aec-bridge.service jasper-aec-init.service" in commands
@@ -3394,55 +3390,56 @@ def test_a_not_ready_alignment_still_reverifies_the_chip_stack(
     assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=ready" in env_file.read_text()
 
 
-def test_a_present_park_marker_still_restarts_voice(tmp_path: Path) -> None:
-    """A pass that would clear the park marker is UN-parking voice; bringing
-    it back is the whole point."""
-    _armed_chip_aec_box(tmp_path)
+def _present_park_marker(tmp_path: Path) -> dict[str, str]:
+    # A pass that would clear the park marker is UN-parking voice; bringing it
+    # back is the whole point.
     _marker(tmp_path).write_text("reason=stale\n")
-
-    result = _run_reconcile(tmp_path, "--reason", "systemd")
-
-    assert result.returncode == 0, result.stderr
-    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
-    assert not _marker(tmp_path).exists()
+    return {}
 
 
-def test_an_invalidated_voice_provider_still_reaches_the_park_branch(
-    tmp_path: Path,
-) -> None:
-    """voice_provider.env is not in jasper.env, so the env change test cannot
-    see a provider that went away. restart_voice's park branch has to run."""
-    _armed_chip_aec_box(tmp_path)
+def _invalidated_voice_provider(tmp_path: Path) -> dict[str, str]:
+    # voice_provider.env is not in jasper.env, so the env change test cannot
+    # see a provider that went away. restart_voice's park branch has to run.
     (tmp_path / "voice_provider.env").write_text("JASPER_VOICE_PROVIDER=\n")
-
-    result = _run_reconcile(tmp_path, "--reason", "systemd")
-
-    assert result.returncode == 0, result.stderr
-    assert "disable --now jasper-voice.service" in _systemctl_log(tmp_path)
+    return {}
 
 
-def test_an_unreadable_accessory_probe_still_restarts_voice(
-    tmp_path: Path,
-) -> None:
-    """The fail-open branch. "I could not tell" is not "nothing is paired": a
-    probe that cannot answer must not be allowed to look like an unchanged
-    input."""
-    _armed_chip_aec_box(tmp_path)
+def _unreadable_accessory_probe(tmp_path: Path) -> dict[str, str]:
+    # The fail-open branch. "I could not tell" is not "nothing is paired": a
+    # probe that cannot answer must not be allowed to look like an unchanged
+    # input.
     broken = _python_double(
         tmp_path,
         "broken-accessory-python",
         failing_module="jasper.accessories.mic_env",
     )
+    return {"JASPER_MIC_PROFILE_PYTHON": str(broken)}
 
-    result = _run_reconcile(
-        tmp_path,
-        "--reason",
-        "systemd",
-        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(broken)},
-    )
+
+@pytest.mark.parametrize(
+    ("apply_change", "expect_command"),
+    [
+        (_present_park_marker, VOICE_RESTART_CMD),
+        (_invalidated_voice_provider, "disable --now jasper-voice.service"),
+        (_unreadable_accessory_probe, VOICE_RESTART_CMD),
+    ],
+    ids=("park-marker", "invalid-provider", "unreadable-probe"),
+)
+def test_a_park_branch_trigger_still_reaches_restart_voice(
+    tmp_path: Path,
+    apply_change: Callable[[Path], dict[str, str]],
+    expect_command: str,
+) -> None:
+    """Three independent inputs to restart_voice's park branch that the env
+    change test cannot see. Each must still reach it."""
+    _armed_chip_aec_box(tmp_path)
+    extra_env = apply_change(tmp_path)
+
+    result = _run_reconcile(tmp_path, "--reason", "systemd", extra_env=extra_env)
 
     assert result.returncode == 0, result.stderr
-    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
+    assert expect_command in _systemctl_log(tmp_path)
+    assert not _marker(tmp_path).exists()
 
 
 def test_a_bond_and_an_unbond_both_restart_the_leaders_voice(

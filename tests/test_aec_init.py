@@ -1590,10 +1590,8 @@ def test_moving_error_counters_are_not_one_window(monkeypatch) -> None:
 
     _install_queue_stream(monkeypatch, tick, clock)
 
-    with pytest.raises(aec_init.ChipInitError) as excinfo:
+    with pytest.raises(aec_init.ReferenceCountersMovedError):
         aec_init.collect_reference_queue(REFERENCE_PCM)
-
-    assert "error counters moved" in str(excinfo.value)
 
 
 def test_the_ring_cannot_rebuild_a_window_across_a_seam(monkeypatch) -> None:

@@ -155,6 +155,10 @@ class ChipInitError(RuntimeError):
     pass
 
 
+class ReferenceCountersMovedError(ChipInitError):
+    """The reference writer's error counters advanced mid-window."""
+
+
 class CommissionRequired(ChipInitError):
     pass
 
@@ -634,6 +638,7 @@ def collect_reference_queue(
     baseline: tuple[tuple[int, ...], float] | None = None
     status_reads = 0
     last_error = "no STATUS response"
+    last_error_cls: type[ChipInitError] = ChipInitError
     while time.monotonic() < deadline:
         try:
             status = read_status_socket(socket_path)
@@ -653,7 +658,9 @@ def collect_reference_queue(
                 baseline = (snapshot.counters, now)
                 window = []
             elif snapshot.counters != baseline[0]:
-                raise ChipInitError("chip-reference writer error counters moved")
+                raise ReferenceCountersMovedError(
+                    "chip-reference writer error counters moved"
+                )
             window = _merge_writes(window, snapshot.writes, now, baseline[1])
         except (OSError, ValueError, ChipInitError) as exc:
             # An xrun, a reopen, or a restart splits the readings on either side
@@ -664,6 +671,7 @@ def collect_reference_queue(
             window = []
             baseline = None
             last_error = str(exc)
+            last_error_cls = type(exc) if isinstance(exc, ChipInitError) else ChipInitError
         else:
             delays = tuple(item.delay for _at, item in window)
             held = _window_span(window)
@@ -677,6 +685,7 @@ def collect_reference_queue(
                 )
                 return status, delays
             last_error = _queue_shortfall(delays, held)
+            last_error_cls = ChipInitError
         time.sleep(interval)
     _log_reference_queue(
         "unstable",
@@ -690,7 +699,7 @@ def collect_reference_queue(
         reason=last_error,
         level=logging.WARNING,
     )
-    raise ChipInitError(f"native chip-reference writer not ready: {last_error}")
+    raise last_error_cls(f"native chip-reference writer not ready: {last_error}")
 
 
 def _window_span(window: Sequence[tuple[float, ReferenceWrite]]) -> float:
