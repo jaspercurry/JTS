@@ -345,6 +345,8 @@ def atomic_write_json(
 
 
 def _parse_env_text(text: str) -> dict[str, str]:
+    # NOT env_load.parse_env_text: this half of a read-modify-write round-trip
+    # keeps surrounding quotes so _format_env_text republishes them verbatim.
     out: dict[str, str] = {}
     for raw in text.splitlines():
         line = raw.strip()

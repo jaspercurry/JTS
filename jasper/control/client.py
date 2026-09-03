@@ -61,8 +61,10 @@ def _connect_host(bind_host: str) -> str:
     return host
 
 
+#: The one spelling of jasper-control's HTTP port; JASPER_CONTROL_PORT wins.
+DEFAULT_CONTROL_PORT = 8780
 DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
-DEFAULT_PORT = int(os.environ.get("JASPER_CONTROL_PORT") or "8780")
+DEFAULT_PORT = int(os.environ.get("JASPER_CONTROL_PORT") or DEFAULT_CONTROL_PORT)
 DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 DEFAULT_TIMEOUT = 2.0
 

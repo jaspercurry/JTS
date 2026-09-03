@@ -42,6 +42,7 @@ from .install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
+from .json_fields import read_json_mapping
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -96,16 +97,8 @@ def _age_seconds(raw: Any) -> float | None:
     return max((datetime.now(timezone.utc) - updated).total_seconds(), 0.0)
 
 
-def _read_json_object(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def _read_versioned_object(path: Path) -> dict[str, Any]:
-    payload = _read_json_object(path)
+    payload = read_json_mapping(path) or {}
     version = payload.get("schema_version")
     if type(version) is not int or version != SCHEMA_VERSION:
         return {}

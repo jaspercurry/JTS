@@ -59,12 +59,12 @@ Three layers, kept strictly separate so the next microphone needs no change here
 """
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.accessories.mic_env import read_accessory_mic_sources
+from jasper.json_fields import read_json_mapping
 from jasper.voice.input_presence import (
     voice_input_absent_marker_path,
     voice_parked_no_mic,
@@ -218,15 +218,6 @@ def _marker_reason() -> str:
     return ""
 
 
-def _read_profile_json(state_path: str | None) -> dict | None:
-    path = state_path or mic_profile_state_path()
-    try:
-        payload = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def read_mic_presence(state_path: str | None = None) -> MicPresence:
     """Resolve current voice-input status from the reconcilers' SSOTs.
 
@@ -260,8 +251,8 @@ def read_mic_presence(state_path: str | None = None) -> MicPresence:
     # is the local mic (its profile JSON says present); a present non-XVF mic
     # has no XVF JSON and is reported simply as present (the per-device checks
     # show specifics).
-    payload = _read_profile_json(state_path)
-    if isinstance(payload, dict) and payload.get("present"):
+    payload = read_json_mapping(Path(state_path or mic_profile_state_path()))
+    if payload and payload.get("present"):
         chan = payload.get("capture_channels")
         return MicPresence(
             present=True,

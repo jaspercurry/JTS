@@ -45,7 +45,9 @@ from jasper.log_event import log_event
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
 
+from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..http_security import management_read_allowed, mutating_request_allowed
+from .client import DEFAULT_CONTROL_PORT
 from ..atomic_io import locked_update_env_file
 from ..audio_quality import (  # noqa: F401 - route-mixin dependency exports
     apply_requested_converter as _apply_audio_quality,
@@ -2237,7 +2239,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--port", type=int,
-        default=int(os.environ.get("JASPER_CONTROL_PORT", "8780")),
+        default=int(os.environ.get("JASPER_CONTROL_PORT", DEFAULT_CONTROL_PORT)),
     )
     parser.add_argument(
         "--camilla-host",
@@ -2245,7 +2247,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--camilla-port", type=int,
-        default=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
+        default=int(os.environ.get("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT)),
     )
     parser.add_argument(
         "--voice-socket",

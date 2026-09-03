@@ -36,7 +36,9 @@ import logging
 import signal
 from typing import Awaitable, Callable, Optional
 
-from jasper.control.client import AsyncControlClient, ControlError, ControlResponse
+from jasper.control.client import (
+    DEFAULT_CONTROL_PORT, AsyncControlClient, ControlError, ControlResponse,
+)
 from jasper.log_event import log_event
 
 # pyudev is Linux-only (Pi runtime). Imported lazily inside the HID bridge
@@ -64,7 +66,7 @@ logger = logging.getLogger(__name__)
 
 # jasper-control on the same Pi. Stays localhost because the bridge is a
 # host-side caller.
-DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
+DEFAULT_CONTROL_URL = f"http://127.0.0.1:{DEFAULT_CONTROL_PORT}"
 
 # Coalesce window for rotation events. At 20 Hz detents (the VK-01's
 # fast-spin rate), this collapses ~4 events into one HTTP call.
