@@ -446,7 +446,6 @@ def test_hid_accessory_unit_files_actually_install(tmp_path):
         # The watcher that turns an unprivileged request file into a pass.
         # Without the file on disk `enable --now` exits 1 under set -e.
         "jasper-accessory-reconcile.path",
-        "jasper-wiim-remote-mic.service",
         "jasper-wiim-remote-ce.service",
     }
 

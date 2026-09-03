@@ -2,9 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""evdev → jasper-control HTTP bridge for HID remote profiles.
+"""The jasper-input process: every accessory bridge in one interpreter.
 
-Watches /dev/input/event* for any device matching
+Two bridges share this process (ADR-0225), each supervised as its own task so
+a fault in one can never stop the other or the process:
+
+* the HID bridge below — evdev → jasper-control HTTP calls, always running;
+* the WiiM Remote 2 BLE mic adapter (``wiim_remote_mic``), run only while
+  ``jasper-accessory-reconcile`` publishes that accessory's manual mic source.
+
+The HID bridge watches /dev/input/event* for any device matching
 `registry.KNOWN_PROFILES` (by USB VID/PID or Bluetooth name fallback).
 For each match, opens an async reader and translates key events into
 HTTP calls against jasper-control on localhost. Volume bursts are
@@ -24,18 +31,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
+import signal
 from typing import Awaitable, Callable, Optional
 
 from jasper.control.client import AsyncControlClient, ControlError, ControlResponse
 from jasper.log_event import log_event
 
-# pyudev is Linux-only (Pi runtime). Imported lazily inside _supervise
+# pyudev is Linux-only (Pi runtime). Imported lazily inside the HID bridge
 # so the rest of the module (registry types, _TapCounter, _Coalescer)
 # stays importable on dev hosts that don't have it — used by the
 # hardware-free pytest suite. Same lazy-import idiom as
 # jasper/control/server.py's _dispatch_transport.
 
+from .constants import WIIM_REMOTE_2_SOURCE_ID
+from .mic_env import read_accessory_mic_sources
 from .registry import (
     KNOWN_PROFILES,
     HoldAction,
@@ -45,6 +56,7 @@ from .registry import (
     lookup,
     lookup_by_name,
 )
+from .supervisor import Bridge, supervise
 
 logger = logging.getLogger(__name__)
 
@@ -625,7 +637,7 @@ async def _read_device(
             pass
 
 
-async def _supervise(control_url: str) -> None:
+async def _run_hid_bridge(control_url: str) -> None:
     """Discover known HID accessories at startup, then watch udev for
     hot-plug. One reader task per attached device; tasks exit on
     unplug and are recreated on replug."""
@@ -704,11 +716,73 @@ async def _supervise(control_url: str) -> None:
             task.cancel()
 
 
+async def _run_wiim_remote_mic() -> None:
+    # Imported here, not at module scope: dbus-next and the ADPCM decoder cost
+    # resident memory that a box with no WiiM Remote 2 paired must not pay.
+    from .wiim_remote_mic import MicAdapterConfig, run
+
+    await run(MicAdapterConfig())
+
+
+# Manual mic source id (as published in accessory-mics.env) -> the adapter that
+# produces it inside this process.
+MIC_ADAPTERS: dict[str, Bridge] = {
+    WIIM_REMOTE_2_SOURCE_ID: _run_wiim_remote_mic,
+}
+
+
+def _published_mic_adapters() -> dict[str, Bridge]:
+    """The adapters jasper-accessory-reconcile currently publishes a source for.
+
+    An unreadable or corrupt file degrades to "no accessory mic" rather than
+    propagating: the HID bridge in this process carries volume and
+    push-to-talk, and must start whatever the mic half says.
+    """
+    try:
+        sources = read_accessory_mic_sources()
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        log_event(
+            logger,
+            "accessory.mic_sources_unreadable",
+            level=logging.WARNING,
+            err=f"{type(exc).__name__}: {exc}",
+        )
+        return {}
+    return {
+        source: MIC_ADAPTERS[source]
+        for source in sources
+        if source in MIC_ADAPTERS
+    }
+
+
+async def _run_bridges(control_url: str) -> None:
+    bridges: dict[str, Bridge] = {
+        "hid": lambda: _run_hid_bridge(control_url),
+        **_published_mic_adapters(),
+    }
+    # Cancel on the signal rather than letting the default disposition kill the
+    # interpreter: every pair/forget try-restarts this unit, and the bridges'
+    # cleanup (GATT StopNotify, the udev observer thread, evdev fds) only runs
+    # if asyncio gets to unwind them first. NotImplementedError: not every
+    # loop implementation carries signal handlers.
+    current = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    if current is not None:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(sig, current.cancel)
+    log_event(logger, "accessory.bridges_started", bridges=",".join(bridges))
+    try:
+        await supervise(bridges)
+    except asyncio.CancelledError:
+        log_event(logger, "accessory.bridges_stopped")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Translate HID accessory key events (volume knobs, etc.) "
-            "into HTTP calls against jasper-control."
+            "Run the accessory bridges: HID key events into jasper-control "
+            "HTTP calls, plus any published accessory mic adapter."
         ),
     )
     parser.add_argument(
@@ -727,7 +801,7 @@ def main() -> int:
     )
 
     try:
-        asyncio.run(_supervise(args.control_url))
+        asyncio.run(_run_bridges(args.control_url))
     except KeyboardInterrupt:
         return 0
     return 0

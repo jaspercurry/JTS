@@ -4,6 +4,11 @@
 
 """Shared constants for optional accessory adapters."""
 
+# The manual mic source id the reconciler publishes for this remote. Shared by
+# the registry profile, the adapter, and the bridge's adapter table: the three
+# must name the same source or the reconciler publishes one nobody produces.
+WIIM_REMOTE_2_SOURCE_ID = "wiim_remote_2"
+
 WIIM_REMOTE_2_MIC_UDP_PORT = 9892
 WIIM_REMOTE_2_MIC_DEVICE = f"udp:{WIIM_REMOTE_2_MIC_UDP_PORT}"
 

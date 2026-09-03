@@ -6,9 +6,15 @@
 
 Accessory profiles declare what extra pipeline they can add. This module owns
 the runtime decision: if BlueZ says an adapter-backed remote profile is paired,
-publish the matching ``JASPER_MANUAL_MIC_SOURCES`` entry and run that adapter
-unit; otherwise keep both voice and the adapter idle. That keeps rare hardware
-from imposing resident cost on every speaker.
+publish the matching ``JASPER_MANUAL_MIC_SOURCES`` entry; otherwise publish
+none. That keeps rare hardware from imposing resident cost on every speaker.
+
+The published env file IS the instruction to the adapter: adapters run as tasks
+inside the always-on ``jasper-input`` process (ADR-0225), which reads the file
+at startup and runs exactly the adapters it names. So this module's only
+systemd action for the mic half is to ``try-restart`` that host when the
+published set changes — never enable, disable or stop it, which would take the
+HID button bridge (volume, push-to-talk) down with it.
 
 Where wake detection runs, it owns the *accessory* fact alone: the voice-input
 gate marker is the AND of "no local mic" and "no accessory mic", so moving this
@@ -60,7 +66,9 @@ VOICE_UNIT = "jasper-voice.service"
 VOICE_INPUT_GATE_UNIT = "jasper-aec-reconcile.service"
 SYSTEMCTL_TIMEOUT_SEC = 10.0
 BLUEZ_DISCOVERY_TIMEOUT_SEC = 5.0
-_ADAPTER_SYSTEMCTL_CALLS = 3
+# Per adapter host, and only when the published set changed: one try-restart,
+# then one show probe of the result.
+_ADAPTER_SYSTEMCTL_CALLS = 2
 _ADAPTER_TIMEOUT_BUDGET_SEC = (
     _ADAPTER_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
 )
@@ -141,12 +149,8 @@ class BluetoothSourceIntentError(AccessoryReconcileError):
     """Bluetooth intent was unreadable, so accessory services were parked."""
 
 
-class AdapterServiceTeardownError(AccessoryReconcileError):
-    """One or more optional adapter services did not reach parked state."""
-
-
-class AdapterServiceActivationError(AccessoryReconcileError):
-    """One or more requested adapter services did not become active."""
+class AdapterHostRefreshError(AccessoryReconcileError):
+    """An adapter host did not accept the refresh that applies the new plan."""
 
 
 def _local_sources_allowed() -> bool:
@@ -171,7 +175,6 @@ class AccessoryMicPlan:
     """Resolved accessory mic state from current BlueZ device records."""
 
     sources: Mapping[str, str]
-    adapter_services: tuple[str, ...]
     active_profiles: tuple[str, ...]
 
 
@@ -187,15 +190,15 @@ def adapter_mic_profiles() -> tuple[RemoteProfile, ...]:
         if profile.mic.status == "adapter"
         and profile.mic.capture_profile_id
         and profile.mic.device
-        and profile.mic.adapter_service
+        and profile.mic.adapter_host_service
     )
 
 
-def adapter_mic_services() -> tuple[str, ...]:
-    """All adapter services managed by this reconciler."""
+def adapter_mic_hosts() -> tuple[str, ...]:
+    """Every process this reconciler asks to re-read the published sources."""
 
     return tuple(sorted({
-        str(profile.mic.adapter_service)
+        str(profile.mic.adapter_host_service)
         for profile in adapter_mic_profiles()
     }))
 
@@ -219,7 +222,6 @@ def plan_from_bluez_objects(
     """
 
     sources: dict[str, str] = {}
-    services: set[str] = set()
     active_profiles: set[str] = set()
     for ifaces in managed.values():
         props = ifaces.get(DEVICE_IFACE)
@@ -230,15 +232,13 @@ def plan_from_bluez_objects(
             continue
         source_id = profile.mic.capture_profile_id
         device = profile.mic.device
-        service = profile.mic.adapter_service
-        if not source_id or not device or not service:
+        host = profile.mic.adapter_host_service
+        if not source_id or not device or not host:
             continue
         sources[source_id] = device
-        services.add(service)
         active_profiles.add(profile.id)
     return AccessoryMicPlan(
         sources=dict(sorted(sources.items())),
-        adapter_services=tuple(sorted(services)),
         active_profiles=tuple(sorted(active_profiles)),
     )
 
@@ -322,130 +322,69 @@ def _show_properties(result: subprocess.CompletedProcess) -> dict[str, str]:
     return properties
 
 
-def _apply_adapter_service(
-    service: str,
+def _unit_command_failure(
+    unit: str,
+    command: Sequence[str],
     *,
-    active: bool,
     systemctl: Systemctl,
-    restart_active: bool,
-) -> tuple[str, ...]:
-    failures: list[str] = []
-    commands: tuple[tuple[str, ...], ...]
-    if active:
-        verb = "restart" if restart_active else "start"
-        commands = (("enable", service), (verb, service))
-        expected_enabled = "enabled"
-        expected_active = "active"
-    else:
-        commands = (
-            ("disable", "--now", service),
-            ("reset-failed", service),
-        )
-        expected_enabled = "disabled"
-        expected_active = "inactive"
+) -> str | None:
+    """Run one systemctl verb against ``unit``; the failure line, or None."""
 
-    for command in commands:
-        # ``reset-failed`` is cleanup, not the terminal-state contract.
-        # systemd returns nonzero when an already-clean inactive unit has no
-        # failed state to reset ("Unit ... not loaded"), even when its unit
-        # file is loaded and the requested disabled/inactive state is exact.
-        # Keep this best-effort and let the authoritative show probe below
-        # catch a genuinely failed or active adapter.
-        if command[0] == "reset-failed":
-            try:
-                systemctl(command)
-            except (
-                OSError,
-                RuntimeError,
-                TimeoutError,
-                subprocess.SubprocessError,
-            ):
-                pass
-            continue
-        try:
-            result = _invoke_systemctl(command, systemctl=systemctl)
-        except (
-            OSError,
-            RuntimeError,
-            TimeoutError,
-            subprocess.SubprocessError,
-        ) as exc:
-            failures.append(
-                f"{service}: systemctl {' '.join(command)} raised {exc}"
-            )
-            continue
-        if result.returncode != 0:
-            failures.append(
-                f"{service}: systemctl {' '.join(command)} failed: "
-                f"{_result_detail(result)}"
-            )
-
-    show_command = (
-        "show",
-        service,
-        "--property=UnitFileState",
-        "--property=ActiveState",
-    )
     try:
-        result = systemctl(show_command)
+        result = _invoke_systemctl(command, systemctl=systemctl)
     except (
         OSError,
         RuntimeError,
         TimeoutError,
         subprocess.SubprocessError,
     ) as exc:
-        failures.append(f"{service}: systemctl show raised {exc}")
-        return tuple(failures)
+        return f"{unit}: systemctl {' '.join(command)} raised {exc}"
     if result.returncode != 0:
-        failures.append(
-            f"{service}: systemctl show failed: {_result_detail(result)}"
+        return (
+            f"{unit}: systemctl {' '.join(command)} failed: "
+            f"{_result_detail(result)}"
         )
-        return tuple(failures)
-
-    properties = _show_properties(result)
-    for label, property_name, expected in (
-        ("is-enabled", "UnitFileState", expected_enabled),
-        ("is-active", "ActiveState", expected_active),
-    ):
-        observed = properties.get(property_name, "")
-        if observed != expected:
-            failures.append(
-                f"{service}: expected {label}={expected}, "
-                f"observed {observed or 'missing state'}"
-            )
-    return tuple(failures)
+    return None
 
 
-def apply_adapter_services(
-    active_services: Sequence[str],
+def refresh_adapter_hosts(
+    hosts: Sequence[str],
     *,
+    restart: bool,
+    require_active: bool,
     systemctl: Systemctl = _systemctl,
-    restart_active: bool = True,
 ) -> tuple[str, ...]:
-    """Converge every adapter and return ordered per-adapter failures.
+    """Converge each adapter host against the sources just published.
 
-    Each declared adapter retains its own exact commands, logs, and terminal
-    probes. The registry currently contains one adapter, so a direct ordered
-    loop is the smallest reliable owner. If a second real adapter ships, its
-    measured service behavior should drive any timeout/concurrency redesign.
+    ``restart`` is the *apply* step and runs only when the published set
+    changed, because a restart is what makes the host re-read the file.
+    ``try-restart`` only, never enable/disable/stop: the host is the always-on
+    HID bridge, whose unit state the installer owns, and stopping it for an
+    unpaired accessory would take volume and push-to-talk with it.
+
+    ``require_active`` is the *observe* step and runs on every pass, changed
+    set or not. ``try-restart`` succeeds against a host that is stopped or
+    ``failed``, and a host past its start limit stays that way across every
+    later no-op pass — while voice, ``/state`` and the doctor all keep
+    reporting the accessory microphone the published file names. So while a
+    source IS published, a host that is not running is a failure every time it
+    is observed, not only on the pass that published it. The restart is
+    blocking, not ``--no-block``, so the probe observes the restart it asked
+    for.
     """
 
-    services = adapter_mic_services()
-    if not services:
-        return ()
-
-    active = set(active_services)
-
-    def converge(service: str) -> tuple[str, ...]:
-        return _apply_adapter_service(
-            service,
-            active=service in active,
-            systemctl=systemctl,
-            restart_active=restart_active,
-        )
-
-    results = tuple(converge(service) for service in services)
-    return tuple(failure for result in results for failure in result)
+    failures: list[str] = []
+    for host in hosts:
+        if restart:
+            failure = _unit_command_failure(
+                host, ("try-restart", host), systemctl=systemctl,
+            )
+            if failure is not None:
+                failures.append(failure)
+                continue
+        if require_active and not _unit_active(host, systemctl=systemctl):
+            failures.append(f"{host}: expected is-active=active")
+    return tuple(failures)
 
 
 def _gate_owner_state(*, systemctl: Systemctl) -> str:
@@ -582,9 +521,9 @@ def voice_follows_accessory_mic() -> bool:
     )
 
 
-def _voice_unit_active(*, systemctl: Systemctl) -> bool:
+def _unit_active(unit: str, *, systemctl: Systemctl) -> bool:
     try:
-        result = systemctl(("show", VOICE_UNIT, "--property=ActiveState"))
+        result = systemctl(("show", unit, "--property=ActiveState"))
     except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError):
         return False
     if result.returncode != 0:
@@ -617,27 +556,14 @@ def converge_voice_unit(
     command: tuple[str, ...]
     if not wanted:
         action, command = "stop", ("stop", VOICE_UNIT)
-    elif env_changed and _voice_unit_active(systemctl=systemctl):
+    elif env_changed and _unit_active(VOICE_UNIT, systemctl=systemctl):
         action, command = "restart", ("--no-block", "restart", VOICE_UNIT)
     else:
         action, command = "start", ("--no-block", "start", VOICE_UNIT)
 
-    try:
-        result = _invoke_systemctl(command, systemctl=systemctl)
-    except (
-        OSError,
-        RuntimeError,
-        TimeoutError,
-        subprocess.SubprocessError,
-    ) as exc:
-        return "none", (
-            f"{VOICE_UNIT}: systemctl {' '.join(command)} raised {exc}",
-        )
-    if result.returncode != 0:
-        return "none", (
-            f"{VOICE_UNIT}: systemctl {' '.join(command)} failed: "
-            f"{_result_detail(result)}",
-        )
+    failure = _unit_command_failure(VOICE_UNIT, command, systemctl=systemctl)
+    if failure is not None:
+        return "none", (failure,)
     return action, ()
 
 
@@ -702,26 +628,29 @@ async def reconcile_once(
         # Bluetooth Off and role parking are authoritative even when BlueZ still
         # has paired records. Do not query D-Bus: BlueZ may be powered down or
         # deliberately retained only as shared control-plane infrastructure.
-        plan = AccessoryMicPlan(
-            sources={},
-            adapter_services=(),
-            active_profiles=(),
-        )
+        plan = AccessoryMicPlan(sources={}, active_profiles=())
 
-    if plan.adapter_services:
-        # Publish the source before its producer starts.
+    # Publish first in both directions: the file is what the host reads, so the
+    # refresh below is what applies it, and a refresh before the write would
+    # apply the previous plan. This gives up the old teardown ordering, which
+    # stopped the producer before withdrawing its source — unreachable now that
+    # the file is the only handle on the adapter. A write that fails therefore
+    # leaves the previous plan running — which is an authoritative failure, not
+    # the fail-soft I/O class main() exits 0 on: a failed unlink under
+    # Bluetooth Off leaves the adapter streaming behind a green oneshot.
+    try:
         env_changed = write_manual_mic_env(plan.sources, path=env_file)
-        adapter_failures = apply_adapter_services(
-            plan.adapter_services,
-            systemctl=systemctl,
-            restart_active=env_changed or reason == "install",
-        )
-    else:
-        # Fail closed in the opposite order: stop every producer before its
-        # voice source disappears. This also guarantees malformed intent parks
-        # the adapter even if cleaning up the env file subsequently fails.
-        adapter_failures = apply_adapter_services((), systemctl=systemctl)
-        env_changed = write_manual_mic_env({}, path=env_file)
+    except OSError as exc:
+        raise AccessoryReconcileError(
+            f"could not publish accessory mic sources: {exc}"
+        ) from exc
+    hosts = adapter_mic_hosts()
+    adapter_failures = refresh_adapter_hosts(
+        hosts,
+        restart=env_changed,
+        require_active=bool(plan.sources),
+        systemctl=systemctl,
+    )
     if voice_follows_accessory_mic():
         voice, voice_failures = converge_voice_unit(
             wanted=bool(plan.sources),
@@ -745,11 +674,7 @@ async def reconcile_once(
     if adapter_failures:
         log_event(
             logger,
-            (
-                "accessory_mic.activation_failed"
-                if plan.adapter_services
-                else "accessory_mic.teardown_failed"
-            ),
+            "accessory_mic.host_refresh_failed",
             reason=reason,
             failures=" | ".join(adapter_failures),
             env_changed=int(env_changed),
@@ -759,17 +684,12 @@ async def reconcile_once(
     if intent_error is not None:
         if adapter_failures:
             raise BluetoothSourceIntentError(
-                f"{intent_error}; adapter teardown failed: "
+                f"{intent_error}; adapter host refresh failed: "
                 + " | ".join(adapter_failures)
             )
         raise intent_error
     if adapter_failures:
-        error_type = (
-            AdapterServiceActivationError
-            if plan.adapter_services
-            else AdapterServiceTeardownError
-        )
-        raise error_type(" | ".join(adapter_failures))
+        raise AdapterHostRefreshError(" | ".join(adapter_failures))
     log_event(
         logger,
         "accessory_mic.reconciled",
@@ -778,7 +698,8 @@ async def reconcile_once(
         role_allowed=int(role_allowed),
         profiles=",".join(plan.active_profiles) or "(none)",
         sources=",".join(plan.sources) or "(none)",
-        services=",".join(plan.adapter_services) or "(none)",
+        hosts=",".join(hosts) or "(none)",
+        host_restarted=int(env_changed),
         env_changed=int(env_changed),
         voice=voice,
     )

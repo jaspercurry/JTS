@@ -6,18 +6,20 @@
 
 The remote exposes button presses as ordinary HID events, but its built-in
 microphone is a vendor-shaped HID-over-GATT voice report rather than a Linux
-capture device. This daemon is intentionally narrow: subscribe to the WiiM
+capture device. This adapter is intentionally narrow: subscribe to the WiiM
 voice GATT report, decode the remote's 16 kHz ADPCM stream, and forward PCM
 frames to a local UDP mic source. The voice daemon owns push-to-talk session
 routing through ``JASPER_MANUAL_MIC_SOURCES``.
+
+``run`` is a task inside the ``jasper-input`` process, not a daemon of its own
+(ADR-0225): it owns its own reconnect retry, and jasper.accessories.supervisor
+is the backstop that keeps a fault here away from the HID button bridge.
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 import re
-import signal
 import socket
 import sys
 import time
@@ -30,7 +32,11 @@ from dbus_next.errors import DBusError  # type: ignore
 from jasper.log_event import log_event
 
 from ._dbus import variant_value
-from .constants import WIIM_REMOTE_2_MIC_UDP_PORT, WIIM_REMOTE_2_NAME_RE
+from .constants import (
+    WIIM_REMOTE_2_MIC_UDP_PORT,
+    WIIM_REMOTE_2_NAME_RE,
+    WIIM_REMOTE_2_SOURCE_ID,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -402,7 +408,7 @@ async def _request_ce_reservation() -> None:
 
     Per-connection and transient: the reservation dies with the connection,
     and this process outlives disconnects (``_run_subscription`` returns and
-    ``_run`` loops), so unit ordering cannot do this — it has to fire here, on
+    ``run`` loops), so unit ordering cannot do this — it has to fire here, on
     every reconnect.
 
     Offloaded to a thread on purpose. ``manage_units`` is a blocking socket
@@ -439,6 +445,18 @@ async def _request_ce_reservation() -> None:
         error=str(result.get("error") or f"rc={result.get('rc')}")[:200],
         level=logging.WARNING,
     )
+
+
+async def _first_of(*awaitables: Any) -> None:
+    """Return when the first awaitable completes; cancel and drain the rest."""
+
+    tasks = [asyncio.ensure_future(item) for item in awaitables]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _read_descriptor_value(bus: Any, path: str) -> bytes:
@@ -488,9 +506,20 @@ async def _connect_bluez():
     return await MessageBus(bus_type=BusType.SYSTEM).connect()
 
 
-async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> None:
+@dataclass(frozen=True)
+class MicAdapterConfig:
+    """Where the decoded stream goes and how fast reconnects are retried."""
+
+    source_id: str = WIIM_REMOTE_2_SOURCE_ID
+    device_name_regex: str = WIIM_REMOTE_2_NAME_RE
+    udp_host: str = "127.0.0.1"
+    udp_port: int = DEFAULT_UDP_PORT
+    retry_sec: float = 2.0
+
+
+async def _run_subscription(config: MicAdapterConfig) -> None:
     bus = await _connect_bluez()
-    sink = UdpPcmSink(args.udp_host, args.udp_port)
+    sink = UdpPcmSink(config.udp_host, config.udp_port)
     stream = WiimVoicePacketStream()
     done = asyncio.Event()
     try:
@@ -502,14 +531,14 @@ async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> No
         candidate = await _find_voice_characteristic(
             bus,
             managed,
-            name_regex=args.device_name_regex,
+            name_regex=config.device_name_regex,
         )
         log_event(
             logger,
             "wiim_remote_mic.connected",
             device=candidate.device_path,
             characteristic=candidate.characteristic_path,
-            udp=f"{args.udp_host}:{args.udp_port}",
+            udp=f"{config.udp_host}:{config.udp_port}",
         )
 
         char_intro = await bus.introspect(BLUEZ_BUS, candidate.characteristic_path)
@@ -554,16 +583,16 @@ async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> No
         log_event(
             logger,
             "wiim_remote_mic.notify_started",
-            source=args.source_id,
-            udp=f"{args.udp_host}:{args.udp_port}",
+            source=config.source_id,
+            udp=f"{config.udp_host}:{config.udp_port}",
         )
         await _request_ce_reservation()
         try:
-            while not stop.is_set() and not done.is_set():
-                try:
-                    await asyncio.wait_for(done.wait(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
+            # Also wake on the BUS dying (a bluetoothd restart), not only on
+            # the device's Connected property going false: on a dead bus no
+            # property change can ever arrive, so waiting on `done` alone hangs
+            # this task forever with nothing raised for the supervisor to see.
+            await _first_of(done.wait(), bus.wait_for_disconnect())
         finally:
             try:
                 await char.call_stop_notify()
@@ -576,7 +605,7 @@ async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> No
         log_event(
             logger,
             "wiim_remote_mic.disconnected",
-            source=args.source_id,
+            source=config.source_id,
             packets=stream.packets,
             frames=stream.frames,
             bad_packets=stream.bad_packets,
@@ -589,9 +618,13 @@ async def _run_subscription(args: argparse.Namespace, stop: asyncio.Event) -> No
             disconnect()
 
 
-async def _run(args: argparse.Namespace) -> None:
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
+async def run(config: MicAdapterConfig) -> None:
+    """Stream the remote's mic for as long as this task lives.
+
+    Reconnect is owned here rather than left to the supervisor: a WiiM link
+    drops on every idle timeout, which is ordinary rather than a fault, and
+    each reconnect must re-request the connection-event reservation.
+    """
     last_error_key: str | None = None
     last_error_logged_at = 0.0
 
@@ -604,15 +637,9 @@ async def _run(args: argparse.Namespace) -> None:
             return True
         return False
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    while True:
         try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            pass
-
-    while not stop.is_set():
-        try:
-            await _run_subscription(args, stop)
+            await _run_subscription(config)
             last_error_key = None
         except DeviceNotReady as exc:
             detail = str(exc)
@@ -646,37 +673,4 @@ async def _run(args: argparse.Namespace) -> None:
                     else logging.DEBUG
                 ),
             )
-        if stop.is_set():
-            break
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=args.retry_sec)
-        except asyncio.TimeoutError:
-            pass
-
-
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-id", default="wiim_remote_2")
-    parser.add_argument("--device-name-regex", default=WIIM_REMOTE_2_NAME_RE)
-    parser.add_argument("--udp-host", default="127.0.0.1")
-    parser.add_argument("--udp-port", type=int, default=DEFAULT_UDP_PORT)
-    parser.add_argument("--retry-sec", type=float, default=2.0)
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> None:
-    args = _parse_args(argv)
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    asyncio.run(_run(args))
-
-
-if __name__ == "__main__":
-    main()
+        await asyncio.sleep(config.retry_sec)

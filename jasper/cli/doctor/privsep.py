@@ -4,7 +4,7 @@
 
 """jasper-doctor checks — privilege-separation read access.
 
-WS1 dropped jasper-control/-mux/-voice/-input/-wiim-remote-mic and the whole
+WS1 dropped jasper-control/-mux/-voice/-input and the whole
 nginx-fronted wizard family (-web/-chat-web/-correction-web/-bluetooth-web/
 -system-web, which share one ``jasper-web`` account) to non-root; the USB mic
 relay likewise runs under its own non-secret-bearing ``jasper-usbmic``
@@ -73,6 +73,7 @@ import stat as _stat
 import subprocess
 from dataclasses import dataclass, field
 
+from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
 
@@ -279,18 +280,21 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/mic_mute.env",
         ),
     ),
-    # jasper-input reads NO on-disk config/state at runtime — it only watches
-    # /dev/input/event* (kernel I/O, 'input' supplementary group) and calls
-    # jasper-control over localhost HTTP. Kept here with an empty read-set so
-    # the drift test pins its identity and a future on-disk read added to this
-    # daemon is forced into the manifest rather than slipping in silently.
+    # jasper-input watches /dev/input/event* (kernel I/O, 'input' supplementary
+    # group) and calls jasper-control over localhost HTTP. Its one on-disk read
+    # is the accessory reconciler's published mic sources, which decide whether
+    # this process also runs an accessory mic adapter task (ADR-0225) — an
+    # unreadable file costs the box its remote microphone. The adapter's
+    # 'bluetooth' grant is not declared here because the unit does not declare
+    # it either (see the unit file); _resolve_identity picks it up from the
+    # user's own group memberships.
     DaemonReadSpec(
         unit="jasper-input",
         unit_file="deploy/systemd/jasper-input.service",
         user="jasper-input",
         group="jasper",
         supplementary_groups=("input",),
-        paths=(),
+        paths=(DEFAULT_ACCESSORY_MIC_ENV_FILE,),
     ),
     DaemonReadSpec(
         unit="jasper-usbmic",
@@ -304,22 +308,6 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # microphone export.
             "/var/lib/jasper/usb_mic.env",
         ),
-    ),
-    # jasper-wiim-remote-mic reads NO on-disk config/state at runtime, so paths
-    # is empty. It has three runtime channels, none of them a config file:
-    # BlueZ over system D-Bus ('bluetooth' supplementary group); decoded PCM
-    # out to the localhost manual-mic UDP source; and jasper-control's restart
-    # broker socket (/run/jasper-control/restart.sock, 0660 jasper-control:
-    # jasper — reached via the primary 'jasper' group below), used to ask the
-    # root jasper-wiim-remote-ce helper for a BLE connection-event reservation
-    # on each reconnect.
-    DaemonReadSpec(
-        unit="jasper-wiim-remote-mic",
-        unit_file="deploy/systemd/jasper-wiim-remote-mic.service",
-        user="jasper-input",
-        group="jasper",
-        supplementary_groups=("bluetooth",),
-        paths=(),
     ),
 )
 
@@ -538,8 +526,8 @@ def _check_daemon(unit: str) -> CheckResult:
     spec = _SPEC_BY_UNIT[unit]
     label = f"daemon reads: {unit}"
     if not spec.paths:
-        # Still honour "not installed" so a streambox shows the skip, but a
-        # read-less daemon (jasper-input) never needs identity resolution.
+        # Still honour "not installed" so a streambox shows the skip; a
+        # read-less daemon needs no identity resolution beyond that.
         info = _unit_runtime_identity(unit)
         if info is not None and info.get("LoadState", "") in ("not-found", "masked"):
             return CheckResult(label, "ok", f"{unit} not installed (skipped)")
@@ -610,8 +598,8 @@ def check_voice_readable_inputs() -> CheckResult:
 
 @doctor_check(order=23.59, group="privsep")
 def check_input_readable_inputs() -> CheckResult:
-    """jasper-input declares no on-disk reads; this is its drift-pin so a future
-    file read is forced into the manifest."""
+    """The accessory bridge process must be able to read the published accessory
+    mic sources — that file is what decides whether it runs the mic adapter."""
     return _check_daemon("jasper-input")
 
 
@@ -619,12 +607,6 @@ def check_input_readable_inputs() -> CheckResult:
 def check_usbmic_readable_inputs() -> CheckResult:
     """The USB mic relay must be able to read its explicit export intent."""
     return _check_daemon("jasper-usbmic")
-
-
-@doctor_check(order=23.593, group="privsep")
-def check_wiim_remote_mic_readable_inputs() -> CheckResult:
-    """The WiiM remote-mic adapter must be able to read its pairing state."""
-    return _check_daemon("jasper-wiim-remote-mic")
 
 
 @doctor_check(order=23.595, group="privsep")

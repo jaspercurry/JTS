@@ -592,7 +592,6 @@ code = [
   "deploy/systemd/jasper-usbgadget.service",
   "deploy/systemd/jasper-mux.service",
   "deploy/systemd/jasper-accessory-reconcile.service",
-  "deploy/systemd/jasper-wiim-remote-mic.service",
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/nqptp.service",
   "deploy/systemd/librespot.service",
@@ -898,12 +897,6 @@ code = [
   # adapter it serves.
   "jasper/cli/wiim_remote_ce.py",
   "deploy/systemd/jasper-wiim-remote-ce.service",
-  # The adapter unit is ALSO in local-source-lifecycle (source enable/disable
-  # owns its unit state). Multi-membership is the convention, not a conflict —
-  # editing this unit needs both the source-lifecycle contract and the
-  # hot-plug/convergence doc below, and listing it in one subsystem meant a
-  # change to the adapter never routed to the doc describing its lifecycle.
-  "deploy/systemd/jasper-wiim-remote-mic.service",
   "deploy/avahi/jasper-peer.service.template",
 ]
 docs = [
@@ -914,7 +907,7 @@ requires_docs_when = [
   "The WiiM remote mic's convergence path changes — adapter gating, the BLE connection-event reservation, or what happens when either fails.",
 ]
 verification = [
-  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py tests/test_accessory_reconcile.py tests/test_wiim_remote_mic.py tests/test_wiim_remote_ce.py",
+  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py tests/test_accessory_reconcile.py tests/test_accessories_bridge.py tests/test_wiim_remote_mic.py tests/test_wiim_remote_ce.py",
 ]
 
 [[subsystem]]
