@@ -2,46 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The round coordinator: what happens once a round's evidence is complete.
+"""The round coordinator: grade a round, act on the adoption table, restore if
+the table says restore, and bank the receipt.
 
-Phase 5's first vertical.  The issue's sequence is *capture → plan → apply →
-verify → adopt*; this module owns its **tail** — grade the round, act on the
-adoption table, restore if the table says restore, and bank the receipt.  The
-legs before it belong to
-:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session`.
-
-**Why the tail first.**  It is the leg whose collaborators are already pure:
-:mod:`.round_evidence` grades, :mod:`.verification` decides, and
-:mod:`.contracts` carries.  What was left on
-:class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session` was the
-*sequencing* between them plus five seam calls — nine methods and four scratch
-fields whose only reader was each other.  Sequencing is exactly what a
-coordinator is, so it moved here whole rather than being split across a class
-that also owns capture choreography.
-
-**What this module is, that its siblings are not.**  It is the only one that
-CHANGES THE SPEAKER: "restore the previous graph and record what happened" is
-not a pure question, so this module calls seams that act.  (Emitting a log line
-is not the distinction — :mod:`.planning` and :mod:`.refusal_copy` both write one
-too.  This module's own text said "every other module in this package is
-side-effect-free" until #2291 Phase 5c-iii; that was too strong, and the
-narrower claim is the one worth checking.)  The boundary it keeps is stated
-here so it can be checked: it holds **no session state** (every input arrives
-as an argument, every output leaves as a return value), it reaches **no host
-object** (only the five callables in :class:`RoundPorts`), and it owns **no
-household vocabulary**
-— a refusal leaves as :class:`RoundRefusal`, a typed *kind*, and the flow maps
-it to the ``REASON_REGISTRY`` code whose copy the household reads.  That last
-line is why :func:`run_round` can live outside the flow at all.  Its original
-form argued that the codes were the flow's and importing them back would invert
-the dependency; since #2291 Phase 5c-ii they are :mod:`.refusal_copy`'s, a
-sibling, so the import would be legal now.  The rule stands on its own without
-that argument: a module that decides answers with a kind, and one that renders
-copy is doing a different job.
-
-Dependency direction, as for every module here: no ``jasper.web`` import and
-nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
-"""
+The only module here that changes the speaker — it calls seams that act. It
+holds no session state (every input an argument, every output a return value),
+reaches no host object beyond :class:`RoundPorts`, and owns no household
+vocabulary: a refusal leaves as a :class:`RoundRefusal` kind the flow maps to a
+:mod:`.refusal_copy` code."""
 
 from __future__ import annotations
 
@@ -78,49 +46,32 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
-#: The refusal kinds :func:`run_round` can return. Kinds rather than reason
-#: codes: the code, and the sentence it renders, belong to
-#: :mod:`.refusal_copy`'s ``REASON_REGISTRY``.
+#: The refusal kinds :func:`run_round` returns. The reason code and its
+#: household sentence belong to :mod:`.refusal_copy`'s ``REASON_REGISTRY``.
 REFUSAL_RESTORED = "restored"
 REFUSAL_ROLLBACK_FAILED = "rollback_failed"
 
-#: Every kind above, so the flow's mapping can be checked for completeness
-#: rather than trusted. A kind added here without an arm there is a wiring
-#: defect, and the flow says so loudly instead of answering with another kind's
-#: household sentence.
+#: Every kind above, so the flow's mapping can be checked for completeness.
 REFUSAL_KINDS = frozenset({REFUSAL_RESTORED, REFUSAL_ROLLBACK_FAILED})
 
-#: The exception family four of the five seam calls are guarded against. Wide on
-#: purpose and for one reason: losing the round's verdict is strictly worse than
-#: reporting it with the seam's own answer marked unavailable. Each guard below
-#: states which way it fails and why.
-#:
-#: :func:`entry_graph_fingerprint` deliberately does NOT use this tuple — its
-#: guard omits ``AttributeError``, exactly as it did on the conductor. The name
-#: it fills is provenance, never a gate, so a narrower catch there costs a
-#: fingerprint rather than a verdict; the difference is preserved rather than
-#: harmonised because harmonising it would be a behaviour change smuggled in as
-#: tidying.
+#: The exception family four of the five seam calls are guarded against: losing
+#: the round's verdict is worse than reporting it with the seam marked
+#: unavailable. :func:`entry_graph_fingerprint` deliberately omits
+#: ``AttributeError`` from its own guard — it fills provenance, never a gate.
 _SEAM_ERRORS = (
     OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError,
 )
 
 
-# --------------------------------------------------------------------------- #
-# ports — the five host capabilities a round needs
-# --------------------------------------------------------------------------- #
+# --- ports: the five host capabilities a round needs ---
 
 
 @dataclass(frozen=True)
 class RoundPorts:
     """The seams a round calls, and nothing else the host can do.
 
-    A narrowed copy of the five relevant fields of
-    :class:`~jasper.active_speaker.crossover_v2_flow.V2FlowSeams` rather than
-    that object itself, so the coordinator's reach is its type signature: it
-    cannot play a program, publish a candidate, or retain a position, because
-    it has no name for those. Each is optional and each absence has a *decided*
-    answer — see the readers below; ``None`` never means "skip the question."
+    Each is optional and each absence has a decided answer in the readers
+    below; ``None`` never means "skip the question".
     """
 
     #: Put the previous graph back. Takes the adoption reason, returns success.
@@ -136,32 +87,15 @@ class RoundPorts:
     publish_round_receipt: Callable[[Mapping[str, Any]], str] | None = None
 
 
-# --------------------------------------------------------------------------- #
-# seam readers — each states its own fail direction
-# --------------------------------------------------------------------------- #
+# --- seam readers: each states its own fail direction ---
 
 
 def applied_boosts(ports: RoundPorts, *, session_id: str) -> bool:
-    """Does the applied intervention put energy IN? (#2291 ``boosted``)
+    """Does the applied intervention put energy IN?
 
-    **Asked of the HOST, not of any session's own state, and that is the
-    whole point.** This originally read a ``_candidate`` field assigned in
-    exactly one place, stage 1's commit. The stage that GRADES a round is a
-    different process with a fresh session and no ctor parameter for a
-    candidate, so the read was ``None`` on every shipped round, ``boosted`` was
-    always ``False``, and #2318's fail-closed cell was unreachable: a boosted
-    intervention with unprovable benefit ended ``accepted=True`` with the graph
-    live. The test suite was green over it because its harness injected a
-    candidate the production path never supplies.
-
-    The seam answers from the applied-profile SSOT — the one owner of "what did
-    we apply" — through the shipped
-    :func:`~jasper.active_speaker.camilla_yaml.linearization_has_boost`, so
-    there is still no second definition of "boost" on this speaker.
-
-    Fails CLOSED at both levels: an unbound seam and a raising one both answer
-    "boosted", so an intervention nobody can inspect is restored rather than
-    left driving a driver on evidence nobody has.
+    Asked of the HOST, never of a session's own state: the stage that grades a
+    round is a fresh process with no candidate of its own. Fails CLOSED at both
+    levels — an unbound seam and a raising one both answer "boosted".
     """
     seam = ports.applied_boosts
     if seam is None:
@@ -177,30 +111,12 @@ def applied_boosts(ports: RoundPorts, *, session_id: str) -> bool:
 
 
 def rollback_available(ports: RoundPorts, *, session_id: str) -> bool:
-    """Can this host actually put the previous sound back? (#2291)
+    """Can this host actually put the previous sound back?
 
-    **BOTH-AND**, and each half answers a different question:
-
-    * the ``rollback`` seam is bound — a *process* fact, the flow's own
-      capability idiom (``STAGE_VERIFY_CAPABILITIES`` provides
-      ``CAPABILITY_ROLLBACK``). A single-stage or future caller may reach this
-      decision with no seam at all.
-    * a prior candidate is recorded — a *state* fact, owned by the host's
-      ``rollback_available`` seam, which reads the very field the restore
-      action resolves its republish target from.
-
-    Either half alone gives a wrong answer to the question
-    :func:`~.verification.decide_adoption` is actually asking. Seam-only says
-    yes on a speaker whose pre-apply stash names no banked candidate: the
-    round would issue a ``restore`` instruction the republish door then
-    refuses, and the household would be told the old sound was coming back
-    when nothing could bring it. State-only ignores that some callers cannot
-    restore at all.
-
-    Fails closed on both halves — an unbound state seam, or one that raises,
-    means "not available", which routes the adoption table to
-    ``recovery_required`` (loud, operator-visible) rather than to a restore that
-    cannot happen.
+    BOTH-AND: the ``rollback`` seam is bound (a process fact) AND a prior
+    candidate is recorded (a state fact). Either half alone answers
+    :func:`~.verification.decide_adoption`'s question wrongly. Fails closed on
+    both halves, which routes the adoption table to ``recovery_required``.
     """
     if ports.rollback is None:
         return False
@@ -220,9 +136,7 @@ def rollback_available(ports: RoundPorts, *, session_id: str) -> bool:
 def entry_graph_fingerprint(ports: RoundPorts, *, session_id: str) -> str:
     """Which graph this capture was measured through, or the unknown word.
 
-    Never raises and never gates — see :data:`ENTRY_GRAPH_FINGERPRINT_UNKNOWN`
-    for the three honest ways the host cannot answer, and why the answer is a
-    word rather than an empty string.
+    Never raises and never gates — see :data:`ENTRY_GRAPH_FINGERPRINT_UNKNOWN`.
     """
     seam = ports.entry_graph_fingerprint
     if seam is None:
@@ -242,12 +156,7 @@ def entry_graph_fingerprint(ports: RoundPorts, *, session_id: str) -> str:
 def _post_measurement_identity(
     analysis: "ProgramAnalysis | None", *, reference_mark: str, phase: str,
 ) -> dict[str, Any] | None:
-    """What the post-apply side WAS, as identity rather than payload.
-
-    The same rule :func:`~.round_evidence.build_round_receipt` applies to the
-    entry baseline: the curve has owners that outlive the receipt, so the
-    receipt names it instead of copying it.
-    """
+    """What the post-apply side WAS, as identity rather than payload."""
     if analysis is None:
         return None
     return {
@@ -257,19 +166,12 @@ def _post_measurement_identity(
     }
 
 
-# --------------------------------------------------------------------------- #
-# the round's inputs and its answer
-# --------------------------------------------------------------------------- #
+# --- the round's inputs and its answer ---
 
 
 @dataclass(frozen=True)
 class RoundEvidence:
-    """Everything one round is graded from, stated once by its caller.
-
-    A frozen argument bundle rather than a live view of the session: the
-    round is graded exactly once, from the evidence as it stood at that moment,
-    and a bundle makes that literally true instead of merely intended.
-    """
+    """Everything one round is graded from, as it stood when grading began."""
 
     session_id: str
     #: The instrument this session ran, for the receipt's evidence identities.
@@ -281,7 +183,7 @@ class RoundEvidence:
     #: The post-apply spatial cloud's spec report, or ``None`` on a tier that
     #: walks no cloud (which the evaluator reads as "no report", not a pass).
     spec_report: "FlatSpecReport | None"
-    #: What this round proposed, for the receipt. Since #2392 this is the
+    #: What this round proposed, for the receipt: the
     #: :class:`~.contracts.InterventionProposal`'s fingerprint whenever the
     #: session has one, and the applied candidate's when it does not.
     proposal_fingerprint: str
@@ -292,123 +194,64 @@ class RoundEvidence:
     #: The mark both captures were taken at.
     reference_mark: str
     #: Which of the two the field above is
-    #: (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`). REQUIRED, like the
-    #: receipt field it feeds: this type has exactly one production constructor
-    #: and no test constructs it, so a default protects nobody — it only buys a
-    #: caller the ability to mislabel a write-once artifact by omission, which
-    #: the closed vocabulary cannot catch because ``"candidate"`` is a legal
-    #: word. Stating it is one line at the one call site.
+    #: (:data:`~.contracts.PROPOSAL_FINGERPRINT_KINDS`).
     proposal_fingerprint_kind: str
-    #: The applied candidate's own fingerprint, which rides into the receipt's
-    #: evidence identities. It used to BE ``proposal_fingerprint``; #2392 gave
-    #: that field to the proposal, and a receipt that dropped the candidate
-    #: identity on the way would have lost a fact it used to carry. Required
-    #: for the reason directly above.
+    #: The applied candidate's own fingerprint, for the receipt's evidence
+    #: identities.
     candidate_fingerprint: str
-    #: The round's
-    #: :class:`~jasper.active_speaker.delta_probe.DeltaProbeMap`, or ``None``
-    #: when the session ran none (#2537). REQUIRED, for the same reason
-    #: ``proposal_fingerprint_kind`` above is and one stronger: this type has
-    #: exactly one production constructor, and the field feeds
-    #: :func:`~.verification.evaluate_applied_safety` — the adoption table's
-    #: only hard stop. A default would let a caller silence that stop by
-    #: forgetting a keyword, which is the cheapest possible way to lose a
-    #: safety check. ``None`` is a legitimate value and must be stated.
+    #: The round's :class:`~jasper.active_speaker.delta_probe.DeltaProbeMap`,
+    #: or ``None`` when the session ran none. Feeds
+    #: :func:`~.verification.evaluate_applied_safety`, the adoption table's
+    #: only hard stop, so it is stated rather than defaulted.
     delta_probe: Any | None
-    #: 1-based position of this round in the household's flattening series
-    #: (#2602) — what :data:`~.round_evidence.ROUND_SERIES_CAP` is checked
-    #: against.
-    #:
-    #: REQUIRED, on the same reasoning as the field above rather than a weaker
-    #: version of it: a default of 1 would be *silently wrong* on every round
-    #: after the first, so a caller that forgot the keyword would produce a
-    #: series that never reaches its cap and a household told to measure again
-    #: forever. That failure looks exactly like working software. One line at
-    #: the one call site buys the guarantee that the ordinal is always
-    #: something the host actually resolved.
+    #: 1-based position of this round in the household's flattening series —
+    #: what :data:`~.round_evidence.ROUND_SERIES_CAP` is checked against.
     round_ordinal: int
-    #: What the PREVIOUS round of this series measured on #2602's two
-    #: objectives, read off the durable receipt that round banked — or ``None``
-    #: for the series' first round. Required for the same reason: "there was no
-    #: previous round" and "nobody looked" must not be the same keyword.
+    #: What the PREVIOUS round of this series measured on the two objectives,
+    #: read off the receipt that round banked — ``None`` for the first round.
     previous_objectives: FlatnessObjectives | None
     #: The trusted floor THIS round's objectives were graded against, and the
-    #: one the previous round's were (#2609 SF5). Together they let the
-    #: headroom axis refuse a cross-floor movement comparison instead of
-    #: reading a gate-length artefact as progress.
-    #:
-    #: **Defaulted, unlike the three required fields above, and the line is
-    #: the fail direction rather than the number of call sites.** A forgotten
-    #: ``round_ordinal`` is silently WRONG on every round after the first; a
-    #: forgotten floor is merely ABSENT, and absent is a value the reader
-    #: already handles honestly — no floor means no evidence the frame moved,
-    #: so the comparison proceeds exactly as it did before SF5. A default that
-    #: can only withhold a refusal is safe; one that can fabricate a number is
-    #: not.
+    #: one the previous round's were. Together they let the headroom axis
+    #: refuse a cross-floor movement comparison instead of reading a
+    #: gate-length artefact as progress. ``None`` is "no evidence the frame
+    #: moved", which withholds a refusal rather than fabricating a number.
     trusted_floor_hz: float | None = None
     previous_trusted_floor_hz: float | None = None
     #: Which epoch of the ordinal sequence ``round_ordinal`` counts in — see
-    #: :attr:`SeriesPosition.ordinal_epoch`, which is where it is resolved.
-    #: Carried on the evidence so :func:`_round_identity` can bank it beside
-    #: the ordinal it qualifies; a receipt naming an ordinal with no epoch
-    #: leaves "round 1" ambiguous the moment a republish has run.
-    #:
-    #: Defaulted for the reason the two floors above are, and NOT for
-    #: ``round_ordinal``'s: a forgotten epoch is absent, not wrong. ``0`` is
-    #: what every round before this key shipped honestly was.
+    #: :attr:`SeriesPosition.ordinal_epoch`, where it is resolved. ``0`` means
+    #: no reset recorded.
     round_ordinal_epoch: int = 0
     #: The post-apply cloud's per-position residuals, role-labelled, as
-    #: JSON-shaped rows (§4.2). Banked on the receipt so the next bite can tell
-    #: a position-INVARIANT miss — ours, a model or level defect — from a
-    #: position-DEPENDENT one, which is the room. Empty on a tier that walks no
-    #: post-apply cloud, and defaulted for the reason directly above: an empty
-    #: tuple and an unsupplied one both mean "no positions to report".
+    #: JSON-shaped rows. Empty on a tier that walks no post-apply cloud.
     position_residuals: tuple[Mapping[str, Any], ...] = ()
     #: The post-apply cloud's flat-spec evaluation with its graded curve and
-    #: MERGED honesty mask (decision 10) — the blend correction's evidence.
-    #: ``None`` on a tier that walks no post-apply cloud, and defaulted for the
-    #: same fail-direction reason the floors above are: absent evidence
-    #: prescribes nothing, which is the safe answer, while a fabricated one
-    #: would prescribe a filter from a mask nobody screened.
+    #: MERGED honesty mask — the blend correction's evidence. ``None`` on a
+    #: tier that walks no post-apply cloud, and absent evidence prescribes
+    #: nothing.
     graded_spec: "GradedSpec | None" = None
     #: The blend correction the post-apply capture actually rode, read off the
     #: APPLIED candidate. ``None`` is "could not be established" and refuses to
-    #: prescribe; ``()`` is "it rode none", which every first round honestly is.
-    #:
-    #: **Defaulted to ``None`` rather than ``()`` deliberately.** The two are
-    #: not interchangeable here: assuming an empty incumbent when the real one
-    #: is unknown double-counts the correction the capture was actually taken
-    #: through, which is the precise shape #2653 reverted for the level datum.
-    #: A caller that forgets this keyword gets a refusal, not a wrong number.
+    #: prescribe; ``()`` is "it rode none", which every first round honestly
+    #: is. The two are not interchangeable: an assumed-empty incumbent
+    #: double-counts the correction the capture was taken through.
     applied_blend_correction: tuple[Mapping[str, Any], ...] | None = None
-    #: The region residual the PREVIOUS round of this series read (decision
-    #: 10), or ``None`` for the first round. Defaulted for the same
-    #: fail-direction reason the floors are: absent only ever lets the loop
-    #: keep prescribing, never freezes it.
+    #: The region residual the PREVIOUS round of this series read, or ``None``
+    #: for the first round — absent only ever lets the loop keep prescribing.
     previous_blend_residual_db: float | None = None
     #: The inter-driver delay PRESCRIPTION this round's candidate was built
-    #: from, or ``None`` for a round whose delay the aligner chose on its own
-    #: (#2662). Banked verbatim, never graded here: it is provenance — what the
-    #: prescribed number was derived from — and the adoption record's job is to
-    #: say what an adopted candidate's timing rests on so a reader can check.
-    #: Defaulted, and ``None`` is honest for the overwhelming majority of
-    #: rounds, which prescribe nothing.
+    #: from, or ``None`` for a round whose delay the aligner chose on its own.
+    #: Banked verbatim as provenance, never graded here.
     alignment_prescription: "AlignmentPrescription | None" = None
     #: WHICH commitment produced the round's delay
     #: (:data:`~jasper.audio_measurement.program_analysis.ALIGNMENT_COMMITMENTS`),
-    #: or ``""`` when no candidate was committed. Banked beside the
-    #: prescription because the pair is what makes an adoption record honest:
-    #: alone, the prescription says only what was ASKED for, and a reachable
-    #: rail (an ``ALIGNMENT_OK`` estimate with no scorable band) commits the
-    #: estimator's seed while the round still carries the prescribed
-    #: candidate's name.
+    #: or ``""`` when no candidate was committed. A reachable rail (an
+    #: ``ALIGNMENT_OK`` estimate with no scorable band) commits the estimator's
+    #: seed while the round still carries the prescribed candidate's name, so
+    #: the outcome is banked beside the request.
     alignment_objective: str = ""
     #: The crossover corner + order this round was PINNED to, or ``None`` for a
-    #: round that ran the speaker's commissioned crossover. Banked verbatim and
-    #: never graded here, exactly like the delay prescription above: it is
-    #: provenance, and the adoption record's job is to say what topology an
-    #: adopted candidate's numbers were measured at — without it, two candidates
-    #: of one tournament are two receipts a reader cannot tell apart.
+    #: round that ran the speaker's commissioned crossover. Banked verbatim as
+    #: provenance, never graded here.
     topology_prescription: "TopologyPrescription | None" = None
 
 
@@ -417,13 +260,9 @@ class RoundRefusal:
     """A round-driven refusal, as a *kind* the flow maps to its own code.
 
     ``kind`` is :data:`REFUSAL_RESTORED` or :data:`REFUSAL_ROLLBACK_FAILED`.
-    ``rollback_anchor_available`` travels with the second because that code
-    covers two situations whose household sentences differ — a restore that
-    failed (the way back can still help) and a restore that was never possible
-    (no prior candidate is recorded, the very predicate that routed here). The
-    fact is recorded here, never re-derived at render time: the record can
-    change between the round and the screen, and the screen must describe the
-    round.
+    ``rollback_anchor_available`` is recorded here, never re-derived at render
+    time: the record can change between the round and the screen, and the
+    screen must describe the round.
     """
 
     kind: str
@@ -436,19 +275,10 @@ class RoundRefusal:
 class RoundDecision:
     """What the round decided, and what it left behind.
 
-    ``refusal is None`` means the caller's own capture verdict stands — the
-    ``KEEP`` and ``KEEP_FOR_ITERATION`` arms, which deliberately do not
-    manufacture a refusal out of "it is not perfect yet."
-
-    Every field is what the caller should now hold, including on the failure
-    paths: a round whose grading raised returns this object with every field at
-    its default, which is precisely the state the caller started in.
-
-    **What a restore DID is deliberately not here.** It has two owners already —
-    the receipt's ``restore_result`` and the ``crossover_v2_round_restore``
-    journal line — and the session had no reader for it once this module took
-    the receipt.  Returning it anyway would put a third copy in the caller's
-    hands with nothing to check it against.
+    ``refusal is None`` means the caller's own capture verdict stands. A round
+    whose grading raised returns every field at its default, which is the state
+    the caller started in. What a restore DID is not here: its owners are the
+    receipt's ``restore_result`` and the ``crossover_v2_round_restore`` line.
     """
 
     evaluation: RoundEvaluation | None = None
@@ -456,31 +286,17 @@ class RoundDecision:
     receipt_identity: dict[str, Any] | None = None
 
 
-# --------------------------------------------------------------------------- #
-# the coordinator
-# --------------------------------------------------------------------------- #
+# --- the coordinator ---
 
 
 def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
     """Grade one round, act on the adoption table, and bank the receipt.
 
-    Called once per session, by whichever trigger finds the post-apply evidence
-    complete — the end of VERIFY on a tier that walks no post-apply cloud, the
-    close of that cloud on a tier that does. The fire-once guard belongs to the
-    caller, which is the only party that knows a capture was *accepted*: both
-    triggers require one, because VERIFY and a position group each carry a retry
-    budget and grading a rejected capture would burn the guard on evidence the
-    household then replaced.
-
-    **Fail-soft, and the fail direction matters:** a grading failure logs and
-    returns an empty decision, so the caller's own verdict stands untouched. The
-    round's job is to add an honest answer, and a bug in the grader must not
-    cost the household the verdict the measurement gate already reached — least
-    of all by turning an accepted capture into a refusal.
-
-    Order is load-bearing. The receipt is written LAST so it records what the
-    round actually DID — including a restore's result, which the adoption arm is
-    what produces.
+    Called once per session, on an ACCEPTED capture; the fire-once guard
+    belongs to the caller, the only party that knows the capture was accepted.
+    Fail-soft: a grading failure logs and returns an empty decision, leaving
+    the caller's own verdict untouched. The receipt is written LAST so it
+    records what the round actually did, a restore's result included.
     """
     try:
         evaluation = evaluate_round(
@@ -495,20 +311,13 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
                 ports, session_id=evidence.session_id,
             ),
             delta_probe=evidence.delta_probe,
-            # #2602's axis. The cap and the plateau bar are NOT passed: their
-            # single definitions are ``evaluate_round``'s own defaults, so
-            # there is no call site free to run a longer series than the
-            # ruling allows. What the host supplies is the two facts only it
-            # can know — where in the series this round sits, and what the
-            # previous one measured.
+            # The cap and the plateau bar are NOT passed: their single
+            # definitions are ``evaluate_round``'s own defaults, so no call
+            # site can run a longer series than the ruling allows.
             round_ordinal=evidence.round_ordinal,
             previous_objectives=evidence.previous_objectives,
-            # #2609 SF5's frame, carried beside the objectives it scoped.
             trusted_floor_hz=evidence.trusted_floor_hz,
             previous_trusted_floor_hz=evidence.previous_trusted_floor_hz,
-            # Decision 10's two inputs, forwarded rather than re-derived: the
-            # cloud evidence the correction is solved from, and the incumbent
-            # the capture rode.
             graded_spec=evidence.graded_spec,
             applied_blend_correction=evidence.applied_blend_correction,
             previous_blend_residual_db=evidence.previous_blend_residual_db,
@@ -522,8 +331,8 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
         return RoundDecision()
     _log_round(evaluation, session_id=evidence.session_id)
     # Rebound rather than reused: a failed restore re-grades through the same
-    # table, and both the refusal below and the receipt must record the decision
-    # the round ended on rather than the one it started from.
+    # table, and both the refusal and the receipt must record the decision the
+    # round ended on.
     evaluation, refusal, restore_result = _act_on_adoption(
         evaluation, evidence, ports,
     )
@@ -536,22 +345,15 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
 
 
 def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
-    """The round's whole answer, as one journal line.
-
-    ``to_dict`` carries the four verdicts WITH their evidence, not just the
-    collapsed statuses: a support read needs to know why a benefit was
-    indeterminate, and the statuses alone cannot say.
-    """
+    """The round's whole answer, as one journal line."""
     record = evaluation.to_dict()
     log_event(
         logger, "correction.crossover_v2_round_graded",
         session_id=session_id,
         adoption=evaluation.adoption.outcome.value,
-        # WHICH rule fired, beside what it decided (#2537). Three of the seven
-        # rows restore and four keep the graph — and the four share only two
-        # outcomes between them, since #2602 and #2656 each split a cell — so
-        # ``adoption`` alone cannot say, and the reason travels from whichever
-        # axis spoke. The row is the stable thing to grep a journal for.
+        # The adoption table's seven rows share four outcomes, so ``adoption``
+        # alone cannot say which rule fired. The row is what a journal is
+        # grepped for.
         row=evaluation.adoption.row,
         reason=evaluation.adoption.reason,
         capture=record["verdicts"]["capture"]["status"],
@@ -560,31 +362,15 @@ def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
         spec=record["verdicts"]["spec"]["status"],
         trust=record["axes"]["trust"]["status"],
         safety=record["axes"]["safety"]["status"],
-        # The only axis whose REASON rides this line beside its status, and it
-        # is the hearing one (series-2 D1 fix round). ``safe`` has two readings
-        # — the realized-energy check looked and found nothing, or it could not
-        # look at all — and a first-ever round takes the second by construction.
-        # Every other axis's reason is either the deciding one (``reason``
-        # above) or a number in ``evidence``; this one is a claim about what was
-        # CHECKED, and a journal that cannot tell the two apart is where the
-        # 2026-08-17 class of defect hides.
+        # The only axis whose reason rides this line beside its status:
+        # ``safe`` has two readings — the realized-energy check looked and
+        # found nothing, or it could not look at all.
         safety_reason=record["axes"]["safety"]["reason"],
         quality=record["axes"]["quality"]["status"],
-        # #2602: WHETHER another round is coming, and where this one sat in
-        # the series — the two facts a support read needs to tell "the series
-        # stopped here" apart from "the series is still going". The tilt and
-        # ripple behind them ride in ``evidence`` below like every other axis's
-        # numbers.
         headroom=record["axes"]["headroom"]["status"],
         round_ordinal=evaluation.headroom.evidence.get("round_ordinal"),
         post_residual_db=evaluation.post_residual_db,
         post_residual_bins=evaluation.post_residual_bins,
-        # Decision 10: which case the blend region took, and how many filters it
-        # prescribed. The receipt is the forensic record and is sufficient on
-        # its own, but a tail that shows every other verdict and is silent
-        # about a stage that CHANGED THE GRAPH reads as a stage that did
-        # nothing — and grepping a journal is the first thing a support read
-        # does, before it knows an artifact exists.
         blend=None if evaluation.blend is None else evaluation.blend.reason,
         blend_filters=(
             None if evaluation.blend is None else len(evaluation.blend.filters)
@@ -598,37 +384,15 @@ def _act_on_adoption(
 ) -> tuple[RoundEvaluation, RoundRefusal | None, dict[str, Any] | None]:
     """Turn the adoption outcome into what the household gets.
 
-    Only ever reached for an ACCEPTED capture (see :func:`run_round`), so every
-    bullet below describes a round whose post-apply measurement stands, and
-    #2291's acting half applies exactly where it was meant to: the round that
-    would otherwise have been reported as a SUCCESS.
+    The table already decided; this carries it out and never re-decides.
 
-    The table already decided; this carries it out and never re-decides. In
-    particular there is no branch here that can keep a graph the table said to
-    restore — a realization pass does not override a measured regression, and
-    the only way that guarantee holds is by not writing the branch that would
-    break it.
-
-    * ``KEEP`` — the caller's verdict stands.
-    * ``KEEP_FOR_ITERATION`` — the caller's verdict also stands, and the graph
-      stays live (#2537). The round's outstanding targets ride the journal and
-      the receipt's ``round_axes``; this path deliberately does not manufacture
-      a refusal out of "it is not perfect yet", which would report a failure
-      that did not happen and revert the least-bad MEASURED tune the household
-      has. Same arm as ``KEEP`` because they leave the speaker in the same
-      state — what differs is the receipt, which is where the difference
-      belongs.
+    * ``KEEP`` and ``KEEP_FOR_ITERATION`` — the caller's verdict stands and the
+      graph stays live; what differs between them is the receipt.
     * ``RESTORE`` — fire the rollback seam (once-guarded on the host side, so
       the delta probe's own rollback and this one cannot both run), then refuse
-      under the cause's own code. A successful restore keeps the "the previous
-      sound has been put back" promise; a failed one is re-graded through the
-      SAME table with ``restore_failed=True``, which is what turns it into
-      ``RECOVERY_REQUIRED`` — the receipt then says the speaker is in neither
-      graph, because it is.
-    * ``RECOVERY_REQUIRED`` — refuse LOUDLY under the flow's rollback-failed
-      code, whose copy already tells the household the correction is still
-      applied and which remedies remain. No new screen: this is the shape the
-      delta probe's refusal established.
+      under the cause's own code. A failed restore is re-graded through the
+      SAME table with ``restore_failed=True``.
+    * ``RECOVERY_REQUIRED`` — refuse loudly under the rollback-failed code.
     """
     outcome = evaluation.adoption.outcome
     if outcome in (AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION):
@@ -647,18 +411,15 @@ def _act_on_adoption(
             )
         return (
             _regrade_after_failed_restore(evaluation, evidence, ports),
-            # A prior candidate was recorded — the restore was attempted
-            # against it and did not complete — so going back to the previous
-            # tuning is still a real remedy.
+            # A prior candidate was recorded and the restore against it did
+            # not complete, so going back is still a real remedy.
             RoundRefusal(
                 kind=REFUSAL_ROLLBACK_FAILED, rollback_anchor_available=True,
             ),
             restore_result,
         )
     # RECOVERY_REQUIRED — the table already knew no restore was possible (no
-    # prior candidate recorded), so nothing is attempted here; the record says
-    # why, and the copy must not offer a way back that refuses on the same
-    # fact.
+    # prior candidate recorded), so nothing is attempted here.
     log_event(
         logger, "correction.crossover_v2_round_recovery_required",
         level=logging.ERROR, session_id=evidence.session_id,
@@ -682,22 +443,11 @@ def _regrade_after_failed_restore(
 ) -> RoundEvaluation:
     """Re-run the table with ``restore_failed=True``, or keep what we had.
 
-    **The speaker is still on the APPLIED graph**, which is what the household
-    copy says ("the newer tuning is STILL APPLIED"). The reachable failure
-    shapes leave it there: a ``CrossoverV2Refused`` from either normal-path
-    door never touches DSP (a republish REPLACES the durable session document
-    — carrying the host-owned apply keys forward — but moves no graph), and
-    the apply door rides an atomic transaction that rolls back to the live
-    config when it does not complete. ``decide_adoption`` and
-    :class:`~.contracts.RoundReceipt` still describe this state as "neither the
-    entry graph nor the intended one" — the abstract worst case, not this one,
-    and contradicted by the sentence the household reads. Left for their owners
-    rather than edited from here; do not propagate it back into this one.
-
-    The table's ``restore_failed`` row still describes it: what makes that row
-    right is that the intended graph is live and unverified with its automatic
-    remedy spent, not the stronger claim above. Re-grading rather than editing the decision in place keeps
-    :func:`~.verification.decide_adoption` the only thing that ever produces an
+    The speaker is still on the APPLIED graph: every reachable failure shape
+    leaves it there, which is what makes the ``restore_failed`` row right — the
+    intended graph is live and unverified with its automatic remedy spent.
+    Re-grading rather than editing the decision keeps
+    :func:`~.verification.decide_adoption` the only producer of an
     :class:`~.contracts.AdoptionDecision`.
     """
     try:
@@ -706,9 +456,7 @@ def _regrade_after_failed_restore(
             safety=evaluation.safety,
             quality=evaluation.quality,
             # The SAME verdict, not a re-evaluation: a failed restore changes
-            # what the speaker is running, not how much headroom the round
-            # measured. Re-grading it here would ask the fourth axis a question
-            # no new measurement had answered.
+            # what the speaker is running, not how much headroom was measured.
             headroom=evaluation.headroom,
             boosted=applied_boosts(ports, session_id=evidence.session_id),
             rollback_available=rollback_available(
@@ -747,21 +495,10 @@ def _run_round_restore(
 ) -> tuple[bool, dict[str, Any]]:
     """Fire the rollback seam for an adoption-driven restore.
 
-    **The ONLY caller of that seam, and that is a guarantee rather than an
-    observation about the call graph.** The delta probe used to restore from a
-    seam of its own, so a Full session could ask twice; the restore is not
-    idempotent — a completed one re-stamps the DISPLACED candidate as the new
-    previous one, so a second ask would put the just-removed graph back — and
-    the historical second asker read the repeat's refusal as a failed rollback
-    and told the household "the correction is still applied" when it was not.
-    That seam is deleted — the probe reports and this function acts on the
-    table's decision — and the flow is pinned against growing a second one
-    back.
-
-    The host's closure is still once-guarded, and it should stay that way: the
-    guard is a property of the binding rather than of this caller's discipline,
-    which is precisely the assumption whose failure produced the false
-    sentence. See ``bind_delta_probe_rollback`` in
+    The ONLY caller of that seam, and the restore is NOT idempotent: a
+    completed one re-stamps the displaced candidate as the new previous one, so
+    a second ask would put the just-removed graph back. The host's closure is
+    once-guarded as well — see ``bind_delta_probe_rollback`` in
     :mod:`jasper.web.correction_crossover_v2`.
     """
     restored = False
@@ -770,10 +507,6 @@ def _run_round_restore(
         try:
             restored = bool(ports.rollback(cause))
         except _SEAM_ERRORS as exc:
-            # Same widened family and same reasoning as the delta probe's
-            # refusal: this call sits outside the cloud pipeline's wrap, and
-            # losing the verdict is strictly worse than reporting it with the
-            # restore marked failed.
             error = str(exc)
     result = {
         "attempted": True,
@@ -798,44 +531,24 @@ def _write_round_receipt(
     *,
     restore_result: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Assemble #2291's receipt and hand it to the publishing seam.
+    """Assemble the round receipt and hand it to the publishing seam.
 
     ``round_id`` is the stage-2 relay session id: one graded post-apply session
-    is one round. A recovery re-verify runs under a NEW relay session and
-    therefore writes its OWN receipt rather than amending this one — which is
-    the honest shape, because it is a different measurement of a different
-    speaker state, and a receipt that could be amended would not be a receipt.
+    is one round, and a recovery re-verify writes its own receipt rather than
+    amending this one.
 
-    **The IDENTITY survives what the ARTIFACT does not, and that split is
-    #2609.** This identity is also the series' only memory:
-    :func:`series_position_from_state` reads ``round_ordinal``, ``objectives``,
-    and (since SF5) ``trusted_floor_hz`` back off it. It used to be returned
-    only on the success path, so an unbound or raising publish seam cost the
-    series its place in the count as well as its artifact: every round then read
-    as round 1, which disables the round cap AND the plateau stop, and the gate
-    drove twelve rounds proving it.
-
-    So the identity is assembled from the EVALUATION — which is in hand
-    whatever the seam does — and returned on every path. Only the two
-    fingerprint fields depend on the artifact, and they say so by being empty:
-    ``""`` means "this round decided what it says it decided, and no artifact
-    was banked", which is a fact worth carrying rather than a hole. Nothing
-    downstream reads a fingerprint as proof the round happened; the row, the
-    outcome, and the reason are what the screens and the next round read.
-
-    **The artifact write is still fail-soft, deliberately and in both
-    directions.** A receipt that could not be built or written never reverses a
-    verdict, never refuses a capture, and never crashes the capture path. The
-    verdict is what protects the household's speaker; the artifact is what lets
-    someone reconstruct why afterwards, and losing the second must not cost the
-    first — nor, now, the series its memory.
+    The IDENTITY survives what the ARTIFACT does not: it is assembled from the
+    evaluation and returned on every path, because
+    :func:`series_position_from_state` reads the series' only memory back off
+    it. Only the two fingerprint fields depend on the artifact, and ``""``
+    means "no artifact was banked". The artifact write is fail-soft — it never
+    reverses a verdict, refuses a capture, or crashes the capture path.
     """
     identity = _round_identity(evaluation, evidence)
     seam = ports.publish_round_receipt
     if seam is None:
-        # No publishing capability on this host. The round still happened and
-        # the series still has to remember it, so the identity goes back with
-        # empty fingerprints rather than as ``None``.
+        # No publishing capability; the series still has to remember the
+        # round, so the identity goes back with empty fingerprints.
         return identity
     baseline = evidence.entry_baseline
     try:
@@ -844,8 +557,7 @@ def _write_round_receipt(
             evaluation=evaluation,
             entry_baseline=baseline,
             # The graph the "before" was measured THROUGH — the baseline's own
-            # stamp, not "what is live now", which post-apply is the applied
-            # graph below.
+            # stamp, not "what is live now".
             entry_graph_fingerprint=(
                 baseline.graph_fingerprint if baseline is not None
                 else ENTRY_GRAPH_FINGERPRINT_UNKNOWN
@@ -866,11 +578,6 @@ def _write_round_receipt(
                 phase=PHASE_VERIFY,
             ),
             restore_result=restore_result,
-            # What the round MEASURED and nothing graded — the next bite's
-            # command inputs. Assembled here rather than in the assembler for
-            # the reason the assembler states: the instruments are the
-            # caller's, and deriving these there would give them a second
-            # owner.
             round_measurements=_round_measurements(evidence, evaluation),
             evidence_identities={
                 "session_id": evidence.session_id,
@@ -879,25 +586,16 @@ def _write_round_receipt(
                     baseline.artifact_ref if baseline is not None else ""
                 ),
                 "commanded_delta_present": evidence.commanded_delta_present,
-                # The applied candidate, kept on the record now that the
-                # ``proposal_fingerprint`` field above names the proposal
-                # instead (#2392). Written unconditionally, including as ``""``
-                # — an absent key would be a second way of saying "unknown"
-                # alongside the empty string, and this map is read by a human
-                # off a banked artifact.
+                # Written unconditionally, ``""`` included: an absent key would
+                # be a second way of saying "unknown".
                 "candidate_fingerprint": evidence.candidate_fingerprint,
             },
             created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         )
         fingerprint = seam(receipt.to_dict())
     except _SEAM_ERRORS:
-        # ERROR, not WARNING, and earned by demonstrated history: this is the
-        # exact event that would have fired on every shipped round for a whole
-        # phase while nobody looked. A dead ``_candidate`` read emptied
-        # ``proposal_fingerprint``, the receipt contract refused it, and this
-        # handler swallowed the loss — a fail-soft path whose only trace is a
-        # WARNING is one nobody reads. Its sibling, the no-anchor recovery path,
-        # is already ERROR.
+        # ERROR, not WARNING: a fail-soft path whose only trace is a WARNING is
+        # one nobody reads.
         log_event(
             logger, "correction.crossover_v2_round_receipt_failed",
             level=logging.ERROR, session_id=evidence.session_id, exc_info=True,
@@ -911,19 +609,12 @@ def _write_round_receipt(
         artifact_fingerprint=str(fingerprint or ""),
         receipt_fingerprint=receipt.fingerprint,
         adoption=evaluation.adoption.outcome.value,
-        # Which regime wrote this receipt, in the journal as well as in the
-        # artifact (#2392) — the journal is where a session looks before it
-        # fetches the bundle.
         proposal_fingerprint_kind=receipt.proposal_fingerprint_kind,
     )
     return identity
 
 
-#: The two adoption outcomes that leave the round's own graph playing. The
-#: other two (``RESTORE``, ``RECOVERY_REQUIRED``) mean the speaker is not on the
-#: graph this round's measurement was taken through — the first deliberately,
-#: the second because a restore was attempted and did not complete, which is
-#: the state where assuming ANYTHING about the live graph is least safe.
+#: The two adoption outcomes that leave the round's own graph playing.
 _GRAPH_KEPT_OUTCOMES = frozenset({
     AdoptionOutcome.KEEP, AdoptionOutcome.KEEP_FOR_ITERATION,
 })
@@ -941,81 +632,34 @@ def _round_identity(
     """What the round decided, plus the series' memory of it.
 
     Built from the evaluation alone, so it exists whether or not an artifact
-    was banked — see :func:`_write_round_receipt` for why that independence is
-    the point. The two fingerprint fields start empty and are filled in only by
-    a successful publish.
+    was banked. The two fingerprint fields start empty and are filled in only
+    by a successful publish.
     """
 
     return {
         "round_id": evidence.session_id,
         "artifact_fingerprint": "",
         "receipt_fingerprint": "",
-        # WHAT the round decided, WHICH row decided it, and the deciding axis's
-        # own reason (#2537), beside the pointers to where the full receipt
-        # landed. The done screen needs the outcome to know whether it owes a
-        # "kept, and here is what is still off" caveat, and a driver chaining
-        # rounds needs the row — fetching a bundle artifact to answer either
-        # would make a live surface depend on evidence storage.
+        # Here rather than only in the banked artifact: fetching a bundle to
+        # answer this would make a live surface depend on evidence storage.
         "adoption": evaluation.adoption.outcome.value,
         "row": evaluation.adoption.row,
         "reason": evaluation.adoption.reason,
-        # #2602: the series' own memory, and the reason it is HERE rather than
-        # only inside the banked artifact. The next round needs all three — the
-        # ordinal to know where the cap is, the objectives to know whether the
-        # series is still moving, and (SF5) the floor to know whether those
-        # objectives are even comparable — and it resolves them from this
-        # durable identity, which the host already carries forward across
-        # sessions. Fetching a bundle artifact to answer "should we run another
-        # round" would make the decision depend on evidence storage.
-        #
-        # Read off the headroom verdict's own evidence rather than recomputed,
-        # so the numbers banked for the next round are byte-for-byte the ones
-        # this round decided on.
+        # The series' own memory, read off the headroom verdict's evidence
+        # rather than recomputed.
         "round_ordinal": evaluation.headroom.evidence.get("round_ordinal"),
-        # Which EPOCH that ordinal counts in. Read off the EVIDENCE rather than
-        # the headroom verdict beside it, because the headroom axis does not
-        # branch on the epoch and must not start: this is disclosure, not a
-        # gate. A republish resets the sequence — it replaces durable state
-        # wholesale and the receipt this dict becomes is that sequence's only
-        # memory — so without this field "round 1" reads identically on a fresh
-        # box and on a series whose count was silently restarted.
+        # Read off the EVIDENCE rather than the headroom verdict beside it:
+        # the headroom axis does not branch on the epoch and must not start.
         "round_ordinal_epoch": evidence.round_ordinal_epoch,
         "objectives": evaluation.headroom.evidence.get("objectives"),
         "trusted_floor_hz": evaluation.headroom.evidence.get("trusted_floor_hz"),
-        # The spec verdict's OWN numbers, beside the two scalars above. The
-        # objectives reduce this round to a tilt and a ripple; a driver
-        # deciding whether to run another round needs to see WHICH bands
-        # disagree, by how much, and at what frequency — which is exactly the
-        # gauge the spec axis already read, discarded here until now. Read off
-        # that verdict's evidence rather than recomputed, so this and the
-        # decision cannot state different numbers.
-        #
-        # Disclosure. Nothing reads it back; the adoption table is unchanged.
+        # Disclosure: nothing reads it back, and the adoption table does not
+        # branch on it.
         "spec": dict(evaluation.spec.evidence) or None,
-        # Decision 10's prescription for the NEXT round, carried on the same
-        # durable record the objectives are — because it is the same kind of
-        # fact (what this round learned that only the next one can use) and
-        # because a series that remembered its objectives from one record and
-        # its prescription from another would be remembering two pasts. Read
-        # back by ``series_position_from_state`` directly below.
-        #
-        # **``None`` when the round did not KEEP its graph** (panel ruling,
-        # 2026-08-18). A prescription is derived from a measurement taken
-        # through a specific incumbent; a restored round threw that graph away,
-        # so its prescription describes a speaker that no longer exists and
-        # applying it next would compose a correction onto the wrong base. The
-        # next round instead derives its incumbent from the APPLIED (restored)
-        # profile — see ``_blend_prescription`` on the apply path. What the
-        # round COMMANDED is still recorded, in the banked artifact's
-        # ``round_measurements.blend``: that is history, and history survives a
-        # restore. This key is not history, it is an instruction.
-        # Two facts, one key, because they are one fact: what to apply next,
-        # and what the region read when that was decided. The next round needs
-        # BOTH — the filters to build its candidate, and the residual to know
-        # whether the region is still improving (the narrow-defect stop in
-        # ``blend_correction.solve_blend_correction``). Splitting them across
-        # two keys would let a series remember a prescription from one round
-        # and a reading from another.
+        # The blend prescription for the NEXT round, read back by
+        # ``series_position_from_state`` below. ``None`` when the round did not
+        # KEEP its graph: a prescription is derived through a specific
+        # incumbent, and a restored round threw that graph away.
         "blend": (
             None
             if evaluation.blend is None or not _round_kept_its_graph(evaluation)
@@ -1035,39 +679,17 @@ def _round_measurements(
 ) -> dict[str, Any]:
     """The round's own measured numbers, for the receipt's third mapping.
 
-    Three instruments, all optional, none graded here:
+    Three instruments, all optional, none graded here: the delta probe's
+    band-resolved realization, the post-apply cloud's per-position residuals,
+    and the blend region's commanded-vs-realized pair. All ride HERE, with the
+    numbers, rather than on ``round_axes`` — that mapping is the four adoption
+    axes and every value in it is a ``Verdict``.
 
-    * the delta probe's band-resolved realization (#2649) — read off the
-      probe's own ``to_dict`` so the receipt banks exactly what the probe
-      published rather than a reshaped copy of it. Absent on a session that ran
-      no probe, and absent on a probe from a build before the band-resolved
-      report shipped; both are honest absences and neither is an error.
-    * the post-apply cloud's per-position residuals (§4.2), already
-      JSON-shaped by the caller.
-    * the blend region's commanded-vs-realized pair (decision 10/11) — the
-      filters prescribed for the next round, the incumbent they were derived
-      from, the damping, and what the incumbent actually achieved in the
-      region. Decision 11 makes that pair deterministic forever no matter who
-      eventually prescribes, which is why it is banked with the numbers rather
-      than only logged.
+    The blend record is NOT nested under ``realization.bands.crossover``: that
+    band is the graded tier below ``DELTA_PROBE_HF_SPLIT_HZ`` and is not
+    derived from any Fc. Same word, different band.
 
-      **Its reason code rides here, with the numbers, not on ``round_axes``.**
-      ``round_axes`` is the four ADOPTION axes and every value in it is a
-      ``Verdict``; a blend reason is neither an adoption axis nor a verdict, and
-      a fifth key of a different shape would read as one — which decision 10
-      explicitly forbids ("not a new safety class"). Keeping the reason beside
-      the numbers is also what lets a reader tell "the region was already
-      clean" from "the instrument refused" in one place.
-
-      **Deliberately NOT nested under ``realization.bands.crossover``.** That
-      band is the graded tier below ``DELTA_PROBE_HF_SPLIT_HZ``
-      (``[953.5, 9999.98] Hz`` on the series-1 rig) and its own comment says it
-      is named for what it contains rather than derived from any Fc — which
-      this one is. Same word, different band.
-
-    Never raises. A probe object that cannot answer costs the receipt one
-    optional mapping, and losing the whole receipt over it would be exactly the
-    trade this module refuses everywhere else.
+    Never raises: a probe that cannot answer costs one optional mapping.
     """
 
     measurements: dict[str, Any] = {}
@@ -1079,67 +701,41 @@ def _round_measurements(
             dict(row) for row in evidence.position_residuals
         ]
     blend = evaluation.blend
-    # Banked only when there WAS a crossover region to speak about. A round on
-    # a tier that walks no cloud, or one whose absolute claim was never
-    # evaluated, has no blend question — and a record saying so would be the
-    # same false claim the empty position-residual list above is refused for:
-    # that the question was asked and answered. Once there IS a band, the
-    # record always rides, emitted or not, because "the region was already
-    # clean" and "the instrument refused" are then genuinely different answers.
+    # Banked only when there WAS a crossover region to speak about; once
+    # there is a band the record always rides, emitted or not.
     if blend is not None and blend.band_hz is not None:
         record = blend.to_dict()
         region_benefit = evaluation.region_benefit
         if region_benefit is not None:
-            # Labelled for the same reason ``realized`` is: this record now
-            # carries two residuals over the same band, referenced differently
-            # and therefore numerically different. The label is what stops a
-            # reader treating the gap as a defect in one of them.
+            # Labelled because the record carries two residuals over the same
+            # band, referenced differently and so numerically different.
             record["region_benefit"] = {
                 "instrument": "region_local_reference",
                 **region_benefit.to_dict(),
             }
         measurements["blend"] = record
-    # #2662's provenance, banked verbatim. It rides HERE, with the numbers,
-    # rather than on ``round_axes`` for the reason the blend reason code does:
-    # ``round_axes`` is the four adoption axes and every value in it is a
-    # ``Verdict``, and provenance is neither. It is also not an INSTRUCTION for
-    # the next round — unlike ``blend``, which the next round reads back as its
-    # incumbent — so it is deliberately absent from ``_round_identity``: each
-    # candidate of a delay sweep is prescribed explicitly, and a receipt that
-    # carried one forward would be how a candidate gets re-run unasked for.
+    # Provenance, banked verbatim, and deliberately absent from
+    # ``_round_identity``: each candidate of a delay sweep is prescribed
+    # explicitly, and a receipt that carried one forward would re-run a
+    # candidate nobody asked for.
     prescription = evidence.alignment_prescription
     if prescription is not None:
         objective = str(evidence.alignment_objective or "")
         measurements["alignment_prescription"] = {
             **prescription.to_dict(),
-            # The OUTCOME beside the request, and the reason both are here.
-            # ``objective`` names which commitment the machinery actually
-            # reached; ``committed`` is that one bit spelled out so a grader
-            # does not have to import a frozenset to read it, derived HERE from
-            # ``objective`` at the single site that banks either — one writer,
-            # never two facts that could disagree. ``None`` is the third
-            # answer, and it is not "no": a round whose fit never committed a
-            # candidate has no objective to report, and saying ``False`` there
-            # would claim the machinery declined a candidate it never reached.
+            # ``committed`` is derived here, at the single site that banks
+            # either, so the two cannot disagree. ``None`` is a third answer
+            # and is not "no": a round whose fit never committed has no
+            # objective to report.
             "objective": objective,
             "committed": (
                 None if not objective
                 else objective in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
             ),
         }
-    # The topology pin's provenance, banked verbatim beside the delay's and for
-    # the same reasons — it rides with the NUMBERS rather than on ``round_axes``
-    # (which is four ``Verdict``s), and it is deliberately absent from
-    # ``_round_identity`` so a receipt can never carry a candidate forward into
-    # a round nobody asked for.
-    #
-    # No ``committed`` bit beside it, and that asymmetry is the honest one. A
-    # delay prescription is a REQUEST the fit may or may not reach, so its
-    # receipt needs the outcome to be worth anything. A topology pin is not
-    # requested of the fit at all: the request boundary opened the session at
-    # the pinned corner and order, so every number in this receipt was measured
-    # there by construction. A bit that could only ever read ``True`` would be
-    # ceremony, and one derived from something else would be a second answer.
+    # No ``committed`` bit beside it: a topology pin is not requested of the
+    # fit at all — the request boundary opened the session at the pinned
+    # corner and order.
     topology = evidence.topology_prescription
     if topology is not None:
         measurements["topology_prescription"] = topology.to_dict()
@@ -1164,84 +760,55 @@ def _probe_realization(probe: Any) -> dict[str, Any] | None:
     return dict(realization) if isinstance(realization, Mapping) else None
 
 
-# --------------------------------------------------------------------------
-# the series' own memory (#2602)
-# --------------------------------------------------------------------------
+# --- the series' own memory ---
 
 
 @dataclass(frozen=True)
 class SeriesPosition:
-    """Where the next round sits in the household's flattening series (#2602).
+    """Where the next round sits in the household's flattening series.
 
-    The two facts :func:`~.verification.evaluate_iteration_headroom` cannot
-    derive from one round's evidence, because they are properties of the
-    SERIES: how many rounds have already run, and what the last one measured.
-
-    Deliberately a pair rather than two loose arguments threaded side by side:
-    they are read from one durable record, in one step, and an ordinal that
-    disagreed with the objectives beside it would be a series remembering two
-    different pasts.
+    What :func:`~.verification.evaluate_iteration_headroom` cannot derive from
+    one round's evidence: how many rounds have run and what the last measured.
+    One record read in one step, so an ordinal cannot disagree with the
+    objectives beside it.
     """
 
     #: 1-based position of the round about to be graded.
     ordinal: int
     #: What the previous round measured, or ``None`` when there was none.
     previous_objectives: FlatnessObjectives | None
-    #: The blend correction the NEXT round should apply (decision 10), or
-    #: ``None`` for "no instruction" — no previous round, a receipt written
-    #: before decision 10, a round that did not keep its graph, or a record
-    #: this reader cannot vouch for. A TOTAL, not a delta: the whole
-    #: correction, incumbent included, so the candidate build applies it
-    #: verbatim rather than composing it with anything.
+    #: The blend correction the NEXT round should apply, or ``None`` for "no
+    #: instruction". A TOTAL, not a delta: the whole correction, incumbent
+    #: included, applied verbatim rather than composed with anything.
     #:
-    #: **``None`` and ``()`` are different instructions**, and the apply path
-    #: turns on the difference: ``()`` says "apply no blend correction" and is
-    #: what a round that measured a clean region with no incumbent prescribes;
-    #: ``None`` says "this series has no instruction for you", and the next
-    #: candidate then derives its correction from the APPLIED graph instead of
-    #: reverting to nothing. Collapsing them would make a restored round, or a
-    #: fresh series on an already-corrected speaker, silently drop an adopted
-    #: correction.
+    #: ``None`` and ``()`` are different instructions and the apply path turns
+    #: on the difference: ``()`` is "apply no blend correction"; ``None`` is
+    #: "this series has no instruction", on which the next candidate derives
+    #: its correction from the APPLIED graph instead of reverting to nothing.
     previous_blend_correction: tuple[Mapping[str, Any], ...] | None = None
-    #: The region residual the previous round read (decision 10), or ``None``.
-    #: Travels in this pair for the reason the pair exists: a residual read
-    #: from one round and a prescription from another would be a series
-    #: remembering two pasts.
+    #: The region residual the previous round read, or ``None``. In this pair
+    #: so a residual and a prescription cannot come from different rounds.
     previous_blend_residual_db: float | None = None
-    #: The frame those objectives were graded in (#2609 SF5), or ``None`` for
-    #: no previous round, a receipt written before SF5, or a round whose tier
-    #: banked no floor. Travels in this pair rather than beside it for the
-    #: reason the pair exists at all: a floor read from one record and
-    #: objectives from another would be a series remembering two different
-    #: pasts, which is precisely the artefact SF5 exists to refuse.
+    #: The frame those objectives were graded in, or ``None`` for no previous
+    #: round or a tier that banked no floor. In this pair for the same reason.
     previous_trusted_floor_hz: float | None = None
-    #: Which EPOCH of the ordinal sequence this round's ``ordinal`` counts in.
+    #: Which EPOCH of the ordinal sequence this round's ``ordinal`` counts in;
     #: ``0`` is a box whose sequence has never been reset. Both doors that
     #: replace durable state wholesale while leaving a measured graph on the
     #: speaker increment it —
     #: :func:`~jasper.web.correction_crossover_v2_republish.handle_v2_republish`
     #: and :func:`~jasper.web.correction_crossover_v2.reset_v2_journey_state`'s
     #: applied branch — because the ``round_receipt`` they drop is the
-    #: sequence's only memory, so the next round is ordinal 1 again. Without
-    #: this the two are indistinguishable: an operator reading "round 1" cannot
-    #: tell a fresh box from a series whose count was reset out from under it.
-    #:
-    #: Defaulted rather than required, on ``previous_trusted_floor_hz``'s
-    #: stated line: a forgotten epoch is merely ABSENT, and ``0`` — "no reset
-    #: recorded" — is what every state file written before this key shipped
-    #: honestly means. It withholds a disclosure; it cannot fabricate one.
+    #: sequence's only memory.
     ordinal_epoch: int = 0
 
     @classmethod
     def first(cls, *, ordinal_epoch: int = 0) -> "SeriesPosition":
         """The opening round — nothing has run, nothing was measured.
 
-        ``ordinal_epoch`` is threaded through rather than defaulted at every
-        call, and that is the whole point: **every** path that resolves to the
-        first round is a path where the sequence restarted, and the honest ones
-        restart it for a reason the state file still records. A republish is
-        one of those, so ``first()`` must be able to say "ordinal 1, epoch 2"
-        or the disclosure dies at exactly the door it exists for.
+        ``ordinal_epoch`` is threaded through rather than defaulted: every path
+        resolving to the first round is one where the sequence restarted, and a
+        republish must still be able to say "ordinal 1, epoch 2".
         """
 
         return cls(
@@ -1251,25 +818,17 @@ class SeriesPosition:
 
 
 #: Durable-state key holding :attr:`SeriesPosition.ordinal_epoch`. Top-level
-#: rather than inside ``round_receipt``, because the epoch has to survive
-#: exactly the write that DROPS the receipt — a republish's whole-dict
-#: replacement — and a marker living inside the record it exists to outlive
-#: would be erased by the same line it is there to disclose.
+#: rather than inside ``round_receipt``: the epoch has to survive exactly the
+#: write that DROPS the receipt — a republish's whole-dict replacement.
 ROUND_ORDINAL_EPOCH_STATE_KEY = "round_ordinal_epoch"
 
 
 def round_ordinal_epoch_from_state(raw: Any) -> int:
     """The ordinal sequence's epoch, or ``0`` for "no reset recorded".
 
-    ``0`` for every unreadable shape, on
-    :func:`series_position_from_state`'s own stated direction: a missing,
-    corrupt, or older-build marker means nobody recorded a reset, and claiming
-    one that did not happen is the direction that fabricates. Under-disclosing
-    here restores exactly today's behaviour; over-disclosing would tell an
-    operator their count was reset when it never was.
-
-    ``bool`` is rejected before ``int`` because it subclasses it — a
-    hand-edited ``true`` must not publish as epoch 1.
+    ``0`` for every unreadable shape: claiming a reset that did not happen is
+    the direction that fabricates. ``bool`` is rejected before ``int`` because
+    it subclasses it — a hand-edited ``true`` must not publish as epoch 1.
     """
 
     if not isinstance(raw, Mapping):
@@ -1283,30 +842,15 @@ def round_ordinal_epoch_from_state(raw: Any) -> int:
 def series_position_from_state(raw: Any) -> SeriesPosition:
     """Resolve the next round's series position from durable journey state.
 
-    The READER for the two keys :func:`_write_round_receipt` writes, and it
-    lives beside that writer on purpose: the receipt identity is the only place
-    a series' history survives between sessions, so the code that parses it and
-    the code that emits it must be impossible to drift apart. A reader in
-    another module would be a second owner of this shape.
+    The reader for the keys :func:`_write_round_receipt` writes, kept beside
+    that writer so the two cannot drift apart.
 
-    **Every unreadable shape resolves to the FIRST round**, and the direction is
-    deliberate. A corrupt, absent, or older-build receipt means the series'
-    history is gone, and the two possible defaults are not symmetric: starting
-    over offers a household up to three more rounds it might not need, while
-    assuming the cap was reached would silently refuse to iterate at all — the
-    exact behaviour #2602 exists to remove, restored by a bad byte on disk.
-
-    **The cap is unconditional since #2609, and this is the other half of
-    that.** The identity this reads is now assembled from the round's own
-    evaluation and returned whether or not the artifact write succeeded (see
-    :func:`_write_round_receipt`), so a broken evidence store costs the series
-    its artifacts and not its count. What still resolves to the first round is
-    genuinely lost history: no state file, a corrupt one, or a host that never
-    persisted the identity at all.
+    Every unreadable shape resolves to the FIRST round: starting over offers a
+    household up to three more rounds it may not need, while assuming the cap
+    was reached would silently refuse to iterate at all.
 
     A previous ordinal at or past the cap still returns ``ordinal + 1``, not a
-    clamp: the headroom axis is the one place the cap is enforced, and a reader
-    that quietly clamped here would be a second enforcer of the same rule.
+    clamp — the headroom axis is the one place the cap is enforced.
     """
 
     epoch = round_ordinal_epoch_from_state(raw)
@@ -1320,12 +864,10 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
         return SeriesPosition.first(ordinal_epoch=epoch)
     objectives = receipt.get("objectives")
     if not isinstance(objectives, Mapping):
-        # A receipt from before #2602 knows its ordinal only if a #2602 build
-        # wrote it, so this is a partially-written or hand-edited record. The
-        # ordinal is still usable and the objectives are not: the round runs
-        # with no movement to judge, which is exactly the first-round reading
-        # of the plateau stop and never a fabricated zero. The floor goes with
-        # them — a frame for objectives nobody has is not a fact.
+        # The ordinal is still usable and the objectives are not, so the
+        # round runs with no movement to judge rather than a fabricated zero.
+        # The floor goes with them: a frame for absent objectives is not a
+        # fact.
         return SeriesPosition(
             ordinal=previous_ordinal + 1,
             previous_objectives=None,
@@ -1341,15 +883,11 @@ def series_position_from_state(raw: Any) -> SeriesPosition:
             tilt_db=_optional_db(objectives.get("tilt_db")),
             ripple_db=_optional_db(objectives.get("ripple_db")),
         ),
-        # Absent on every receipt written before decision 10, and on every
-        # round that did not keep its graph — both mean "no instruction", which
-        # the apply path reads as "derive from the applied graph" rather than
-        # as "revert to nothing".
+        # Absent on a round that did not keep its graph: "no instruction",
+        # which the apply path reads as "derive from the applied graph" rather
+        # than as "revert to nothing".
         previous_blend_correction=_blend_from_receipt(receipt),
         previous_blend_residual_db=_blend_residual_from_receipt(receipt),
-        # Absent on every receipt written before SF5, which the headroom axis
-        # reads as "no evidence the frame moved" — the same non-refusing
-        # direction an unknown floor has everywhere else.
         previous_trusted_floor_hz=_optional_db(receipt.get("trusted_floor_hz")),
     )
 
@@ -1359,17 +897,10 @@ def _blend_from_receipt(
 ) -> tuple[Mapping[str, Any], ...] | None:
     """The blend instruction a banked receipt carries, or ``None`` for none.
 
-    ``None`` — no instruction — for an absent key (a receipt from before
-    decision 10, or a round that did not keep its graph), and for a record this
-    reader cannot vouch for. The apply path reads that as "derive from the
-    applied graph", which is the safe direction: an unreadable instruction must
-    not be able to REMOVE an adopted correction any more than it can invent
-    one. Cuts-only is re-proved at the emitter regardless; this reader refuses
-    earlier so a malformed record never reaches it.
-
-    An explicit ``[]`` is a real instruction — "apply no blend correction" —
-    and survives as ``()``. That is what a round with no incumbent and a clean
-    region prescribes, and it must not be confused with the absence above.
+    ``None`` for an absent key and for a record this reader cannot vouch for:
+    an unreadable instruction must not be able to REMOVE an adopted correction
+    any more than it can invent one. An explicit ``[]`` is a real instruction —
+    "apply no blend correction" — and survives as ``()``.
     """
 
     from .blend_correction import blend_filters_from_mapping
@@ -1383,10 +914,8 @@ def _blend_from_receipt(
 def _blend_residual_from_receipt(receipt: Mapping[str, Any]) -> float | None:
     """The region residual the previous round read, or ``None``.
 
-    ``None`` — no comparison available — for every shape the instruction reader
-    above refuses, and for a round that read no region. The stop it feeds only
-    ever WITHHOLDS a new prescription, so an absent reading resolves to "keep
-    prescribing", which is the direction that cannot silently freeze a series.
+    ``None`` resolves to "keep prescribing", the direction that cannot
+    silently freeze a series.
     """
 
     blend = receipt.get("blend")
@@ -1398,10 +927,8 @@ def _blend_residual_from_receipt(receipt: Mapping[str, Any]) -> float | None:
 def _optional_db(value: Any) -> float | None:
     """A finite float from persisted JSON, or ``None``.
 
-    ``None`` for anything that is not a real number — including a NaN or an
-    infinity a corrupt write could leave behind, which would otherwise sail
-    through every comparison in the headroom axis and make a plateau look
-    unreachable forever.
+    NaN and infinity are rejected: they sail through every comparison in the
+    headroom axis and make a plateau look unreachable forever.
     """
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
