@@ -826,16 +826,16 @@ def main() -> int:
             outputd_later, ("content", "eagain_count")
         )
         later_uptime = _uptime_seconds(outputd_later)
+        content_xrun_delta = content_xruns - first_content_xruns
+        dac_xrun_delta = dac_xruns - first_dac_xruns
         empty_delta = later_content_empty - content_empty
         eagain_delta = later_content_eagain - content_eagain
         age = _progress_age_ms(outputd_later)
         if (
             first_backend == "alsa"
             and backend == "alsa"
-            and first_content_xruns == 0
-            and first_dac_xruns == 0
-            and content_xruns == 0
-            and dac_xruns == 0
+            and content_xrun_delta == 0
+            and dac_xrun_delta == 0
             and empty_delta == 0
             and eagain_delta == 0
             and first_age <= MAX_PROGRESS_AGE_MS
@@ -846,9 +846,10 @@ def main() -> int:
                 "OK",
                 "jasper-outputd STATUS",
                 (
-                    f"backend=alsa xruns=0/0 empty={later_content_empty} "
-                    f"eagain={later_content_eagain} empty_delta=0 eagain_delta=0 "
-                    f"progress_age_ms={first_age}->{age} "
+                    f"backend=alsa xruns={first_content_xruns}/{first_dac_xruns}"
+                    f"->{content_xruns}/{dac_xruns} empty={later_content_empty} "
+                    f"eagain={later_content_eagain} xrun_delta=0/0 empty_delta=0 "
+                    f"eagain_delta=0 progress_age_ms={first_age}->{age} "
                     f"uptime_seconds={first_uptime:g}->{later_uptime:g}"
                 ),
             )
@@ -862,6 +863,7 @@ def main() -> int:
                     f"xruns={first_content_xruns}/{first_dac_xruns}"
                     f"->{content_xruns}/{dac_xruns} "
                     f"empty={later_content_empty} eagain={later_content_eagain} "
+                    f"xrun_delta={content_xrun_delta}/{dac_xrun_delta} "
                     f"empty_delta={empty_delta} eagain_delta={eagain_delta} "
                     f"progress_age_ms={first_age}->{age} "
                     f"uptime_seconds={first_uptime:g}->{later_uptime:g}"

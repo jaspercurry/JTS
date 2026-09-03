@@ -1392,8 +1392,6 @@ def test_inactive_bluetooth_agent_fails_when_bluetooth_is_desired_on(
             "progress_age_ms=2001",
         ),
         (None, _outputd_status(backend="pipewire"), "backend='pipewire'"),
-        (None, _outputd_status(content_xruns=1), "xruns=1/0"),
-        (None, _outputd_status(dac_xruns=1), "xruns=0/1"),
         (None, _outputd_status(progress_age_ms=2001), "progress_age_ms=2001"),
     ],
 )
@@ -1417,6 +1415,42 @@ def test_main_fails_on_xrun_progress_or_outputd_health_regression(
     )
 
     assert detail in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("later_content_xruns", "later_dac_xruns", "expect_pass"),
+    [
+        # Lifetime xrun_count of 1 predates the health window (e.g. outputd's
+        # startup "went deaf, then recovered" event); no new xruns during the
+        # window must pass.
+        (1, 1, True),
+        (2, 1, False),  # new content xrun during the window
+        (1, 2, False),  # new dac xrun during the window
+    ],
+)
+def test_outputd_xrun_check_uses_window_delta_not_lifetime_count(
+    monkeypatch: pytest.MonkeyPatch,
+    short_socket_dir: Path,
+    stub_systemctl: Path,
+    capsys: pytest.CaptureFixture[str],
+    later_content_xruns: int,
+    later_dac_xruns: int,
+    expect_pass: bool,
+) -> None:
+    first = _outputd_status(uptime_seconds=100.0, content_xruns=1, dac_xruns=1)
+    later = _outputd_status(
+        uptime_seconds=101.0,
+        content_xruns=later_content_xruns,
+        dac_xruns=later_dac_xruns,
+    )
+
+    result = _run_main(
+        monkeypatch,
+        short_socket_dir,
+        outputd_payloads=[first, later],
+    )
+
+    assert result == (0 if expect_pass else 1)
 
 
 def test_outputd_stable_startup_starvation_counters_are_healthy(
@@ -1443,7 +1477,7 @@ def test_outputd_stable_startup_starvation_counters_are_healthy(
     ) == 0
 
     output = capsys.readouterr().out
-    assert "empty=2 eagain=2 empty_delta=0 eagain_delta=0" in output
+    assert "empty=2 eagain=2 xrun_delta=0/0 empty_delta=0 eagain_delta=0" in output
     assert "deploy health passed" in output
 
 
