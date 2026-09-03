@@ -1368,6 +1368,10 @@ class OutputdTtsPlayout(TtsPlayout):
         self._assistant_meter: AssistantSourceMeter | None = None
         self._profile_cache_key: tuple[str, str, str, str] | None = None
         self._profile_cache = None
+        # Keeps references so scheduled profile-save tasks (see
+        # _schedule_assistant_source_profile_save) aren't garbage-collected
+        # mid-flight.
+        self._profile_save_tasks: set[asyncio.Task] = set()
         # One publisher owns reconnect. Without this lock, simultaneous meter
         # and audio callers can each connect after the same poisoned adapter
         # and leave one live but unreachable socket behind.
@@ -1775,10 +1779,10 @@ class OutputdTtsPlayout(TtsPlayout):
     async def end_segment(self) -> None:
         stream = self._stream
         if stream is None:
-            await self._save_assistant_source_profile()
+            self._schedule_assistant_source_profile_save()
             return
         if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
-            await self._save_assistant_source_profile()
+            self._schedule_assistant_source_profile_save()
             return
         end = getattr(stream, "end_segment", None)
         if end is not None:
@@ -1786,14 +1790,34 @@ class OutputdTtsPlayout(TtsPlayout):
                 await asyncio.to_thread(end)
             except OSError as e:
                 logger.warning("fan-in TTS IPC segment end failed: %s", e)
-        await self._save_assistant_source_profile()
+        self._schedule_assistant_source_profile_save()
 
-    async def _save_assistant_source_profile(self) -> None:
+    def _pop_assistant_meter(self) -> AssistantSourceMeter | None:
         meter = self._assistant_meter
         self._assistant_meter = None
+        return meter
+
+    def _schedule_assistant_source_profile_save(self) -> None:
+        """Run the profile save off the chirp's critical path.
+
+        ``meter.finish()`` runs a pure-Python per-sample IIR filter twice
+        over the reply audio (assistant_loudness.py's ``_biquad``); awaited
+        inline here it blocked the loop for ~0.7s per second of reply,
+        delaying the end-of-turn chirp. The meter is popped now, by value,
+        so a segment that starts before this task gets to run cannot steal
+        it from the segment that just ended.
+        """
+        meter = self._pop_assistant_meter()
+        task = asyncio.create_task(self._save_assistant_source_profile(meter))
+        self._profile_save_tasks.add(task)
+        task.add_done_callback(self._profile_save_tasks.discard)
+
+    async def _save_assistant_source_profile(
+        self, meter: AssistantSourceMeter | None
+    ) -> None:
         if meter is None or not (self._provider and self._model and self._voice):
             return
-        measurement = meter.finish()
+        measurement = await asyncio.to_thread(meter.finish)
         if measurement is None:
             return
         confidence = confidence_for_measurement(measurement)
@@ -1817,7 +1841,7 @@ class OutputdTtsPlayout(TtsPlayout):
     async def flush(self) -> dict | None:
         stream = self._stream
         if stream is None:
-            await self._save_assistant_source_profile()
+            await self._save_assistant_source_profile(self._pop_assistant_meter())
             return None
         ack: dict | None = None
         try:
@@ -1840,7 +1864,7 @@ class OutputdTtsPlayout(TtsPlayout):
                 flushed_frames=ack.get("flushed_frames"),
                 max_audio_played_ms=ack.get("max_audio_played_ms"),
             )
-        await self._save_assistant_source_profile()
+        await self._save_assistant_source_profile(self._pop_assistant_meter())
         return ack
 
     async def __aexit__(self, *exc) -> None:
