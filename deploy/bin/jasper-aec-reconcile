@@ -268,6 +268,7 @@ load_env_file() {
 }
 
 ensure_mode_file() {
+    local inferred_profile
     if [[ -f "$MODE_FILE" ]]; then
         # File exists. Seed any missing keys so an older deploy's
         # mode file picks up the new leg defaults on next reconcile.
@@ -291,8 +292,10 @@ ensure_mode_file() {
             printf 'JASPER_AEC_CHIP_REF_OBSERVE=0\n' >> "$MODE_FILE"
         fi
         if ! grep -q '^JASPER_AUDIO_INPUT_PROFILE=' "$MODE_FILE"; then
-            printf 'JASPER_AUDIO_INPUT_PROFILE=%s\n' \
-                "$(infer_audio_input_profile_from_mode_file)" >> "$MODE_FILE"
+            if inferred_profile="$(infer_audio_input_profile_from_mode_file)"; then
+                printf 'JASPER_AUDIO_INPUT_PROFILE=%s\n' \
+                    "$inferred_profile" >> "$MODE_FILE"
+            fi
         fi
         return
     fi
@@ -648,19 +651,20 @@ normalize_bool() {
     esac
 }
 
-# jasper.audio_profile_state owns the profile alias table and the profile ->
-# wake-leg vectors; jasper.cli.audio_input_profile hands them to this script
-# as assignments to AUDIO_INPUT_PROFILE, AUDIO_INPUT_PROFILE_KNOWN and — when
-# --chip-available says whether chip-AEC can arm — AEC_MODE plus the five
-# LEG_* booleans. A `custom` profile assigns no legs: the operator's own mode
-# and legs stand.
+# jasper.audio_profile_state owns this vocabulary; the shim emits it as shell
+# assignments to the variables set below.
 #
 # ADR-0101: an unresolvable vocabulary is unmeasured, not a demotion. Callers
 # pre-seed the selection as written and ignore the non-zero return, so a
-# missing interpreter carries the declared profile (every writer of the key
-# stores it normalized) and leaves mode and legs exactly as configured.
+# missing interpreter carries the declared profile and leaves mode and legs
+# exactly as configured. Only a name the vocabulary does not have is demoted —
+# without the resolver this script cannot route it, and unrouted is `custom`.
 AUDIO_INPUT_PROFILE="custom"
 AUDIO_INPUT_PROFILE_KNOWN="1"
+AUDIO_INPUT_PROFILE_HAS_LEGS="0"
+CHIP_AEC_TESTING_REQUESTED="0"
+CHIP_AEC_PROFILE_SEEKS="0"
+CHIP_AEC_PROFILE_NEEDS_MIC_READY="0"
 read_audio_input_profile() {
     local payload
     if command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1 \
@@ -670,6 +674,16 @@ read_audio_input_profile() {
         return 0
     fi
     log "audio input profile resolver unavailable at ${MIC_PROFILE_PYTHON}; carrying the selection as written"
+    case "$AUDIO_INPUT_PROFILE" in
+        xvf_chip_aec_testing)
+            CHIP_AEC_TESTING_REQUESTED="1"
+            ;;
+        auto|xvf_chip_aec|xvf_software_aec3|direct_mic|custom) ;;
+        *)
+            log "unroutable JASPER_AUDIO_INPUT_PROFILE=${AUDIO_INPUT_PROFILE} without the resolver; treating as custom"
+            AUDIO_INPUT_PROFILE="custom"
+            ;;
+    esac
     return 1
 }
 
@@ -823,52 +837,31 @@ mode_file_value() {
     printf '%s\n' "$default"
 }
 
-infer_audio_input_profile_from_values() {
-    local mode="$1"
-    local raw="$2"
-    local dtln="$3"
-    local chip_aec="$4"
-    local chip_aec_150="${5:-0}"
-    local chip_aec_210="${6:-0}"
-    if [[ "$mode" != "auto" ]]; then
-        echo "direct_mic"
-    elif [[ "$chip_aec_150" == "1" || "$chip_aec_210" == "1" ]]; then
-        echo "custom"
-    elif [[ "$chip_aec" == "1" ]]; then
-        echo "xvf_chip_aec"
-    elif [[ "$raw" == "1" && "$dtln" == "0" ]]; then
-        echo "xvf_software_aec3"
-    else
-        echo "custom"
-    fi
-}
+# The closest profile for a mode file written before profiles existed. A
+# subshell, so seeding never disturbs the pass's own selection; exits non-zero
+# when the resolver is down, which leaves the key unseeded for the next pass
+# rather than stamping a guess.
+infer_audio_input_profile_from_mode_file() (
+    read_audio_input_profile --infer \
+        --mode="$(normalize_mode "$(mode_file_value JASPER_AEC_MODE auto)")" \
+        --leg-raw="$(mode_file_value JASPER_WAKE_LEG_RAW 1)" \
+        --leg-dtln="$(mode_file_value JASPER_WAKE_LEG_DTLN 0)" \
+        --leg-chip-aec="$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC 0)" \
+        --leg-chip-aec-150="$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_150 0)" \
+        --leg-chip-aec-210="$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_210 0)" \
+        || return 1
+    printf '%s\n' "$AUDIO_INPUT_PROFILE"
+)
 
-infer_audio_input_profile_from_mode_file() {
-    local mode raw dtln chip_aec chip_aec_150 chip_aec_210
-    mode="$(normalize_mode "$(mode_file_value JASPER_AEC_MODE auto)")"
-    raw="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_RAW 1)")"
-    dtln="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_DTLN 0)")"
-    chip_aec="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC 0)")"
-    chip_aec_150="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_150 0)")"
-    chip_aec_210="$(normalize_bool "$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_210 0)")"
-    infer_audio_input_profile_from_values \
-        "$mode" "$raw" "$dtln" "$chip_aec" "$chip_aec_150" "$chip_aec_210"
-}
-
-# Which runtime facts admit chip-AEC, per profile: `auto` additionally needs a
-# 6-channel mic before it will leave software AEC3; an explicitly requested
-# chip profile does not. Every other profile short-circuits before the DAC
-# gate is queried at all, so an unasked gate keeps its unresolved record.
+# The shell runs the probes; the shim already said which profiles they apply
+# to. A profile that does not seek chip-AEC returns before the DAC gate is
+# queried at all, so an unasked gate keeps its unresolved record.
 chip_aec_can_arm() {
-    case "$AUDIO_INPUT_PROFILE" in
-        auto)
-            aec_ready "$AEC_MIC_DEVICE" || return 1
-            ;;
-        xvf_chip_aec|xvf_chip_aec_testing) ;;
-        *)
-            return 1
-            ;;
-    esac
+    [[ "$CHIP_AEC_PROFILE_SEEKS" == "1" ]] || return 1
+    if [[ "$CHIP_AEC_PROFILE_NEEDS_MIC_READY" == "1" ]] \
+        && ! aec_ready "$AEC_MIC_DEVICE"; then
+        return 1
+    fi
     chip_aec_mic_supported \
         && chip_aec_dac_supported "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
 }
@@ -909,6 +902,7 @@ apply_audio_input_profile() {
         fi
         return
     fi
+    [[ "$AUDIO_INPUT_PROFILE_HAS_LEGS" == "1" ]] || return 0
     if chip_aec_can_arm; then
         chip_available=1
         log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
@@ -919,8 +913,8 @@ apply_audio_input_profile() {
     elif [[ "$AUDIO_INPUT_PROFILE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
         log "chip-AEC unavailable for output_dac=${AUDIO_DAC_ID}: $(chip_aec_block_detail "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"); using software AEC3"
     fi
-    read_audio_input_profile --profile "$AUDIO_INPUT_PROFILE" \
-        --chip-available "$chip_available" || true
+    read_audio_input_profile --profile="$AUDIO_INPUT_PROFILE" \
+        --chip-available="$chip_available" || true
 }
 
 # Map wake-leg booleans to the underlying env vars that
@@ -1993,7 +1987,7 @@ observe_mic_profile_state
 
 AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
 AUDIO_INPUT_PROFILE="${JASPER_AUDIO_INPUT_PROFILE:-custom}"
-read_audio_input_profile --profile "$AUDIO_INPUT_PROFILE" || true
+read_audio_input_profile --profile="$AUDIO_INPUT_PROFILE" || true
 if [[ "$AUDIO_INPUT_PROFILE_KNOWN" != "1" ]]; then
     log "unknown JASPER_AUDIO_INPUT_PROFILE=${JASPER_AUDIO_INPUT_PROFILE:-}; treating as custom"
 fi
@@ -2073,10 +2067,6 @@ LEG_CHIP_AEC_210="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC_210:-0}")"
 # Only the software-AEC3 leg path in write_leg_env acts on it.
 CHIP_REF_OBSERVE="$(normalize_bool "$(mode_file_value JASPER_AEC_CHIP_REF_OBSERVE 0)")"
 AUDIO_DAC_ID="$(normalize_output_dac_id "${JASPER_AUDIO_DAC_ID:-unknown}")"
-CHIP_AEC_TESTING_REQUESTED=0
-if [[ "$AUDIO_INPUT_PROFILE" == "xvf_chip_aec_testing" ]]; then
-    CHIP_AEC_TESTING_REQUESTED=1
-fi
 apply_audio_input_profile
 if [[ "$AUDIO_INPUT_PROFILE" == "custom" && "$LEG_CHIP_AEC" == "1" ]]; then
     if ! chip_aec_mic_supported; then
