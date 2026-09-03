@@ -33,10 +33,6 @@ from jasper.active_speaker import candidate_bank
 from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2.capture_source import (
-    SOURCE_RELAY,
-    SOURCE_WIRED,
-)
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     MEASURE_KIND_CANDIDATE,
@@ -98,15 +94,13 @@ def _arm_shape():
 
 def _take(
     shape=None, *, base_entries=3, lateral_group_present=False,
-    plans_cloud_group=False, capture_source=SOURCE_WIRED,
-    preset=None, topology=None,
+    plans_cloud_group=False, preset=None, topology=None,
 ):
     return v2host._take_staged_angle_walk(
         shape if shape is not None else _hand_shape(),
         base_entries=base_entries,
         lateral_group_present=lateral_group_present,
         plans_cloud_group=plans_cloud_group,
-        capture_source=capture_source,
         # Read ONLY by the level-match resolution, which an unmatched walk
         # never reaches — the ordinary walk pays no statefile read.
         preset=preset,
@@ -757,65 +751,6 @@ def test_a_walk_asking_for_no_level_match_never_refuses_on_evidence(
     assert _take() is not None
 
 
-def _level_matched_walk():
-    """A normal-polarity walk that only asks for the level match.
-
-    Not ``_inverted_walk``: an inverted walk is already wired-gated by polarity,
-    so a walk that isolates the level-match source gate must NOT also ride a
-    flip, or the polarity gate would answer first and this pin would test the
-    wrong door.
-    """
-    return ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), level_matched=True,
-    )
-
-
-def test_a_level_matched_walk_refuses_a_source_that_cannot_play_the_match(
-    slot, monkeypatch, caplog,
-):
-    """The twin of the polarity gate. The trims ride the engine MEASURE leg's
-    ``graph.install``, which only a wired session binds; every other source
-    runs MEASURE on the flow leg, which installs the ordinary graph and knows
-    nothing about them. So adopting a level-matched walk on a relay source
-    would journal ``level_matched=true`` over an unmatched capture — the S12
-    lie through a seam the graph does not cover.
-
-    It refuses on the SOURCE, and BEFORE any evidence is read: the box below
-    HAS trims, and the walk still refuses ``needs_wired`` rather than being
-    taken, and the evidence resolver is never called.
-    """
-    asked: list = []
-
-    def _resolver(spec, *, preset, topology):
-        asked.append(spec)
-        return {DRIVER_ROLE_TWEETER: -9.5}, "banked_base_trim"
-
-    monkeypatch.setattr(v2host, "_resolve_measurement_level_trims", _resolver)
-    spool.stage_angle_request(_level_matched_walk())
-    with caplog.at_level(logging.WARNING):
-        sentence = _refused(capture_source=SOURCE_RELAY)
-
-    assert ac.WALK_LEVEL_MATCH_NEEDS_WIRED in sentence
-    # A SOURCE refusal, not a no-evidence one — the box HAS trims.
-    assert ac.WALK_LEVEL_MATCH_NO_EVIDENCE not in sentence
-    # And the gate short-circuits the resolver: a doomed walk reads no statefile.
-    assert asked == []
-    line, = _events(caplog)
-    assert f"reason={ac.WALK_LEVEL_MATCH_NEEDS_WIRED}" in line
-    assert "crossover_v2_angle_walk_taken" not in line
-    assert ac.WALK_LEVEL_MATCH_NEEDS_WIRED in ac.WALK_REFUSAL_REASONS
-    assert spool.staged_angle_request_pending() is False
-
-    # The refusal is the SOURCE's and only the source's: the same walk on a
-    # wired session, with the same evidence, is taken…
-    spool.stage_angle_request(_level_matched_walk())
-    assert _take(capture_source=SOURCE_WIRED) is not None
-
-    # …and a walk that asks for no level match is untouched on the relay.
-    spool.stage_angle_request(ac.per_driver_at([0]))
-    assert _take(capture_source=SOURCE_RELAY) is not None
-
-
 def test_a_genuinely_empty_box_refuses_no_evidence_through_the_real_resolver(
     slot, monkeypatch,
 ):
@@ -848,9 +783,7 @@ def test_a_genuinely_empty_box_refuses_no_evidence_through_the_real_resolver(
     sentence = _refused(preset=preset)
 
     assert ac.WALK_LEVEL_MATCH_NO_EVIDENCE in sentence
-    # The real owner ran and answered empty, so the refusal is the evidence's,
-    # not the source's (this walk is wired) and not a masqueraded fault.
-    assert ac.WALK_LEVEL_MATCH_NEEDS_WIRED not in sentence
+
 
 
 def _stub_evidence_loaders(monkeypatch):
@@ -989,37 +922,6 @@ def test_a_one_sided_polarity_refuses_the_open_in_the_specs_own_words(slot, capl
     assert f"reason={ac.WALK_POLARITY_NOT_ACCEPTED}" in line
     assert "consumed=true" in line and "session_continues=false" in line
     assert spool.staged_angle_request_pending() is False
-
-
-def test_an_inverted_walk_refuses_a_source_that_cannot_play_the_flip(slot, caplog):
-    """Only a WIRED session binds the engine MEASURE leg, so only a wired
-    session can play a sign flip.
-
-    Every other source runs MEASURE on the flow leg, which has no spec and
-    plays the ordinary graph — so adopting the walk there would bank a normal
-    capture under a record that says ``inverted``, and journal
-    ``polarity=inverted`` for a walk in which nothing inverted played. It
-    refuses instead, and NOTHING is journaled as taken.
-    """
-    spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
-    with caplog.at_level(logging.WARNING):
-        sentence = _refused(capture_source=SOURCE_RELAY)
-
-    assert ac.WALK_POLARITY_NEEDS_WIRED in sentence
-    line, = _events(caplog)
-    assert f"reason={ac.WALK_POLARITY_NEEDS_WIRED}" in line
-    assert "crossover_v2_angle_walk_taken" not in line
-    assert spool.staged_angle_request_pending() is False
-
-    # The refusal is the SOURCE's and only the source's: the same walk on a
-    # wired session is taken…
-    spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
-    assert _take(capture_source=SOURCE_WIRED) is not None
-
-    # …and a normal walk is untouched by the question, because nothing rides
-    # flipped and there is nothing the flow leg cannot play.
-    spool.stage_angle_request(ac.per_driver_at([0]))
-    assert _take(capture_source=SOURCE_RELAY) is not None
 
 
 # --- one take, four surfaces --------------------------------------------------

@@ -33,7 +33,6 @@ import pytest
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
-from jasper.active_speaker.crossover_v2.capture_source import SOURCE_RELAY
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_REGISTRY,
@@ -49,6 +48,7 @@ from jasper.output_topology import (
     OutputTopology,
 )
 from jasper.web import correction_crossover_v2 as v2host
+from tests.crossover_v2_fixtures import fake_measurement_mic
 
 _TWO_WAY_GROUP = [{
     "id": "mono",
@@ -718,10 +718,11 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
     fail-soft seam) is stubbed."""
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
-    # The subject is the CONTEXT resolver, so the capture source is named
-    # rather than probed: wired is the default (ADR-0188), and no machine
-    # running this suite has a measurement mic plugged in.
-    monkeypatch.setenv("JASPER_CAPTURE_SOURCE", SOURCE_RELAY)
+    # The subject is the CONTEXT resolver, so the mic is named rather than
+    # probed: no machine running this suite has one plugged in.
+    monkeypatch.setattr(
+        v2host, "_resolve_prepare_wired_mic", fake_measurement_mic,
+    )
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store", lambda topology: (object(), "sess-fake")
     )

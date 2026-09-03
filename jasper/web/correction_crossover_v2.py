@@ -21,14 +21,11 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
   :func:`jasper.active_speaker.crossover_v2.composition.bind_program_playback_seams`,
   and the apply gate reading the durable applied flag;
 * the **session assembly for the capture provider** (#2662): the preparers
-  below gate, build the conductor, and hand the walk to the capture source
-  the session resolved to — :mod:`jasper.web.correction_crossover_v2_wired`
-  by default, and :mod:`jasper.web.correction_crossover_v2_relay` when the
-  parked phone flow is named. Each owns its own plan-walk hosting, its own
-  choreography, and the translation of its internal deaths into the flow's
-  reason vocabulary; each is reached LAZILY, on its own branch, so a session
-  loads only the island it measures on. This host stays the single writer of
-  the persisted failure state those reasons land in
+  below gate, build the conductor, and hand the walk to
+  :mod:`jasper.web.correction_crossover_v2_wired`, which owns the plan-walk
+  hosting, the capture choreography, and the translation of its internal
+  deaths into the flow's reason vocabulary. It is reached LAZILY. This host
+  stays the single writer of the persisted failure state those reasons land in
   (``status["crossover_v2"]["failure"]`` — ``relay_timeout``,
   ``user_stopped``, …), and of the walked-away volume guarantee the provider
   drives through ``V2VolumeHooks``.
@@ -98,10 +95,6 @@ from jasper.active_speaker.capture_provenance import (
     record_capture_provenance,
 )
 from jasper.active_speaker.crossover_v2 import durable_state as _durable
-from jasper.active_speaker.crossover_v2.capture_source import (
-    SOURCE_RELAY,
-    SOURCE_WIRED,
-)
 from jasper.active_speaker.crossover_v2.durable_state import (
     build_conductor_state,
 )
@@ -1953,7 +1946,6 @@ def _take_staged_angle_walk(
     base_entries: int,
     lateral_group_present: bool,
     plans_cloud_group: bool,
-    capture_source: str,
     preset: Any,
     topology: Any,
 ) -> tuple[
@@ -1983,20 +1975,12 @@ def _take_staged_angle_walk(
     ``trims`` is the per-role attenuation a ``--level-matched`` walk carries,
     resolved HERE and empty for a walk that asked for none. Adoption is the one
     place that can both ask the evidence question and still refuse, so it is
-    asked exactly once. Such a walk faces two refusals, the same lie caught at
-    different seams: a non-wired ``capture_source`` refuses with
-    :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NEEDS_WIRED`
-    before any statefile is read, and a wired box with no measured evidence
+    asked exactly once. A box with no measured evidence
     (:func:`~jasper.active_speaker.baseline_profile.measured_level_trims`)
     refuses with
     :data:`~jasper.active_speaker.angle_capture.WALK_LEVEL_MATCH_NO_EVIDENCE`.
     A datasheet estimate is deliberately not a fallback: it is physics about
     the driver model, not a measurement of this cabinet.
-
-    ``capture_source`` gates the same capability twice: only a wired session
-    binds the engine MEASURE leg, and every other source runs MEASURE on the
-    flow leg, which has no ``spec`` and knows nothing about a sign-flip or a
-    level match.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
@@ -2013,9 +1997,7 @@ def _take_staged_angle_walk(
     from jasper.active_speaker.angle_capture import (
         WALK_CANDIDATE_NOT_MEASURABLE,
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
-        WALK_LEVEL_MATCH_NEEDS_WIRED,
         WALK_LEVEL_MATCH_NO_EVIDENCE,
-        WALK_POLARITY_NEEDS_WIRED,
         WALK_DELAY_NOT_ACCEPTED,
         WALK_POLARITY_NOT_ACCEPTED,
         WALK_STOP_NO_LONGER_VALID,
@@ -2046,10 +2028,7 @@ def _take_staged_angle_walk(
         PHASE_LATERAL,
         PHASE_MEASURE,
     )
-    from jasper.active_speaker.crossover_v2.measure_spec import (
-        MeasureSpec,
-        inverted_roles_for,
-    )
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.spatial import TakeClaim
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
@@ -2114,31 +2093,6 @@ def _take_staged_angle_walk(
             WALK_DELAY_NOT_ACCEPTED if stated_delay else WALK_POLARITY_NOT_ACCEPTED,
             str(exc),
         ) from exc
-    if inverted_roles_for(measure_spec) and capture_source != SOURCE_WIRED:
-        # Asked through the ONE translation rather than by re-reading the
-        # polarity word, so "does anything ride flipped" keeps a single owner.
-        raise refused(
-            WALK_POLARITY_NEEDS_WIRED,
-            "a reverse-polarity capture plays through the engine MEASURE leg, "
-            f"which only a {SOURCE_WIRED} session binds; this session's "
-            f"capture source is {capture_source!r}",
-        )
-    if measure_spec.level_matched and capture_source != SOURCE_WIRED:
-        # The twin of the polarity gate above, and BEFORE the evidence
-        # resolution below: the trims ride the engine MEASURE leg's
-        # ``graph.install``, which only a wired session binds — the flow leg
-        # calls ``session_graph.install()`` with none and plays the ordinary
-        # graph. A non-wired box that HAS evidence still cannot play the match,
-        # so this is a source refusal and not a no-evidence one, and asked
-        # first so a doomed walk never reads a statefile. Without it a
-        # ``level_matched`` walk on a relay source would journal
-        # ``level_matched=true`` over an unmatched capture — the S12 lie.
-        raise refused(
-            WALK_LEVEL_MATCH_NEEDS_WIRED,
-            "a level-matched capture plays through the engine MEASURE leg, "
-            f"which only a {SOURCE_WIRED} session binds; this session's "
-            f"capture source is {capture_source!r}",
-        )
     level_trims, trim_source = _resolve_measurement_level_trims(
         measure_spec, preset=preset, topology=topology,
     )
@@ -2151,13 +2105,6 @@ def _take_staged_angle_walk(
             "the walk without --level-matched",
         )
     candidate_ids = tuple(stop.candidate_id for stop in request.stops)
-    if any(candidate_ids) and capture_source != SOURCE_WIRED:
-        raise refused(
-            WALK_CANDIDATE_NOT_MEASURABLE,
-            "a candidate is played as the alignment it was minted with, which "
-            f"rides the engine MEASURE leg only a {SOURCE_WIRED} session "
-            f"binds; this session's capture source is {capture_source!r}",
-        )
     try:
         axes_by_candidate = {
             candidate_id: candidate_measure_axes(
@@ -3647,7 +3594,6 @@ def bind_production_play(
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
     declared_sensitivities: Mapping[str, float] | None = None,
     config_dir: str | None = None,
-    on_playback_started: Callable[[Any], None] | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
 ) -> "ProductionPlay":
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
@@ -3674,13 +3620,6 @@ def bind_production_play(
     WRONG lock identity — every other writer locks
     ``/var/lib/camilladsp/configs/.dsp_apply.lock``, so a real ``/etc``
     lock would not have serialized against them at all.
-
-    ``on_playback_started`` (optional) is fired with the program at the instant
-    its WAV reaches the playback call — the closest the host gets to "audio
-    starts now" without reaching into the shared aplay path. It is what anchors
-    the phone's pre-tone phase ladder (:func:`~jasper.web.correction_crossover_v2_relay.start_program_phase_ladder`);
-    omitted, playback is unchanged and the caller keeps whatever progress
-    reporting it had.
 
     ``provenance`` (optional) is the session's
     :class:`~jasper.active_speaker.capture_provenance.CaptureProvenanceRecorder`.
@@ -3902,8 +3841,6 @@ def bind_production_play(
                 await _hold_fader(camilla_factory)
                 if observing:
                     await _observe(camilla_factory, GRAPH_KIND_APPLIED)
-                if on_playback_started is not None:
-                    on_playback_started(program)
                 await verified_program_aplay(
                     bundle_dir, artifact, timeout_s=60.0
                 )
@@ -3934,26 +3871,12 @@ def bind_production_play(
                 session_volume_db=session_volume_db,
                 declared_sensitivities=declared_sensitivities,
             )
-            if on_playback_started is not None:
-                # Wrap the seam rather than firing before ``play_program``: the
-                # readmission and writer-lock acquisition both happen inside it
-                # and both precede any sound. Firing here keeps the anchor at
-                # the WAV handoff for both playback shapes.
-                inner_play_wav = seams["play_wav"]
-
-                async def _play_wav_signalling() -> Any:
-                    on_playback_started(program)
-                    return await inner_play_wav()
-
-                seams["play_wav"] = _play_wav_signalling
             if observing:
-                # OUTSIDE the signalling wrapper, so the phase-ladder anchor
-                # stays adjacent to the WAV handoff. Still INSIDE
-                # ``play_program`` even though the graph is installed earlier
-                # now: what this records is what the capture PLAYED through, so
-                # it belongs next to the WAV handoff rather than next to the
-                # install — and ``get_active_config_raw`` answers the
-                # measurement graph at both points.
+                # INSIDE ``play_program`` even though the graph is installed
+                # earlier now: what this records is what the capture PLAYED
+                # through, so it belongs next to the WAV handoff rather than
+                # next to the install — and ``get_active_config_raw`` answers
+                # the measurement graph at both points.
                 pre_provenance_play_wav = seams["play_wav"]
 
                 async def _play_wav_observed() -> Any:
@@ -3965,9 +3888,7 @@ def bind_production_play(
             # states the mechanism). Wrapping ``play_wav`` is what puts the hold
             # where the fix has to be: INSIDE the writer lock, AFTER the graph
             # is proven installed, BEFORE any audio. Outside the provenance
-            # wrapper so the recorded fader is one that was proven, and outside
-            # the signalling wrapper so the phone's phase-ladder anchor still
-            # fires adjacent to the WAV handoff and never for a refused capture.
+            # wrapper so the recorded fader is one that was proven.
             pre_hold_play_wav = seams["play_wav"]
 
             async def _play_wav_volume_held() -> Any:
@@ -5053,28 +4974,18 @@ class V2PreparedSession:
     open: Callable[..., Any]
     run_and_consume: Callable[[Any, Any], Any]
     request_stop: Callable[[], None]
-    #: Which capture source this session opened on (#2662):
-    #: ``capture_source.SOURCE_RELAY`` or ``SOURCE_WIRED`` (local capture —
-    #: no relay client, no link, and the hosting must not require a
-    #: configured relay).
-    capture_source: str
-    #: This session's position gate, or ``None`` for a tap-paced one. Built for
+    #: This session's position gate, or ``None`` for an ungated one. Built for
     #: either GATED shape (``V2PlanShape.positions_gated``): the remote tier,
-    #: and a hand-walked round on the wired source.
-    #: ``correction_setup`` reads :meth:`PositionGate.pending` into the relay
-    #: block the envelope renders, and routes the release POST to
-    #: :meth:`PositionGate.release`.
+    #: and a hand-walked round. ``correction_setup`` reads
+    #: :meth:`PositionGate.pending` into the status block the envelope renders,
+    #: and routes the release POST to :meth:`PositionGate.release`.
     position_gate: PositionGate | None = None
-    #: The wired session's completion signal (work order D1) — the local
-    #: stand-in for the phone's authenticated complete-capture-set event.
-    #: ``None`` on a relay session, whose signal rides the relay protocol.
-    #: The W3 wizard surface is what will POST this; it exists now because
-    #: the held-set walk semantics need a signal source to be complete.
+    #: The session's completion signal for a held set (work order D1). The W3
+    #: wizard surface is what will POST this; it exists now because the
+    #: held-set walk semantics need a signal source to be complete.
     request_complete: Callable[[], None] | None = None
-    #: The wired session's per-take RETAKE signal — the local stand-in for the
-    #: phone's ``begin_capture {retake: true}``. ``None`` on a relay session
-    #: (whose retake rides the relay protocol's own begin) AND on a GATELESS
-    #: wired one, which never waits for a person to serve it in. Routed from
+    #: The session's per-take RETAKE signal. ``None`` on a GATELESS session,
+    #: which never waits for a person to serve it in. Routed from
     #: ``POST /crossover/v2/retake`` through the same slot as
     #: :attr:`request_complete`, and honoured in either window where the walk
     #: is waiting on a person: a HELD BEGIN, or the held-set window.
@@ -5518,9 +5429,8 @@ def bind_v2_engine_seams(
       artifact FINGERPRINTS into ``refs`` — and they still do. W1-d's index is
       the first reader that will want the path.
 
-    ``capture_stimulus`` is bound for the WIRED source and ``None`` for the
-    relay, whose microphone is on a phone answering through its own
-    conversation — the transaction names which in the outcome's incident.
+    ``capture_stimulus`` records what each stimulus does to the room; the
+    transaction names it in the outcome's incident.
     """
     from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
@@ -5671,94 +5581,51 @@ def bind_v2_stage_seams(
     )
 
 
-def _resolve_prepare_capture_source() -> tuple[str, Any]:
-    """Which capture source this prepare opens on (#2662 W2b).
+def _resolve_prepare_wired_mic() -> Any:
+    """The measurement mic this prepare opens on (#2662 W2b).
 
-    Resolved ONCE per prepare and threaded into ``_open`` — the mint, the
-    runner build, and the returned ``capture_source`` must describe one
-    decision, not three reads of a probe that can change between them. Both
-    providers are imported lazily, so a session loads only the island it
-    measures on. A wired resolution error — no measurement mic on the
-    default wired path (``WiredMicMissing``), or an unrecognized override
-    value — refuses at the tap, before any evidence store or durable state
-    is touched, carrying the provider's own code so the journal names the
-    disclosure rather than quoting it.
-
-    **The relay's own precondition is checked HERE too** (gate fix round
-    S3): a session that resolved to the relay needs a configured relay
-    origin, and learning that at the dispatch — after the preparer had
-    already opened a fresh evidence bundle (abandoning the prior one) and
-    hydrated durable state — was a refusal that cost side effects. Every
-    source's "can this session open at all?" question is answered at this
-    one point, before anything is written. The dispatch's later
-    ``_require_relay_base()`` read is then a plain re-read of a value this
-    gate just proved present.
+    Resolved ONCE per prepare and threaded into ``_open`` — the mint and the
+    runner build must describe one decision, not two reads of a probe that can
+    change between them. The provider is imported lazily. A resolution error
+    (``WiredMicMissing``) refuses at the tap, before any evidence store or
+    durable state is touched, carrying the provider's own code so the journal
+    names the disclosure rather than quoting it.
     """
     from jasper.audio_measurement.wired_capture import WiredCaptureError
     from jasper.web import correction_crossover_v2_wired as wired
 
     try:
-        source, device = wired.resolve_v2_capture_source()
+        return wired.resolve_v2_wired_mic()
     except WiredCaptureError as exc:
         raise CrossoverV2Refused(
             str(exc), code=str(getattr(exc, "code", "") or ""),
         ) from exc
-    if source == SOURCE_RELAY:
-        # The one owner of the relay-configured question and its message
-        # (correction_setup._require_relay_base), reached lazily exactly as
-        # the calibration resolver reaches its correction_setup owner.
-        from jasper.web.correction_setup import _require_relay_base
-
-        try:
-            _require_relay_base()
-        except ValueError as exc:
-            raise CrossoverV2Refused(str(exc)) from exc
-    return source, device
 
 
-def _hand_released_plan_shape(plan_shape: Any, capture_source: str) -> Any:
+def _hand_released_plan_shape(plan_shape: Any) -> Any:
     """The same shape, told whether a PERSON releases each of its begins.
 
-    The one place that pairs the two facts neither half owns alone: the plan
-    shape knows whether a MACHINE advances the walk (its tier), and only the
-    host knows which capture SOURCE is answering. A hand-walked round on the
-    WIRED source is the pair that needs saying — it has no capture page, so
-    nothing there taps, and without a hold the local runner fires every capture
-    back to back while the household is still walking to the next spot. Its
-    begins are therefore held and released by hand
-    (``V2PlanShape.hand_released_positions``), the same
+    A hand-walked round is the shape that needs saying: nothing paces it, and
+    without a hold the local runner fires every capture back to back while the
+    household is still walking to the next spot. Its begins are therefore held
+    and released by hand (``V2PlanShape.hand_released_positions``), the same
     ``POST /crossover/v2/position-ready`` an external driver uses.
 
-    Every other pairing is returned untouched, so nothing about a relay session
-    or the arm's remote tier moves: a relay round is paced by the page's own
-    tap, the arm already holds behind its driver's report, and the tier-less
-    recovery re-arm (``plan_shape is None``) is one sweep at the mark with no
-    walk to pace at all.
+    Every other shape is returned untouched: the arm already holds behind its
+    driver's report, and the tier-less recovery re-arm (``plan_shape is
+    None``) is one sweep at the mark with no walk to pace at all.
     """
-    if plan_shape is None or capture_source != SOURCE_WIRED:
+    if plan_shape is None:
         return plan_shape
     if plan_shape.externally_positioned:
         return plan_shape
     return dataclasses.replace(plan_shape, hand_released_positions=True)
 
 
-def _mint_source_session(
-    source: str,
-    wired_device: Any,
-    client: Any,
-    spec: Any,
-    *,
-    base: str,
-    capture_origin: str,
-    return_url: str,
-    plan_shape: Any,
-    ceiling_s: float,
-) -> Any:
-    """Mint one session on the selected source (#2662 W2b).
+def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
+    """Mint one session on the measurement mic (#2662 W2b).
 
-    Both mints answer the same shape (``pi_session`` + ``tap_link``); only
-    the relay's talks to a network. The TTL policy is relay-private — a wired
-    session has no link to expire.
+    Answers ``pi_session`` + ``tap_link``; the link is empty by construction.
 
     **No Pi-minted per-capture result wait.** The wait #2706 put on the spec was
     the Fc sweep's compute ceiling plus its measured overhead; with no sweep to
@@ -5767,36 +5634,14 @@ def _mint_source_session(
     and 8.7 s clear of the slowest observed round (81.28 s), which did strictly
     more work than any round runs now.
     """
-    if source == SOURCE_WIRED:
-        from jasper.web import correction_crossover_v2_wired as wired
+    from jasper.web import correction_crossover_v2_wired as wired
 
-        return wired.open_wired_capture(spec, device=wired_device)
-    from jasper.capture_relay import correction_adapter
-    from jasper.web import correction_crossover_v2_relay as relay
-
-    return correction_adapter.open_capture(
-        client,
-        spec,
-        relay_base=base,
-        capture_origin=capture_origin,
-        return_url=return_url,
-        ttl_s=relay.relay_link_ttl_s(plan_shape, ceiling_s),
-    )
+    return wired.open_wired_capture(spec, device=wired_device)
 
 
-def _wired_stimulus_capture(
-    source: str, wired_device: Any, evidence_store: Any,
-) -> Any:
-    """The play seam's capture half for this source, or ``None``.
-
-    One source records what it plays, and it is the same question
-    :func:`_build_source_run` asks: the Pi's own microphone is on the box the
-    stimulus comes out of, and a phone is not. A relay session therefore binds
-    nothing here and its transaction says so by name — never by handing back an
-    empty path with nothing to explain it.
-    """
-    if source != SOURCE_WIRED or wired_device is None:
-        return None
+def _wired_stimulus_capture(wired_device: Any, evidence_store: Any) -> Any:
+    """The play seam's capture half: the Pi's own microphone, on the box the
+    stimulus comes out of."""
     from jasper.web import correction_crossover_v2_wired as wired
 
     return wired.WiredStimulusCapture(
@@ -5817,8 +5662,8 @@ def _bind_engine_measure_leg(
     Returns the ``capture_stimulus(index, attempt, entry)`` callable the wired
     runner drives in place of its own recorder + ``on_armed`` for the indices
     this closure claims, or ``None`` when there is nothing to bind (no local
-    capture half — the relay). The closure answers ``None`` for every index it
-    does NOT claim, and the walk's own path is unchanged for those.
+    capture half). The closure answers ``None`` for every index it does NOT
+    claim, and the walk's own path is unchanged for those.
 
     **It claims every index ``specs_by_index`` names, and the MEASURE ones
     besides.** MEASURE is the one phase the
@@ -6010,8 +5855,7 @@ def _bind_engine_measure_leg(
     return _measure_capture
 
 
-def _build_source_run(
-    source: str,
+def _build_wired_run(
     conductor: Any,
     *,
     volume: "V2VolumeHooks",
@@ -6019,48 +5863,31 @@ def _build_source_run(
     stop_lock: Any,
     position_gate: "PositionGate | None",
     evidence_refs: dict[str, Any],
-    playback_started: Any,
     wired_device: Any,
     ceiling_s: float,
     complete_event: threading.Event,
     retake_event: threading.Event,
     capture_stimulus: Any = None,
 ) -> Callable[[Any, Any], Any]:
-    """One provider runner per source, driving the same conductor hooks.
+    """The provider runner, driving the conductor hooks.
 
-    The relay runner takes the phone-phase signal (its progress ladder); the
-    wired runner takes the device, the session ceiling (its confirm-wait
-    bound), the local completion and retake signals, and the engine measure
-    leg. Neither takes the other's extras — the seam's rule that a source's
-    choreography stays private, and the relay's retake needs no signal here
-    because it arrives on the phone's own begin.
+    It takes the device, the session ceiling (its confirm-wait bound), the
+    local completion and retake signals, and the engine measure leg.
     """
-    if source == SOURCE_WIRED:
-        from jasper.web import correction_crossover_v2_wired as wired
+    from jasper.web import correction_crossover_v2_wired as wired
 
-        return wired.build_v2_wired_run_and_consume(
-            conductor,
-            volume=volume,
-            stop_event=stop_event,
-            stop_lock=stop_lock,
-            device=wired_device,
-            ceiling_s=ceiling_s,
-            complete_event=complete_event,
-            retake_event=retake_event,
-            position_gate=position_gate,
-            evidence_refs=evidence_refs,
-            capture_stimulus=capture_stimulus,
-        )
-    from jasper.web import correction_crossover_v2_relay as relay
-
-    return relay.build_v2_run_and_consume(
+    return wired.build_v2_wired_run_and_consume(
         conductor,
         volume=volume,
         stop_event=stop_event,
         stop_lock=stop_lock,
+        device=wired_device,
+        ceiling_s=ceiling_s,
+        complete_event=complete_event,
+        retake_event=retake_event,
         position_gate=position_gate,
         evidence_refs=evidence_refs,
-        playback_started=playback_started,
+        capture_stimulus=capture_stimulus,
     )
 
 
@@ -6407,20 +6234,14 @@ def prepare_v2_session(
                 f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
             ) from exc
 
-    # #2662 W2b: which capture source answers this session's asks. After the
-    # speaker-level gates (they are prior questions), before any state is
-    # opened (an explicit-override refusal must cost nothing) — and BEFORE the
-    # stage-1 plan below, because the source is half of "does this round hold
-    # before every capture" and a plan built from the other half alone would
-    # emit entries the gate cannot read. Stage 2 resolves it in the same
-    # position for the same reason: a refused verify-start (relay-less Pi,
-    # unplugged mic under an explicit wired override) costs no side effects
-    # (gate S3, both stages).
-    capture_source, wired_device = _resolve_prepare_capture_source()
-    # ...which is the whole of what the source changes about the shape. Rebound
-    # ONCE, here, so every surface downstream — the index map, the spec, the
-    # gate — reads one shape rather than a half-updated one.
-    plan_shape = _hand_released_plan_shape(plan_shape, capture_source)
+    # #2662 W2b: the microphone that answers this session's asks. After the
+    # speaker-level gates (they are prior questions) and before any state is
+    # opened, so a refused start (unplugged mic) costs no side effects (gate
+    # S3, both stages).
+    wired_device = _resolve_prepare_wired_mic()
+    # Rebound ONCE, here, so every surface downstream — the index map, the
+    # spec, the gate — reads one shape rather than a half-updated one.
+    plan_shape = _hand_released_plan_shape(plan_shape)
     # Capture index -> the MEASURE spec a staged walk states there (R-1's
     # reverse polarity, and #3498's per-pose candidate). Bound here rather than
     # inside the branch below because ``_open`` reads it on both stages, and
@@ -6464,7 +6285,6 @@ def prepare_v2_session(
             base_entries=len(stage1_index_phase),
             lateral_group_present=include_lateral,
             plans_cloud_group=include_cloud_measure,
-            capture_source=capture_source,
             preset=context.preset,
             topology=context.topology,
         )
@@ -6688,21 +6508,11 @@ def prepare_v2_session(
                 default_setup_calibration=default_setup_calibration_for_v2(),
             ).with_return_url(return_url)
         # This stage's own wall-clock budget, read ONCE off the plan it just
-        # emitted: the relay link is minted against it below and the walked-away
-        # volume ceiling is armed from it further down, and those two must
-        # describe the same session (issue #2509).
+        # emitted: the runner's confirm-wait is bounded by it and the
+        # walked-away volume ceiling is armed from it further down, and those
+        # two must describe the same session (issue #2509).
         ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
-        rc = _mint_source_session(
-            capture_source,
-            wired_device,
-            client,
-            spec,
-            base=base,
-            capture_origin=capture_origin,
-            return_url=return_url,
-            plan_shape=plan_shape,
-            ceiling_s=ceiling_s,
-        )
+        rc = _mint_wired_session(wired_device, spec)
         # The conductor + publishers bind to the MINTED provider session id
         # (the seam's identity rule — the wired id rides the same key).
         relay_session_id = rc.pi_session.session_id
@@ -6717,17 +6527,7 @@ def prepare_v2_session(
         publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
-        # One signal per RELAY session, shared by the play seam (which fires
-        # it) and the relay runner (which installs the armed capture's phone
-        # progress ladder on it). A wired session has no page to pace, so it
-        # carries None — the seam's own documented "nobody is listening", and
-        # what keeps a wired measurement from loading the parked relay island.
-        playback_started = None
-        if capture_source == SOURCE_RELAY:
-            from jasper.web import correction_crossover_v2_relay as relay
-
-            playback_started = relay.PlaybackStartSignal()
-        # Same shape, same reason: written by the play seam, read by analyze.
+        # Written by the play seam, read by analyze.
         capture_provenance = CaptureProvenanceRecorder()
         production_play = bind_production_play(
             run_async=run_async,
@@ -6747,9 +6547,6 @@ def prepare_v2_session(
                 None if verify_only else protection_sections
             ),
             declared_sensitivities=context.declared_sensitivities,
-            on_playback_started=(
-                None if playback_started is None else playback_started.fire
-            ),
             provenance=capture_provenance,
         )
         play = production_play.play
@@ -6955,12 +6752,10 @@ def prepare_v2_session(
         volume_claim = _session_volume_claim()
         # The half that records what a stimulus does to the room — minted ONCE,
         # because two parties hold the same object: the play transaction (which
-        # records across the play and banks the path) and the wired walk (which
+        # records across the play and banks the path) and the walk (which
         # drains the minted answer so `consume_capture` grades the very take
-        # the engine banked). None on the relay: its microphone is a phone.
-        stimulus_capture = _wired_stimulus_capture(
-            capture_source, wired_device, evidence_store,
-        )
+        # the engine banked).
+        stimulus_capture = _wired_stimulus_capture(wired_device, evidence_store)
         tuning = TuningSession(
             session_id=relay_session_id,
             seams=bind_v2_engine_seams(
@@ -6988,8 +6783,7 @@ def prepare_v2_session(
             level_match_trims_db=engine_level_trims,
         )
         nonlocal held
-        source_run = _build_source_run(
-            capture_source,
+        source_run = _build_wired_run(
             conductor,
             volume=_volume_hooks(
                 camilla_factory, context, tuning=tuning,
@@ -6999,7 +6793,6 @@ def prepare_v2_session(
             stop_lock=stop_lock,
             position_gate=position_gate,
             evidence_refs=refs,
-            playback_started=playback_started,
             wired_device=wired_device,
             ceiling_s=ceiling_s,
             complete_event=complete_event,
@@ -7043,10 +6836,7 @@ def prepare_v2_session(
         run_and_consume=_run,
         request_stop=_request_stop,
         position_gate=position_gate,
-        capture_source=capture_source,
-        request_complete=(
-            complete_event.set if capture_source == SOURCE_WIRED else None
-        ),
+        request_complete=complete_event.set,
         request_retake=(
             # Carried only by a walk that can ever WAIT for a person, which is
             # the same question the gate answers: the retake is served at a
@@ -7055,9 +6845,7 @@ def prepare_v2_session(
             # group to hold open. Carrying it there would answer a household's
             # POST with ok:true and then do nothing at all, which is the one
             # shape a signal seam must never have.
-            retake_event.set
-            if capture_source == SOURCE_WIRED and position_gate is not None
-            else None
+            retake_event.set if position_gate is not None else None
         ),
     )
 

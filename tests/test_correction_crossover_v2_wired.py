@@ -6,16 +6,14 @@
 
 Five layers, least to most integrated:
 
-1. **Source resolution** — auto picks wired exactly when a measurement-class
-   mic is present; explicit overrides are honored, and an impossible override
-   fails loudly rather than silently measuring on a source nobody chose.
-2. **The host's fork** — one resolved decision drives the mint and the
-   runner; the wired runner gets the wired extras, the relay runner keeps the
-   phone-phase signal, and the host's refusal translation reaches the tap.
+1. **Mic resolution** — the measurement-class mic is picked when present, and
+   absence is disclosed rather than measured around.
+2. **The host's wiring** — one resolved mic drives the mint and the runner,
+   and the host's refusal translation reaches the tap.
 3. **The wired runner** — drives the conductor conversation (gate → admission
-   → capture-while-play → consume) with the relay's own error mapping minus
-   everything phone-shaped; the walked-away volume guarantee holds on every
-   exit; wired deaths never persist a transport claim.
+   → capture-while-play → consume) with the host-owned error mapping; the
+   walked-away volume guarantee holds on every exit; a death never persists a
+   transport claim.
 4. **The fake-ALSA end-to-end** — extends the #2701 wired-readiness pin from
    a contract-only answer to a REAL engine capture consumed through the REAL
    host path: a real ``CrossoverV2Session`` (recovery re-verify shape), the
@@ -25,7 +23,7 @@ Five layers, least to most integrated:
 5. **The play seam's capture half** — the same box plays and records, so one
    stimulus is one transaction: the recorder rolls before the first sample,
    stops after the last, and the bytes land in the bundle under a path the
-   engine's record can carry. Only the wired source binds one.
+   engine's record can carry.
 
 Equal-or-more scrutiny is pinned here as behavior: every wired answer carries
 all four frame-ledger counters with real values (so the analyzer's frame
@@ -51,8 +49,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginRefused,
     CaptureFailed,
     CaptureStopped,
-    SOURCE_RELAY,
-    SOURCE_WIRED,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -69,7 +65,6 @@ from jasper.audio_measurement.wired_capture import (
 )
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_relay as v2relay
 from jasper.web import correction_crossover_v2_wired as v2wired
 
 from tests.test_wired_capture import FakePcm, UMIK2_USB_ID, _make_card
@@ -100,53 +95,18 @@ def _device() -> WiredMicDevice:
 # --------------------------------------------------------------------------- #
 
 
-#: Every spelling that means "measure on the local mic" — the default (unset)
-#: and the two ways of saying it out loud.
-WIRED_ENVS = [
-    {},
-    {"JASPER_CAPTURE_SOURCE": "auto"},
-    {"JASPER_CAPTURE_SOURCE": "wired"},
-]
-
-
-@pytest.mark.parametrize("env", WIRED_ENVS)
-def test_wired_is_the_default_source_when_a_mic_is_present(tmp_path, env):
+def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
     _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
-    source, device = v2wired.resolve_v2_capture_source(env, proc_asound=tmp_path)
-    assert source == SOURCE_WIRED
-    assert device is not None and device.model_key == "minidsp_umik2"
+    device = v2wired.resolve_v2_wired_mic(proc_asound=tmp_path)
+    assert device.model_key == "minidsp_umik2"
 
 
-@pytest.mark.parametrize("env", WIRED_ENVS)
-def test_no_mic_discloses_instead_of_falling_back_to_the_relay(tmp_path, env):
+def test_no_mic_discloses_instead_of_measuring_anyway(tmp_path):
     """ADR-0188: wired is THE acoustic-measurement path, so absence is
-    DISCLOSED and the session refuses to guess. A silent relay session here is
-    the defect — a household measures their speaker through a phone they never
-    chose because a USB plug was loose."""
+    DISCLOSED and the session refuses to guess."""
     with pytest.raises(v2wired.WiredMicMissing) as caught:
-        v2wired.resolve_v2_capture_source(env, proc_asound=tmp_path)
+        v2wired.resolve_v2_wired_mic(proc_asound=tmp_path)
     assert caught.value.code == v2wired.CODE_WIRED_MIC_MISSING
-
-
-@pytest.mark.parametrize("mic_present", [True, False])
-def test_the_parked_relay_is_reached_by_naming_it(tmp_path, mic_present):
-    """Disclose-and-recommend, never nanny: the phone flow stays fully usable
-    for whoever asks for it, mic plugged in or not."""
-    if mic_present:
-        _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
-    assert v2wired.resolve_v2_capture_source(
-        {"JASPER_CAPTURE_SOURCE": "relay"}, proc_asound=tmp_path
-    ) == (SOURCE_RELAY, None)
-
-
-def test_an_unrecognized_override_refuses_rather_than_guessing(tmp_path):
-    with pytest.raises(WiredCaptureError) as caught:
-        v2wired.resolve_v2_capture_source(
-            {"JASPER_CAPTURE_SOURCE": "phone"}, proc_asound=tmp_path
-        )
-    # NOT the missing-mic disclosure: an unreadable override is a different
-    # fault with a different fix, so it must not carry that code.
-    assert not isinstance(caught.value, v2wired.WiredMicMissing)
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +163,7 @@ def test_the_wired_answer_satisfies_the_seam_contract():
         (WiredCaptureError, ""),
     ],
 )
-def test_resolve_prepare_capture_source_translates_to_a_refusal(
+def test_resolve_prepare_wired_mic_translates_to_a_refusal(
     monkeypatch, raised, expected_code,
 ):
     """The refusal reaches the tap CODED where the provider named it, so the
@@ -213,44 +173,20 @@ def test_resolve_prepare_capture_source_translates_to_a_refusal(
     def _boom(*args, **kwargs):
         raise raised("no mic")
 
-    monkeypatch.setattr(v2wired, "resolve_v2_capture_source", _boom)
+    monkeypatch.setattr(v2wired, "resolve_v2_wired_mic", _boom)
     with pytest.raises(v2host.CrossoverV2Refused) as caught:
-        v2host._resolve_prepare_capture_source()
+        v2host._resolve_prepare_wired_mic()
     assert caught.value.code == expected_code
-
-
-def test_a_relay_session_requires_the_relay_at_the_source_gate(monkeypatch):
-    """S3 (#2720 gate), the unit half: a session that resolved to the RELAY
-    refuses right at the source gate when no relay origin is configured —
-    while a WIRED session on the same relay-less Pi sails through (a local
-    measurement must not depend on a public Worker)."""
-    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
-    monkeypatch.setattr(
-        v2wired, "resolve_v2_capture_source", lambda: (SOURCE_RELAY, None),
-    )
-    with pytest.raises(
-        v2host.CrossoverV2Refused, match="relay capture is not configured"
-    ):
-        v2host._resolve_prepare_capture_source()
-
-    device = _device()
-    monkeypatch.setattr(
-        v2wired, "resolve_v2_capture_source", lambda: (SOURCE_WIRED, device),
-    )
-    assert v2host._resolve_prepare_capture_source() == (SOURCE_WIRED, device)
 
 
 @pytest.mark.parametrize("preparer", ["session", "verify"])
 def test_a_refused_prepare_leaves_the_bundle_store_untouched(
     monkeypatch, tmp_path, preparer,
 ):
-    """S3's behavioral pin, BOTH preparers: the relay-precondition refusal
-    fires BEFORE ``open_v2_evidence_store`` — a refused start on a relay-less
-    Pi must not abandon the prior bundle and write a new one on its way to
-    the 400 (the side effect the dispatch-level gate ordering used to
-    prevent; this PR's reorder briefly lost it on stage 1, and the gate's
-    delta round found stage 2 had it 71 lines late). The gates ahead of the
-    source resolution are stubbed to pass — for verify that is the
+    """S3's behavioral pin, BOTH preparers: the missing-mic refusal fires
+    BEFORE ``open_v2_evidence_store`` — a refused start must not abandon the
+    prior bundle and write a new one on its way to the 400. The gates ahead
+    of the mic resolution are stubbed to pass — for verify that is the
     recovery gate (needs_recovery False) and the applied-state gate (state
     applied True); the evidence store is a bomb."""
     import jasper.active_speaker.branch_chain as branch_chain
@@ -260,10 +196,10 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
 
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
-        monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
-        monkeypatch.setattr(
-            v2wired, "resolve_v2_capture_source", lambda: (SOURCE_RELAY, None),
-        )
+        def _no_mic():
+            raise v2wired.WiredMicMissing("no mic")
+
+        monkeypatch.setattr(v2wired, "resolve_v2_wired_mic", _no_mic)
         monkeypatch.setattr(
             v2host, "session_volume_plan",
             lambda: SimpleNamespace(needs_recovery=False),
@@ -296,88 +232,50 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
             )
 
         monkeypatch.setattr(v2host, "open_v2_evidence_store", _bomb)
-        with pytest.raises(
-            v2host.CrossoverV2Refused, match="relay capture is not configured"
-        ):
+        with pytest.raises(v2host.CrossoverV2Refused) as caught:
             v2host.prepare_v2_session(
                 {}, status={}, run_async=None, camilla_factory=None,
                 verify_only=preparer == "verify",
             )
+        assert caught.value.code == v2wired.CODE_WIRED_MIC_MISSING
     finally:
         v2host.set_state_path_for_tests(None)
 
 
-def test_mint_source_session_forks_on_the_source(monkeypatch):
+def test_the_mint_opens_the_capture_on_the_resolved_mic(monkeypatch):
     minted = []
     monkeypatch.setattr(
         v2wired, "open_wired_capture",
-        lambda spec, device: minted.append(("wired", spec, device)) or "wired-rc",
-    )
-    import jasper.capture_relay.correction_adapter as adapter
-
-    monkeypatch.setattr(
-        adapter, "open_capture",
-        lambda client, spec, **kw: minted.append(("relay", kw["ttl_s"])) or "relay-rc",
+        lambda spec, device: minted.append((spec, device)) or "wired-rc",
     )
     device = _device()
-    rc = v2host._mint_source_session(
-        SOURCE_WIRED, device, None, "spec",
-        base="", capture_origin="", return_url="", plan_shape=None,
-        ceiling_s=100.0,
-    )
-    assert rc == "wired-rc"
-    assert minted == [("wired", "spec", device)]
 
-    minted.clear()
-    rc = v2host._mint_source_session(
-        SOURCE_RELAY, None, object(), "spec",
-        base="https://relay.test", capture_origin="cap.test",
-        return_url="", plan_shape=None, ceiling_s=100.0,
-    )
-    assert rc == "relay-rc"
-    # The relay mint keeps its TTL policy (default for a shape-less session).
-    from jasper.capture_relay.session import DEFAULT_TTL_S
-
-    assert minted == [("relay", DEFAULT_TTL_S)]
+    assert v2host._mint_wired_session(device, "spec") == "wired-rc"
+    assert minted == [("spec", device)]
 
 
-def test_build_source_run_gives_each_provider_its_own_extras(monkeypatch):
+def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
     built = {}
 
     def _wired_builder(conductor, **kw):
-        built["wired"] = kw
+        built.update(kw)
         return "wired-run"
 
-    def _relay_builder(conductor, **kw):
-        built["relay"] = kw
-        return "relay-run"
-
     monkeypatch.setattr(v2wired, "build_v2_wired_run_and_consume", _wired_builder)
-    monkeypatch.setattr(v2relay, "build_v2_run_and_consume", _relay_builder)
     device = _device()
     complete = threading.Event()
     retake = threading.Event()
-    signal = object()
-    common = dict(
-        volume="vol", stop_event=threading.Event(), stop_lock=threading.Lock(),
-        position_gate=None, evidence_refs={}, playback_started=signal,
-        wired_device=device, ceiling_s=42.0, complete_event=complete,
-        retake_event=retake,
-    )
-    assert v2host._build_source_run(SOURCE_WIRED, "conductor", **common) == "wired-run"
-    assert built["wired"]["device"] is device
-    assert built["wired"]["ceiling_s"] == 42.0
-    assert built["wired"]["complete_event"] is complete
-    assert built["wired"]["retake_event"] is retake
-    assert "playback_started" not in built["wired"]
 
-    assert v2host._build_source_run(SOURCE_RELAY, "conductor", **common) == "relay-run"
-    assert built["relay"]["playback_started"] is signal
-    assert "device" not in built["relay"]
-    # The relay's retake rides the phone's own begin, so the local signal is
-    # NOT one of its extras — the seam's rule that a source's choreography
-    # stays private.
-    assert "retake_event" not in built["relay"]
+    assert v2host._build_wired_run(
+        "conductor",
+        volume="vol", stop_event=threading.Event(), stop_lock=threading.Lock(),
+        position_gate=None, evidence_refs={}, wired_device=device,
+        ceiling_s=42.0, complete_event=complete, retake_event=retake,
+    ) == "wired-run"
+    assert built["device"] is device
+    assert built["ceiling_s"] == 42.0
+    assert built["complete_event"] is complete
+    assert built["retake_event"] is retake
 
 
 # --------------------------------------------------------------------------- #
@@ -1616,19 +1514,6 @@ def test_the_retake_signal_drops_with_the_slot():
         correction_setup._set_relay_capture(None)
 
 
-def test_a_relay_session_offers_no_local_retake_signal():
-    """The relay's retake rides the phone's own begin, so a relay session
-    leaves the local seam unset and the route 409s rather than half-serving
-    a verb whose walk would never look at it."""
-    prepared = v2host.V2PreparedSession(
-        label="x", open=lambda *a: None,
-        run_and_consume=lambda c, s: None, request_stop=lambda: None,
-        capture_source=SOURCE_RELAY,
-    )
-    assert prepared.request_retake is None
-    assert prepared.request_complete is None
-
-
 def test_the_wired_provider_reaches_the_host_only_at_call_time():
     """The relay provider's import-shape pin, mirrored for its sibling: the
     host imports NEITHER provider lazily by accident — it must stay free to
@@ -1809,24 +1694,16 @@ async def test_a_capture_that_cannot_be_placed_says_so_after_the_play(
     assert played == ["played"], "the stimulus really did play"
 
 
-def test_only_the_wired_source_binds_a_capture_half():
-    """The same question `_build_source_run` asks, and it must answer alike.
-
-    A relay session's microphone is on a phone answering through its own
-    conversation, so binding a local recorder for it would record the room
-    twice and hand the engine a path the phone's take never produced.
-    """
+def test_the_capture_half_records_into_this_sessions_bundle():
     store = SimpleNamespace(bundle_dir="/var/lib/jasper/bundle")
 
-    wired_half = v2host._wired_stimulus_capture(SOURCE_WIRED, _device(), store)
-    relay_half = v2host._wired_stimulus_capture(SOURCE_RELAY, None, store)
+    half = v2host._wired_stimulus_capture(_device(), store)
 
-    assert isinstance(wired_half, v2wired.WiredStimulusCapture)
-    assert wired_half.device.model_key == "minidsp_umik2"
+    assert isinstance(half, v2wired.WiredStimulusCapture)
+    assert half.device.model_key == "minidsp_umik2"
     # The bundle this session's evidence lands in, so the path the record
     # carries resolves against the same root `analyze` will be declared.
-    assert wired_half.bundle_dir == Path("/var/lib/jasper/bundle")
-    assert relay_half is None
+    assert half.bundle_dir == Path("/var/lib/jasper/bundle")
 
 
 # --------------------------------------------------------------------------- #

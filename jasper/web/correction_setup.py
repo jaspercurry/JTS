@@ -2630,22 +2630,6 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 "repeat_main_position must use the automatic trust check"
             )
         repeat_main_position = DEFAULT_REPEAT_MAIN_POSITION
-        from jasper.capture_relay import correction_adapter
-
-        requested_transport = body.get("capture_transport")
-        if requested_transport is None:
-            capture_transport = (
-                "relay" if correction_adapter.relay_enabled() else "local"
-            )
-        else:
-            capture_transport = str(requested_transport)
-            if capture_transport not in {"relay", "local"}:
-                raise ValueError("capture_transport must be relay or local")
-            if (
-                capture_transport == "relay"
-                and not correction_adapter.relay_enabled()
-            ):
-                raise ValueError("phone capture is not configured")
         noise_floor_db: float | None
         try:
             noise_floor_db = (
@@ -2716,7 +2700,6 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             input_device=input_device,
             repeat_main_position=repeat_main_position,
         )
-        sess.capture_transport = capture_transport
         sess.noise_floor_db = noise_floor_db
         sess.room_authority_binding = authority_binding
 
@@ -3731,7 +3714,6 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     mechanism snapshot at /status. The browser renders the envelope's exact
     ordered section list and closed action vocabulary without owning a
     second screen policy."""
-    from jasper.capture_relay import correction_adapter
     from jasper.correction import envelope
 
     sess = _get_or_create_session()
@@ -3739,23 +3721,6 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     readiness_blocker = None
     if screen == envelope.SCREEN_IDLE:
         readiness_blocker = _room_readiness().blocker
-
-    # Capture path is a bounded presentation input while the idle page is
-    # open. Once a run starts, the session's own transport is authoritative.
-    # Relay is the fleet default when configured; the local HTTPS backup asks
-    # for `capture_transport=local` on envelope refreshes after the user picks
-    # it under Change.
-    capture_transport = str(getattr(sess, "capture_transport", "local"))
-    if screen == envelope.SCREEN_IDLE:
-        query = parse_qs(urlparse(handler.path).query)
-        requested = str((query.get("capture_transport") or [""])[0])
-        relay_enabled = correction_adapter.relay_enabled()
-        if requested == "local":
-            capture_transport = "local"
-        elif requested == "relay" and relay_enabled:
-            capture_transport = "relay"
-        else:
-            capture_transport = "relay" if relay_enabled else "local"
 
     # Session discovery reads every bundle today, so it is intentionally
     # confined to idle/result static edges. Active screens are fetched every
@@ -3786,15 +3751,8 @@ def _handle_envelope(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # it, the omitted argument takes the builder's fail-closed path rather
         # than accidentally treating `None` as a positive readiness decision.
         envelope_kwargs["readiness_blocker"] = readiness_blocker
-    relay_snapshot = _get_relay_capture_for("room_", "level_ramp:room")
-    relay_capture_pending = bool(
-        relay_snapshot
-        and relay_snapshot.get("status") in {"starting", "awaiting_phone"}
-    )
     return envelope.build_envelope_logged(
         sess,
-        capture_transport=capture_transport,
-        relay_capture_pending=relay_capture_pending,
         reports_available=reports_available,
         **envelope_kwargs,
     )
@@ -5309,30 +5267,20 @@ def _handle_crossover_v2_relay(
         camilla_factory=_camilla,
         verify_only=verify_only,
     )
-    # #2662 W2b: the relay origin is required only when the session actually
-    # opens on the relay — a wired session must work on a relay-unconfigured
-    # Pi (a local measurement must not depend on a public Worker). The
-    # REFUSAL itself lives inside the preparers' source gate
-    # (`_resolve_prepare_capture_source`, before any evidence bundle opens —
-    # gate fix round S3), so this later read is a plain re-read of a value
-    # prepare just proved present, kept only to hand the orchestrator its
-    # base URL.
-    wired = prepared.capture_source == v2host.SOURCE_WIRED
-    relay_base = "" if wired else _require_relay_base()
     kind = RelayCaptureKind(
         label=prepared.label,
         open=prepared.open,
         run_and_consume=prepared.run_and_consume,
         request_stop=prepared.request_stop,
         position_gate=prepared.position_gate,
-        local=wired,
+        local=True,
         request_complete=prepared.request_complete,
         request_retake=prepared.request_retake,
     )
     return {
         "relay": _run_relay_capture(
             kind,
-            relay_base,
+            "",
             return_url=_request_local_return_url(handler, "/correction/crossover/"),
             idle_hold=idle_hold,
         )

@@ -329,21 +329,20 @@ park-and-verify held in code. It is opt-in and foreground: nothing starts it. Se
 **The WIRED capture source is the default, and it changes steps 1–2.** A
 measurement-class USB mic plugged into the Pi (usbid matched against the
 calibration registry — a UMIK-2; never a voice array) is what a session opens on:
-the Pi plays and records on one host, so there is **no phone, no transport
-dependency, and none of the three capture-device gestures**. With no such mic
-the session refuses at the tap and says so. The position gate is unchanged, and on the wired
-source a hand-walked round is gated too, because there is no capture page to
-tap. Two steps are new: stage 1's held set
+the Pi plays and records on one host, so there is **no phone and none of the
+three capture-device gestures**. With no such mic the session refuses at the tap
+and says so ([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md)). The
+position gate is unchanged, and a hand-walked round is gated too, because
+nothing else paces it. Two steps are new: stage 1's held set
 closes on `POST /correction/crossover/v2/complete` (empty body), bounded by the
 session ceiling and expiring as `session_ceiling_expired`; and
 `POST /correction/crossover/v2/retake` (empty body) re-opens the take that just
-completed. The retake's terms are the relay's own §2.6, stated once in
+completed. The retake's terms are the §2.6 ones, stated once in
 `run_capture_plan`'s docstring and implemented against that statement in
 `build_v2_wired_run_and_consume`
 ([`correction_crossover_v2_wired.py`](../jasper/web/correction_crossover_v2_wired.py))
-— read either, not a third copy. Two facts are LOCAL rather than the relay's: the
-request names no index (WHICH slot is the walk's own fact), and a retake the walk
-cannot serve is journalled as
+— read either, not a third copy. The request names no index (WHICH slot is the
+walk's own fact), and a retake the walk cannot serve is journalled as
 `event=correction.crossover_v2_wired_retake_refused`.
 
 **A hand-walked round is driven from the browser, not a CLI**

@@ -2190,3 +2190,14 @@ def bank_capture_round(
             doc["curves"] = [{"role": "summed", "band_hz": list(radiated_band_hz)}]
         (summed / f"{stem}.json").write_text(json.dumps(doc))
     return root
+
+
+def fake_measurement_mic():
+    """The resolved measurement mic a suite names rather than probes: no
+    machine running these tests has one plugged in."""
+    from jasper.audio_measurement.wired_capture import WiredMicDevice
+
+    return WiredMicDevice(
+        card_id="UMIK2", card_index=9, usb_id="2752:0072",
+        model_key="minidsp_umik2", model_label="miniDSP UMIK-2",
+    )

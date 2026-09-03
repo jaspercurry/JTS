@@ -7,61 +7,52 @@
 The capture-source seam (decision 13,
 :mod:`jasper.active_speaker.crossover_v2.capture_source`) says the conductor
 asks for a capture of program X at position Y and a provider answers with WAV
-plus metadata. This module is the Pi-attached measurement-mic provider: the
-Pi plays AND records on one host, so everything the relay provider exists to
-choreograph — sessions, encrypted upload, deferred begins over a public
-Worker, host events, purge — does not exist here at all. What replaces it:
+plus metadata. This module is the Pi-attached measurement-mic provider, and
+the only one: the Pi plays AND records on one host. What that buys:
 
-* **Source resolution** (:func:`resolve_v2_capture_source`): wired is THE
-  acoustic-measurement path (ADR-0188), chosen by default from a
-  registry-anchored usbid match (probe-at-use —
-  :func:`jasper.audio_measurement.wired_capture.resolve_wired_mic`); the relay
-  is parked and reachable by naming it in
-  ``JASPER_CAPTURE_SOURCE``. Disclose-and-recommend, never nanny: no mic and
-  no override is a named disclosure carrying both remedies
-  (:class:`WiredMicMissing`), never a relay session nobody asked for, and the
-  relay stays whole for anyone who names it.
+* **Mic resolution** (:func:`resolve_v2_wired_mic`): wired is THE
+  acoustic-measurement path (ADR-0188), found from a registry-anchored usbid
+  match (probe-at-use —
+  :func:`jasper.audio_measurement.wired_capture.resolve_wired_mic`).
+  Disclose-and-recommend, never nanny: no mic is a named disclosure carrying
+  its remedy (:class:`WiredMicMissing`), never a session measuring on
+  something nobody chose.
 * **The session identity** (:func:`open_wired_capture`): the provider mints
   ``wired-<token>`` and the host keys durable state, evidence publishers and
-  phase artifacts by it — the same key vocabulary as a relay session id, per
-  the seam's ownership rule (the bundle id stays the canonical attribution
-  identity; this id rides the existing alias).
-* **The plan walk** (:func:`build_v2_wired_run_and_consume`): the same
-  conductor conversation ``run_capture_plan`` carries for the relay —
-  authorize (position gate first, admission second) → the host plays program
-  X while the local recorder is already confirmed live → the answer lands in
-  ``consume_capture`` — driven locally on a worker thread. Deferred begins
-  become a local retry loop against the same :class:`PositionGate`; the
-  held-set completion signal (work order D1) becomes a local
-  ``threading.Event`` the host's ``request_complete`` seam sets.
+  phase artifacts by it, per the seam's ownership rule (the bundle id stays
+  the canonical attribution identity; this id rides the existing alias).
+* **The plan walk** (:func:`build_v2_wired_run_and_consume`): the conductor
+  conversation ``run_capture_plan`` carries — authorize (position gate first,
+  admission second) → the host plays program X while the local recorder is
+  already confirmed live → the answer lands in ``consume_capture`` — driven
+  locally on a worker thread. Deferred begins are a local retry loop against
+  the same :class:`PositionGate`; the held-set completion signal (work order
+  D1) is a local ``threading.Event`` the host's ``request_complete`` seam
+  sets.
 * **The answer**: a :class:`WiredCaptureAnswer` carrying exactly the seam's
   four fields. Integrity counters come from the capture engine's own ALSA
   accounting plus the re-homed zero-run scan
   (:mod:`jasper.audio_measurement.wired_capture`), in the frame ledger's wire
   spelling — so ``reconcile_capture_frames`` and the analyzer's
-  frame-accounting checks grade a wired take exactly as they grade a phone
-  take, with the counters always REPORTED (a wired capture never passes on
-  "not evaluated"). Calibration identity rides the existing household-mic
-  stored-reference shape (``{"calibration": {"mode": "stored", ...}}``), so
+  frame-accounting checks grade the take with the counters always REPORTED
+  (a wired capture never passes on "not evaluated"). Calibration identity
+  rides the existing household-mic stored-reference shape (``{"calibration": {"mode": "stored", ...}}``), so
   the session's UNCHANGED resolver — including the wrong-mic mismatch guard —
   turns it into a record; capture banks RAW audio + identity, analysis
   applies the curve.
 
-What is NOT here, on purpose (the same boundary the relay provider states):
-durable-state writes, the persisted failure codes, the session-volume
-policy, admission, and the position gate are the host's
-(:mod:`jasper.web.correction_crossover_v2`), reached late-bound so a test
-double patched there is honored from this side of the seam. Failure mapping
-stays in the flow's own reason vocabulary — a wired death never invents a
-transport claim (``relay_timeout``) about a transport that does not exist:
-the walk outliving its wall-clock ceiling persists
-``session_ceiling_expired``, and a capture-chain fault persists through the
-host's one program-failure classifier (``internal_error`` when unclassified,
-with the real cause on the journal).
+What is NOT here, on purpose: durable-state writes, the persisted failure
+codes, the session-volume policy, admission, and the position gate are the
+host's (:mod:`jasper.web.correction_crossover_v2`), reached late-bound so a
+test double patched there is honored from this side of the seam. Failure
+mapping stays in the flow's own reason vocabulary: the walk outliving its
+wall-clock ceiling persists ``session_ceiling_expired``, and a capture-chain
+fault persists through the host's one program-failure classifier
+(``internal_error`` when unclassified, with the real cause on the journal).
 
 A voluntary RETAKE is initiated locally, through the host's
-``request_retake`` seam (``POST /crossover/v2/retake``), on the relay's own
-§2.6 terms. Those terms are stated once, where they are implemented
+``request_retake`` seam (``POST /crossover/v2/retake``), on the §2.6 terms
+stated once where they are implemented
 (:func:`build_v2_wired_run_and_consume`), rather than a second time here.
 
 Deferred to W3 (stated, not implied): the wizard UI for wired sessions —
@@ -83,8 +74,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker.crossover_v2.capture_source import (
-    SOURCE_RELAY,
-    SOURCE_WIRED,
     CaptureBeginDeferred,
     CaptureBeginRefused,
     CaptureFailed,
@@ -109,11 +98,6 @@ if TYPE_CHECKING:
     from jasper.web.correction_crossover_v2 import PositionGate, V2VolumeHooks
 
 logger = logging.getLogger(__name__)
-
-#: The source override (also documented in ``.env.example``): empty/``auto``
-#: and ``wired`` both mean the local measurement mic (loud disclosure when
-#: none is plugged in), ``relay`` opts back into the parked phone flow.
-CAPTURE_SOURCE_ENV = "JASPER_CAPTURE_SOURCE"
 
 #: The structured code :class:`WiredMicMissing` carries to the journal and the
 #: refused tap. Deliberately NOT a ``REASON_REGISTRY`` entry: that registry
@@ -173,54 +157,37 @@ class _RetakeRequested(Exception):
 
 
 class WiredMicMissing(WiredCaptureError):
-    """Wired was asked for — by default or by name — and no mic answered.
+    """A session asked to measure and no mic answered.
 
     The disclosure as a TYPE, so the host and the suite name one thing rather
-    than matching a sentence. Its message carries both ways forward (plug a
-    measurement mic in; or name the parked relay), because the owner ruling
-    is disclose-and-recommend: this refuses to guess a source, never to let
-    the household measure.
+    than matching a sentence. Its message carries the way forward (plug a
+    measurement mic in), because the owner ruling is disclose-and-recommend:
+    this refuses to measure without a microphone, never to let the household
+    measure.
     """
 
     code = CODE_WIRED_MIC_MISSING
 
 
-def resolve_v2_capture_source(
-    env: Mapping[str, str] | None = None,
+def resolve_v2_wired_mic(
     *,
     proc_asound: str | os.PathLike[str] = "/proc/asound",
-) -> tuple[str, WiredMicDevice | None]:
-    """Which capture source this session should open, resolved at prepare.
+) -> WiredMicDevice:
+    """The measurement mic this session records on, resolved at prepare.
 
-    WIRED is the default and the only auto-selected source (see
+    Wired is THE acoustic-measurement path (see
     ``docs/adr/0188-wired-first-measurement-relay-parked.md``). Probe-at-use:
     presence is read fresh from ``/proc/asound`` every time — the mic is
     plugged in for a measurement, so there is no steady state for a
-    reconciler to own.
-
-    * unset/``auto``/``wired`` → the local measurement mic when one is
-      present (the pick is logged), else :class:`WiredMicMissing`. There is
-      no silent fall back to the relay: a session that opened on the phone
-      because a USB cable was loose is a measurement nobody chose.
-    * ``relay`` → the phone flow, mic present or not.
-    * anything else raises rather than measuring on a source nobody chose.
+    reconciler to own. No mic present raises :class:`WiredMicMissing` rather
+    than measuring on something nobody chose.
     """
-    source = env if env is not None else os.environ
-    raw = str(source.get(CAPTURE_SOURCE_ENV) or "").strip().lower()
-    if raw == SOURCE_RELAY:
-        return SOURCE_RELAY, None
-    if raw not in ("", "auto", SOURCE_WIRED):
-        raise WiredCaptureError(
-            f"unrecognized {CAPTURE_SOURCE_ENV}={raw!r} "
-            "(expected wired, relay, or empty/auto)"
-        )
     device = resolve_wired_mic(proc_asound=proc_asound)
     if device is None:
         raise WiredMicMissing(
             "no measurement microphone is plugged into the speaker — connect "
             "a registered measurement mic (e.g. miniDSP UMIK-2) and start "
-            f"again, or set {CAPTURE_SOURCE_ENV}=relay to measure with the "
-            "parked phone-mic flow"
+            "again"
         )
     log_event(
         logger,
@@ -229,7 +196,7 @@ def resolve_v2_capture_source(
         usb_id=device.usb_id,
         model=device.model_key,
     )
-    return SOURCE_WIRED, device
+    return device
 
 
 @dataclass(frozen=True)
