@@ -2681,28 +2681,38 @@ def test_check_ok_when_no_loaded_capture(monkeypatch, tmp_path):
 # --- check_fanin_coupling_value: persisted coupling value must be recognized --
 
 
-def test_check_fanin_coupling_value_warns_on_removed_transport_pipe(monkeypatch, tmp_path):
-    # A migrating box carrying the REMOVED transport_pipe coupling (or a typo) must
-    # surface a warn until the reconciler converges it to loopback.
+@pytest.mark.parametrize(
+    "raw,status",
+    [
+        (None, "ok"),
+        ("", "ok"),
+        ("shm_ring", "ok"),
+        ("transport_pipe", "warn"),
+        ("loopback", "warn"),
+    ],
+    ids=["absent_key", "empty", "declared", "removed_token", "retired_token"],
+)
+def test_check_fanin_coupling_value_reads_the_shared_predicate(
+    monkeypatch, tmp_path, raw, status
+):
+    """ADR-0100: only a value fan-in REFUSES is a finding.
+
+    A migrating box carrying the removed ``transport_pipe`` token (or a typo)
+    warns until the reconciler converges it. An ABSENT or empty key is not that
+    state — fan-in serves the ring for it — so this surface must agree with the
+    daemon rather than with the presence of a token (#3655).
+    """
     fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=transport_pipe\n")
+    fanin_env.write_text(
+        "" if raw is None else f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n"
+    )
     monkeypatch.setattr(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     res = audio_runtime.check_fanin_coupling_value()
-    assert res.status == "warn"
-    assert "transport_pipe" in res.detail
-    assert "removed" in res.detail
-
-
-def test_check_fanin_coupling_value_ok_on_recognized_coupling(monkeypatch, tmp_path):
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
-    )
-    res = audio_runtime.check_fanin_coupling_value()
-    assert res.status == "ok"
+    assert res.status == status
+    if status == "warn":
+        assert raw in res.detail, "the operator needs the stale token named"
 
 
 # --- shm_ring coherence (Ring A + Ring B, P2) --------------------------------

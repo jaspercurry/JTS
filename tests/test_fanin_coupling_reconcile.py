@@ -27,6 +27,7 @@ from jasper.fanin.coupling_reconcile import (
 from jasper.fanin.ring_health import (
     FANIN_ENV_PATH,
     OUTPUTD_ENV_PATH,
+    persisted_coupling_feeds_ring,
     read_persisted_coupling,
     ring_edge_width_ready,
 )
@@ -947,6 +948,36 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
     # Fails closed (ADR-0100), never a fallback — the reason code this gate
     # actually carries, not the English sentence around it.
     assert "ADR-0100" in detail
+
+
+_FEEDS_RING_CASES = [
+    ("", True),
+    (f"{COUPLING_ENV_VAR}=\n", True),
+    (f"{COUPLING_ENV_VAR}=   \n", True),
+    (f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n", True),
+    (f"{COUPLING_ENV_VAR}=loopback\n", False),
+    (f"{COUPLING_ENV_VAR}=wat\n", False),
+]
+_FEEDS_RING_IDS = ["absent_key", "empty", "whitespace", "declared", "retired", "typo"]
+
+
+@pytest.mark.parametrize("fanin_text,feeds_ring", _FEEDS_RING_CASES, ids=_FEEDS_RING_IDS)
+def test_persisted_coupling_feeds_ring_answers_the_file_and_a_snapshot_alike(
+    tmp_path, fanin_text, feeds_ring
+):
+    """The ONE predicate for "is fan-in filling Ring A", through both its doors.
+
+    ADR-0100 left one transport: `jasper-fanin` serves an absent key, an empty
+    value and the token alike and refuses anything else at parse (exit 78), so
+    naming nothing IS a fan-in on the ring. The ``text`` door must reach the same
+    verdict as the path door — a caller that already holds fanin.env's text is
+    the reason the readers used to spell this rule for themselves (#3655).
+    """
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(fanin_text, encoding="utf-8")
+
+    assert persisted_coupling_feeds_ring(fanin_env) is feeds_ring
+    assert persisted_coupling_feeds_ring(text=fanin_text) is feeds_ring
 
 
 def test_default_ring_gates_order_puts_each_gate_after_what_makes_it_meaningful():
@@ -2074,8 +2105,14 @@ def _wide_declared_env(tmp_path, coupling: str) -> Path:
 def test_arming_a_declared_wide_box_restarts_voice_once(
     tmp_path, _wide_arm_gates_pass
 ):
-    """narrow -> wide: the flip changes the assistant width, so voice re-reads it."""
-    fanin_env = _wide_declared_env(tmp_path, "")
+    """narrow -> wide: the flip changes the assistant width, so voice re-reads it.
+
+    The box starts on the RETIRED token, which is the only ``before`` state that
+    still resolves narrow on a declared-wide box: since #3655 an undeclared
+    coupling is the ring on both sides of the language boundary, so it was
+    already wide and nothing moves (the pair test below).
+    """
+    fanin_env = _wide_declared_env(tmp_path, "loopback")
     outputd_env = _write(tmp_path / "outputd.env", "")
     calls = []
 
@@ -2096,19 +2133,22 @@ def test_arming_a_declared_wide_box_restarts_voice_once(
     )
 
 
-def test_an_undeclared_box_flipping_coupling_does_restart_voice(
+def test_an_undeclared_box_flipping_coupling_does_not_restart_voice(
     tmp_path, _ring_assets_present
 ):
-    """THE FLIP'S CONSEQUENCE, from the other side of the pair above.
+    """THE FLIP'S NON-CONSEQUENCE, from the other side of the pair above.
 
     Every box that has not pinned itself narrow resolves the ring wire resolver's
-    WIDE default (`resolve_ring_wire_format`), so an undeclared box crossing
-    an unwritten fanin.env onto the ring moves BOTH halves of
-    `assistant_wire_is_wide`'s conjunction (coupling AND format) to true — the
-    width genuinely changes, so voice must be told. `_ring_assets_present` alone (no width-gate bypass) is
-    enough here: the shipped conf.d spells S32_LE explicitly, matching what this
-    undeclared box resolves, so `ring_edge_width_ready`/`ring_wire_caps_ready`
-    pass on their own merits rather than needing to be stubbed out of the way.
+    WIDE default (`resolve_ring_wire_format`), and since #3655 an UNDECLARED
+    coupling feeds the ring on the Python side too — the same answer
+    `jasper-fanin` has always given it (`coupling_is_shm_ring: true`). So both
+    halves of `assistant_wire_is_wide`'s conjunction were ALREADY true before the
+    flip: writing the token changes nothing voice resolves, and bouncing it would
+    cut the assistant for no width change. `_ring_assets_present` alone (no
+    width-gate bypass) is enough here: the shipped conf.d spells S32_LE
+    explicitly, matching what this undeclared box resolves, so
+    `ring_edge_width_ready`/`ring_wire_caps_ready` pass on their own merits
+    rather than needing to be stubbed out of the way.
     """
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
@@ -2125,9 +2165,9 @@ def test_an_undeclared_box_flipping_coupling_does_restart_voice(
 
     assert result.ok, result.detail
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    assert calls == ["voice"], (
-        "an undeclared box's assistant width moves from S16_LE to S32_LE across "
-        "this flip; voice resolves that once at start"
+    assert calls == [], (
+        "an undeclared box is already on the wide assistant wire; the flip moves "
+        "no width, so voice must not be bounced"
     )
 
 
@@ -2250,8 +2290,12 @@ def test_the_default_voice_restart_wiring_issues_try_restart(
     code under test. Everything else is still injected, which is what makes the
     single recorded broker call unambiguous: if the join were wired to any other
     helper, or to `restart`, this fails.
+
+    Starts on the retired token for the same reason as
+    `test_arming_a_declared_wide_box_restarts_voice_once`: that is the transition
+    that still moves a declared-wide box's assistant width.
     """
-    fanin_env = _wide_declared_env(tmp_path, "")
+    fanin_env = _wide_declared_env(tmp_path, "loopback")
     outputd_env = _write(tmp_path / "outputd.env", "")
     broker_calls = []
 

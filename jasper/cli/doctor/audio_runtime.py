@@ -1080,12 +1080,8 @@ def check_fanin_coupling_value() -> CheckResult:
     pass runs. An ABSENT key is not that state: fan-in serves the ring for it
     (ADR-0100), so a box the reconciler has not written yet is ``ok``.
     """
-    from jasper.fanin.ring_health import FANIN_ENV_PATH
-    from jasper.fanin_coupling import (
-        COUPLING_ENV_VAR,
-        COUPLING_SHM_RING,
-        coupling_value_removed,
-    )
+    from jasper.fanin.ring_health import FANIN_ENV_PATH, persisted_coupling_feeds_ring
+    from jasper.fanin_coupling import COUPLING_ENV_VAR, COUPLING_SHM_RING
     from jasper.env_file import read_value
 
     label = "fan-in coupling value"
@@ -1095,8 +1091,10 @@ def check_fanin_coupling_value() -> CheckResult:
         return CheckResult(
             label, "ok", f"no fanin.env — fan-in serves {COUPLING_SHM_RING}"
         )
+    # The raw token is read for the MESSAGE only; the verdict is the shared
+    # predicate's, so this surface cannot drift from what fan-in serves.
     raw = read_value(text, COUPLING_ENV_VAR)
-    if coupling_value_removed(raw):
+    if not persisted_coupling_feeds_ring(text=text):
         return CheckResult(
             label,
             "warn",

@@ -205,6 +205,39 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
     }
 
 
+@pytest.mark.parametrize(
+    "fanin_text,wide",
+    [
+        ("", True),
+        ("JASPER_FANIN_CAMILLA_COUPLING=\n", True),
+        ("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", True),
+        ("JASPER_FANIN_CAMILLA_COUPLING=loopback\n", False),
+        ("JASPER_FANIN_CAMILLA_COUPLING=wat\n", False),
+    ],
+    ids=["absent_key", "empty", "declared", "retired_token", "typo"],
+)
+def test_assistant_wire_width_reads_the_file_through_the_shared_predicate(
+    monkeypatch, tmp_path, fanin_text, wide
+):
+    """The FILE-default half of `assistant_wire_is_wide`, on a wide-format box.
+
+    ADR-0100 left one transport, so `jasper-fanin` serves an absent key, an empty
+    value and the token alike; only a value it REFUSES (exit 78, the unit parks)
+    takes the box off the wide wire. Requiring the literal token here resolved
+    NARROW on every unwritten box while the daemon on it ran WIDE (#3655).
+    """
+    from jasper import fanin_coupling
+
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(fanin_text, encoding="utf-8")
+    monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
+
+    assert (
+        fanin_coupling.assistant_wire_is_wide(wire_format=RING_WIRE_FORMAT_WIDE)
+        is wide
+    )
+
+
 # --- Ring B (outputd content bridge) vocabulary + coherence (P2) -------------
 
 

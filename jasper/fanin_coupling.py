@@ -447,28 +447,46 @@ def assistant_wire_is_wide(
     by reading the Rust source rather than by trusting this docstring.
 
     **BOTH halves.** A wide wire needs the resolved ``S32_LE`` ring wire format
-    AND the ``shm_ring`` coupling.
+    AND a coupling that leaves fan-in on the ring.
+
+    UNDECLARED IS THE RING on the transport half, which is why it asks
+    :func:`coupling_value_removed` rather than the ``shm_ring`` token: the Rust
+    side passes ``coupling_is_shm_ring: true`` unconditionally
+    (``Config::program_wire_is_wide``) because ADR-0100 left one transport and
+    ``jasper-fanin`` serves an absent key, an empty value and the token alike.
+    Requiring the literal token here resolved NARROW on every box the reconciler
+    had not written while the daemon on that same box ran WIDE — the two-language
+    shear this predicate exists to prevent (#3655). Only a value the daemon
+    REFUSES (exit 78, the unit parks) answers narrow, which is also what
+    ``jasper-voice`` resolves in that situation.
 
     Both inputs default to a FILE-FRESH read of the same SSOT files the daemons
     read — :func:`read_declared_ring_wire_format` for the format and
-    ``coupling_reconcile.read_persisted_coupling`` for the coupling — because the
-    callers that need this answer are long-lived daemons and socket-activated
-    wizards that never loaded ``fanin.env``. Passing either explicitly is
-    authoritative for that half, with no file fallback, for a caller that means
-    the value it hands in.
+    :func:`jasper.fanin.ring_health.persisted_coupling_feeds_ring` for the
+    transport — because the callers that need this answer are long-lived daemons
+    and socket-activated wizards that never loaded ``fanin.env``. Passing either
+    explicitly is authoritative for that half, with no file fallback, for a
+    caller that means the value it hands in — and the coupling must be handed in
+    RAW, not resolved: a resolver answering "the ring or nothing" cannot spell
+    the refused value this half turns on.
     """
     if wire_format is None:
         wire_format = read_declared_ring_wire_format()
     if coupling is None:
-        # Lazy import: jasper.fanin.coupling_reconcile imports THIS module, so a
+        # Lazy import: jasper.fanin.ring_health imports THIS module, so a
         # top-level import would be circular (mirrors every other in-tree caller).
-        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+        from jasper.fanin.ring_health import (
+            FANIN_ENV_PATH,
+            persisted_coupling_feeds_ring,
+        )
 
-        coupling = read_persisted_coupling()
-    return (
-        wire_format == RING_WIRE_FORMAT_WIDE
-        and resolve_coupling(coupling) == COUPLING_SHM_RING
-    )
+        # Passed explicitly: the predicate's own default is bound at def time,
+        # so a caller (or a test) repointing the module constant would not move
+        # a no-argument call.
+        on_ring = persisted_coupling_feeds_ring(FANIN_ENV_PATH)
+    else:
+        on_ring = not coupling_value_removed(coupling)
+    return wire_format == RING_WIRE_FORMAT_WIDE and on_ring
 
 
 def resolve_ring_wire(topology: Any = None) -> RingWire:
