@@ -209,10 +209,10 @@ def _refresh_gadget_consumers_after_rebuild(name_changed: bool) -> bool:
     The composite USB gadget owns the host-visible device strings (product =
     speaker name; the name-patch reruns as its ExecStartPre). Only a NAME
     change touches those strings -- room is display-only and never reaches
-    the name-patch (jasper/speaker_name.py's CLI reader prints only
-    ``.name``, which is all deploy/usbsink/jasper-usbsink-name-patch reads),
-    so a room-only edit must never pay for a gadget rebuild plus a fan-in/
-    usbmic bounce. The audio label re-applies on a bound gadget's restart
+    the name-patch (deploy/usbsink/jasper-usbgadget-compose.sh's identity
+    reader resolves ``JASPER_SPEAKER_NAME`` alone), so a room-only edit must
+    never pay for a gadget rebuild plus a fan-in/usbmic bounce. The audio
+    label re-applies on a bound gadget's restart
     only once the module index already names the override, which is the
     steady state on any box that has composed USB audio before. On a box
     where it does not yet (first enable, first boot after a kernel update)

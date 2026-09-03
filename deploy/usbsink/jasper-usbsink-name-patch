@@ -62,9 +62,12 @@ set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHER="${SELF_DIR}/uac2_name_patch.py"
-SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
-SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}"
 MODULES_ROOT="${JASPER_MODULES_ROOT:-/lib/modules}"
+
+# Sourced for jasper_usbgadget_speaker_name only — this script composes
+# nothing. Its own `emit` below deliberately shadows the fragment's.
+# shellcheck source=deploy/usbsink/jasper-usbgadget-compose.sh
+source "${SELF_DIR}/jasper-usbgadget-compose.sh"
 
 INDEX_UNIT="jasper-usbsink-name-index.service"
 
@@ -143,17 +146,10 @@ kick_index() {
 }
 
 # --- desired name -----------------------------------------------------
-# Management-writable identity state is untrusted at this root boundary. The
-# canonical reader owns env quoting plus the 32-character printable-name
-# policy before a value reaches module labels, markers, or structured logs.
-# Never source/eval/pre-read the path. The reader performs one descriptor-held,
-# no-follow, nonblocking, 64 KiB-capped read so FIFO/symlink/replacement races
-# fail safely to JTS.
-NAME="JTS"
-canonical_name="$("${SPEAKER_NAME_READER}" -m jasper.speaker_name "${SPEAKER_NAME_FILE}" 2>/dev/null || true)"
-if [[ -n "${canonical_name}" ]]; then
-    NAME="${canonical_name}"
-fi
+# `:-JTS` because this script runs without `set -e`: an unreadable fragment
+# (partial install) must label the module JTS, never the empty string.
+NAME="$(jasper_usbgadget_speaker_name 2>/dev/null)"
+NAME="${NAME:-JTS}"
 MIC_NAME="${NAME} Mic"
 
 # --- locate the STOCK module (always under kernel/, never updates/) ---

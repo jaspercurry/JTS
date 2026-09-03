@@ -187,6 +187,21 @@ find_card() {
     jasper_find_alsa_card "$APLAY" "$1"
 }
 
+publish_management_transport_marker() {
+    # Read by jasper-usbgadget's composition with `test -e`. In /run so a
+    # reboot clears it before the boot config it describes can change.
+    # Truncate in place rather than `install`: install unlinks first, and a
+    # true->true republish would then leave a window where `test -e` is false.
+    local marker="${OUTPUT_HARDWARE_STATE_PATH%/*}/management-transport.ok"
+    if [[ "$1" != "true" ]]; then
+        rm -f -- "$marker"
+        return 0
+    fi
+    [[ -d "${OUTPUT_HARDWARE_STATE_PATH%/*}" ]] ||
+        install -d -m 0755 "${OUTPUT_HARDWARE_STATE_PATH%/*}"
+    : > "$marker"
+}
+
 observe_output_hardware_state() {
     local should_write="${1:-0}"
     local payload profile_id profile_status selected_card_id usb_topology usb_desired usb_active usb_available usb_management usb_reason blocker_codes
@@ -245,6 +260,9 @@ print(",".join(
     usb_management="$(printf '%s' "$payload" | sed -n 's/.*"management_transport_available": *\([[:alpha:]][[:alpha:]]*\).*/\1/p')"
     case "$usb_available" in true|false) ;; *) usb_available="" ;; esac
     case "$usb_management" in true|false) ;; *) usb_management="" ;; esac
+    # Never fatal: every other failure in this function logs and returns, and a
+    # full /run must not skip the DAC-role policy the caller runs next.
+    publish_management_transport_marker "$usb_management" || true
     usb_reason="$(printf '%s' "$payload" | sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p')"
     log_event "state_${action}" \
         "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${profile_id:-unknown} status=${profile_status:-unknown}"

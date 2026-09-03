@@ -18,6 +18,10 @@
 #                              rebuild that bypasses converge -- see PHYSICS
 #                              beside jasper_usbgadget_refresh_consumers)
 #
+# jasper-usbsink-name-patch sources it for the IDENTITY READERS only
+# (jasper_usbgadget_speaker_name); it composes nothing and defines its own
+# `emit` after sourcing, on its own event namespace.
+#
 # Two facts, one vocabulary:
 #
 #   jasper_usbgadget_desired  -> DESIRED composition, from live intent
@@ -55,8 +59,16 @@ SYSTEMCTL="${JASPER_USBGADGET_SYSTEMCTL:-systemctl}"
 # The verdict is a marker file the source coordinator publishes (ADR-0221):
 # present = allowed, absent (including the whole directory) = blocked.
 AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/usr/bin/test -e /run/jasper-source-intent/allowed/usbsink}"
+# jasper-audio-hardware-reconcile's copy of the one field the resolver below
+# answers (ADR-0226, push don't pull). ABSENT is not "unavailable": it falls
+# back to the resolver, because withdrawing the management network is what
+# strands a deploy riding ncm.usb0.
+MANAGEMENT_TRANSPORT_MARKER="${JASPER_USBGADGET_MANAGEMENT_TRANSPORT_MARKER:-/run/jasper-output-hardware/management-transport.ok}"
 HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
-USB_MIC_ENABLED_CMD="${JASPER_USBGADGET_USB_MIC_ENABLED_CMD:-/opt/jasper/.venv/bin/python -m jasper.usb_mic --check-intent}"
+# Read directly, not through their Python readers: this is an
+# ExecCondition/ExecStartPre path (ADR-0226).
+SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
+USB_MIC_INTENT_FILE="${JASPER_USB_MIC_INTENT_FILE:-/var/lib/jasper/usb_mic.env}"
 
 emit() {
     # Structured single-line event for journal grep (the wifi-guardian idiom).
@@ -68,39 +80,103 @@ emit() {
     fi
 }
 
-_jasper_usbgadget_env_usb_network() {
-    # JASPER_USB_NETWORK reaches the gadget UNIT through its EnvironmentFile=,
-    # but the converger runs from install.sh and from jasper-usbmic-apply, and
-    # neither loads /etc/jasper/jasper.env. Without this read a kill-switched
-    # box computes desired network=1 here while the unit composes network=0, so
-    # the two never agree and every deploy and every mic toggle rebuilds —
-    # forever. Reading the ONE key restores the agreement.
+_jasper_usbgadget_env_value() {
+    # `$1` file, `$2` key, `$3` byte cap, `$4` shlex mode -> the resolved value,
+    # empty for every failure, out of which each caller reads its own fail-safe
+    # direction. Never source/eval: this runs as root, and sourcing turns an
+    # inert config value into a code path.
     #
-    # Grep-and-extract, never source/eval: this runs as root, and sourcing turns
-    # an inert config value into a code path. The parse mirrors
-    # jasper.env_load.parse_env_text, which is what unions the same key into the
-    # doctor's os.environ, so the shell and Python readers cannot disagree about
-    # a file value: comments skipped, split on the first `=`, surrounding
-    # whitespace stripped, one layer of matching quotes dropped, last assignment
-    # wins. Every failure (absent file, unreadable, key missing) yields an empty
-    # value, which the caller reads as the default `enabled` — the fail-safe
-    # direction, because withdrawing the management network is what strands a
-    # deploy riding ncm.usb0.
-    local line value
-    [[ -r "${JASPER_ENV_FILE}" ]] || return 0
-    line=$(grep -a -E '^[[:space:]]*JASPER_USB_NETWORK[[:space:]]*=' \
-        "${JASPER_ENV_FILE}" 2>/dev/null | tail -n1 || true)
-    [[ -n "${line}" ]] || return 0
+    # Mode 0 mirrors jasper.env_load.parse_env_text; mode 1 adds
+    # jasper.speaker_name's shlex rules on top — `KEY=` with no spacing, and an
+    # unquoted value ends at the first whitespace or `#`.
+    #
+    # This NARROWS jasper.atomic_io.read_regular_bytes_nofollow, it does not
+    # mirror it: the cap counts bytes as read (trailing X so command
+    # substitution keeps newlines, NUL to newline so it still counts; bash's
+    # own locale is C here, unexported, so ${#text} is a byte count), but
+    # O_NOFOLLOW|O_NONBLOCK on a held descriptor is not expressible in POSIX
+    # sh, so a symlink or FIFO substituted between the type check and the open
+    # is still followed. `timeout` is what bounds that: jasper-usbgadget-
+    # converge runs from install.sh with no unit budget at all. It is used
+    # where present (absent only on a dev box without GNU coreutils), the same
+    # fixed path jasper_usbgadget_refresh_consumers uses.
+    local LC_ALL=C
+    local file="$1" key="$2" max_bytes="$3" shlex_mode="${4:-0}"
+    local pattern="^[[:space:]]*${key}[[:space:]]*=" bound="" text line value quoted=0
+    if [[ "${shlex_mode}" == "1" ]]; then pattern="^[[:space:]]*${key}="; fi
+    if [[ -x /usr/bin/timeout ]]; then bound="/usr/bin/timeout 1"; fi
+    if [[ -L "${file}" ]]; then return 0; fi
+    if [[ ! -f "${file}" || ! -r "${file}" ]]; then return 0; fi
+    text=$({ ${bound} head -c "$((max_bytes + 1))" "${file}" 2>/dev/null \
+        || true; } | tr '\0' '\n'; printf X)
+    text="${text%X}"
+    if [[ "${#text}" -gt "${max_bytes}" ]]; then return 0; fi
+    line=$(printf '%s\n' "${text}" | grep -a -E "${pattern}" | tail -n1 || true)
+    if [[ -z "${line}" ]]; then return 0; fi
     value="${line#*=}"
     # Trim surrounding whitespace without extglob (bash 3.2 runs the tests).
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
     if [[ "${#value}" -ge 2 ]]; then
         case "${value}" in
-            \"*\"|\'*\') value="${value:1:${#value}-2}" ;;
+            \"*\"|\'*\') value="${value:1:${#value}-2}"; quoted=1 ;;
         esac
     fi
+    if [[ "${shlex_mode}" == "1" && "${quoted}" == "0" ]]; then
+        value="${value%%[[:space:]#]*}"
+    fi
     printf '%s' "${value}"
+}
+
+_jasper_usbgadget_env_usb_network() {
+    # JASPER_USB_NETWORK reaches the gadget UNIT through its EnvironmentFile=,
+    # but the converger runs from install.sh and from jasper-usbmic-apply, and
+    # neither loads /etc/jasper/jasper.env. Without this read a kill-switched
+    # box computes desired network=1 here while the unit composes network=0, so
+    # the two never agree and every deploy and every mic toggle rebuilds —
+    # forever. Reading the ONE key restores the agreement. An empty answer is
+    # the default `enabled` — the fail-safe direction, because withdrawing the
+    # management network is what strands a deploy riding ncm.usb0.
+    _jasper_usbgadget_env_value "${JASPER_ENV_FILE}" JASPER_USB_NETWORK 65536
+}
+
+jasper_usbgadget_usb_mic_enabled() {
+    # True only for an explicit, valid `enabled`, the answer
+    # jasper.usb_mic.read_intent gives without its interpreter; missing or
+    # corrupt is Off, which keeps p_chmask=0. 4096 is THAT reader's
+    # _MAX_ENV_BYTES, tighter than the 64 KiB default. The one shape the two
+    # read differently is an UNBALANCED quote (`="enabled`), which resolves
+    # Off here and surfaces in the doctor's usbsink check.
+    #
+    # The third reader of this key is jasper-usbmic.service's inline
+    # ExecCondition; converging the two shell copies is follow-up work.
+    local raw
+    raw="$(_jasper_usbgadget_env_value "${USB_MIC_INTENT_FILE}" JASPER_USB_MIC 4096)"
+    [[ "${raw}" == "enabled" ]]
+}
+
+jasper_usbgadget_speaker_name() {
+    # Ports jasper.speaker_name.validate_name for descriptor strings and module
+    # labels, JTS on any rejection; pinned equal to that validator by
+    # tests/test_usbgadget_script.py. LC_ALL=C so the ranges cannot admit an
+    # accented character Python's isascii() rejects. The readers still part on
+    # a hand-edited QUOTED value with trailing text (`="Kitchen" # note`),
+    # which lands on JTS here — what an unreadable file gives.
+    local LC_ALL=C
+    local max_chars=32
+    local allowed="^[A-Za-z0-9]([A-Za-z0-9 .,'&()+_#-]*[A-Za-z0-9])?$"
+    local name
+    name="$(_jasper_usbgadget_env_value "${SPEAKER_NAME_FILE}" JASPER_SPEAKER_NAME 65536 1)"
+    name="${name//$'\t'/ }"
+    while [[ "${name}" == *"  "* ]]; do
+        name="${name//  / }"
+    done
+    name="${name# }"
+    name="${name% }"
+    if [[ "${#name}" -gt "${max_chars}" ]] || ! [[ "${name}" =~ $allowed ]]; then
+        name=JTS
+    fi
+    printf '%s' "${name}"
 }
 
 # SC2034 (appears unused) — every name below is read by the sourcing script.
@@ -129,9 +205,11 @@ jasper_usbgadget_desired() {
     WANTED_REASON=""
     COMPOSITION="0/0/0"
 
-    # The shared hardware resolver authorizes the management transport. Short
-    # circuit: a box that cannot be a peripheral needs none of the probes below.
-    if ! ${HARDWARE_ALLOWED_CMD}; then
+    # The management transport must be authorized. Short circuit: a box that
+    # cannot be a peripheral needs none of the probes below. The reconciler's
+    # marker answers first and the shared resolver answers when it is absent,
+    # so only a box the reconciler has not spoken for pays an interpreter.
+    if [[ ! -e "${MANAGEMENT_TRANSPORT_MARKER}" ]] && ! ${HARDWARE_ALLOWED_CMD}; then
         WANTED_REASON="hardware_unavailable"
         return 0
     fi
@@ -184,7 +262,7 @@ jasper_usbgadget_desired() {
     # The return microphone is a refinement of the existing UAC2 source, never
     # an audio function of its own: USB Audio Input must already be authorized
     # above.
-    if [[ "${WANT_AUDIO}" == "1" ]] && ${USB_MIC_ENABLED_CMD} >/dev/null 2>&1; then
+    if [[ "${WANT_AUDIO}" == "1" ]] && jasper_usbgadget_usb_mic_enabled; then
         WANT_USB_MIC=1
     fi
 

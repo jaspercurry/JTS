@@ -14,10 +14,9 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import sys
 from dataclasses import dataclass
 
-from .atomic_io import atomic_write_text, read_regular_bytes_nofollow
+from .atomic_io import atomic_write_text
 
 DEFAULT_SPEAKER_NAME = "JTS"
 ENV_VAR = "JASPER_SPEAKER_NAME"
@@ -183,26 +182,6 @@ def read_state(path: str = STATE_FILE) -> SpeakerNameState:
         return SpeakerNameState(DEFAULT_SPEAKER_NAME, "", "default")
 
 
-def read_untrusted_state(
-    path: str = STATE_FILE,
-    *,
-    max_bytes: int = 64 * 1024,
-) -> SpeakerNameState:
-    """Read management-writable identity state for a privileged boundary.
-
-    One descriptor-held, nonblocking, no-follow read rejects symlinks and
-    non-regular files and enforces the byte cap while reading. Any rejection,
-    malformed UTF-8, or invalid value falls back to the safe default.
-    """
-
-    try:
-        raw = read_regular_bytes_nofollow(path, max_bytes=max_bytes)
-        text = raw.decode("utf-8")
-    except (FileNotFoundError, OSError, UnicodeError, ValueError):
-        return SpeakerNameState(DEFAULT_SPEAKER_NAME, "", "default")
-    return _state_from_lines(text.splitlines())
-
-
 def runtime_name(*, environ: dict[str, str] | None = None, path: str = STATE_FILE) -> str:
     """Resolve the name for runtime code.
 
@@ -273,23 +252,3 @@ def write_state(
     )
     atomic_write_text(path, text, mode=mode)
     return cleaned
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Print one canonical name for privileged shell boundaries.
-
-    The caller supplies the identity-state path as data. ``read_state`` owns
-    quoting, character, and length validation and falls back to ``JTS`` for a
-    missing, unreadable, or malformed value.
-    """
-
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 1:
-        print("usage: python -m jasper.speaker_name STATE_FILE", file=sys.stderr)
-        return 2
-    print(read_untrusted_state(args[0]).name)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

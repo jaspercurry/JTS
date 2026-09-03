@@ -52,6 +52,6 @@ ExecStart=/usr/local/sbin/jasper-usbsink-name-patch --index
 # and the script's test-only path seams stripped from the production
 # environment so they can never be injected here.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE JASPER_SPEAKER_NAME_READER
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES PYTHONPATH PYTHONHOME JASPER_MODULES_ROOT JASPER_SPEAKER_NAME_FILE
 StandardOutput=journal
 StandardError=journal

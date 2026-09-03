@@ -1293,6 +1293,27 @@ def _assert_publications_agree(tmp_path: Path) -> None:
     assert published_dac_id(env) == (recorded or "unknown")
 
 
+def test_reconcile_publishes_the_management_transport_verdict_as_a_marker(
+    tmp_path: Path,
+):
+    """The gadget reads this field with `test -e` instead of an interpreter, so
+    it has to CLEAR when the board stops being a peripheral."""
+    marker = tmp_path / "management-transport.ok"
+
+    peripheral = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "test")
+    assert peripheral.returncode == 0, peripheral.stderr
+    assert marker.exists()
+    assert _output_hardware_record(tmp_path)["usb_data_role"][
+        "management_transport_available"
+    ] is True
+
+    host = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--reason", "test", active_usb_role="host",
+    )
+    assert host.returncode == 0, host.stderr
+    assert not marker.exists()
+
+
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     tmp_path: Path,
 ):
