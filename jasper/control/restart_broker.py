@@ -175,10 +175,10 @@ START_ONLY_UNITS = frozenset({
     # Root oneshot that reserves BLE connection-event length on the live WiiM
     # Remote 2 link (jasper.cli.wiim_remote_ce). BlueZ hardcodes CE length to
     # 0, which starves the remote's mic to ~24 % of realtime on a Pi Zero 2 W.
-    # The reservation lives on the connection, so the non-root adapter
-    # (jasper-wiim-remote-mic, user jasper-input) must re-request it on every
-    # reconnect. Start-only: the adapter may kick one reservation pass, not
-    # stop/restart the helper (mirrors jasper-wifi-scan-repair). The helper
+    # The reservation lives on the connection, so the non-root adapter task
+    # (inside jasper-input) must re-request it on every reconnect. Start-only:
+    # the adapter may kick one reservation pass, not stop/restart the helper
+    # (mirrors jasper-wifi-scan-repair). The helper
     # takes NO argument identifying a connection — it enumerates live LE links
     # and cross-checks them against BlueZ itself, so the caller cannot aim it
     # at an unrelated Bluetooth device.

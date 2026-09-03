@@ -20,22 +20,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import sys
 import types
 from typing import List, Optional
 
+import pytest
 
 from jasper.accessories import bridge as bridge_mod
 from jasper.accessories.bridge import (
     COALESCE_WINDOW_SEC, _Coalescer, _post_once, _read_device, _TapCounter,
 )
 from jasper.accessories.registry import (
+    KNOWN_PROFILES,
     HoldAction,
     KeyAction,
     RemoteIdentity,
     RemoteProfile,
     TapAction,
 )
+from jasper.accessories.supervisor import supervise
 from jasper.control.client import ControlError, ControlResponse
 
 
@@ -834,3 +838,172 @@ async def test_read_device_close_emits_canonical_event(caplog, monkeypatch):
         'event=knob.close device="Anti cater VK-01" profile=anticater_vk01 '
         'reason="simulated: device disconnected"'
     )
+
+
+# --------------------------------------------------------------------------
+# One process, two supervised bridges (ADR-0225). The isolation contract is
+# the point: the HID bridge is how volume and push-to-talk work, so a mic
+# fault must not stop it, and vice versa.
+# --------------------------------------------------------------------------
+
+
+def _crashing_bridge(attempts: List[str], name: str):
+    async def bridge() -> None:
+        attempts.append(name)
+        raise RuntimeError("simulated bridge fault")
+
+    return bridge
+
+
+def _healthy_bridge(started: asyncio.Event):
+    async def bridge() -> None:
+        started.set()
+        await asyncio.Event().wait()  # runs until cancelled
+
+    return bridge
+
+
+async def _supervise_until(bridges, predicate, *, backoff_sec: float) -> bool:
+    """Run the supervisor until `predicate` holds; report whether it survived.
+
+    "The process does not exit" is the half that cannot be observed after the
+    fact, so it is asserted on every poll rather than only at the end.
+    """
+    task = asyncio.create_task(supervise(bridges, backoff_sec=backoff_sec))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while not predicate():
+        assert not task.done(), "the supervisor exited instead of restarting"
+        assert loop.time() < deadline, "timed out waiting for the supervisor"
+        await asyncio.sleep(0.001)
+    still_running = not task.done()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    return still_running
+
+
+@pytest.mark.parametrize("failing,healthy", [("hid", "mic"), ("mic", "hid")])
+async def test_a_failing_bridge_is_restarted_without_disturbing_the_other(
+    failing: str, healthy: str,
+):
+    attempts: List[str] = []
+    alive = asyncio.Event()
+
+    still_running = await _supervise_until(
+        {
+            failing: _crashing_bridge(attempts, failing),
+            healthy: _healthy_bridge(alive),
+        },
+        lambda: len(attempts) >= 3,
+        backoff_sec=0.0,
+    )
+
+    assert still_running
+    assert alive.is_set(), f"{healthy} was disturbed by {failing}'s fault"
+
+
+async def test_a_restart_waits_out_the_backoff_instead_of_spinning():
+    attempts: List[str] = []
+    alive = asyncio.Event()
+
+    # An hour of backoff: the failing bridge stays parked in its wait for the
+    # whole test, so a second attempt would mean the backoff is not honoured.
+    still_running = await _supervise_until(
+        {
+            "mic": _crashing_bridge(attempts, "mic"),
+            "hid": _healthy_bridge(alive),
+        },
+        alive.is_set,
+        backoff_sec=3600.0,
+    )
+
+    assert still_running
+    assert attempts == ["mic"]
+
+
+def test_every_declared_adapter_mic_has_an_in_process_adapter():
+    """The registry's adapter profiles and this process's adapters are one
+    fact: a profile whose published source id nothing here produces would
+    reconcile clean and stream nothing."""
+    published = {
+        profile.mic.capture_profile_id
+        for profile in KNOWN_PROFILES
+        if profile.mic.status == "adapter"
+    }
+    assert published
+    assert published <= set(bridge_mod.MIC_ADAPTERS)
+
+
+def test_unreadable_published_sources_still_leave_the_button_bridge_running(
+    monkeypatch, tmp_path,
+):
+    """Volume and push-to-talk must not depend on the mic half being readable."""
+    corrupt = tmp_path / "accessory-mics.env"
+    corrupt.write_text("JASPER_MANUAL_MIC_SOURCES=nonsense\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(corrupt))
+
+    assert bridge_mod._published_mic_adapters() == {}
+
+
+def test_a_published_source_selects_its_adapter(monkeypatch, tmp_path):
+    published = tmp_path / "accessory-mics.env"
+    published.write_text(
+        "JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=udp:9892\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(published))
+
+    assert set(bridge_mod._published_mic_adapters()) == {"wiim_remote_2"}
+
+
+async def test_a_termination_signal_runs_every_bridge_teardown_to_completion(
+    monkeypatch,
+):
+    """Every pair/forget `try-restart`s this unit, and the bridges release real
+    resources in their own finally blocks — GATT StopNotify and the D-Bus
+    socket, the udev observer thread, the evdev fds. SIGTERM's default
+    disposition kills the interpreter before any of that runs, so the process
+    must ask asyncio to unwind instead, and must wait for teardowns that
+    themselves await (as `call_stop_notify()` does).
+
+    The handler is captured rather than a real signal raised: a regression here
+    would otherwise kill the pytest process instead of failing this test.
+    """
+    started = asyncio.Event()
+    torn_down: List[str] = []
+    running = 0
+
+    def bridge(name: str):
+        async def run() -> None:
+            nonlocal running
+            running += 1
+            try:
+                if running == 2:
+                    started.set()
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)  # an awaiting teardown, like StopNotify
+                torn_down.append(name)
+
+        return run
+
+    handlers: dict[int, object] = {}
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        loop, "add_signal_handler", lambda sig, cb: handlers.__setitem__(sig, cb),
+    )
+    monkeypatch.setattr(bridge_mod, "_run_hid_bridge", lambda _url: bridge("hid")())
+    monkeypatch.setattr(
+        bridge_mod, "_published_mic_adapters", lambda: {"mic": bridge("mic")},
+    )
+
+    task = asyncio.create_task(bridge_mod._run_bridges("http://127.0.0.1:8780"))
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    assert set(handlers) == {signal.SIGINT, signal.SIGTERM}
+    handlers[signal.SIGTERM]()  # what the kernel's signal would reach
+
+    await asyncio.wait_for(task, timeout=5.0)
+    assert sorted(torn_down) == ["hid", "mic"]

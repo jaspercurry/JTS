@@ -144,7 +144,7 @@ def test_wiim_remote_2_declares_adapter_mic_source():
     assert WIIM_REMOTE_2.mic.status == "adapter"
     assert WIIM_REMOTE_2.mic.capture_profile_id == "wiim_remote_2"
     assert WIIM_REMOTE_2.mic.device == WIIM_REMOTE_2_MIC_DEVICE
-    assert WIIM_REMOTE_2.mic.adapter_service == "jasper-wiim-remote-mic.service"
+    assert WIIM_REMOTE_2.mic.adapter_host_service == "jasper-input.service"
 
 
 def test_wiim_remote_2_name_re_ssot_registry_matches_adapter():
@@ -212,4 +212,4 @@ def test_every_registered_profile_has_known_mic_status(profile):
     if profile.mic.status == "adapter":
         assert profile.mic.capture_profile_id
         assert profile.mic.device
-        assert profile.mic.adapter_service
+        assert profile.mic.adapter_host_service

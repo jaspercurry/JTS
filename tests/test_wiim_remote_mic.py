@@ -786,6 +786,10 @@ class _SubscriptionBus:
         self.device_path = device_path
         self.journal: list[str] = []
         self.handlers: dict = {}
+        self._gone: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def wait_for_disconnect(self) -> None:
+        await self._gone
 
     async def introspect(self, service: str, path: str) -> str:
         assert service == "org.bluez"
@@ -814,6 +818,10 @@ class _SubscriptionBus:
             {"Connected": Variant("b", False)},
             [],
         )
+
+    def push_bus_loss(self) -> None:
+        if not self._gone.done():
+            self._gone.set_result(None)
 
 
 async def _wait_until(predicate, *, what: str, timeout: float = 5.0) -> None:
@@ -878,7 +886,7 @@ async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
     await asyncio.wait_for(
         asyncio.gather(
             wiim_remote_mic._run_subscription(
-                wiim_remote_mic._parse_args([]), asyncio.Event()
+                wiim_remote_mic.MicAdapterConfig()
             ),
             drive(),
         ),
@@ -941,7 +949,7 @@ async def test_run_subscription_reports_the_final_hold_when_the_link_drops(
     await asyncio.wait_for(
         asyncio.gather(
             wiim_remote_mic._run_subscription(
-                wiim_remote_mic._parse_args([]), asyncio.Event()
+                wiim_remote_mic.MicAdapterConfig()
             ),
             drive(),
         ),
@@ -985,7 +993,7 @@ async def test_run_subscription_survives_a_broker_that_refuses_the_reservation(
     await asyncio.wait_for(
         asyncio.gather(
             wiim_remote_mic._run_subscription(
-                wiim_remote_mic._parse_args([]), asyncio.Event()
+                wiim_remote_mic.MicAdapterConfig()
             ),
             drive(),
         ),
@@ -993,4 +1001,29 @@ async def test_run_subscription_survives_a_broker_that_refuses_the_reservation(
     )
 
     assert len(sink.frames) == 1
+    assert sink.closed
+
+
+async def test_a_dead_bus_ends_the_subscription_rather_than_wedging(monkeypatch):
+    """bluetoothd restarting takes the bus with it, and no Connected property
+    change can arrive over a bus that is gone. Waiting on the device alone
+    would leave this task parked forever with nothing raised — invisible to the
+    supervisor, which sees a task that is still running."""
+    bus, sink = _subscription_harness(monkeypatch)
+    monkeypatch.setattr(restart_broker, "manage_units", lambda *a, **k: {"ok": True})
+
+    async def drive():
+        await _wait_until(
+            lambda: "start_notify" in bus.journal, what="the notify subscription",
+        )
+        bus.push_bus_loss()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig()),
+            drive(),
+        ),
+        timeout=5,
+    )
+
     assert sink.closed

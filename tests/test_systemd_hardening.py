@@ -40,10 +40,6 @@ TIER_A = {
     "jasper-input": ROOT / "deploy/systemd/jasper-input.service",
 }
 
-ACCESSORY_ADAPTERS = {
-    "jasper-wiim-remote-mic": ROOT / "deploy/systemd/jasper-wiim-remote-mic.service",
-}
-
 ACCESSORY_RECONCILERS = {
     "jasper-accessory-reconcile": (
         ROOT / "deploy/systemd/jasper-accessory-reconcile.service"
@@ -179,34 +175,40 @@ def test_tier_a_required_directives(unit, path):
     )
 
 
-@pytest.mark.parametrize("unit,path", sorted(ACCESSORY_ADAPTERS.items()))
-def test_accessory_adapter_unit_is_hardened(unit, path):
-    directives = _directives(path)
-    pairs = set(directives)
-    keys = {k for k, _ in directives}
-    for key, want in REQUIRED_ALL.items():
-        if want is None:
-            assert key in keys, f"{unit}: missing {key}=<any>"
-        else:
-            assert (key, want) in pairs, f"{unit}: missing {key}={want}"
-    assert ("ProtectKernelLogs", "true") in pairs
-    assert ("User", "jasper-input") in pairs
-    assert ("Group", "jasper") in pairs
-    assert ("SupplementaryGroups", "bluetooth") in pairs
-    assert ("CapabilityBoundingSet", "") in pairs
-    assert ("SystemCallFilter", "@system-service") in pairs
-    assert ("PrivateDevices", "true") in pairs
-    assert ("ProtectClock", "true") in pairs
-    assert ("ProtectHostname", "true") in pairs
-    assert ("ProtectProc", "invisible") in pairs
-    assert ("ProcSubset", "pid") in pairs
-    assert ("RestrictRealtime", "true") in pairs
-    assert ("MemoryDenyWriteExecute", "true") in pairs
-    assert ("RestrictAddressFamilies", "AF_UNIX AF_INET") in pairs
-    assert ("IPAddressDeny", "any") in pairs
-    assert ("IPAddressAllow", "localhost") in pairs
-    assert ("RemoveIPC", "true") in pairs
-    assert ("UMask", "0077") in pairs
+def test_accessory_bridge_host_keeps_the_folded_adapter_sandbox():
+    """The accessory mic adapter used to be its own unit with its own sandbox.
+    Folding it into jasper-input (ADR-0225) must not have quietly dropped that
+    sandbox on the way in. PrivateDevices=/ProtectProc=/ProcSubset=/
+    MemoryDenyWriteExecute= are deliberately absent: the first would hide
+    /dev/input/event*, and the rest are unverified against the evdev/pyudev
+    ctypes path — see the ADR."""
+    pairs = set(_directives(TIER_A["jasper-input"]))
+    for directive in (
+        ("ProtectClock", "true"),
+        ("ProtectHostname", "true"),
+        ("RestrictRealtime", "true"),
+        ("IPAddressDeny", "any"),
+        ("IPAddressAllow", "localhost"),
+        ("RemoveIPC", "true"),
+        ("UMask", "0077"),
+    ):
+        assert directive in pairs, f"jasper-input lost {directive[0]}"
+    assert ("PrivateDevices", "true") not in pairs
+    # The BlueZ grant is a user-database membership, never a unit directive.
+    assert not any(
+        k == "SupplementaryGroups" and "bluetooth" in v for k, v in pairs
+    )
+
+
+def test_the_installer_grants_the_bridge_user_its_bluez_membership():
+    """With the group off the unit file, `usermod -aG` is the ONLY thing that
+    reaches the mic adapter's BlueZ access — and the drop-in supplementary-group
+    contract test above can no longer see it."""
+    users = (ROOT / "deploy/lib/install/service-users.sh").read_text(
+        encoding="utf-8",
+    )
+
+    assert "usermod -aG bluetooth jasper-input" in users
 
 
 @pytest.mark.parametrize("unit,path", sorted(ACCESSORY_RECONCILERS.items()))
@@ -237,7 +239,9 @@ def test_accessory_reconciler_unit_is_hardened_root_oneshot(unit, path):
     assert ("UMask", "0022") in pairs
     rwpaths = " ".join(v for k, v in pairs if k == "ReadWritePaths")
     assert "/var/lib/jasper" in rwpaths
-    assert "/etc/systemd/system" in rwpaths
+    # It publishes the env file and refreshes units; it enables none, so it
+    # must not be able to write unit files.
+    assert "/etc/systemd/system" not in rwpaths
 
 
 @pytest.mark.parametrize("unit,path", sorted(RECONCILE_ONESHOTS.items()))
@@ -290,7 +294,7 @@ def test_accessory_parallel_budget_matches_owner_and_caller_barriers():
 
     accessory_unit = ACCESSORY_RECONCILERS["jasper-accessory-reconcile"]
     owner_timeout = float(dict(_directives(accessory_unit))["TimeoutStartSec"])
-    assert accessory_reconcile._ADAPTER_SYSTEMCTL_CALLS == 3
+    assert accessory_reconcile._ADAPTER_SYSTEMCTL_CALLS == 2
     assert accessory_reconcile._VOICE_REFRESH_SYSTEMCTL_CALLS == 2
     assert accessory_reconcile._OWNER_OPERATION_TIMEOUT_BUDGET_SEC < owner_timeout
     assert (
@@ -337,6 +341,10 @@ DROPPED = {
     # voice/control/mux/web (input excluded). `audio` = ALSA.
     "jasper-voice": ("jasper-voice", {"audio", "jasper-secrets", "jasper-intsecrets"}),
     "jasper-mux": ("jasper-mux", {"jasper-intsecrets"}),
+    # NOT `bluetooth`, even though ADR-0225 folded the accessory mic adapter
+    # into this process: an unresolvable group name fails the unit 216/GROUP,
+    # and this one carries the volume and push-to-talk buttons. The adapter
+    # gets that group from the service user instead — see the unit file.
     "jasper-input": ("jasper-input", {"input"}),
     # 3b-2: control's privileged restarts/reboots are granted by polkit
     # (deploy/polkit/49-jasper-control.rules), not a group; it opens no

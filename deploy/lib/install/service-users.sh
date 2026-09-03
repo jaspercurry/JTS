@@ -85,6 +85,16 @@ create_jasper_service_users() {
     if ! getent passwd jasper-input >/dev/null 2>&1; then
         useradd -r -M -s /usr/sbin/nologin -g jasper -G input jasper-input
     fi
+    # `bluetooth` for the accessory mic adapter task this process runs
+    # (ADR-0225): BlueZ's D-Bus policy grants that group the GATT access the
+    # adapter needs. Guarded rather than hard-listed for the same reason as
+    # jasper-web's below — bluez is apt-installed after this function runs, so
+    # a hard `-G bluetooth` would exit 6 on a base image without it and abort
+    # the install. Idempotent, and also the upgrade path (useradd is skipped
+    # when the user already exists).
+    if getent group bluetooth >/dev/null 2>&1; then
+        usermod -aG bluetooth jasper-input 2>/dev/null || true
+    fi
     # Optional Pi-to-host USB microphone relay. Keep this separate from
     # jasper-input: the relay needs ALSA playback plus group-readable Jasper
     # state, never HID event devices or the accessory daemon's signaling

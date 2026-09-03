@@ -1,6 +1,9 @@
 [Unit]
-Description=Jasper HID accessory bridge (evdev → jasper-control)
+Description=Jasper accessory bridges (HID buttons + accessory mic adapters)
 After=network.target jasper-control.service
+# Passive ordering for the BLE mic adapter task this process may run:
+# an optional accessory must never pull bluetooth.service up through Wants=.
+After=bluetooth.service
 # Wants= (not Requires=) so a jasper-control restart blip doesn't
 # cascade-stop the bridge. The bridge's HTTP calls just fail and
 # retry on the next keypress.
@@ -8,28 +11,47 @@ Wants=jasper-control.service
 
 [Service]
 Type=simple
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT GLIBC_TUNABLES
 ExecStart=/opt/jasper/.venv/bin/jasper-input
 Restart=on-failure
 RestartSec=2
 
 # WS1 Phase 3b — user drop (3b-1). Non-root service user; `input`
 # (supplementary) grants /dev/input/event* (root:input on Trixie), `jasper`
-# (primary) is the shared group. Talks to jasper-control over localhost TCP
-# (no UDS), writes nothing, needs no capability — CapabilityBoundingSet= drops
+# (primary) is the shared group and reaches jasper-control's restart-broker
+# socket. Writes nothing, needs no capability — CapabilityBoundingSet= drops
 # them all and SystemCallFilter=@system-service blocks the dangerous classes.
+#
+# `bluetooth` — the BlueZ system-bus grant the mic adapter task needs — is
+# deliberately NOT listed here: systemd fails a unit 216/GROUP on a name it
+# cannot resolve, bluez (which creates that group) is apt-installed after the
+# service users are created, and this unit carries the volume and
+# push-to-talk buttons. It reaches the process through the user's own group
+# membership, added guarded by deploy/lib/install/service-users.sh — so on a
+# bare image where bluez is not yet installed when the service users are
+# created, the grant lands on the next deploy and the accessory mic is dead
+# until then (the buttons are not).
 User=jasper-input
 Group=jasper
 SupplementaryGroups=input
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 
-# Hardening — daemon reads /dev/input/event*, watches udev, and makes localhost
-# HTTP requests to jasper-control. No writes outside stdout/stderr (journald).
-# /dev/input/event* access comes from the `input` supplementary group above.
+# Hardening — the process reads /dev/input/event* and the published accessory
+# mic sources, watches udev, talks to BlueZ, and makes localhost HTTP/UDP calls.
+# No writes outside stdout/stderr (journald). /dev/input/event* access comes
+# from the `input` supplementary group above, which is also why the mic
+# adapter's former PrivateDevices=true cannot come across: it would hide the
+# input nodes this process exists to read.
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RemoveIPC=true
+UMask=0077
 # WS1 phase-1 hardening (hardened root).
 # AF_NETLINK is required for the pyudev hot-plug monitor; AF_INET for the
 # localhost POST to jasper-control. Writes nothing, so ProtectSystem=strict
@@ -43,16 +65,24 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
+# Every peer is on this box: jasper-control over TCP, the manual mic source
+# over UDP, BlueZ and the restart broker over AF_UNIX.
+IPAddressDeny=any
+IPAddressAllow=localhost
 
-# Idle: one udev netlink socket + a small number of evdev fds (one
-# per attached known accessory). Reads at human keystroke speed.
-MemoryHigh=80M
-MemoryMax=120M
+# Idle: one udev netlink socket + a small number of evdev fds (one per
+# attached known accessory), plus — only while an accessory mic is paired — one
+# D-Bus connection and one UDP socket. Both read at human gesture speed. The
+# two separate units this replaced budgeted 80M+60M high / 120M+100M max; one
+# interpreter needs neither interpreter base twice.
+MemoryHigh=110M
+MemoryMax=160M
 
-# OOM protection (Stage 1 of memory-resilience plan). Input bridge for HID accessories
-# (VK-01 remote knob). Direct USB still works without the bridge.
-# Moderate protection. NOTE: MemoryHigh/MemoryMax are silent
-# no-ops until the memory cgroup is enabled (Stage 2 of plan).
+# OOM protection (Stage 1 of memory-resilience plan). Accessory bridges: direct
+# USB still works without the HID bridge, and the local mic (where there is
+# one) still works without the accessory mic adapter. Moderate protection.
+# NOTE: MemoryHigh/MemoryMax are silent no-ops until the memory cgroup is
+# enabled (Stage 2 of plan).
 OOMScoreAdjust=-300
 
 [Install]

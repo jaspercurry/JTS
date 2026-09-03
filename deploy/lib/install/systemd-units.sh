@@ -219,20 +219,29 @@ _rollback_full_unit_install_transaction() {
 # than the AEC bridge's local-array path. The AEC units below stay
 # full-profile only, deliberately.
 install_hid_accessory_unit_files() {
-    # jasper-input: third-party HID accessory bridge (Anticater VK-01
-    # volume knob today; future macro pads / foot pedals). Reads
-    # /dev/input/event* via python-evdev, translates known devices'
-    # key events into HTTP calls against jasper-control. Always-on
-    # like jasper-mux — idle cost is negligible if no accessory is
+    # The WiiM mic adapter is a task inside jasper-input now (ADR-0225). An
+    # upgraded box still has the old daemon running and its unit enabled, and
+    # both producers would subscribe to the same GATT voice report and send to
+    # the same UDP mic source. Retire it before staging the host. Fresh
+    # installs no-op.
+    systemctl disable --now jasper-wiim-remote-mic.service \
+        >/dev/null 2>&1 || true
+    rm -f "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service" \
+          "${SYSTEMD_DIR}/multi-user.target.wants/jasper-wiim-remote-mic.service"
+    # jasper-input: every accessory bridge in one interpreter (ADR-0225).
+    # Reads /dev/input/event* via python-evdev and translates known devices'
+    # key events into HTTP calls against jasper-control; also runs the BLE mic
+    # adapter task for whichever accessory mic the reconciler below publishes.
+    # Always-on like jasper-mux — idle cost is negligible if no accessory is
     # attached. See jasper/accessories/.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-input.service" \
         "${SYSTEMD_DIR}/jasper-input.service"
     # Optional accessory mic profiles are activated by this root oneshot:
-    # it reads BlueZ's paired-device state, writes
-    # /var/lib/jasper/accessory-mics.env for jasper-voice, and owns the
-    # matching adapter unit state. This keeps rare remotes from imposing
-    # resident cost on every speaker.
+    # it reads BlueZ's paired-device state and writes
+    # /var/lib/jasper/accessory-mics.env, which is both jasper-voice's source
+    # list and jasper-input's instruction about which mic adapter to run. This
+    # keeps rare remotes from imposing resident cost on every speaker.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
@@ -242,12 +251,6 @@ install_hid_accessory_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.path" \
         "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
-    # WiiM Remote 2 BLE microphone adapter. Button events still flow through
-    # jasper-input; this companion daemon only decodes the remote's GATT voice
-    # report into the wiim_remote_2 manual mic UDP source.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wiim-remote-mic.service" \
-        "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
     # Root oneshot the adapter kicks (through jasper-control's restart broker)
     # on every reconnect: it reserves BLE connection-event length on the live
     # remote link. BlueZ hardcodes that to 0, which starves the mic to ~24% of
@@ -385,7 +388,6 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-voice.service"
             "${SYSTEMD_DIR}/jasper-input.service"
             "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
-            "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service"
             "${SYSTEMD_DIR}/jasper-wiim-remote-ce.service"
         )
         if [[ -x /usr/bin/snapserver ]]; then
@@ -1240,9 +1242,9 @@ start_streambox_runtime_units() {
     systemctl restart jasper-control.service
     # Enabling only arms these for the NEXT boot; deploy health checks this
     # boot. Mirrors the full path: restart the bridge so an already-paired
-    # remote picks up new code, then let the reconciler bring up the optional
-    # mic units a paired remote needs. Ordered after jasper-control, which is
-    # what the bridge posts key events to.
+    # remote picks up new code, then let the reconciler publish the mic source
+    # a paired remote needs. Ordered after jasper-control, which is what the
+    # bridge posts key events to.
     systemctl restart jasper-input.service 2>/dev/null || true
     /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
@@ -1809,7 +1811,7 @@ install_systemd_units() {
     systemctl restart jasper-input.service 2>/dev/null || true
     # Optional adapter-backed mic sources are profile-gated. Reconcile after
     # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
-    # without one keep the BLE decoder stopped/disabled.
+    # without one never load the BLE decoder at all.
     /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 

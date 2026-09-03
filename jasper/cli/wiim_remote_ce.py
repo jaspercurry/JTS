@@ -57,7 +57,7 @@ What it does
 ------------
 This is a short-lived root oneshot. It takes **no argument that identifies a
 connection** — it discovers and validates the target itself, so the caller
-(jasper-wiim-remote-mic, via the restart broker's start-only allowlist) hands
+(the adapter task in jasper-input, via the broker's start-only allowlist) hands
 over nothing this helper trusts:
 
 1. ask BlueZ which connected devices are named like a WiiM Remote 2;
@@ -184,7 +184,7 @@ CE_LENGTH_MAX = 0x000C          # 7.5 ms
 # controller has to reach the next connection event on both sides to apply an
 # update, so a couple of intervals plus slack; a timeout means "not applied".
 HCI_EVENT_TIMEOUT_SEC = 5.0
-# BlueZ ObjectManager read bound. jasper-wiim-remote-mic just finished talking
+# BlueZ ObjectManager read bound. The mic adapter just finished talking
 # to the same bus, so this only has to cover a wedged bus, not a cold one.
 BLUEZ_TIMEOUT_SEC = 5.0
 # Largest HCI event packet: 1 B type + 2 B header + 255 B payload.
