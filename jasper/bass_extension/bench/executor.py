@@ -11,16 +11,15 @@ modules (this PR's new tap-realization logic) with the injected
 
 **Scope boundary — the one injected seam.** Admitting and PLAYING an
 ALREADY-PREPARED stimulus through hardware while near-field-capturing the
-acoustic response over the phone capture-relay session is the piece the
-CLI's original stub named as "the one piece with no in-tree helper to
-compose": no existing function in this tree opens a capture-relay session,
-waits for a phone to connect and upload, and returns the result end to end,
-and doing so correctly is fundamentally an on-device, hardware-verified
-exercise. This module takes that ONE step as an injected collaborator
-(:class:`PlayAndCapture`) — mirroring the SAME dependency-injection shape
-the runner already uses for ``BenchDeps`` (``controller`` / ``floor`` /
-``executor``), applied one level further down at the point that is
-genuinely hardware/phone-dependent.
+acoustic response over the wired mic is the piece the CLI's original stub
+named as "the one piece with no in-tree helper to compose": no existing
+function in this tree opens a wired-mic capture session and returns the
+result end to end, and doing so correctly is fundamentally an on-device,
+hardware-verified exercise. This module takes that ONE step as an injected
+collaborator (:class:`PlayAndCapture`) — mirroring the SAME dependency-
+injection shape the runner already uses for ``BenchDeps`` (``controller`` /
+``floor`` / ``executor``), applied one level further down at the point that
+is genuinely hardware-dependent.
 
 Every other piece is fully implemented here, including stimulus GENERATION
 and R6 padding: this module generates every role's unpadded stimulus from

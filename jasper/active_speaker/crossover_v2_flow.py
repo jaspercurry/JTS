@@ -316,7 +316,6 @@ _min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
 _pose = _plan._pose
 _program_duration_ms = _plan._program_duration_ms
 announced_capture_indexes = _plan.announced_capture_indexes
-assert_cloud_plan_fits_relay_capacity = _plan.assert_cloud_plan_fits_relay_capacity
 build_v2_capture_plan = _plan.build_v2_capture_plan
 build_v2_cloud_index_phase_map = _plan.build_v2_cloud_index_phase_map
 build_v2_session_spec = _plan.build_v2_session_spec
@@ -336,7 +335,6 @@ normalize_tier = _plan.normalize_tier
 position_angle_deg = _plan.position_angle_deg
 position_elevation_deg = _plan.position_elevation_deg
 position_geometry = _plan.position_geometry
-relay_plan_attempts_required = _plan.relay_plan_attempts_required
 remote_cloud_measure_positions = _plan.remote_cloud_measure_positions
 remote_cloud_verify_positions = _plan.remote_cloud_verify_positions
 remote_position_prompt = _plan.remote_position_prompt
@@ -489,7 +487,7 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 VERIFY_REPEAT_FLOOR_DB = 0.2
 
 #: ``terminal_outcome`` for the verdict above: the captures agreed, and the
-#: agreement ends the set. Read by ``capture_relay.plan_terminal_result``.
+#: agreement ends the set.
 VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 
 # Nothing here reads this name; it survives as a door pinned by
@@ -866,10 +864,11 @@ class CrossoverV2Session:
     """One measurement session: its state, its seams, and its host contract.
 
     Hand :meth:`authorize_begin`, :meth:`on_armed` and :meth:`consume_capture` to
-    :func:`jasper.capture_relay.session.run_capture_plan`; :meth:`snapshot` /
-    :meth:`hydrate` carry phase persistence. Three things belong here: this
-    session's mutable state, the reads of it the web host needs, and the acts that
-    cannot be undone or repeated, each behind a seam. No RULE belongs here.
+    :func:`jasper.web.correction_crossover_v2_wired.build_v2_wired_run_and_consume`;
+    :meth:`snapshot` / :meth:`hydrate` carry phase persistence. Three things
+    belong here: this session's mutable state, the reads of it the web host
+    needs, and the acts that cannot be undone or repeated, each behind a seam.
+    No RULE belongs here.
     """
 
     def __init__(
@@ -4284,8 +4283,9 @@ class CrossoverV2Session:
             # ``payload`` in this scope.
             mismatch_payload: dict[str, Any] = {"tracking": dict(tracking)}
             if code == REASON_VERIFY_DETERMINISTIC_MISMATCH:
-                # The runner's contract for "no later capture can make this set usable":
-                # the session closes on the verdict rather than on the relay TTL.
+                # The runner's contract for "no later capture can make this set
+                # usable": the session closes on the verdict instead of waiting
+                # for a next begin whose only answer would be a refusal.
                 mismatch_payload["terminal"] = True
                 mismatch_payload["terminal_outcome"] = (
                     VERIFY_TERMINAL_OUTCOME_DETERMINISTIC

@@ -80,7 +80,7 @@ from jasper.audio_measurement.program_analysis import (
     solve_branch_trims,
 )
 from jasper.active_speaker.flat_spec import spec_convergence_residual
-from jasper.capture_relay.session import CaptureResult
+from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.test_active_speaker_profile import _two_way_preset
 
@@ -434,8 +434,8 @@ def bank_into(
     The id is minted the way the store mints it, off the record's OWN take id,
     which is the invariant the seam exists to keep.
 
-    ``with_capture`` keeps the :class:`CaptureResult` beside the record, for
-    the two tests that assert the raw bytes cross the seam.
+    ``with_capture`` keeps the :class:`WiredCaptureAnswer` beside the record,
+    for the two tests that assert the raw bytes cross the seam.
     """
     def bank_take(result: Any, record: Mapping[str, Any]) -> str:
         banked = dict(record)
@@ -727,8 +727,8 @@ def _verify_only_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
     )
 
 
-def _capture() -> CaptureResult:
-    return CaptureResult(wav=b"fake-wav")
+def _capture() -> WiredCaptureAnswer:
+    return WiredCaptureAnswer(wav=b"fake-wav")
 
 
 def _configured_sections(conductor, role: str) -> tuple:
@@ -793,8 +793,9 @@ def _plan_spy(mp) -> list:
 
 def _run_phase(conductor, index, attempt) -> dict:
     # Mirrors the production host's own authorize wrapper
-    # (``correction_crossover_v2_relay.build_v2_run_and_consume``): admission, and
-    # ONLY admission. It used to call ``confirm_cloud_measure_group(index)``
+    # (``correction_crossover_v2_wired.build_v2_wired_run_and_consume``):
+    # admission, and ONLY admission. It used to call
+    # ``confirm_cloud_measure_group(index)``
     # first, because the household's confirmation was inferred from a begin
     # past the cloud group; since the two-stage split (work order D1) the
     # confirmation is its own explicit signal and rides no begin at all.

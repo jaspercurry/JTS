@@ -600,7 +600,6 @@ def test_crossover_v2_refusal_is_logged_not_silent(monkeypatch, caplog):
     WHICH gate this bare box hits first is not the subject and is free to move.
     The subject is that whichever gate refuses, the refusal is journaled, never
     silent, and it carries the code the household's screen renders from."""
-    monkeypatch.delenv("JASPER_CAPTURE_RELAY_BASE", raising=False)
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
     )
@@ -743,26 +742,17 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     assert "next_action" not in plain
 
 
-def test_stale_relay_capacity_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
-    """``RelayCapacityUnavailable`` is a START-TIME refusal, raised inside
-    ``register_session`` before a session exists — the same position every other
-    precondition refusal occupies. Since the crossover cloud plan is the first
-    plan large enough to reach that gate, this pins the shape it answers with:
-    a clean 400 carrying the operator's remedy, not a 500 with a traceback.
+def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
+    """A ``ValueError`` raised inside ``register_session`` before a session
+    exists — the position every precondition refusal occupies — pins the
+    shape the dispatcher answers with: a clean 400 carrying the operator's
+    remedy, not a 500 with a traceback.
     """
-    from jasper.capture_relay.session import RelayCapacityUnavailable
-
-    # The base-class relationship IS the routing contract in this dispatcher.
-    assert issubclass(RelayCapacityUnavailable, ValueError)
-
     def _refuse(*_a, **_k):
-        raise RelayCapacityUnavailable(
-            "the relay at https://relay.test predates the capture-plan capacity "
-            "release. Deploy the current relay Worker before running this "
-            "measurement."
+        raise ValueError(
+            "the measurement mic is not ready — reconnect it and try again."
         )
 
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
     )
@@ -772,7 +762,7 @@ def test_stale_relay_capacity_refusal_is_a_clean_400_not_a_500(monkeypatch, capl
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
     assert b"400" in resp.split(b"\r\n", 1)[0]
-    assert b"Deploy the current relay Worker" in resp
+    assert b"reconnect it and try again" in resp
     # And it is on the journal like every other refused start.
     assert any(
         r.getMessage().startswith("event=correction.crossover_v2_refused")

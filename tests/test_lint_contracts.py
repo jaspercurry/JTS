@@ -99,7 +99,6 @@ MAX_LINES_BY_PATH = {
     "jasper/web/correction_crossover_v2.py": 10_000,
     "jasper/audio_measurement/program_analysis.py": 8_000,
     "jasper/active_speaker/crossover_envelope_v2.py": 5_000,
-    "jasper/web/correction_crossover_v2_relay.py": 2_000,
     "jasper/web/correction_crossover_v2_wired.py": 2_000,
     "jasper/audio_measurement/wired_capture.py": 1_000,
     "jasper/active_speaker/crossover_declaration.py": 1_000,

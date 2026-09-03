@@ -423,10 +423,9 @@ def session_open(monkeypatch):
 
     ``calls`` records the two side effects that must NOT happen on a refused
     pre-flight — the evidence-store bundle open (the first durable write after
-    the gate) and ``correction_adapter.open_capture`` (the relay registration
-    that mints the phone link). The relay seam is wired to raise if it is ever
-    reached, so "no link minted" is pinned by construction, not by absence of
-    an assertion.
+    the gate) and ``_mint_wired_session`` (the wired-mic session that opens the
+    measurement). That seam is wired to raise if it is ever reached, so "no
+    session minted" is pinned by construction, not by absence of an assertion.
     """
     # The preparers' mic gate (#2662 W2b S3) resolves the measurement mic
     # before any bundle opens. The gate under test is the SAFETY one, so the
@@ -435,11 +434,9 @@ def session_open(monkeypatch):
     monkeypatch.setattr(
         v2host, "_resolve_prepare_wired_mic", fake_measurement_mic,
     )
-    monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import commission_wiring, design_draft
     from jasper.active_speaker.tone_plan import load_active_speaker_preset
-    from jasper.capture_relay import correction_adapter
     from tests.active_speaker_fixtures import mono_output_topology
 
     topology = mono_output_topology(card_id="DAC8")
@@ -461,11 +458,11 @@ def session_open(monkeypatch):
     def _open_capture(*args, **kwargs):
         calls["open_capture"].append(args)
         raise AssertionError(
-            "a refused pre-flight must never reach relay registration"
+            "a refused pre-flight must never reach the wired session mint"
         )
 
     monkeypatch.setattr(v2host, "open_v2_evidence_store", _evidence_store)
-    monkeypatch.setattr(correction_adapter, "open_capture", _open_capture)
+    monkeypatch.setattr(v2host, "_mint_wired_session", _open_capture)
 
     def _install(profile) -> None:
         monkeypatch.setattr(

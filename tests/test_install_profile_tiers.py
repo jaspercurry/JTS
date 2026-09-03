@@ -336,14 +336,6 @@ def test_pyproject_base_install_stays_minimal():
     }
 
 
-def test_correction_relay_dependency_is_explicit_in_both_install_profiles():
-    data = tomllib.loads(PYPROJECT.read_text())
-
-    for profile in ("full", "streambox"):
-        dependencies = data["project"]["optional-dependencies"][profile]
-        assert "cryptography>=50.0.0" in dependencies, profile
-
-
 # ---------- (4) no endpoint install functions / deleted artifacts --------
 
 

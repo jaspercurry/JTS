@@ -60,9 +60,8 @@ logger = logging.getLogger(__name__)
 CAPTURE_PLAN_TARGET = 3
 
 # Total admission attempts a v2 session may spend across its entries, retakes
-# included. A POLICY choice about retries, deliberately not the TRANSPORT limit
-# `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS` (blob keys the relay Worker will
-# store for one session).
+# included. A POLICY choice about retries, deliberately not the SANITY ceiling
+# `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`.
 CAPTURE_PLAN_MAX_ATTEMPTS = 8
 
 
@@ -79,13 +78,12 @@ DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
 # Configurable floor. ``CLOUD_POSITION_PROMPTS``' wide-offset guarantee is
 # specified against exactly this number.
 MIN_CLOUD_MEASURE_POSITIONS = 6
-# Configurable ceiling, sized so the worst-case plan still fits the relay's
-# blob-index space; ``assert_cloud_plan_fits_relay_capacity`` is the executable
-# form of that claim. There is no slack at the walk-armed bound: at N=11, M=6,
-# ``relay_plan_attempts_required`` lands on ``MAX_CAPTURE_PLAN_ATTEMPTS``
-# exactly. Raising N costs a step of configuration headroom, a
-# household-visible retake (``CLOUD_RETAKE_ALLOWANCE``), or a lockstep raise of
-# the relay Worker's own deployed ceiling.
+# Configurable ceiling, sized so the worst-case plan still fits under
+# `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`; `CapturePlan.max_attempts`
+# validation (sweep_spec.py) enforces that fit at build time. There is no slack
+# at the walk-armed bound: at N=11, M=6 the attempt sum lands on
+# ``MAX_CAPTURE_PLAN_ATTEMPTS`` exactly. Raising N costs a step of configuration
+# headroom or a household-visible retake (``CLOUD_RETAKE_ALLOWANCE``).
 MAX_CLOUD_MEASURE_POSITIONS = 11
 # Total MIC POSITIONS in the post-apply cloud, VERIFY's anchor included, so the
 # plan emits ``M − 1`` prompted positions after VERIFY and the group combines
@@ -1012,68 +1010,6 @@ def _shape_from_kwargs(
     )
 
 
-def relay_plan_attempts_required(
-    *,
-    cloud_measure_positions: int | None = None,
-    cloud_verify_positions: int | None = None,
-) -> int:
-    """Relay blob indexes one journey needs — the SINGLE producer of that fact.
-
-    Read by :func:`assert_cloud_plan_fits_relay_capacity` with the worst-case
-    counts and by ``jasper-doctor``'s ``check_capture_relay`` with the shipped
-    ones; the two questions differ, the arithmetic must not.
-
-    The lateral walk counts UNCONDITIONALLY: no stage-1 plan arms it, but an
-    operator's staged angle walk builds one on any session and its poses ride
-    the same blob-index space.
-    """
-    return (
-        cloud_plan_max_attempts(
-            cloud_measure_positions=cloud_measure_positions,
-            cloud_verify_positions=cloud_verify_positions,
-        )
-        + len(LATERAL_POSE_PROMPTS)
-        + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    )
-
-
-def assert_cloud_plan_fits_relay_capacity() -> None:
-    """Raise unless the WORST-CASE cloud plan fits the relay's index space.
-
-    The relay stores one blob per admitted attempt at
-    ``capture_index = attempt - 1``, so
-    ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` bounds entries PLUS retakes
-    for a whole session. This is the executable statement of that dependency.
-    """
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-
-    # The lateral walk and the entry baseline are entries too, counted through
-    # the shared producer's rules so this and jasper-doctor cannot disagree.
-    entries = (
-        cloud_capture_target(
-            cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-            cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-        )
-        + len(LATERAL_POSE_PROMPTS)
-        + (1 if STAGE1_INCLUDES_ENTRY_BASELINE else 0)
-    )
-    if entries + GEOMETRY_RETRY_POSITIONS > MAX_CAPTURE_PLAN_ATTEMPTS:
-        raise CrossoverV2FlowError(
-            f"worst-case cloud plan needs {entries + GEOMETRY_RETRY_POSITIONS} "
-            f"relay blob indexes but the relay ceiling is "
-            f"{MAX_CAPTURE_PLAN_ATTEMPTS}"
-        )
-    attempts = relay_plan_attempts_required(
-        cloud_measure_positions=MAX_CLOUD_MEASURE_POSITIONS,
-        cloud_verify_positions=DEFAULT_CLOUD_VERIFY_POSITIONS,
-    )
-    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
-        raise CrossoverV2FlowError(
-            f"worst-case cloud plan's attempt budget {attempts} exceeds the "
-            f"relay ceiling {MAX_CAPTURE_PLAN_ATTEMPTS}"
-        )
-
-
 def stage1_plan_max_attempts(
     capture_target: int, *, include_cloud_measure: bool,
 ) -> int:
@@ -1158,8 +1094,8 @@ def cloud_plan_max_attempts(
     """This flow's retry budget for a cloud plan (a POLICY number).
 
     Entries + the bounded geometry retakes + ``CLOUD_RETAKE_ALLOWANCE``. Kept
-    separate from ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` (the relay's
-    TRANSPORT ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states.
+    separate from ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` (a SANITY
+    ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states.
     """
     return _shape_from_kwargs(
         plan_shape,
@@ -1221,9 +1157,8 @@ def build_v2_cloud_index_phase_map(
 ) -> dict[int, str]:
     """Capture-plan index → session phase for a STAGE-1 (measure) session.
 
-    The relay drives 1-based indexes where ``index == accepted_count + 1``
-    (``capture_relay.session._poll_capture_plan``), so this map is also the
-    running order::
+    The wired driver walks 1-based indexes where ``index == accepted_count +
+    1``, so this map is also the running order::
 
         1                    CHECK
         2                    MEASURE            (design-axis anchor)
@@ -1338,8 +1273,8 @@ def v2_first_begin_timeout_s() -> float:
 
     Out-of-range or unparseable ``JASPER_V2_FIRST_BEGIN_TIMEOUT_S`` values fall
     back to the default. The ceiling is derived from
-    ``capture_protocol.MAX_TTL_S``: nothing outliving the longest link the
-    Worker grants can be honoured, whatever this knob says.
+    ``capture_protocol.MAX_TTL_S``: nothing outliving that sanity ceiling can be
+    honoured, whatever this knob says.
     """
 
     from jasper.capture_protocol import MAX_TTL_S
@@ -1934,11 +1869,6 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     accepted capture beyond the 3-entry baseline and is hard-capped by
     ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S``, which owns that bound. Each
     STAGE arms its own ceiling from its own plan.
-
-    A HAND-WALKED stage rides ``capture_relay.session.DEFAULT_TTL_S`` and this
-    ceiling does NOT make it fit inside that link; a REMOTE stage does fit,
-    because ``correction_crossover_v2_relay.relay_link_ttl_s`` mints its link
-    from this ceiling instead (#2509).
     """
     target = int(getattr(capture_plan, "capture_target", CAPTURE_PLAN_TARGET) or 0)
     return wall_clock_ceiling_s(target)
