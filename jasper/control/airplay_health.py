@@ -73,13 +73,12 @@ MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
 MIN_AIRPLAY_INPUT_BUFFER_FRAMES = 4096
 
 # AirPlay drop attribution (network vs internal:receiver — see
-# jasper.control.audio_health._input_attribution). The session baseline is
-# the median rx_bytes_per_sec of the last LINK_BASELINE_SAMPLES ticks where
-# AirPlay was selected and the ring lane was actually receiving frames.
+# jasper.control.audio_health._input_attribution, which owns the verdict
+# thresholds). The session baseline is the median rx_bytes_per_sec of the
+# last LINK_BASELINE_SAMPLES ticks where AirPlay was selected and the ring
+# lane was actually receiving frames.
 LINK_BASELINE_SAMPLES = 12
 LINK_HEALTHY_FRAMES_PER_SEC = 1000.0
-ATTRIBUTION_NETWORK_RATIO = 0.35
-ATTRIBUTION_RECEIVER_RATIO = 0.70
 # Fallback mixer rate when fan-in STATUS omits output.sample_rate.
 DEFAULT_MIXER_RATE_HZ = 48000
 
@@ -156,17 +155,16 @@ def _as_int_or_none(value: Any) -> int | None:
         return None
 
 
-def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
-    """A monotonic counter's per-second delta, or None on wrap/reset/absence."""
-    if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
-        return None
-    return (curr - prev) / dt
-
-
 def _nonneg_delta(curr: Any, prev: Any) -> int | None:
     if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
         return None
     return curr - prev
+
+
+def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
+    """A monotonic counter's per-second delta, or None on wrap/reset/absence."""
+    delta = _nonneg_delta(curr, prev)
+    return delta / dt if delta is not None else None
 
 
 def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:
@@ -490,14 +488,20 @@ def _read_pid_state(pid: int) -> str | None:
     return None
 
 
+def _read_pid_comm(pid: int) -> str | None:
+    return _read_text_file(f"/proc/{pid}/comm")
+
+
 def _read_receiver_stat(pid: int) -> dict[str, Any]:
     """Pure /proc/<pid> reads: the receiver-process half of AirPlay drop
     attribution. `pid` is the ring's writer_pid — the ioplug inside
-    shairport-sync.
+    shairport-sync. Includes `comm` so the caller can refuse a stale,
+    recycled pid rather than trust an unrelated process's counters.
     """
     stat = _read_pid_stat_counters(pid)
     return {
         "pid": pid,
+        "comm": _read_pid_comm(pid),
         "state": _read_pid_state(pid),
         "majflt": stat[0] if stat is not None else None,
         "cpu_ticks": stat[1] if stat is not None else None,
@@ -963,16 +967,9 @@ class AirPlayHealthSampler:
             previous_empty_reads = prev.get("input_empty_reads")
             if isinstance(previous_empty_reads, Mapping):
                 for source_id, empty_reads in input_empty_reads.items():
-                    if empty_reads is None:
-                        continue
-                    previous_value = previous_empty_reads.get(source_id)
-                    if (
-                        isinstance(previous_value, int)
-                        and empty_reads >= previous_value
-                    ):
-                        input_empty_reads_rates[source_id] = (
-                            (empty_reads - previous_value) / dt
-                        )
+                    input_empty_reads_rates[source_id] = _nonneg_rate(
+                        empty_reads, previous_empty_reads.get(source_id), dt,
+                    )
 
             airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
             output_delta = output_xruns - _as_int(prev.get("output_xruns"))
@@ -1038,6 +1035,9 @@ class AirPlayHealthSampler:
                 if isinstance(entry, dict) and isinstance(entry.get("ring"), dict)
                 else None
             )
+            slot_frames = (
+                _as_int_or_none(ring.get("slot_frames")) if ring is not None else None
+            )
             empty_reads_rate = input_empty_reads_rates[spec.id.value]
             input_observations[spec.id.value] = {
                 "label": spec.fanin_label,
@@ -1057,11 +1057,10 @@ class AirPlayHealthSampler:
                 ),
                 "silent_ms_per_sec": (
                     round(
-                        empty_reads_rate * _as_int(ring.get("slot_frames"))
-                        / mixer_rate_hz * 1000.0,
+                        empty_reads_rate * slot_frames / mixer_rate_hz * 1000.0,
                         1,
                     )
-                    if empty_reads_rate is not None and ring is not None else None
+                    if empty_reads_rate is not None and slot_frames else None
                 ),
                 "xrun_count": (
                     _as_int(entry.get("xrun_count"))
@@ -1264,6 +1263,7 @@ class AirPlayHealthSampler:
         if (
             selected == "airplay"
             and rx_rate is not None
+            and rx_rate > 0
             and frames_per_sec is not None
             and frames_per_sec >= LINK_HEALTHY_FRAMES_PER_SEC
         ):
@@ -1288,10 +1288,14 @@ class AirPlayHealthSampler:
         with self._lock:
             self._current_link = current_link
 
-    def _sample_receiver(self, now: float, pid: int) -> dict[str, Any]:
+    def _sample_receiver(self, now: float, pid: int) -> dict[str, Any] | None:
         """Delta shairport-sync's own /proc/<pid> counters into per-second
         rates. `pid` is the ring's writer_pid — the ioplug inside
-        shairport-sync."""
+        shairport-sync. Returns None when /proc/<pid>/comm doesn't say
+        "shairport": the writer_pid is stale once the process is
+        SIGKILLed, and a recycled pid's counters must never be
+        misattributed to the receiver.
+        """
         try:
             stat = self._receiver_probe(pid)
         except Exception:  # noqa: BLE001
@@ -1299,24 +1303,24 @@ class AirPlayHealthSampler:
             stat = None
         if not isinstance(stat, dict):
             stat = {}
+        comm = stat.get("comm")
+        if not isinstance(comm, str) or "shairport" not in comm:
+            self._last_receiver_counts = None
+            return None
         majflt = stat.get("majflt")
         cpu_ticks = stat.get("cpu_ticks")
         prev = self._last_receiver_counts
         majflt_rate: float | None = None
         cpu_ms_rate: float | None = None
-        if (
-            prev is not None
-            and prev.get("pid") == pid
-            and isinstance(majflt, int)
-            and isinstance(prev.get("majflt"), int)
-            and majflt >= prev["majflt"]
-            and isinstance(cpu_ticks, int)
-            and isinstance(prev.get("cpu_ticks"), int)
-            and cpu_ticks >= prev["cpu_ticks"]
-        ):
-            dt = max(0.001, now - float(prev.get("ts", now)))
-            majflt_rate = (majflt - prev["majflt"]) / dt
-            cpu_ms_rate = (cpu_ticks - prev["cpu_ticks"]) * 1000.0 / _CLK_TCK / dt
+        if prev is not None and prev.get("pid") == pid:
+            # Both-or-neither: a rate is only meaningful when BOTH counters
+            # produced a valid monotonic delta this tick.
+            majflt_delta = _nonneg_delta(majflt, prev.get("majflt"))
+            cpu_ticks_delta = _nonneg_delta(cpu_ticks, prev.get("cpu_ticks"))
+            if majflt_delta is not None and cpu_ticks_delta is not None:
+                dt = max(0.001, now - float(prev.get("ts", now)))
+                majflt_rate = majflt_delta / dt
+                cpu_ms_rate = cpu_ticks_delta * 1000.0 / _CLK_TCK / dt
         self._last_receiver_counts = {
             "ts": now, "pid": pid, "majflt": majflt, "cpu_ticks": cpu_ticks,
         }

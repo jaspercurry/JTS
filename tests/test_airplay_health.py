@@ -1124,3 +1124,20 @@ def test_link_baseline_resets_on_ring_epoch_change() -> None:
     now[0] += 5.0
     sampler._tick()
     assert sampler.snapshot()["current"]["link"]["rx_bytes_per_sec_baseline"] is None
+
+
+def test_receiver_is_none_when_pid_comm_does_not_match_shairport() -> None:
+    # writer_pid can outlive shairport-sync (SIGKILL) and be recycled by an
+    # unrelated process; comm must gate before any counter is trusted.
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(selected_input="airplay", ring=_ring()),
+        receiver_probe=lambda pid: {
+            "pid": pid, "comm": "some-recycled-proc",
+            "state": "S", "majflt": 5, "cpu_ticks": 100,
+        },
+        time_fn=lambda: 1000.0,
+    )
+
+    sampler._tick()
+
+    assert sampler.snapshot()["current"]["link"]["receiver"] is None

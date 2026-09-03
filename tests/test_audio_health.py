@@ -2694,8 +2694,13 @@ def test_incident_store_drops_oldest_records_to_stay_readable(tmp_path) -> None:
         ({"attached": True}, 100.0, 1000.0, 0, "S", 1.0, "internal:receiver"),
         # No baseline yet -> unknown.
         ({"attached": True}, 100.0, None, 0, "S", 0.0, "unknown"),
-        # RcvbufErrors climbing outranks a collapsed rate.
-        ({"attached": True}, 100.0, 1000.0, 5, "S", 0.0, "internal:receiver"),
+        # A zero baseline is treated like no baseline -> unknown, never a
+        # divide-by-zero ratio.
+        ({"attached": True}, 100.0, 0.0, 0, "S", 0.0, "unknown"),
+        # RcvbufErrors is system-wide and cannot implicate shairport-sync by
+        # itself — it stays evidence only, so a collapsed rate still reads
+        # network even with errors climbing.
+        ({"attached": True}, 100.0, 1000.0, 5, "S", 0.0, "network"),
         # Lane not ring-armed -> unknown, regardless of the other signals.
         (None, 100.0, 1000.0, 0, "S", 0.0, "unknown"),
     ],
@@ -2726,6 +2731,27 @@ def test_input_attribution_is_none_off_the_airplay_source() -> None:
 
     assert audio_health._input_attribution(airplay, "usbsink") is None
     assert audio_health._input_attribution(airplay, None) is None
+
+
+def test_incident_evidence_keeps_attribution_and_legacy_rows_uncapped() -> None:
+    """A full 5-row attribution plus the 3 legacy rows must all survive —
+    the evidence list must not silently drop rows past a fixed cap."""
+    airplay = _airplay_link(
+        ring={"attached": True}, rx_bytes_per_sec=100.0,
+        rx_bytes_per_sec_baseline=1000.0, udp_rcvbuf_errors_delta=5,
+    )
+    airplay["current"]["fanin"]["host_clock"] = {
+        "enabled": True, "ladder": "l0_locked",
+    }
+    context = audio_health._incident_context(airplay, _outputd(), "airplay")
+    issue = {"key": "airplay.input_unavailable", "context": {"started": context}}
+
+    evidence = audio_health._incident_evidence(issue)
+
+    assert [row["label"] for row in evidence] == [
+        "Verdict", "Link rate", "Receiver state", "Packets in",
+        "UDP recv buffer errors", "Clock mode", "Input level", "DAC queue",
+    ]
 
 
 def test_attribution_survives_incident_store_round_trip_and_drops_bad_token(

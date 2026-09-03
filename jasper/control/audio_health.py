@@ -36,8 +36,6 @@ from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..source_intent import read_source_intents
 from .airplay_health import (
-    ATTRIBUTION_NETWORK_RATIO,
-    ATTRIBUTION_RECEIVER_RATIO,
     CAMILLA_UNIT_FULL,
     AirPlayHealthSampler,
     SAMPLE_INTERVAL_SEC,
@@ -1637,6 +1635,8 @@ def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:
 # airplay.input_unavailable incident on a ring-armed lane (jts4-class
 # Zero 2 W). A closed token set — "unknown" is a first-class, expected
 # answer, not a failure to classify.
+ATTRIBUTION_NETWORK_RATIO = 0.35
+ATTRIBUTION_RECEIVER_RATIO = 0.70
 _ATTRIBUTION_RECEIVER_STOPPED_STATES = frozenset({"T", "D", "Z"})
 _ATTRIBUTION_LABELS = {
     "network": (
@@ -1656,14 +1656,18 @@ def _input_attribution(
     """Network vs internal:receiver verdict, evaluated only for AirPlay on a
     ring-armed lane. Rules, first match wins:
 
-    1. no ring block, no baseline, or no link sample -> unknown
+    1. no ring block, no baseline, baseline <= 0, or no link sample ->
+       unknown
     2. receiver stopped/swapping (state T/D/Z, or majflt this tick) ->
        internal:receiver (checked first: a stalled receiver in TCP mode
        also collapses rx, so this must outrank the rate rule)
-    3. UDP RcvbufErrors climbed -> internal:receiver (arrived, not drained)
-    4. rx rate < NETWORK_RATIO * baseline -> network
-    5. rx rate >= RECEIVER_RATIO * baseline -> internal:receiver
-    6. else -> unknown
+    3. rx rate < NETWORK_RATIO * baseline -> network
+    4. rx rate >= RECEIVER_RATIO * baseline -> internal:receiver
+    5. else -> unknown
+
+    UDP RcvbufErrors is system-wide (any process' socket can overflow it)
+    and cannot implicate shairport-sync specifically, so its delta is
+    surfaced as evidence only, never a verdict rule.
     """
     if active_source != Source.AIRPLAY.value:
         return None
@@ -1680,13 +1684,11 @@ def _input_attribution(
     majflt_rate = _finite_number(receiver.get("majflt_per_sec"))
     rcvbuf_delta = _finite_number(link.get("udp_rcvbuf_errors_delta"))
 
-    if not ring or baseline is None or rx_rate is None:
+    if not ring or baseline is None or baseline <= 0 or rx_rate is None:
         verdict = "unknown"
     elif state in _ATTRIBUTION_RECEIVER_STOPPED_STATES or (
         majflt_rate is not None and majflt_rate > 0
     ):
-        verdict = "internal:receiver"
-    elif rcvbuf_delta is not None and rcvbuf_delta > 0:
         verdict = "internal:receiver"
     elif rx_rate < ATTRIBUTION_NETWORK_RATIO * baseline:
         verdict = "network"
@@ -1706,6 +1708,8 @@ def _input_attribution(
     packet_rate = _finite_number(link.get("udp_in_datagrams_per_sec"))
     if packet_rate is not None:
         details.append(_detail("Packets in", f"{float(packet_rate):.0f}/s"))
+    if rcvbuf_delta is not None and rcvbuf_delta > 0:
+        details.append(_detail("UDP recv buffer errors", f"+{int(rcvbuf_delta)}"))
     return {"verdict": verdict, "details": details[:5]}
 
 
@@ -1971,7 +1975,7 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
             "DAC queue",
             f"{float(output_context['snd_pcm_delay_ms']):.1f} ms",
         ))
-    return evidence[:5]
+    return evidence
 
 
 def _timestamp(value: Any, default: float) -> float:
