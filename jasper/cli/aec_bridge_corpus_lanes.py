@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import logging
 import os
 from queue import Queue
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
@@ -40,25 +40,8 @@ from jasper.cli.aec_bridge import (
     _env_bool,
     logger,
 )
+from jasper.cli.aec_bridge_engines import Aec3Engine, EngineSelector
 from jasper.cli.aec_bridge_telemetry import LegEmitter
-
-
-class Aec3Engine(Protocol):
-    """The engine surface the sweep dispatcher relies on."""
-
-    def process(self, mic: bytes, ref: bytes) -> bytes: ...
-
-    def close(self) -> None: ...
-
-
-class EngineSelector(Protocol):
-    """`aec_bridge._select_engine`, passed in so this module stays one-way."""
-
-    def __call__(
-        self,
-        overrides: dict[str, str] | None = None,
-        label: str | None = None,
-    ) -> Aec3Engine: ...
 
 
 @dataclass(frozen=True, eq=False)

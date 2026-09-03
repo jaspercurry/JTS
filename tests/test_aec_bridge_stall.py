@@ -37,7 +37,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.cli import aec_bridge, aec_bridge_telemetry
+from jasper.cli import aec_bridge, aec_bridge_engines, aec_bridge_telemetry
 from jasper.cli.aec_bridge import (
     BridgeStalled,
     FRAME_SAMPLES,
@@ -446,7 +446,7 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     )
     monkeypatch.setattr(aec_bridge, "sd", sd_mod)
     engine_cls = MagicMock()
-    monkeypatch.setattr(aec_bridge, "_Aec3Engine", engine_cls)
+    monkeypatch.setattr(aec_bridge_engines, "Aec3V1Engine", engine_cls)
 
     assert aec_bridge.main() == 1
     engine_cls.assert_not_called()
