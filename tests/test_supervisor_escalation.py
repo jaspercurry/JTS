@@ -122,7 +122,7 @@ def _wrapped(inner: BaseException) -> Exception:
         (_Coded(1002), False),
         (_Coded(1003), False),
         (_Coded(1007), False),
-        (_Coded(1008), False),
+        (_Coded(1008), True),
         (_Closed(1007), False),
         (_Closed(1006), True),
         (_Coded(400), False),

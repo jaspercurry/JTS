@@ -64,9 +64,14 @@ _OUT_OF_CREDIT_MARKERS = (
 
 # RFC 6455 close codes that mean the server refused what we sent, not
 # that the link failed: 1002 protocol error, 1003 unsupported data,
-# 1007 invalid frame payload, 1008 policy violation. A provider rejects
-# a malformed `setup` message with one of these.
-_SETUP_REJECTION_CLOSE_CODES = frozenset({1002, 1003, 1007, 1008})
+# 1007 invalid frame payload. A provider rejects a malformed `setup`
+# message with one of these.
+#
+# 1008 (policy violation) is deliberately excluded: Gemini uses it for
+# a benign, self-healing case, an expired session-resumption handle,
+# which gemini_session.py already handles by dropping the handle and
+# reconnecting.
+_SETUP_REJECTION_CLOSE_CODES = frozenset({1002, 1003, 1007})
 
 # Cap on the cause string stored and logged. Comfortably fits a provider's
 # JSON error body; short enough that an HTML error page cannot flood the
