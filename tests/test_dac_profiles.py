@@ -230,61 +230,51 @@ def test_studio_dac8x_pro_parks_rather_than_borrowing_the_studio_profile() -> No
         assert dac.profile_for_card_label(label) is None, label
 
 
-# rpi-6.18.y's `hifiberry_studio.c` names the 8-channel Studio DAC8x and the
-# 2-channel Studio Digi/AES alike — `.name = "Hifiberry Studio Soundcard"`,
-# no product token and no width — so the label alone cannot separate them and
-# the HAT ID EEPROM is the discriminator (#2258).
-_UNIFIED_STUDIO_LABELS = (
-    "Hifiberry Studio Soundcard",
-    " 2 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard"
-    " Hifiberry Studio Soundcard",
-)
 _DAC8X_STUDIO_HAT = HatEeprom(
     vendor="HiFiBerry",
     product="StudioDAC8x",
     uuid="be3b8164-dd7b-48fc-ab27-79dd7c641980",
 )
 
-
-def test_unified_studio_soundcard_name_parks_without_eeprom_evidence() -> None:
-    """The shared 6.18 Studio name is not claimable on the label alone (#2258).
-
-    Claiming it label-only would let a 2-channel Digi be driven as this
-    8-channel profile, so with no EEPROM the honest answer stays "unknown",
-    which parks the output owner loudly.
-    """
-    for label in (*_UNIFIED_STUDIO_LABELS, "Hifiberry Studio Digi"):
-        assert dac.profile_for_card_label(label) is None, label
-
-
-def test_unified_studio_soundcard_name_routes_when_the_eeprom_agrees() -> None:
-    """The HAT EEPROM product is what makes the shared name routable (#2258)."""
-
-    for label in _UNIFIED_STUDIO_LABELS:
-        assert (
-            dac.profile_for_card_label(label, hat=_DAC8X_STUDIO_HAT)
-            is HIFIBERRY_DAC8X_STUDIO
-        ), label
+# `label` is `product or proc_description or card_id`
+# (`output_hardware.probe_system_cards`), so both the bare kernel card name
+# and the joined /proc/asound/cards description are realistic inputs.
+_UNIFIED_STUDIO_PROC_LABEL = (
+    " 2 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard"
+    " Hifiberry Studio Soundcard"
+)
 
 
 @pytest.mark.parametrize(
     ("label", "hat_product", "expected_id"),
     [
         # The base driver stack keeps its own row even on Studio silicon:
-        # the profile keys the DRIVER STACK, and the EEPROM only ever
-        # disambiguates a label more than one stack emits.
+        # a profile keys the DRIVER STACK, and the EEPROM only ever
+        # disambiguates a label more than one stack emits. jts3 is exactly
+        # this case — Studio silicon on the base `hifiberry-dac8x` overlay.
         ("snd_rpi_hifiberry_dac8x", None, HIFIBERRY_DAC8X_ID),
         ("snd_rpi_hifiberry_dac8x", "StudioDAC8x", HIFIBERRY_DAC8X_ID),
         # An unambiguous Studio label needs no EEPROM and is not overridden.
         ("HiFiBerry Studio DAC8x", None, HIFIBERRY_DAC8X_STUDIO_ID),
         ("HiFiBerry Studio DAC8x", "StudioDAC8x", HIFIBERRY_DAC8X_STUDIO_ID),
+        # rpi-6.18.y's `hifiberry_studio.c` names the 8-channel Studio DAC8x
+        # and the 2-channel Studio Digi/AES alike — no product token, no
+        # width — so on the label alone this name parks rather than risking a
+        # Digi being driven as an 8-channel board (#2258).
         ("Hifiberry Studio Soundcard", None, None),
+        (_UNIFIED_STUDIO_PROC_LABEL, None, None),
         ("Hifiberry Studio Soundcard", "StudioDAC8x", HIFIBERRY_DAC8X_STUDIO_ID),
+        (_UNIFIED_STUDIO_PROC_LABEL, "StudioDAC8x", HIFIBERRY_DAC8X_STUDIO_ID),
         # Whole-string comparison, not a substring test: the Pro is a
         # different board with the opposite I2S clock role.
         ("Hifiberry Studio Soundcard", "StudioDAC8xPro", None),
         ("HiFiBerry Studio DAC8x Pro", "StudioDAC8x", None),
-        # An EEPROM never invents a route for a label no row claims.
+        # A HAT node that publishes no product routes nothing, so a partial
+        # read is never mistaken for evidence.
+        ("Hifiberry Studio Soundcard", "", None),
+        # An EEPROM never invents a route for a label no row claims, and the
+        # dangerous sibling parks with or without one.
+        ("Hifiberry Studio Digi", None, None),
         ("Hifiberry Studio Digi", "StudioDAC8x", None),
         ("Mystery USB DAC", "StudioDAC8x", None),
     ],
@@ -303,26 +293,13 @@ def test_card_label_routing_matrix_over_hat_eeprom_evidence(
     assert (profile.id if profile is not None else None) == expected_id
 
 
-def test_only_the_studio_row_declares_hat_eeprom_evidence() -> None:
-    """The base row keys the base DRIVER STACK, not the silicon under it.
-
-    jts3 runs Studio silicon on the base `hifiberry-dac8x` overlay, so an
-    EEPROM saying "StudioDAC8x" must not pull that box off the row its own
-    driver stack names.
-    """
-    assert HIFIBERRY_DAC8X.eeprom_gated_card_matches == ()
-    assert HIFIBERRY_DAC8X.hat_products == ()
-    assert HIFIBERRY_DAC8X_STUDIO.hat_products == ("StudioDAC8x",)
-
-
-def test_hat_eeprom_reader_reports_none_when_no_hat_is_fitted(
+def test_hat_eeprom_reader_reports_none_when_no_hat_node_exists(
     tmp_path: Path,
 ) -> None:
     assert read_hat_eeprom(tmp_path / "absent") is None
-    partial = tmp_path / "partial"
-    partial.mkdir()
-    (partial / "vendor").write_bytes(b"HiFiBerry\x00")
-    assert read_hat_eeprom(partial) is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert read_hat_eeprom(empty) is None
 
 
 def test_hat_eeprom_reader_strips_devicetree_nul_terminators(
@@ -334,6 +311,20 @@ def test_hat_eeprom_reader_strips_devicetree_nul_terminators(
         b"be3b8164-dd7b-48fc-ab27-79dd7c641980\x00\n"
     )
     assert read_hat_eeprom(tmp_path) == _DAC8X_STUDIO_HAT
+
+
+def test_hat_eeprom_reader_keeps_a_partially_published_node(
+    tmp_path: Path,
+) -> None:
+    """A blank field is an answer, not a failure — it just matches no row."""
+
+    (tmp_path / "vendor").write_bytes(b"HiFiBerry\x00")
+    partial = read_hat_eeprom(tmp_path)
+
+    assert partial == HatEeprom(vendor="HiFiBerry", product="", uuid="")
+    assert dac.profile_for_card_label(
+        "Hifiberry Studio Soundcard", hat=partial
+    ) is None
 
 
 # One or more realistic ALSA labels per single-kind profile. The walking guard

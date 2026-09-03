@@ -25,6 +25,7 @@ from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
 from jasper.env_file import parse_env_lines
 
 from .dac import INNOMAKER_HIFI_AMP_PRO_ID, DacProfile, all_profiles, by_id
+from .text_property import read_text_property
 
 
 DEFAULT_MODEL_PATH = "/proc/device-tree/model"
@@ -418,13 +419,6 @@ def resolve_usb_port_role(
     )
 
 
-def _read_text(path: str | Path) -> str:
-    try:
-        return Path(path).read_text(encoding="utf-8").replace("\x00", "").strip()
-    except OSError:
-        return ""
-
-
 def boot_config_path() -> Path:
     """``config.txt``'s resolved path, honoring ``JTS_BOOT_CONFIG_FILE``."""
 
@@ -434,10 +428,11 @@ def boot_config_path() -> Path:
 def read_boot_config_or_none(path: str | Path | None = None) -> str | None:
     """``config.txt``'s content, or ``None`` if it could not be read.
 
-    Unlike :func:`_read_text` (whose callers treat a transient USB-port-role
-    read as equivalent to "not configured"), a caller confirming a saved
-    line is genuinely GONE — not merely unreadable right now — needs that
-    distinction kept.
+    Unlike :func:`~.text_property.read_text_property` (whose callers treat a
+    transient USB-port-role read as equivalent to "not configured"), a caller
+    confirming a saved line is genuinely GONE — not merely unreadable right
+    now — needs that distinction kept, so this neither collapses the error to
+    "" nor strips surrounding whitespace from the file it returns.
     """
     target = Path(path) if path is not None else boot_config_path()
     try:
@@ -471,8 +466,8 @@ def resolve_system_usb_port_role(
         "JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR
     )
     return resolve_usb_port_role(
-        board_model=_read_text(model_path),
-        boot_config=_read_text(boot_config_path),
+        board_model=read_text_property(model_path),
+        boot_config=read_text_property(boot_config_path),
         active_role=observed_active_role(udc_class_dir),
         observed_output_profile_id=observed_output_profile_id,
     )
@@ -720,7 +715,7 @@ def reconcile_boot_config(
         return state, False, False, desired_profile, False
     original = config_path.read_text(encoding="utf-8")
     initial = resolve_usb_port_role(
-        board_model=_read_text(model_path),
+        board_model=read_text_property(model_path),
         boot_config=original,
         active_role=observed_active_role(udc_class_dir),
     )

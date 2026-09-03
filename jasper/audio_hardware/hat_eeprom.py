@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from .text_property import read_text_property
+
 
 DEFAULT_HAT_DIR = "/proc/device-tree/hat"
 
@@ -43,27 +45,20 @@ class HatEeprom:
         return {"vendor": self.vendor, "product": self.product, "uuid": self.uuid}
 
 
-def _read_property(path: Path) -> str | None:
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return None
-    # Devicetree property files carry NUL-terminated strings.
-    return raw.decode("utf-8", "replace").replace("\x00", "").strip()
-
-
 def read_hat_eeprom(hat_dir: str | Path = DEFAULT_HAT_DIR) -> HatEeprom | None:
     """Return the fitted HAT's declared identity, or None when there is none.
 
-    A board with no HAT, a kernel that publishes no ``hat`` node, and an
-    unreadable property all answer None: the caller must treat "no EEPROM" as
-    "no extra evidence", never as a distinct hardware claim.
+    A board with no HAT and a kernel that publishes no ``hat`` node both answer
+    None: the caller must treat "no EEPROM" as "no extra evidence", never as a
+    distinct hardware claim. A node that publishes only some of the three
+    fields is still an answer — the blanks simply match no profile's declared
+    products, so a partial EEPROM routes nothing.
     """
 
     root = Path(hat_dir)
-    vendor = _read_property(root / "vendor")
-    product = _read_property(root / "product")
-    uuid = _read_property(root / "uuid")
-    if vendor is None or product is None or uuid is None:
+    vendor = read_text_property(root / "vendor")
+    product = read_text_property(root / "product")
+    uuid = read_text_property(root / "uuid")
+    if not (vendor or product or uuid):
         return None
     return HatEeprom(vendor=vendor, product=product, uuid=uuid)

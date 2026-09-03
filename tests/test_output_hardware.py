@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.hat_eeprom import HatEeprom
@@ -228,15 +229,17 @@ def test_probe_system_cards_classifies_non_usb_hifiberry_from_proc_cards(
     assert state.physical_output_count == 8
 
 
-def test_hat_eeprom_routes_the_shared_studio_card_name_and_reaches_the_record(
-    tmp_path: Path,
-) -> None:
-    """rpi-6.18.y names every Studio-family card alike, so the EEPROM decides.
+_STUDIO_HAT = HatEeprom(
+    vendor="HiFiBerry",
+    product="StudioDAC8x",
+    uuid="be3b8164-dd7b-48fc-ab27-79dd7c641980",
+)
+# rpi-6.18.y names every Studio-family card this, so the label carries no
+# product token and no width (#2258).
+_UNIFIED_STUDIO_LABEL = "Hifiberry Studio Soundcard"
 
-    The observable is both halves at once: the probe classifies the shared
-    name only because a HAT product was supplied, and the published record
-    carries the evidence it routed on (#2258).
-    """
+
+def _unified_studio_sysfs(tmp_path: Path) -> tuple[Path, Path]:
     sys_class = tmp_path / "sys" / "class" / "sound"
     proc_asound = tmp_path / "proc" / "asound"
     card_dir = tmp_path / "sys" / "devices" / "platform" / "soc" / "sound" / "card1"
@@ -249,37 +252,77 @@ def test_hat_eeprom_routes_the_shared_studio_card_name_and_reaches_the_record(
     (proc_card / "id").write_text("HiFiBerryStudio", encoding="utf-8")
     (proc_card / "pcm0p").mkdir()
     (proc_asound / "cards").write_text(
-        " 1 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard\n"
-        "                      Hifiberry Studio Soundcard\n",
+        f" 1 [HiFiBerryStudio]: HifiberryStudio - {_UNIFIED_STUDIO_LABEL}\n"
+        f"                      {_UNIFIED_STUDIO_LABEL}\n",
         encoding="utf-8",
     )
-    hat = HatEeprom(
-        vendor="HiFiBerry",
-        product="StudioDAC8x",
-        uuid="be3b8164-dd7b-48fc-ab27-79dd7c641980",
-    )
+    return sys_class, proc_asound
 
-    (unrouted,) = probe_system_cards(
-        sys_class_sound=sys_class,
-        proc_asound=proc_asound,
-    )
-    (routed,) = probe_system_cards(
-        sys_class_sound=sys_class,
-        proc_asound=proc_asound,
-        hat=hat,
-    )
-    state = replace(classify_output_cards([routed]), hat_eeprom=hat)
 
-    assert unrouted.device_id == "unknown"
-    assert routed.device_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
-    assert state.profile_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
-    assert state.to_dict()["hat_eeprom"] == {
+@pytest.mark.parametrize("discovery", ["sysfs", "aplay_fallback"])
+def test_hat_eeprom_routes_the_shared_studio_name_into_the_record(
+    discovery: str,
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """`python -m jasper.output_hardware --write` is the record's one writer.
+
+    Both card-discovery paths must consult the same EEPROM, and the record has
+    to carry the evidence it routed on — `/state` and doctor read only what
+    this publishes (#2258).
+    """
+    state_file = tmp_path / "output_hardware.json"
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
+    monkeypatch.setattr(output_hardware, "read_hat_eeprom", lambda: _STUDIO_HAT)
+    if discovery == "sysfs":
+        sys_class, proc_asound = _unified_studio_sysfs(tmp_path)
+        monkeypatch.setenv("JASPER_SYS_CLASS_SOUND", str(sys_class))
+        monkeypatch.setenv("JASPER_PROC_ASOUND", str(proc_asound))
+    else:
+        monkeypatch.setattr(output_hardware, "probe_system_cards", lambda **_: ())
+        monkeypatch.setattr(
+            output_hardware,
+            "probe_aplay_listing",
+            lambda _aplay: (
+                f"hw:CARD=HiFiBerryStudio,DEV=0\n    {_UNIFIED_STUDIO_LABEL}\n"
+            ),
+        )
+
+    assert output_hardware.main(["--write"]) == 0
+
+    capsys.readouterr()
+    published = json.loads(state_file.read_text(encoding="utf-8"))
+    assert published["profile_id"] == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
+    assert published["hat_eeprom"] == {
         "vendor": "HiFiBerry",
         "product": "StudioDAC8x",
         "uuid": "be3b8164-dd7b-48fc-ab27-79dd7c641980",
     }
-    assert OutputHardwareState.from_mapping(state.to_dict()).hat_eeprom == hat
-    assert OutputHardwareState.from_mapping({"profile_id": "unknown"}).hat_eeprom is None
+    assert OutputHardwareState.from_mapping(published).hat_eeprom == _STUDIO_HAT
+
+
+def test_the_shared_studio_name_parks_and_publishes_a_null_hat_eeprom(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """No HAT is a published fact, so a reader can tell it from an old record."""
+
+    state_file = tmp_path / "output_hardware.json"
+    sys_class, proc_asound = _unified_studio_sysfs(tmp_path)
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_file))
+    monkeypatch.setenv("JASPER_SYS_CLASS_SOUND", str(sys_class))
+    monkeypatch.setenv("JASPER_PROC_ASOUND", str(proc_asound))
+    monkeypatch.setattr(output_hardware, "read_hat_eeprom", lambda: None)
+
+    assert output_hardware.main(["--write"]) == 0
+
+    capsys.readouterr()
+    published = json.loads(state_file.read_text(encoding="utf-8"))
+    assert published["hat_eeprom"] is None
+    assert published["profile_id"] == "unknown"
+    assert OutputHardwareState.from_mapping(published).hat_eeprom is None
 
 
 def test_output_hardware_state_from_mapping_preserves_zero_apple_dac_count() -> None:
