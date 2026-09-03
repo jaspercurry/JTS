@@ -1202,7 +1202,10 @@ impl StateServer {
         // is a heartbeat-live-but-frozen reader (bounded-wait give-ups + sticky
         // demotions), `drop_no_reader` a dead/absent reader (normal reload
         // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
-        // episode.
+        // episode. `clockless_paces` counts periods whose only pacer was the
+        // mixer's own deadline sleep — neither back-pressure nor a drop — which
+        // is the free-running-reader shape that used to SIGKILL this daemon
+        // under `LimitRTTIME`.
         //
         // There are no `mirror_frames` / `mirror_drops` here: U4/P7-4 removed the
         // lossy aloop side-tap they counted, and a pair of counters pinned at 0
@@ -1252,6 +1255,12 @@ impl StateServer {
             buf,
             "last_stall_ms",
             ring.last_stall_ms.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "clockless_paces",
+            ring.clockless_paces.load(Ordering::Relaxed),
         );
         buf.push('}');
         buf.push('}');
@@ -1604,6 +1613,7 @@ mod tests {
                 drop_no_reader: Arc::new(AtomicU64::new(3)),
                 stall_active: Arc::new(AtomicBool::new(true)),
                 last_stall_ms: Arc::new(AtomicU64::new(1500)),
+                clockless_paces: Arc::new(AtomicU64::new(7)),
             },
             selected_input_index: Arc::new(AtomicI32::new(-1)),
             heartbeat: Arc::new(Heartbeat::new()),
@@ -1916,6 +1926,7 @@ mod tests {
         assert_eq!(ring["drop_no_reader"], 3, "drop_no_reader: {ring}");
         assert_eq!(ring["stall_active"], true, "stall_active: {ring}");
         assert_eq!(ring["last_stall_ms"], 1500, "last_stall_ms: {ring}");
+        assert_eq!(ring["clockless_paces"], 7, "clockless_paces: {ring}");
         // The OBSERVED wire tuple: which wire this ring is carrying, so /state
         // can answer that without inferring it from config.
         assert_eq!(ring["wire_format"], "S32_LE", "wire_format: {ring}");
