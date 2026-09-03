@@ -14,7 +14,7 @@ consistent across providers. The generic retry schedule lives in
 private module.
 
 What's NOT here: the supervisor task itself, provider-specific reconnect
-handling (Gemini's 409 retry) and resumption-handle logic. Those stay in
+handling (Gemini's 409 / 1008) and resumption-handle logic. Those stay in
 `gemini_session.py` / `openai_session.py`.
 """
 from __future__ import annotations
@@ -127,18 +127,28 @@ def http_status(exc: BaseException) -> int | None:
     return status
 
 
+_NO_RCVD = object()
+
+
 def provider_code(exc: BaseException) -> int | None:
     """The code a failure carries where ``http_status`` cannot see it.
 
     google-genai's ``APIError`` puts its code on ``.code`` (never
-    ``.status_code``); a websockets close puts the RFC 6455 close code
-    on ``.rcvd.code``."""
-    for candidate in (
-        getattr(exc, "code", None),
-        getattr(getattr(exc, "rcvd", None), "code", None),
-    ):
-        if isinstance(candidate, int) and not isinstance(candidate, bool):
-            return candidate
+    ``.status_code``); a websockets ``ConnectionClosed`` puts the RFC 6455
+    close code on ``.rcvd.code``. Its own ``.code`` is a deprecated
+    backwards-compatibility property (websockets 13.1+): reading it emits
+    a ``DeprecationWarning``, and when no close frame was received
+    (``.rcvd`` is ``None``) it synthesizes 1006 instead of reporting
+    absence. Never read it: any exception carrying an ``.rcvd`` attribute
+    is treated as a websockets close, and its code comes from ``.rcvd``
+    alone, even when that is ``None``."""
+    rcvd = getattr(exc, "rcvd", _NO_RCVD)
+    if rcvd is _NO_RCVD:
+        candidate = getattr(exc, "code", None)
+    else:
+        candidate = getattr(rcvd, "code", None)
+    if isinstance(candidate, int) and not isinstance(candidate, bool):
+        return candidate
     return None
 
 

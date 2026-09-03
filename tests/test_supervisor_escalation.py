@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import socket
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -68,11 +69,24 @@ class _Coded:
 
 
 class _Closed(Exception):
-    """A websockets close: the RFC 6455 code is on ``.rcvd.code``."""
+    """The shape of a real ``websockets.exceptions.ConnectionClosed``: the
+    RFC 6455 code is on ``.rcvd.code`` (``.rcvd`` is ``None`` for an
+    abnormal closure with no close frame received). ``.code`` mirrors the
+    real deprecated backwards-compatibility property: it warns on every
+    read and synthesizes 1006 instead of reporting absence."""
 
-    def __init__(self, code: int) -> None:
+    def __init__(self, code: int | None) -> None:
         super().__init__(f"connection closed: {code}")
-        self.rcvd = SimpleNamespace(code=code)
+        self.rcvd = SimpleNamespace(code=code) if code is not None else None
+
+    @property
+    def code(self) -> int:
+        warnings.warn(
+            "ConnectionClosed.code is deprecated; "
+            "use Protocol.close_code or ConnectionClosed.rcvd.code",
+            DeprecationWarning,
+        )
+        return self.rcvd.code if self.rcvd is not None else 1006
 
 
 class _StatusAndCode(_Coded):
@@ -125,6 +139,7 @@ def _wrapped(inner: BaseException) -> Exception:
         (_Coded(1008), True),
         (_Closed(1007), False),
         (_Closed(1006), True),
+        (_Closed(None), True),
         (_Coded(400), False),
         (_Coded(409), True),
         (_Coded(429), True),
@@ -137,6 +152,17 @@ def test_is_transient_classifies_by_who_must_act(
 ) -> None:
     """Terminal means a human must act; everything else retries in silence."""
     assert is_transient(exc) is transient  # type: ignore[arg-type]
+
+
+def test_is_transient_never_reads_the_deprecated_close_code() -> None:
+    """The RFC 6455 code must come from ``.rcvd.code``: reading the
+    deprecated ``ConnectionClosed.code`` property emits a
+    ``DeprecationWarning`` on every access, so a real close still has to
+    classify without ever touching it."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        assert is_transient(_Closed(1007)) is False
+        assert is_transient(_Closed(None)) is True
 
 
 # ---------------------------------------------------------------------------
