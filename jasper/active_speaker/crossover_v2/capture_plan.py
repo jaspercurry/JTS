@@ -1886,11 +1886,9 @@ def v2_first_begin_timeout_s() -> float:
     ``JASPER_CAPTURE_ALIGNMENT_THRESHOLD`` pattern.
 
     The ceiling is DERIVED from ``capture_protocol.MAX_TTL_S`` rather than
-    written here: nothing outliving the longest link the Worker grants can be
-    honoured, whatever this knob says, and a second copy of that bound would be
-    free to drift from it. Below the ceiling a hand-walked stage still spends
-    this window out of its own ``DEFAULT_TTL_S`` link — ``.env.example`` carries
-    what an operator has to weigh, and is the only place that says it.
+    written here: nothing outliving that sanity ceiling can be honoured,
+    whatever this knob says, and a second copy of that bound would be free
+    to drift from it.
     """
 
     from jasper.capture_protocol import MAX_TTL_S
