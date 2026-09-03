@@ -1,9 +1,15 @@
-# deploy/constraints-pi.txt — Pi-generated pip constraints.
+# deploy/constraints-pi.pins — Pi-generated pip constraints.
 #
 # GENERATED FILE — do not hand-edit version pins. Regenerate with:
 #   bash scripts/generate-pi-constraints.sh
 # then review the diff and commit (see the script header for the
 # full generate -> review -> commit workflow).
+#
+# Named `.pins`, not `.txt`: Dependabot's uv-ecosystem file fetcher treats
+# any `*.txt`/`*.in` file under the repo root as a requirements/constraints
+# manifest and rewrites its pins directly, bypassing uv.lock and the #1275
+# co-resolution guard below. `.pins` isn't a pattern it matches, so this
+# file only ever moves via the align script or a real Pi regenerate.
 #
 # One narrow exception, for the cross-ecosystem pin chain only (#1275):
 #   python3 scripts/align-pi-constraint-pins.py

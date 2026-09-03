@@ -4,16 +4,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Align deploy/constraints-pi.txt's pins to uv.lock.
+"""Align deploy/constraints-pi.pins's pins to uv.lock.
 
-``deploy/constraints-pi.txt`` is Pi-generated (``generate-pi-constraints.sh``)
-and ``uv.lock`` is laptop/CI-resolved, so Dependabot can only ever move one
-side: it bumps ``uv.lock`` and leaves the Pi overlay behind, and
-``tests/test_constraints_pi_resolvable.py`` then fails the PR on the #1275
-drift class. That is the guard working — a fresh deploy really would hit
-``ResolutionImpossible`` — but co-resolving it by hand meant reading two
-lockfiles and editing pins one at a time (see the 2026-08-08 note in the
-constraints header). This makes that step one command.
+``deploy/constraints-pi.pins`` is Pi-generated (``generate-pi-constraints.sh``)
+and ``uv.lock`` is laptop/CI-resolved. Dependabot's uv ecosystem cannot see
+the ``.pins`` file at all (it only matches ``*.txt``/``*.in``/``uv.lock``),
+so it only ever bumps ``uv.lock`` — this script is what carries a uv-side
+bump over to the Pi overlay; ``tests/test_constraints_pi_resolvable.py``
+guards the #1275 drift class if that step is skipped. Co-resolving by hand
+meant reading two lockfiles and editing pins one at a time (see the
+2026-08-08 note in the constraints header). This makes that step one
+command.
 
 It rewrites every package present in BOTH files (``walked_packages`` below)
 to uv.lock's version, except the documented ``EXCEPTIONS``; every other line
@@ -34,12 +35,12 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONSTRAINTS = ROOT / "deploy" / "constraints-pi.txt"
+CONSTRAINTS = ROOT / "deploy" / "constraints-pi.pins"
 UV_LOCK = ROOT / "uv.lock"
 
 _PIN_RE = re.compile(r"^([A-Za-z0-9._-]+)==([^\s;]+)$")
 
-# Packages that legitimately pin a different version in constraints-pi.txt
+# Packages that legitimately pin a different version in constraints-pi.pins
 # than uv.lock, keyed by PEP 503 canonical name, with a one-line reason.
 # Empty today (#2256) — everything present in both files is expected to
 # agree. This is the single owner of the exception set;
@@ -49,7 +50,7 @@ EXCEPTIONS: dict[str, str] = {}
 
 
 def canon(name: str) -> str:
-    """PEP 503 normalization, so constraints-pi.txt's ``pydantic_core``
+    """PEP 503 normalization, so constraints-pi.pins's ``pydantic_core``
     matches uv.lock's ``pydantic-core``."""
     return re.sub(r"[-_.]+", "-", name.strip().lower())
 
@@ -120,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     updated, changes = align(original, lock)
 
     if not changes:
-        print("deploy/constraints-pi.txt: already matches uv.lock")
+        print("deploy/constraints-pi.pins: already matches uv.lock")
         return 0
 
     for change in changes:
@@ -135,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     CONSTRAINTS.write_text(updated, encoding="utf-8")
-    print(f"deploy/constraints-pi.txt: aligned {len(changes)} pin(s) to uv.lock")
+    print(f"deploy/constraints-pi.pins: aligned {len(changes)} pin(s) to uv.lock")
     return 0
 
 

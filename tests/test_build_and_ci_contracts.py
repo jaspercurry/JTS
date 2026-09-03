@@ -667,7 +667,7 @@ def test_python_resolution_artifacts_are_committed() -> None:
     resolution artifacts; keep both present."""
 
     assert (ROOT / "uv.lock").is_file()
-    assert (ROOT / "deploy" / "constraints-pi.txt").is_file()
+    assert (ROOT / "deploy" / "constraints-pi.pins").is_file()
 
 
 def test_linux_only_c_extensions_have_platform_markers() -> None:
