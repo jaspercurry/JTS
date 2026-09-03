@@ -137,6 +137,7 @@ window.addEventListener("popstate", () => {
 
 let pollTimer = null;
 let pollInFlight = false;
+let wakeRequested = false;
 
 function schedulePoll(delayMs = POLL_MS) {
   if (pollTimer !== null) clearTimeout(pollTimer);
@@ -148,9 +149,13 @@ function schedulePoll(delayMs = POLL_MS) {
 }
 
 async function poll() {
-  // One chain only: a visibilitychange arriving mid-fetch must not start a
-  // second poller alongside the one already running.
-  if (pollInFlight) return;
+  // One chain only: a wake arriving mid-fetch must not start a second poller
+  // alongside the one already running — it hands the request to the chain in
+  // flight, which comes current as soon as it lands.
+  if (pollInFlight) {
+    wakeRequested = true;
+    return;
+  }
   pollInFlight = true;
   try {
     let snap;
@@ -169,7 +174,9 @@ async function poll() {
     updateEntry(activeEntry, snap);
   } finally {
     pollInFlight = false;
-    schedulePoll();
+    const wake = wakeRequested;
+    wakeRequested = false;
+    schedulePoll(wake ? 0 : POLL_MS);
   }
 }
 

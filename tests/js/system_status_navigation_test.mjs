@@ -83,10 +83,15 @@ function updateAudio() {
   if (audioUpdateThrows) throw new Error("malformed optional audio slice");
 }
 
-let resolveSnapshot;
+// One deferred per fetch, resolved in order — so a poll can be held in
+// flight while the test drives a visibility change against it.
 let fetchCalls = 0;
-const snapshotPromise = new Promise((resolve) => { resolveSnapshot = resolve; });
-function getJSON() { fetchCalls += 1; return snapshotPromise; }
+const pendingFetches = [];
+function getJSON() {
+  fetchCalls += 1;
+  return new Promise((resolve) => { pendingFetches.push(resolve); });
+}
+function resolveSnapshot(value) { pendingFetches.shift()(value); }
 // A real timer registry (stable ids, honours clearTimeout) so both the
 // cadence and the "never two pollers" invariant are observable.
 const timers = [];
@@ -207,9 +212,30 @@ assert.equal(timers[0].ms, 0, "returning visible brings the page current at once
 
 const fetchesBeforeWake = fetchCalls;
 timers.shift().fn();
-for (let i = 0; i < 5; i += 1) await Promise.resolve();
+await Promise.resolve();
 assert.equal(fetchCalls, fetchesBeforeWake + 1, "the woken timer actually polls");
+
+// A wake arriving while that fetch is still open must be honoured by the
+// chain in flight, not dropped and not answered with a second poller.
+document.visibilityState = "hidden";
+documentListeners.visibilitychange();
+document.visibilityState = "visible";
+documentListeners.visibilitychange();
+assert.equal(timers.length, 1, "a mid-fetch wake never stacks a second poller");
+timers.shift().fn();
+assert.equal(fetchCalls, fetchesBeforeWake + 1, "no second fetch runs in parallel");
+
+resolveSnapshot({ audio_health: { sources: [] } });
+for (let i = 0; i < 6; i += 1) await Promise.resolve();
 assert.equal(timers.length, 1, "the resumed loop keeps one successor only");
+assert.equal(timers[0].ms, 0, "a wake during a fetch still refreshes at once");
+
+// With nothing outstanding, the loop settles back to the normal cadence.
+timers.shift().fn();
+await Promise.resolve();
+resolveSnapshot({ audio_health: { sources: [] } });
+for (let i = 0; i < 6; i += 1) await Promise.resolve();
+assert.equal(timers.length, 1);
 assert.equal(timers[0].ms, 5000, "normal cadence resumes while visible");
 
 process.stdout.write(JSON.stringify({ ok: true }));

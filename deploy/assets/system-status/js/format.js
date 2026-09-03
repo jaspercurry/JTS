@@ -129,7 +129,8 @@ export function toneForMemoryHeadroom(availableMb, totalMb) {
 //
 // Either input may be null — the sampler omits the field entirely on a kernel
 // that publishes no PSI / no oom_kill counter, and "no reading" must not
-// render as a calm zero.
+// render as a calm zero. A zero kill count says nothing worth a line of its
+// own, so the caption stays on what the number means until a kill happens.
 export function memoryPressureInfo(psiAvg60, oomKills) {
   const psi = psiAvg60 == null ? null : Number(psiAvg60);
   const kills = oomKills == null ? null : Number(oomKills);
@@ -138,9 +139,9 @@ export function memoryPressureInfo(psiAvg60, oomKills) {
     tone: killed ? "danger"
       : (psi == null ? "ok" : toneForPercent(psi, 10, 20)),
     value: psi == null ? "no PSI" : psi.toFixed(1) + "%",
-    sub: kills == null
-      ? "stalled on memory, last 60 s"
-      : kills + (kills === 1 ? " OOM kill" : " OOM kills") + " this boot",
+    sub: killed
+      ? kills + (kills === 1 ? " OOM kill" : " OOM kills") + " this boot"
+      : "stalled on memory, last 60 s",
     killed,
   };
 }

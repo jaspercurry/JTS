@@ -140,10 +140,12 @@ export function vitalsCards(cur, hist, cores) {
     chart: sparkline(hist.mem_used_mb, { min: 0, max: memTotal, tone: memTone, fill: true }),
   }));
 
-  // Memory pressure — kernel PSI + the boot's OOM-kill count. Both fields are
-  // omitted by the sampler on a kernel that publishes neither, so the tile
-  // only appears where at least one number is real.
-  if (cur.mem_psi_some_avg60 != null || cur.oom_kill != null) {
+  // Memory pressure — kernel PSI + the boot's OOM-kill count. Every Linux
+  // kernel publishes oom_kill (usually 0), so that field alone must not
+  // conjure the tile: without PSI and without a kill there is nothing to say,
+  // and a box that hasn't rebooted since `psi=1` landed would show a dead
+  // tile forever.
+  if (cur.mem_psi_some_avg60 != null || cur.oom_kill > 0) {
     const psiInfo = memoryPressureInfo(cur.mem_psi_some_avg60, cur.oom_kill);
     cards.push(statCard({
       label: "Memory pressure",
