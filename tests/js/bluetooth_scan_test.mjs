@@ -317,6 +317,7 @@ function harness(overrides = {}) {
     [{paired: true}, false, 'mine'],
     [{paired: false, rssi: -60}, false, 'nearby'],
     [{paired: false, connected: true}, false, 'nearby'],
+    [{paired: false, trusted: true}, false, 'nearby'],
     [{paired: false}, false, null],
     [{paired: false}, true, 'nearby'],
   ];

@@ -742,11 +742,23 @@ _REFUSED = (
 _BUSY = "Bluetooth is busy. Try again in a moment."
 _CONNECT_FAILURE_REASONS: dict[str, str] = {
     **dict.fromkeys(
-        ("br-connection-page-timeout", "le-connection-abort-by-local", "connect-timeout"),
+        (
+            "br-connection-page-timeout",
+            "le-connection-abort-by-local",
+            "connect-timeout",
+            "br-connection-timeout",
+            "le-connection-timeout",
+        ),
         _NOT_ANSWERING,
     ),
     **dict.fromkeys(
-        ("br-connection-refused", "br-connection-key-missing", "le-connection-refused"),
+        (
+            "br-connection-refused",
+            "br-connection-key-missing",
+            "le-connection-refused",
+            "br-connection-aborted-by-remote",
+            "le-connection-abort-by-remote",
+        ),
         _REFUSED,
     ),
     "br-connection-profile-unavailable": (
@@ -774,8 +786,10 @@ _NAME_ERROR_REASONS: dict[str, str] = {
 }
 
 
-def _classify_dbus_error(err: DBusError) -> tuple[str, str | None]:
+def _classify_dbus_error(err: BaseException) -> tuple[str, str | None]:
     """Map a DBusError to (user-facing message, BlueZ reason code)."""
+    if not isinstance(err, DBusError):
+        return str(err), None
     name = err.type or ""
     msg = str(err)
     if msg in _CONNECT_FAILURE_REASONS:
@@ -789,7 +803,7 @@ def _classify_dbus_error(err: DBusError) -> tuple[str, str | None]:
 
 
 def _device_action_error(err: DBusError) -> BluetoothActionResult:
-    if err.type == "org.bluez.Error.NotReady":
+    if err.type == "org.bluez.Error.NotReady" or str(err).endswith("adapter-not-powered"):
         return adapter_not_ready_result()
     message, code = _classify_dbus_error(err)
     return BluetoothActionResult(False, message, code)

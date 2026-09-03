@@ -19,6 +19,7 @@ from jasper.bluetooth.engine import (
     _device_action_error,
 )
 from jasper.bluetooth.models import (
+    ADAPTER_NOT_READY_CODE,
     BluetoothActionResult,
     BluetoothDevice,
     UUID_HOGP,
@@ -1218,65 +1219,57 @@ async def test_scan_manual_stop_propagates_permission_and_unexpected_failures(
 
 
 @pytest.mark.parametrize(
-    ("error_type", "detail", "code"),
+    ("err", "code"),
     [
-        ("org.bluez.Error.AuthenticationTimeout", "timed out", "AuthenticationTimeout"),
         (
-            "org.bluez.Error.Failed",
-            "org.bluez.Error.AuthenticationTimeout",
+            DBusError("org.bluez.Error.AuthenticationTimeout", "timed out"),
             "AuthenticationTimeout",
         ),
         (
-            "org.bluez.Error.AuthenticationCanceled",
-            "cancelled",
+            DBusError("org.bluez.Error.Failed", "org.bluez.Error.AuthenticationTimeout"),
+            "AuthenticationTimeout",
+        ),
+        (
+            DBusError("org.bluez.Error.AuthenticationCanceled", "cancelled"),
             "AuthenticationCanceled",
         ),
         (
-            "org.bluez.Error.AuthenticationRejected",
-            "rejected",
+            DBusError("org.bluez.Error.AuthenticationRejected", "rejected"),
             "AuthenticationRejected",
         ),
-        ("org.bluez.Error.AuthenticationFailed", "failed", "AuthenticationFailed"),
         (
-            "org.bluez.Error.ConnectionAttemptFailed",
-            "failed",
+            DBusError("org.bluez.Error.AuthenticationFailed", "failed"),
+            "AuthenticationFailed",
+        ),
+        (
+            DBusError("org.bluez.Error.ConnectionAttemptFailed", "failed"),
             "ConnectionAttemptFailed",
         ),
-        ("org.bluez.Error.AlreadyExists", "exists", "AlreadyExists"),
-        ("org.bluez.Error.InProgress", "busy", "InProgress"),
-        ("org.bluez.Error.Failed", "BlueZ detail", None),
-        ("org.bluez.Error.Failed", "", None),
+        (DBusError("org.bluez.Error.AlreadyExists", "exists"), "AlreadyExists"),
+        (DBusError("org.bluez.Error.InProgress", "busy"), "InProgress"),
+        (
+            DBusError("org.bluez.Error.Failed", "br-connection-aborted-by-remote"),
+            "br-connection-aborted-by-remote",
+        ),
+        (DBusError("org.bluez.Error.Failed", "BlueZ detail"), None),
+        (DBusError("org.bluez.Error.Failed", ""), None),
+        (RuntimeError("plain failure"), None),
     ],
 )
-def test_classify_dbus_error_codes(
-    error_type: str,
-    detail: str,
-    code: str | None,
-):
-    assert _classify_dbus_error(DBusError(error_type, detail))[1] == code
+def test_classify_dbus_error_codes(err: BaseException, code: str | None):
+    assert _classify_dbus_error(err)[1] == code
 
 
 @pytest.mark.parametrize(
-    ("error_type", "detail", "code"),
+    ("error_type", "detail"),
     [
-        (
-            "org.bluez.Error.Failed",
-            "br-connection-page-timeout",
-            "br-connection-page-timeout",
-        ),
-        ("org.bluez.Error.Failed", "br-connection-refused", "br-connection-refused"),
-        ("org.bluez.Error.Failed", "br-connection-busy", "br-connection-busy"),
-        (
-            "org.bluez.Error.AuthenticationTimeout",
-            "timed out",
-            "AuthenticationTimeout",
-        ),
-        ("org.bluez.Error.Failed", "unmapped-reason", None),
+        ("org.bluez.Error.NotReady", "Resource Not Ready"),
+        ("org.bluez.Error.Failed", "br-connection-adapter-not-powered"),
     ],
 )
-def test_device_action_error_codes(error_type: str, detail: str, code: str | None):
+def test_device_action_error_codes(error_type: str, detail: str):
     result = _device_action_error(DBusError(error_type, detail))
-    assert (result.ok, result.code) == (False, code)
+    assert (result.ok, result.code) == (False, ADAPTER_NOT_READY_CODE)
 
 
 async def test_connect_returns_connect_timeout_code_on_bluez_hang(monkeypatch):

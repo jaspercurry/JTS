@@ -363,7 +363,7 @@ function visibleDeviceRows(live = devices, mutations = deviceMutations) {
 // still remembers it, not that it's actually present.
 function deviceSection(d, pending = false) {
   if (d.paired) return 'mine';
-  if (pending || d.connected || (d.rssi !== null && d.rssi !== undefined)) return 'nearby';
+  if (pending || d.connected || d.trusted || (d.rssi !== null && d.rssi !== undefined)) return 'nearby';
   return null;
 }
 
@@ -371,10 +371,11 @@ function renderDevices() {
   const paired = [];
   const other = [];
   for (const d of visibleDeviceRows()) {
-    const pending = deviceMutations.get(macKey(d));
-    const section = deviceSection(d, pending);
-    if (section === 'mine') paired.push({d, pending});
-    else if (section === 'nearby') other.push({d, pending});
+    const key = macKey(d);
+    const mutation = deviceMutations.get(key);
+    const section = deviceSection(d, !!mutation || pairStreams.has(key));
+    if (section === 'mine') paired.push({d, pending: mutation});
+    else if (section === 'nearby') other.push({d, pending: mutation});
   }
   // Paired: connected first, then by name.
   paired.sort((a, b) => (b.d.connected - a.d.connected)
@@ -613,7 +614,8 @@ function rssiBars(rssi) {
 // -------- pair flow --------
 
 async function startPair(mac) {
-  if (pairStreams.has(mac)) return; // already pairing this device
+  const key = macKey(mac);
+  if (pairStreams.has(key)) return; // already pairing this device
   const slot = document.getElementById(`pair-${cssIdSafe(mac)}`);
   if (!slot) return;
   if (!beginMutation()) return;
@@ -648,7 +650,7 @@ async function startPair(mac) {
     await jtsAlert('Could not open the pairing progress stream.');
     return;
   }
-  pairStreams.set(mac, es);
+  pairStreams.set(key, es);
   const card = document.getElementById(`pc-${cssIdSafe(mac)}`);
 
   es.onmessage = async ev => {
@@ -657,7 +659,7 @@ async function startPair(mac) {
     renderPairStage(mac, data, card);
     if (data.stage === 'ready' || data.stage === 'error') {
       es.close();
-      pairStreams.delete(mac);
+      pairStreams.delete(key);
       await finishMutation();
       // Hide card after a short delay so user can read the final state.
       setTimeout(() => {
@@ -668,7 +670,7 @@ async function startPair(mac) {
   };
   es.onerror = async () => {
     es.close();
-    pairStreams.delete(mac);
+    pairStreams.delete(key);
     await finishMutation();
   };
 }
