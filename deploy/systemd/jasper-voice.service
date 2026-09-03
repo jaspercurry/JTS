@@ -313,10 +313,8 @@ OOMScoreAdjust=-500
 # policy decide.
 # Sizing rule: ~2.5x the daemon's steady-state footprint (~100 MB with the
 # TTS path numpy-only, issue #3697) — cgroup memory.current counts full RSS
-# + page cache, so headroom must be generous. Caveat: a non-default
-# JASPER_MIC_CAPTURE_RATE makes MicCapture decimate, which still imports
-# scipy (+~58 MB) and leaves ~1.6x headroom rather than 2.5x. Silent no-op
-# until the memory cgroup controller is enabled — same documented-intent
+# + page cache, so headroom must be generous. Silent no-op until the memory
+# cgroup controller is enabled — same documented-intent
 # posture as jasper-mux / -input / -usbsink.
 MemoryHigh=256M
 
