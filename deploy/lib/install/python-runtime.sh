@@ -445,7 +445,7 @@ PY
 
 install_streambox_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
-    install -d -m 0750 "${STATE_DIR}"
+    ensure_state_dir
     install -d -m 0750 "${ENV_DIR}"
     install -d -m 0755 -o root -g root "${STATE_DIR}/audio-validation"
 
