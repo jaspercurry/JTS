@@ -42,7 +42,7 @@ from ..source_intent import (
 )
 from ..source_intent import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from . import config
-from .config import GroupingConfig
+from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
     DAC_CONTENT_LANE_ENV,
     DAC_CONTENT_RING_PCM,
@@ -245,14 +245,6 @@ class _PcmHandleProbeResult:
     @property
     def unknown(self) -> bool:
         return self.state == "unknown"
-
-
-# The snapserver stream id — ONE definition: the argv builder names the pipe
-# source with it, the reconciler's binding pin re-binds persisted groups to it,
-# and the leader's runtime health checks clients against it. snapcast PERSISTS
-# group->stream assignments in server.json, so a stale binding silently mutes a
-# bond behind green health.
-SNAP_STREAM_ID = "jts"
 
 
 # ---------- Plan types ----------

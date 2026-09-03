@@ -159,7 +159,7 @@ async def _snapshot(
     members: dict[str, dict[str, Any]],
     camilla: Any,
 ) -> VolumeSnapshot:
-    from jasper.multiroom.reconcile import SNAP_STREAM_ID
+    from jasper.multiroom.config import SNAP_STREAM_ID
     from jasper.multiroom.snapcast_rpc import read_stream_clients
 
     main_volume = await camilla.get_volume_db(best_effort=False)

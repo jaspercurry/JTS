@@ -76,8 +76,12 @@ from .supervisor_runtime import (
     run_supervisor_loop,
     snapshot_or_disabled,
 )
-from ..multiroom.config import GroupingConfig, is_active_member, load_config
-from ..multiroom.reconcile import SNAP_STREAM_ID, is_active_speaker_box
+from ..multiroom.config import (
+    SNAP_STREAM_ID,
+    GroupingConfig,
+    is_active_member,
+    load_config,
+)
 from ..multiroom.state import parse_grouping_response
 from ..multiroom.snapcast_rpc import ensure_groups_on_stream
 
@@ -421,7 +425,12 @@ class GroupingSupervisor:
         known bonded-valid (the ``_tick`` gate), so ``is_active_speaker_box()``
         alone distinguishes an active endpoint from a dumb member. Fail-soft to
         ``False`` (the dumb-member path, which keeps the real starvation watch
-        running). One small topology read per poll; overridable for tests."""
+        running). One small topology read per poll; overridable for tests.
+
+        The reconciler import is deferred here as at its other call sites:
+        jasper-control would otherwise carry that oneshot resident (#3697)."""
+        from ..multiroom.reconcile import is_active_speaker_box
+
         return is_active_speaker_box()
 
     async def outputd_status(self) -> dict | None:
