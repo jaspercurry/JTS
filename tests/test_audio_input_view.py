@@ -148,6 +148,7 @@ def test_xvf_without_chip_plan_reads_as_running_aec3_with_the_chip_choice_shut()
         "state": "disclosed_stale",
         "reason": "mic has no validated production chip-AEC beam plan",
         "action": "Run sudo jasper-aec-commission",
+        "commission_recommended": True,
     }
     status["chip_aec_gate"] = {
         "status": "needs_calibration",
@@ -194,8 +195,23 @@ def test_xvf_without_chip_plan_reads_as_running_aec3_with_the_chip_choice_shut()
     assert _choice(view, "xvf_software_aec3")["selected"] is False
     assert _choice(view, "xvf_software_aec3")["visible"] is False
     assert _choice(view, "auto")["selected"] is True
+    # No capable array means no commission button, so the SSH remedy is the
+    # only remedy this box has and it survives on the web wire.
     assert view["echo"]["action"] == "Run sudo jasper-aec-commission"
     assert view["advanced"] == {}
+
+
+def test_capable_array_drops_the_ssh_remedy_its_own_button_replaces() -> None:
+    status = _base_status()
+    status["audio_profile"].update({
+        "action": "Run sudo jasper-aec-commission",
+        "commission_recommended": True,
+    })
+
+    view = build_microphone_settings_view(status)
+
+    assert view["mic"]["chip_aec_capable"] is True
+    assert view["echo"]["action"] == ""
 
 
 def test_a_disclosed_direct_mic_xvf_reads_as_running_without_bridge_streams() -> None:

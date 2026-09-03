@@ -281,7 +281,7 @@ def _echo_card_html() -> str:
       <div class="echo-status__action" id="echo-status-action" hidden></div>
       <button class="btn btn--primary echo-status__commission" type="button"
               id="echo-commission-button" hidden
-              disabled>Re-measure chip AEC (~3 min, plays test sweeps)</button>
+              disabled>Align echo cancellation</button>
       <div class="echo-status__commission-detail"
            id="echo-commission-detail" hidden></div>
     </div>

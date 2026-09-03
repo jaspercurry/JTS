@@ -233,7 +233,14 @@ def _echo_view(
     active = str(profile.get("active") or "")
     state = str(profile.get("state") or "unknown")
     reason = str(profile.get("reason") or "")
-    action = str(profile.get("action") or "")
+    # The page renders its commission button on the same chip-AEC capability
+    # fact, so drop the SSH remedy the button replaces only where that button
+    # will be there to replace it. Doctor keeps the instruction either way.
+    action = (
+        ""
+        if profile.get("commission_recommended") and mic_view.get("chip_aec_capable")
+        else str(profile.get("action") or "")
+    )
     managed_xvf = (
         mic_view.get("kind") == "xvf3800" and selection != PROFILE_CUSTOM
     )
@@ -323,7 +330,6 @@ def _echo_view(
         "title": title,
         "detail": detail,
         "action": action,
-        "commission_recommended": bool(profile.get("commission_recommended")),
         "state": state,
         "bridge_active": bridge_active,
         "hardware": {
