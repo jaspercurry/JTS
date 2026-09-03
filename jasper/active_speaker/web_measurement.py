@@ -111,7 +111,7 @@ def _stored_ambient_report(
     calibration: Any,
     ambient_duration_s: Any,
 ) -> dict[str, Any] | None:
-    """Validate the relay's declared controlled pre-sweep interval.
+    """Validate the capture's declared controlled pre-sweep interval.
 
     This is a validation stub only: it confirms the browser-declared
     ``ambient_duration_s`` actually fits ahead of the reference sweep in the

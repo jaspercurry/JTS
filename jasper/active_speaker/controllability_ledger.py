@@ -33,7 +33,7 @@ from typing import Any
 
 __all__ = ["ROUND_RECEIPT_GLOB", "read_controllability_ledger"]
 
-#: ``*`` one is the bundle id, ``*`` two the minting relay session id — two
+#: ``*`` one is the bundle id, ``*`` two the minting capture session id — two
 #: distinct namespaces, as
 #: :data:`~jasper.active_speaker.candidate_bank.CANDIDATE_ARTIFACT_GLOB` states
 #: for the sibling artifact in the same directory.

@@ -59,9 +59,9 @@ def _receipt(
     return receipt
 
 
-def _bank(root: Path, bundle: str, relay: str, receipt: dict | str) -> None:
+def _bank(root: Path, bundle: str, capture: str, receipt: dict | str) -> None:
     """File one receipt where the store puts it."""
-    round_dir = root / bundle / "evidence/v1/artifacts/crossover_v2" / relay
+    round_dir = root / bundle / "evidence/v1/artifacts/crossover_v2" / capture
     round_dir.mkdir(parents=True, exist_ok=True)
     path = round_dir / "round_receipt.json"
     path.write_text(
@@ -76,7 +76,7 @@ def test_the_reader_hands_back_each_rounds_blocks_exactly_as_banked(tmp_path):
     The acceptance pin: no mean, no spread, no label, and the per-band rows are
     the probe's own dicts rather than a reshaped copy of them.
     """
-    _bank(tmp_path, "bundle-a", "relay-1", _receipt(
+    _bank(tmp_path, "bundle-a", "capture-1", _receipt(
         ratio=0.70, spec="failed", failing=((250.0, 2000.0),),
     ))
 
@@ -96,9 +96,9 @@ def test_the_reader_hands_back_each_rounds_blocks_exactly_as_banked(tmp_path):
 
 def test_every_banked_round_is_its_own_entry(tmp_path):
     """Three rounds are three entries; nothing is folded across them."""
-    _bank(tmp_path, "bundle-a", "relay-1", _receipt(ratio=0.50))
-    _bank(tmp_path, "bundle-b", "relay-2", _receipt(ratio=0.52))
-    _bank(tmp_path, "bundle-c", "relay-3", _receipt(ratio=0.51))
+    _bank(tmp_path, "bundle-a", "capture-1", _receipt(ratio=0.50))
+    _bank(tmp_path, "bundle-b", "capture-2", _receipt(ratio=0.52))
+    _bank(tmp_path, "bundle-c", "capture-3", _receipt(ratio=0.51))
 
     payload = read_controllability_ledger(tmp_path)
     assert payload["n_rounds"] == 3
@@ -115,7 +115,7 @@ def test_a_receipt_missing_the_newer_blocks_reads_as_absent_not_as_zero(
     Empty rather than a fabricated row: the receipt does not say, and inventing
     a zero would be a number no instrument produced.
     """
-    _bank(tmp_path, "bundle-a", "relay-1", {"verification": {"spec": "passed"}})
+    _bank(tmp_path, "bundle-a", "capture-1", {"verification": {"spec": "passed"}})
 
     payload = read_controllability_ledger(tmp_path)
     assert payload["n_rounds"] == 1
@@ -140,9 +140,9 @@ def test_the_reader_walks_the_bundle_root_and_survives_a_corrupt_receipt(
     root — no argument means the speaker's own bundle directory.
     """
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path))
-    _bank(tmp_path, "bundle-a", "relay-1", _receipt(ratio=0.70))
-    _bank(tmp_path, "bundle-b", "relay-2", _receipt(ratio=0.74))
-    _bank(tmp_path, "bundle-c", "relay-3", "{not json at all")
+    _bank(tmp_path, "bundle-a", "capture-1", _receipt(ratio=0.70))
+    _bank(tmp_path, "bundle-b", "capture-2", _receipt(ratio=0.74))
+    _bank(tmp_path, "bundle-c", "capture-3", "{not json at all")
 
     payload = read_controllability_ledger()
     assert payload["n_rounds"] == 2
@@ -158,8 +158,8 @@ def test_the_state_block_carries_the_rounds_with_their_numbers(
     from jasper.web import correction_crossover_v2_status as v2status
 
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path))
-    _bank(tmp_path, "bundle-a", "relay-1", _receipt(ratio=0.50, spec="passed"))
-    _bank(tmp_path, "bundle-b", "relay-2", _receipt(ratio=0.52, spec="passed"))
+    _bank(tmp_path, "bundle-a", "capture-1", _receipt(ratio=0.50, spec="passed"))
+    _bank(tmp_path, "bundle-b", "capture-2", _receipt(ratio=0.52, spec="passed"))
 
     ledger = v2status.crossover_v2_status_block()["controllability"]
     assert ledger["n_rounds"] == 2

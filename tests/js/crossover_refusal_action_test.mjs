@@ -42,14 +42,14 @@ const ids = [
   "crossover-chart-legend-corridor",
   "crossover-chart-legend-excluded",
   "crossover-action",
-  "crossover-relay",
+  "crossover-capture",
   "crossover-walk",
   "crossover-walk-progress",
   "crossover-walk-headline",
   "crossover-walk-detail",
   "crossover-walk-action",
-  "crossover-relay-status",
-  "crossover-relay-stop",
+  "crossover-capture-status",
+  "crossover-capture-stop",
   "capture-status",
 ];
 const elements = installFixedDocument(ids, {
@@ -66,7 +66,7 @@ const baseEnvelope = {
   verdict_text: "",
   steps: [],
   nudges: [],
-  relay: null,
+  capture: null,
   next_action: null,
   alternate_actions: [],
 };

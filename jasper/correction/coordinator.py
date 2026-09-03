@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"
-# Renew the voice-side crash-recovery timer while a window is open; a relay
-# setup may wait up to eight minutes for a human. Must stay under the daemon's
+# Renew the voice-side crash-recovery timer while a window is open; a capture
+# may wait up to eight minutes for a human. Must stay under the daemon's
 # auto-clear with room for a retry, and is also the volume hold's cadence.
 MEASUREMENT_LEASE_REFRESH_SEC = 60.0
 # Back-off before re-trying a failed lease acquire/renewal. One policy shared

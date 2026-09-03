@@ -8,7 +8,7 @@ The durable host already owns operation order, graphs, admission, analysis,
 restore, and lifecycle progress.  This module supplies only the product state
 needed to construct that host: the exact current run/plan, an explicit signed
 geometry attestation for every region, the calibrated fixed-axis placement,
-and a CamillaDSP runtime port.  Browser and relay adapters never choose a
+and a CamillaDSP runtime port.  Browser and capture adapters never choose a
 region, polarity, delay coordinate, graph, attempt, or capture ordinal.
 """
 

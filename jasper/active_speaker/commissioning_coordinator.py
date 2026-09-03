@@ -987,7 +987,7 @@ def load_commissioning_view(
     that omits one of its inputs silently degrades the view, so both the
     ``/sound/`` payload and the ``/correction/crossover/envelope`` builder come
     through here. ``commission`` is the one caller-supplied input, a
-    runtime-only relay needing an async CamillaDSP probe only ``/sound/`` owns;
+    runtime-only view needing an async CamillaDSP probe only ``/sound/`` owns;
     ``None`` composes identical steps.
     """
     from jasper.active_speaker.baseline_profile import (

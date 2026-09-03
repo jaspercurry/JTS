@@ -73,7 +73,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_DELAY_IMPLAUSIBLE,
     REASON_NOISY_ROOM_LINEARITY,
-    REASON_RELAY_TIMEOUT,
+    REASON_CAPTURE_TIMEOUT,
     REASON_SNR_FLOOR,
     REASON_USER_STOPPED,
     REASON_VERIFY_CROSSOVER_REGION,
@@ -193,7 +193,7 @@ def _every_screen_envelope() -> dict[str, dict]:
 
 def test_schema_8_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -238,7 +238,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = _build_envelope_logged(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert env["flow"] == "v2"
 
 
@@ -645,10 +645,10 @@ def test_verify_phase_screen():
     # STAGE 2's entry point (two-stage work order D2, PR-T3). The measuring
     # session ended at the review screen and the household applied from there,
     # so the post-apply check is a NEW session somebody has to start — and
-    # deliberately so, because the relay TTL begins ticking at open and the
+    # deliberately so, because the session TTL begins ticking at open and the
     # household is still walking back to fetch the phone. It used to be None:
     # the same screen rendered mid-session while the phone drove it, and the
-    # shared relay gate still suppresses this action while stage 2's own relay
+    # shared capture gate still suppresses this action while stage 2's own capture
     # is in flight.
     assert env["next_action"] == {
         "id": "verify_start",
@@ -1921,7 +1921,7 @@ def test_a_session_restart_on_an_applied_speaker_still_discloses_the_apply():
     envelope must still tell the household the crossover landed, without
     promising a control the flow no longer has.
     """
-    restart = {"code": REASON_RELAY_TIMEOUT}
+    restart = {"code": REASON_CAPTURE_TIMEOUT}
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, failure=restart,
     ))
@@ -2591,7 +2591,7 @@ def test_the_envelope_schema_version_moved_with_the_candidate_review_shape():
     env = build_crossover_envelope_v2(_status(
         phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
     ))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert "headroom_cost" in env["candidate_review"]
 
 
@@ -2664,7 +2664,7 @@ def test_hard_stop_template():
 
 def test_session_restart_template():
     env = build_crossover_envelope_v2(_status(
-        phase="measure", failure={"code": REASON_RELAY_TIMEOUT},
+        phase="measure", failure={"code": REASON_CAPTURE_TIMEOUT},
     ))
     assert env["screen"] == "session_restart"
     assert env["next_action"]["id"] == "restart_session"
@@ -2673,7 +2673,7 @@ def test_session_restart_template():
 
 
 def test_user_stopped_renders_session_restart_with_honest_copy():
-    """A deliberate phone Stop is not a relay-transport death (gotcha #18) —
+    """A deliberate phone Stop is not a transport death (gotcha #18) —
     same session_restart template/action shape, but the copy must not claim
     a timeout that never happened."""
     env = build_crossover_envelope_v2(_status(
@@ -2697,19 +2697,19 @@ def test_verify_fail_one_default_screen():
     expert = [a for a in env["alternate_actions"] if a.get("expert")]
     assert [a["id"] for a in expert] == ["verify_remeasure"]
     # W6.12: the way back and Re-measure must survive the JS action-row's
-    # relay-in-flight gate (a real window right after a failed capture,
-    # before the phone side has fully wound down) — the same show_during_relay
+    # capture-in-flight gate (a real window right after a failed capture,
+    # before the phone side has fully wound down) — the same show_during_capture
     # escape hatch W6.10 gave the review screen's Apply. "Try again" starts a
-    # brand new relay session, so it deliberately does NOT carry the flag.
+    # brand new capture session, so it deliberately does NOT carry the flag.
     way_back = next(
         a for a in env["alternate_actions"] if a["id"] == "republish_previous"
     )
     remeasure = next(
         a for a in env["alternate_actions"] if a["id"] == "verify_remeasure"
     )
-    assert way_back["show_during_relay"] is True
-    assert remeasure["show_during_relay"] is True
-    assert "show_during_relay" not in env["next_action"]
+    assert way_back["show_during_capture"] is True
+    assert remeasure["show_during_capture"] is True
+    assert "show_during_capture" not in env["next_action"]
 
 
 def test_verify_fail_on_a_first_ever_apply_keeps_its_forward_actions():
@@ -4050,7 +4050,7 @@ def test_verify_level_shift_copy_matches_the_controls_on_its_own_screen():
 
 def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
     """The household's field report on this screen was that "Try again" was the
-    only obvious control, so they took it until the relay session expired. For a
+    only obvious control, so they took it until the capture session expired. For a
     verdict that has already established the mismatch repeats, that button is a
     dead lever presented as the next step: it opens a fresh /v2/verify and
     re-checks the SAME applied graph.
@@ -4073,10 +4073,10 @@ def test_deterministic_mismatch_promotes_remeasure_over_a_dead_retry():
     # alternate — a primary the screen steers towards is not a disclosure.
     assert "expert" not in env["next_action"]
     # …and it keeps the flag that makes it survive the wizard's
-    # relay-in-flight gate while the ended session winds down. On a primary
-    # the same flag also suppresses the connect link/QR for that dead relay,
+    # capture-in-flight gate while the ended session winds down. On a primary
+    # the same flag also stands the dead capture's own controls down,
     # which is the wanted behaviour for a verdict that ends the session.
-    assert env["next_action"]["show_during_relay"] is True
+    assert env["next_action"]["show_during_capture"] is True
     ids = [a["id"] for a in env["alternate_actions"]]
     # …and not offered twice.
     assert "verify_remeasure" not in ids
@@ -4176,13 +4176,13 @@ def test_a_budget_zero_code_reaching_this_screen_by_the_applied_override_keeps_r
     """The swap is keyed on the code's OWN registry row — verify_fail template
     AND budget 0 — never on budget alone, and this is why.
 
-    ``relay_timeout`` and ``user_stopped`` are budget-0 ``session_restart``
+    ``capture_timeout`` and ``user_stopped`` are budget-0 ``session_restart``
     rows that land on this screen only because something is applied (W6.7
     ruling 3). Their zero budget says no further CAPTURE of what failed can
     help; it says nothing about the VERIFY check, and here "Try again" means a
-    fresh /v2/verify session — which for a dead relay is precisely the fix.
+    fresh /v2/verify session — which for a dead capture is precisely the fix.
     Keying on budget alone would have taken the working button away."""
-    for code in (REASON_RELAY_TIMEOUT, REASON_USER_STOPPED):
+    for code in (REASON_CAPTURE_TIMEOUT, REASON_USER_STOPPED):
         assert REASON_REGISTRY[code].retry_budget == 0, code
         env = build_crossover_envelope_v2(_status(
             phase="verify", applied=True, failure={"code": code},
@@ -4296,12 +4296,12 @@ def test_check_phase_agc_failure_still_renders_its_normal_template():
     assert env["alternate_actions"] == []
 
 
-def test_verify_phase_relay_timeout_also_renders_verify_fail():
-    """A non-agc code (REASON_RELAY_TIMEOUT's own template is
+def test_verify_phase_capture_timeout_also_renders_verify_fail():
+    """A non-agc code (REASON_CAPTURE_TIMEOUT's own template is
     session_restart) gets the same applied override -- ANY failure code
     surfacing once genuinely applied is entitled to the route out."""
     env = build_crossover_envelope_v2(_status(
-        phase="verify", applied=True, failure={"code": REASON_RELAY_TIMEOUT},
+        phase="verify", applied=True, failure={"code": REASON_CAPTURE_TIMEOUT},
     ))
     assert env["screen"] == "verify_fail"
 
@@ -4446,7 +4446,7 @@ def test_aged_failure_greets_with_the_entry_screen_not_the_terminal_one():
     """The headline acceptance: a day-old failure over an APPLIED crossover
     renders the entry / tier-choice screen, not verify_fail."""
     env = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
         verify=_PRIOR_SESSION_EVIDENCE,
     ))
     assert env["screen"] == "microphone_check"
@@ -4511,7 +4511,7 @@ _WAY_BACK_FP = "b" * 64
             previous_candidate_fingerprint=_WAY_BACK_FP,
         )),
         ("microphone_check", _aged_status(
-            REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+            REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
             previous_candidate_fingerprint=_WAY_BACK_FP,
         )),
     ],
@@ -4534,9 +4534,9 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
     assert len(way_back) == 1
     assert way_back[0]["endpoint"] == "/correction/crossover/v2/republish"
     assert way_back[0]["body"] == {"fingerprint": _WAY_BACK_FP}
-    # Survives the JS relay-in-flight gate (W6.12): a get-me-out affordance
-    # must stay visible while a failed capture's relay is still winding down.
-    assert way_back[0]["show_during_relay"] is True
+    # Survives the JS capture-in-flight gate (W6.12): a get-me-out affordance
+    # must stay visible while a failed capture is still winding down.
+    assert way_back[0]["show_during_capture"] is True
 
 
 @pytest.mark.parametrize("screen_status", [
@@ -4548,7 +4548,7 @@ def test_the_three_way_back_screens_offer_the_banked_way_back(screen, status):
         phase="verify", failure={"code": REASON_VERIFY_OUT_OF_TOLERANCE},
     ),
     _aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
     ),
 ], ids=["done", "verify_fail", "aged_entry"])
 def test_no_way_back_is_minted_without_a_prior_candidate_fingerprint(screen_status):
@@ -4575,7 +4575,7 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
     clean = build_crossover_envelope_v2(_status(phase="check"))
     aged = build_crossover_envelope_v2(
         _stale_measurement_status(
-            REASON_RELAY_TIMEOUT, phase="verify",
+            REASON_CAPTURE_TIMEOUT, phase="verify",
             previous_candidate_fingerprint=_WAY_BACK_FP,
         ),
     )
@@ -4597,7 +4597,7 @@ def test_aged_entry_screen_differs_from_a_clean_start_in_EXACTLY_two_keys():
             "label": "Go back to the previous tuning",
             "endpoint": "/correction/crossover/v2/republish",
             "body": {"fingerprint": _WAY_BACK_FP},
-            "show_during_relay": True,
+            "show_during_capture": True,
         },
     ]
 
@@ -4607,7 +4607,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
     dict copied shallowly, every envelope this process ever served would share
     that dict — one mutation would poison the daemon for its whole life."""
     first = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
         previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
     way_back = [
@@ -4616,7 +4616,7 @@ def test_way_back_action_never_shares_mutable_state_between_envelopes():
     way_back["body"]["poisoned"] = True
 
     second = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, phase="verify", applied=True,
+        REASON_CAPTURE_TIMEOUT, phase="verify", applied=True,
         previous_candidate_fingerprint=_WAY_BACK_FP,
     ))
     assert [a for a in second["alternate_actions"]
@@ -4679,7 +4679,7 @@ def test_aged_failure_note_dates_a_previous_year_explicitly():
     dates already follow elsewhere in the tree (jasper.tools.gmail)."""
     stamp = time.localtime(time.time() - 400 * _DAY_S)
     env = build_crossover_envelope_v2(_aged_status(
-        REASON_RELAY_TIMEOUT, age_s=400 * _DAY_S, phase="check",
+        REASON_CAPTURE_TIMEOUT, age_s=400 * _DAY_S, phase="check",
     ))
     assert str(stamp.tm_year) in _history_note(env)
 
@@ -4689,7 +4689,7 @@ def test_aged_failure_note_dates_a_previous_year_explicitly():
 
 @pytest.mark.parametrize("code,expected", [
     (REASON_VERIFY_OUT_OF_TOLERANCE, "it wasn't confirmed"),
-    (REASON_RELAY_TIMEOUT, "it stopped before finishing"),
+    (REASON_CAPTURE_TIMEOUT, "it stopped before finishing"),
     (REASON_USER_STOPPED, "it stopped before finishing"),
     (REASON_CHANNEL_MAP_MISMATCH, "it couldn't continue"),
     # The one code that used to keep a durable-fact sentence through aging;
@@ -4774,7 +4774,7 @@ def test_unreadable_timestamp_reads_as_aged_and_never_raises(stamp):
         "active": True,
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": {
-            "phase": "check", "failure": {"code": REASON_RELAY_TIMEOUT, "at": stamp},
+            "phase": "check", "failure": {"code": REASON_CAPTURE_TIMEOUT, "at": stamp},
         },
     })
     assert env["screen"] == "microphone_check"
@@ -4790,7 +4790,7 @@ def test_fresh_failure_still_renders_todays_terminal_screen_exactly():
     """No regression to the live path. A failure the household is looking at
     right now renders the screen it renders today, numbers and all — this is
     the case the recency check must leave completely alone."""
-    fresh = {"code": REASON_RELAY_TIMEOUT, "at": time.time()}
+    fresh = {"code": REASON_CAPTURE_TIMEOUT, "at": time.time()}
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, failure=fresh,
         previous_candidate_fingerprint=_WAY_BACK_FP,
@@ -4921,24 +4921,24 @@ def test_durable_phases_are_exempt_from_the_session_clock(phase, screen):
     assert env["screen"] == screen
 
 
-@pytest.mark.parametrize("relay_status,screen", [
+@pytest.mark.parametrize("capture_status,screen", [
     # The wizard still holds the slot: the session cannot be over, whatever
     # the clock says. An unknown status reads as in flight for the same
     # reason ``SESSION_ENDED_STATUSES`` does.
-    ("awaiting_phone", "verify"),
+    ("awaiting_capture", "verify"),
     ("committing", "verify"),
     ("some_future_status", "verify"),
     ("complete", "microphone_check"),
     ("stopped", "microphone_check"),
     ("failed", "microphone_check"),
 ])
-def test_a_live_relay_outranks_the_clock(relay_status, screen):
+def test_a_live_capture_outranks_the_clock(capture_status, screen):
     """A commission's own wall-clock ceiling is 3600 s and the closing screen's
     confirm waits on a human, so an in-flight session can idle past the
     freshness window — and a slot the wizard still holds proves it is not
     over."""
     status = _dead_session_status("verify", applied=True)
-    status["relay"] = {"status": relay_status}
+    status["capture"] = {"status": capture_status}
     assert build_crossover_envelope_v2(status)["screen"] == screen
 
 
@@ -4982,7 +4982,7 @@ def test_failed_post_apply_walk_names_what_survived():
     env = build_crossover_envelope_v2(_status(
         phase="verify", applied=True, tier="full", session_id="cap_live",
         verify={"outcome": "pass"},
-        failure={"code": REASON_RELAY_TIMEOUT},
+        failure={"code": REASON_CAPTURE_TIMEOUT},
     ))
     banked = [n for n in env["nudges"] if n["code"] == "crossover_v2_banked_progress"]
     assert len(banked) == 1
@@ -5000,34 +5000,34 @@ def test_failed_post_apply_walk_names_what_survived():
 def test_banked_progress_line_is_silent_when_state_cannot_support_it(v2):
     env = build_crossover_envelope_v2(_status(
         phase="verify", session_id="cap_live",
-        failure={"code": REASON_RELAY_TIMEOUT}, **v2,
+        failure={"code": REASON_CAPTURE_TIMEOUT}, **v2,
     ))
     assert [n for n in env["nudges"]
             if n["code"] == "crossover_v2_banked_progress"] == []
 
 
-# --- W6.1 Finding D: the v2 relay slot is visible in the envelope ----------------
+# --- W6.1 Finding D: the v2 capture slot is visible in the envelope ----------------
 
 
-def test_envelope_carries_relay_block_awaiting_and_after_failure():
-    """The v2 envelope threads status['relay'] into BOTH the awaiting-phone
+def test_envelope_carries_capture_block_awaiting_and_after_failure():
+    """The v2 envelope threads status['capture'] into BOTH the awaiting-phone
     screen and the failure screen, so a page reload keeps the tap link and the
     failure copy reaches the household (Finding D — the slot was invisible)."""
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_PROGRAM_UNPLAYABLE,
     )
 
-    relay = {"tap_link": "https://capture.test/#s=cap_x", "status": "awaiting_phone"}
+    capture = {"tap_link": "https://capture.test/#s=cap_x", "status": "awaiting_capture"}
 
-    awaiting = build_crossover_envelope_v2({**_status(phase="check"), "relay": relay})
-    assert awaiting["relay"] == relay
+    awaiting = build_crossover_envelope_v2({**_status(phase="check"), "capture": capture})
+    assert awaiting["capture"] == capture
 
     failed = build_crossover_envelope_v2({
         **_status(phase="check", failure={"code": REASON_PROGRAM_UNPLAYABLE}),
-        "relay": relay,
+        "capture": capture,
     })
     assert failed["screen"] == "hard_stop"
-    assert failed["relay"] == relay
+    assert failed["capture"] == capture
     assert "safe limits" in failed["verdict_text"]
 
 
@@ -5607,16 +5607,12 @@ def test_the_before_tuning_scope_clause_renders_once_the_check_has_passed():
            "at the mark only" in combined
 
 
-def test_the_review_screen_moved_the_schema_version():
-    """PR-T2's bump (9 → 10): the screen vocabulary gained ``review`` and the
-    envelope gained ``prediction``. PR-T3's (10 → 11): the vocabulary gained
-    ``closing`` and the envelope gained ``busy``. CC1's (11 → 12): the envelope
-    gained ``findings``. #2881's (14 → 15): the ``relay`` block gained
-    ``source`` and its hold gained ``prompt``/``hand_released``. All additive —
-    no key removed or re-typed — so an unredeployed page ignores the new keys
-    rather than refusing the envelope, the same property the 8 → 9 bump had."""
+def test_the_review_screen_stamps_the_schema_version():
+    """The review envelope carries the current schema version and the keys an
+    external driver reads off it, each present on every screen so a renderer
+    never has to branch on the screen to know whether to look."""
     env = build_crossover_envelope_v2(_review_status())
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 15
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 16
     assert "prediction" in env
     assert env["busy"] is False  # present on every screen, true on one
     # Present on EVERY screen, populated on two — the key's absence would make
@@ -5848,7 +5844,7 @@ def test_an_aged_resume_stays_one_quiet_line_and_carries_no_finding():
     accident.
     """
     env = build_crossover_envelope_v2(_status(
-        failure={"code": REASON_RELAY_TIMEOUT, "at": time.time() - _DAY_S},
+        failure={"code": REASON_CAPTURE_TIMEOUT, "at": time.time() - _DAY_S},
         phase="verify", applied=True, findings=_banked_finding(age_s=_DAY_S),
     ))
     assert env["screen"] == "microphone_check"

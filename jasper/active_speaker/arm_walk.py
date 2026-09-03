@@ -4,7 +4,7 @@
 
 """Drive the crossover-v2 position gate with the lab turntable arm.
 
-The session publishes ``relay.position_pending`` on ``GET
+The session publishes ``capture.position_pending`` on ``GET
 /correction/crossover/status`` and holds every begin until something POSTs
 ``/correction/crossover/v2/position-ready``; the turntable adapter moves the
 microphone. This module is the loop that joins them, kept as a contract
@@ -16,11 +16,11 @@ one turn per held capture::
 
     poll status -> power preflight -> move -> settle -> position-ready
 
-A walk ends when its session does: the same poll carries ``relay.status``,
+A walk ends when its session does: the same poll carries ``capture.status``,
 and the three terminal values (:data:`SESSION_ENDED_STATUSES`) are the cue
 to stop (``complete`` a clean finish, ``stopped`` -> :data:`EXIT_SESSION_STOPPED`,
 ``failed`` -> :data:`EXIT_SESSION_FAILED`). A terminal status only counts
-once this walk has seen its session LIVE, since the wizard keeps one relay
+once this walk has seen its session LIVE, since the wizard keeps one capture
 slot and a walk launches before its session opens.
 
 Safety invariants, each a test in ``tests/test_arm_walk.py``: power is
@@ -94,7 +94,7 @@ DEFAULT_STUCK_ALARM_S = 300.0
 #: absorbed; a wrong ``--hostname``, a 403, or a stopped wizard never clears.
 DEFAULT_UNREADABLE_CEILING_S = 60.0
 
-#: The ``relay.status`` values meaning the session is OVER. Every other
+#: The ``capture.status`` values meaning the session is OVER. Every other
 #: value, INCLUDING an unrecognised one, reads as in flight (ending early
 #: strands a round; waiting costs one poll). Pinned against the wizard's own
 #: in-flight set by ``tests/test_arm_walk.py``.
@@ -200,7 +200,7 @@ class PowerVerdict:
 
 @dataclass(frozen=True)
 class Pending:
-    """What the session is waiting for -- ``relay.position_pending``, typed."""
+    """What the session is waiting for -- ``capture.position_pending``, typed."""
 
     index: int
     attempt: int
@@ -217,7 +217,7 @@ class Pending:
 class Poll:
     """One read of the envelope.
 
-    ``failed_error`` is the session's OWN error string on ``relay.status == "failed"``,
+    ``failed_error`` is the session's OWN error string on ``capture.status == "failed"``,
     turning a dead session into an immediate exit instead of a
     :data:`DEFAULT_STUCK_ALARM_S` wait; which SESSION it is attributed to is the walk's
     own decision (:meth:`ArmWalk._session_ended`).
@@ -227,9 +227,9 @@ class Poll:
     still reports ``in_flight=True``; :data:`WalkConfig.unreadable_ceiling_s` ends an
     unbroken run of them.
 
-    ``ended`` is the TERMINAL ``relay.status`` a finished session published
+    ``ended`` is the TERMINAL ``capture.status`` a finished session published
     (:data:`SESSION_ENDED_STATUSES`), or empty -- a third state, not the negation of
-    ``in_flight``: no relay block at all means no session has opened yet.
+    ``in_flight``: no capture block at all means no session has opened yet.
     """
 
     pending: Pending | None
@@ -733,7 +733,7 @@ class ArmWalk:
         """The session published a terminal status. Its verdict becomes ours.
 
         Reached only once ``_saw_session`` (a LIVE, readable poll was seen),
-        load-bearing rather than defensive: the wizard keeps ONE relay slot with the
+        load-bearing rather than defensive: the wizard keeps ONE capture slot with the
         FINISHED session's block in it, and a walk launches BEFORE its session opens, so
         round N+1's first polls read round N's terminal block without the latch.
 
@@ -823,13 +823,13 @@ class ArmWalk:
         )
 
 
-def pending_from_relay(relay: Mapping[str, Any]) -> Pending | None:
-    """``relay.position_pending`` -> :class:`Pending`, or ``None``.
+def pending_from_capture(capture: Mapping[str, Any]) -> Pending | None:
+    """``capture.position_pending`` -> :class:`Pending`, or ``None``.
 
     Absent, malformed, or missing its index all read the same way: nothing to
     serve. A hold this loop cannot parse is one it must not move for.
     """
-    raw = relay.get("position_pending")
+    raw = capture.get("position_pending")
     if not isinstance(raw, Mapping) or "index" not in raw or "degrees" not in raw:
         return None
     try:
@@ -848,23 +848,23 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
 
     ``None`` is an UNREADABLE envelope: ``in_flight=True`` so a transient
     read failure is not mistaken for "session ended", ``readable=False`` so
-    an unbroken run of them is named for what it is. A relay block is not by
+    an unbroken run of them is named for what it is. A capture block is not by
     itself a live session -- the wizard keeps the FINISHED session's block
-    in its one relay slot, so a terminal ``status`` must be read, not merely
+    in its one capture slot, so a terminal ``status`` must be read, not merely
     the block's presence (measured 2026-08-21: a closed jts3 round was
     reported stuck 300 s later because the walk had no way to see the close).
     """
     if status is None:
         return Poll(None, True, None, readable=False)
-    relay = status.get("relay")
-    if not isinstance(relay, Mapping):
+    capture = status.get("capture")
+    if not isinstance(capture, Mapping):
         return Poll(None, False, None)
-    state = str(relay.get("status") or "")
+    state = str(capture.get("status") or "")
     failed = None
     if state == "failed":
-        failed = str(relay.get("error") or "(the session supplied no error)")
+        failed = str(capture.get("error") or "(the session supplied no error)")
     ended = state if state in SESSION_ENDED_STATUSES else ""
-    return Poll(pending_from_relay(relay), not ended, failed, ended=ended)
+    return Poll(pending_from_capture(capture), not ended, failed, ended=ended)
 
 
 def staged_walk_pending() -> bool:
@@ -920,7 +920,7 @@ __all__: Sequence[str] = (
     "TurntableMover",
     "WalkConfig",
     "parse_power",
-    "pending_from_relay",
+    "pending_from_capture",
     "poll_from_status",
     "staged_walk_pending",
 )

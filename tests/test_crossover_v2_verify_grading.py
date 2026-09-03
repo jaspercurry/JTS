@@ -20,7 +20,7 @@ that produced it:
 * **#1873 — a verify-fail that REPEATS is a finding, not a transient.** Two
   answers 0.16 dB apart, from an instrument whose measured consecutive-pair
   repeat floor is 0.052 dB median / 0.085 dB p95, are the SAME answer twice; the
-  phone offered "Try again" anyway and the relay session's TTL expired mid-loop.
+  phone offered "Try again" anyway and the capture session's TTL expired mid-loop.
 * **#1971 — the VERIFY capture-integrity gate.** Nothing on the VERIFY path
   checked whether the capture the tracking verdict grades was intact, because
   ``glitch_detected`` came from a splice filter over ``KIND_SWEEP`` while
@@ -103,7 +103,7 @@ from tests.crossover_v2_fixtures import (
 # then 3.82 dB against a 1.5 dB tolerance — 0.16 dB apart, and therefore the
 # same answer twice at an instrument whose consecutive-pair repeat floor on this
 # exact metric is 0.052 dB median / 0.085 dB p95 (captures/repeat-floor-20260731).
-# The phone offered "Try again" both times, the household took it, and the relay
+# The phone offered "Try again" both times, the household took it, and the capture
 # session's TTL expired mid-loop. In the owner's words: "The speaker didn't match
 # the prediction — that's just the reality of what it is."
 
@@ -137,7 +137,7 @@ def test_second_agreeing_verify_mismatch_is_a_deterministic_finding():
     and inside the instrument's own 0.2 dB claim floor.
 
     The second attempt earns its OWN code — the mismatch is a fact about the
-    speaker, not a bad take — and rides out ``terminal`` so the relay runner
+    speaker, not a bad take — and rides out ``terminal`` so the capture runner
     publishes it and ends the session instead of waiting for a next begin. That
     is what stops the retry loop burning the session's TTL: it closes on the
     verdict rather than on the clock."""

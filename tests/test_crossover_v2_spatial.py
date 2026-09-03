@@ -1067,14 +1067,14 @@ def test_the_storage_seam_names_the_take_the_record_names():
         def identify_artifact(self, path):
             return SimpleNamespace(fingerprint="fp")
 
-    seam = v2host.bind_position_retention(_Store(), "relay", {}, asyncio.run)
+    seam = v2host.bind_position_retention(_Store(), "capture", {}, asyncio.run)
     take_id = spatial.take_id_for("cloud_measure_03", 7)
     seam(
         SimpleNamespace(wav=None),
         {"attempt": 7, "take_id": take_id, "measure_kind": ""},
     )
 
-    assert minted == [f"crossover_v2/relay/positions/{take_id}.json"]
+    assert minted == [f"crossover_v2/capture/positions/{take_id}.json"]
     assert take_id == "cloud_measure_03_a07"
 
 

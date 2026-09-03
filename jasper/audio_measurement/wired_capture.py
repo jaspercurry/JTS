@@ -6,7 +6,7 @@
 
 The capture ENGINE behind :mod:`jasper.web.correction_crossover_v2_wired`: parameterized ALSA
 capture from a Pi-attached measurement-class microphone, with the frame accounting and dropout
-scanning that make a wired take gradeable by the same ladder as phone-relay takes. No
+scanning that make a wired take gradeable by the same ladder as browser capture takes. No
 web/session knowledge lives here — this module records, counts, and encodes.
 
 **Device resolution is registry-anchored, probe-at-use.** :func:`resolve_wired_mic` matches

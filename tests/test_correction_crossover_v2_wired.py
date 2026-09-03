@@ -128,7 +128,7 @@ def test_open_wired_capture_mints_identity_and_validates_the_spec():
     opened = v2wired.open_wired_capture(_real_verify_spec(), device=_device())
     assert opened.pi_session.session_id.startswith("wired-")
     # The 48 kHz pin reaches the wired path through the same validate the
-    # relay registration runs.
+    # capture registration runs.
     assert opened.pi_session.spec.sample_rate_hz == RATE
     assert opened.pi_session.device.card_id == "UMIK2"
 
@@ -639,7 +639,7 @@ def test_a_refusal_persists_the_conductors_own_code(monkeypatch):
 
 
 def test_a_wired_death_never_persists_a_transport_claim(monkeypatch):
-    """The relay's REASON_RELAY_TIMEOUT fallback is deliberately not
+    """The capture's REASON_CAPTURE_TIMEOUT fallback is deliberately not
     mirrored: an unregistered refusal with no conductor code degrades to
     internal_error — there is no link to blame."""
     terminal = []
@@ -761,7 +761,7 @@ def test_a_ceiling_expiry_after_a_rejection_keeps_its_own_code(monkeypatch):
     """S1's probe scenario: a prior rejection stamps ``last_failure_code``,
     and the ceiling then expires. The persisted code must be the refusal's
     own — the clock that actually ended the session — never the stale
-    capture-quality claim (the shadowing the relay-style precedence
+    capture-quality claim (the shadowing the capture-style precedence
     allowed)."""
     terminal = []
     conductor = FakeConductor(
@@ -819,7 +819,7 @@ def test_confirm_wait_expiry_persists_the_session_ceiling_code(monkeypatch):
 
 
 def test_cancellation_drains_the_walk_before_cleanup(monkeypatch):
-    """Stop-by-cancel mirrors the relay's shielded drain: the worker walk
+    """Stop-by-cancel mirrors the capture's shielded drain: the worker walk
     finishes its capture before the volume is abandoned."""
     persists = []
     conductor = FakeConductor()
@@ -852,14 +852,14 @@ def test_cancellation_drains_the_walk_before_cleanup(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 3b. the per-take RETAKE (#2879) — the relay's own §2.6 terms, locally
+# 3b. the per-take RETAKE (#2879) — the capture's own §2.6 terms, locally
 # --------------------------------------------------------------------------- #
 
 
 class _RetakeOnHold:
     """A gate that holds ONE begin and asks for a retake while it holds.
 
-    The wired analogue of the relay's retake window: the previous slot is
+    The wired analogue of the capture's retake window: the previous slot is
     accepted and this one has not started, so replacing the previous take is
     still meaningful. ``hold_index=None`` admits everything.
     """
@@ -887,7 +887,7 @@ class _RetakeOnHold:
 def test_a_retake_asked_while_a_begin_is_held_re_opens_the_completed_slot(
     monkeypatch,
 ):
-    """The whole contract, in one event list (relay ``session.py`` §2.6).
+    """The whole contract, in one event list (the capture ``session.py`` §2.6).
 
     The retake names the slot that JUST COMPLETED (``index == accepted``,
     never ``accepted + 1``); it spends ONE ordinary attempt; and the accepted
@@ -922,7 +922,7 @@ def test_a_retake_asked_while_a_begin_is_held_re_opens_the_completed_slot(
 
 
 def test_a_rejected_retake_leaves_the_original_take_standing(monkeypatch):
-    """"Nothing was dropped on its behalf" — the relay's own words.
+    """"Nothing was dropped on its behalf" — the capture's own words.
 
     The replacement is REJECTED, so the host never replaces the retained
     position and the walk moves on to the next slot rather than re-running the
@@ -1027,7 +1027,7 @@ def test_a_retake_past_the_plans_attempt_budget_is_refused_not_fatal(
 
 
 def test_a_retake_inside_the_held_set_window_re_opens_the_last_slot(monkeypatch):
-    """The relay holds the set open so "the just-accepted slot is still
+    """The capture holds the set open so "the just-accepted slot is still
     retakeable on exactly the terms above" — the same sentence, locally."""
     retake = threading.Event()
     conductor = FakeConductor(awaiting_confirm=True)
@@ -1382,7 +1382,7 @@ def _fake_handler(body: bytes = b"{}"):
 def test_complete_endpoint_conflicts_when_nothing_is_waiting():
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     with pytest.raises(ValueError, match="no wired measurement"):
         correction_setup._handle_crossover_v2_complete(_fake_handler())
 
@@ -1391,15 +1391,15 @@ def test_complete_endpoint_fires_the_wired_sessions_signal():
     from jasper.web import correction_setup
 
     fired = []
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session",
         request_complete=lambda: fired.append(True),
     )
     try:
         result = correction_setup._handle_crossover_v2_complete(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
     assert result == {"ok": True}
     assert fired == [True]
 
@@ -1407,24 +1407,24 @@ def test_complete_endpoint_fires_the_wired_sessions_signal():
 def test_the_completion_signal_drops_with_the_slot():
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session", request_complete=lambda: None,
     )
-    correction_setup._set_relay_capture(
+    correction_setup._set_capture_slot(
         {"status": "complete", "kind": "crossover_v2:session"}
     )
     try:
         with pytest.raises(ValueError, match="no wired measurement"):
             correction_setup._handle_crossover_v2_complete(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
 
 def test_retake_endpoint_conflicts_when_nothing_is_waiting():
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     with pytest.raises(ValueError, match="no wired measurement"):
         correction_setup._handle_crossover_v2_retake(_fake_handler())
 
@@ -1433,15 +1433,15 @@ def test_retake_endpoint_fires_the_wired_sessions_signal():
     from jasper.web import correction_setup
 
     fired = []
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session",
         request_retake=lambda: fired.append(True),
     )
     try:
         result = correction_setup._handle_crossover_v2_retake(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
     assert result == {"ok": True}
     assert fired == [True]
 
@@ -1450,22 +1450,22 @@ def test_the_retake_signal_drops_with_the_slot():
     """A POST arriving after the walk must not re-open a slot nothing holds."""
     from jasper.web import correction_setup
 
-    correction_setup._set_relay_capture(None)
-    assert correction_setup._begin_relay_capture(
+    correction_setup._set_capture_slot(None)
+    assert correction_setup._begin_capture_slot(
         "crossover_v2:session", request_retake=lambda: None,
     )
-    correction_setup._set_relay_capture(
+    correction_setup._set_capture_slot(
         {"status": "complete", "kind": "crossover_v2:session"}
     )
     try:
         with pytest.raises(ValueError, match="no wired measurement"):
             correction_setup._handle_crossover_v2_retake(_fake_handler())
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
 
 def test_the_wired_provider_reaches_the_host_only_at_call_time():
-    """The relay provider's import-shape pin, mirrored for its sibling: the
+    """The capture provider's import-shape pin, mirrored for its sibling: the
     host imports NEITHER provider lazily by accident — it must stay free to
     import this module without a cycle, so the provider's host reach-backs
     are call-time only. Asserted on a real interpreter (catches indirect

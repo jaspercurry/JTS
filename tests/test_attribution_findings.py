@@ -54,7 +54,7 @@ from jasper.attribution.promotion import (
     promote_level_frame_disagreement,
 )
 from jasper.attribution.session_identity import (
-    ALIAS_RELAY_SESSION_ID,
+    ALIAS_CAPTURE_SESSION_ID,
     SESSION_IDENTITY_KEY,
     SESSION_IDENTITY_SCHEME,
     SessionIdentity,
@@ -65,7 +65,7 @@ from jasper.attribution.session_identity import (
 
 _SESSION = SessionIdentity(
     session_id="7f54494228cc",
-    aliases={ALIAS_RELAY_SESSION_ID: "cap_Ktm3xQ2p"},
+    aliases={ALIAS_CAPTURE_SESSION_ID: "cap_Ktm3xQ2p"},
 )
 _CITE = EvidenceRef(
     session=_SESSION,
@@ -251,7 +251,7 @@ GOLDEN_FINDING_SET: dict = {
     "session": {
         "scheme": "jts-session-1",
         "session_id": "7f54494228cc",
-        "aliases": {"relay_session_id": "cap_Ktm3xQ2p"},
+        "aliases": {"capture_session_id": "cap_Ktm3xQ2p"},
     },
     "produced_by": PRODUCED_BY,
     "findings": [
@@ -273,7 +273,7 @@ GOLDEN_FINDING_SET: dict = {
                     "session": {
                         "scheme": "jts-session-1",
                         "session_id": "7f54494228cc",
-                        "aliases": {"relay_session_id": "cap_Ktm3xQ2p"},
+                        "aliases": {"capture_session_id": "cap_Ktm3xQ2p"},
                     },
                     "store": "commissioning_bundle",
                     "locator": (

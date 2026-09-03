@@ -33,14 +33,14 @@ export const CROSSOVER_IDS = [
   "crossover-review",
   "crossover-review-body",
   "crossover-action",
-  "crossover-relay",
+  "crossover-capture",
   "crossover-walk",
   "crossover-walk-progress",
   "crossover-walk-headline",
   "crossover-walk-detail",
   "crossover-walk-action",
-  "crossover-relay-status",
-  "crossover-relay-stop",
+  "crossover-capture-status",
+  "crossover-capture-stop",
   "capture-status",
 ];
 

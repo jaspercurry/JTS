@@ -64,7 +64,7 @@ class _Conductor:
     def __init__(self, *, done: bool = False, awaiting: Any = False) -> None:
         self.session_id = "drain-test"
         self.last_failure_code = None
-        self.relay_published_refusal = False
+        self.capture_published_refusal = False
         self.armed_capture = None
         self.accepted_phases: set[str] = set()
         self._done = done
@@ -199,7 +199,7 @@ POST_WALK = tuple(row for row in ROWS if "-complete-" in row.id)
 def test_a_failing_drain_does_not_replace_the_persists_own_error(row, monkeypatch):
     """A drain raising inside the ``finally`` would REPLACE the in-flight
     persist error and change the failure identity the outer net logs and
-    flips ``/status.relay`` on.
+    flips ``/status.capture`` on.
 
     What stops it is that BOTH branches are best-effort over the same
     ``(OSError, RuntimeError, ValueError)`` tuple — ``_abandon_best_effort``

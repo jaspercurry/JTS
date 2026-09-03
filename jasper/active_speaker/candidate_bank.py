@@ -7,7 +7,7 @@
 Owns the fingerprint SCAN glob; a second reader should import it from here, not restate
 it. Integrity is the candidate model's alone
 (:meth:`MeasuredCrossoverCandidate.from_mapping`) -- this module adds only bounds and
-identity resolution, no second hasher. Lookup is keyed on bundle id *and* minting relay
+identity resolution, no second hasher. Lookup is keyed on bundle id *and* minting capture
 session id together, both carried on :class:`BankedCandidate`. Kept out of
 ``crossover_v2/`` to avoid that package's numpy-pulling ``__init__``; lazy-imports the
 candidate model instead.
@@ -26,7 +26,7 @@ from jasper.log_event import log_event
 logger = logging.getLogger(__name__)
 
 #: Published candidate artifact path, relative to bundle root. First ``*`` is the bundle
-#: id (``bundles.open_bundle``'s 12-hex session id); second is the MINTING relay session
+#: id (``bundles.open_bundle``'s 12-hex session id); second is the MINTING capture session
 #: id -- distinct namespaces, do not conflate.
 CANDIDATE_ARTIFACT_GLOB = "*/evidence/v1/artifacts/crossover_v2/*/candidate.json"
 
@@ -53,12 +53,12 @@ class CandidateBankRefusal(LookupError):
 @dataclass(frozen=True)
 class BankedCandidate:
     """One banked candidate plus the identity needed to re-open it later. ``bundle_session_id``
-    and ``relay_session_id`` together are the ONLY way back to this artifact.
+    and ``capture_session_id`` together are the ONLY way back to this artifact.
     """
 
     candidate: Any
     bundle_session_id: str
-    relay_session_id: str
+    capture_session_id: str
     path: Path
 
     @property
@@ -79,14 +79,14 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
 
 
 def _identity_from_path(path: Path) -> tuple[str, str]:
-    """``(bundle_session_id, relay_session_id)`` for one artifact path. Positional, not parsed:
-    the glob fixes the depth (relay session is the artifact's own directory, bundle is
+    """``(bundle_session_id, capture_session_id)`` for one artifact path. Positional, not parsed:
+    the glob fixes the depth (capture session is the artifact's own directory, bundle is
     five levels above).
     """
     parents = path.parents
-    relay_session_id = parents[0].name
+    capture_session_id = parents[0].name
     bundle_session_id = parents[5].name if len(parents) > 5 else ""
-    return bundle_session_id, relay_session_id
+    return bundle_session_id, capture_session_id
 
 
 def load_candidate_artifact(path: Path) -> Any | None:
@@ -136,15 +136,15 @@ def find_banked_candidate(
         verified += 1
         if str(candidate.fingerprint) != wanted:
             continue
-        bundle_session_id, relay_session_id = _identity_from_path(path)
-        if not bundle_session_id or not relay_session_id:
+        bundle_session_id, capture_session_id = _identity_from_path(path)
+        if not bundle_session_id or not capture_session_id:
             continue
         matches.setdefault(
-            (bundle_session_id, relay_session_id),
+            (bundle_session_id, capture_session_id),
             BankedCandidate(
                 candidate=candidate,
                 bundle_session_id=bundle_session_id,
-                relay_session_id=relay_session_id,
+                capture_session_id=capture_session_id,
                 path=path,
             ),
         )
@@ -167,7 +167,7 @@ def find_banked_candidate(
         "correction.crossover_v2_banked_candidate_found",
         candidate_fingerprint=found.fingerprint,
         bundle_session_id=found.bundle_session_id,
-        relay_session_id=found.relay_session_id,
+        capture_session_id=found.capture_session_id,
         examined=verified,
     )
     return found

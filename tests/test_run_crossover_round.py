@@ -205,7 +205,7 @@ class _Handler(BaseHTTPRequestHandler):
                        "application/json")
             return
         server.opened = True
-        self._send(200, json.dumps({"relay": {"status": "awaiting_phone"}}).encode(),
+        self._send(200, json.dumps({"capture": {"status": "awaiting_capture"}}).encode(),
                    "application/json")
 
 
@@ -270,7 +270,7 @@ def checkout(tmp_path: Path):
         # relative path with the store's `evidence/v1/artifacts/` namespace, and
         # the bank untars the whole bundle. A double that skipped that prefix is
         # what let a wrong glob look right (see the position_cycle contract test).
-        positions="$1/bundle/sess-1/evidence/v1/artifacts/crossover_v2/relay-1/positions"
+        positions="$1/bundle/sess-1/evidence/v1/artifacts/crossover_v2/capture-1/positions"
         mkdir -p "$positions"
         # A counting `while`, never `for i in $(seq 1 "$takes")`: BSD seq counts
         # DOWN when last < first, so `seq 1 0` emits `1 0` and "zero takes"
@@ -281,7 +281,7 @@ def checkout(tmp_path: Path):
             printf -v n '%02d' "$i"
             printf '%s' "{\\"schema_version\\":1,
                 \\"kind\\":\\"jts_crossover_v2_position_evidence\\",
-                \\"relay_session_id\\":\\"relay-1\\",\\"phase\\":\\"lateral\\",
+                \\"capture_session_id\\":\\"capture-1\\",\\"phase\\":\\"lateral\\",
                 \\"pose_id\\":\\"lateral_$n\\",\\"index\\":$i,\\"attempt\\":1,
                 \\"take_id\\":\\"lateral_${n}_a01\\",\\"role\\":\\"onax\\",
                 \\"position_deg\\":0,\\"regime\\":\\"per_driver\\",
@@ -614,7 +614,7 @@ def test_the_index_is_derived_from_the_bundle_the_bank_pulled(
         f"lateral_0{i}_a01" for i in range(1, 7)
     ]
     assert document["sources"] == [
-        "bundle/sess-1/evidence/v1/artifacts/crossover_v2/relay-1/positions"
+        "bundle/sess-1/evidence/v1/artifacts/crossover_v2/capture-1/positions"
     ]
     # Nothing the runner INTENDED is in the document — no angles, no
     # per_position, no staged list.

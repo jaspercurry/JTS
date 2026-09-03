@@ -10,7 +10,7 @@ Offline and laptop-side: it reads a commissioning bundle and writes the
 re-measured, and the bundle is only read.
 
 ``<bundle-dir>`` is the same directory those two take — ``info.json`` beside
-``evidence/v1/artifacts/crossover_v2/<relay-session-id>/`` — and the round
+``evidence/v1/artifacts/crossover_v2/<capture-session-id>/`` — and the round
 inside it is found by the SAME rule they use, so a bundle carrying more than
 one round is refused here rather than pooled into one ring.
 
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"projected {len(projection.projected)} take(s) from "
-        f"{projection.session_id} ({projection.relay_session_id}) "
+        f"{projection.session_id} ({projection.capture_session_id}) "
         f"-> {projection.dumps_dir}",
         file=sys.stderr,
     )
@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                 "ok": True,
                 "dumps_dir": str(projection.dumps_dir),
                 "session_id": projection.session_id,
-                "relay_session_id": projection.relay_session_id,
+                "capture_session_id": projection.capture_session_id,
                 "projected": [
                     {
                         "take_id": take.take_id,

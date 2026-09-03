@@ -10,10 +10,10 @@ by design, and every subsequent crossover measurement was refused. Four things
 were wrong with how that refusal reached the household, and one with WHEN:
 
 1. The raw internal slug reached the DOM. ``ProgramPlaybackRefused`` builds its
-   message by joining raw enum values, and ``correction_setup``'s relay-failure
+   message by joining raw enum values, and ``correction_setup``'s capture-failure
    mapper had no branch for the program family, so ``str(exc)`` — "program
    re-admission refused: program_profile_not_confirmed" — was echoed on the
-   wizard's relay status line. ``crossover_v2_flow``'s own written contract says
+   wizard's capture status line. ``crossover_v2_flow``'s own written contract says
    "never a bare code reaches the household"; NO test pinned it.
 2. The advice looped. The copy this refusal inherited said "re-check the driver
    details in speaker setup" — and editing those details rotates the fingerprint
@@ -22,7 +22,7 @@ were wrong with how that refusal reached the household, and one with WHEN:
    ``program_unplayable`` code, so a deterministic missing confirmation and a
    real level-ceiling failure were indistinguishable to every caller.
 4. (#1821) The confirmation was only evaluated at CHECK-phase program admission
-   — after the relay session and phone link existed. The session-open gate
+   — after the capture session and phone link existed. The session-open gate
    checked only that a profile object was PRESENT while its refusal text claimed
    confirmation had been checked.
 
@@ -137,13 +137,13 @@ def test_every_reason_renders_household_copy_never_a_bare_code():
 
 def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
     """The observed leak. ``str(exc)`` is built from raw enum values at the
-    raise site; the wizard's relay status line echoes whatever this mapper
+    raise site; the wizard's capture status line echoes whatever this mapper
     returns."""
 
     exc = _refused(ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
     assert str(exc) == "program re-admission refused: program_profile_not_confirmed"
 
-    message = correction_setup._relay_failure_message(exc)
+    message = correction_setup._capture_failure_message(exc)
     assert message == REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
     assert "program_profile_not_confirmed" not in message
     assert "re-admission" not in message
@@ -174,7 +174,7 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
     runner classifies must also be mapped here, or the next one to fire leaks
     its own programmer string."""
 
-    assert correction_setup._relay_failure_message(exc) == (
+    assert correction_setup._capture_failure_message(exc) == (
         REASON_REGISTRY[expected_code].message
     )
 
@@ -182,7 +182,7 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
 def test_non_program_exceptions_still_fall_through_unchanged():
     """Scope guard: this fix must not swallow every other exception's message."""
 
-    assert correction_setup._relay_failure_message(
+    assert correction_setup._capture_failure_message(
         ValueError("device mismatch")
     ) == "device mismatch"
 
@@ -221,7 +221,7 @@ def test_classifier_preserves_refusal_identity_and_slugs():
 
 def test_classifier_returns_none_outside_the_program_family():
     """"Not mine" must be distinguishable from "mine, program_unplayable" — the
-    relay mapper's fall-through depends on it."""
+    capture mapper's fall-through depends on it."""
 
     assert v2host.classify_program_failure(ValueError("device mismatch")) is None
     assert v2host.classify_program_failure(TimeoutError("read timed out")) is None
@@ -496,7 +496,7 @@ def test_an_unreadable_profile_refuses_at_session_open_with_the_named_reason(
     session_open, caplog,
 ):
     """No link minted, no session burned: ``prepare_v2_session`` raises BEFORE
-    it registers the relay session, and it says the same sentence the phone's
+    it registers the capture session, and it says the same sentence the phone's
     failure screen would have said four screens later.
 
     The state exercised is ``malformed`` rather than the retired
@@ -527,7 +527,7 @@ def test_an_unreadable_profile_refuses_at_session_open_with_the_named_reason(
     assert "gate=session_open" in caplog.text
     assert "profile_status=malformed" in caplog.text
     # Nothing downstream of the gate ran: no evidence bundle opened, and the
-    # relay registration that mints the phone link was never reached (its seam
+    # capture registration that mints the phone link was never reached (its seam
     # raises loudly if it is — see the fixture).
     assert env.calls["evidence_store"] == []
     assert env.calls["open_capture"] == []
@@ -640,7 +640,7 @@ def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open):
     prepared = v2host.prepare_v2_session(
         {}, status=env.status, run_async=None, camilla_factory=None
     )
-    assert prepared.label == v2host.V2_RELAY_KIND_SESSION
+    assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
     assert env.calls["evidence_store"] != []
 
 

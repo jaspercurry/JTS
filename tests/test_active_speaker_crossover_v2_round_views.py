@@ -119,7 +119,7 @@ def _make_round_dir(
     position_degrees: dict[str, float] | None = None,
 ) -> Path:
     """One banked round directory, in the tree ``bank-crossover-round.sh``
-    produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<relay>/``.
+    produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<capture>/``.
 
     ``position_curves`` maps ``position_id -> (role, magnitude_db)``.
     ``spec_smoothing_fraction`` / ``positions_smoothing_fraction`` are
@@ -132,8 +132,8 @@ def _make_round_dir(
         positions_smoothing_fraction = spec_smoothing_fraction
     round_dir = tmp_path / name
     session_dir = round_dir / "bundle" / "sess1"
-    relay_dir = session_dir / "evidence/v1/artifacts/crossover_v2" / "cap1"
-    relay_dir.mkdir(parents=True)
+    capture_dir = session_dir / "evidence/v1/artifacts/crossover_v2" / "cap1"
+    capture_dir.mkdir(parents=True)
 
     (session_dir / "info.json").write_text(json.dumps({
         "kind": "jts_active_speaker_commissioning_bundle",
@@ -147,7 +147,7 @@ def _make_round_dir(
             "build_sha": "deadbeef",
         },
     }))
-    (relay_dir / "round_receipt.json").write_text(json.dumps({
+    (capture_dir / "round_receipt.json").write_text(json.dumps({
         "kind": "jts_crossover_v2_round_receipt", "schema_version": 2, "round_id": "r1",
     }))
     if combined_db is None:
@@ -189,8 +189,8 @@ def _make_round_dir(
             "positions": positions,
         },
     }
-    (relay_dir / "cloud_verify.json").write_text(json.dumps(cloud))
-    (relay_dir / "findings_cloud_verify.json").write_text(json.dumps({
+    (capture_dir / "cloud_verify.json").write_text(json.dumps(cloud))
+    (capture_dir / "findings_cloud_verify.json").write_text(json.dumps({
         "findings": [], "field_descriptions": {},
     }))
     return round_dir
@@ -242,14 +242,14 @@ def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
     session handed the current one would be graded on another round's verify
     curve, verdicts and ordinal — wrong numbers rather than missing ones. The
     two ids are compared in the namespace they share: the state's own
-    ``session_id`` against the relay directory the bundle filed its round
+    ``session_id`` against the capture directory the bundle filed its round
     artifacts under.
     """
     curves = {"cloud_verify_02": ("onax", _flat_curve())}
     mine = _make_round_dir(tmp_path, "r1", position_curves=curves) / "bundle" / "sess1"
     other = _make_round_dir(tmp_path, "r2", position_curves=curves) / "bundle" / "sess1"
-    relay = other / "evidence/v1/artifacts/crossover_v2"
-    (relay / "cap1").rename(relay / "cap2")
+    capture = other / "evidence/v1/artifacts/crossover_v2"
+    (capture / "cap1").rename(capture / "cap2")
     state = tmp_path / "flow-state.json"
     state.write_text(json.dumps({"session_id": "cap2"}))
     monkeypatch.setattr(round_inputs_mod, "STATE_DEFAULT_PATH", state)
@@ -1290,7 +1290,7 @@ def _bank_entry_baseline_take(
 ) -> None:
     """One write-once entry-baseline take, in the tree the store banks to.
 
-    ``crossover_v2/<relay>/positions/<take_id>.json`` — the path
+    ``crossover_v2/<capture>/positions/<take_id>.json`` — the path
     ``contracts.BANKED_TAKE_GLOB`` selects and
     ``position_cycle.read_entry_baseline_take`` opens. Written as the real
     record is shaped rather than as the reader's narrowed view, so a change to
@@ -1728,7 +1728,7 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
 def _bank_lateral_pose(
     session_dir: Path, *, take_id: str, position_deg: int,
     curves: list[dict[str, Any]], vertical_deg: int = 0,
-    relay: str = "wired-TEST",
+    capture: str = "wired-TEST",
 ) -> None:
     """Directly write a banked ``positions/<take_id>.json`` lateral-pose
     take — the exact shape :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
@@ -1738,7 +1738,7 @@ def _bank_lateral_pose(
     the same take shape.
     """
     positions_dir = (
-        session_dir / "evidence/v1/artifacts/crossover_v2" / relay / "positions"
+        session_dir / "evidence/v1/artifacts/crossover_v2" / capture / "positions"
     )
     positions_dir.mkdir(parents=True, exist_ok=True)
     (positions_dir / f"{take_id}.json").write_text(json.dumps({

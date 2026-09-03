@@ -22,7 +22,7 @@ nothing that ships.
 
 **The two shapes are DISJOINT, and that is the finding they exist to hold.**
 ``jasper.web.correction_crossover_v2``'s own words: *"stage 2 opens a new
-bundle under a new relay session id"*. So one ``bank-crossover-round.sh`` run
+bundle under a new capture session id"*. So one ``bank-crossover-round.sh`` run
 banks ONE stage, and:
 
 * :func:`bank_measure_round` — stage 1. CHECK, the design-axis MEASURE take
@@ -123,7 +123,7 @@ VERIFY_GRID_HZ = np.geomspace(SOLO_BAND_HZ[0], SOLO_BAND_HZ[1], 301)
 #: measured corner: it only has to sit inside :data:`SOLO_BAND_HZ` so the
 #: summed prediction has a crossover region inside the compared span.
 _CROSSOVER_HZ = 1800.0
-_RELAY_SESSION_ID = "relay-1"
+_CAPTURE_SESSION_ID = "capture-1"
 
 
 def _lr4(freqs_hz: np.ndarray, *, highpass: bool) -> np.ndarray:
@@ -179,7 +179,7 @@ def _open_round(
         Path(str(info["bundle_dir"])), expected_session_id=str(info["session_id"]),
     )
     return round_dir, BankedRecordStore(
-        evidence=store, relay_session_id=_RELAY_SESSION_ID,
+        evidence=store, capture_session_id=_CAPTURE_SESSION_ID,
     ), str(info["session_id"])
 
 

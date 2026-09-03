@@ -32,7 +32,7 @@ SESSION_IDENTITY_KEY = "jts_session_identity"
 
 #: Known alias namespaces. Deliberately not closed by validation — a new store
 #: may name one this module has never heard of.
-ALIAS_RELAY_SESSION_ID = "relay_session_id"
+ALIAS_CAPTURE_SESSION_ID = "capture_session_id"
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-]{1,128}")
 _MAX_ALIASES = 16
@@ -179,7 +179,7 @@ def read_session_identity(payload: Any) -> SessionIdentity | None:
 
 
 __all__ = [
-    "ALIAS_RELAY_SESSION_ID",
+    "ALIAS_CAPTURE_SESSION_ID",
     "SESSION_IDENTITY_KEY",
     "SESSION_IDENTITY_SCHEME",
     "SessionIdentity",

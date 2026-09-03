@@ -275,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     predict.add_argument(
         "bundle_dir",
         help="a commissioning bundle directory (the one holding info.json "
-             "beside evidence/v1/artifacts/crossover_v2/<relay-session-id>/)",
+             "beside evidence/v1/artifacts/crossover_v2/<capture-session-id>/)",
     )
     predict.add_argument("--woofer-role", default=DRIVER_ROLE_WOOFER)
     predict.add_argument("--tweeter-role", default=DRIVER_ROLE_TWEETER)

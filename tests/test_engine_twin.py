@@ -148,13 +148,13 @@ async def test_uc2_a_fader_that_cannot_be_proven_refuses_only_its_own_stimulus()
 async def test_uc2_a_transaction_that_never_played_banks_nothing_and_says_why():
     play = FakePlay(script=[
         (STAGE_RESTORE, ""),
-        (STAGE_ADMIT, "relay_timeout"),
+        (STAGE_ADMIT, "capture_timeout"),
         (STAGE_RESTORE, ""),
     ])
     async with open_session(FakeSeams(play=play)) as (session, fakes):
         outcome = await session.measure(_walk())
 
-    assert [s.incident for s in outcome.stimuli] == ["", "relay_timeout", ""]
+    assert [s.incident for s in outcome.stimuli] == ["", "capture_timeout", ""]
     assert len(fakes.banked) == 2
 
 
@@ -201,7 +201,7 @@ def test_uc3_dataclasses_replace_works_on_the_bundle_too():
     """Both spellings, because a test reads better with whichever it reaches
     for and a harness should not make that a decision."""
     base = FakeSeams()
-    swapped = replace(base, play=FakePlay(default=(STAGE_ADMIT, "relay_timeout")))
+    swapped = replace(base, play=FakePlay(default=(STAGE_ADMIT, "capture_timeout")))
 
     assert swapped.play is not base.play
     assert swapped.volume is base.volume
@@ -296,7 +296,7 @@ async def test_uc5_the_bank_outlives_the_session_that_wrote_it():
 
 
 async def test_uc6_playback_can_differ_by_kind():
-    play = FakePlay(by_kind={MEASURE_KIND_VERIFY: (STAGE_ADMIT, "relay_timeout")})
+    play = FakePlay(by_kind={MEASURE_KIND_VERIFY: (STAGE_ADMIT, "capture_timeout")})
     fakes = FakeSeams(play=play)
 
     async with open_session(fakes) as (session, _):
@@ -305,7 +305,7 @@ async def test_uc6_playback_can_differ_by_kind():
 
     assert baseline.record_ids != ()
     assert verify.record_ids == ()
-    assert verify.stimuli[0].incident == "relay_timeout"
+    assert verify.stimuli[0].incident == "capture_timeout"
 
 
 @pytest.mark.parametrize(

@@ -129,7 +129,7 @@ def test_render_page_embeds_csrf_meta_and_fetch_helpers():
     assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in js
 
 
-def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
+def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
     stop_event = threading.Event()
     cleanup_started = threading.Event()
     release_cleanup = threading.Event()
@@ -142,10 +142,10 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
         cleanup_started.set()
         await asyncio.to_thread(release_cleanup.wait)
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     try:
-        correction_setup._run_relay_capture(
-            correction_setup.RelayCaptureKind(
+        correction_setup._run_capture(
+            correction_setup.CaptureKind(
                 label="crossover_sweep:driver",
                 open=open_capture,
                 run_and_consume=run_and_consume,
@@ -153,17 +153,17 @@ def test_relay_stop_holds_slot_until_owner_cleanup_is_terminal():
             ),
             idle_hold=no_hold,
         )
-        response = correction_setup._request_relay_stop("crossover_sweep:")
+        response = correction_setup._request_capture_stop("crossover_sweep:")
         assert response["status"] == "stopping"
         assert stop_event.is_set()
         assert cleanup_started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
-        assert correction_setup._get_relay_capture()["status"] == "stopping"
-        assert not correction_setup._begin_relay_capture("crossover_sweep:summed")
+        assert correction_setup._get_capture_slot()["status"] == "stopping"
+        assert not correction_setup._begin_capture_slot("crossover_sweep:summed")
         release_cleanup.set()
         wait_until_sync(
-            lambda: correction_setup._get_relay_capture()["status"] == "stopped"
+            lambda: correction_setup._get_capture_slot()["status"] == "stopped"
         )
-        assert correction_setup._get_relay_capture()["status"] == "stopped"
+        assert correction_setup._get_capture_slot()["status"] == "stopped"
     finally:
         release_cleanup.set()
 
@@ -198,16 +198,16 @@ class _RecordingIdleHold:
         return [label for _kind, label in self.events]
 
 
-def test_the_relay_spawn_seam_has_no_silent_idle_hold_default():
-    """Whether a relay runner outlives its request is a per-call-site decision.
+def test_the_capture_spawn_seam_has_no_silent_idle_hold_default():
+    """Whether a capture runner outlives its request is a per-call-site decision.
 
-    ``_run_relay_capture``'s job IS spawning work that outlives the POST, and
+    ``_run_capture``'s job IS spawning work that outlives the POST, and
     the socket-activated process exits after ~600 s with nothing inbound
     (#1854). A default — safe or unsafe — makes that decision invisible and
     lets the next call site inherit it silently. Required keyword-only means a
     site that forgets fails at the call, not on a household's speaker.
     """
-    param = inspect.signature(correction_setup._run_relay_capture).parameters["idle_hold"]
+    param = inspect.signature(correction_setup._run_capture).parameters["idle_hold"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
     assert param.default is inspect.Parameter.empty, (
         "idle_hold must stay required — pass _systemd.no_hold to opt out "
@@ -215,12 +215,12 @@ def test_the_relay_spawn_seam_has_no_silent_idle_hold_default():
     )
 
 
-def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
+def test_capture_holds_the_idle_exit_for_the_whole_background_session():
     """The background runner keeps the socket-activated wizard alive (#1854).
 
     2026-07-29 JTS3: a crossover-v2 session's last INBOUND request was the
     envelope GET the phone made before it navigated to the capture origin.
-    Everything after that — relay polling, sweep playback, analysis, apply,
+    Everything after that — status polling, sweep playback, analysis, apply,
     verify — ran on background workers holding nothing, so correction-web's
     600 s idle exit fired mid-verify and `os._exit(0)`'d the analysis away.
     The hold is taken on the request thread before the runner is scheduled and
@@ -237,10 +237,10 @@ def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
         runner_entered.set()
         await asyncio.to_thread(release_runner.wait)
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     try:
-        correction_setup._run_relay_capture(
-            correction_setup.RelayCaptureKind(
+        correction_setup._run_capture(
+            correction_setup.CaptureKind(
                 label="crossover_v2:session",
                 open=open_capture,
                 run_and_consume=run_and_consume,
@@ -255,12 +255,12 @@ def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
 
         release_runner.set()
         wait_until_sync(
-            lambda: correction_setup._get_relay_capture()["status"] == "complete"
+            lambda: correction_setup._get_capture_slot()["status"] == "complete"
         )
-        assert correction_setup._get_relay_capture()["status"] == "complete"
+        assert correction_setup._get_capture_slot()["status"] == "complete"
     finally:
         release_runner.set()
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
     wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0, "the completed session released its hold"
@@ -270,12 +270,12 @@ def test_relay_capture_holds_the_idle_exit_for_the_whole_background_session():
     ]
 
 
-def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
+def test_capture_releases_the_idle_hold_when_the_runner_fails():
     """Every terminal path releases — failure included (#1854).
 
     A hold that only released on the happy path would trade a killed session
-    for an immortal wizard, and the relay runner's ordinary endings (user stop,
-    relay timeout, begin-refused, the catch-all cleanup arm) are ALL exception
+    for an immortal wizard, and the capture runner's ordinary endings (user stop,
+    capture timeout, begin-refused, the catch-all cleanup arm) are ALL exception
     paths.
     """
     idle_hold = _RecordingIdleHold()
@@ -286,10 +286,10 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
     async def run_and_consume(_pi_session):
         raise RuntimeError("the measurement link timed out")
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     try:
-        correction_setup._run_relay_capture(
-            correction_setup.RelayCaptureKind(
+        correction_setup._run_capture(
+            correction_setup.CaptureKind(
                 label="crossover_v2:verify",
                 open=open_capture,
                 run_and_consume=run_and_consume,
@@ -297,10 +297,10 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
             idle_hold=idle_hold,
         )
         wait_until_sync(
-            lambda: correction_setup._get_relay_capture()["status"] == "failed"
+            lambda: correction_setup._get_capture_slot()["status"] == "failed"
         )
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
     wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0
@@ -310,7 +310,7 @@ def test_relay_capture_releases_the_idle_hold_when_the_runner_fails():
     ]
 
 
-def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
+def test_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     monkeypatch,
 ):
     """A failed spawn must not leave a hold nobody will ever release."""
@@ -329,11 +329,11 @@ def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     monkeypatch.setattr(
         correction_setup.asyncio, "run_coroutine_threadsafe", _refuse,
     )
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     try:
         with pytest.raises(RuntimeError, match="event loop is closed"):
-            correction_setup._run_relay_capture(
-                correction_setup.RelayCaptureKind(
+            correction_setup._run_capture(
+                correction_setup.CaptureKind(
                     label="crossover_v2:session",
                     open=open_capture,
                     run_and_consume=run_and_consume,
@@ -341,7 +341,7 @@ def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
                 idle_hold=idle_hold,
             )
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
     assert idle_hold.active == 0
     assert idle_hold.labels == [
@@ -349,13 +349,13 @@ def test_relay_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     ]
 
 
-def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
+def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     monkeypatch,
 ):
     """The one background lifetime a v2 session still owns (#1854).
 
-    RE-DERIVED by PR-T3: this used to assert BOTH lifetimes — the relay
-    runner, held by ``_run_relay_capture``, and the auto-apply worker thread
+    RE-DERIVED by PR-T3: this used to assert BOTH lifetimes — the capture
+    runner, held by ``_run_capture``, and the auto-apply worker thread
     the preparer spawned, which could outlive it. The two-stage split removed
     that worker: the apply is now a household POST served in-request, so the
     idle tracker's ordinary in-flight-request accounting holds the process for
@@ -386,9 +386,9 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
             request_retake=None,
         )
 
-    def _fake_run_relay_capture(kind, *, idle_hold):
+    def _fake_run_capture(kind, *, idle_hold):
         seen["orchestrator"] = idle_hold
-        return {"status": "awaiting_phone"}
+        return {"status": "awaiting_capture"}
 
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
@@ -397,9 +397,9 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
     monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", _fake_run_relay_capture)
+    monkeypatch.setattr(correction_setup, "_run_capture", _fake_run_capture)
 
-    correction_setup._handle_crossover_v2_relay(
+    correction_setup._handle_crossover_v2_capture(
         None, verify_only=False, idle_hold=idle_hold,
     )
 
@@ -427,7 +427,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
         pytest.param(True, "crossover_v2:verify", id="verify-route"),
     ],
 )
-def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
+def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
     monkeypatch, verify_only, expected_label,
 ):
     """Which STAGE a route opens, carried through the dispatch to the kind.
@@ -439,10 +439,10 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
     handler had only ever been driven for stage 1.
 
     Asserted at BOTH ends of the hop — the flag the preparer is handed, and the
-    label the relay kind ends up carrying — so neither a dropped argument nor a
+    label the capture kind ends up carrying — so neither a dropped argument nor a
     preparer that ignores it can pass. The expected labels are spelled as
     literals rather than read back off the module, because they are the wire
-    identity the relay lifecycle keys on.
+    identity the capture lifecycle keys on.
     """
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
@@ -455,8 +455,8 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
             # The real preparer's own line, so the label this route surfaces is
             # the stage the route asked for rather than one the stub chose.
             label=(
-                v2host.V2_RELAY_KIND_VERIFY if verify_only
-                else v2host.V2_RELAY_KIND_SESSION
+                v2host.V2_CAPTURE_KIND_VERIFY if verify_only
+                else v2host.V2_CAPTURE_KIND_SESSION
             ),
             open=lambda *a, **kw: None,
             run_and_consume=lambda *a, **kw: None,
@@ -466,48 +466,48 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
             request_retake=None,
         )
 
-    def _fake_run_relay_capture(kind, *, idle_hold):
+    def _fake_run_capture(kind, *, idle_hold):
         seen["kind"] = kind
-        return {"status": "awaiting_phone"}
+        return {"status": "awaiting_capture"}
 
     monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
     monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
-    monkeypatch.setattr(correction_setup, "_run_relay_capture", _fake_run_relay_capture)
+    monkeypatch.setattr(correction_setup, "_run_capture", _fake_run_capture)
 
-    correction_setup._handle_crossover_v2_relay(None, verify_only=verify_only)
+    correction_setup._handle_crossover_v2_capture(None, verify_only=verify_only)
 
     assert seen["verify_only"] is verify_only
     assert seen["kind"].label == expected_label
 
 
 
-def test_relay_stop_callback_is_atomic_with_starting_state():
+def test_capture_stop_callback_is_atomic_with_starting_state():
     stopped = threading.Event()
     kind = "crossover_sweep:driver"
 
-    correction_setup._set_relay_capture(None)
+    correction_setup._set_capture_slot(None)
     try:
-        assert correction_setup._begin_relay_capture(
+        assert correction_setup._begin_capture_slot(
             kind,
             request_stop=stopped.set,
         )
-        response = correction_setup._request_relay_stop("crossover_sweep:")
+        response = correction_setup._request_capture_stop("crossover_sweep:")
         assert response["status"] == "stopping"
         assert stopped.is_set()
-        waiting = correction_setup._publish_relay_waiting(kind)
+        waiting = correction_setup._publish_capture_waiting(kind)
         assert waiting["status"] == "stopping"
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
 
 
-def test_relay_failure_message_sanitizes_local_seam_oserror_to_internal_error_copy():
+def test_capture_failure_message_sanitizes_local_seam_oserror_to_internal_error_copy():
     """W6 hardware run 3 finding G: a bare OSError from the v2 crossover's
     LOCAL play/DSP seam (the DSP writer lock's os.open hitting a read-only
     config_dir, finding F) used to leak the raw errno string —
     "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'" —
-    onto the wizard's relay status line via the generic str(exc) fallback.
+    onto the wizard's capture status line via the generic str(exc) fallback.
     build_v2_run_and_consume wraps it as CrossoverV2LocalSeamError before it
     escapes the seam (see
     tests/test_correction_crossover_v2_endpoints.py::
@@ -525,7 +525,7 @@ def test_relay_failure_message_sanitizes_local_seam_oserror_to_internal_error_co
     exc = CrossoverV2LocalSeamError(
         "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"
     )
-    message = correction_setup._relay_failure_message(exc)
+    message = correction_setup._capture_failure_message(exc)
     assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     assert "Errno" not in message
     assert "/etc/camilladsp" not in message
@@ -1117,7 +1117,7 @@ def test_local_resume_reacquires_mic_before_advancing_capture_states():
 
 def test_local_permission_is_requested_only_after_start_setup_action():
     # The pre-Start local-capture toggle (issue #3069) is gone, so this pins
-    # only the landing init branch now: relay-disabled installs populate
+    # only the landing init branch now: capture-less installs populate
     # input devices without ever calling detectMicrophones(), which is what
     # would trigger a permission prompt before the user reaches Start.
     js = _module_js()
@@ -1230,7 +1230,7 @@ def test_render_page_includes_autolevel_controls():
     assert "startAutolevel" in js
     assert "autolevel/start" in js
     assert "autolevel/lock" in js
-    # Local and relay paths share Room's fixed acoustic-headroom window;
+    # Every capture path share Room's fixed acoustic-headroom window;
     # measured noise remains evidence rather than permission to lock hotter.
     assert "computeTargetBand" in js
     assert "ROOM_LEVEL_WINDOW_LOW_DBFS" in js
@@ -1376,7 +1376,7 @@ def test_render_page_redraws_chart_on_resize():
 
 
 def test_render_page_autolevel_target_band_clamps():
-    """The preferred local UMIK path reserves the same ESS headroom as relay."""
+    """The preferred local UMIK path reserves the same ESS headroom."""
     body = _module_js()  # behaviour relocated to the static ES module
     assert "ROOM_LEVEL_WINDOW_LOW_DBFS = -26" in body
     assert "ROOM_LEVEL_WINDOW_HIGH_DBFS = -18" in body
@@ -3848,9 +3848,8 @@ def test_needs_noise_capture_offers_cancel_in_ui():
     assert "'needs_noise_capture'" in block
     assert "'preparing', 'sweeping', 'verifying'" in block
     policy = js.split("function applyButtonPolicy", 1)[1]
-    policy = policy.split("function renderRelayStatusFromSnapshot", 1)[0]
+    policy = policy.split("function renderCaptureStatusFromSnapshot", 1)[0]
     assert "cancellableStates.indexOf(state) !== -1" in policy
-    assert "!(autolevelRamping && !relayMode)" not in policy
     assert "'Stop measurement'" in policy
 
 

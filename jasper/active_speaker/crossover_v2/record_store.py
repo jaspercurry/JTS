@@ -20,7 +20,7 @@ from typing import Any, Callable, Mapping
 
 from jasper.attribution.findings import FINDING_SET_SCHEMA
 from jasper.attribution.session_identity import (
-    ALIAS_RELAY_SESSION_ID,
+    ALIAS_CAPTURE_SESSION_ID,
     SessionIdentity,
     stamp_session_identity,
 )
@@ -49,7 +49,7 @@ CLOUD_EVIDENCE_KIND = "jts_crossover_v2_cloud_evidence"
 #: The keys the STORE owns on an enveloped record. A record that arrives
 #: carrying one is refused rather than overwritten.
 _SCHEMA_VERSION = 1
-_ENVELOPE_KEYS = ("schema_version", "relay_session_id")
+_ENVELOPE_KEYS = ("schema_version", "capture_session_id")
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,7 @@ class _Route:
     """Where one artifact kind lands, and what the store does around it.
 
     ``enveloped`` is per-kind because three of the six shipped payloads carry
-    ``schema_version``/``kind``/``relay_session_id`` and three do not, and
+    ``schema_version``/``kind``/``capture_session_id`` and three do not, and
     ``MeasuredCrossoverCandidate.from_mapping`` refuses any unknown key.
     ``stamp`` and ``verify`` are strictness the shipped publishers ran at the
     write, so they stay here.
@@ -69,9 +69,9 @@ class _Route:
     verify: Callable[[Mapping[str, Any], Mapping[str, Any]], None] | None = None
 
 
-def _round_dir(relay_session_id: str) -> str:
+def _round_dir(capture_session_id: str) -> str:
     """The one directory every reader globs, spelled once."""
-    return f"crossover_v2/{relay_session_id}"
+    return f"crossover_v2/{capture_session_id}"
 
 
 def _verify_candidate(
@@ -106,33 +106,33 @@ _ROUTES: dict[str, _Route] = {
     # ``take_id`` is REQUIRED and never re-minted here: a geometry retake
     # reuses its position id, so two takes would collide on one path.
     POSITION_EVIDENCE_KIND: _Route(
-        lambda relay, r: (
-            f"{_round_dir(relay)}/positions/{_required(r, 'take_id')}.json"
+        lambda capture, r: (
+            f"{_round_dir(capture)}/positions/{_required(r, 'take_id')}.json"
         ),
         enveloped=True,
     ),
     CHECK_EVIDENCE_KIND: _Route(
-        lambda relay, _r: f"{_round_dir(relay)}/check.json", enveloped=True,
+        lambda capture, _r: f"{_round_dir(capture)}/check.json", enveloped=True,
     ),
     CLOUD_EVIDENCE_KIND: _Route(
-        lambda relay, r: f"{_round_dir(relay)}/{_required(r, 'phase')}.json",
+        lambda capture, r: f"{_round_dir(capture)}/{_required(r, 'phase')}.json",
         enveloped=True,
         stamp_identity=True,
     ),
     CANDIDATE_KIND: _Route(
-        lambda relay, _r: f"{_round_dir(relay)}/candidate.json",
+        lambda capture, _r: f"{_round_dir(capture)}/candidate.json",
         enveloped=False,
         verify=_verify_candidate,
     ),
     ROUND_RECEIPT_KIND: _Route(
-        lambda relay, _r: f"{_round_dir(relay)}/round_receipt.json",
+        lambda capture, _r: f"{_round_dir(capture)}/round_receipt.json",
         enveloped=False,
         verify=_verify_receipt,
     ),
     # The CALLER injects ``phase``: ``FindingSet.to_dict()`` carries none and
     # ``from_mapping`` ignores top-level keys it does not know.
     FINDING_SET_SCHEMA: _Route(
-        lambda relay, r: findings_relative_path(relay, _required(r, "phase")),
+        lambda capture, r: findings_relative_path(capture, _required(r, "phase")),
         enveloped=False,
     ),
 }
@@ -176,14 +176,14 @@ def _discriminator(record: Mapping[str, Any]) -> str:
 class BankedRecordStore:
     """:class:`~.session_seams.RecordStore` over the evidence bundle.
 
-    Keyed on ``relay_session_id`` and not the bundle id: every reader globs
-    ``evidence/v1/artifacts/crossover_v2/{relay}/…`` and
+    Keyed on ``capture_session_id`` and not the bundle id: every reader globs
+    ``evidence/v1/artifacts/crossover_v2/{capture}/…`` and
     ``evidence_packet.round_artifact_dir`` reports that directory's name AS the
-    relay id.
+    capture id.
     """
 
     evidence: CommissioningEvidenceStore
-    relay_session_id: str
+    capture_session_id: str
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         """Write one record; return the id that finds it again.
@@ -194,7 +194,7 @@ class BankedRecordStore:
         """
         measure, discriminator = _classify(record)
         route = self._route(discriminator)
-        relative = route.relative_path(self.relay_session_id, record)
+        relative = route.relative_path(self.capture_session_id, record)
         payload = self._payload(record, route, discriminator, measure)
         await asyncio.to_thread(
             self._publish, relative, payload, record, route,
@@ -235,7 +235,7 @@ class BankedRecordStore:
         payload = {
             "schema_version": _SCHEMA_VERSION,
             "kind": discriminator,
-            "relay_session_id": self.relay_session_id,
+            "capture_session_id": self.capture_session_id,
             **payload,
         }
         if route.stamp_identity:
@@ -246,11 +246,11 @@ class BankedRecordStore:
         """This session across two namespaces, as the cloud payload records it.
 
         The bundle id is canonical because the bundle is the retention unit;
-        the relay id is minted after it and is not derivable from it.
+        the capture id is minted after it and is not derivable from it.
         """
         return SessionIdentity(
             session_id=str(self.evidence.session_id),
-            aliases={ALIAS_RELAY_SESSION_ID: str(self.relay_session_id)},
+            aliases={ALIAS_CAPTURE_SESSION_ID: str(self.capture_session_id)},
         )
 
     def _publish(

@@ -146,26 +146,26 @@ def _constant_from_source(path: str, name: str) -> int:
 def test_max_reservations_fits_every_budget_the_attempt_number_must_pass():
     """The reservation attempt number flows into two DIFFERENT budgets.
 
-    Both were 8 before the relay ceiling was raised to 32 for multi-position
+    Both were 8 before the capture ceiling was raised to 32 for multi-position
     capture plans, which made a single equality assertion ambiguous about
     which relationship it was guarding. They are separate invariants:
 
     1. **Plan-budget fit (the binding one).** A reservation attempt becomes
-       the relay session's ``begin_capture.attempt``, and
+       the capture session's ``begin_capture.attempt``, and
        ``parse_begin_capture`` rejects ``attempt > plan.max_attempts``. The v2
        flow's plan carries ``CAPTURE_PLAN_MAX_ATTEMPTS``, so the ledger must
        never hand out an attempt that plan cannot admit. Currently exactly
        tight (8 <= 8) — lowering the flow's retry budget below
        ``MAX_RESERVATIONS`` would break the flow, and this is the assertion
        that catches it.
-    2. **Transport fit.** The plan's own budget must fit the relay's
+    2. **Transport fit.** The plan's own budget must fit the capture's
        blob-index space (``capture_index = attempt - 1``, valid indexes
        ``0..MAX_CAPTURE_PLAN_ATTEMPTS-1``). With (1) this transitively keeps
        every reservation attempt inside the blob table, which is what the
        ``MAX_RESERVATIONS`` rationale comment claims.
 
     ``MAX_RESERVATIONS`` is an infra circuit-breaker sized against
-    ``MAX_ATTEMPTS``, so it deliberately does not track the relay ceiling
+    ``MAX_ATTEMPTS``, so it deliberately does not track the capture ceiling
     upward — only these inequalities bind it.
     """
     flow_budget = _constant_from_source(
@@ -177,5 +177,5 @@ def test_max_reservations_fits_every_budget_the_attempt_number_must_pass():
     )
     # (1) plan-budget fit — the invariant that actually binds the v2 flow.
     assert MAX_RESERVATIONS <= flow_budget
-    # (2) transport fit — the plan's budget must fit the relay's blob table.
+    # (2) transport fit — the plan's budget must fit the capture's blob table.
     assert flow_budget <= transport_ceiling

@@ -110,7 +110,7 @@ async def test_pause_and_resume_voice(monkeypatch):
 
 
 async def test_long_window_renews_voice_measurement_lease(monkeypatch):
-    """Human relay setup may outlast the voice daemon's auto-clear timer."""
+    """Human capture setup may outlast the voice daemon's auto-clear timer."""
     uds_calls: list[str] = []
     lease_renewed = asyncio.Event()
 

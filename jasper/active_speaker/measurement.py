@@ -169,7 +169,7 @@ def _record_summed_kind(record: Mapping[str, Any]) -> str | None:
 def _record_comparison_scope(record: Mapping[str, Any]) -> tuple[str, str | None]:
     """Authoritative commissioning-run scope carried by a capture record.
 
-    Modern relay captures bind their server-normalized placement proof to the
+    Modern captures bind their server-normalized placement proof to the
     active comparison set.  That id is decision evidence (unlike the optional
     forensic bundle reference), so paired in-phase/reverse captures may use it
     to prove they came from the same fixed-position commissioning run.  Legacy
@@ -1464,7 +1464,7 @@ def record_driver_measurement(
             if isinstance(raw.get("excitation"), Mapping)
             else None
         ),
-        # Server-normalized relay acknowledgement + comparison-set binding.
+        # Server-normalized acknowledgement + comparison-set binding.
         # Operator-only and legacy acoustic records intentionally leave this
         # absent and cannot drive a new automatic crossover.
         "placement_proof": (

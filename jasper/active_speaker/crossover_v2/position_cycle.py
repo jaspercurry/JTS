@@ -41,7 +41,7 @@ the signed ``position_deg``, the ``index``/``attempt``/``take_id`` identity, the
 ``role``, the ``regime`` and the ``wav_sha256`` verifier;
 ``crossover_v2_flow._retain_lateral_pose`` hands it to retention; the web host
 publishes it through the evidence store, which lands it at
-``{EVIDENCE_ROOT}/artifacts/crossover_v2/{relay}/positions/{take_id}.json``
+``{EVIDENCE_ROOT}/artifacts/crossover_v2/{capture}/positions/{take_id}.json``
 inside the bundle; and ``bank-crossover-round.sh`` tars that whole bundle tree
 into the round directory.  A laptop-written mapping would therefore be a SECOND
 writer of one fact — the runner's *intent* beside the speaker's *record* — and
@@ -155,8 +155,8 @@ def expand_angle_spec(angles: str, per_position: int) -> str:
 
     Raises :class:`PositionCycleError` for ``per_position < 1``. There is
     deliberately no upper bound: how many stops a session can carry is the
-    relay's own ceiling (``angle_capture.session_lateral_walk``'s
-    ``WALK_OVER_RELAY_CAPACITY``), and a second, lower bound invented on the
+    plan's own ceiling (``angle_capture.session_lateral_walk``'s
+    ``WALK_OVER_CAPTURE_CAPACITY``), and a second, lower bound invented on the
     laptop would refuse walks the speaker would have taken.
     """
     if per_position < 1:

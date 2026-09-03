@@ -139,7 +139,7 @@ def _bundle(
 
     ``bank_shape=True`` banks the program WAVs the way
     ``scripts/bank-crossover-round.sh`` pulls a live Pi session bundle: in a
-    SIBLING ``crossover_v2/<relay>/`` directory next to — not inside —
+    SIBLING ``crossover_v2/<capture>/`` directory next to — not inside —
     ``evidence/``, rather than beside the JSON receipts. ``round_dir`` itself
     still has to exist either way, empty or not, for
     :func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`
@@ -1418,7 +1418,7 @@ def test_no_lateral_poses_reads_as_not_run(peak_artifact):
 
 def _bank_lateral_pose(
     bundle: Path, *, take_id: str, position_deg: int, curves: list[dict],
-    vertical_deg: int = 0, relay: str = "wired-TEST",
+    vertical_deg: int = 0, capture: str = "wired-TEST",
 ) -> None:
     """Directly write a banked ``positions/<take_id>.json`` -- the exact
     fields :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
@@ -1428,7 +1428,7 @@ def _bank_lateral_pose(
     from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
     positions_dir = (
-        bundle / "evidence/v1/artifacts/crossover_v2" / relay / "positions"
+        bundle / "evidence/v1/artifacts/crossover_v2" / capture / "positions"
     )
     positions_dir.mkdir(parents=True, exist_ok=True)
     (positions_dir / f"{take_id}.json").write_text(
@@ -1678,7 +1678,7 @@ def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys):
     """The exact composition docs/testing-tooling.md shows: a banked round.
 
     ``bank-crossover-round.sh`` tars a live Pi session bundle verbatim, so its
-    program WAVs land in a sibling ``crossover_v2/<relay>/`` directory,
+    program WAVs land in a sibling ``crossover_v2/<capture>/`` directory,
     never inside the JSON receipts one. Before this fix, pointing the CLI at
     exactly this shape refused ``classification_program_missing`` with
     ``programs_present: []`` on a real banked round; this reproduces that
@@ -1845,7 +1845,7 @@ def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, ca
 def test_a_dir_matching_neither_shape_names_both_in_its_refusal(tmp_path, capsys):
     """Point the CLI at the WAV leaf itself -- the second real failure tonight.
 
-    Neither shape's ``evidence/v1/artifacts/crossover_v2/<relay>/`` exists
+    Neither shape's ``evidence/v1/artifacts/crossover_v2/<capture>/`` exists
     anywhere under this path, so the pre-existing "round could not be read"
     refusal fires -- but its message must name BOTH accepted shapes, not
     only the receipts one, so an operator who just banked a round with

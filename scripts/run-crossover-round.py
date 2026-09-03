@@ -673,7 +673,7 @@ def round_graded_this_session(wizard: WizardClient, prior_session_id: str) -> bo
     restored/edge rounds are disproportionately the interesting ones: the
     campaign that filed this lost its first full spec pass that way.
 
-    ``round_id`` is the stage-2 relay session id (``coordinator._round_identity``),
+    ``round_id`` is the stage-2 capture session id (``coordinator._round_identity``),
     so the equality below is what stops a PREVIOUS round's receipt — carried
     forward in durable state — from vouching for this one.
     """
@@ -1033,7 +1033,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: WizardClient,
                        detail=_open_failure_detail(status, payload, target))
             return open_exit
         trail.emit("open", path=path, http=status, body=body,
-                   relay=_render(payload.get("relay") if isinstance(payload, Mapping)
+                   capture=_render(payload.get("capture") if isinstance(payload, Mapping)
                                  else payload))
 
         if walk is not None:
@@ -1245,7 +1245,7 @@ def build_parser() -> argparse.ArgumentParser:
             "them, never the pose. Requires --angles, --stage measure, and a "
             "regime that composes one stop per angle (per_driver or summed; "
             "both composes two, so it is refused). There is no ceiling here: "
-            "how many stops a session can carry is the relay's own, and it "
+            "how many stops a session can carry is the plan's own, and it "
             "refuses by name. --complete-after counts RELEASES, so it must "
             "scale with N (default: 1)"
         ),

@@ -38,7 +38,7 @@ class FindingEvidenceMissing(FindingStorageError):
     """
 
 
-def findings_relative_path(relay_session_id: str, phase: str) -> str:
+def findings_relative_path(capture_session_id: str, phase: str) -> str:
     """The **publish** path for one phase's finding set.
 
     Per phase, not per session: the pre-apply and post-apply groups close at
@@ -48,12 +48,12 @@ def findings_relative_path(relay_session_id: str, phase: str) -> str:
     full bundle-relative form every reader and citation uses.
     """
 
-    if not relay_session_id or not phase:
-        raise FindingStorageError("relay_session_id and phase are required")
-    return f"crossover_v2/{relay_session_id}/findings_{phase}.json"
+    if not capture_session_id or not phase:
+        raise FindingStorageError("capture_session_id and phase are required")
+    return f"crossover_v2/{capture_session_id}/findings_{phase}.json"
 
 
-def findings_artifact_path(relay_session_id: str, phase: str) -> str:
+def findings_artifact_path(capture_session_id: str, phase: str) -> str:
     """The full bundle-relative path — what a reader and a citation use.
 
     The namespace prefix is imported from the store rather than spelled here,
@@ -63,7 +63,7 @@ def findings_artifact_path(relay_session_id: str, phase: str) -> str:
 
     from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 
-    return f"{EVIDENCE_ROOT}/artifacts/{findings_relative_path(relay_session_id, phase)}"
+    return f"{EVIDENCE_ROOT}/artifacts/{findings_relative_path(capture_session_id, phase)}"
 
 
 def bundle_evidence_ref(artifact: Any, session: SessionIdentity) -> EvidenceRef:
@@ -88,7 +88,7 @@ def bundle_evidence_ref(artifact: Any, session: SessionIdentity) -> EvidenceRef:
 
 
 def publish_finding_set(
-    store: Any, *, relay_session_id: str, phase: str, finding_set: FindingSet
+    store: Any, *, capture_session_id: str, phase: str, finding_set: FindingSet
 ) -> Any:
     """Publish one phase's findings into the session bundle.
 
@@ -99,7 +99,7 @@ def publish_finding_set(
 
     if not isinstance(finding_set, FindingSet):
         raise FindingStorageError("finding_set must be a FindingSet")
-    path = findings_relative_path(relay_session_id, phase)
+    path = findings_relative_path(capture_session_id, phase)
     try:
         return store.publish_json_artifact(path, finding_set.to_dict())
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -109,7 +109,7 @@ def publish_finding_set(
 def read_finding_set(
     store: Any,
     *,
-    relay_session_id: str,
+    capture_session_id: str,
     phase: str,
     verify_evidence: bool = True,
 ) -> FindingSet | None:
@@ -122,7 +122,7 @@ def read_finding_set(
     the record without its support.
     """
 
-    path = findings_artifact_path(relay_session_id, phase)
+    path = findings_artifact_path(capture_session_id, phase)
     try:
         artifact = store.identify_artifact(path)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

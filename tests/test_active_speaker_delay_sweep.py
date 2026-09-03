@@ -73,7 +73,7 @@ def _bank(
     """
 
     positions = (
-        tmp_path / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "relay-1" / "positions"
+        tmp_path / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "capture-1" / "positions"
     )
     positions.mkdir(parents=True, exist_ok=True)
     (positions / f"{take_id}.json").write_text(
@@ -246,7 +246,7 @@ def test_the_curve_reader_answers_none_and_never_raises(
     payload = [_curve("woofer"), _curve("tweeter")] if curves == "ok" else curves
     bundle = _bank(tmp_path, curves=payload, phase=phase, kind=kind)
     take = (
-        bundle / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "relay-1"
+        bundle / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "capture-1"
         / "positions" / "p0_a01.json"
     )
     assert read_take_curves(take, phase=PHASE_MEASURE) is None

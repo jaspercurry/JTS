@@ -86,7 +86,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
             EXIT_REFUSED,
             REFUSE_NO_ROUND,
             f"{bundle_dir}: {why}; bundle_dir must hold info.json beside "
-            "evidence/v1/artifacts/crossover_v2/<relay>/",
+            "evidence/v1/artifacts/crossover_v2/<capture>/",
         )
 
     found = read_pose_curve_pair(
@@ -230,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     child.add_argument(
         "bundle_dir",
         help="a commissioning bundle directory (the one holding info.json "
-             "beside evidence/v1/artifacts/crossover_v2/<relay-session-id>/)",
+             "beside evidence/v1/artifacts/crossover_v2/<capture-session-id>/)",
     )
     child.add_argument("--fc-hz", type=float, required=True,
                        help="the applied crossover corner")

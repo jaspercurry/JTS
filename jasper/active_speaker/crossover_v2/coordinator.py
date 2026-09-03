@@ -533,7 +533,7 @@ def _write_round_receipt(
 ) -> dict[str, Any] | None:
     """Assemble the round receipt and hand it to the publishing seam.
 
-    ``round_id`` is the stage-2 relay session id: one graded post-apply session
+    ``round_id`` is the stage-2 capture session id: one graded post-apply session
     is one round, and a recovery re-verify writes its own receipt rather than
     amending this one.
 

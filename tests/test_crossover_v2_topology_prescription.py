@@ -1217,7 +1217,7 @@ def test_the_announced_capture_program_follows_the_corner_it_is_built_at():
 
     The web boundary now passes its own ``session_fc_hz`` / ``verify_fc_hz`` to
     both spec builders. That WIRING is not covered by a test: the builders sit
-    inside a relay-hosting callback this suite cannot reach without the
+    inside a capture-hosting callback this suite cannot reach without the
     autouse stage harness. Verified by inspection at both call sites in
     ``jasper/web/correction_crossover_v2.py``.
     """

@@ -61,7 +61,7 @@ MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
 # Who asked for one extra attempt. Pooled against the single bound above, but
 # recorded separately so the count the household reads is truthful about who
 # spent what. Observed at the REJECTION that kept the plan alive, never at
-# the relay's ``retake`` flag: a geometry rung rejects a good capture to hold
+# the capture's ``retake`` flag: a geometry rung rejects a good capture to hold
 # the runner on the same index, so it travels with ``retake=false``.
 ATTEMPT_INITIATOR_HOUSEHOLD = "household"
 ATTEMPT_INITIATOR_SPEAKER = "speaker"
@@ -280,7 +280,7 @@ def assess_begin(
     that hold since the two-stage split (work order D10): stage 1 has no VERIFY
     index and stage 2's session is constructed ``applied=True``, so no new
     design may depend on it. A TERMINAL auto-apply failure refuses outright
-    rather than holding toward a dishonest relay_timeout.
+    rather than holding toward a dishonest capture_timeout.
 
     Neither closing condition normally arrives here (#2086): both are settled
     at the REJECTION that closed the slot, so a household is never handed a

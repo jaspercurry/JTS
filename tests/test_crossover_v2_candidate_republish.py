@@ -35,7 +35,7 @@ from jasper.web import correction_crossover_v2_republish as republish
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 
 BUNDLE = "bundle0000aa"
-RELAY = "relay-session-1"
+CAPTURE = "capture-session-1"
 
 
 @pytest.fixture(autouse=True)
@@ -64,10 +64,10 @@ def bank(tmp_path, monkeypatch):
     return root
 
 
-def _publish(root: Path, candidate, *, bundle=BUNDLE, relay=RELAY) -> Path:
+def _publish(root: Path, candidate, *, bundle=BUNDLE, capture=CAPTURE) -> Path:
     path = (
         root / bundle / "evidence" / "v1" / "artifacts"
-        / "crossover_v2" / relay / "candidate.json"
+        / "crossover_v2" / capture / "candidate.json"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
@@ -100,13 +100,13 @@ def test_republish_then_apply_reaches_the_banked_candidate(bank):
 
     state = v2host.load_v2_state()
     assert state["candidate"]["fingerprint"] == candidate.fingerprint
-    assert state["session_id"] == RELAY
+    assert state["session_id"] == CAPTURE
     assert state["evidence"]["bundle_session_id"] == BUNDLE
 
     reopened = v2host._reopen_candidate_artifact(state, state["evidence"])
     assert reopened["fingerprint"] == candidate.fingerprint
 
-    assert v2host._update_current_review(RELAY, candidate.fingerprint, None, {})
+    assert v2host._update_current_review(CAPTURE, candidate.fingerprint, None, {})
 
 
 def test_a_republished_candidate_does_not_wear_a_current_headroom_era(bank):
@@ -278,8 +278,8 @@ def test_two_minting_lineages_for_one_fingerprint_refuse_as_ambiguous(bank):
     and lineage is the path the apply door rebuilds to find the artifact again.
     """
     candidate = _candidate()
-    _publish(bank, candidate, bundle="bundle0000aa", relay="relay-1")
-    _publish(bank, candidate, bundle="bundle0000bb", relay="relay-2")
+    _publish(bank, candidate, bundle="bundle0000aa", capture="capture-1")
+    _publish(bank, candidate, bundle="bundle0000bb", capture="capture-2")
 
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
@@ -292,11 +292,11 @@ def test_the_same_artifact_seen_once_is_not_ambiguous(bank):
     candidate = _candidate()
     _publish(bank, candidate)
     _publish(bank, _candidate(trims={"woofer": -1.0, "tweeter": -4.0}),
-             bundle="bundle0000bb", relay="relay-2")
+             bundle="bundle0000bb", capture="capture-2")
 
     result = republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
 
-    assert result["republished"]["session_id"] == RELAY
+    assert result["republished"]["session_id"] == CAPTURE
 
 
 # --- the fact a bundle cannot reconstruct, named rather than guessed --------
@@ -360,7 +360,7 @@ def test_republish_emits_its_event_with_fingerprint_and_source_bundle(bank, capl
     )
     assert f"candidate_fingerprint={candidate.fingerprint}" in line
     assert f"bundle_session_id={BUNDLE}" in line
-    assert f"relay_session_id={RELAY}" in line
+    assert f"capture_session_id={CAPTURE}" in line
 
 
 @pytest.mark.parametrize(
@@ -370,8 +370,8 @@ def test_republish_emits_its_event_with_fingerprint_and_source_bundle(bank, capl
         (lambda root: None, {"fingerprint": "a" * 64}, "not_found"),
         (
             lambda root: (
-                _publish(root, _candidate(), bundle="b1", relay="r1"),
-                _publish(root, _candidate(), bundle="b2", relay="r2"),
+                _publish(root, _candidate(), bundle="b1", capture="r1"),
+                _publish(root, _candidate(), bundle="b2", capture="r2"),
             ),
             None,
             "ambiguous",

@@ -1292,7 +1292,7 @@ def _program_duration_ms(program: ExcitationProgram) -> int:
 def capture_progress_label(index: int, capture_target: int) -> str:
     """The ONE counter a step screen shows — "Measurement N of T".
 
-    ``index`` is the entry's 1-based WIRE index (the relay's own index space),
+    ``index`` is the entry's 1-based WIRE index (the capture's own index space),
     not the 0-based ``CapturePlanEntry.index``.
     """
     return f"Measurement {int(index)} of {int(capture_target)}"
@@ -1539,7 +1539,7 @@ def build_v2_capture_plan(
                 ),
             )
         )
-    # The two prompted groups. ``index_phase`` is 1-based (the relay's own
+    # The two prompted groups. ``index_phase`` is 1-based (the capture's own
     # index space); ``CapturePlanEntry.index`` is 0-based, hence the -1.
     cloud_measure_indexes = [
         i for i, p in sorted(index_phase.items()) if p == PHASE_CLOUD_MEASURE
@@ -1690,7 +1690,7 @@ def build_v2_verify_capture_plan(
     # establishes: the correction is applied, and reaching this screen means the
     # tracking comparator passed. The post-apply SPEC verdict can fail while
     # tracking passes, and the phone cannot carry that caveat — its component
-    # vocabulary has no result-shaped member and the relay's host-event slot is
+    # vocabulary has no result-shaped member and the capture's host-event slot is
     # last-write-wins — so the verdict has ONE owner, jts.local's done screen,
     # and this copy points at it rather than guessing it.
     #

@@ -144,7 +144,7 @@ CLOUD_CLOSE_RUNNING = "running"
 # geometry-locked check may ask for, once per group.
 #
 # Retakes rather than appended positions because of the PROTOCOL, not the
-# physics: the relay runner completes a set at exactly ``capture_target``
+# physics: the capture runner completes a set at exactly ``capture_target``
 # accepted captures with ``index == accepted_count + 1``, so rejecting a capture
 # is the only lever that keeps a plan alive at the same index. Appending is the
 # better estimator if the runner ever grows variable-length sets.

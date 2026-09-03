@@ -91,7 +91,7 @@ __all__ = [
     "WALK_REGIME_UNSUPPORTED",
     "WALK_MOVER_MISMATCH",
     "WALK_OVER_MOVER_ENVELOPE",
-    "WALK_OVER_RELAY_CAPACITY",
+    "WALK_OVER_CAPTURE_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
     "WALK_DELAY_NOT_ACCEPTED",
@@ -477,7 +477,7 @@ def walk_price(
 @dataclass(frozen=True)
 class ResolvedStop:
     """One stop, resolved into what the shipped runner already consumes. ``index`` is the
-    1-based capture index the relay drives (``index == accepted_count + 1``).
+    1-based capture index the capture drives (``index == accepted_count + 1``).
     ``program_phase`` names the phase whose composed program object this stop plays;
     :func:`program_for_stop` turns it into the object -- a program question, never a
     session-journey one (see the module docstring).
@@ -579,8 +579,8 @@ WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 #: :class:`AngleCaptureRequest` at STATEMENT time, not at a 600 s live hold.
 WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
-#: The composed session would need more relay blob indexes than exist.
-WALK_OVER_RELAY_CAPACITY = "walk_over_relay_capacity"
+#: The composed session would need more capture blob indexes than exist.
+WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
 
 #: The session already plans a lateral group. Raised by the CALLER; this
 #: module does not read session flags.
@@ -616,7 +616,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
     WALK_OVER_MOVER_ENVELOPE,
-    WALK_OVER_RELAY_CAPACITY,
+    WALK_OVER_CAPTURE_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
     WALK_POLARITY_NOT_ACCEPTED,
@@ -710,7 +710,7 @@ def session_lateral_walk(
     cloud. Returns one pose per stop, in stop order, never a session phase.
 
     Raises :class:`LateralWalkRefused` with :data:`WALK_REGIME_UNSUPPORTED`,
-    :data:`WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_RELAY_CAPACITY` --
+    :data:`WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_CAPTURE_CAPACITY` --
     properties of the PAIR (walk, session), so the spool's own document
     validation cannot make them. The capacity bound asks
     :func:`stage1_plan_max_attempts`, the same producer the emitted plan
@@ -740,9 +740,9 @@ def session_lateral_walk(
     )
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise LateralWalkRefused(
-            WALK_OVER_RELAY_CAPACITY,
+            WALK_OVER_CAPTURE_CAPACITY,
             f"{base_entries} session captures + {len(request.stops)} stops = "
-            f"{entries} entries, needing {attempts} relay blob indexes over a "
+            f"{entries} entries, needing {attempts} capture blob indexes over a "
             f"ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
         )
     return tuple(stop.prompt for stop in resolve_request(request))

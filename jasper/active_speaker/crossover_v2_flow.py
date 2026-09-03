@@ -29,7 +29,7 @@ replaces the legacy per-driver distributed transaction with this shape: the
 Pi compiles one excitation program per phase, plays it as one continuous
 stream, and analyzes
 ``(program, capture) → analysis`` as a pure function. The session owns the
-phase state machine that drives the relay session. At the shipped defaults a
+phase state machine that drives the capture session. At the shipped defaults a
 FULL-tier commission is 9 captures (3 in stage 1, then 6) and an express one
 is 4 (the same 3, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
 only. :func:`tier_display_info` derives both from the plans themselves and is
@@ -85,7 +85,7 @@ The session exposes the three ``run_capture_plan`` callbacks
 (:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
 lifecycle hooks the host needs (:meth:`note_apply_complete`,
 :meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
-journey spans TWO relay sessions since the two-stage split (work order D1/D2,
+journey spans TWO capture sessions since the two-stage split (work order D1/D2,
 issue #1806), each a heterogeneous ``CapturePlan``: **stage 1** is check /
 measure / #2291's entry baseline (3 entries at either tier — the pre-apply
 position group is off, and so is the lateral walk that ran between them until
@@ -969,17 +969,17 @@ class CrossoverV2Session:
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
-        # True once ``authorize_begin`` has refused: the relay writes its own
+        # True once ``authorize_begin`` has refused: the capture writes its own
         # capture_refused into a last-write-wins slot the terminal rider
         # must not clobber.
-        self.relay_published_refusal = False
+        self.capture_published_refusal = False
         self._measurement_protection_sections_by_role = None
         if measurement_protection_sections_by_role is not None:
             self._measurement_protection_sections_by_role = {
                 str(role): tuple(sections)
                 for role, sections in measurement_protection_sections_by_role.items()
             }
-        # Attempts belong to the commissioning journey, not to this relay session.
+        # Attempts belong to the commissioning journey, not to this capture session.
         self._attempt_history = list(attempt_history)[
             -AttemptBudget().hard_cap_attempts:
         ]
@@ -1180,11 +1180,11 @@ class CrossoverV2Session:
         # confirms. ``None`` = no eager fit is banked.
         self._speculative_close: _SpeculativeClose | None = None
         # Serializes the group close against the eager fit, the one part of this
-        # session that runs off the relay thread. Three entry points take it and
+        # session that runs off the capture thread. Three entry points take it and
         # none nests — the confirm path reaches ``_close_measure_cloud_candidate``,
         # never the lock-taking ``_close_cloud_group`` — so this non-reentrant
         # ``Lock`` is correct AND enforces that: an edit that makes one call another
-        # deadlocks the relay thread. It covers ``_group_combined`` and
+        # deadlocks the capture thread. It covers ``_group_combined`` and
         # ``_group_cloud_result``, not ``_measure_analysis``, which is safe by phase
         # ordering. The combine and the speculative stash are written together under
         # it, which is why no generation counter tells a stale bank from a current one.
@@ -1918,7 +1918,7 @@ class CrossoverV2Session:
             )
         return cls(session_id=session_id, **journey, **kwargs)
 
-    # --- relay callbacks -----------------------------------------------------
+    # --- capture callbacks ---------------------------------------------------
 
     def authorize_begin(self, index: int, attempt: int, entry: Any = None) -> None:
         """Admit (or defer / refuse) one phone ``begin_capture`` (§5.7)."""
@@ -1953,13 +1953,13 @@ class CrossoverV2Session:
             message = (
                 reason_message(decision.code, spec) if spec else decision.code
             )
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(decision.code, message)
         if decision.kind == _admission.DEFER_AWAITING_APPLY:
             raise CaptureBeginDeferred("awaiting_apply", VERIFY_ANCHOR_HOLD_MESSAGE)
         if decision.kind == _admission.REFUSE_NON_RETRIABLE:
             spec = REASON_REGISTRY[decision.code]
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 spec.code,
                 reason_message(
@@ -1982,7 +1982,7 @@ class CrossoverV2Session:
                     code, slot=slot,
                 ),
             )
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 # The code the household is told about is the condition actually
                 # observed here, never a generic exhaustion code.
@@ -2001,7 +2001,7 @@ class CrossoverV2Session:
                 level=logging.ERROR, session_id=self.session_id,
                 phase=phase, index=index, kind=str(decision.kind),
             )
-            self.relay_published_refusal = True
+            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 REASON_LOCATE_FAILED,
                 reason_message(
@@ -2185,7 +2185,7 @@ class CrossoverV2Session:
             # without it four ``code=locate_failed`` lines are indistinguishable.
             pilot_heard=verdict.pilot_heard,
         )
-        return verdict.to_relay_dict()
+        return verdict.to_capture_dict()
 
     def _with_attempt_payload(
         self, slot: str, verdict: PhaseVerdict
@@ -2343,7 +2343,7 @@ class CrossoverV2Session:
             verdict,
             payload={
                 **verdict.payload,
-                # Overrides ``to_relay_dict``'s retryable reason; the same observed
+                # Overrides ``to_capture_dict``'s retryable reason; the same observed
                 # code still selects the diagnosis.
                 "reason": self._extras_spent_message(
                     ledger,
@@ -2362,7 +2362,7 @@ class CrossoverV2Session:
     ) -> PhaseVerdict:
         """Advance the group past a settled position.
 
-        ``accepted=True`` is the relay's only "this slot is done" signal, so a settled
+        ``accepted=True`` is the only "this slot is done" signal, so a settled
         position must look accepted on the wire. Caller holds ``_close_lock``.
         """
         if self._journey.plan.is_last_index_of_group(phase, index):
@@ -3092,7 +3092,7 @@ class CrossoverV2Session:
         """Fit the pre-apply cloud NOW, before the household confirms.
 
         Returns True when a build was banked; every reason not to run is checked here.
-        **Runs OFF the relay thread**, holding ``_close_lock`` for the whole fit, which
+        **Runs OFF the capture thread**, holding ``_close_lock`` for the whole fit, which
         the retake close and the confirm both take. It never closes the retake window,
         and a failure here is dropped — the confirm refits and raises the same thing.
         """
@@ -3535,7 +3535,7 @@ class CrossoverV2Session:
 
         **No production path calls this today**; it is kept because it alone owns the
         stamp. **Stamping ``_last_failure_code`` is the load-bearing half**: the host
-        falls back to a relay-timeout sentence when it is unset.
+        falls back to a capture-timeout sentence when it is unset.
         """
         spec = REASON_REGISTRY[code]
         pilot_heard = self._pilot_heard_for(code)
@@ -4031,7 +4031,7 @@ class CrossoverV2Session:
         record = attempt_record_from_verify(
             analysis,
             attempt_id=attempt_id,
-            # The session that captured THIS sweep — a relay session is the
+            # The session that captured THIS sweep — a capture session is the
             # sitting (#2081).
             sitting_id=self.session_id,
         )

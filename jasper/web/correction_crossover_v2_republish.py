@@ -161,7 +161,7 @@ def handle_v2_republish(
     * ``session_id`` — NOT just review identity. It is a **path component**:
       :func:`_reopen_candidate_artifact` rebuilds
       ``<bundle>/evidence/v1/artifacts/crossover_v2/<session_id>/candidate.json``
-      from it, so it must be the MINTING relay session, not a fresh id.
+      from it, so it must be the MINTING capture session, not a fresh id.
     * ``evidence.bundle_session_id`` — which bundle holds that path.
     * ``accepted_phases`` containing ``"measure"`` — :func:`_update_current_review`
       gates on it, and that CAS is what admits :func:`observe_apply_success`.
@@ -263,7 +263,7 @@ def handle_v2_republish(
         republished = {
             "candidate_fingerprint": banked.fingerprint,
             "bundle_session_id": banked.bundle_session_id,
-            "session_id": banked.relay_session_id,
+            "session_id": banked.capture_session_id,
             "at": time.time() if now is None else float(now),
             "round_ordinal_epoch": epoch,
             # ``None`` when the state carried no readable receipt — a box that
@@ -282,7 +282,7 @@ def handle_v2_republish(
         # a session this is not, so dropping it is the honest default and
         # listing what survives is the reviewable shape.
         state = {
-            "session_id": banked.relay_session_id,
+            "session_id": banked.capture_session_id,
             # Truthful minimum, not a guess: a published candidate artifact IS
             # the record that MEASURE was accepted. Nothing else about the
             # minting session's plan is recoverable, so nothing else is claimed.
@@ -349,7 +349,7 @@ def handle_v2_republish(
         "correction.crossover_v2_candidate_republished",
         candidate_fingerprint=banked.fingerprint,
         bundle_session_id=banked.bundle_session_id,
-        relay_session_id=banked.relay_session_id,
+        capture_session_id=banked.capture_session_id,
     )
     # The ordinal reset gets its own line, on this module's own standard (see
     # ``_refused``): an operator reaches this door when something has already

@@ -2,31 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Correction-side adapter for the relay-closed level-match ramp (P2).
+"""Correction-side adapter for the level-match ramp (P2).
 
 The pure staircase / settle / lock math lives in the shared kernel
 (:mod:`jasper.audio_measurement.ramp`). This module is the correction-layer glue
 that the kernel deliberately does not know about:
 
-  * :class:`RelayLevelFeed` — the ``next_samples`` source the kernel awaits each
-    tick, reading the phone's **batched, client-timestamped** level samples out
-    of the relay ``status`` event. The relay ``event`` slot is last-write-wins
-    and the phone streams into it continuously, so ramp control is robust by
-    construction, not by one-shot posts: the phone's every level batch carries
+  * :class:`LevelStatusFeed` — the ``next_samples`` source the kernel awaits
+    each tick, reading the measurement page's **batched, client-timestamped**
+    level samples out of the ``status`` event. The ``event`` slot is
+    last-write-wins and the page streams into it continuously, so ramp control
+    is robust by construction, not by one-shot posts: every level batch carries
     its own ``armed`` / ``aborted`` / ``agc_frozen`` / ``agc_unattested`` state
     as a SUPERSET envelope (a clobbered one-shot host event never strands the
-    flow), Pi-side
-    abort acks re-post each tick while the ramp exits, and the terminal ramp
-    state is re-posted until the relay's ``/status`` echoes it back (the Pi's
-    pull-token status includes ``host_event``, so the read-modify-write revert
-    race is *observable*, not assumed away). The feed also rate-limits its
-    status reads — the kernel tick is ~100 Hz, the HTTP cadence must not be.
+    flow), Pi-side abort acks re-post each tick while the ramp exits, and the
+    terminal ramp state is re-posted until ``/status`` echoes it back, so the
+    read-modify-write revert race is *observable*, not assumed away. The feed
+    also rate-limits its status reads — the kernel tick is ~100 Hz, the HTTP
+    cadence must not be.
   * A **run token** scopes the feed to one ramp run: the token rides the
-    ``level_ramp`` capture spec, the phone echoes it in every batch, and the
+    ``level_ramp`` capture spec, the page echoes it in every batch, and the
     feed ignores events carrying another run's token — a *previous* run's
     persisted slot (its final abort superset, its stale samples) can no longer
     insta-cancel or mis-feed a retry. A same-token ``seq`` *regression* (the
-    phone page reloaded mid-ramp and restarted its counter) is treated as a new
+    page reloaded mid-ramp and restarted its counter) is treated as a new
     stream rather than dropped as stale.
   * :class:`MeasurementLevelLock` + :class:`LevelLockStore` — the lock is scoped
     **per mic-geometry step, not blanket per-session** (near-field baffle vs
@@ -66,9 +65,9 @@ from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
-# Failures a relay/status reader can realistically raise. RelayError subclasses
-# RuntimeError; json decode errors are ValueError; a buggy injected reader adds
-# Type/Attribute/LookupError. Named (not blind) per the lint contract.
+# Failures a status reader can realistically raise: json decode errors are
+# ValueError, and a buggy injected reader adds Type/Attribute/LookupError.
+# Named (not blind) per the lint contract.
 _FEED_ERRORS = (
     OSError,
     RuntimeError,
@@ -232,7 +231,7 @@ class LevelLockStore:
         return {geo: lock.to_dict() for geo, lock in self._locks.items()}
 
 
-# --- relay feed: batched level samples in, latched ramp control out ----------
+# --- level feed: batched level samples in, latched ramp control out ----------
 
 StatusReader = Callable[[], dict[str, Any]]
 HostEventPoster = Callable[[dict[str, Any]], Any]
@@ -244,14 +243,14 @@ def parse_level_batch(
     run_token: str = "",
     on_schema_mismatch: Callable[[Any], None] | None = None,
 ) -> list[LevelSample]:
-    """Extract the phone's batched level samples from a relay ``status`` event.
+    """Extract the batched level samples from a ``status`` event.
 
-    The phone posts ``{"level_batch": {"schema": N, "run_token": "...",
+    The measurement page posts ``{"level_batch": {"schema": N, "run_token": "...",
     "samples": [ {...}, ... ], "agc_frozen": bool, "armed": bool,
     "aborted": bool}}`` over the existing ``event`` envelope. Unknown /
     malformed payloads yield an empty list (the kernel treats a tick with no
-    samples as "nothing new"), never an exception — the transport crosses the
-    untrusted relay. A non-empty ``run_token`` scopes parsing to one ramp run:
+    samples as "nothing new"), never an exception — the payload is browser
+    input. A non-empty ``run_token`` scopes parsing to one ramp run:
     batches carrying a different (or no) token are another run's stale slot and
     are ignored entirely. A schema mismatch is reported through
     ``on_schema_mismatch`` when given (the feed latches its warning — a stale
@@ -344,16 +343,16 @@ def phone_reported_armed(event: dict[str, Any], *, run_token: str = "") -> bool:
     return bool(not run_token and event.get("armed"))
 
 
-class RelayLevelFeed:
-    """Turns relay polling into the kernel's ``next_samples`` source.
+class LevelStatusFeed:
+    """Turns status polling into the kernel's ``next_samples`` source.
 
-    Each ``next_samples()`` reads the freshest relay status (via the injected
+    Each ``next_samples()`` reads the freshest status (via the injected
     ``read_status``, rate-limited to ``min_read_interval_s`` so the kernel's
     ~100 Hz tick never becomes an HTTP cadence), dedupes samples by ``seq``
     (the last-write-wins slot re-delivers the same batch until the phone posts
     a newer one), treats a same-token seq *regression* as a fresh stream (page
     reload), watches for a phone-reported abort, and returns only the new
-    :class:`LevelSample` s. Warnings are latched — a down relay or a stale
+    :class:`LevelSample` s. Warnings are latched — an unreadable feed or a stale
     mismatched-schema slot logs once per state change, not per tick.
     """
 
@@ -394,14 +393,14 @@ class RelayLevelFeed:
             if not self._read_failing:
                 self._read_failing = True
                 logger.warning(
-                    "relay status read failed during ramp (latched — further "
+                    "status read failed during ramp (latched — further "
                     "failures are silent until recovery)",
                     exc_info=True,
                 )
             return {}
         if self._read_failing:
             self._read_failing = False
-            logger.info("relay status read recovered")
+            logger.info("status read recovered")
         event = status.get("event") if isinstance(status, dict) else None
         return event if isinstance(event, dict) else {}
 
@@ -468,14 +467,13 @@ class RelayLevelFeed:
             logger.warning("ramp host-event post failed (%s)", key, exc_info=True)
 
     def read_back_ramp_state(self) -> str:
-        """The ramp state currently echoed in the relay's host_event, if any.
+        """The ramp state currently echoed in the status host_event, if any.
 
-        The Pi's pull-token ``/status`` includes ``host_event`` (worker.js
-        ``getStatus``), so a terminal post that a phone putMeta race reverted
-        is detectable. Observability only: a single confirmed read-back is NOT
-        durable (the next phone batch post can revert it), so the terminal
-        re-post schedule always runs to its bounded end regardless of what
-        this returns."""
+        ``/status`` includes ``host_event``, so a terminal post that a
+        concurrent page post reverted is detectable. Observability only: a
+        single confirmed read-back is NOT durable (the next batch post can
+        revert it), so the terminal re-post schedule always runs to its bounded
+        end regardless of what this returns."""
         try:
             status = self._read_status() or {}
         except _FEED_ERRORS:
@@ -686,20 +684,20 @@ def describe_ramp_refusal(
 
 
 class LevelMatchSession:
-    """Wires the kernel ramp to the relay for ONE geometry step.
+    """Wires the kernel ramp to the measurement page for ONE geometry step.
 
     Host-mediated: the caller injects the volume get/set, the tone
-    play/cancel, and the relay status-read / host-event-post — this class owns
+    play/cancel, and the status-read / host-event-post — this class owns
     only the ramp orchestration and the per-geometry lock persistence. It never
     imports the correction daemon or touches CamillaDSP directly.
     """
 
-    # Pre-ramp armed gate: how long the phone gets to tap Start before the run
-    # is abandoned without ever touching volume or tone.
+    # Pre-ramp armed gate: how long the household gets to tap Start before the
+    # run is abandoned without ever touching volume or tone.
     DEFAULT_ARMED_TIMEOUT_S = 90.0
     ARMED_POLL_S = 0.25
-    # Terminal host-event re-posting: attempts × spacing bound the "phone still
-    # metering with a hot mic" window after a putMeta revert race. The FULL
+    # Terminal host-event re-posting: attempts × spacing bound the "page still
+    # metering with a hot mic" window after a post revert race. The FULL
     # schedule always runs (no early exit on a confirmed echo) — see the
     # re-post loop in run_for_geometry for the revert-race rationale.
     TERMINAL_POST_ATTEMPTS = 5
@@ -718,7 +716,7 @@ class LevelMatchSession:
         self._controller: RampController | None = None
         # Lifecycle cancellation is wider than RampController.cancel(): the
         # retained session exists while waiting for the phone to arm and after
-        # the kernel publishes a terminal state but is still completing relay
+        # the kernel publishes a terminal state but is still completing the
         # acknowledgement. Stop must await both edges, never infer cleanup from
         # the public RampState alone.
         self._cancel_requested = False
@@ -754,7 +752,7 @@ class LevelMatchSession:
         token minted into this run's ``build_level_ramp_spec`` so the feed is
         scoped to this run.
         """
-        feed = RelayLevelFeed(
+        feed = LevelStatusFeed(
             read_status=read_status,
             post_host_event=post_host_event,
             run_token=run_token,

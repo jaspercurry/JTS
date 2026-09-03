@@ -853,7 +853,7 @@ def forward_model_verify_delta(
 
     They come from two different banked rounds because that is where the flow
     puts them (#3482): the measure stage walks the solos and never reaches
-    VERIFY; the verify stage measures the sum in a NEW bundle under a new relay
+    VERIFY; the verify stage measures the sum in a NEW bundle under a new capture
     session id. So the join is disclosed on the result. ``candidate`` is a
     PARAMETER rather than the round's incumbent — the question is usually what
     some candidate WOULD have measured.

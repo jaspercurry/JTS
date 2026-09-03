@@ -463,8 +463,8 @@ def rebuild_measure_program(
     )
 
 
-def _state_relay_session_id(state: Mapping[str, Any]) -> str | None:
-    """The flow state's own session id — a RELAY id, not the ring's bundle id.
+def _state_capture_session_id(state: Mapping[str, Any]) -> str | None:
+    """The flow state's own session id — a CAPTURE id, not the ring's bundle id.
 
     Two namespaces that look alike and are not: this is
     ``wired-dBetH8WEDOn8zCl5JMeAjQ``-shaped, while a ring sidecar stamps
@@ -593,11 +593,11 @@ def _scope_captures(
     caller passing a scope from one round and a state from another
     mis-attributes drive through every gate cleanly — 5/5 fidelity, zero
     refusals, an authoritative-looking ``captures.scope`` block. It is not
-    guardable today: the state's ``session_id`` is a RELAY id while the ring
+    guardable today: the state's ``session_id`` is a CAPTURE id while the ring
     stamps the BUNDLE id, nothing banked maps between them, and the capture's
     ``provenance`` block is empty on every sidecar in both shipped corpora.
     **What retires this is the capture banking its own program_id.** Until
-    then the relay id is at least RECORDED in the artifact's ``program``
+    then the capture id is at least RECORDED in the artifact's ``program``
     block, so a mis-scoped read is auditable after the fact.
     """
     if session_id is not None:
@@ -1095,10 +1095,10 @@ def read_round_harmonics(
             "crossover_fc_hz": round(fc_hz, 1),
             # WHICH round's state this program was rebuilt from, in the state's own
             # namespace. It cannot be compared against `captures.scope` (that is a
-            # BUNDLE id, this is a RELAY id, and nothing banked maps between them),
+            # BUNDLE id, this is a CAPTURE id, and nothing banked maps between them),
             # so it guards nothing at read time — it is here so the one seam
             # `_scope_captures` cannot refuse is at least AUDITABLE afterwards.
-            "state_relay_session_id": _state_relay_session_id(state),
+            "state_capture_session_id": _state_capture_session_id(state),
         },
         "captures": {
             # WHICH captures this reading is of, and by what rule they were chosen.

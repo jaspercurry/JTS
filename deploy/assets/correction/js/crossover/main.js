@@ -29,14 +29,14 @@ const els = {
   legendCorridor: document.getElementById('crossover-chart-legend-corridor'),
   legendExcluded: document.getElementById('crossover-chart-legend-excluded'),
   action: document.getElementById('crossover-action'),
-  relay: document.getElementById('crossover-relay'),
+  capture: document.getElementById('crossover-capture'),
   walk: document.getElementById('crossover-walk'),
   walkProgress: document.getElementById('crossover-walk-progress'),
   walkHeadline: document.getElementById('crossover-walk-headline'),
   walkDetail: document.getElementById('crossover-walk-detail'),
   walkAction: document.getElementById('crossover-walk-action'),
-  relayStatus: document.getElementById('crossover-relay-status'),
-  relayStop: document.getElementById('crossover-relay-stop'),
+  captureStatus: document.getElementById('crossover-capture-status'),
+  captureStop: document.getElementById('crossover-capture-stop'),
   status: document.getElementById('capture-status'),
 };
 
@@ -56,12 +56,12 @@ const RETRY_MS = 5000;
 // measurement finishes. Normal cadence resumes on visibilitychange (and on
 // the next render() call after that).
 const HIDDEN_POLL_MS = 10000;
-const RELAY_STOPPABLE = new Set(['starting', 'awaiting_phone']);
+const CAPTURE_STOPPABLE = new Set(['starting', 'awaiting_capture']);
 // Wind-down: in flight, but the captures are over and the session is draining
 // its own work. A walkthrough has nothing to say here — the status line
 // narrates it instead.
-const RELAY_WINDING_DOWN = new Set(['stopping']);
-const RELAY_IN_FLIGHT = new Set([...RELAY_STOPPABLE, ...RELAY_WINDING_DOWN]);
+const CAPTURE_WINDING_DOWN = new Set(['stopping']);
+const CAPTURE_IN_FLIGHT = new Set([...CAPTURE_STOPPABLE, ...CAPTURE_WINDING_DOWN]);
 function publicCrossoverUrl(value) {
   const raw = String(value || '');
   const pathname = typeof window !== 'undefined' && window.location
@@ -658,7 +658,7 @@ function walkKey(prompt, pending, yielded) {
 
 // The walkthrough: which spot, in the capture plan's own words, and the
 // control that says the microphone is there (#2881). Reads
-// `relay.position_pending` — the hold the position gate publishes, which until
+// `capture.position_pending` — the hold the position gate publishes, which until
 // now only `jasper-arm-walk` ever rendered.
 //
 // Transport-agnostic by construction: NOTHING here tests which source the
@@ -671,11 +671,11 @@ function walkKey(prompt, pending, yielded) {
 //
 // `yielded` steps the panel aside when the SCREEN has minted its own control
 // for this session (the closing screen's Save / Record-again, the review
-// screen's Apply) — one primary at a time, the rule the action row's relay
+// screen's Apply) — one primary at a time, the rule the action row's capture
 // gate already holds.
-function renderWalk(relay, {active, yielded}) {
-  const walking = Boolean(active && !RELAY_WINDING_DOWN.has(relay.status));
-  const held = walking ? relay.position_pending : null;
+function renderWalk(capture, {active, yielded}) {
+  const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
+  const held = walking ? capture.position_pending : null;
   const pending = held && held.hand_released ? held : null;
   if (pending && pending.prompt) walkPrompt = pending.prompt;
   if (!walking) walkPrompt = null;
@@ -719,28 +719,28 @@ function renderWalk(relay, {active, yielded}) {
 // and Stop stays wired) but yields the walkthrough to the screen that owns the
 // live control — used on the review screen, where a second live prompt beside
 // the Apply button would be a misleading second primary (W6.10 blocker #2).
-function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
-  const active = relay && RELAY_IN_FLIGHT.has(relay.status);
-  const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
-  els.relay.hidden = !active;
-  els.relayStop.hidden = !stoppable;
-  els.relayStop.disabled = stopInFlight;
+function renderCapture(capture, {suppressConnectAffordance = false} = {}) {
+  const active = capture && CAPTURE_IN_FLIGHT.has(capture.status);
+  const stoppable = capture && CAPTURE_STOPPABLE.has(capture.status);
+  els.capture.hidden = !active;
+  els.captureStop.hidden = !stoppable;
+  els.captureStop.disabled = stopInFlight;
   // Ahead of the status branches below, all of which return early: the walk is
   // a property of the SESSION, not of the branch that happens to be describing
   // it, and it has to be torn down on the terminal ones too.
-  renderWalk(relay, {active, yielded: suppressConnectAffordance});
+  renderWalk(capture, {active, yielded: suppressConnectAffordance});
   if (!active) {
-    if (relay && relay.status === 'failed') {
-      setStatus(relay.error || 'Capture failed. Retry this step.', 'bad');
-    } else if (relay && relay.status === 'stopped') {
-      setStatus(relay.error || 'Measurement stopped safely.', 'ok');
-    } else if (relay && relay.status === 'complete') {
+    if (capture && capture.status === 'failed') {
+      setStatus(capture.error || 'Capture failed. Retry this step.', 'bad');
+    } else if (capture && capture.status === 'stopped') {
+      setStatus(capture.error || 'Measurement stopped safely.', 'ok');
+    } else if (capture && capture.status === 'complete') {
       setStatus('Capture complete.', 'ok');
     }
     return;
   }
-  if (relay.status === 'stopping') {
-    els.relayStatus.textContent = 'Stopping playback and restoring the speaker safely…';
+  if (capture.status === 'stopping') {
+    els.captureStatus.textContent = 'Stopping playback and restoring the speaker safely…';
     return;
   }
   // Which of the two sentences is keyed off the same `hand_released` the
@@ -748,15 +748,15 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
   // if it waited on the reader.
   const awaitingReader = Boolean(
     !suppressConnectAffordance &&
-    relay.position_pending && relay.position_pending.hand_released,
+    capture.position_pending && capture.position_pending.hand_released,
   );
-  els.relayStatus.textContent = awaitingReader
+  els.captureStatus.textContent = awaitingReader
     ? 'The tone plays as soon as you confirm the microphone is in place.'
     : 'Measuring on the microphone plugged into the speaker.';
 }
 
-function relayIsActive(relay) {
-  return Boolean(relay && RELAY_IN_FLIGHT.has(relay.status));
+function captureIsActive(capture) {
+  return Boolean(capture && CAPTURE_IN_FLIGHT.has(capture.status));
 }
 
 // The last action row this function actually rendered, as a stable
@@ -774,29 +774,29 @@ function actionRowKey(primary, alternates) {
 }
 
 // Sole authority for what the action row shows given an envelope. Every
-// call-site (render, stopRelay's finally, runAction's finally) routes
-// through this so the relay-in-flight gate can't be forgotten or duplicated
+// call-site (render, stopCapture's finally, runAction's finally) routes
+// through this so the capture-in-flight gate can't be forgotten or duplicated
 // at one of them — the 2026-07-16 two-primary-buttons bug was exactly that:
 // runAction's finally re-rendered envelope.next_action ungated, so a second
-// primary button could appear beside the "Open phone capture" relay link.
+// primary button could appear beside the "Open phone capture" capture session.
 function renderActionRow(env) {
   if (!env) return;
-  const relayActive = relayIsActive(env.relay);
-  // The relay gate suppresses a next_action beside a live phone link so a
+  const captureActive = captureIsActive(env.capture);
+  // The capture gate suppresses a next_action beside a live phone link so a
   // second capture can't be started (the 2026-07-16 two-primary-buttons bug).
   // The review screen's Apply is the exception: it is the PRIMARY action while
-  // the just-ended stage-1 relay is still winding down, so the envelope marks
-  // it show_during_relay and it renders through (W6.10 blocker #2).
-  const showPrimary = !relayActive
-    || (env.next_action && env.next_action.show_during_relay);
+  // the just-ended stage-1 capture is still winding down, so the envelope marks
+  // it show_during_capture and it renders through (W6.10 blocker #2).
+  const showPrimary = !captureActive
+    || (env.next_action && env.next_action.show_during_capture);
   const alternates = Array.isArray(env.alternate_actions) ? env.alternate_actions : [];
-  // Only alternates the envelope explicitly marks show_during_relay survive
+  // Only alternates the envelope explicitly marks show_during_capture survive
   // the gate — e.g. the verify_fail screen's "Go back to the previous
   // tuning" / Re-measure "get me out of this" affordances must stay visible
-  // even while a relay link is live.
-  // Every other alternate stays hidden while a relay is in flight.
-  const shownAlternates = relayActive
-    ? alternates.filter((action) => action && action.show_during_relay)
+  // even while a capture session is live.
+  // Every other alternate stays hidden while a capture is in flight.
+  const shownAlternates = captureActive
+    ? alternates.filter((action) => action && action.show_during_capture)
     : alternates;
   const primary = showPrimary ? env.next_action : null;
   // W6.12: the row builder below unconditionally tears down and rebuilds
@@ -808,7 +808,7 @@ function renderActionRow(env) {
   // would come out byte-identical to what is already on screen; busy is
   // included in the key because it changes each button's baked-in
   // `disabled` without otherwise touching primary/alternates (see
-  // stopRelay/runAction/startOver's finally blocks, which rely on THIS
+  // stopCapture/runAction/startOver's finally blocks, which rely on THIS
   // function re-rendering once busy flips back to false).
   const key = actionRowKey(primary, shownAlternates);
   if (key === lastActionRowKey) return;
@@ -819,10 +819,10 @@ function renderActionRow(env) {
 // Whether the SCREEN has minted a primary the household is meant to press
 // while the session is still in flight — the review screen's Apply, and the
 // closing screen's Save / Record-again on a wired round. One primary at a
-// time: when this is true the relay block stops advertising a connect link
+// time: when this is true the capture block stops advertising a connect link
 // and the walkthrough stands down, so the two never compete.
 function screenOwnsLiveControl(env) {
-  return Boolean(env && env.next_action && env.next_action.show_during_relay);
+  return Boolean(env && env.next_action && env.next_action.show_during_capture);
 }
 
 function render(env) {
@@ -833,26 +833,26 @@ function render(env) {
   renderNudges(env.nudges, env.expert_details, env.findings);
   renderCandidateReview(env.candidate_review);
   renderCloud(els, env);
-  renderRelay(env.relay, {
+  renderCapture(env.capture, {
     suppressConnectAffordance: screenOwnsLiveControl(env),
   });
   renderActionRow(env);
-  schedulePoll(relayIsActive(env.relay) ? POLL_MS : null);
+  schedulePoll(captureIsActive(env.capture) ? POLL_MS : null);
 }
 
-async function stopRelay() {
+async function stopCapture() {
   if (stopInFlight) return;
   busy = true;
   stopInFlight = true;
   renderEpoch += 1;
-  els.relayStop.disabled = true;
+  els.captureStop.disabled = true;
   setStatus('Stopping safely…');
   try {
     const response = await postJSON(
-      publicCrossoverUrl('/correction/crossover/relay-cancel'),
+      publicCrossoverUrl('/correction/crossover/capture-cancel'),
       {},
     );
-    renderRelay(response.relay);
+    renderCapture(response.capture);
     schedulePoll(POLL_MS);
     await refresh();
   } catch (error) {
@@ -915,7 +915,7 @@ async function startOver() {
     // them — including buttons unrelated to Start-over, like "Start
     // measurement". Nothing re-rendered after busy flipped back to false, so
     // those buttons stayed disabled until a manual reload. Match the sibling
-    // pattern (stopRelay/runAction's finally) exactly: always re-render the
+    // pattern (stopCapture/runAction's finally) exactly: always re-render the
     // action row against the now-correct busy=false.
     renderActionRow(envelope);
   }
@@ -929,22 +929,22 @@ async function runAction(action, button) {
   renderEpoch += 1;
   button.disabled = true;
   setStatus('Working…');
-  let relayStarted = false;
+  let captureStarted = false;
   try {
     const response = await postJSON(
       publicCrossoverUrl(action.endpoint),
       action.body || {},
     );
-    relayStarted = Boolean(response && response.relay);
-    if (relayStarted) {
-      renderRelay(response.relay);
-      // The response's relay hasn't landed in `envelope` yet (that happens
+    captureStarted = Boolean(response && response.capture);
+    if (captureStarted) {
+      renderCapture(response.capture);
+      // The response's capture hasn't landed in `envelope` yet (that happens
       // inside refresh() below) — hide the action row immediately against
-      // the relay we just started rather than waiting a round trip.
-      renderActionRow({relay: response.relay, next_action: null, alternate_actions: []});
+      // the capture we just started rather than waiting a round trip.
+      renderActionRow({capture: response.capture, next_action: null, alternate_actions: []});
       schedulePoll(POLL_MS);
     }
-    setStatus(response && response.relay ? 'Measurement started.' : 'Updated.', 'ok');
+    setStatus(response && response.capture ? 'Measurement started.' : 'Updated.', 'ok');
     await refresh();
   } catch (error) {
     const failureMessage = error && error.message ? error.message : String(error);
@@ -985,12 +985,12 @@ async function runAction(action, button) {
     }
   } finally {
     busy = false;
-    // If relay registration succeeded but refresh failed, keep the old action
+    // If capture registration succeeded but refresh failed, keep the old action
     // hidden. Showing it beside a live phone link would permit a second run.
-    // renderActionRow re-applies the relay gate against the latest known
+    // renderActionRow re-applies the capture gate against the latest known
     // envelope. The prior version of this block rendered envelope.next_action
     // directly, without that gate — the 2026-07-16 two-primary-buttons bug.
-    if (!relayStarted) {
+    if (!captureStarted) {
       renderActionRow(envelope);
       // Same reason, same latest-known envelope: the walk's release button was
       // built while busy was still true (render() ran inside the refresh
@@ -998,8 +998,8 @@ async function runAction(action, button) {
       // clear until the next poll — a full second and a half in which the
       // household's next spot looks refused.
       if (envelope) {
-        renderWalk(envelope.relay, {
-          active: relayIsActive(envelope.relay),
+        renderWalk(envelope.capture, {
+          active: captureIsActive(envelope.capture),
           yielded: screenOwnsLiveControl(envelope),
         });
       }
@@ -1048,7 +1048,7 @@ function refresh() {
 }
 
 if (typeof document !== 'undefined') {
-  els.relayStop.addEventListener('click', stopRelay);
+  els.captureStop.addEventListener('click', stopCapture);
   els.startOver.addEventListener('click', startOver);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {

@@ -2107,8 +2107,8 @@ def test_unarmed_renderer_lanes_report_ok(monkeypatch):
     branch, which made EVERY unarmed box render a failure and exit 1
     (AGENTS.md: "Returns 0 if all critical checks pass"). Unarmed/
     unconfigured-is-ok is the established doctor convention —
-    check_chip_reference (this same domain), Spotify auth, the capture
-    relay, and Google integrations all return ok + a skipped-style detail.
+    check_chip_reference (this same domain), Spotify auth and Google
+    integrations all return ok + a skipped-style detail.
     """
     import jasper.renderer_lanes as rl
 

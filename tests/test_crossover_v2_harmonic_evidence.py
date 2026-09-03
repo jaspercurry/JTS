@@ -139,7 +139,7 @@ def _artifact(n_roles: int = 1) -> dict[str, Any]:
         "program": {
             "program_id": "b542773d8a8d",
             "crossover_fc_hz": 1648.7,
-            "state_relay_session_id": "wired-TESTONLY",
+            "state_capture_session_id": "wired-TESTONLY",
         },
         "captures": {"n_read": n_roles, "n_refused": 0, "refused": []},
         "calibration": {"applied": False},
@@ -533,7 +533,7 @@ def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
     """The one seam `_scope_captures` cannot refuse is at least auditable.
 
     Nothing checks that the ``--state`` belongs to the round the scope selects:
-    the state's id is a RELAY id and the ring stamps a BUNDLE id, two
+    the state's id is a CAPTURE id and the ring stamps a BUNDLE id, two
     namespaces with no banked mapping between them, so a mismatched pair
     publishes a wrong drive through every gate cleanly. Recording the state's
     own id does not refuse that — it makes it checkable afterwards, which is
@@ -542,15 +542,15 @@ def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
     Pinned on both halves: the writer resolves it, and the packet carries it
     (a recorded fact with no reader is not an audit trail).
     """
-    assert he._state_relay_session_id({"session_id": "wired-abc"}) == "wired-abc"
+    assert he._state_capture_session_id({"session_id": "wired-abc"}) == "wired-abc"
     # Absent, empty, and non-string all resolve to None rather than to a value
     # a reader might compare against something.
-    assert he._state_relay_session_id({}) is None
-    assert he._state_relay_session_id({"session_id": ""}) is None
-    assert he._state_relay_session_id({"session_id": 7}) is None
+    assert he._state_capture_session_id({}) is None
+    assert he._state_capture_session_id({"session_id": ""}) is None
+    assert he._state_capture_session_id({"session_id": 7}) is None
 
     packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
-    assert packet["harmonics"]["program"]["state_relay_session_id"] == "wired-TESTONLY"
+    assert packet["harmonics"]["program"]["state_capture_session_id"] == "wired-TESTONLY"
 
 
 def test_the_crossover_corner_is_read_from_the_applied_profile_not_a_flag():

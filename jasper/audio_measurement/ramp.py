@@ -70,7 +70,7 @@ LISTENING_POSITION_CAP_BUMP_DB = 15.0
 LISTENING_POSITION_CAP_CEIL_DB = HARD_CEILING_DBFS
 
 # Worst-case expected gap between consecutive phone samples reaching the kernel
-# (≤2 Hz batches behind the relay's ~0.75 s poll). Budgets the derived safety
+# (≤2 Hz batches behind the ~0.75 s status poll). Budgets the derived safety
 # timeout -- not a gate.
 SAMPLE_BUDGET_S = 1.5
 
@@ -160,7 +160,7 @@ TERMINAL_STATES = frozenset(
 class LevelSample:
     """One phone-reported mic-level sample.
 
-    Batched, client-timestamped sample arrays ride the relay's last-write-wins
+    Batched, client-timestamped sample arrays ride the last-write-wins
     ``event`` slot, so the Pi's ~0.75 s poll never decimates the series.
     ``rms_dbfs`` / ``peak_dbfs`` are computed on the phone the same way the Pi's
     ``quality._dbfs`` computes them; ``clip`` marks a full-scale sample
@@ -645,7 +645,7 @@ class RampData:
 
 
 # A source of the next batch of phone-reported samples. Injected so the loop is
-# testable with a synthetic feed; the real feed polls the relay (rate-limited
+# testable with a synthetic feed; the real feed polls ``/status`` (rate-limited
 # feed-side). An empty list means "no new samples this tick" and the loop keeps
 # its clock running.
 SampleSource = Callable[[], Awaitable[list[LevelSample]]]

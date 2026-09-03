@@ -371,7 +371,7 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path):
         run_async=lambda coro: None,
         camilla_factory=lambda: object(),
         evidence_store=SimpleNamespace(bundle_dir=tmp_path),
-        relay_session_id="door_pin",
+        capture_session_id="door_pin",
         topology=topology,
         preset=preset,
         role_channels={"woofer": 0, "tweeter": 1},

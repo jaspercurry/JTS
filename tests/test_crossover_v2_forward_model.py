@@ -110,7 +110,7 @@ def _bank_take(
     """
 
     positions = (
-        tmp_path / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "relay-1"
+        tmp_path / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "capture-1"
         / "positions"
     )
     positions.mkdir(parents=True, exist_ok=True)

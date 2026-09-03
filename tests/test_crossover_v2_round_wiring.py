@@ -139,7 +139,7 @@ from tests.crossover_v2_round_harness import (
 # idiom for "this module-level name is deliberate", and it says so without
 # spending a lint suppression against the repo's frozen noqa budget.
 from tests.test_crossover_v2_stage_bridge import (
-    _MINTED_RELAY_SESSION_ID,
+    _MINTED_CAPTURE_SESSION_ID,
     _flow_seams,
     _isolated_v2_state as _isolated_v2_state,
     _open_prepared,
@@ -181,7 +181,7 @@ def _hydrated_series_position(conductor: Any) -> Any:
 
 
 
-def _round_receipt_json(store: Any, relay_session_id: str) -> dict[str, Any]:
+def _round_receipt_json(store: Any, capture_session_id: str) -> dict[str, Any]:
     """The receipt as it sits in the bundle, read off the filesystem.
 
     Read as bytes rather than through the store's own reader, because "the
@@ -197,7 +197,7 @@ def _round_receipt_json(store: Any, relay_session_id: str) -> dict[str, Any]:
         .joinpath(*EVIDENCE_ROOT.split("/"))
         / "artifacts"
         / "crossover_v2"
-        / relay_session_id
+        / capture_session_id
         / "round_receipt.json"
     )
     return json.loads(path.read_text(encoding="utf-8"))
@@ -798,7 +798,7 @@ def test_a_rejected_verify_keeps_its_own_code_and_burns_no_round(
     # …and nothing landed in the write-once bundle either, which is the fact
     # that actually matters: the receipt cannot be amended later.
     with pytest.raises(FileNotFoundError):
-        _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+        _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
     # Nothing was done to the speaker either: the shipped verify-fail path
     # already owns what happens next.
     assert attempts == []
@@ -874,9 +874,9 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
     assert verdict.accepted is True
 
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
 
-    assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
+    assert receipt["round_id"] == _MINTED_CAPTURE_SESSION_ID
     assert receipt["adoption"]["outcome"] == (
         AdoptionOutcome.KEEP_FOR_ITERATION.value
     )
@@ -892,7 +892,7 @@ def test_the_round_receipt_lands_in_the_bundle_fingerprinted_and_readable(
     core = {key: value for key, value in receipt.items() if key != "fingerprint"}
     assert receipt["fingerprint"] == json_fingerprint(core)
     identity = conductor.round_receipt_identity
-    assert identity["round_id"] == _MINTED_RELAY_SESSION_ID
+    assert identity["round_id"] == _MINTED_CAPTURE_SESSION_ID
     assert identity["receipt_fingerprint"] == receipt["fingerprint"]
     assert identity["artifact_fingerprint"]
 
@@ -942,7 +942,7 @@ def test_a_quieter_only_shape_miss_reaches_the_table_instead_of_the_seam(
     assert attempts == [], "no Undo may run for a quieter-only shape miss"
     assert verdict.accepted is True
 
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
     # The deferral reaches the record through the axis that now reads it: the
     # quality axis declined to escalate, and names the class it declined on.
     assert receipt["round_axes"]["quality"]["evidence"]["probe_rollback_class"] == ""
@@ -1006,7 +1006,7 @@ def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(
     _consume_verify(conductor, _post_apply_analysis(conductor))
     assert attempts == [1]
 
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
 
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
     assert receipt["restore_result"]["attempted"] is True
@@ -1068,7 +1068,7 @@ def test_the_receipt_names_the_proposal_that_was_made(monkeypatch, real_bundle):
     )
     assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted is True
 
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
 
     assert receipt["proposal_fingerprint"] == _PROPOSAL_FP
     assert receipt["proposal_fingerprint_kind"] == "intervention_proposal"
@@ -1097,7 +1097,7 @@ def test_a_pre_2392_stage_1_still_gets_a_receipt_and_it_says_so(
     assert conductor.measure_proposal_fingerprint == ""
     assert _consume_verify(conductor, _post_apply_analysis(conductor)).accepted is True
 
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
 
     assert receipt["proposal_fingerprint"] == "fp-stage-1"
     assert receipt["proposal_fingerprint_kind"] == "candidate"
@@ -1126,7 +1126,7 @@ def test_two_receipts_from_the_two_regimes_are_told_apart_by_the_receipt_itself(
     _install_entry_baseline(conductor, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
     _consume_verify(conductor, _post_apply_analysis(conductor))
-    new_regime = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    new_regime = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
 
     # The pre-#2392 record, as a banked artifact would present it: the key is
     # ABSENT, not empty. That is the third state, and it is the one a reader
@@ -1191,7 +1191,7 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
     payload = written[0]
     assert payload["proposal_fingerprint"] == _PROPOSAL_FP
     assert payload["proposal_fingerprint_kind"] == "intervention_proposal"
-    assert payload["round_id"] == _MINTED_RELAY_SESSION_ID
+    assert payload["round_id"] == _MINTED_CAPTURE_SESSION_ID
     # The bytes handed to the seam ARE the receipt: same digest, and it is the
     # digest the session then reports.
     core = {key: value for key, value in payload.items() if key != "fingerprint"}
@@ -1199,7 +1199,7 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
     assert conductor.round_receipt_identity["receipt_fingerprint"] == (
         payload["fingerprint"]
     )
-    assert _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID) == payload
+    assert _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID) == payload
 
 
 # --------------------------------------------------------------------------- #
@@ -2012,8 +2012,8 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     # from the round id alone.
     identity = conductor.round_receipt_identity
     assert identity is not None
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
-    assert receipt["round_id"] == _MINTED_RELAY_SESSION_ID
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
+    assert receipt["round_id"] == _MINTED_CAPTURE_SESSION_ID
     # The receipt records the same answer the evaluation reached — #2602's
     # row 6, not row 1. A receipt that still said "keep" here would be the
     # banked artifact disagreeing with the screen.
@@ -2077,7 +2077,7 @@ def test_the_full_tier_restores_a_measured_regression_at_the_cloud_close(
     # reaches the screen is the round's.
     assert verdict.accepted is False
     assert verdict.code == REASON_CORRECTION_MEASURED_REGRESSION
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
 
 
@@ -2180,7 +2180,7 @@ def test_a_probe_rollback_at_the_cloud_close_banks_its_round(
     assert quality.evidence["probe_rollback_class"] == VERDICT_MODEL_ERROR
 
     # The receipt exists, and records what the restore DID.
-    receipt = _round_receipt_json(real_bundle, _MINTED_RELAY_SESSION_ID)
+    receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
     assert receipt["adoption"]["outcome"] == AdoptionOutcome.RESTORE.value
     assert receipt["restore_result"]["attempted"] is True
     assert receipt["restore_result"]["restored"] is True

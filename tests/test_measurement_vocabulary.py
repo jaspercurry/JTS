@@ -6,7 +6,7 @@
 
 Issue #1941 R4, design principle 6: *"The actor is the microphone. Never 'the
 phone' in household-facing copy."* The instrument a household holds in front of
-the speaker is whatever browser can reach the relay — the 2026-07-30 bench ran a
+the speaker is whatever browser can reach the wizard — the 2026-07-30 bench ran a
 **UMIK-2** while the wizard told the household its *phone* had drifted (#1924).
 A laptop is equally legal. So the copy names the microphone, or the measurement
 page, and never the shape of the device.
@@ -14,9 +14,8 @@ page, and never the shape of the device.
 **This guard is a curated constant list, deliberately NOT a repo-wide grep.**
 Roughly 800 occurrences of "phone" across the tree are internal and must stay:
 protocol keys (``phone-event``), wire error strings (``phone never armed``),
-relay endpoints (``/phone-status``), element ids (``phone-mic-select``), mic-tier
-vocabulary (``MIC_TIERS``), the ``phone-mic capture relay`` subsystem name in
-docstrings, and every source-of-a-phone surface that genuinely means a phone
+element ids (``phone-mic-select``), mic-tier vocabulary (``MIC_TIERS``), and
+every source-of-a-phone surface that genuinely means a phone
 (Spotify Connect, Bluetooth pairing, AirPlay senders, OAuth hand-offs). A blanket
 scan would either fail on all of those or be silenced into uselessness.
 
@@ -57,7 +56,7 @@ PHONE_WORD_RE = re.compile(r"(?:^|[^A-Za-z])[Pp]hones?(?:[^A-Za-z]|$)")
 # That third mode exists because the first review of this guard proved a real
 # hole: run against ``deploy/index.html`` as if it were JS, the extractor found
 # 919 string literals and ZERO "phone" hits while the landing page was rendering
-# "Phone measurement relay" in plain sight. Element text is simply not a string
+# "Phone measurement" in plain sight. Element text is simply not a string
 # literal. Reading such a file with the JS extractor is worse than not listing it
 # — it reports clean and means nothing.
 
@@ -116,13 +115,12 @@ SWEPT_SURFACES: tuple[str, ...] = (
 # would exempt the page. The value is the reason the fragment is not copy.
 
 ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
-    # --- Wire / protocol vocabulary. Renaming these is a relay protocol change,
+    # --- Wire / protocol vocabulary. Renaming these is a wire protocol change,
     # not a copy change, and both sides of the transport already agree on them.
-    "awaiting_phone": "relay session state on the wire",
     "phone_feed_lost": "canonical snake_case refusal code (reason= log key)",
     "phone_never_armed": "canonical snake_case refusal code",
     "cancelled_before_phone_armed": "canonical snake_case refusal code",
-    "phone_aborted": "capture-page abort reason posted to the relay",
+    "phone_aborted": "abort reason the capture page posts",
     # --- Raw ramp error strings: the KEYS of the refusal tables, i.e. the
     # verbatim `error` the audio-measurement ramp emits, pinned by
     # tests/test_audio_measurement_ramp.py. Only their VALUES are household copy.

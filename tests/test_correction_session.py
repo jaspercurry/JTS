@@ -1135,7 +1135,7 @@ async def test_needs_noise_capture_times_out_to_failed(tmp_path: Path):
 async def test_human_setup_can_suspend_and_resume_capture_watchdog_on_loop(
     tmp_path: Path,
 ):
-    # Relay level setup is deliberately human-paced (permission,
+    # Level setup is deliberately human-paced (permission,
     # mic/calibration, placement, then auto-level). Pause the local upload
     # watchdog for that sub-flow, then restore a fresh bound so an abandoned
     # room capture still self-recovers.
@@ -1327,7 +1327,7 @@ async def test_begin_reset_releases_its_intent_when_quiescence_fails(
     assert await sess.release_autolevel_run_reservation(token) is True
 
 
-async def test_emergency_stop_gracefully_reaps_active_relay_level_ramp(
+async def test_emergency_stop_gracefully_reaps_active_level_ramp(
     tmp_path: Path,
 ):
     sess = _make_session(tmp_path)
@@ -1361,7 +1361,7 @@ async def test_emergency_stop_gracefully_reaps_active_relay_level_ramp(
             wait_for_armed=False,
         )
     )
-    await wait_signalled(tone_started, "level-match relay tone started", producer=running)
+    await wait_signalled(tone_started, "level-match tone started", producer=running)
 
     intent = await sess.begin_autolevel_reset()
     assert await sess.stop_background_audio_for_reset() is True

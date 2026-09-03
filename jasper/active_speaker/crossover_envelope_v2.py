@@ -14,7 +14,7 @@ directly or via
 ``jasper.web.correction_crossover_flow._build_envelope_logged`` — the only
 crossover flow since W5b retired the legacy schema-6 envelope. It emits
 the envelope dict shape (``schema_version`` / ``screen`` / ``steps`` /
-``verdict_text`` / ``nudges`` / ``relay`` / ``next_action`` /
+``verdict_text`` / ``nudges`` / ``capture`` / ``next_action`` /
 ``alternate_actions`` / ``progress`` / ``applied``) the generic
 data-driven JS renderer consumes, needing no v2-specific code. Schema
 version is :data:`CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION` below, read from
@@ -125,7 +125,7 @@ logger = logging.getLogger(__name__)
 # removed or re-typed, so an unredeployed page is unaffected). Exists for
 # the EXTERNAL DRIVER chaining rounds, which needs a stable way to know a
 # contract is present rather than probing a key that is `null` pre-VERIFY.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 15
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 16
 
 # The v2 step tuple (§5.9): these five are the whole journey.
 _STEP_IDS = (
@@ -952,9 +952,9 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     group-close confirm open — household has something to do) and
     ``running`` (confirmed, combine+fit in flight — the one screen that
     sets ``busy``). Not the review screen. No SCREEN-LEVEL actions (all
-    are destructive of in-progress work; Stop rides the relay block). The
+    are destructive of in-progress work; Stop rides the capture block). The
     confirm belongs to the household here (#2881): mints Save/Record-again
-    against ``/v2/complete``/``/v2/retake``, both ``show_during_relay``.
+    against ``/v2/complete``/``/v2/retake``, both ``show_during_capture``.
     NOT while a capture is held — a screen-level primary would suppress
     the walkthrough rendering the hold.
     """
@@ -962,15 +962,15 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
 
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
-    relay = _mapping(status.get("relay"))
+    capture = _mapping(status.get("capture"))
     # Derived from durable ``cloud_close``, not the slot, so it also
     # renders after the walk ended un-confirmed. The two moves below POST
     # into signals the slot drops once out of an in-flight status.
     live = bool(
-        str(relay.get("status") or "")
-        and str(relay.get("status")) not in SESSION_ENDED_STATUSES
+        str(capture.get("status") or "")
+        and str(capture.get("status")) not in SESSION_ENDED_STATUSES
     )
-    held = bool(relay.get("position_pending"))
+    held = bool(capture.get("position_pending"))
     ready = live and not running and not held
     if running:
         verdict = (
@@ -999,14 +999,14 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "label": "Save this measurement",
             "endpoint": "/correction/crossover/v2/complete",
             "body": {},
-            "show_during_relay": True,
+            "show_during_capture": True,
         } if ready else None,
         alternate_actions=[{
             "id": "crossover_v2_retake",
             "label": "Record the last spot again",
             "endpoint": "/correction/crossover/v2/retake",
             "body": {},
-            "show_during_relay": True,
+            "show_during_capture": True,
         }] if ready else [],
         busy=running,
         status=status,
@@ -1091,7 +1091,7 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "body": {},
             # W6.12's escape hatch: a `stopping` session would otherwise
             # blanket-hide every alternate, stranding the household.
-            "show_during_relay": True,
+            "show_during_capture": True,
         },
         {
             "id": "review_decline",
@@ -1114,14 +1114,14 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             # flow (#1985). Declining changes nothing, so the honest destination
             # is where the journey started.
             "href": "/correction/crossover/",
-            "show_during_relay": True,
+            "show_during_capture": True,
         },
     ]
     if preflight_action and show_preflight_refusal:
         # The refusal's own resolution control, from the SAME registry entry the
         # hard-stop screen reads — one click to the fix rather than prose. Gated
         # identically to the sentence above.
-        alternate_actions.insert(0, {**preflight_action, "show_during_relay": True})
+        alternate_actions.insert(0, {**preflight_action, "show_during_capture": True})
 
     return _envelope(
         screen="review",
@@ -1134,9 +1134,9 @@ def _review_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "endpoint": "/correction/crossover/v2/apply",
             "body": {"expected_candidate_fingerprint": fingerprint},
             "enabled": apply_enabled,
-        # The ``show_during_relay`` primary is what keeps Apply visible (and owns
-        # the phone affordance) while the just-closed relay winds down.
-            "show_during_relay": True,
+        # The ``show_during_capture`` primary is what keeps Apply visible
+        # while the just-closed capture winds down.
+            "show_during_capture": True,
         } if has_candidate else None,
         alternate_actions=alternate_actions,
         status=status,
@@ -1934,7 +1934,7 @@ def _envelope(
     status: Mapping[str, Any],
     candidate_review: Mapping[str, Any] | None = None,
     expert_details: list[str] | None = None,
-    advertise_relay: bool = True,
+    advertise_capture: bool = True,
     prediction: Mapping[str, Any] | None = None,
     busy: bool = False,
     findings: list[dict[str, str]] | None = None,
@@ -1952,7 +1952,7 @@ def _envelope(
         "expert_details": list(expert_details or []),
         # A terminal / restart screen must stop advertising the dead phone link
         # and its QR (W6.10 fold-in) — the session it pointed at is gone.
-        "relay": (_mapping(status.get("relay")) or None) if advertise_relay else None,
+        "capture": (_mapping(status.get("capture")) or None) if advertise_capture else None,
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
         # MACHINE-paced: speaker working, household waits. Declared for the
@@ -2037,18 +2037,17 @@ def _way_back_action(status: Mapping[str, Any]) -> list[dict[str, Any]]:
         "label": "Go back to the previous tuning",
         "endpoint": "/correction/crossover/v2/republish",
         "body": {"fingerprint": fingerprint},
-        "show_during_relay": True,
+        "show_during_capture": True,
     }]
 
 
 # --- session recency (issues #1942, #1947) -----------------------------------
 
 #: How long a dated record keeps rendering as the LIVE screen. A clock,
-#: not a structural signal, since relay liveness changes the WRONG WAY (a
-#: terminal failure purges its relay within 3s). 30 minutes: these screens
+#: not a structural signal, since capture liveness changes the WRONG WAY (a
+#: terminal failure purges its capture within 3s). 30 minutes: these screens
 #: are read and acted on in seconds to minutes; erring long is the
-#: conservative direction. Not borrowed from the relay's
-#: ``DEFAULT_TTL_S``, the lifetime of a link already dead by then.
+#: conservative direction.
 SESSION_FRESH_WINDOW_S = 30 * 60.0
 
 # The one-line history note's reason clause, keyed on the reason's
@@ -2078,15 +2077,15 @@ def _record_is_fresh(record: Mapping[str, Any]) -> bool:
 def _session_is_live(status: Mapping[str, Any]) -> bool:
     """Is the durable state's session the one the household is in RIGHT
     NOW? A session can end without persisting a terminal failure (#1947).
-    Clock is the state file's own ``updated_at``. A NON-TERMINAL relay
+    Clock is the state file's own ``updated_at``. A NON-TERMINAL capture
     block short-circuits it (a held slot proves the session isn't over,
     and must win — a commission's wall-clock ceiling is 3600s, double
     this window). Unknown statuses read as in flight.
     """
     from .arm_walk import SESSION_ENDED_STATUSES
 
-    relay_status = str(_mapping(status.get("relay")).get("status") or "")
-    if relay_status and relay_status not in SESSION_ENDED_STATUSES:
+    capture_status = str(_mapping(status.get("capture")).get("status") or "")
+    if capture_status and capture_status not in SESSION_ENDED_STATUSES:
         return True
     return _record_is_fresh({"at": _v2(status).get("updated_at")})
 
@@ -2235,7 +2234,7 @@ def _verify_fail_envelope(
     for ``verify_deterministic_mismatch``, whose verdict IS that a
     second attempt agreed with the first, Re-measure is promoted to
     primary instead — keyed on the code's own registry row, template AND
-    budget. ``show_during_relay`` on the alternates (W6.12) keeps them
+    budget. ``show_during_capture`` on the alternates (W6.12) keeps them
     reachable while a capture is still transitioning (``stopping``);
     ``verify_retry`` deliberately omits it, since starting a brand-new
     session during teardown is the race the gate prevents.
@@ -2246,7 +2245,7 @@ def _verify_fail_envelope(
         "endpoint": "/correction/crossover/v2/session",
         "body": {},
         "expert": True,
-        "show_during_relay": True,
+        "show_during_capture": True,
     }
     own_spec = REASON_REGISTRY.get(code)
     retriable = not (
@@ -2265,7 +2264,7 @@ def _verify_fail_envelope(
             "body": {},
         } if retriable else {
             # Promoted, not duplicated — leaves the alternate list below.
-            # ``show_during_relay`` is KEPT: on a primary the wizard reads
+            # ``show_during_capture`` is KEPT: on a primary the wizard reads
             # it as ``suppressConnectAffordance`` and hides the phone QR,
             # which is wanted since this verdict ENDS the capture session.
             **{k: v for k, v in remeasure.items() if k != "expert"},
@@ -2379,7 +2378,7 @@ def _failure_envelope(
             status=status,
         )
     if template == TEMPLATE_HARD_STOP:
-        # Keeps the relay block (Finding D): failure copy and phone status
+        # Keeps the capture block (Finding D): failure copy and phone status
         # stay visible together. A ReasonSpec's own destination (#1820)
         # wins over this screen's generic one.
         return _envelope(
@@ -2405,7 +2404,7 @@ def _failure_envelope(
             status=status,
             # The session this screen replaced is dead — don't re-advertise
             # its phone link/QR (W6.10). Start over mints a fresh one.
-            advertise_relay=False,
+            advertise_capture=False,
         )
     if template == TEMPLATE_VERIFY_FAIL:
         # One default ("Try again") plus the way back; the explicit trio
@@ -2454,7 +2453,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "This speaker has no active crossover. Continue with room correction."
             ),
             "nudges": [],
-            "relay": _mapping(status.get("relay")) or None,
+            "capture": _mapping(status.get("capture")) or None,
             "next_action": {
                 "id": "room", "label": "Correct the room", "href": "/correction/room/",
             },
@@ -2639,12 +2638,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             verdict=verdict,
             # STAGE 2's entry point (D2, PR-T3). The measuring session ended at
             # the review screen, so the post-apply check is a NEW session somebody
-            # has to start — deliberately, because the relay TTL begins ticking at
-            # open while the household is still walking back to fetch the phone.
+            # has to start — deliberately, because the session TTL begins
+            # ticking at open while the household is still walking back to the
+            # microphone.
             #
-            # No ``show_during_relay``: while stage 2's own relay IS in flight
+            # No ``show_during_capture``: while stage 2's own capture IS in flight
             # this screen renders the same copy with the action suppressed by the
-            # shared relay gate — one button to start it, none to start it twice.
+            # shared capture gate — one button to start it, none to start it twice.
             next_action={
                 "id": "verify_start",
                 "label": "Check the result",

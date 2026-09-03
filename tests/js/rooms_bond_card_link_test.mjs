@@ -4,7 +4,7 @@
 
 // Issue #1842: the bond card's balance block used to render an
 // `https://<hostname>/balance/` link ("Balance automatically with a
-// microphone") — a relay design ADR-0188 parked. On the self-signed origin
+// microphone") — a capture design ADR-0188 parked. On the self-signed origin
 // that link fails hard (ERR_CERT_AUTHORITY_INVALID). This pins that the card
 // never builds an anchor at all: only the manual slider/reset controls.
 //

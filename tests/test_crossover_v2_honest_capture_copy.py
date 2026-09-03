@@ -40,7 +40,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
     REASON_REGISTRY,
-    REASON_RELAY_TIMEOUT,
+    REASON_CAPTURE_TIMEOUT,
     locate_failed_diagnosis,
     locate_failed_message,
     reason_message,
@@ -255,7 +255,7 @@ def test_the_registry_holds_the_no_evidence_rendering():
 def test_the_selector_is_the_one_voice_for_every_surface(pilot_heard):
     """One failure, one account of it.
 
-    The relay verdict, the budget refusal, and the envelope each render this
+    The capture verdict, the budget refusal, and the envelope each render this
     sentence from their own surface. They agree because they all ask
     :func:`reason_message`; a caller that went back to ``spec.message`` would
     break this.
@@ -396,7 +396,7 @@ def test_the_persisted_failure_reaches_the_envelope_with_its_evidence(
 ):
     """The production link, end to end — conductor to state file to screen.
 
-    Every other test here stops at ``to_relay_dict`` or feeds the envelope a
+    Every other test here stops at ``to_capture_dict`` or feeds the envelope a
     hand-built dict, so between them the real write was unpinned: deleting the
     ``pilot_heard`` write from ``persist_conductor_state`` left the whole
     targeted suite green while every real session silently reverted to the
@@ -421,8 +421,8 @@ def test_a_persisted_code_never_carries_another_failures_evidence(
 ):
     """The caller-side half of the pairing rule.
 
-    The relay-death arm persists ``relay_timeout`` over whatever the last
-    capture failed on. Ungated, that wrote ``{"code": "relay_timeout",
+    The capture-death arm persists ``capture_timeout`` over whatever the last
+    capture failed on. Ungated, that wrote ``{"code": "capture_timeout",
     "pilot_heard": True}`` — one failure's code with another's evidence. Only
     ``locate_failed`` reads the key today, so no wrong sentence shipped, but
     the record is the thing a later reader trusts.
@@ -435,10 +435,10 @@ def test_a_persisted_code_never_carries_another_failures_evidence(
     _run_phase(c, 1, 1)
     assert c.last_failure_pilot_heard is True
 
-    v2host.persist_conductor_state(c, failure_code=REASON_RELAY_TIMEOUT)
+    v2host.persist_conductor_state(c, failure_code=REASON_CAPTURE_TIMEOUT)
 
     failure = v2host.load_v2_state()["failure"]
-    assert failure["code"] == REASON_RELAY_TIMEOUT
+    assert failure["code"] == REASON_CAPTURE_TIMEOUT
     assert "pilot_heard" not in failure
 
 

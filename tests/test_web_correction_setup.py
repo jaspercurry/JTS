@@ -196,7 +196,7 @@ def test_render_has_one_root_for_each_envelope_section():
         assert html.count(f'data-envelope-section="{section_id}"') == 1
 
     for deleted_id in (
-        "relay-panel", "relay-start-capture", "advanced-correction-options",
+        "advanced-correction-options",
         "mic-panel", "measurement-reports", "measure-section",
         "run-measurement", "apply-correction", "verify-correction",
         "repeat-position", "continue-position", "start",
@@ -551,7 +551,7 @@ def test_known_post_routes_reach_csrf_guard():
         "/balance/reset",
         "/sync/start", "/sync/play", "/sync/analyze",
         "/sync/apply", "/sync/stop", "/sync/reset",
-        "/crossover/relay-cancel",
+        "/crossover/capture-cancel",
         "/crossover/reset", "/crossover/recover-volume",
         # v2 conductor flow (Wave 5a) — the only crossover-measurement flow
         # since W5b retired the legacy per-driver flow and the
@@ -584,7 +584,7 @@ def test_known_post_routes_reach_csrf_guard():
             f"{route} should reach the CSRF guard (403)"
         )
 
-    # Driver evidence requires the relay's signal-bounded quiet crop + repeat
+    # Driver evidence requires the capture's signal-bounded quiet crop + repeat
     # state machine. The former raw-WAV single-shot route had no product caller
     # and is deliberately absent rather than implicitly accepting null SNR.
     response = _drive("/crossover/driver-capture", method="POST", body=b"wav")
@@ -647,7 +647,7 @@ def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
         raise CrossoverV2FlowError(raw_text)
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _raise_flow_error
+        correction_setup, "_handle_crossover_v2_capture", _raise_flow_error
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
@@ -667,16 +667,16 @@ def test_the_500_arm_still_reports_unmapped_failures_verbatim(monkeypatch):
     )
 
     def _raise_oserror(*_a, **_k):
-        raise OSError("relay socket vanished")
+        raise OSError("capture socket vanished")
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _raise_oserror
+        correction_setup, "_handle_crossover_v2_capture", _raise_oserror
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
     assert b"500" in resp.split(b"\r\n", 1)[0]
     body = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
-    assert body["error"] == "relay socket vanished"
+    assert body["error"] == "capture socket vanished"
 
 
 def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
@@ -713,7 +713,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
         )
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _refuse_coded
+        correction_setup, "_handle_crossover_v2_capture", _refuse_coded
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
 
@@ -735,7 +735,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
         )
 
     monkeypatch.setattr(
-        correction_setup, "_handle_crossover_v2_relay", _refuse_uncoded
+        correction_setup, "_handle_crossover_v2_capture", _refuse_uncoded
     )
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
     plain = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
@@ -756,7 +756,7 @@ def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
     monkeypatch.setattr(
         correction_setup, "guard_mutating_request", lambda handler: True
     )
-    monkeypatch.setattr(correction_setup, "_handle_crossover_v2_relay", _refuse)
+    monkeypatch.setattr(correction_setup, "_handle_crossover_v2_capture", _refuse)
     caplog.set_level(logging.WARNING, logger=correction_setup.logger.name)
 
     resp = _drive("/crossover/v2/session", method="POST", body=b"{}")
@@ -1506,7 +1506,7 @@ def test_upload_handler_auto_revert_failure_still_returns_ok(
     assert "Reset" in env["verdict_text"]
 
 
-# --- W6.1 Findings D + E2: v2 relay visibility + recover-volume routing ----------
+# --- W6.1 Findings D + E2: v2 capture visibility + recover-volume routing ----------
 
 
 class _CleanSessionVolumePlan:
@@ -1519,30 +1519,29 @@ class _CleanSessionVolumePlan:
         return False
 
 
-def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
-    """Finding D: /crossover/envelope's relay lookup must match crossover_v2:* —
-    it filtered only crossover_sweep:/level_ramp:crossover, so ``relay`` came
-    back null during an awaiting-phone v2 session and a page reload lost the tap
-    link (and the failure copy never reached the household)."""
+def test_crossover_envelope_surfaces_the_v2_capture_slot(monkeypatch):
+    """Finding D: /crossover/envelope's capture lookup must match crossover_v2:*
+    — it filtered only crossover_sweep:/level_ramp:crossover, so ``capture`` came
+    back null during a live v2 session and a page reload lost the session's
+    status (and the failure copy never reached the household)."""
     import json
 
     from jasper.web import correction_crossover_v2 as v2host
 
     v2host.set_volume_plan_for_tests(_CleanSessionVolumePlan())
-    correction_setup._set_relay_capture({
-        "tap_link": "https://capture.test/#s=cap_x",
+    correction_setup._set_capture_slot({
         "status": "waiting",
-        "kind": v2host.V2_RELAY_KIND_SESSION,
+        "kind": v2host.V2_CAPTURE_KIND_SESSION,
     })
     try:
         resp = _drive("/crossover/envelope")
         assert b"200" in resp.split(b"\r\n", 1)[0]
         body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
-        assert body["relay"] is not None
-        assert body["relay"]["tap_link"] == "https://capture.test/#s=cap_x"
-        assert body["relay"]["kind"] == "crossover_v2:session"
+        assert body["capture"] is not None
+        assert body["capture"]["status"] == "waiting"
+        assert body["capture"]["kind"] == "crossover_v2:session"
     finally:
-        correction_setup._set_relay_capture(None)
+        correction_setup._set_capture_slot(None)
         v2host.set_volume_plan_for_tests(None)
 
 

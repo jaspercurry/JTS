@@ -417,7 +417,7 @@ def test_the_commit_seam_stashes_the_proposal_and_its_durable_identity():
 def test_an_unassemblable_candidate_costs_the_round_its_proposal_not_its_commit():
     """"Assembly cannot fail this commit" — the docstring's promise, tested.
 
-    The seam runs on the relay thread for a candidate the household has already
+    The seam runs on the capture thread for a candidate the household has already
     confirmed, and ``publish_candidate`` is irreversible. A contract violation
     while gathering forensics must not be the thing that stops a measurement
     that would otherwise have succeeded.

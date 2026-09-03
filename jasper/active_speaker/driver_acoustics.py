@@ -333,7 +333,7 @@ def _capture_to_magnitude(
         from scipy.signal import resample_poly
         from jasper.audio_measurement.alignment import assert_alignment_confident
 
-        # Locate across the full legal relay window at 16 kHz.  The largest
+        # Locate across the full legal capture window at 16 kHz.  The largest
         # correlation is <=2**20, then only the final <=2**21 full-rate crop is
         # deconvolved on the 1 GB Pi.
         from jasper.active_speaker.test_signal_plan import (
@@ -394,7 +394,7 @@ def _capture_to_magnitude(
         expected_sample_rate=sample_rate,
         sweep_n_samples=n_samples,
         has_mic_calibration=has_cal,
-        # The relay path intentionally selects equal-length signal and quiet
+        # The capture path intentionally selects equal-length signal and quiet
         # evidence from a longer recording; that is not the memory-bound
         # truncation this quality issue describes.  Only report a truncation
         # when cap_capture_length actually discarded a tail.

@@ -958,7 +958,7 @@ async def test_every_banked_take_of_one_session_is_named_apart_from_the_others()
     names, or the second overwrites the first at the store's path.
 
     Uniqueness is claimed for the SESSION and no wider: two sessions are two
-    relay-scoped paths, which is what makes a global registry of minted ids
+    capture-scoped paths, which is what makes a global registry of minted ids
     unnecessary.
     """
     session, parts = _session()
@@ -1082,7 +1082,7 @@ async def test_a_reading_inside_the_confirm_tolerance_is_proven_and_banked():
 
 async def test_a_transaction_that_never_reached_play_banks_nothing():
     session, parts = _session(
-        play=_Play(stage=STAGE_ADMIT, incident="relay_timeout")
+        play=_Play(stage=STAGE_ADMIT, incident="capture_timeout")
     )
 
     async with session:
@@ -1090,7 +1090,7 @@ async def test_a_transaction_that_never_reached_play_banks_nothing():
 
     assert outcome.record_ids == ()
     assert parts["records"].banked == []
-    assert outcome.stimuli[0].incident == "relay_timeout"
+    assert outcome.stimuli[0].incident == "capture_timeout"
 
 
 async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
@@ -1098,7 +1098,7 @@ async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
     and every entry says what became of its own stimulus."""
     session, parts = _session(play=_Play(script=[
         (STAGE_RESTORE, ""),
-        (STAGE_ADMIT, "relay_timeout"),
+        (STAGE_ADMIT, "capture_timeout"),
         (STAGE_RESTORE, ""),
     ]))
 
@@ -1109,7 +1109,7 @@ async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
 
     assert len(outcome.stimuli) == 3, "the walk continued past the failure"
     assert [s.record_id for s in outcome.stimuli] == ["rec-1", "", "rec-2"]
-    assert [s.incident for s in outcome.stimuli] == ["", "relay_timeout", ""]
+    assert [s.incident for s in outcome.stimuli] == ["", "capture_timeout", ""]
     assert [s.banked for s in outcome.stimuli] == [True, False, True]
     assert [row["position_deg"] for row in parts["records"].banked] == [-22, 22]
 
@@ -1200,7 +1200,7 @@ def test_an_outcome_naming_a_stage_that_does_not_exist_is_refused():
 
 @pytest.mark.parametrize(
     "incident",
-    ["relay timed out", "RelayTimeout", "the fader could not be proven", "9lives"],
+    ["capture timed out", "CaptureTimeout", "the fader could not be proven", "9lives"],
 )
 def test_an_incident_that_is_a_sentence_rather_than_a_code_is_refused(
     incident: str,
@@ -1213,8 +1213,8 @@ def test_an_incident_that_is_a_sentence_rather_than_a_code_is_refused(
 
 def test_a_reason_code_shaped_incident_is_accepted():
     assert PlaybackOutcome(
-        stage_reached=STAGE_ADMIT, incident="relay_timeout",
-    ).incident == "relay_timeout"
+        stage_reached=STAGE_ADMIT, incident="capture_timeout",
+    ).incident == "capture_timeout"
     assert PlaybackOutcome(stage_reached=STAGE_RESTORE).incident == ""
 
 

@@ -728,4 +728,4 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
         {}, status=_status(), run_async=None, camilla_factory=None
     )
 
-    assert prepared.label == v2host.V2_RELAY_KIND_SESSION
+    assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION

@@ -125,26 +125,26 @@ _loop_thread: threading.Thread | None = None
 # The measurement capture in flight, surfaced in /status, or None. Claimed by
 # the route that opens a session and updated by its background runner. Guarded
 # by _session_lock (same single-session scope).
-_relay_capture: dict[str, Any] | None = None
-_relay_stop_request: Callable[[], None] | None = None
+_capture_slot: dict[str, Any] | None = None
+_capture_stop_request: Callable[[], None] | None = None
 # The active session's position gate, or None — set for a GATED round (the
 # remote commission tier, and a hand-walked round).
-# Same lifecycle as ``_relay_stop_request``: set when the slot is claimed,
+# Same lifecycle as ``_capture_stop_request``: set when the slot is claimed,
 # dropped the moment the slot leaves an in-flight status — which is what stops a
 # finished session from still advertising a position it is waiting for, and
 # stops a late driver POST from releasing a gate nobody is holding.
-_relay_position_gate: Any | None = None
+_capture_position_gate: Any | None = None
 # The active session's all-spots-measured signal, or None — set by the
 # session's driver/wizard POST. Same claimed-with-the-slot,
 # dropped-when-not-in-flight lifecycle as the two above.
-_relay_complete_request: Callable[[], None] | None = None
+_capture_complete_request: Callable[[], None] | None = None
 # The active session's per-take RETAKE signal, or None. Same
 # claimed-with-the-slot, dropped-when-not-in-flight lifecycle as the three
 # above, which is what stops a POST arriving after the walk from re-opening a
 # slot nothing is holding.
-_relay_retake_request: Callable[[], None] | None = None
-_RELAY_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_phone"})
-_RELAY_IN_FLIGHT_STATUSES = _RELAY_STOPPABLE_STATUSES | {"stopping"}
+_capture_retake_request: Callable[[], None] | None = None
+_CAPTURE_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_capture"})
+_CAPTURE_IN_FLIGHT_STATUSES = _CAPTURE_STOPPABLE_STATUSES | {"stopping"}
 # Exact set/readback plus the emergency set/readback each use Camilla's bounded
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
@@ -332,7 +332,7 @@ _POST_ROUTES = frozenset({
     "/interpret",
     "/propose",
     "/propose/apply",
-    "/crossover/relay-cancel",
+    "/crossover/capture-cancel",
     "/crossover/reset",
     "/crossover/recover-volume",
     # v2 session flow — the only crossover-measurement flow. There is no
@@ -375,33 +375,33 @@ _POST_ROUTES = frozenset({
 })
 
 
-def _set_relay_capture(value: dict[str, Any] | None) -> None:
-    global _relay_capture, _relay_stop_request, _relay_position_gate
-    global _relay_complete_request, _relay_retake_request
+def _set_capture_slot(value: dict[str, Any] | None) -> None:
+    global _capture_slot, _capture_stop_request, _capture_position_gate
+    global _capture_complete_request, _capture_retake_request
     with _session_lock:
-        _relay_capture = value
-        if value is None or value.get("status") not in _RELAY_IN_FLIGHT_STATUSES:
-            _relay_stop_request = None
-            _relay_position_gate = None
-            _relay_complete_request = None
-            _relay_retake_request = None
+        _capture_slot = value
+        if value is None or value.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
+            _capture_stop_request = None
+            _capture_position_gate = None
+            _capture_complete_request = None
+            _capture_retake_request = None
 
 
-def _get_relay_capture() -> dict[str, Any] | None:
+def _get_capture_slot() -> dict[str, Any] | None:
     with _session_lock:
-        return dict(_relay_capture) if _relay_capture else None
+        return dict(_capture_slot) if _capture_slot else None
 
 
-def _get_relay_capture_for(kind_prefix: str) -> dict[str, Any] | None:
+def _get_capture_slot_for(kind_prefix: str) -> dict[str, Any] | None:
     """Return capture state only to the flow that owns it.
 
     The process has one hardware-safe capture slot; a page must never render
     another flow's waiting state.
     """
-    relay = _get_relay_capture()
-    if relay is None:
+    capture = _get_capture_slot()
+    if capture is None:
         return None
-    if not str(relay.get("kind") or "").startswith(kind_prefix):
+    if not str(capture.get("kind") or "").startswith(kind_prefix):
         return None
     # A gated session's live position hold, merged in here rather than pushed
     # into the slot by the gate: the gate owns the fact and this is a read, so
@@ -409,22 +409,22 @@ def _get_relay_capture_for(kind_prefix: str) -> dict[str, Any] | None:
     # gate has already released.
     #
     # THREE guards keep a hold from outliving its session, and none of them is
-    # the envelope: ``_set_relay_capture`` drops ``_relay_position_gate`` as
+    # the envelope: ``_set_capture_slot`` drops ``_capture_position_gate`` as
     # soon as the slot leaves an in-flight status; the in-flight test below
     # re-checks that on every read; and the gate clears its own ``_pending`` on
     # both exits from a hold. A finished session therefore reports no hold even
     # if its gate object is still referenced somewhere.
     with _session_lock:
-        gate = _relay_position_gate
-    if gate is not None and relay.get("status") in _RELAY_IN_FLIGHT_STATUSES:
+        gate = _capture_position_gate
+    if gate is not None and capture.get("status") in _CAPTURE_IN_FLIGHT_STATUSES:
         try:
             pending = gate.pending()
         except (OSError, RuntimeError, ValueError):
             logger.warning("could not read the position gate", exc_info=True)
             pending = None
         if pending:
-            relay["position_pending"] = pending
-    return relay
+            capture["position_pending"] = pending
+    return capture
 
 
 def _enforce_session_volume_ceiling(v2host: Any) -> None:
@@ -446,7 +446,7 @@ def _enforce_session_volume_ceiling(v2host: Any) -> None:
     if not v2host.enforce_session_volume_ceiling_if_stale(_run_async, _camilla):
         return
     with _session_lock:
-        gate = _relay_position_gate
+        gate = _capture_position_gate
     if gate is None:
         return
     try:
@@ -455,7 +455,7 @@ def _enforce_session_volume_ceiling(v2host: Any) -> None:
         logger.warning("could not mark the position gate's ceiling", exc_info=True)
 
 
-def _begin_relay_capture(
+def _begin_capture_slot(
     kind_label: str,
     *,
     request_stop: Callable[[], None] | None = None,
@@ -466,42 +466,42 @@ def _begin_relay_capture(
     """Atomically claim the single capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two sessions + a file
     race for one position — mirrors /autolevel's "already in progress" guard).
-    The slot is released by `_set_relay_capture(None)` on a failed open, or by the
+    The slot is released by `_set_capture_slot(None)` on a failed open, or by the
     background runner setting `complete`/`failed`."""
-    global _relay_capture, _relay_stop_request, _relay_position_gate
-    global _relay_complete_request, _relay_retake_request
+    global _capture_slot, _capture_stop_request, _capture_position_gate
+    global _capture_complete_request, _capture_retake_request
     with _session_lock:
         if (
-            _relay_capture
-            and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
+            _capture_slot
+            and _capture_slot.get("status") in _CAPTURE_IN_FLIGHT_STATUSES
         ):
             return False
-        _relay_capture = {"status": "starting", "kind": kind_label}
-        _relay_stop_request = request_stop
-        _relay_position_gate = position_gate
-        _relay_complete_request = request_complete
-        _relay_retake_request = request_retake
+        _capture_slot = {"status": "starting", "kind": kind_label}
+        _capture_stop_request = request_stop
+        _capture_position_gate = position_gate
+        _capture_complete_request = request_complete
+        _capture_retake_request = request_retake
         return True
 
 
-def _publish_relay_waiting(kind_label: str) -> dict[str, Any]:
+def _publish_capture_waiting(kind_label: str) -> dict[str, Any]:
     """Open the capture window without overwriting a concurrent Stop."""
 
-    global _relay_capture
+    global _capture_slot
     with _session_lock:
-        relay = _relay_capture
+        capture = _capture_slot
         if (
-            relay is None
-            or relay.get("kind") != kind_label
-            or relay.get("status") not in {"starting", "stopping"}
+            capture is None
+            or capture.get("kind") != kind_label
+            or capture.get("status") not in {"starting", "stopping"}
         ):
             raise RuntimeError("capture ownership changed while the session opened")
-        status = "awaiting_phone" if relay.get("status") == "starting" else "stopping"
-        _relay_capture = {**relay, "status": status}
-        return dict(_relay_capture)
+        status = "awaiting_capture" if capture.get("status") == "starting" else "stopping"
+        _capture_slot = {**capture, "status": status}
+        return dict(_capture_slot)
 
 
-def _request_relay_stop(kind_prefix: str) -> dict[str, Any]:
+def _request_capture_stop(kind_prefix: str) -> dict[str, Any]:
     """Signal the active matching capture owner and expose Stop as in progress.
 
     The owner publishes ``stopped`` only after its capture worker, audio
@@ -509,14 +509,14 @@ def _request_relay_stop(kind_prefix: str) -> dict[str, Any]:
     slot prevents a second run from entering during cleanup.
     """
 
-    global _relay_capture
+    global _capture_slot
     with _session_lock:
-        relay = _relay_capture
-        if relay is None or relay.get("status") not in _RELAY_STOPPABLE_STATUSES:
+        capture = _capture_slot
+        if capture is None or capture.get("status") not in _CAPTURE_STOPPABLE_STATUSES:
             raise ValueError("no matching capture is running")
-        if not str(relay.get("kind") or "").startswith(kind_prefix):
+        if not str(capture.get("kind") or "").startswith(kind_prefix):
             raise ValueError("no matching capture is running")
-        callback = _relay_stop_request
+        callback = _capture_stop_request
         if callback is None:
             raise RuntimeError("this capture cannot be stopped safely")
         try:
@@ -525,14 +525,14 @@ def _request_relay_stop(kind_prefix: str) -> dict[str, Any]:
             # never observe ``stopping`` before the owner is actually signaled.
             callback()
         except (OSError, RuntimeError, ValueError) as exc:
-            _relay_capture = {
-                **relay,
+            _capture_slot = {
+                **capture,
                 "status": "failed",
                 "error": "the measurement stop signal failed",
             }
             raise RuntimeError("the measurement stop signal failed") from exc
-        _relay_capture = {**relay, "status": "stopping"}
-        return dict(_relay_capture)
+        _capture_slot = {**capture, "status": "stopping"}
+        return dict(_capture_slot)
 
 
 
@@ -540,13 +540,13 @@ def _request_relay_stop(kind_prefix: str) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class RelayCaptureKind:
-    """Per-flow plug for the generic capture orchestrator (`_run_relay_capture`).
+class CaptureKind:
+    """Per-flow plug for the generic capture orchestrator (`_run_capture`).
 
     Each measurement flow injects only what is flow-specific — how to mint its
     capture session, and how to run it + consume the recorded WAV (play its
     stimulus, then analyze). The orchestrator owns everything common: the
-    single-slot re-entrancy guard, the `/status.relay` holder, and the
+    single-slot re-entrancy guard, the `/status.capture` holder, and the
     background-task lifecycle. Adding a kind is a descriptor, not a second copy
     of the handler.
 
@@ -577,7 +577,7 @@ class RelayCaptureKind:
 
 
 
-def _relay_failure_message(exc: BaseException) -> str:
+def _capture_failure_message(exc: BaseException) -> str:
     """The household-facing text for a capture-lifecycle failure.
 
     ``CrossoverV2LocalSeamError`` (W6 hardware run 3 finding G) wraps a bare
@@ -625,8 +625,8 @@ def _relay_failure_message(exc: BaseException) -> str:
     return str(exc)
 
 
-def _run_relay_capture(
-    kind: RelayCaptureKind,
+def _run_capture(
+    kind: CaptureKind,
     *,
     idle_hold: Callable[[str], AbstractContextManager[Any]],
 ) -> dict[str, Any]:
@@ -650,7 +650,7 @@ def _run_relay_capture(
     A real hold is taken here, on the request thread BEFORE the runner is
     scheduled, and released in the runner's own ``finally``, so no window
     exists in either direction."""
-    if not _begin_relay_capture(
+    if not _begin_capture_slot(
         kind.label,
         request_stop=kind.request_stop,
         position_gate=kind.position_gate,
@@ -660,7 +660,7 @@ def _run_relay_capture(
         # Name the ACTUAL holder when it is still readable. A race between
         # this read and the failed claim above can only widen to the generic
         # wording, never misreport which measurement is in the way.
-        holder = _get_relay_capture()
+        holder = _get_capture_slot()
         held_by = str(holder.get("kind") or "") if holder else ""
         raise ValueError(
             (f"a capture ({held_by})" if held_by else "another capture")
@@ -679,16 +679,16 @@ def _run_relay_capture(
 
             try:
                 await kind.run_and_consume(rc.pi_session)
-                relay = _get_relay_capture()
+                capture = _get_capture_slot()
                 if (
-                    relay is not None
-                    and relay.get("kind") == kind.label
-                    and relay.get("status") == "stopping"
+                    capture is not None
+                    and capture.get("kind") == kind.label
+                    and capture.get("status") == "stopping"
                 ):
                     raise CaptureStopped("capture stopped")
-                _set_relay_capture({"status": "complete", "kind": kind.label})
+                _set_capture_slot({"status": "complete", "kind": kind.label})
             except (asyncio.CancelledError, CaptureStopped):
-                _set_relay_capture({
+                _set_capture_slot({
                     "status": "stopped",
                     "kind": kind.label,
                     "error": "Measurement stopped safely.",
@@ -699,8 +699,8 @@ def _run_relay_capture(
                     kind=kind.label,
                 )
             except Exception as exc:  # noqa: BLE001 — surface loudly; never crash the loop
-                # This outer net flips /status.relay to failed and carries the
-                # household-facing reason (see _relay_failure_message) so the
+                # This outer net flips /status.capture to failed and carries the
+                # household-facing reason (see _capture_failure_message) so the
                 # status page can show why.
                 log_event(
                     logger,
@@ -710,10 +710,10 @@ def _run_relay_capture(
                     kind=kind.label,
                     reason=type(exc).__name__,
                 )
-                _set_relay_capture({
+                _set_capture_slot({
                     "status": "failed",
                     "kind": kind.label,
-                    "error": _relay_failure_message(exc),
+                    "error": _capture_failure_message(exc),
                 })
             finally:
                 # Every terminal path — complete, stopped, failed, and any
@@ -722,7 +722,7 @@ def _run_relay_capture(
                 # session is genuinely over.
                 session_hold.close()
 
-        waiting = _publish_relay_waiting(kind.label)
+        waiting = _publish_capture_waiting(kind.label)
         session_hold.enter_context(idle_hold(f"capture:{kind.label}"))
         asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
         spawned = True
@@ -730,7 +730,7 @@ def _run_relay_capture(
     finally:
         if not spawned:
             session_hold.close()  # nothing will run to release it
-            _set_relay_capture(None)  # release the slot on any early failure
+            _set_capture_slot(None)  # release the slot on any early failure
 
 
 
@@ -2941,24 +2941,24 @@ def _handle_upload_capture(
 
 
 
-def _handle_crossover_relay_cancel() -> dict[str, Any]:
+def _handle_crossover_capture_cancel() -> dict[str, Any]:
     """Stop Crossover capture work and keep its slot until cleanup completes.
 
     The Stop button is already hidden once the rendered status turns terminal
-    (crossover/main.js's ``RELAY_STOPPABLE`` gate), but a poll-cycle race can
+    (crossover/main.js's ``CAPTURE_STOPPABLE`` gate), but a poll-cycle race can
     still let a click reach the server after the capture finished on its own
-    (it completed, or another tab already stopped it). ``_request_relay_stop``
+    (it completed, or another tab already stopped it). ``_request_capture_stop``
     raises a diagnostic message for that case; map it to a plain-language
     sentence here rather than leaking it to the page.
     """
 
     try:
-        relay = _request_relay_stop("crossover_v2:")
+        capture = _request_capture_stop("crossover_v2:")
     except ValueError:
         raise ValueError(
             "This measurement already stopped — nothing more to do here."
         ) from None
-    return {"relay": relay}
+    return {"capture": capture}
 
 
 def _handle_crossover_v2_position_ready(
@@ -2966,7 +2966,7 @@ def _handle_crossover_v2_position_ready(
 ) -> dict[str, Any]:
     """POST /crossover/v2/position-ready — a GATED session's position release.
 
-    Whoever moved the microphone read ``relay.position_pending`` off the
+    Whoever moved the microphone read ``capture.position_pending`` off the
     envelope, went to the stated angle, waited their own settle time, and is now
     saying so. Releasing admits the held ``begin_capture`` and the capture
     starts. Two shapes reach here and the verb does not care which: the remote
@@ -2993,7 +2993,7 @@ def _handle_crossover_v2_position_ready(
         raise BadRequest("index must be an integer")
     index = int(raw_index)
     with _session_lock:
-        gate = _relay_position_gate
+        gate = _capture_position_gate
     if gate is None:
         raise ValueError(
             "no remote measurement is waiting for the microphone right now"
@@ -3011,13 +3011,12 @@ def _handle_crossover_v2_complete(
     complete-capture-set event (#2662 W2b): the driver (or the W3 wizard
     surface) says the household is done measuring, the held pre-apply group
     closes, and the fit runs. Only a live WIRED session holds the signal — a
-    relay session's completion rides the relay protocol, and a finished
-    session drops it with the slot — so "nothing waiting" is a conflict
+    a finished session drops it with the slot — so "nothing waiting" is a conflict
     (stale caller), the position-ready shape.
     """
     _read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
-        request_complete = _relay_complete_request
+        request_complete = _capture_complete_request
     if request_complete is None:
         raise ValueError(
             "no wired measurement is waiting for an all-spots-measured "
@@ -3036,10 +3035,10 @@ def _handle_crossover_v2_retake(
     household (or the W3 wizard surface) says the take that just completed
     should be measured again. The walk re-opens THAT slot the next time it is
     waiting on a person — a held begin, or the held-set window — on the
-    relay's own §2.6 terms.
+    same terms.
 
     **No ``index``, and that is the contract rather than a shortcut.** The
-    relay's own rule is that a retake names the slot which JUST COMPLETED
+    rule is that a retake names the slot which JUST COMPLETED
     (``retakes_the_just_accepted_slot``: ``index == accepted_count``), and the
     walk is the only thing that knows that number — it is a worker-thread
     local, not a published one. Accepting an index here would mint a second
@@ -3047,9 +3046,8 @@ def _handle_crossover_v2_retake(
     disagree. The signal says WHAT the household wants; WHICH slot stays the
     walk's own fact.
 
-    Only a live WIRED session holds the signal — a relay session's retake
-    rides its own begin, and a finished session drops the signal with the
-    slot — so "nothing waiting" is a conflict (stale caller), the
+    Only a live session holds the signal, and a finished session drops it
+    with the slot, so "nothing waiting" is a conflict (stale caller), the
     position-ready shape. Whether the retake is then ADMISSIBLE (a take exists
     to replace, the plan's attempts are not spent, the slot's extras ledger
     still has room) is the walk's decision, journalled as
@@ -3059,7 +3057,7 @@ def _handle_crossover_v2_retake(
     """
     _read_json_body(handler)  # no fields consumed; drains the request body
     with _session_lock:
-        request_retake = _relay_retake_request
+        request_retake = _capture_retake_request
     if request_retake is None:
         raise ValueError(
             "no wired measurement is waiting to re-take a spot right now"
@@ -3068,7 +3066,7 @@ def _handle_crossover_v2_retake(
     return {"ok": True}
 
 
-def _handle_crossover_v2_relay(
+def _handle_crossover_v2_capture(
     handler: BaseHTTPRequestHandler,
     *,
     verify_only: bool,
@@ -3078,12 +3076,12 @@ def _handle_crossover_v2_relay(
 
     Thin dispatch over :mod:`jasper.web.correction_crossover_v2` — the v2 host
     module owns gating, conductor construction, seam bindings, and the plan
-    runner; this bridges it into the shared relay slot/lifecycle machinery
-    (``_run_relay_capture``) exactly as the other relay-hosted crossover
+    runner; this bridges it into the shared capture slot/lifecycle machinery
+    (``_run_capture``) exactly as the other hosted crossover
     captures do.
 
     ``idle_hold`` covers the one background lifetime a v2 session still owns:
-    the relay runner (through ``_run_relay_capture``). It serves no HTTP
+    the capture runner (through ``_run_capture``). It serves no HTTP
     request, and it is the flow the 600 s idle exit actually killed (issue
     #1854). It used to reach a SECOND lifetime — the auto-apply worker thread
     the runner spawned — which the two-stage split removed: the apply is now a
@@ -3108,7 +3106,7 @@ def _handle_crossover_v2_relay(
         camilla_factory=_camilla,
         verify_only=verify_only,
     )
-    kind = RelayCaptureKind(
+    kind = CaptureKind(
         label=prepared.label,
         open=prepared.open,
         run_and_consume=prepared.run_and_consume,
@@ -3117,7 +3115,7 @@ def _handle_crossover_v2_relay(
         request_complete=prepared.request_complete,
         request_retake=prepared.request_retake,
     )
-    return {"relay": _run_relay_capture(kind, idle_hold=idle_hold)}
+    return {"capture": _run_capture(kind, idle_hold=idle_hold)}
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -3145,7 +3143,7 @@ def _handle_crossover_v2_republish(
 ) -> dict[str, Any]:
     """POST /crossover/v2/republish: re-publish a banked candidate by fingerprint.
 
-    Touches no DSP and holds no relay — it replaces the durable session
+    Touches no DSP and holds no capture — it replaces the durable session
     document around the published-candidate slot (host-owned apply keys
     carried forward) and moves no graph — so unlike its apply sibling it
     needs neither ``_run_async`` nor ``_camilla`` nor the stage-2
@@ -3164,9 +3162,9 @@ def _handle_crossover_v2_decline(
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/v2/decline: the review screen's "Keep current sound".
 
-    Touches no DSP and holds no relay, so unlike its apply/restore siblings it
+    Touches no DSP and holds no capture, so unlike its apply/restore siblings it
     needs neither ``_run_async`` nor ``_camilla`` — it records a decision and
-    re-renders. The relay snapshot rides the response for the same reason
+    re-renders. The capture snapshot rides the response for the same reason
     ``/crossover/reset``'s does: the page renders one envelope per round trip.
     """
     raw = _read_json_body(handler)
@@ -3175,31 +3173,31 @@ def _handle_crossover_v2_decline(
 
     return correction_crossover_flow.handle_v2_decline(
         raw,
-        relay=_get_relay_capture_for("crossover_v2:"),
+        capture=_get_capture_slot_for("crossover_v2:"),
     )
 
 
 def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
     """POST /crossover/reset: in-flow "start over" for the crossover flow.
 
-    Unlike ``_handle_crossover_relay_cancel``, an unstarted relay is the
+    Unlike ``_handle_crossover_capture_cancel``, an unstarted capture is the
     COMMON case here (most Start-over clicks happen between measurements,
     not mid-capture), so a "nothing to stop" ``ValueError`` is swallowed
-    rather than surfaced. Any crossover-owned relay or level-match ramp is
+    rather than surfaced. Any crossover-owned capture or level-match ramp is
     requested to stop first; the actual state clear
     (``correction_crossover_flow.handle_reset``) fails closed if that stop
     has not finished draining yet, rather than racing it.
     """
 
     try:
-        _request_relay_stop("crossover_v2:")
+        _request_capture_stop("crossover_v2:")
     except ValueError:
         pass
 
     from . import correction_crossover_flow
 
     return correction_crossover_flow.handle_reset(
-        relay=_get_relay_capture_for("crossover_v2:"),
+        capture=_get_capture_slot_for("crossover_v2:"),
     )
 
 
@@ -3243,7 +3241,7 @@ def _maybe_restore_main_volume(sess, cam) -> None:
 
             if _run_async(_restore_level_match(), timeout=5.0):
                 logger.info(
-                    "restored main_volume after relay level-match workflow"
+                    "restored main_volume after the level-match workflow"
                 )
                 return
 
@@ -4074,10 +4072,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
                 # v2 commission sessions (Wave 5a). ValueError covers both the
                 # host's typed CrossoverV2Refused (a subclass) and shared
-                # precondition refusals — same contract as relay-capture.
+                # precondition refusals — same contract as the capture routes.
                 try:
                     self._send_json(
-                        _handle_crossover_v2_relay(
+                        _handle_crossover_v2_capture(
                             self,
                             verify_only=(path == "/crossover/v2/verify"),
                             idle_hold=cfg["idle_hold"],
@@ -4128,7 +4126,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # via logger.exception above.
                     logger.exception("%s failed", path)
                     self._send_json(
-                        {"ok": False, "error": _relay_failure_message(e)},
+                        {"ok": False, "error": _capture_failure_message(e)},
                         status=500,
                     )
                 return
@@ -4209,7 +4207,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     payload = _handle_crossover_v2_apply(self)
                     # Finding N: a blocked apply must not read as success — the
                     # same "compute status from payload contents" shape
-                    # /crossover/relay-capture already uses above.
+                    # the capture routes already use above.
                     self._send_json(
                         payload,
                         status=(
@@ -4444,8 +4442,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                     return
 
-                if path == "/crossover/relay-cancel":
-                    self._send_json(_handle_crossover_relay_cancel())
+                if path == "/crossover/capture-cancel":
+                    self._send_json(_handle_crossover_capture_cancel())
                     return
 
                 if path == "/crossover/reset":
@@ -4557,7 +4555,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # force-drained here (cheap in-memory stale check first).
                     _enforce_session_volume_ceiling(v2host)
                     return correction_crossover_flow.handle_status(
-                        relay=_get_relay_capture_for("crossover_v2:"),
+                        capture=_get_capture_slot_for("crossover_v2:"),
                     )
 
                 self._serve_json_route(path, _crossover_status)
@@ -4571,7 +4569,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     # so it promptly drains a walked-away or slow-driver session.
                     _enforce_session_volume_ceiling(v2host)
                     return correction_crossover_flow.handle_envelope(
-                        relay=_get_relay_capture_for("crossover_v2:"),
+                        capture=_get_capture_slot_for("crossover_v2:"),
                     )
 
                 self._serve_json_route(path, _crossover_envelope)
@@ -5164,8 +5162,8 @@ def main(argv: list[str] | None = None) -> int:
     # next service-start claim boundary.
     #
     # The tracker is built BEFORE the server so `tracker.hold` can ride the
-    # handler cfg: a route that spawns background work (the phone-relay
-    # measurement sessions) holds it for that work's whole lifetime, which is
+    # handler cfg: a route that spawns background work (the measurement
+    # sessions) holds it for that work's whole lifetime, which is
     # what makes "idle" mean abandoned again (issue #1854).
     tracker = _systemd.IdleShutdownTracker(
         on_idle_exit=_idle_exit_restore_capture_entry,
