@@ -1014,7 +1014,6 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     from jasper.audio_runtime_plan import (
         output_endpoint_evidence_from_statefiles as _real_endpoint_evidence,
     )
-    from jasper.cli.doctor import audio_runtime_ring as _audio_runtime
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     # ONE on-disk statefile pair drives BOTH halves — no stubbed evidence
@@ -1038,7 +1037,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     absent = tmp_path / "crossover-statefile.yml"
 
     monkeypatch.setattr(
-        _audio_runtime, "_active_camilla_config_path",
+        audio_runtime_ring, "_active_camilla_config_path",
         lambda: (str(statefile), str(config)),
     )
     monkeypatch.setattr(
@@ -1077,7 +1076,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     # Half two: the check that OWNS the split still fails on it, with the
     # remedy — off the same statefile half one just read.
-    split = _audio_runtime.check_ring_split_transport()
+    split = audio_runtime_ring.check_ring_split_transport()
 
     assert split.status == "fail", split.detail
     assert "jasper-fanin-coupling-reconcile shm_ring" in split.detail
@@ -2501,7 +2500,6 @@ def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
 
 
 def test_derivation_rejects_a_non_loopback_card(monkeypatch):
-
     monkeypatch.setattr(
         audio_runtime_fanin,
         "_FANIN_EXPECTED_ALOOP_INPUTS",
@@ -2513,7 +2511,6 @@ def test_derivation_rejects_a_non_loopback_card(monkeypatch):
 def test_unparseable_source_constant_is_warn(proc_root, tmp_path, monkeypatch):
     """An unparseable owner degrades the FULL check to warn, never to a
     shrunken set that red-doctors a healthy box."""
-
     monkeypatch.setattr(
         audio_runtime_fanin, "_FANIN_EXPECTED_ALOOP_INPUTS", [("spotify", "not-a-pcm")]
     )
@@ -2594,7 +2591,7 @@ _BONDED_LEADER_CFG = _ALSA_CFG.replace(
 def test_capture_parser_reads_rawfile(tmp_path):
     cfg = tmp_path / "c.yml"
     cfg.write_text(_RAWFILE_CFG)
-    assert audio_runtime._loaded_capture_type(cfg) == "RawFile"
+    assert audio_runtime_fanin._loaded_capture_type(cfg) == "RawFile"
     assert audio_runtime._loaded_playback_type(cfg) == "File"
 
 
@@ -2602,14 +2599,14 @@ def test_capture_parser_reads_alsa_not_playback_file(tmp_path):
     # The playback File sink must NOT be misread as the capture type.
     cfg = tmp_path / "c.yml"
     cfg.write_text(_ALSA_CFG)
-    assert audio_runtime._loaded_capture_type(cfg) == "Alsa"
+    assert audio_runtime_fanin._loaded_capture_type(cfg) == "Alsa"
 
 
 def test_capture_parser_none_when_absent(tmp_path):
-    assert audio_runtime._loaded_capture_type(tmp_path / "missing.yml") is None
+    assert audio_runtime_fanin._loaded_capture_type(tmp_path / "missing.yml") is None
     cfg = tmp_path / "c.yml"
     cfg.write_text("filters:\n  x: 1\n")
-    assert audio_runtime._loaded_capture_type(cfg) is None
+    assert audio_runtime_fanin._loaded_capture_type(cfg) is None
 
 
 def _run_check(monkeypatch, *, cfg_text, tmp_path):

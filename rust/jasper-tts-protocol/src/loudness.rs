@@ -849,7 +849,7 @@ fn push_json_u64(buf: &mut String, key: &str, value: u64) {
 /// `null` is the substitute rather than omission because the key set is a
 /// pinned wire contract (`ASSISTANT_LOUDNESS_STATUS_KEYS`, asserted present
 /// by both daemons' state tests), and it lands somewhere a consumer already
-/// reads: `jasper/cli/doctor/audio_runtime.py` WARNs on `decision_seen=true`
+/// reads: `jasper/cli/doctor/audio_runtime_fanin.py` WARNs on `decision_seen=true`
 /// with a non-numeric `final_gain_db`. That loud path is scoped to
 /// `final_gain_db` — the one doctor-guarded field. Every other float here
 /// maps to `null` **silently, by design**: this is a polled render, so a

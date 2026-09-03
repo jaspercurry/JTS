@@ -65,11 +65,6 @@ def _loaded_device_field(config_path: Path, block: str, field: str) -> str | Non
     return read_camilla_device_field(config_path, block, field)
 
 
-def _loaded_capture_type(config_path: Path) -> str | None:
-    """The ``devices.capture.type`` of a CamillaDSP config, or None."""
-    return _loaded_device_field(config_path, "capture", "type")
-
-
 def _loaded_playback_type(config_path: Path) -> str | None:
     """The ``devices.playback.type`` of a CamillaDSP config, or None."""
     return _loaded_device_field(config_path, "playback", "type")

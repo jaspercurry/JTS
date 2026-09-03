@@ -115,8 +115,6 @@ from . import audio_runtime_ring as audio_runtime_ring
 from . import boot_config as boot_config
 from .audio_runtime_fanin import (
     check_fanin_binary_installed,
-    _asound_non_comment_text,
-    _asound_pcm_block,
     _FANIN_EXPECTED_ALOOP_INPUTS,
     check_fanin_asound_wiring,
     check_fanin_coupling,
@@ -476,8 +474,6 @@ __all__ = [
     "check_apple_dongle_audio",
     "check_dongle_headphone_at_max",
     "check_fanin_binary_installed",
-    "_asound_non_comment_text",
-    "_asound_pcm_block",
     "_FANIN_EXPECTED_ALOOP_INPUTS",
     "_OUTPUTD_EXPECTED_DAC_PCM",
     "_OUTPUTD_EXPECTED_DUAL_DAC_PCM",

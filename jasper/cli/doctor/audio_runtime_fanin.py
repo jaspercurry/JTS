@@ -25,11 +25,7 @@ from ._shared import (
     _read_status_socket_bytes,
     _run,
 )
-from .audio_runtime import (
-    _graph_feeds_the_bond,
-    _loaded_capture_type,
-    _loaded_device_field,
-)
+from .audio_runtime import _graph_feeds_the_bond, _loaded_device_field
 from .correction import _active_camilla_config_path
 
 @doctor_check(order=49, group="audio")
@@ -766,6 +762,11 @@ def check_fanin_coupling_value() -> CheckResult:
         "ok",
         f"{COUPLING_ENV_VAR}={raw or f'(unset → {COUPLING_SHM_RING})'}",
     )
+
+
+def _loaded_capture_type(config_path: Path) -> str | None:
+    """The ``devices.capture.type`` of a CamillaDSP config, or None."""
+    return _loaded_device_field(config_path, "capture", "type")
 
 
 def _requires_roleful_graph() -> bool:

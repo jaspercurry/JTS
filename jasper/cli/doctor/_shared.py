@@ -9,9 +9,14 @@ The base layer every per-domain check module imports from: the
 crashing check from aborting a run, ``_run``, the JTS daemon ``STATUS``
 control-socket reader, and the helpers used by more than one domain.
 
-A name tests patch (``_run``, ``_read_status_socket_bytes``) is re-imported
-into each domain module, so a check reads it from its OWN namespace and a
-patch has to target that module rather than this one."""
+``_run`` and ``_read_status_socket`` are re-imported into the domain modules
+that call them, so a check resolves them in its OWN namespace and a test patch
+must target that module, not this one. Such a patch reaches only that module's
+own calls: a helper defined HERE resolves ITS dependencies in this module's
+globals, so ``_read_status_socket_bytes`` (reached through
+``_read_status_socket``) and ``_run`` (through ``_pid_of_unit``,
+``_systemctl_show_property`` and ``_service_runtime_states``) stay bound here
+on those paths."""
 from __future__ import annotations
 
 import grp
