@@ -54,7 +54,7 @@ def test_default_budget_is_the_free_regime():
     fit = al.assess_fit(buffer_ms=400, notified_frames=None)
     assert fit.budget_source == "default"
     assert fit.negotiated_frames == al.AP2_DEFAULT_NOTIFIED_FRAMES
-    assert fit.budget_sec == pytest.approx(2.0002, abs=1e-3)
+    assert fit.budget_sec == pytest.approx(2.0, abs=1e-9)
     assert fit.need_sec == pytest.approx(0.56, abs=1e-9)
     assert fit.tight is False
     assert fit.residual_lag_sec == 0.0
@@ -62,10 +62,10 @@ def test_default_budget_is_the_free_regime():
 
 def test_high_buffer_is_tight_even_at_the_default_budget():
     """shairport's tight condition is budget < need + the backend buffer, so
-    a large enough buffer_ms is tight EVEN at the default ~2.0002 s budget,
+    a large enough buffer_ms is tight EVEN at the default 2.0 s budget,
     and shairport drops the whole offset => residual lag is the FULL need,
     not a shortfall. Pins the adjacent pair straddling the boundary:
-    need + buffer crosses 2.0002 between buffer_ms 1795 and 1796."""
+    need + buffer crosses 2.0 between buffer_ms 1795 and 1796."""
     tight = al.assess_fit(buffer_ms=1796, notified_frames=None)
     assert tight.need_sec == pytest.approx(1.956, abs=1e-9)
     assert tight.tight is True
@@ -80,8 +80,8 @@ def test_small_negotiated_budget_is_tight_residual_is_full_need():
     uncompensated, so residual_lag_sec == need_sec (not need - budget)."""
     fit = al.assess_fit(buffer_ms=400, notified_frames=5000)
     assert fit.budget_source == "journal"
-    # (5000 + 11035) / 44100 ≈ 0.3636 s budget vs 0.56 s need.
-    assert fit.budget_sec == pytest.approx(0.36361, abs=1e-4)
+    # (5000 + 11025) / 44100 ≈ 0.3634 s budget vs 0.56 s need.
+    assert fit.budget_sec == pytest.approx(0.36338, abs=1e-4)
     assert fit.tight is True
     assert fit.residual_lag_sec == pytest.approx(0.56, abs=1e-9)
 
@@ -91,9 +91,9 @@ def test_backend_buffer_band_is_tight_against_the_production_backend_buffer():
     between need (0.56 s) and need + the backend buffer (0.605 s). shairport
     DOES warn and drop the offset there. Pins the fix against the production
     backend buffer, not just the synthetic 0.1 s classifier string."""
-    # frames=14543 -> budget = 25578/44100 = 0.58 s, inside (0.56, 0.605).
+    # frames=14543 -> budget = 25568/44100 ≈ 0.5798 s, inside (0.56, 0.605).
     fit = al.assess_fit(buffer_ms=400, notified_frames=14543)
-    assert fit.budget_sec == pytest.approx(0.58, abs=1e-4)
+    assert fit.budget_sec == pytest.approx(0.57977, abs=1e-4)
     assert fit.tight is True  # old math: 0.56 > 0.58 -> False (the bug)
     assert fit.residual_lag_sec == pytest.approx(0.56, abs=1e-9)
 
