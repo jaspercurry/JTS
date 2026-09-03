@@ -221,8 +221,8 @@ class MeasureScreens:
     trims-only candidate has no estimate and skips them),
     ``alignment_status_ok`` is the resolve verdict, and
     ``delay_physically_plausible`` is the physics backstop, asked ONLY of a
-    resolved estimate. The GCC trust floor that was a fourth rung is now a
-    disclosure on the receipt and this ladder no longer reads it.
+    resolved estimate. The GCC trust floor is a receipt disclosure, not a
+    ladder rung here.
     """
 
     stimulus_located: bool
