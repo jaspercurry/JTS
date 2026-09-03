@@ -75,9 +75,7 @@ from .startup_hold import (
 )
 from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from .safe_playback import load_safe_playback_state
-from .state_paths import (  # noqa: F401  ENV names re-exported for the package façade
-    COMMISSION_LOAD_STATE_ENV,
-    STARTUP_LOAD_STATE_ENV,
+from .state_paths import (
     commission_load_state_path,
     startup_load_state_path,
 )
