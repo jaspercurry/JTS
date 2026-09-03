@@ -25,9 +25,9 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.peq import design_peq, predicted_response
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.camilla_config_contract import SHELF_Q as _HIGHSHELF_Q
-from jasper.correction.peq import design_peq, predicted_response
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 from .branch_chain import chain_response
@@ -365,7 +365,8 @@ def _highshelf_response_db(
 @dataclass(frozen=True)
 class LinearizationFilter:
     """One filter in a :class:`LinearizationFit` — a plain, JSON-safe record
-    (not :class:`jasper.correction.peq.PEQ`, which has no ``biquad_type``).
+    (not :class:`jasper.audio_measurement.peq.PEQ`, which has no
+    ``biquad_type``).
     """
 
     biquad_type: str  # "Peaking" | "Highshelf" | "Lowshelf"
