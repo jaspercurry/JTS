@@ -1452,7 +1452,9 @@ GRADE_SPATIAL_UNMEASURABLE = "unmeasurable"
 def _spatial_grade(post_apply: Any) -> str:
     """One post-apply cloud entry reduced to its SPATIAL grade state.
 
-    ``overall_passed`` — projected by :func:`_compact_cloud_status` from the
+    ``overall_passed`` — projected by
+    :func:`~jasper.active_speaker.crossover_envelope_v2.compact_cloud_status`
+    from the
     spec report — stays THE consumed verdict key: every existing verdict path
     reads it, and ``flatness.passed`` is the same value under another name, so
     this deliberately does not become a second reader of it.
@@ -3270,7 +3272,7 @@ def _bank_household_findings(
     by the time the household sees the result screen, "this session's bundle"
     no longer holds the set the measuring session banked. Reading once and
     projecting the compact result into the durable state is the same shape
-    ``_compact_cloud_status`` already uses for the cloud's numbers: the bundle
+    ``compact_cloud_status`` already uses for the cloud's numbers: the bundle
     artifact stays the record; the state carries what a screen renders.
 
     **The read-back is itself the honesty check.** Going out through

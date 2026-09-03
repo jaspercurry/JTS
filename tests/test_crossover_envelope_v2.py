@@ -57,6 +57,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     _PHASE_STEP,
     _per_band_flatness_lines,
     build_crossover_envelope_v2,
+    compact_cloud_status,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
@@ -110,7 +111,6 @@ from jasper.web.correction_crossover_v2 import (
     GRADE_SPATIAL_UNMEASURABLE,
     _post_apply_grade,
 )
-from jasper.web.correction_crossover_v2_status import _compact_cloud_status
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "apply", "verify")
 
@@ -2765,7 +2765,7 @@ def test_verify_fail_folds_tracking_numbers_behind_expert_details():
     assert bare["expert_details"] == []
 
 
-# The compact ``cloud`` block shape ``_compact_cloud_status`` serves — the ONE
+# The compact ``cloud`` block shape ``compact_cloud_status`` serves — the ONE
 # place a household-facing flatness number comes from since the
 # flat-linearization plan's PR-5 (the spec-curve SSOT). The numbers here are a
 # ``spec_flatness_gauge`` dict verbatim; tests/test_flat_spec_ssot.py is what
@@ -2946,7 +2946,7 @@ def _dark_tweeter_compact_cloud(*, phase: str = PHASE_CLOUD_VERIFY):
         "merged_excluded_bands_hz": [],
         "validity_floor_hz": None,
     }
-    compact = _compact_cloud_status({phase: {"geometry": {}, "pipeline": pipeline}})
+    compact = compact_cloud_status({phase: {"geometry": {}, "pipeline": pipeline}})
     return compact[phase], report, gauge
 
 
@@ -4325,7 +4325,7 @@ def test_applied_true_forces_verify_fail_regardless_of_phase():
     (§5.6, scoped away from ``apply_failed`` only) clears ``accepted_phases``.
     If the auto-apply's OWN success then lands moments later, the final
     durable state is applied=True with accepted_phases still cleared —
-    ``_phase_from_state`` resolves that combination to PHASE_CHECK, not
+    ``crossover_v2_phase`` resolves that combination to PHASE_CHECK, not
     PHASE_VERIFY. The render must not trust that phase derivation: keying
     on the RAW ``applied`` state fact catches this even when phase says
     "check" and active_step says "microphone_check"."""
@@ -5044,9 +5044,9 @@ def test_envelope_carries_capture_block_awaiting_and_after_failure():
 def _prediction(
     *, curve=True, overall_passed=True, bands=None, reference_db=80.0,
 ) -> dict:
-    """One ``_prediction_status`` projection, in the shape the wire sends.
+    """One ``prediction_status`` projection, in the shape the wire sends.
 
-    Mirrors ``jasper.web.correction_crossover_v2_status._prediction_status``'s
+    Mirrors ``crossover_envelope_v2.prediction_status``'s
     output
     key-for-key rather than inventing a convenient shape — the four
     absence/presence combinations exercised below are its OWN enumerated
@@ -5363,7 +5363,7 @@ def test_a_graded_miss_is_not_an_ungradeable_prediction():
 
 
 def test_the_refusal_lane_states_its_verdict_and_stages_no_decision():
-    """``_prediction_status``'s **4th** state: report present, curve absent.
+    """``prediction_status``'s **4th** state: report present, curve absent.
 
     The improvement gate refused, so the verdict was stashed before the gate ran
     while ``predicted_sum`` was never assigned — ``overall_passed`` is a REAL
