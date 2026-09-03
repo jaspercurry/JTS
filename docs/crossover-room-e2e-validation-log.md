@@ -68,7 +68,7 @@ protected by the *applied* crossover highpass (passive-window exposure over).
 
 The automated mic flow refines the provisional sensitivity-derived levels into
 measured ones. It is **relay-based**: the control page (`/correction/crossover/`)
-opens a relay session whose `tap_link` (a `capture.jasper.tech` page holding the
+opens a relay session whose `tap_link` (a hosted capture page holding the
 mic + E2E key) the capture device joins; the Pi plays a protected sweep, the
 capture device records via the mic + uploads through the relay, the Pi pulls +
 commits. Since the UMIK-2 is on the operator's Mac Studio, the *same machine*
@@ -149,14 +149,14 @@ accept. Ingests the UMIK-2 calibration by serial (`/correction/calibration/fetch
 8. **Correct surface split (operator correction):** the **control page is HTTP**
    on `jts3.local` (its mkcert cert is untrusted in a normal browser — you should
    not reach it over HTTPS), and the **getUserMedia capture is HTTPS on the
-   jasper.tech relay** (`capture.jasper.tech`, valid public cert). Driving via a
+   relay's hosted page** (valid public cert). Driving via a
    scripted headed-Playwright context (HTTPS-jts3 + `--use-fake-ui-for-media-stream`)
    *level-matched* fine but the driver-**sweep** getUserMedia recording kept
    resetting; switching to the real extension-controlled Chrome (HTTP control +
    HTTPS relay capture) fixed it immediately — the sweep tone played and recorded.
    Lesson: drive this flow through a real browser, not a synthetic media context.
 7. **Relay session TTL + hash-routed capture SPA — automation-driving finding.**
-   The `capture.jasper.tech` page is a hash-routed SPA (`#s=<session>…`) and the
+   The relay's hosted capture page is a hash-routed SPA (`#s=<session>…`) and the
    relay session has a short TTL. Two practical consequences for a *scripted*
    driver (a human tapping through on a phone wouldn't hit these): (a)
    re-navigating an already-open capture tab to a *new* session's hash does not

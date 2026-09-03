@@ -219,9 +219,7 @@ are what size the relay's attempt cap. Worst-case ENTRY count at the section's
 documented maxima: CHECK 1 + MEASURE 1 + `(N−1)` cloud-measure at max N=12 ⇒ 11,
 plus M=6 cloud-verify and 2 geometry-retry positions = **21 entries**. Since
 `max_attempts` doubles as the retake budget, the cap covers entries plus
-retakes: 21 + 11 = **32**, ~52 % retake headroom. That is
-`capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`, kept in lockstep with
-`relay/src/worker.js`.
+retakes: 21 + 11 = **32**, ~52 % retake headroom.
 
 **The named corner-cut that sizes retention:** full per-position WAVs are kept
 rather than derived summaries, *because the S0 forensics that produced this

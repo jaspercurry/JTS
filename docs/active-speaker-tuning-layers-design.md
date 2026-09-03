@@ -1761,8 +1761,8 @@ JTS3, issues for anything parked.
 
 #1650 relay voids (two located causes) · #1652 anomaly/quality program ·
 #1654 Fix-4 tweeter-sweep energy (revival trigger fired ×3) · #1656
-crossover-v2 wrong-cal primary scope · #1658 capture-page on-device pass +
-optional nits · #1660 room-relay device threading · #1664 worktree hygiene ·
+crossover-v2 wrong-cal primary scope ·
+#1660 room-relay device threading · #1664 worktree hygiene ·
 #1665 component entry + pad declarations (schema + pad/class-declaration
 slice landed 2026-07-24; JTS3 hardware validation and the research-prefill-
 audit portion still open) · #1666 apply promotion · #1667 trim-band bias

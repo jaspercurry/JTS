@@ -64,19 +64,6 @@ without changing:
   normal desk placement. This does not change Wave 3's scope — it
   explains why some of the older punchlist entries describe walls that
   no longer reproduce.
-- **v3 session-spanning relay capture** (#1550 dormant wiring, #1560
-  capture-page + ambient stats + one-tap mic, #1562 Pi-side flip) — one
-  relay session now drives an entire repeat set instead of one QR
-  round-trip per repeat. **Known open hardware bug, NOT in Wave-3
-  scope:** punchlist #52 (run 21) found a reserve-then-guard ordering
-  conflict between the v3 capture-plan reservation and an older
-  server-owned-next-step guard (`correction_setup.py:5359` and
-  `:4743`) that can 3-for-3 block the very first driver capture on
-  hardware. As of this kit's writing that fix has **not** landed on
-  `main`. If a Wave-3 hardware validation pass hits it, that is a
-  pre-existing Wave-2 defect — name it in the pilot report and move on;
-  do not attempt to fix it inside a Wave-3 PR (it is outside every
-  workstream's file allowlist).
 - **Durable household mic identity** (#1540 Pi-side record, #1564
   one-tap stored-calibration resolve-by-id) — `/var/lib/jasper/correction/
   household_mic.json`, owned by `jasper/correction/household_mic.py`,

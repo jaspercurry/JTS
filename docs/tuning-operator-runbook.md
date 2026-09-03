@@ -193,30 +193,8 @@ withdraw` is a different thing — it pulls a staged *walk*.)
 ~1 m in front of the speaker at tweeter height, pick a tier on
 `microphone_check`, tap Start. What paces the walk depends on the capture
 source — the wired default records on the Pi (see *The WIRED capture source*
-below); the parked phone flow is followed on the phone. When measurement ends,
-return to jts.local and choose Apply explicitly.
-
-**Three independent releases ship in a fixed order.** The phone page and the
-relay Worker both go out **before** the Pi, because each must be able to accept
-what the Pi will emit:
-
-1. **Phone capture page** — [`capture-page/`](../capture-page/README.md), a
-   Cloudflare Pages app at `capture.jasper.tech`. Deploy from the repo root:
-   `npx wrangler pages deploy capture-page/dist --project-name jts-capture-page --branch=main`.
-   `--branch=main` is load-bearing — without it wrangler publishes a preview
-   alias and the production domain keeps serving the stale page. The custom
-   domain lags the deploy by ~5 min; verify it before moving on.
-2. **Relay Worker** — [`relay/`](../relay/README.md) at `relay.jasper.tech`.
-   `cd relay && npx wrangler deploy`, then confirm the public artifact:
-   `curl -fsS https://relay.jasper.tech/capabilities` and check
-   `max_capture_plan_attempts` is at least what the Pi build will emit. The
-   Worker's blob-index space *is* the capture-plan attempt ceiling.
-3. **The Pi** — `bash scripts/deploy-to-pi.sh`.
-
-The Pi reads `/capabilities` at session setup and refuses before registering
-rather than dying on the ninth capture
-(`event=capture_relay.plan_capacity_refused`). Both READMEs own the full
-ordering rule, including the removal direction (page last).
+below). When measurement ends, return to jts.local and choose Apply
+explicitly.
 
 ## The capture flow
 
@@ -308,7 +286,7 @@ fourth tier.
 
 **The position gate replaces the tap.** Every begin — including the 0° ones — is
 held until the driver says the microphone has arrived. The hold is the shipped
-`CaptureBeginDeferred` soft-hold, so **no capture-page change is involved**: the
+`CaptureBeginDeferred` soft-hold, so **no page change is involved**: the
 Pi answers `capture_deferred`, the page parks with no affordance and re-posts the
 identical begin every 1.5 s, the attempt budget is not spent, and the session
 does not end. Gating is per `(index, attempt)`, so a retake re-gates.
@@ -351,12 +329,9 @@ park-and-verify held in code. It is opt-in and foreground: nothing starts it. Se
 **The WIRED capture source is the default, and it changes steps 1–2.** A
 measurement-class USB mic plugged into the Pi (usbid matched against the
 calibration registry — a UMIK-2; never a voice array) is what a session opens on:
-the Pi plays and records on one host, so there is **no phone, no relay
-dependency, and none of the three capture-device gestures**. With no such mic the
-session refuses at the tap and says so — it never falls back to the phone quietly
-— and `JASPER_CAPTURE_SOURCE=relay` is the way to the parked phone-mic flow
-([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md); the knob is
-documented in `.env.example`). The position gate is unchanged, and on the wired
+the Pi plays and records on one host, so there is **no phone, no transport
+dependency, and none of the three capture-device gestures**. With no such mic
+the session refuses at the tap and says so. The position gate is unchanged, and on the wired
 source a hand-walked round is gated too, because there is no capture page to
 tap. Two steps are new: stage 1's held set
 closes on `POST /correction/crossover/v2/complete` (empty body), bounded by the
@@ -403,15 +378,6 @@ is page-side and fires only on evidence measured in *that take*; the derivation
 of why an `auto_retry` class filter is the wrong one for it, and the 2026-08-15
 deterministic-fault campaign that settled it, are the campaign record's.
 
-**A transient relay failure is NOT that stall — the page recovers on its own.**
-The capture page re-sends the begin exchange automatically on a backoff ladder,
-bounded by both rung count *and* wall clock so it can never spend the
-`awaiting_arm` budget the household's tap still needs. The rungs, the arithmetic
-and the safety argument for re-posting an identical begin are stated in
-`withRelayReconnect` ([`capture-page/js/main.js`](../capture-page/js/main.js)),
-not restated here. A **rejected** capture still needs a human; a **transport**
-blip no longer does.
-
 **A geometry-locked group refuses rather than prompting — on EITHER gated
 shape.** If a group's echo estimates cluster, a screen-paced walk asks for a
 wider retake: 75 cm out, and on the second rung 75 cm out *and above* mark
@@ -433,16 +399,6 @@ actionable sentence. It introduces no new budget: past the ceiling
 `SessionVolumePlan.assert_ready` already refuses a stale-active plan, so every
 capture after it was doomed; what changed is that the session says so instead of
 reporting `relay_timeout`, a claim about a transport that never failed.
-
-**The link is minted to outlive the stage.** A relay link is an absolute clock
-(`TIME_BUDGET_LINK` — minted once, refreshed by nothing) and the shared default
-is shorter than either remote ceiling, so a remote stage sizes its own:
-`relay_link_ttl_s` asks for that stage's ceiling plus `REMOTE_RELAY_TTL_MARGIN_S`,
-clamped at what the relay Worker grants (`capture_relay.session.MAX_TTL_S`,
-mirrored from `relay/src/worker.js`). Each stage mints its own link;
-hand-walked tiers keep the default. Read the numbers off those constants, not
-from here. Symptom when this is wrong: the capture page is alive and re-posting,
-and the Pi's own status poll takes a `404 not_found` mid-walk.
 
 **What a remote walk cannot say.** It samples one axis, so its post-apply group
 carries no `xovr` role at all. The done screen discloses that once

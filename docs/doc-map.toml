@@ -521,7 +521,6 @@ code = [
 ]
 docs = [
   "docs/audio-paths.md",
-  "docs/phone-mic-relay-plan.md",
 ]
 requires_docs_when = [
   "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, the graph-carrier dispatch for re-emitting the loaded graph (preference EQ over any output topology), or generated DSP config safety behavior changes.",
