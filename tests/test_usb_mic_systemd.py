@@ -174,6 +174,11 @@ def _run_condition(
     stub = bin_dir / "systemctl"
     stub.write_text(f"#!/bin/sh\nexit {0 if bridge else 3}\n", encoding="utf-8")
     stub.chmod(0o755)
+    # macOS ships no `timeout(1)`; the condition script wraps its systemctl
+    # call in one, so stand in a passthrough (matches test_control_systemd.py).
+    timeout_stub = bin_dir / "timeout"
+    timeout_stub.write_text('#!/bin/sh\nshift\nexec "$@"\n', encoding="utf-8")
+    timeout_stub.chmod(0o755)
     return subprocess.run(
         ["/bin/sh", "-c", _condition_script(tmp_path)],
         capture_output=True,
