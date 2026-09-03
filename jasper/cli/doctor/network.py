@@ -30,6 +30,11 @@ from jasper.usb_network import (
     render_dnsmasq,
     render_nmconnection,
 )
+from jasper.wifi_guardian_persistence import (
+    NMCLI_ACTIVE_WIFI_FIELDS,
+    active_wifi_connection,
+    nm_unescape as _nm_unescape,
+)
 
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
@@ -85,46 +90,15 @@ def _format_phy_regdom_detail(phy_countries: dict[str, str]) -> str:
     return "; ".join(parts)
 
 def _active_wifi_connection(nmcli: str) -> tuple[str | None, str | None]:
-    """Return the active Wi-Fi NetworkManager profile name and device.
-
-    Field order is ``TYPE,DEVICE,NAME`` on purpose: ``nmcli -t``
-    colon-separates fields, and a profile NAME can legitimately contain
-    a literal colon (real SSIDs like ``Home:2.4G`` or ``AT&T:5G``).
-    nmcli escapes such colons as ``\\:`` inside the value, but a
-    NAME-first split (the previous order) still mis-parsed them — the
-    first ``\\:`` was treated as a field boundary, so TYPE landed on the
-    wrong token and the active Wi-Fi row was silently missed, returning
-    ``(None, None)`` for a perfectly valid profile. Putting the only
-    variable-content field (NAME) last means the fixed-format TYPE and
-    DEVICE tokens parse unambiguously and NAME is the remainder, which
-    we then unescape. This mirrors the ``TYPE,NAME`` order the bash
-    guardian uses for the same reason (deploy/bin/jasper-wifi-guardian);
-    drift is pinned by tests/test_doctor_network.py."""
+    """Return the active Wi-Fi NetworkManager profile name and device."""
     proc = _run(
-        [nmcli, "-t", "-f", "TYPE,DEVICE,NAME", "connection", "show", "--active"],
+        [nmcli, "-t", "-f", NMCLI_ACTIVE_WIFI_FIELDS,
+         "connection", "show", "--active"],
         timeout=5,
     )
     if proc.returncode != 0:
         return None, None
-    for raw in proc.stdout.splitlines():
-        # TYPE and DEVICE never contain a colon, so split off exactly the
-        # first two fields; the rest is the (possibly colon-bearing) NAME.
-        parts = raw.split(":", 2)
-        if len(parts) == 3 and parts[0] in ("802-11-wireless", "wifi"):
-            device = parts[1] or None
-            name = _nm_unescape(parts[2]) or None
-            return name, device
-    return None, None
-
-
-def _nm_unescape(value: str) -> str:
-    r"""Reverse ``nmcli -t``'s ``\:`` escaping of literal colons in values.
-
-    A literal backslash in a value would itself be escaped as ``\\`` by
-    nmcli, but SSIDs with backslashes are not a real-world case, so —
-    matching the bash guardian's ``nm_unescape`` — we reverse only the
-    colon escape and leave any other backslash as-is."""
-    return value.replace("\\:", ":")
+    return active_wifi_connection(proc.stdout)
 
 @doctor_check(order=63, group="network")
 def check_wifi_regdom() -> CheckResult:

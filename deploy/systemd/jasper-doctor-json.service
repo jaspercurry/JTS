@@ -1,29 +1,22 @@
 [Unit]
 Description=Capture jasper-doctor --json for the /system dashboard (root fidelity)
-# jasper-control dropped to a non-root user, but jasper-doctor is a root tool
-# (it runs aplay/amixer probes, reads the journal, and `sudo -u <renderer>
-# aplay`). Running it AS the non-root jasper-control makes ~7 hardware checks
-# fail on permissions — the dashboard's Diagnostics card would show false red.
-# So the on-demand /system/diagnostics report is produced by THIS root oneshot
-# instead: the non-root jasper-control triggers it via its polkit manage-units
-# grant (this unit is in jasper.control.restart_broker.MANAGED_UNITS), the
-# doctor runs at full root fidelity, and the result lands group-`jasper`
-# readable for jasper-control to serve. This is started on demand, never
-# enabled — hence no [Install] section.
+# Root, because jasper-doctor runs aplay/amixer probes, reads the journal, and
+# `sudo -u <renderer> aplay`; run as the non-root jasper-control instead, ~7
+# hardware checks fail on permissions and the dashboard shows false red.
 After=jasper-control.service
 
 [Service]
 Type=oneshot
-# root (no User=) so the full hardware/mixer/journal/renderer checks are
-# accurate. Group=jasper so the result file — written into jasper-control's
-# /run dir — is group-readable by the non-root jasper-control without being
+# Group=jasper so the result file — written into jasper-control's /run dir —
+# is group-readable by the non-root jasper-control without being
 # world-readable (the doctor JSON can name configured subsystems).
 Group=jasper
-# The /system/diagnostics handler starts this unit with `systemctl --no-block`
-# when the cached result is stale/missing, then serves the previous snapshot
-# immediately. `--out` makes the doctor exit 0 even when checks fail (the
-# failures are in the JSON), so a "report with failures" never flips this unit
-# to `failed`.
+# ~175 checks at concurrency 8 with a 15 s per-check ceiling. Without a bound,
+# a wedged probe leaves the oneshot activating forever.
+TimeoutStartSec=300
+# `--out` makes the doctor exit 0 even when checks fail (the failures are in
+# the JSON), so a "report with failures" never flips this unit to `failed`.
 ExecStart=/opt/jasper/.venv/bin/jasper-doctor --json --out /run/jasper-control/doctor-result.json
 StandardOutput=journal
 StandardError=journal
+# Started on demand by /system/diagnostics, never enabled — hence no [Install].

@@ -254,10 +254,17 @@ def _audio_graph_state(
         and isinstance(outputd_status.get("dac"), dict)
         else None
     )
-    outputd_aec_clock = (
-        outputd_status.get("aec_clock")
+    outputd_reference_outputs = (
+        outputd_status.get("reference_outputs")
         if isinstance(outputd_status, dict)
-        and isinstance(outputd_status.get("aec_clock"), dict)
+        else None
+    )
+    # outputd nests aec_clock inside reference_outputs
+    # (rust/jasper-outputd/src/state.rs), as jasper-doctor reads it.
+    outputd_aec_clock = (
+        outputd_reference_outputs.get("aec_clock")
+        if isinstance(outputd_reference_outputs, dict)
+        and isinstance(outputd_reference_outputs.get("aec_clock"), dict)
         else None
     )
     outputd_latency = (

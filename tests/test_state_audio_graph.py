@@ -50,9 +50,15 @@ def test_audio_graph_state_aggregates_route_fanin_and_outputd(
                 "snd_pcm_delay_ms": 10.333,
                 "snd_pcm_delay_frames": 496,
             },
-            "aec_clock": {
-                "status": "locked",
-                "latency": {"dac_presentation_ms": 10.333},
+            # outputd nests aec_clock under reference_outputs
+            # (rust/jasper-outputd/src/state.rs).
+            "reference_outputs": {
+                "speaker_reference_source": "outputd_final_electrical",
+                "aec_clock": {
+                    "sro_estimator_status": "locked",
+                    "verdict": "ok",
+                    "latency": {"dac_presentation_ms": 10.333},
+                },
             },
         },
     )
@@ -64,7 +70,10 @@ def test_audio_graph_state_aggregates_route_fanin_and_outputd(
     assert graph["fanin"]["resampler"]["locked"] is True
     assert graph["fanin"]["resampler"]["target_fill_frames"] == 2048
     assert graph["outputd"]["dac_delay_ms"] == 10.333
-    assert graph["outputd"]["final_reference_health"]["status"] == "locked"
+    assert (
+        graph["outputd"]["final_reference_health"]["sro_estimator_status"]
+        == "locked"
+    )
     assert graph["outputd"]["route_latency_components"] == {
         "dac_presentation_ms": 10.333
     }

@@ -68,50 +68,16 @@ def _nmcli_active_run(stdout: str):
     return fake_run
 
 
-def test_active_wifi_connection_simple(monkeypatch):
-    """Plain SSID with no colon resolves to (name, device)."""
-    # nmcli -t -f TYPE,DEVICE,NAME connection show --active
-    stdout = "802-11-wireless:wlan0:HomeWiFi\n"
-    monkeypatch.setattr(doctor.network, "_run", _nmcli_active_run(stdout))
-
-    name, device = doctor.network._active_wifi_connection("nmcli")
-
-    assert name == "HomeWiFi"
-    assert device == "wlan0"
-
-
-def test_active_wifi_connection_handles_colon_in_ssid(monkeypatch):
-    """An SSID containing a literal colon must still be matched.
-
-    Real-world SSIDs like ``Home:2.4G`` / ``AT&T:5G`` appear in
-    nmcli -t output with the colon escaped as ``\\:``. With the old
-    NAME-first field order (``NAME,TYPE,DEVICE``) this row mis-parsed —
-    the first ``\\:`` was treated as a field boundary, TYPE landed on
-    ``2.4G`` (not a wifi type), and the active connection was silently
-    missed, returning (None, None) for a valid profile. This test pins
-    the colon-safe TYPE,DEVICE,NAME order + unescape and FAILS on the
-    old order."""
-    # As emitted by `nmcli -t -f TYPE,DEVICE,NAME connection show --active`:
-    # the NAME field's literal colon is backslash-escaped.
-    stdout = "802-11-wireless:wlan0:Home\\:2.4G\n"
-    fake_run = _nmcli_active_run(stdout)
+def test_active_wifi_connection_requests_the_colon_safe_field_order(monkeypatch):
+    """The variable-content NAME field must be requested LAST, so the
+    fixed-format TYPE/DEVICE tokens parse unambiguously ahead of an SSID that
+    contains its own colon. The parse itself is pinned on the shared function
+    (tests/test_wifi_guardian_persistence.py)."""
+    fake_run = _nmcli_active_run("802-11-wireless:wlan0:Home\\:2.4G\n")
     monkeypatch.setattr(doctor.network, "_run", fake_run)
 
-    name, device = doctor.network._active_wifi_connection("nmcli")
-
-    assert name == "Home:2.4G", "colon-containing SSID must be unescaped, not dropped"
-    assert device == "wlan0"
-    # The variable-content NAME field must be requested last so fixed-format
-    # TYPE/DEVICE tokens parse unambiguously.
+    assert doctor.network._active_wifi_connection("nmcli") == ("Home:2.4G", "wlan0")
     assert "TYPE,DEVICE,NAME" in fake_run.calls[0]
-
-
-def test_active_wifi_connection_no_wifi_row(monkeypatch):
-    """Only a non-wifi (ethernet) active connection → (None, None)."""
-    stdout = "802-3-ethernet:eth0:Wired connection 1\n"
-    monkeypatch.setattr(doctor.network, "_run", _nmcli_active_run(stdout))
-
-    assert doctor.network._active_wifi_connection("nmcli") == (None, None)
 
 
 def test_active_wifi_connection_nonzero_returncode(monkeypatch):

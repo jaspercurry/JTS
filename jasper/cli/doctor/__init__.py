@@ -57,6 +57,7 @@ from ...install_profile import (
     install_role_for_profile,
     read_install_profile,
 )
+from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import default_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
@@ -65,6 +66,7 @@ from ._registry import doctor_check, registered_checks
 from ._shared import (
     BOLD,
     CheckResult,
+    DIM,
     DoctorCheck,
     GREEN,
     RED,
@@ -364,9 +366,15 @@ _STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
 })
 
 
+def _registered_check_name(entry) -> str:
+    """The displayed and crash-path name of a registered check — one rule for
+    every calling convention, so a check cannot be named one thing on a full
+    box and another on a streambox."""
+    return entry.label or _check_name(entry.func)
+
+
 def _profile_skip_result(entry, *, reason: str) -> CheckResult:
-    label = entry.label or _check_name(entry.func)
-    return CheckResult(label, "ok", reason)
+    return CheckResult(_registered_check_name(entry), "skipped", reason)
 
 
 def _doctor_skip_reason(entry, install_profile: str) -> str:
@@ -385,6 +393,7 @@ __all__ = [
     "_load_env_files",
     "BOLD",
     "CheckResult",
+    "DIM",
     "DoctorCheck",
     "GREEN",
     "RED",
@@ -676,6 +685,8 @@ def render(results: list[CheckResult]) -> int:
     for r in results:
         if r.status == "ok":
             color, mark = GREEN, "✓"
+        elif r.status == "skipped":
+            color, mark = DIM, "-"
         else:
             # Read inside this arm, so an `ok` result's `speaker_silent` is
             # never read at all. That makes the field's warn/fail scope true by
@@ -720,6 +731,11 @@ def _json_payload(
     payload = {
         "fails": sum(1 for r in results if r.status == "fail"),
         "warns": sum(1 for r in results if r.status == "warn"),
+        # Same warn/fail-only scope `render` reads it in: an `ok` result
+        # asserting silence contradicts itself, so it never contributes.
+        "speaker_silent": any(
+            r.speaker_silent for r in results if r.status in ("warn", "fail")
+        ),
         "generated_at_epoch": time.time(),
         "results": [
             {
@@ -727,6 +743,7 @@ def _json_payload(
                 "status": r.status,
                 "detail": r.detail,
                 "reason": r.reason,
+                "speaker_silent": r.speaker_silent,
             }
             for r in results
         ],
@@ -864,6 +881,9 @@ def _local_audio_config_from_env() -> SimpleNamespace:
         usage_db=os.environ.get("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
         camilla_host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
         camilla_port=_env_int_for_doctor("JASPER_CAMILLA_PORT", 1234),
+        librespot_state_path=os.environ.get(
+            "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
+        ),
         spotify_client_id=spotify_client_id,
         spotify_redirect_uri=(
             os.environ.get("SPOTIFY_REDIRECT_URI", spotify_redirect_default)
@@ -922,38 +942,27 @@ def _build_doctor_checks(
 ) -> list[_RunnableDoctorCheck]:
     checks: list[_RunnableDoctorCheck] = []
     for entry in registered_checks():
+        name = _registered_check_name(entry)
         skip_reason = _doctor_skip_reason(entry, install_profile)
         if skip_reason:
             skipped = _profile_skip_result(entry, reason=skip_reason)
-            check = (skipped.name, lambda skipped=skipped: skipped)
-            checks.append(_RunnableDoctorCheck(skipped.name, check))
-            continue
-        fn = entry.func
-        if entry.is_async:
-            name = entry.label or _check_name(fn)  # type: ignore[arg-type]
-            async_check = (
-                (lambda fn=fn, cfg=cfg: fn(cfg))
-                if entry.needs_cfg
-                else (lambda fn=fn: fn())
-            )
             checks.append(
                 _RunnableDoctorCheck(
-                    name,
-                    async_check,  # type: ignore[arg-type]
-                    is_async=True,
-                    exclusive_group=entry.exclusive_group,
+                    name, (name, lambda skipped=skipped: skipped)
                 )
             )
             continue
-        if entry.needs_cfg:
-            check: DoctorCheck = (entry.label, lambda fn=fn, cfg=cfg: fn(cfg))
-        else:
-            check = fn  # type: ignore[assignment]
-        name, _ = _normalize_doctor_check(check)
+        fn = entry.func
+        call = (
+            (lambda fn=fn, cfg=cfg: fn(cfg))
+            if entry.needs_cfg
+            else (lambda fn=fn: fn())
+        )
         checks.append(
             _RunnableDoctorCheck(
                 name,
-                check,
+                call if entry.is_async else (name, call),
+                is_async=entry.is_async,
                 exclusive_group=entry.exclusive_group,
             )
         )

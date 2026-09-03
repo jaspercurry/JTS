@@ -39,6 +39,8 @@ from jasper.log_event import log_event
 
 from ..wifi_guardian_persistence import (
     DEFAULT_PATH as _DEFAULT_STASH,
+    NMCLI_ACTIVE_WIFI_FIELDS,
+    active_wifi_connection,
     read_stash,
 )
 
@@ -70,7 +72,7 @@ def _active_ssid() -> str | None:
     so all failure paths report "unknown" rather than raising."""
     try:
         proc = subprocess.run(
-            ["nmcli", "-t", "-f", "NAME,TYPE", "connection",
+            ["nmcli", "-t", "-f", NMCLI_ACTIVE_WIFI_FIELDS, "connection",
              "show", "--active"],
             capture_output=True, text=True, timeout=3,
         )
@@ -78,12 +80,7 @@ def _active_ssid() -> str | None:
         return None
     if proc.returncode != 0:
         return None
-    active_name: str | None = None
-    for raw in proc.stdout.splitlines():
-        parts = raw.split(":", 1)
-        if len(parts) == 2 and parts[1] in ("802-11-wireless", "wifi"):
-            active_name = parts[0]
-            break
+    active_name, _device = active_wifi_connection(proc.stdout)
     if not active_name:
         return None
     # Resolve to actual SSID (netplan-seeded profile NAMEs can differ).

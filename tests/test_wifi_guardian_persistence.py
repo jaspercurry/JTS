@@ -26,6 +26,7 @@ import pytest
 from jasper.wifi_guardian_persistence import (
     DEFAULT_PATH,
     WifiStash,
+    active_wifi_connection,
     clear_stash,
     read_stash,
     write_stash,
@@ -252,3 +253,21 @@ def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
     assert read_stash(_path(tmp_path)) is not None
     # The dir fsync was attempted and failed gracefully.
     assert seen_paths == [tmp_path]
+
+
+@pytest.mark.parametrize(
+    "row,expected_name",
+    [
+        ("802-11-wireless:wlan0:HomeWiFi", "HomeWiFi"),
+        # nmcli -t escapes a literal colon in the variable-content NAME field;
+        # a NAME-first field order mis-parses the escape as a separator.
+        (r"802-11-wireless:wlan0:Home\:2.4G", "Home:2.4G"),
+        ("wifi:wlan0:AT&T:5G", "AT&T:5G"),
+        ("802-3-ethernet:eth0:Wired connection 1", None),
+    ],
+)
+def test_active_wifi_connection_parses_the_wifi_row(row, expected_name):
+    name, device = active_wifi_connection(row + "\n")
+
+    assert name == expected_name
+    assert device == ("wlan0" if expected_name else None)

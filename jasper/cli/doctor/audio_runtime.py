@@ -21,6 +21,7 @@ from ...camilla_config_contract import read_camilla_device_field
 from ...fanin_coupling import RING_SLOT_FRAMES, read_declared_ring_wire_format
 from ._registry import doctor_check
 from ...output_hardware import active_dac_profile_id
+from ...route_latency.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ._shared import CheckResult, _run
 from .correction import _active_camilla_config_path
 
@@ -533,7 +534,7 @@ def check_fanin_service() -> CheckResult:
             "fail",
             "active but STATUS response missing watchdog state",
         )
-    if progress_age > 1000:
+    if progress_age > FANIN_STALE_MS:
         return CheckResult(
             "jasper-fanin service",
             "warn",
@@ -1515,6 +1516,7 @@ def check_ring_split_transport() -> CheckResult:
         "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if "
         "an arm ladder is running right now; the ladder's own final doctor pass "
         "is the authoritative read.)",
+        speaker_silent=True,
     )
 
 
@@ -1593,6 +1595,7 @@ def check_active_ring_path_projection() -> CheckResult:
         "jasper-fanin-coupling-reconcile shm_ring. (Transient and expected if an "
         "arm ladder is running right now; the ladder's own final doctor pass is "
         "the authoritative read.)",
+        speaker_silent=True,
     )
 
 
@@ -2908,7 +2911,7 @@ def check_outputd_service() -> CheckResult:
     if isinstance(loudness_health, CheckResult):
         return loudness_health
     loudness_detail = loudness_health
-    if progress_age > 1000:
+    if progress_age > OUTPUTD_STALE_MS:
         return CheckResult(
             "jasper-outputd",
             "warn",
@@ -3317,7 +3320,7 @@ def check_camilla_recover_park() -> CheckResult:
         value = state.get(field)
         if value:
             parts.append(f"{prefix}{value}")
-    return CheckResult(label, "fail", ". ".join(parts))
+    return CheckResult(label, "fail", ". ".join(parts), speaker_silent=True)
 
 
 @doctor_check(order=52.68, group="audio")
@@ -3424,6 +3427,7 @@ def check_ring_transport_park() -> CheckResult:
         "fail",
         "PARKED — no ring serves this box, so it emits nothing: "
         + "; ".join(named),
+        speaker_silent=True,
     )
 
 

@@ -45,6 +45,39 @@ DEFAULT_PATH = "/var/lib/jasper/wifi_guardian.env"
 _KEY_SSID = "JASPER_WIFI_SSID"
 _KEY_PSK = "JASPER_WIFI_PSK"
 _KEY_MGMT = "JASPER_WIFI_KEY_MGMT"
+# Field order for `nmcli -t -f ... connection show --active`. NAME is LAST
+# because it is the only variable-content field: a real SSID may contain a
+# literal colon (`Home:2.4G`), which nmcli escapes as `\:` but which a
+# NAME-first split still mis-parses into the wrong fields. TYPE and DEVICE
+# never contain a colon, so splitting off exactly two fields leaves NAME as the
+# remainder. Mirrors deploy/bin/jasper-wifi-guardian's TYPE-first order.
+NMCLI_ACTIVE_WIFI_FIELDS = "TYPE,DEVICE,NAME"
+_WIFI_CONNECTION_TYPES = ("802-11-wireless", "wifi")
+
+
+def nm_unescape(value: str) -> str:
+    r"""Reverse ``nmcli -t``'s ``\:`` escaping of literal colons in values.
+
+    A literal backslash would itself be escaped as ``\\``, but SSIDs with
+    backslashes are not a real-world case, so — matching the bash guardian's
+    ``nm_unescape`` — only the colon escape is reversed.
+    """
+    return value.replace("\\:", ":")
+
+
+def active_wifi_connection(terse_output: str) -> tuple[str | None, str | None]:
+    """Parse ``nmcli -t -f TYPE,DEVICE,NAME connection show --active`` output.
+
+    Returns ``(profile_name, device)`` for the first active Wi-Fi row, or
+    ``(None, None)`` when no row is Wi-Fi.
+    """
+    for raw in terse_output.splitlines():
+        parts = raw.split(":", 2)
+        if len(parts) == 3 and parts[0] in _WIFI_CONNECTION_TYPES:
+            return nm_unescape(parts[2]) or None, parts[1] or None
+    return None, None
+
+
 @dataclass(frozen=True)
 class WifiStash:
     """An immutable snapshot of the stashed WiFi profile intent.

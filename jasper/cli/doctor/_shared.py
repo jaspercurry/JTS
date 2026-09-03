@@ -50,6 +50,8 @@ YELLOW = "\033[33m"
 
 BOLD = "\033[1m"
 
+DIM = "\033[2m"
+
 RESET = "\033[0m"
 
 _CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
@@ -68,7 +70,10 @@ _CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
 @dataclass
 class CheckResult:
     name: str
-    status: str  # "ok" | "warn" | "fail"
+    # "skipped" is a check that never ran (a profile that does not install the
+    # subsystem). It is not "ok": nothing was observed, so it counts toward
+    # neither fails nor warns and renders dim.
+    status: str  # "ok" | "warn" | "fail" | "skipped"
     detail: str = ""
     # True when THIS result's meaning is "the speaker emits nothing right
     # now". Only a check that can prove that sets it, because only the check

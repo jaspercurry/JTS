@@ -12,6 +12,7 @@ import pytest
 
 from jasper import audio_runtime_plan
 from jasper.cli import doctor
+from jasper.control import audio_health
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
 )
@@ -5278,3 +5279,110 @@ def test_outputd_service_ok_on_a_marker_armed_member(monkeypatch, tmp_path):
 
     assert r.status == "ok", r.detail
     assert "content_source=alsa" in r.detail
+
+
+def _silent_split_transport(monkeypatch, tmp_path):
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        bridge=DIRECT_BRIDGE,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+    return audio_runtime.check_ring_split_transport
+
+
+def _silent_ring_path_projection(monkeypatch, tmp_path):
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        env_lines=(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
+            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
+        ),
+    )
+    return audio_runtime.check_active_ring_path_projection
+
+
+def _silent_camilla_recover_park(monkeypatch, tmp_path):
+    from jasper.control import camilla_recover_state
+
+    monkeypatch.setattr(
+        camilla_recover_state,
+        "snapshot",
+        lambda *a, **k: {
+            "status": "parked",
+            "parked": True,
+            "reason": "camilla_start_failed",
+        },
+    )
+    return audio_runtime.check_camilla_recover_park
+
+
+def _silent_ring_transport_park(monkeypatch, tmp_path):
+    from jasper.control import transport_park
+
+    monkeypatch.setattr(
+        transport_park,
+        "snapshot",
+        lambda *a, **k: {
+            "status": "parked",
+            "parked": True,
+            "parks": [{"park_class": "mono_full_range", "detail": "d"}],
+        },
+    )
+    return audio_runtime.check_ring_transport_park
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        _silent_split_transport,
+        _silent_ring_path_projection,
+        _silent_camilla_recover_park,
+        _silent_ring_transport_park,
+    ],
+    ids=lambda fn: fn.__name__,
+)
+def test_a_check_that_asserts_silence_carries_speaker_silent(
+    monkeypatch, tmp_path, arrange
+) -> None:
+    """A branch whose whole finding is "the household hears nothing" must say so
+    in the structured field, not only in its prose — `render` and the dashboard
+    lead their summary with it."""
+    check = arrange(monkeypatch, tmp_path)
+
+    result = check()
+
+    assert result.status == "fail", result
+    assert result.speaker_silent is True
+
+
+@pytest.mark.parametrize(
+    "stale_ms,payload,check",
+    [
+        (
+            audio_health.FANIN_STALE_MS,
+            _fanin_status_payload,
+            lambda: doctor.check_fanin_service(),
+        ),
+        (
+            audio_health.OUTPUTD_STALE_MS,
+            _outputd_status_payload,
+            lambda: doctor.check_outputd_service(),
+        ),
+    ],
+    ids=["fanin", "outputd"],
+)
+@pytest.mark.parametrize("over", [False, True])
+def test_doctor_stale_warning_uses_the_household_threshold(
+    monkeypatch, stale_ms, payload, check, over
+) -> None:
+    """One tolerance for "the transport stopped moving": the doctor must not
+    warn about an age the /system household card still calls healthy."""
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch, payload(progress_age_ms=stale_ms + (1 if over else 0))
+    )
+
+    assert check().status == ("warn" if over else "ok")

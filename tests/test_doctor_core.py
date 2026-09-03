@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 from jasper.cli import doctor
 from jasper.cli.doctor import CheckResult, render_json
@@ -85,12 +87,14 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["fails"] == 0
+    assert payload["speaker_silent"] is False
     assert payload["results"] == [
         {
             "name": "endpoint smoke",
             "status": "ok",
             "detail": "minimal cfg",
             "reason": "",
+            "speaker_silent": False,
         }
     ]
 
@@ -179,7 +183,7 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
     assert ran == ["env", "web"]
     assert [(r.name, r.status, r.detail) for r in results] == [
         ("env file", "ok", "ran"),
-        ("provider key", "ok", "not installed (streambox profile)"),
+        ("provider key", "skipped", "not installed (streambox profile)"),
         ("management surface", "ok", "ran"),
     ]
 
@@ -286,8 +290,8 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
 
     assert ran == ["renderers", "correction"]
     assert [(r.name, r.status, r.detail) for r in results] == [
-        ("provider key", "ok", "not installed (streambox profile)"),
-        ("mic capture", "ok", "not installed (streambox profile)"),
+        ("provider key", "skipped", "not installed (streambox profile)"),
+        ("mic capture", "skipped", "not installed (streambox profile)"),
         ("librespot.service", "ok", "ran"),
         ("room correction service", "ok", "ran"),
     ]
@@ -588,20 +592,30 @@ def test_render_json_stdout_keeps_exit_semantics(capsys):
 
 def test_oneshot_unit_runs_doctor_with_out():
     assert UNIT.is_file(), f"missing {UNIT}"
-    text = UNIT.read_text(encoding="utf-8")
-    assert "Type=oneshot" in text
+    lines = [ln.strip() for ln in UNIT.read_text(encoding="utf-8").splitlines()]
+    settings: dict[str, str] = {}
+    for line in lines:
+        if line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        settings[key] = value
+    assert settings["Type"] == "oneshot"
     # root (no User=) for full fidelity; Group=jasper so the result is readable.
-    assert not any(
-        ln.strip().startswith("User=") for ln in text.splitlines()
-    ), "the doctor oneshot must run as root (no User=) for full-fidelity checks"
-    assert "Group=jasper" in text
+    assert "User" not in settings, (
+        "the doctor oneshot must run as root (no User=) for full-fidelity checks"
+    )
+    assert settings["Group"] == "jasper"
     # The writer's --out and the reader's default are one path: rename one
     # only and /system/diagnostics stats a file nothing writes.
     from jasper.control.server import _DIAGNOSTICS_RESULT_PATH
 
-    assert f"jasper-doctor --json --out {_DIAGNOSTICS_RESULT_PATH}" in text
+    assert settings["ExecStart"].endswith(
+        f"jasper-doctor --json --out {_DIAGNOSTICS_RESULT_PATH}"
+    )
+    # Bounded so a wedged probe cannot leave the oneshot activating forever.
+    assert int(settings["TimeoutStartSec"]) > 0
     # On-demand only — never enabled (no [Install] section header).
-    assert "[Install]" not in [ln.strip() for ln in text.splitlines()]
+    assert "[Install]" not in lines
 
 
 def test_oneshot_in_managed_units_and_polkit_allowlist():
@@ -609,3 +623,57 @@ def test_oneshot_in_managed_units_and_polkit_allowlist():
     in MANAGED_UNITS (and therefore the polkit allowlist, pinned set-equal by
     test_polkit_jasper_control)."""
     assert "jasper-doctor-json.service" in MANAGED_UNITS
+
+
+
+def _cfg_attrs_read_by(func) -> set[str]:
+    """Every ``cfg.<attr>`` the check's source reads."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    return {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "cfg"
+    }
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        entry
+        for entry in doctor.registered_checks()
+        if entry.needs_cfg and not doctor._doctor_skip_reason(entry, "streambox")
+    ],
+    ids=lambda entry: entry.func.__name__,
+)
+def test_streambox_cfg_carries_every_attribute_its_checks_read(entry):
+    """The streambox cfg stub is a contract, not a convenience: a check that
+    survives the profile filter must find every attribute it reads, or it
+    crashes and the dashboard shows a red row on a healthy box."""
+    cfg = doctor._doctor_config_from_env("streambox")
+    missing = {
+        attr for attr in _cfg_attrs_read_by(entry.func) if not hasattr(cfg, attr)
+    }
+    assert not missing
+
+
+def test_librespot_check_reports_ok_on_streambox_cfg(monkeypatch):
+    monkeypatch.setattr(doctor.renderers, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.renderers, "source_intent_enabled", lambda source: True)
+    monkeypatch.setattr(doctor.renderers.os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(
+        doctor.renderers,
+        "_run",
+        lambda cmd: SimpleNamespace(returncode=0, stdout="active\n", stderr=""),
+    )
+
+    result = doctor.check_librespot_running(
+        doctor._doctor_config_from_env("streambox")
+    )
+
+    assert result.status == "ok"

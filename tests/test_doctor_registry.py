@@ -69,3 +69,18 @@ def test_duplicate_order_is_rejected_at_registration():
     finally:
         # Restore the registry even if the guard regressed and appended.
         _registry._REGISTRY[:] = saved
+
+
+@pytest.mark.parametrize("install_profile", ["full", "streambox"])
+def test_every_built_check_is_named_by_one_rule(install_profile):
+    """`entry.label or _check_name(entry.func)` — on every profile and every
+    calling convention. A check named one thing on a full box and another on a
+    streambox makes two rows out of one check for anything reading the report."""
+    from types import SimpleNamespace
+
+    from jasper.cli.doctor import _build_doctor_checks, _check_name
+
+    built = _build_doctor_checks(SimpleNamespace(), install_profile)
+    assert [c.name for c in built] == [
+        entry.label or _check_name(entry.func) for entry in registered_checks()
+    ]

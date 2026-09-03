@@ -26,18 +26,11 @@ Behaviour contract preserved from the old literal list:
   sorting by ``order`` makes the final sequence independent of import
   order.
 
-- **The bare-vs-tuple distinction is preserved.** In the old list a
-  *bare* function reference got its crash-path label derived from
-  ``fn.__name__`` (``check_env_file`` → ``"env file"``) by
-  ``_normalize_doctor_check``; a ``(label, lambda: fn(cfg))`` *tuple*
-  pinned the label explicitly and bound ``cfg``. ``run_async`` rebuilds
-  exactly that ``DoctorCheck`` shape from the registry: a check with
-  ``needs_cfg=False`` is emitted as the bare function (so the harness
-  derives the same ``__name__`` crash label); a check with
-  ``needs_cfg=True`` is emitted as ``(label, lambda: fn(cfg))`` (same
-  explicit crash label, same ``cfg`` closure). So the displayed name on
-  the success path (``CheckResult.name``) and the crash path
-  (``_crashed_check_result``) are identical to before.
+- **One naming rule for every entry.** A check's displayed name and its
+  crash-path label are both ``entry.label or _check_name(entry.func)``
+  (``check_env_file`` → ``"env file"``), regardless of ``needs_cfg`` /
+  ``is_async``. ``label`` is therefore optional everywhere and always
+  honoured where set.
 
 - **Async and hardware-sensitive checks carry explicit metadata.** A
   check flagged ``is_async=True`` is awaited directly by the harness.
@@ -64,12 +57,9 @@ from ._shared import CheckResult
 class RegisteredCheck:
     """One registry entry.
 
-    ``func`` is the raw check function. ``needs_cfg`` mirrors whether the
-    original list entry was a ``(label, lambda: fn(cfg))`` tuple (True)
-    or a bare callable (False). ``label`` is the explicit tuple label
-    when ``needs_cfg`` is True; for bare checks it is left empty and the
-    harness derives the displayed/crash label from ``func.__name__`` —
-    preserving the original behaviour exactly.
+    ``func`` is the raw check function; ``needs_cfg`` says whether it
+    takes the ``Config`` argument. ``label`` is the explicit display and
+    crash label; left empty, it is derived from ``func.__name__``.
     """
 
     order: float
@@ -110,11 +100,9 @@ def doctor_check(
             ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole
             groups a streambox does not install; ``install`` is not one of
             them, so drift checks run on both profiles.
-        label: explicit display/crash label. Required for ``needs_cfg``
-            checks (the original ``(label, lambda)`` tuples). Leave empty
-            for bare checks so the label is derived from ``__name__``.
-        needs_cfg: True iff the check takes the ``Config`` argument (the
-            original tuple-with-cfg-lambda entries).
+        label: explicit display/crash label. Leave empty to derive it
+            from ``__name__``.
+        needs_cfg: True iff the check takes the ``Config`` argument.
         is_async: True for checks implemented as async callables.
         exclusive_group: Optional serialization key for probes that are
             individually safe but can perturb one another when run at the

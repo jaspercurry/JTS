@@ -118,12 +118,17 @@ export async function setLatencyMode(refs, mode, onApplied) {
 }
 
 function renderDiagnostics(out, body) {
-  const mark = (s) => (s === "fail" ? "✗" : s === "warn" ? "!" : "✓");
-  const tone = (s) => (s === "fail" ? "danger" : s === "warn" ? "warn" : "ok");
+  const mark = (s) =>
+    (s === "fail" ? "✗" : s === "warn" ? "!" : s === "skipped" ? "–" : "✓");
+  // "skipped" never ran, so it gets no status colour at all — muted, not green.
+  const tone = (s) =>
+    (s === "skipped"
+      ? "var(--muted-faint)"
+      : "var(--status-" + (s === "fail" ? "danger" : s === "warn" ? "warn" : "ok") + ")");
   const rows = (body.results || []).map((c) =>
     h("tr", null,
-      h("td.diag-mark", { style: { color: "var(--status-" + tone(c.status) + ")" } }, mark(c.status)),
-      h("td", null, c.name),
+      h("td.diag-mark", { style: { color: tone(c.status) } }, mark(c.status)),
+      h(c.status === "skipped" ? "td.muted" : "td", null, c.name),
       h("td.muted", null, c.detail || "")));
   const meta = [];
   if (typeof body.cache_age_seconds === "number") {
@@ -134,6 +139,7 @@ function renderDiagnostics(out, body) {
   out.replaceChildren(
     h("div.table-wrap", null, h("table.table.table--diag", null, h("tbody", null, ...rows))),
     h("p.info-card__note", null,
+      (body.speaker_silent ? "the speaker is silent — " : "") +
       body.fails + " failed, " + body.warns + " warning(s)." +
       (meta.length ? " " + meta.join(" - ") + "." : "")));
 }
