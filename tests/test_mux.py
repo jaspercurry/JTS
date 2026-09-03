@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -153,6 +154,24 @@ def _stub_pauses(mux: Mux):
     mux._pause = AsyncMock()
 
 
+class _FakeClock:
+    """Stand-in for jasper.mux's `time`; the module only calls monotonic()."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def mux_clock(monkeypatch):
+    """Advanceable jasper.mux clock. The asyncio loop clock is untouched."""
+    clock = _FakeClock()
+    monkeypatch.setattr(mux_module, "time", clock)
+    return clock
+
+
 async def test_no_transitions_no_pause_calls(mux, patched_probes):
     _stub_probes(patched_probes, spotify=False, airplay=False, bluetooth=False)
     _stub_pauses(mux)
@@ -205,7 +224,9 @@ async def test_notify_control_command_only_marks_source_dirty(mux):
     mux._fanin_select.assert_not_awaited()
 
 
-async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
+async def test_alert_and_patrol_share_reconciler_policy(
+    mux, patched_probes, mux_clock,
+):
     _stub_pauses(mux)
     _stub_probes(patched_probes, spotify=True)
 
@@ -218,11 +239,66 @@ async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
     assert mux._last_reconcile["trigger"] == "alert"
     assert mux._last_reconcile["dirty_sources"] == ["spotify"]
 
-    # A lost alert is repaired by the same operation on the patrol path.
+    # A lost alert is repaired by the same operation on the patrol path, once
+    # the deferred AirPlay probe comes due again.
     _stub_probes(patched_probes, spotify=False, airplay=True)
+    mux_clock.now += mux_module.EVENT_BACKED_PROBE_SEC
     await mux._reconcile(trigger="patrol", dirty_sources=set())
     assert mux._winner is Source.AIRPLAY
     assert mux._patrol_repairs == 1
+
+
+async def test_idle_patrols_defer_the_subprocess_backed_probes(
+    mux, patched_probes, mux_clock,
+):
+    """An idle minute of patrols must not fork busctl/bluealsa-cli 60 times."""
+    _stub_probes(patched_probes)
+    patrols = int(60 / mux.POLL_INTERVAL_SEC)
+    for _ in range(patrols):
+        await mux._reconcile(trigger="patrol", dirty_sources=set())
+        mux_clock.now += mux.POLL_INTERVAL_SEC
+
+    assert patched_probes.spotify.await_count == patrols
+    assert patched_probes.usbsink.await_count == patrols
+    forked = math.ceil(
+        patrols * mux.POLL_INTERVAL_SEC / mux_module.EVENT_BACKED_PROBE_SEC,
+    )
+    assert patched_probes.airplay.await_count == forked
+    assert patched_probes.bluetooth.await_count == forked
+
+
+@pytest.mark.parametrize(
+    ("alerted", "elapsed_sec", "expected_winner"),
+    [
+        (True, 0.0, Source.AIRPLAY),
+        (False, mux_module.EVENT_BACKED_PROBE_SEC / 2, None),
+        (False, mux_module.EVENT_BACKED_PROBE_SEC, Source.AIRPLAY),
+    ],
+)
+async def test_a_start_is_noticed_by_its_event_or_within_the_repair_window(
+    mux, patched_probes, mux_clock, alerted, elapsed_sec, expected_winner,
+):
+    """The bound on noticing a subprocess-backed source change.
+
+    With its event delivered, immediately. With the event lost, no later than
+    EVENT_BACKED_PROBE_SEC.
+    """
+    _stub_pauses(mux)
+    _stub_probes(patched_probes)
+    await mux._reconcile(trigger="patrol", dirty_sources=set())
+
+    _stub_probes(patched_probes, airplay=True)
+    mux_clock.now += elapsed_sec
+    dirty: set[Source] = set()
+    if alerted:
+        mux.notify_source_changed(Source.AIRPLAY, "dbus")
+        dirty = set(mux._dirty_sources)
+        mux._dirty_sources.clear()
+    await mux._reconcile(
+        trigger="alert" if dirty else "patrol", dirty_sources=dirty,
+    )
+
+    assert mux._winner is expected_winner
 
 
 async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
@@ -1145,7 +1221,7 @@ async def test_source_observations_serialize_probe_and_record(mux):
     release_first_probe = asyncio.Event()
     calls = 0
 
-    async def probe_sources():
+    async def probe_sources(**_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:

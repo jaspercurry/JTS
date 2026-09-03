@@ -5,11 +5,13 @@
 """jasper-mux — renderer source-arbiter.
 
 Native producer notifications wake one host-owned reconciler, which re-reads
-all source state and applies one source-neutral latest-start-wins policy. A
+source state and applies one source-neutral latest-start-wins policy. A
 fixed 1 Hz patrol invokes that exact same reconciler as a lost-alert safety net.
 Alerts are therefore hints, never routing commands: stale and duplicate alerts
 are harmless, and the patrol cannot disagree with a separate alert policy
-because none exists.
+because none exists. A patrol re-probes the two subprocess-backed sources only
+every EVENT_BACKED_PROBE_SEC (see that constant); an alert naming one of them
+still probes it on the spot.
 
 Renderer support:
   Spotify (librespot):
@@ -178,6 +180,25 @@ ALERT_COALESCE_SEC = 0.05
 # active last-known state for this bounded grace, then fail inactive until a
 # successful observation re-establishes it.
 UNKNOWN_ACTIVE_HOLD_SEC = 5.0
+# How stale a lost-signal repair may get on the two sources below. Matched to
+# UNKNOWN_ACTIVE_HOLD_SEC, the window the arbiter already tolerates without a
+# known observation before it drops an active source.
+EVENT_BACKED_PROBE_SEC = UNKNOWN_ACTIVE_HOLD_SEC
+
+
+def event_backed_probes() -> dict[Source, Callable[[], Any]]:
+    """The only two source probes that fork a subprocess.
+
+    busctl for the AirPlay MPRIS properties, bluealsa-cli for the A2DP PCM
+    list. Both sources also have a live system-D-Bus signal adapter in
+    jasper.source_events, so for them the patrol probe is a lost-signal repair
+    rather than the detection path. Resolved per call so the probes stay
+    patchable by name.
+    """
+    return {
+        Source.AIRPLAY: airplay_playing,
+        Source.BLUETOOTH: bluetooth_playing,
+    }
 
 
 @dataclass(frozen=True)
@@ -306,6 +327,7 @@ class Mux:
             s: None for s in MUSIC_SOURCES
         }
         self._reconcile_seq = 0
+        self._probe_due_at = {s: 0.0 for s in event_backed_probes()}
         self._patrol_count = 0
         self._patrol_repairs = 0
         self._last_reconcile: dict[str, Any] | None = None
@@ -432,7 +454,7 @@ class Mux:
         """The sole automatic arbitration entry point for alerts and patrols."""
         started = time.monotonic()
         before = (self._winner, tuple(self._state.playing.items()))
-        await self._tick()
+        await self._tick(defer_probes=self._deferrable_probes(dirty_sources))
         after = (self._winner, tuple(self._state.playing.items()))
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         changed = before != after
@@ -464,21 +486,51 @@ class Mux:
                 elapsed_ms=elapsed_ms,
             )
 
-    async def _probe_sources(self) -> dict[Source, bool]:
-        spotify, airplay, bluetooth, usbsink = await asyncio.gather(
-            spotify_playing(self._librespot_state_path),
-            airplay_playing(),
-            bluetooth_playing(),
-            self._usbsink_playing(),
-        )
-        observed: dict[Source, bool | None] = {
-            Source.SPOTIFY: spotify,
-            Source.AIRPLAY: airplay,
-            Source.BLUETOOTH: bluetooth,
-            Source.USBSINK: usbsink,
-        }
-        resolved = dict(self._state.playing)
+    def _deferrable_probes(
+        self, dirty_sources: set[Source],
+    ) -> frozenset[Source]:
+        """Subprocess-backed sources this reconcile does not need to re-probe.
+
+        A source an alert named is always probed: the alert is why we woke.
+        Otherwise the probe is only repairing a signal that never arrived, and
+        one repair per EVENT_BACKED_PROBE_SEC is enough.
+        """
         now = time.monotonic()
+        return frozenset(
+            source
+            for source in event_backed_probes()
+            if source not in dirty_sources
+            and now < self._probe_due_at[source]
+        )
+
+    async def _probe_sources(
+        self, *, defer_probes: frozenset[Source] = frozenset(),
+    ) -> dict[Source, bool]:
+        probes: dict[Source, Any] = {
+            Source.SPOTIFY: spotify_playing(self._librespot_state_path),
+            Source.USBSINK: self._usbsink_playing(),
+        }
+        probes.update(
+            (source, probe())
+            for source, probe in event_backed_probes().items()
+            if source not in defer_probes
+        )
+        observed: dict[Source, bool | None] = dict(
+            zip(probes, await asyncio.gather(*probes.values()), strict=True),
+        )
+        now = time.monotonic()
+        for source in self._probe_due_at:
+            if source in observed:
+                # A probe that could not observe anything is not a repair, so
+                # it does not buy the next one a full window.
+                self._probe_due_at[source] = (
+                    now + EVENT_BACKED_PROBE_SEC
+                    if observed[source] is not None
+                    else 0.0
+                )
+        # A deferred source is absent from `observed`, so it keeps the state and
+        # the observation label its last real probe recorded.
+        resolved = dict(self._state.playing)
         for source, value in observed.items():
             if value is None:
                 known_age = now - self._state.known_at[source]
@@ -565,8 +617,12 @@ class Mux:
             return None
         return payload if isinstance(payload, dict) else None
 
-    async def _tick(self) -> None:
-        current, newly_started = await self._observe_sources()
+    async def _tick(
+        self, *, defer_probes: frozenset[Source] = frozenset(),
+    ) -> None:
+        current, newly_started = await self._observe_sources(
+            defer_probes=defer_probes,
+        )
         self._winner_age_ticks += 1
 
         if (
@@ -954,6 +1010,7 @@ class Mux:
             },
             "reconciler": {
                 "patrol_interval_sec": self.POLL_INTERVAL_SEC,
+                "event_backed_probe_sec": EVENT_BACKED_PROBE_SEC,
                 "patrols": self._patrol_count,
                 "patrol_repairs": self._patrol_repairs,
                 "pending_sources": sorted(
@@ -1004,7 +1061,7 @@ class Mux:
         return [source for source in MUSIC_SOURCES if current.get(source, False)]
 
     async def _observe_sources(
-        self,
+        self, *, defer_probes: frozenset[Source] = frozenset(),
     ) -> tuple[dict[Source, bool], list[Source]]:
         """Probe and record one source snapshot in serialized order.
 
@@ -1014,7 +1071,7 @@ class Mux:
         manufacturing a false stop/start edge.
         """
         async with self._observation_lock:
-            current = await self._probe_sources()
+            current = await self._probe_sources(defer_probes=defer_probes)
             newly_started = self._record_source_observation(current)
             return current, newly_started
 

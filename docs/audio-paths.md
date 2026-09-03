@@ -126,8 +126,11 @@ Ownership is deliberately split:
   Native producer events are wake hints only: `jasper/source_events.py`
   translates librespot inotify and AirPlay/Bluetooth D-Bus signals, while
   fan-in sends USB frame-flow edges over mux's UDS. Every hint and the fixed
-  1 Hz lost-alert patrol enter the same reconciler, which re-reads all source
+  1 Hz lost-alert patrol enter the same reconciler, which re-reads source
   state before applying policy; alert arrival order never chooses the winner.
+  The two probes that fork a subprocess (AirPlay over busctl, Bluetooth over
+  bluealsa-cli) are re-read on the patrol once per `EVENT_BACKED_PROBE_SEC`
+  instead of every tick; an alert naming either source still probes it at once.
   Source metadata lives in `jasper/music_sources.py`, including the
   fan-in lane label and whether `listening_level` is carried by
   CamillaDSP or by a push-to-source volume API. Operational lifecycle

@@ -10,6 +10,8 @@ import struct
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 
 from jasper.music_sources import Source
 from jasper import source_events
@@ -50,6 +52,24 @@ def test_bluetooth_transport_changes_wake_bluetooth_reconcile():
         path="/",
         body=["/org/bluez/hci0/dev_x/fd0", {"org.bluez.MediaTransport1": {}}],
     ) == (Source.BLUETOOTH,)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("org.mpris.MediaPlayer2.ShairportSync", (Source.AIRPLAY,)),
+        ("org.bluealsa", (Source.BLUETOOTH,)),
+        ("org.freedesktop.systemd1", ()),
+    ],
+)
+def test_a_producer_losing_its_bus_name_wakes_its_source(name, expected):
+    """A crashed producer emits no property change, only NameOwnerChanged."""
+    assert classify_source_signal(
+        interface="org.freedesktop.DBus",
+        member="NameOwnerChanged",
+        path="/org/freedesktop/DBus",
+        body=[name, ":1.42", ""],
+    ) == expected
 
 
 def test_inotify_parser_handles_atomic_rename_record():
