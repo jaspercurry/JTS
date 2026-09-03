@@ -413,14 +413,10 @@ def _normalise_driver_common(
             f"{prefix}.notes",
             max_chars=MAX_DRIVER_NOTE_CHARS,
         ),
-        # #1665 component entry: physical facts about the driver itself, not
-        # a safety limit. driver_class feeds
-        # linearization_envelope.compose_envelope's class_prior_limit term;
-        # radiating_diameter_mm is the ka-beaming input (#1675, closed
-        # 2026-08-08) behind the /sound/ crossover hint and, on the pinned
-        # prescription path, correction_crossover_v2's disclosure-only beaming
-        # ceiling. pad is the third component-entry field and is parsed below,
-        # outside the safety normaliser, for the reason stated there.
+        # #1665 component entry: physical facts about the driver, not safety
+        # limits. driver_class feeds compose_envelope's class_prior_limit;
+        # radiating_diameter_mm is the ka-beaming input (#1675). pad is the
+        # third such field and is parsed below, outside the safety normaliser.
         "driver_class": _driver_class(raw.get("driver_class"), f"{prefix}.driver_class"),
         "radiating_diameter_mm": _positive_float(
             raw.get("radiating_diameter_mm"),
@@ -723,15 +719,10 @@ def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, 
     """Per-role declared datasheet sensitivities (dB @ 2.83 V/1 m) from the draft.
 
     The declaration (``manual_settings.drivers``) is the ONE owner of driver
-    sensitivity -- a declared physical property of the driver, not a safety
-    limit -- so the W6.5 sensitivity-derived HF measurement ceiling (which now reads the
-    pad-folded :func:`declared_effective_driver_sensitivities` instead of this
-    naked reader)
-    (:func:`jasper.active_speaker.excitation_safety_plan.resolve_driver_excitation_ceilings`)
-    reads it from here rather than duplicating it onto the confirmed safety
-    profile. That keeps one copy of the fact and needs zero migration: every
-    already-declared box (JTS3 included) carries the values in its persisted
-    draft today, whereas pre-W6.5 safety profiles never did.
+    sensitivity — a declared physical property, not a safety limit — so it is
+    never duplicated onto the confirmed safety profile. Consumers wanting the
+    ceiling read the pad-folded
+    :func:`declared_effective_driver_sensitivities` rather than this naked one.
 
     A role declared more than once with disagreeing values derives nothing for
     that role (ambiguity fails toward the conservative class-default ceiling).
@@ -773,20 +764,16 @@ def declared_effective_driver_sensitivities(
 ) -> dict[str, float]:
     """Per-role declared sensitivities with any in-line pad folded in.
 
-    Sibling of :func:`declared_driver_sensitivities` -- same declaration, same
-    role-keyed / conflict-drops-the-role shape -- except each row's naked
-    ``sensitivity_db_2v83_1m`` is first folded through
-    :func:`jasper.active_speaker.driver_pad.effective_sensitivity_db` using
-    that same row's own ``pad``. This is what excitation-ceiling derivation,
-    session-volume planning, and playback admission should read (#1665): an
-    L-pad'd tweeter's effective output is quieter than its bare datasheet
-    figure, and every one of those consumers needs the number a microphone
-    would actually measure at the driver terminals, not the naked rating.
+    Sibling of :func:`declared_driver_sensitivities` with the same shape, except
+    each row's naked ``sensitivity_db_2v83_1m`` is folded through
+    :func:`jasper.active_speaker.driver_pad.effective_sensitivity_db` using that
+    row's own ``pad``. Excitation-ceiling derivation, session-volume planning and
+    playback admission read THIS one (#1665): they need the number a microphone
+    would measure at the driver terminals, not the naked rating.
 
-    A role is dropped on ANY disagreement between rows for that role -- in
-    the naked sensitivity, the pad, or both -- since either kind of
-    disagreement makes the effective figure ambiguous. Returns ``{}`` when
-    the draft carries no declaration.
+    A role is dropped on ANY disagreement between its rows — naked sensitivity,
+    pad, or both — since either makes the effective figure ambiguous. Returns
+    ``{}`` when the draft carries no declaration.
     """
 
     if not isinstance(draft, Mapping):
@@ -1112,23 +1099,18 @@ def _rebound_to_restamped_request(
 ) -> Any:
     """Carry a v2 result across a request RE-STAMP, or leave it exactly alone.
 
-    ``validate_driver_research_request`` accepts a request fingerprinted by a
-    build that has since had a per-driver field retired, and re-stamps it to the
-    current shape (see ``_common.LEGACY_DROPPED_DRIVER_FIELDS``).  A v2 result
-    ECHOES the request's fingerprint, and
-    ``driver_safety.validate_research_result_binding`` compares the two -- so
-    re-stamping the request alone orphans the result the same box stored beside
-    it, and the save fails one gate later with "does not match the current
-    request".  Migrating one of a matched pair is not a migration.
+    ``validate_driver_research_request`` re-stamps a request fingerprinted by a
+    build that has since had a per-driver field retired
+    (``_common.LEGACY_DROPPED_DRIVER_FIELDS``). A v2 result ECHOES that
+    fingerprint, so re-stamping the request alone orphans the result stored
+    beside it: migrating one of a matched pair is not a migration.
 
-    **This module owns the pair**: it is the one that refuses a v2 result with
-    no request at all, and the only place both artifacts are in hand together,
-    so the re-binding is here rather than inside either validator.
+    This module owns the pair — the only place both artifacts are in hand — so
+    the re-binding lives here rather than in either validator.
 
-    Deliberately narrow. It moves a result ONLY when the request's digest
-    actually changed AND the result echoed the exact pre-stamp digest -- so a
-    genuinely mismatched result is still refused by the binding, which is the
-    check's whole job.
+    Deliberately narrow: it moves a result ONLY when the request's digest
+    actually changed AND the result echoed the exact pre-stamp digest, so a
+    genuinely mismatched result is still refused by the binding.
     """
 
     if not isinstance(canonical, Mapping) or not isinstance(driver_research, Mapping):

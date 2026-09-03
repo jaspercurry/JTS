@@ -4,11 +4,10 @@
 
 """The tuning handoff card's prompt: a POINTER, not a manual (#2883).
 
-**Pull, not dump.** The prompt names the orientation verb, the runbook's tool
-menu and the program door; it never restates what any of them serve. Copying
-the tool menu in would freeze a second copy of a document that changes with
-every deploy — so the only thing here that CAN go stale is the binding, which
-is why the binding is stamped.
+The prompt names the orientation verb, the runbook's tool menu and the program
+door, and never restates what any of them serve: copying the tool menu in would
+freeze a second copy of a document that changes with every deploy. The binding
+is the only thing here that can go stale, which is why it is stamped.
 """
 from __future__ import annotations
 
@@ -119,14 +118,13 @@ def build_tuning_handoff(
 ) -> dict[str, Any]:
     """``{prompt, binding}`` for the /sound/setup/ handoff card.
 
-    Readiness is ``applied_profile_stands`` — THE applied verdict, read from
-    the same baseline-profile payload the page renders its active-profile card
-    from (ADR-0195). A second reading of the applied-profile SSOT would answer
-    a slightly looser question and hand out a prompt the page itself hides.
+    Readiness is ``applied_profile_stands``, read from the same baseline-profile
+    payload the page renders its active-profile card from (ADR-0195): a second
+    reading of that SSOT answers a looser question and would hand out a prompt
+    the page itself hides.
 
-    The binding is minted either way so the card can name the speaker while it
-    is still holding the prompt back; ``prompt`` is empty until there is a
-    baseline to hand over.
+    The binding is minted either way so the card can name the speaker while
+    holding the prompt back; ``prompt`` is empty until there is a baseline.
     """
     binding = build_tuning_handoff_binding(design_draft)
     ready = baseline_profile.get("applied_profile_stands") is True

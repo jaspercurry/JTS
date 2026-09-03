@@ -5,17 +5,10 @@
 """Active-owned, fail-closed preparation for admitted driver excitation.
 
 The closed sweep/level ledger below derives every field passed to Shared's
-persisted admission types. It deliberately remains pure: the production
-adapter owns fresh live-graph proof, persistence, exact WAV binding, guarded
-playback, and writer-lock lifetime. The one deliberate exception is the
-``log_event`` calls in :func:`resolve_driver_excitation_ceilings` -- two around
-the undeclared-HF ceiling (one when the sensitivity derivation supersedes it,
-carrying the delegation that let it and the low-frequency ANCHOR the derived
-number is a delta from; one naming why it could not derive), and one when a
-proven-HP high-frequency
-role's excitation floor follows its declared hard band below its declared
-analysis window (#1654). Audit lines, not state mutations; see the W6.5 and
-"Low-side asymmetry" rulings in that function's docstring.
+persisted admission types, and is pure: the production adapter owns live-graph
+proof, persistence, WAV binding, guarded playback and writer-lock lifetime. The
+one exception is the ``log_event`` audit lines in
+:func:`resolve_driver_excitation_ceilings` — never state mutations.
 """
 
 from __future__ import annotations
@@ -368,24 +361,17 @@ def _target_for_request(
 def effective_sweep_duration_limit_s(
     safety_profile: Mapping[str, Any], target_fingerprint: str
 ) -> float:
-    """How long ONE sweep of this target may run: the tighter of the operator's
-    declared ``level_duration_limits.max_sweep_duration_s`` and the code-side
-    per-role protocol duration (:func:`driver_sweep_duration_s`).
+    """How long ONE sweep of this target may run: the tighter of the declared
+    ``level_duration_limits.max_sweep_duration_s`` and the code-side per-role
+    protocol duration (:func:`driver_sweep_duration_s`).
 
-    The single owner of that ``min``. :func:`prepare_driver_excitation_plan`
-    below compares a request's realized duration against it, so anything that
-    COMPOSES a sweep intended to pass that comparison must fit the SAME number
-    — a composer holding its own copy could drift from the gate by one edit and
-    then refuse programs it had just built. Both callers that had restated the
-    ``min`` read here now, and the composer's caller reads here too rather than
-    deriving a third one (#2921).
+    The single owner of that ``min`` (#2921): :func:`prepare_driver_excitation_plan`
+    compares a request's realized duration against it, so anything COMPOSING a
+    sweep meant to pass that comparison must fit the SAME number.
 
-    Takes the profile and a target fingerprint — the shape
-    :func:`resolve_driver_excitation_ceilings` takes — so the role and the
-    declared limits are read off ONE confirmed target rather than passed in
-    beside it. Refuses ``TARGET_NOT_CURRENT`` for a fingerprint this profile
-    does not carry exactly once, and ``PROFILE_NOT_CONFIRMED`` when that
-    target declares no usable ``level_duration_limits``.
+    Refuses ``TARGET_NOT_CURRENT`` for a fingerprint this profile does not carry
+    exactly once, and ``PROFILE_NOT_CONFIRMED`` when the target declares no
+    usable ``level_duration_limits``.
     """
     target = _target_for_request(safety_profile, target_fingerprint)
     profile_limits = target.get("level_duration_limits")
@@ -410,15 +396,11 @@ def _declared_sensitivity(
 ) -> float | None:
     """One role's declared datasheet sensitivity from the caller's mapping.
 
-    ``declared_sensitivities`` is read from the DECLARATION -- the design
-    draft's ``manual_settings`` (see
-    :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
-    the one owner of this declared physical property. It never rides the
-    confirmed safety profile: duplicating it there would make a second copy of
-    the fact and would have required every already-declared box to re-declare
-    before the derivation could fire. Many households won't know the value at
-    all, and the derivation degrades gracefully (class-default ceiling) when
-    it's missing on either side.
+    ``declared_sensitivities`` is read from the DECLARATION
+    (:func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
+    the one owner of this physical property; it never rides the confirmed safety
+    profile. Missing on either side, the derivation degrades to the class
+    default rather than refusing.
     """
 
     if not isinstance(declared_sensitivities, Mapping):
@@ -446,16 +428,13 @@ def _derived_hf_ceiling_dbfs(
     target with a declared sensitivity, so the high-frequency driver's
     ceiling never exceeds what is safe against any one of them.
 
-    **The anchor is returned, not just consumed, because it MOVES.** This
-    ceiling is a delta from a low-frequency sibling's own cap, and that cap is
-    itself a :func:`declared_level_ceiling_dbfs` answer. A woofer that declares
-    a level limit anchors the derivation there; one that declares none anchors
-    it at the woofer class default, which for a low-frequency role is full
-    scale (``MAX_TEST_LEVEL_DBFS``) -- so the same tweeter derives -30.8 under
-    a woofer declaring -20 and -10.8 under a woofer declaring nothing. Both are
-    correct answers to different declarations, and the difference is 20 dB on a
-    compression driver, so the caller names the anchor on its log line instead
-    of leaving an operator to infer the contract shape from the level.
+    The anchor is returned, not just consumed, because it MOVES: this ceiling is
+    a delta from a low-frequency sibling's own cap, itself a
+    :func:`declared_level_ceiling_dbfs` answer. A woofer declaring no level
+    limit anchors at its class default, which for a low-frequency role is full
+    scale — so the same tweeter derives -30.8 under a woofer declaring -20 and
+    -10.8 under one declaring nothing. The caller names the anchor on its log
+    line rather than leaving an operator to infer the contract shape.
     """
 
     sens_hf = _declared_sensitivity(declared_sensitivities, hf_role)
@@ -478,12 +457,9 @@ def _derived_hf_ceiling_dbfs(
         if not lf_fingerprint:
             continue
         try:
-            # The cap comes from the one derivation path (which also validates
-            # this sibling's shape and skips it below if malformed). Only the
-            # PROVENANCE is read off the second call: for a low-frequency role
-            # the two return the same number by construction, since the
-            # supersede branch below is high-frequency-only and this call does
-            # not take the proven-HP path.
+            # Only the PROVENANCE is read off the second call: for a
+            # low-frequency role both return the same number by construction,
+            # the supersede branch below being high-frequency-only.
             _lf_band, lf_cap = resolve_driver_excitation_ceilings(
                 safety_profile, lf_fingerprint
             )
@@ -501,17 +477,14 @@ def _derived_hf_ceiling_dbfs(
                 lf_cap,
             )
         )
-    # ``min`` on the derived ceiling, and the anchor that PRODUCED it rides
-    # along -- reporting a different sibling's anchor beside the binding
-    # number would be a receipt that names the wrong cause.
+    # ``min`` on the derived ceiling, with the anchor that PRODUCED it: another
+    # sibling's anchor beside the binding number names the wrong cause.
     return min(candidates, key=lambda item: item[0]) if candidates else None
 
 
-#: How a target's effective-peak ceiling got its number. The same three-way
-#: shape :func:`jasper.active_speaker.driver_protection.resolve_driver_low_limit`
-#: uses for the low limit, and for the same reason: "who decided this?" is a
-#: provenance question, and answering it by comparing a value against a code
-#: figure is how a magic number ends up steering a derivation.
+#: How a target's effective-peak ceiling got its number. Provenance is recorded
+#: rather than inferred: comparing a value against a code figure to answer "who
+#: decided this?" is how a magic number ends up steering a derivation.
 LEVEL_CEILING_DECLARED = "declared"
 LEVEL_CEILING_UNDECLARED = "undeclared"
 LEVEL_CEILING_LEGACY_CLASS_SEED = "legacy_class_seed"
@@ -520,46 +493,21 @@ LEVEL_CEILING_LEGACY_CLASS_SEED = "legacy_class_seed"
 def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
     """One target's effective-peak ceiling and where that number came from.
 
-    **The one owner of this question**, because the field is optional and two
-    readers with two local interpretations of "absent" is exactly how one of
-    them came to raise on the shape the other calls ordinary (2026-08-23).
-    Floor, checked rather than asserted: a grep of ``jasper/`` for
-    ``max_effective_peak_dbfs`` finds exactly one direct dict access, the one
-    below; the two callers that want the answer are
-    :func:`resolve_driver_excitation_ceilings` and
-    ``commissioning_runtime.prepare_summed_excitation``, and everything further
-    downstream (``web.correction_crossover_backend``,
-    ``audio_measurement.level_solver``) takes the already-resolved number as an
-    argument. A third reader belongs here too.
+    The one owner of this question: ``max_effective_peak_dbfs`` is optional, and
+    two readers with two local interpretations of "absent" is how one comes to
+    raise on the shape the other calls ordinary. Three cases:
 
-    ``max_effective_peak_dbfs`` is OPTIONAL, and absent is the ordinary answer.
-    It is the one datasheet fact in ``level_duration_limits``, so since the
-    2026-08-23 owner ruling the research ask requests it only where a
-    manufacturer publishes a level limit and ``_target_issues`` no longer
-    requires it. **Absent** therefore means "no published level limit for this
-    driver" — ``LEVEL_CEILING_UNDECLARED`` — which is exactly the
-    no-driver-specific-level-intent the sensitivity derivation answers; the
-    class default stands as the seed until it does.
-
-    A **declared** value is honoured verbatim, never clamped down to the class
-    figure. It is a published limit or an operator's own choice, and the same
-    ruling bars a code figure from overruling either; the one bound that
-    survives on it is digital full scale, enforced where the value is parsed
-    (``driver_safety._normalise_level_duration_limits`` refuses a peak above
-    0 dBFS). Until that ruling this was ``min(declared, class_default)``, so a
-    household value typed LOUDER than the seed was silently clamped back — the
-    trap the old comment here anticipated and left open.
-
-    ``LEVEL_CEILING_LEGACY_CLASS_SEED`` is the third case and the only one that
-    compares a value: a profile SAVED under the retired contract carries the
-    class default itself, because the ask told the researcher to send exactly
-    that number to mean "no level intent". It said then what absence says now,
-    so it is read that way rather than silently regressing an already-
-    commissioned speaker's tweeter by tens of decibels. It is named on the
-    supersede log line so the residual is visible, and the arm is deletable
-    once no stored profile carries a seed -- with the whole sensitivity
-    derivation behind it, tracked with its inventory and its unblock check as
-    `#2913 <https://github.com/jaspercurry/JTS/issues/2913>`_.
+    * **absent** — ``LEVEL_CEILING_UNDECLARED``: no published level limit for
+      this driver, exactly the no-level-intent the sensitivity derivation
+      answers. The class default stands as the seed until it does.
+    * **declared** — honoured verbatim, never clamped down to the class figure;
+      the one surviving bound is digital full scale, enforced where the value is
+      parsed (``driver_safety._normalise_level_duration_limits``).
+    * **``LEVEL_CEILING_LEGACY_CLASS_SEED``** — a profile saved under the
+      retired contract carries the class default itself to mean "no level
+      intent", so it is read that way rather than regressing an already
+      commissioned speaker's tweeter. Deletable once no stored profile carries a
+      seed (#2913).
     """
 
     profile_limits = target.get("level_duration_limits")
@@ -598,77 +546,33 @@ def resolve_driver_excitation_ceilings(
     """The confirmed permitted band + maximum effective-peak ceiling for one
     driver target.
 
-    Extracted from :func:`prepare_driver_excitation_plan` so a caller that
-    needs ONLY these two ceilings -- the level solver (W2.1), choosing a
-    sweep's ``main_volume_db``/``commissioning_gain_db`` before any
-    ``DriverSweepGeneratorPlan`` exists to admit -- does not have to
-    duplicate this derivation. Admission itself (:func:`admit_excitation`
-    via :func:`prepare_driver_excitation_plan`) still re-derives and
-    re-validates these same ceilings against the actual requested plan; this
-    function has no authority of its own, it is shared math.
+    Shared math with no authority of its own: admission re-derives and
+    re-validates these same ceilings against the actual requested plan.
 
-    ``program_admission`` marks the PROVEN protective-HP path (operator
-    ruling, 2026-07-19: two invariants, one owner each -- wrong-frequency-range
-    stays the declared hard band + proven HP, untouched; too-loud becomes ONE
-    derived ceiling instead of stacked hedges). Callers whose excitation rides
-    a graph that carries the driver's crossover high-pass by construction --
-    the v2 conductor context, :mod:`jasper.active_speaker.program_admission`'s
-    per-segment plans + per-channel facts, and the session-volume derivation
-    that serves them -- pass ``True`` so a high-frequency driver's measurement
-    ceiling can be derived from a low-frequency sibling's own declared cap and
-    the two drivers' declared sensitivities, rather than pinned at the
-    naked-tone class default (sized for an UNPROTECTED tone, not a HP-proven
-    one). Every other caller (isolated driver capture, the v1 ramp solver,
-    ear-check ramps) defaults to ``False`` and keeps the declared ceiling, or
-    the class default when no level limit is published -- one conditional, no
-    new subsystem.
+    ``program_admission`` marks the PROVEN protective-HP path (operator ruling,
+    2026-07-19). Callers whose excitation rides a graph carrying the driver's
+    crossover high-pass by construction pass ``True``, so a high-frequency
+    driver's ceiling derives from a low-frequency sibling's declared cap and the
+    two declared sensitivities rather than sitting at the naked-tone class
+    default. Every other caller defaults to ``False``.
 
-    ``declared_sensitivities`` is the per-role declared datasheet sensitivity
-    mapping read from the DECLARATION (the design draft's ``manual_settings``
-    -- :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
-    which is the one owner of that physical property. Optional: without it the
-    proven-HP path simply keeps the class-default ceiling (and logs the skip).
+    ``declared_sensitivities`` is optional; without it the proven-HP path keeps
+    the class-default ceiling and logs the skip.
 
-    Band-edge asymmetry (sweep-composition PR-A, #1668): the UPPER permitted
-    edge is ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` --
-    ``measurement_band[1]`` is deliberately EXCLUDED from it.
-    ``measurement_band`` is analysis-window metadata (what the wizard tells
-    the confidence/SNR scoring to expect), not a protection boundary the
-    driver must never be excited past; the declared HARD excitation band (the
-    datasheet-backed physically-safe range) and the global test-frequency
-    ceiling are what still bind the upper edge. A driver whose measurement
-    band tops out below its hard band (e.g. a tweeter declared
-    hard=[1600, 20000], measurement=[2000, 18000]) can now be swept up to its
-    OWN hard band's edge (or the global ceiling, whichever is lower) instead
-    of being silently capped at the narrower analysis window -- wider MEASURE
-    sweeps without loosening excursion protection.
+    Band-edge asymmetry (#1668): the UPPER permitted edge is
+    ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` — ``measurement_band[1]``
+    is deliberately EXCLUDED, being analysis-window metadata rather than a
+    protection boundary.
 
-    Low-side asymmetry, PROVEN-HP HIGH-FREQUENCY ROLES ONLY (#1654): the same
-    argument, applied to the LOWER edge, but deliberately NOT generalised. The
-    lower edge is normally ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0],
-    measurement_band[0])`` and stays exactly that for every low-frequency role
-    and every naked-tone caller, because there ``measurement_band[0]`` is a
-    real EXCURSION hedge: a woofer driven below its declared analysis floor
-    has nothing between it and its own suspension. A high-frequency role on
-    the ``program_admission`` path is the one case where that reasoning does
-    not hold -- the graph carries the driver's crossover high-pass by
-    construction (the same proven-HP property this flag already gates the
-    level ceiling on), so the sub-window region reaches the driver ATTENUATED
-    by that filter rather than naked, and the declared HARD floor is the
-    operator-confirmed datasheet minimum for exactly this question. There the
-    floor becomes ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])``.
-
-    Why it matters (#1654, R17's unblocker): a tweeter declared
-    hard=[1600, 20000] / measurement=[2000, 18000] was swept from 2000 Hz --
-    which on the shipped JTS3 box is also the configured Fc. Every scoring
-    band a crossover candidate is judged over clamps its low edge up to that
-    real sweep floor, so a candidate BELOW 2 kHz was scored on a mask that
-    excluded its own handoff, and the measured -4.80 dB @ 1656 Hz dip
-    (#1894 Gate 0) sat under the floor entirely. This widening is what lets a
-    downward candidate be judged where it actually hands over. It moves only
-    the DERIVED excitation floor -- the declared ``measurement_band`` is
-    untouched, and :func:`resolve_driver_measurement_band_hz` still returns
-    the declared window verbatim to its own consumers.
+    Low-side asymmetry, PROVEN-HP HIGH-FREQUENCY ROLES ONLY (#1654): the lower
+    edge is normally ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0],
+    measurement_band[0])`` and stays that for every low-frequency role and every
+    naked-tone caller, where ``measurement_band[0]`` is a real EXCURSION hedge.
+    On the proven-HP path a high-frequency role reaches the sub-window region
+    ATTENUATED by the crossover high-pass, so the floor becomes
+    ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])`` — otherwise a candidate
+    below the analysis floor is scored on a mask excluding its own handoff. Only
+    the DERIVED excitation floor moves; ``measurement_band`` is untouched.
     """
 
     target = _target_for_request(safety_profile, target_fingerprint)
@@ -691,19 +595,17 @@ def resolve_driver_excitation_ceilings(
         raise ExcitationSafetyPlanError(
             ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
         )
-    # measurement_band[0] participates in the lower edge for every role and
-    # every path EXCEPT a high-frequency role on the proven-HP path -- see the
-    # "Low-side asymmetry" paragraph in this function's docstring for why the
-    # excursion argument that keeps it binding elsewhere does not apply there.
+    # measurement_band[0] binds the lower edge for every role and path EXCEPT a
+    # high-frequency role on the proven-HP path — see "Low-side asymmetry" in
+    # this function's docstring.
     lower_edges = [MIN_DRIVER_TEST_FREQUENCY_HZ, float(hard_band[0])]
     if not (program_admission and role in HIGH_FREQUENCY_ROLES):
         lower_edges.append(float(measurement_band[0]))
     lower = max(lower_edges)
     if lower < float(measurement_band[0]):
-        # Named, so an operator triaging a session can see that this driver was
-        # deliberately excited BELOW its declared analysis window, and to what.
-        # Logged only when the widening actually moves the floor (a declaration
-        # whose analysis floor already equals its hard floor is silent).
+        # Named so a triage can see the driver was deliberately excited BELOW
+        # its declared analysis window, and to what. Logged only when the
+        # widening actually moves the floor.
         log_event(
             logger,
             "active_speaker.excitation_floor_widened_to_hard_band",
@@ -712,9 +614,8 @@ def resolve_driver_excitation_ceilings(
             declared_measurement_floor_hz=f"{float(measurement_band[0]):.1f}",
             excitation_floor_hz=f"{lower:.1f}",
         )
-    # measurement_band[1] is deliberately NOT part of this min() -- see the
-    # "Band-edge asymmetry" paragraph in this function's docstring. The hard
-    # band + global ceiling are the only upper-edge protection boundaries.
+    # measurement_band[1] is deliberately NOT part of this min(): the hard band
+    # and global ceiling are the only upper-edge protection boundaries.
     upper = min(
         MAX_DRIVER_TEST_FREQUENCY_HZ,
         float(hard_band[1]),
@@ -723,15 +624,10 @@ def resolve_driver_excitation_ceilings(
     maximum_peak, level_provenance = declared_level_ceiling_dbfs(target)
     # Supersede-the-seed rule (W6.5): only on the proven-HP path, only for
     # high-frequency roles, and only when NO driver-specific level was declared
-    # -- see :func:`declared_level_ceiling_dbfs` for what that means and how a
-    # stored profile still says it. A declared value is a real published or
-    # household choice and is always respected as-is, never overridden.
-    #
-    # The step is real and deliberate: on this path a delegated ceiling
-    # resolves to the sensitivity-derived one -- since the provisional absolute
-    # hedge was retired on 2026-08-20, that is the low-frequency sibling's own
-    # cap less the declared sensitivity delta, tens of decibels louder than the
-    # class seed -- while a declared -66.0 resolves to -66.0.
+    # (see :func:`declared_level_ceiling_dbfs`). A declared value is always
+    # respected as-is. The resulting step is real: a delegated ceiling resolves
+    # to the low-frequency sibling's cap less the declared sensitivity delta,
+    # tens of decibels louder than the class seed.
     if (
         program_admission
         and role in HIGH_FREQUENCY_ROLES
@@ -742,9 +638,8 @@ def resolve_driver_excitation_ceilings(
         )
         if derived is None:
             # Named skip: the proven-HP path WOULD derive here but a declared
-            # sensitivity is missing on one side, so the (usually far too
-            # quiet) class default stays in force. Without this line a
-            # near-inaudible HF measurement is a puzzling triage.
+            # sensitivity is missing on one side, so the usually far too quiet
+            # class default stays in force.
             log_event(
                 logger,
                 "active_speaker.excitation_ceiling_derivation_skipped",
@@ -764,13 +659,11 @@ def resolve_driver_excitation_ceilings(
                 legacy_ceiling_dbfs=f"{maximum_peak:.1f}",
                 derived_ceiling_dbfs=f"{derived_peak:.1f}",
                 delegation=level_provenance,
-                # The ANCHOR this number is a delta from, named. A
-                # low-frequency sibling that declares no level limit anchors
-                # the derivation at ITS class default, which for a
-                # low-frequency role IS full scale -- so the high-frequency
-                # ceiling moves with the sibling's contract shape, and an
-                # operator triaging a level must be able to see which shape
-                # produced it rather than inferring it from a number.
+                # The ANCHOR this number is a delta from. A low-frequency
+                # sibling declaring no level limit anchors at ITS class
+                # default, which for that role IS full scale, so the
+                # high-frequency ceiling moves with the sibling's contract
+                # shape and a triage must be able to see which shape produced it.
                 anchor=anchor,
                 anchor_cap_dbfs=f"{anchor_cap:.1f}",
             )
@@ -783,20 +676,13 @@ def resolve_driver_measurement_band_hz(
 ) -> tuple[float, float]:
     """The confirmed ``measurement_band_hz`` for one driver target.
 
-    :func:`resolve_driver_excitation_ceilings` already reads and validates
-    this exact field internally (see its "Band-edge asymmetry" docstring
-    paragraph) but does not return it — its own return value is the DERIVED
-    EXCITATION ceiling, a different quantity that deliberately excludes
-    ``measurement_band[1]``. Exposed separately for
-    flat-linearization plan PR-4's contract-derived echo/null analysis band,
-    which needs the declared analysis WINDOW itself ("what the wizard tells
-    the confidence/SNR scoring to expect" — the same docstring), not the
-    excitation ceiling.
+    :func:`resolve_driver_excitation_ceilings` validates this field but does not
+    return it: its answer is the DERIVED EXCITATION ceiling, which deliberately
+    excludes ``measurement_band[1]``. Exposed separately for consumers that need
+    the declared analysis WINDOW itself.
 
-    Raises the SAME ``ExcitationSafetyPlanError(PROFILE_NOT_CONFIRMED)`` as
-    ``resolve_driver_excitation_ceilings`` on the identical malformed-shape
-    check, since both functions read the same confirmed record via
-    :func:`_target_for_request`.
+    Raises the SAME ``ExcitationSafetyPlanError(PROFILE_NOT_CONFIRMED)`` on the
+    identical malformed-shape check, both reading one confirmed record.
     """
     target = _target_for_request(safety_profile, target_fingerprint)
     measurement_band = target.get("measurement_band_hz")
@@ -817,65 +703,29 @@ def resolve_driver_protection_slope_db_per_octave(
 ) -> float | None:
     """The manufacturer's PUBLISHED high-pass slope condition, or ``None``.
 
-    The second of this file's confirmed-record readers, and the slope half of
-    the pair whose frequency half is
+    The slope half of the pair whose frequency half is
     :func:`~jasper.active_speaker.driver_protection.declared_protection_highpass_floor_hz`.
     One parse site each, so the two halves of one declaration cannot disagree.
 
-    **The two halves read DIFFERENT fields, and that asymmetry is the point.**
-    The frequency half reads ``required_protection_filters[highpass].cutoff_hz``
-    — a projection, but a LOSSLESS one:
-    :func:`~jasper.active_speaker.driver_protection.apply_driver_low_limit`
-    stamps that cutoff as the declared frequency verbatim, with no floor
-    applied.  The slope beside it is not lossless — it is
-    ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)``, so reading it
-    cannot tell a published 24 from a published 12 raised to 24.  This function
-    therefore reads the OWNER field instead
-    (``recommended_highpass_slope_db_per_octave``, the pair
-    ``driver_protection``'s decision-9 block describes), which a confirmed
-    target carries only when the manufacturer actually published one.
+    The two halves read DIFFERENT fields, deliberately. The frequency half reads
+    a lossless projection; the slope beside it is
+    ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`` and so cannot tell
+    a published 24 from a published 12 raised to 24. This reads the OWNER field
+    (``recommended_highpass_slope_db_per_octave``), which a confirmed target
+    carries only when the manufacturer actually published one — reading the
+    projection instead made the topology gate refuse a DE250 at order 2 against
+    a code figure B&C never published.
 
-    Reading the projection was what made the topology gate refuse a DE250 at
-    order 2 "below the protected driver's declared minimum of 24 dB/octave"
-    when B&C publish 12 — a code figure refusing a household's choice, which
-    the 2026-08-22 ruling bars and the 2026-08-23 owner ruling struck.
+    Returns ``None`` rather than raising, unlike
+    :func:`resolve_driver_measurement_band_hz`: that band bounds a program about
+    to PLAY, so an unreadable one must stop the session.
 
-    **It exists for the topology gate**
-    (:func:`~jasper.active_speaker.crossover_v2.topology_prescription.read_topology_prescription`):
-    a two-way corner high-passes the upper driver AT the corner, so that
-    driver's published minimum slope is a claim about what the crossover's own
-    filter must do.  Nothing downstream enforces a slope ABOVE 12 dB/octave on a
-    crossover: ``graph_safety.output_highpass_protected`` reads the corner and
-    no ``order`` at all, ``graph_safety.tweeter_guard_present`` reads ``order``
-    absent or ``>= 2.0`` (so every emittable order clears it), and the derived
-    requirement is proved only against the protective filter this build itself
-    emitted, and ``camilla_yaml._assert_tweeter_crossover_hp_satisfies_floor``
-    — which DID carry a second copy of this refusal on the VERIFY stage's call
-    shape — now discloses its shortfall instead.  See
-    ``topology_prescription``'s module docstring for the gate-by-gate
-    quotation.
-
-    **Returns ``None`` rather than raising**, unlike its sibling
-    :func:`resolve_driver_measurement_band_hz` above, and the difference is
-    deliberate: the measurement band bounds a program that is about to PLAY, so
-    an unreadable one must stop the session.
-
-    **``None`` means there is no published condition ON THE RECORD, and that has
-    TWO causes — say both, because they are not equally comfortable.**  Either
-    the maker prints no slope qualifier (an ordinary datasheet; BMS's 4590), or
-    the profile was saved before the owner pair existed as a target field, in
-    which case NO driver on that speaker has a published slope — not even one
-    publishing 24 — until the next ``/sound/`` save re-derives the target.  The
-    second case is every already-commissioned speaker on the deploy that ships
-    this, and it is why the field is optional in
-    ``driver_safety._validate_driver_safety_profile_shape`` rather than
-    required: a stored profile stays confirmed rather than being invalidated.
-    Both cases mean the same thing HERE — there is no published bound to apply,
-    never a guessed default, on ``declared_protection_highpass_floor_hz``'s
-    never-nanny rule — and in both the commissioning recommendation is still
-    DISCLOSED on the pin's record.  What this function must never do is let a
-    caller read ``None`` as "the manufacturer publishes nothing", because on a
-    pre-field profile that is a claim about a datasheet nobody consulted.
+    ``None`` means no published condition ON THE RECORD, from either of two
+    causes: the maker prints no slope qualifier, or the profile predates the
+    field (in which case no driver on that speaker has one until the next
+    ``/sound/`` save). Both mean the same thing here — no published bound to
+    apply, never a guessed default — so a caller must never read ``None`` as
+    "the manufacturer publishes nothing".
     """
     try:
         target = _target_for_request(safety_profile, target_fingerprint)
@@ -923,10 +773,8 @@ def prepare_driver_excitation_plan(
     target_id = str(target.get("target_id") or "")
     profile_limits = target.get("level_duration_limits")
     required_filters = target.get("required_protection_filters")
-    # resolve_driver_excitation_ceilings already validated an equivalent
-    # profile_limits mapping (on its own re-fetched target) and would have
-    # raised above if it were malformed; this re-check is for mypy's
-    # narrowing in THIS function's scope, not new runtime behavior.
+    # Already validated by resolve_driver_excitation_ceilings above; this
+    # re-check is mypy narrowing, not new runtime behavior.
     if not isinstance(profile_limits, Mapping):
         raise ExcitationSafetyPlanError(
             ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
