@@ -323,3 +323,14 @@ mechanics, the exclusion list, the prose bar, deletion rules, report format.
   `-X theirs` merge of a deletion branch can keep tests for deleted classes —
   re-run the branch's touched test files after integration; compression can
   falsify counterfactual comments.
+- 2026-09-03 18:40Z: **wave 2 merged** — PR #3914 → main f2920ee04 (100 files,
+  +6,702 / −19,850; 12 constituent PRs incl. the re-ruled #3836). ADR-0228
+  (plan doc retired, twelve rulings carried), ADR-0229 (bass plan stays),
+  ADR-0230 (summed-graph lane deleted). Runtime severance landed with an
+  import-closure test; `jasper-round-views directivity` is the first toolbox
+  promotion; the cloud-binding view (#3916, with the two banked fit inputs)
+  follows. Owner rulings added: deletion needs a SPENT/SUPERSEDED/PROMOTE
+  verdict, not just a grep; build every capability toward the CLI + artifact +
+  runbook-menu + methodology-pointer shape; JSON bundles, no database.
+- Wave 3 and the verification checklist for a fresh agent:
+  `tuning-rightsize-recon/HANDOFF-PROMPT.md`.
