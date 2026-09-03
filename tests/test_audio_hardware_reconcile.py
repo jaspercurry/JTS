@@ -43,6 +43,7 @@ def _fake_renderer(tmp_path: Path) -> tuple[Path, Path]:
     fake.write_text(
         "#!/usr/bin/env bash\n"
         "printf 'render\\n' >> \"$JASPER_RENDER_LOG\"\n"
+        "cp \"$JASPER_ASOUND_TEMPLATE\" \"$JASPER_ASOUND_CONF\"\n"
         "exit 0\n",
         encoding="utf-8",
     )
@@ -2221,6 +2222,48 @@ def test_render_success_still_writes_template(tmp_path: Path):
     assert "event=audio_hardware_reconcile.asound_rendered" in result.stderr
     assert "event=audio_hardware_reconcile.asound_render_failed" not in result.stderr
     assert _render_log(tmp_path) == "render\n"
+    # The live conf must carry THIS pass's template, not the one it replaced.
+    _assert_states(
+        (tmp_path / "asound.conf").read_text(encoding="utf-8"),
+        "pcm.outputd_dac",
+        "card sndrpihifiberry",
+    )
+
+
+def test_failed_asound_conf_render_fails_the_pass_without_restarting(tmp_path: Path):
+    """A nonzero jasper-render-asound-conf may not pass as a rendered asound."""
+    live_conf = tmp_path / "asound.conf"
+    live_conf.write_bytes(b"GOOD LIVE ASOUND.CONF\n")
+    good_template = "GOOD LIVE TEMPLATE\n"
+    failing = tmp_path / "failing-render-asound-conf"
+    failing.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'render\\n' >> \"$JASPER_RENDER_LOG\"\n"
+        "exit 64\n",
+        encoding="utf-8",
+    )
+    failing.chmod(0o755)
+
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "render-conf-fail",
+        initial_template=good_template,
+        extra_env={"JASPER_RENDER_ASOUND_CONF": str(failing)},
+    )
+
+    assert result.returncode == 78, result.stderr
+    assert _render_log(tmp_path) == "render\n"
+    assert live_conf.read_bytes() == b"GOOD LIVE ASOUND.CONF\n"
+    assert _template(tmp_path) == good_template
+    _assert_omits(
+        _systemctl_log(tmp_path),
+        "restart jasper-outputd.service",
+        "stop jasper-voice.service",
+    )
+    leftovers = list(tmp_path.glob("asoundrc.jasper.template.*"))
+    assert leftovers == [], leftovers
 
 
 # --- the per-DAC latency floor emit -------------------------------------------

@@ -1196,7 +1196,7 @@ print_env() {
 }
 
 render_asound_if_needed() {
-    local tmp changed=1
+    local tmp rc=0
 
     if [[ ! -f "$ASOUND_SOURCE_TEMPLATE" ]]; then
         log_event "asound_skip" "source_template=${ASOUND_SOURCE_TEMPLATE} missing=1"
@@ -1220,26 +1220,36 @@ render_asound_if_needed() {
     if ! jasper_asound_render_template "$ASOUND_SOURCE_TEMPLATE" "$tmp" || [[ ! -s "$tmp" ]]; then
         rm -f "$tmp"
         log_event "asound_render_failed" \
-            "source_template=${ASOUND_SOURCE_TEMPLATE} output_dac_id=${OUTPUT_DAC_ID} output_dac_card=$(jasper_asound_log_token "$OUTPUT_DAC_CARD") preserved_existing=1"
+            "stage=source_template source_template=${ASOUND_SOURCE_TEMPLATE} output_dac_id=${OUTPUT_DAC_ID} output_dac_card=$(jasper_asound_log_token "$OUTPUT_DAC_CARD") preserved_existing=1"
         return 1
     fi
     chmod 0644 "$tmp"
 
     if [[ -f "$ASOUND_TEMPLATE" ]] && cmp -s "$tmp" "$ASOUND_TEMPLATE"; then
-        changed=0
         rm -f "$tmp"
-    else
-        mv "$tmp" "$ASOUND_TEMPLATE"
-        changed=1
+        return 1
     fi
 
-    if [[ "$changed" == "1" ]]; then
-        "$RENDER_ASOUND_CONF"
-        log_event "asound_rendered" \
-            "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS")"
-        return 0
+    # The suppressed `set -e` noted above hides a nonzero exit here too, so an
+    # unchecked call would log a successful render and take the renderer-restart
+    # path against an asound.conf that was never rewritten. Discarding the temp
+    # on failure also keeps the next pass's template diff — and its retry.
+    JASPER_ASOUND_TEMPLATE="$tmp" "$RENDER_ASOUND_CONF" || rc=$?
+    if [[ "$rc" != "0" ]]; then
+        rm -f "$tmp"
+        log_event "asound_render_failed" \
+            "stage=asound_conf rc=${rc} output_dac_id=${OUTPUT_DAC_ID} output_dac_card=$(jasper_asound_log_token "$OUTPUT_DAC_CARD") preserved_existing=1"
+        # Fails the unit like the outputd_candidate_rejected exit below, for the
+        # same reason: nothing has been stopped or restarted yet, while
+        # continuing would restart outputd against an asound.conf naming a
+        # different DAC than the outputd.env this pass already committed.
+        exit 78
     fi
-    return 1
+    mv "$tmp" "$ASOUND_TEMPLATE"
+
+    log_event "asound_rendered" \
+        "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} outputd_active_mode=${OUTPUTD_ACTIVE_MODE} outputd_active_channels=$(jasper_asound_log_token "$OUTPUTD_ACTIVE_CHANNELS")"
+    return 0
 }
 
 # Render the shm-ring conf.d slot period from the ACTIVE DAC's DECLARED latency
