@@ -59,6 +59,29 @@ def test_auto_flush_on_warning_includes_prior_context():
     assert len(ring.buffer) == 0
 
 
+def test_auto_flush_is_floored_per_signature():
+    """A chronic warning dumps the ring once per floor interval; a
+    different call site still gets its own dump immediately."""
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(10, s)
+    ring.emit(_rec(logging.WARNING, "churn"))
+    ring.emit(_rec(logging.WARNING, "churn"))
+    assert s.getvalue().count("event=flightrec.dump ") == 1
+    # Same message, different logger -> different signature.
+    ring.emit(_rec(logging.WARNING, "churn", name="jasper.other"))
+    assert s.getvalue().count("event=flightrec.dump ") == 2
+
+
+def test_explicit_dump_is_never_floored():
+    """The floor is for automatic dumps only — an operator's SIGUSR1 or
+    a 'flag that' must always write what is in the ring."""
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(10, s)
+    ring.emit(_rec(logging.WARNING, "churn"))
+    ring.emit(_rec(logging.WARNING, "churn"))  # floored
+    assert ring.flush_buffer("manual") == 1
+
+
 def test_no_flush_on_info_or_debug():
     s = io.StringIO()
     ring = fr.RingFlushHandler(10, s)

@@ -360,6 +360,14 @@ PTT_KEEPALIVE_INTERVAL_SEC = 2.0
 # the guard test cannot drift from the registry entry.
 NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
 
+# How long a manual (button) session start waits out a paused connection
+# before refusing. Most pauses are now a planned session rotation, which
+# is back inside ~400 ms; refusing instantly turns those into a dead
+# press. Must stay under jasper.control.client.DEFAULT_TIMEOUT (2.0 s)
+# with room for the round trip, or the caller times out before it can
+# read the refusal.
+MANUAL_START_PAUSED_WAIT_SEC = 1.2
+
 # Per-leg score-freshness window. When a leg fires, another leg's most-
 # recent score counts toward `fired_legs` (and the per-leg log line) only
 # if it landed within this window — so a stream that stopped feeding (e.g.
@@ -4539,6 +4547,23 @@ class WakeLoop:
             peak_min=SPEECH_RUN_PEAK_MIN,
         )
 
+    async def _await_connection(self, timeout_sec: float) -> bool:
+        """Nudge a paused connection and wait a bounded time for it.
+
+        Returns whether the connection became usable. A planned session
+        rotation clears in a few hundred ms, so a press landing in one
+        should still get its turn; a real outage never clears, and the
+        bound is what keeps the refusal inside the control client's
+        request timeout."""
+        self._connection.request_reconnect_now()
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_sec
+        while self._connection.is_paused():
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
+        return True
+
     async def manual_session_start(self, source: str | None = None) -> str:
         """Trigger a voice session from external IPC (remote hold-to-talk).
         Bypasses the openWakeWord trigger but honors the same gates
@@ -4611,8 +4636,19 @@ class WakeLoop:
             return "MEASURING"
         if not self._spend_cap.allowed():
             return "CAP"
-        if self._connection.is_paused():
-            self._connection.request_reconnect_now()
+        if self._connection.is_paused() and not await self._await_connection(
+            MANUAL_START_PAUSED_WAIT_SEC,
+        ):
+            # Still paused after the wait: this is a real outage, not a
+            # rotation. Cue first — a press that produces nothing is the
+            # one refusal the household cannot explain to itself.
+            log_event(
+                logger,
+                "session.manual_refused",
+                reason="connection_paused",
+                waited_sec=MANUAL_START_PAUSED_WAIT_SEC,
+            )
+            await self._play_cue(self._connection.wake_cue())
             return "PAUSED"
         if source:
             self._active_manual_source = source

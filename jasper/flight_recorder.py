@@ -36,6 +36,7 @@ import logging
 import os
 import signal
 import sys
+import time
 
 from . import debug_mode
 
@@ -43,6 +44,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CAPACITY = 1000  # stores formatted lines (~0.3 KB) -> ~0.3 MB/daemon
 FLUSH_LEVEL = logging.WARNING
+# Minimum gap between two AUTOMATIC dumps triggered by the same WARNING+
+# call site. A chronic warning dumps the whole ring every time it fires,
+# which buries the journal it was meant to illuminate (2026-09-03: the
+# Gemini reconnect churn on jts4 produced 42k of 44k lines/day). Explicit
+# dumps (`dump()`, SIGUSR1, "flag that") are never rate-limited.
+AUTO_FLUSH_MIN_INTERVAL_SEC = 3600.0
+# Signatures are per call site, so this only binds if a daemon logs
+# WARNING+ through f-strings from many places.
+_AUTO_FLUSH_SIG_MAX = 512
 _FLIGHTREC_FORMAT = "%(asctime)s flightrec %(levelname)s %(name)s: %(message)s"
 
 _ring: "RingFlushHandler | None" = None
@@ -67,6 +77,8 @@ class RingFlushHandler(logging.Handler):
         self.dump_stream = dump_stream
         self.setFormatter(logging.Formatter(_FLIGHTREC_FORMAT))
         self._dumping = False
+        # Monotonic time of the last auto-flush per WARNING+ signature.
+        self._last_auto_flush: dict[str, float] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
         if self._dumping:
@@ -76,8 +88,28 @@ class RingFlushHandler(logging.Handler):
         except Exception:  # noqa: BLE001  # pragma: no cover - defensive; never crash the caller
             return
         self.buffer.append(line)
-        if record.levelno >= FLUSH_LEVEL:
+        if record.levelno >= FLUSH_LEVEL and self._auto_flush_due(record):
             self.flush_buffer("auto:" + record.levelname.lower())
+
+    def _auto_flush_due(self, record: logging.LogRecord) -> bool:
+        """Whether this WARNING+ record may trigger an automatic dump.
+
+        Keyed on logger name + unformatted message, i.e. the call site,
+        so one chronic warning cannot starve every other one of its
+        first dump. The ring keeps buffering either way — a suppressed
+        signature still appears as context in the next dump."""
+        sig = f"{record.name}:{record.msg}"
+        now = time.monotonic()
+        last = self._last_auto_flush.get(sig)
+        if last is not None and now - last < AUTO_FLUSH_MIN_INTERVAL_SEC:
+            return False
+        if len(self._last_auto_flush) >= _AUTO_FLUSH_SIG_MAX:
+            cutoff = now - AUTO_FLUSH_MIN_INTERVAL_SEC
+            self._last_auto_flush = {
+                k: v for k, v in self._last_auto_flush.items() if v >= cutoff
+            }
+        self._last_auto_flush[sig] = now
+        return True
 
     def flush_buffer(self, reason: str) -> int:
         """Write the buffered lines to the dump stream and clear the ring.
