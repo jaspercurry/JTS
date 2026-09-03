@@ -39,7 +39,7 @@ from jasper.accessories.registry import (
     RemoteProfile,
     TapAction,
 )
-from jasper.accessories.supervisor import supervise
+from jasper.accessories.supervisor import snapshot, supervise
 from jasper.control.client import ControlError, ControlResponse
 
 
@@ -863,13 +863,17 @@ def _healthy_bridge(started: asyncio.Event):
     return bridge
 
 
-async def _supervise_until(bridges, predicate, *, backoff_sec: float) -> bool:
+async def _supervise_until(
+    bridges, predicate, *, backoff_sec: float, status_path,
+) -> bool:
     """Run the supervisor until `predicate` holds; report whether it survived.
 
     "The process does not exit" is the half that cannot be observed after the
     fact, so it is asserted on every poll rather than only at the end.
     """
-    task = asyncio.create_task(supervise(bridges, backoff_sec=backoff_sec))
+    task = asyncio.create_task(
+        supervise(bridges, backoff_sec=backoff_sec, status_path=status_path),
+    )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 5.0
     while not predicate():
@@ -887,7 +891,7 @@ async def _supervise_until(bridges, predicate, *, backoff_sec: float) -> bool:
 
 @pytest.mark.parametrize("failing,healthy", [("hid", "mic"), ("mic", "hid")])
 async def test_a_failing_bridge_is_restarted_without_disturbing_the_other(
-    failing: str, healthy: str,
+    failing: str, healthy: str, tmp_path,
 ):
     attempts: List[str] = []
     alive = asyncio.Event()
@@ -899,13 +903,14 @@ async def test_a_failing_bridge_is_restarted_without_disturbing_the_other(
         },
         lambda: len(attempts) >= 3,
         backoff_sec=0.0,
+        status_path=tmp_path / "status.json",
     )
 
     assert still_running
     assert alive.is_set(), f"{healthy} was disturbed by {failing}'s fault"
 
 
-async def test_a_restart_waits_out_the_backoff_instead_of_spinning():
+async def test_a_restart_waits_out_the_backoff_instead_of_spinning(tmp_path):
     attempts: List[str] = []
     alive = asyncio.Event()
 
@@ -918,10 +923,48 @@ async def test_a_restart_waits_out_the_backoff_instead_of_spinning():
         },
         alive.is_set,
         backoff_sec=3600.0,
+        status_path=tmp_path / "status.json",
     )
 
     assert still_running
     assert attempts == ["mic"]
+
+
+async def test_the_status_file_carries_each_bridges_restarts_and_error_class(
+    tmp_path,
+):
+    """A bridge looping in backoff leaves the unit `active`, so /state reads
+    this file instead. last_error is the exception CLASS only — a bridge fault
+    message can name the device."""
+    status_path = tmp_path / "status.json"
+    recovered = asyncio.Event()
+    attempts: List[str] = []
+
+    async def flaky() -> None:
+        attempts.append("mic")
+        if len(attempts) <= 2:
+            raise TimeoutError("wiim remote 2 at aa:bb:cc:dd:ee:ff")
+        recovered.set()
+        await asyncio.Event().wait()
+
+    still_running = await _supervise_until(
+        {"mic": flaky, "hid": _healthy_bridge(asyncio.Event())},
+        recovered.is_set,
+        backoff_sec=0.0,
+        status_path=status_path,
+    )
+
+    assert still_running
+    assert snapshot(status_path) == {
+        "present": True,
+        "bridges": {
+            "mic": {"restarts": 2, "last_error": "TimeoutError"},
+            "hid": {"restarts": 0, "last_error": None},
+        },
+    }
+    assert snapshot(tmp_path / "absent.json") == {
+        "present": False, "bridges": {},
+    }
 
 
 def test_every_declared_adapter_mic_has_an_in_process_adapter():
