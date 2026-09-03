@@ -7,7 +7,10 @@
 The one module here that owns household-facing copy rather than a decision:
 the codes, the templates, the :data:`REASON_REGISTRY` binding a code to its
 sentence and retry budget, the selectors that pick between two sentences for
-one code, and :class:`PhaseVerdict`. Every sibling answers with a *kind* and
+one code, and :class:`PhaseVerdict`. :data:`SCREEN_KIND_REASONS` covers
+:data:`~.capture_dispatch.CAPTURE_SCREEN_KINDS` exactly and names only
+:data:`REASON_REGISTRY` codes (pinned in ``tests/test_crossover_v2_spatial.py``),
+so a new rung cannot ship without a household sentence. Every sibling answers with a *kind* and
 never renders a sentence. Where this vocabulary belongs is still open (#2390).
 """
 

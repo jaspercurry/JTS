@@ -79,9 +79,10 @@ def test_nan_capture_does_not_poison_peak_and_is_gated():
         alignment.assert_alignment_confident(captured, stim, require=True)
 
 
-def test_a_ten_second_sweep_correlates_in_well_under_a_second():
+def test_a_ten_second_sweep_correlates_far_faster_than_a_naive_correlator():
     # B1 regression: an O(N·M) correlator takes minutes on this pair; the
-    # budget is ~50x the FFT path's measured cost, so only an algorithm
+    # 10 s budget: a naive O(N^2) correlator on a 10 s sweep takes minutes; the
+    # FFT path takes a fraction of a second, so only an algorithm regression trips it.
     # change can breach it.
     import time
 

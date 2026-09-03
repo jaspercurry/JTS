@@ -1790,6 +1790,13 @@ def _verify_frame_from_tracking(
     Rendered on EVERY outcome: a PASS is exactly the case where an unstated
     tilt lets a reader take instrument agreement for model agreement.
 
+    ``None`` means no frame was measured, never that the frames matched.
+    Tilt-removed keys are omitted individually rather than defaulted to their
+    raw twins (a beside-number equal to its twin would read as a measurement).
+    ``pivot_hz``/``n_bins``/``band_hz`` travel because a two-parameter fit over
+    few bins is ill-conditioned and ``frame_fit`` reports the span instead of a
+    confidence policy.
+
     ``None`` when no tracking comparison ran, or when the frame could not be
     fitted. The tilt-removed keys are omitted individually rather than
     defaulted to their raw twins, because a beside-number equal to its twin

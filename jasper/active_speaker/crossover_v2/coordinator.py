@@ -5,7 +5,7 @@
 """The round coordinator: grade a round, act on the adoption table, restore if
 the table says restore, and bank the receipt.
 
-The only module here that changes the speaker — it calls seams that act. It
+The module in the round tail that changes the speaker — it calls seams that act. It
 holds no session state (every input an argument, every output a return value),
 reaches no host object beyond :class:`RoundPorts`, and owns no household
 vocabulary: a refusal leaves as a :class:`RoundRefusal` kind the flow maps to a

@@ -22,9 +22,12 @@ capture provenance and to nothing else; it is not a round receipt's
 Every field is read from the ONE live owner of that fact at the instant the
 stimulus is emitted. :func:`volume_fields_agree` compares ``main_volume_db``
 against ``session_volume_db`` (#2925 T1-2: an overnight campaign carried the
-two two lines apart disagreeing by 8.712 dB, found five days later by fitting
+two fields two lines apart disagreeing by 8.712 dB, found five days later by fitting
 the banked curves) and is a DISCLOSURE, not a gate -- nothing here may break a
-capture. The fail-CLOSED half is the playback path's volume hold, which shares
+capture. It runs only on records this module observes, which is not every
+capture: observation is bought only while capture retention is on, and
+:func:`observe_capture_provenance` logs the WARN when a retained record
+self-contradicts. The fail-CLOSED half is the playback path's volume hold, which shares
 one tolerance with this comparison so the two cannot disagree about "agree".
 
 Every read is individually guarded and :func:`record_capture_provenance` wraps
