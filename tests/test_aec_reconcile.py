@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -15,8 +16,8 @@ import pytest
 
 from jasper import wake_legs
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
-from jasper.audio_profile_state import profile_env_updates
-from jasper.cli import aec_init
+from jasper.audio_profile_state import ALL_PROFILES, profile_env_updates
+from jasper.cli import aec_init, audio_input_profile
 from jasper.control import aec_endpoints
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
@@ -1915,6 +1916,96 @@ def test_profile_env_updates_are_consumed_by_reconciler(
     assert values["JASPER_MIC_DEVICE_DTLN"] == _EMPTY
     assert values["JASPER_AEC_CHIP_AEC_ENABLED"] == expected["chip_enabled"]
     assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
+
+
+# The shell variables the reconciler evals the shim's output into, seeded with
+# a sentinel so a profile that emits no vector is visibly left alone.
+_SHIM_SENTINEL = "unchanged"
+_SHIM_VARS = ("AUDIO_INPUT_PROFILE", *audio_input_profile.SHELL_VARS.values())
+_LEGS_CHIP = ("auto", "0", "0", "1", "0", "0")
+_LEGS_SOFTWARE = ("auto", "1", "0", "0", "0", "0")
+_LEGS_DIRECT = ("disabled", "0", "0", "0", "0", "0")
+_LEGS_UNCHANGED = (_SHIM_SENTINEL,) * 6
+# profile -> (normalized name, legs without chip-AEC, legs with chip-AEC).
+_PROFILE_VECTORS = {
+    "auto": ("auto", _LEGS_SOFTWARE, _LEGS_CHIP),
+    "xvf_chip_aec": ("xvf_chip_aec", _LEGS_SOFTWARE, _LEGS_CHIP),
+    "xvf_chip_aec_testing": ("xvf_chip_aec_testing", _LEGS_SOFTWARE, _LEGS_CHIP),
+    "xvf_chip_aec_test": ("xvf_chip_aec_testing", _LEGS_SOFTWARE, _LEGS_CHIP),
+    "xvf_software_aec3": ("xvf_software_aec3", _LEGS_SOFTWARE, _LEGS_SOFTWARE),
+    "direct_mic": ("direct_mic", _LEGS_DIRECT, _LEGS_DIRECT),
+    "custom": ("custom", _LEGS_UNCHANGED, _LEGS_UNCHANGED),
+}
+
+
+@pytest.mark.parametrize("chip_available", ("0", "1"))
+@pytest.mark.parametrize("profile", (*ALL_PROFILES, "xvf_chip_aec_test"))
+def test_reconciler_evals_the_python_profile_tables(
+    profile: str,
+    chip_available: str,
+) -> None:
+    """The reconciler carries no profile vocabulary of its own.
+
+    `jasper.audio_profile_state` owns the alias table and the profile ->
+    wake-leg vectors; the shell evals what `jasper.cli.audio_input_profile`
+    prints into exactly these variables. Driving that eval the way the script
+    does pins both sides to one table — `xvf_chip_aec_test` is the alias
+    Python accepted and Bash demoted to `custom`. A profile with no row here
+    fails on the lookup, so a new one cannot ship untested.
+    """
+    normalized = _PROFILE_VECTORS[profile][0]
+    legs = _PROFILE_VECTORS[profile][1 + int(chip_available)]
+    shim = shlex.join(
+        [
+            sys.executable,
+            "-m",
+            "jasper.cli.audio_input_profile",
+            "--profile",
+            profile,
+            "--chip-available",
+            chip_available,
+        ]
+    )
+    script = (
+        "".join(f"{name}={_SHIM_SENTINEL}\n" for name in _SHIM_VARS)
+        + f'eval "$({shim})"\n'
+        + "".join(f'printf "%s=%s\\n" {name} "${name}"\n' for name in _SHIM_VARS)
+    )
+
+    shell = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        check=False,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+
+    assert shell.returncode == 0, shell.stderr
+    assert dict(line.split("=", 1) for line in shell.stdout.splitlines()) == dict(
+        zip(_SHIM_VARS, (normalized, *legs))
+    )
+
+
+def test_chip_aec_test_alias_reaches_the_testing_profile(tmp_path: Path) -> None:
+    """The alias Bash used to demote to `custom` now arms the testing profile."""
+    _write_env(tmp_path, "Array")
+    (tmp_path / "aec_mode.env").write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec_test\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC_150=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC_210=0\n"
+    )
+    _write_card(tmp_path, channels=6)
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    values = _env_assignments(tmp_path / "jasper.env")
+    assert values["JASPER_AEC_CHIP_AEC_TESTING_REQUESTED"] == "1"
+    assert values["JASPER_AEC_CHIP_AEC_ENABLED"] == "1"
 
 
 _RAW_PORT = f"udp:{wake_legs.by_token('off').udp_port}"

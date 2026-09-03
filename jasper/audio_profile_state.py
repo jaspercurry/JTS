@@ -216,6 +216,32 @@ def profile_env_updates(profile: str) -> dict[str, str]:
     return updates
 
 
+def resolve_profile_wake_legs(
+    profile: str,
+    *,
+    chip_available: bool,
+) -> dict[str, str]:
+    """Runtime AEC mode and wake legs the reconciler applies for a profile.
+
+    `profile_env_updates` owns the per-profile vectors; runtime capability
+    only decides which of them a chip-seeking profile lands on. `custom`
+    yields no keys — the operator's own mode and legs stand.
+    """
+
+    normalized = normalize_audio_input_profile(profile, default=PROFILE_CUSTOM)
+    if normalized in (
+        PROFILE_AUTO,
+        PROFILE_XVF_CHIP_AEC,
+        PROFILE_XVF_CHIP_AEC_TESTING,
+    ):
+        normalized = (
+            PROFILE_XVF_CHIP_AEC if chip_available else PROFILE_XVF_SOFTWARE_AEC3
+        )
+    updates = profile_env_updates(normalized)
+    updates.pop("JASPER_AUDIO_INPUT_PROFILE")
+    return updates
+
+
 def resolve_audio_input_intent(
     intent: AecIntent,
     *,

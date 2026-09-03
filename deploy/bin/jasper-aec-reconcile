@@ -648,33 +648,29 @@ normalize_bool() {
     esac
 }
 
-normalize_audio_input_profile() {
-    local profile="${1:-custom}"
-    profile="$(printf '%s' "$profile" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
-    case "$profile" in
-        auto|automatic)
-            echo "auto"
-            ;;
-        xvf_chip_aec|xvf_chip|chip_aec|chip|hardware_aec)
-            echo "xvf_chip_aec"
-            ;;
-        xvf_chip_aec_testing|xvf_chip_aec_trial|chip_aec_testing|chip_aec_trial|hardware_aec_testing)
-            echo "xvf_chip_aec_testing"
-            ;;
-        xvf_software_aec3|xvf_software|software_aec3|aec3|software)
-            echo "xvf_software_aec3"
-            ;;
-        direct_mic|direct|raw|off|disabled)
-            echo "direct_mic"
-            ;;
-        custom|manual|"")
-            echo "custom"
-            ;;
-        *)
-            log "unknown JASPER_AUDIO_INPUT_PROFILE=${profile}; treating as custom"
-            echo "custom"
-            ;;
-    esac
+# jasper.audio_profile_state owns the profile alias table and the profile ->
+# wake-leg vectors; jasper.cli.audio_input_profile hands them to this script
+# as assignments to AUDIO_INPUT_PROFILE, AUDIO_INPUT_PROFILE_KNOWN and — when
+# --chip-available says whether chip-AEC can arm — AEC_MODE plus the five
+# LEG_* booleans. A `custom` profile assigns no legs: the operator's own mode
+# and legs stand.
+#
+# ADR-0101: an unresolvable vocabulary is unmeasured, not a demotion. Callers
+# pre-seed the selection as written and ignore the non-zero return, so a
+# missing interpreter carries the declared profile (every writer of the key
+# stores it normalized) and leaves mode and legs exactly as configured.
+AUDIO_INPUT_PROFILE="custom"
+AUDIO_INPUT_PROFILE_KNOWN="1"
+read_audio_input_profile() {
+    local payload
+    if command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1 \
+        && payload="$("$MIC_PROFILE_PYTHON" -m jasper.cli.audio_input_profile "$@")"; then
+        # Output is produced by jasper.cli.audio_input_profile with shlex.quote.
+        eval "$payload"
+        return 0
+    fi
+    log "audio input profile resolver unavailable at ${MIC_PROFILE_PYTHON}; carrying the selection as written"
+    return 1
 }
 
 normalize_output_dac_id() {
@@ -859,8 +855,26 @@ infer_audio_input_profile_from_mode_file() {
         "$mode" "$raw" "$dtln" "$chip_aec" "$chip_aec_150" "$chip_aec_210"
 }
 
+# Which runtime facts admit chip-AEC, per profile: `auto` additionally needs a
+# 6-channel mic before it will leave software AEC3; an explicitly requested
+# chip profile does not. Every other profile short-circuits before the DAC
+# gate is queried at all, so an unasked gate keeps its unresolved record.
+chip_aec_can_arm() {
+    case "$AUDIO_INPUT_PROFILE" in
+        auto)
+            aec_ready "$AEC_MIC_DEVICE" || return 1
+            ;;
+        xvf_chip_aec|xvf_chip_aec_testing) ;;
+        *)
+            return 1
+            ;;
+    esac
+    chip_aec_mic_supported \
+        && chip_aec_dac_supported "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
+}
+
 apply_audio_input_profile() {
-    local detail
+    local chip_available=0
     MANAGED_XVF_PARK_REASON=""
     MANAGED_XVF_DISCLOSURE=""
     MANAGED_XVF_DISCLOSURE_ACTION=""
@@ -895,91 +909,18 @@ apply_audio_input_profile() {
         fi
         return
     fi
-    case "$AUDIO_INPUT_PROFILE" in
-        auto)
-            AEC_MODE="auto"
-            if aec_ready "$AEC_MIC_DEVICE" \
-                && chip_aec_mic_supported \
-                && chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
-                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "0"
-                LEG_RAW="0"
-                LEG_DTLN="0"
-                LEG_CHIP_AEC="1"
-                LEG_CHIP_AEC_150="0"
-                LEG_CHIP_AEC_210="0"
-            elif aec_ready "$AEC_MIC_DEVICE"; then
-                detail="$(chip_aec_block_detail "$AUDIO_DAC_ID" "0")"
-                log "chip-AEC unavailable for output_dac=${AUDIO_DAC_ID}: ${detail}; using software AEC3"
-                LEG_RAW="1"
-                LEG_DTLN="0"
-                LEG_CHIP_AEC="0"
-                LEG_CHIP_AEC_150="0"
-                LEG_CHIP_AEC_210="0"
-            else
-                LEG_RAW="1"
-                LEG_DTLN="0"
-                LEG_CHIP_AEC="0"
-                LEG_CHIP_AEC_150="0"
-                LEG_CHIP_AEC_210="0"
-            fi
-            ;;
-        xvf_chip_aec)
-            AEC_MODE="auto"
-            if chip_aec_mic_supported && chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
-                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "0"
-                LEG_RAW="0"
-                LEG_DTLN="0"
-                LEG_CHIP_AEC="1"
-                LEG_CHIP_AEC_150="0"
-                LEG_CHIP_AEC_210="0"
-            else
-                detail="$(chip_aec_block_detail "$AUDIO_DAC_ID" "0")"
-                log "requested xvf_chip_aec but output_dac=${AUDIO_DAC_ID} is not calibrated for chip AEC: ${detail}; using software AEC3"
-                LEG_RAW="1"
-                LEG_DTLN="0"
-                LEG_CHIP_AEC="0"
-                LEG_CHIP_AEC_150="0"
-                LEG_CHIP_AEC_210="0"
-            fi
-            ;;
-        xvf_chip_aec_testing)
-            AEC_MODE="auto"
-            if chip_aec_mic_supported && chip_aec_dac_supported "$AUDIO_DAC_ID" "1"; then
-                log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "1"
-                LEG_RAW="0"
-                LEG_DTLN="0"
-                LEG_CHIP_AEC="1"
-                LEG_CHIP_AEC_150="0"
-                LEG_CHIP_AEC_210="0"
-            else
-                detail="$(chip_aec_block_detail "$AUDIO_DAC_ID" "1")"
-                log "requested xvf_chip_aec_testing but chip-AEC cannot be armed for output_dac=${AUDIO_DAC_ID}: ${detail}; using software AEC3"
-                LEG_RAW="1"
-                LEG_DTLN="0"
-                LEG_CHIP_AEC="0"
-                LEG_CHIP_AEC_150="0"
-                LEG_CHIP_AEC_210="0"
-            fi
-            ;;
-        xvf_software_aec3)
-            AEC_MODE="auto"
-            LEG_RAW="1"
-            LEG_DTLN="0"
-            LEG_CHIP_AEC="0"
-            LEG_CHIP_AEC_150="0"
-            LEG_CHIP_AEC_210="0"
-            ;;
-        direct_mic)
-            AEC_MODE="disabled"
-            LEG_RAW="0"
-            LEG_DTLN="0"
-            LEG_CHIP_AEC="0"
-            LEG_CHIP_AEC_150="0"
-            LEG_CHIP_AEC_210="0"
-            ;;
-        custom)
-            ;;
-    esac
+    if chip_aec_can_arm; then
+        chip_available=1
+        log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
+    elif [[ "$AUDIO_INPUT_PROFILE" == "xvf_chip_aec" ]]; then
+        log "requested xvf_chip_aec but output_dac=${AUDIO_DAC_ID} is not calibrated for chip AEC: $(chip_aec_block_detail "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"); using software AEC3"
+    elif [[ "$AUDIO_INPUT_PROFILE" == "xvf_chip_aec_testing" ]]; then
+        log "requested xvf_chip_aec_testing but chip-AEC cannot be armed for output_dac=${AUDIO_DAC_ID}: $(chip_aec_block_detail "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"); using software AEC3"
+    elif [[ "$AUDIO_INPUT_PROFILE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
+        log "chip-AEC unavailable for output_dac=${AUDIO_DAC_ID}: $(chip_aec_block_detail "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"); using software AEC3"
+    fi
+    read_audio_input_profile --profile "$AUDIO_INPUT_PROFILE" \
+        --chip-available "$chip_available" || true
 }
 
 # Map wake-leg booleans to the underlying env vars that
@@ -2051,7 +1992,11 @@ load_env_file "$MODE_FILE"
 observe_mic_profile_state
 
 AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
-AUDIO_INPUT_PROFILE="$(normalize_audio_input_profile "${JASPER_AUDIO_INPUT_PROFILE:-custom}")"
+AUDIO_INPUT_PROFILE="${JASPER_AUDIO_INPUT_PROFILE:-custom}"
+read_audio_input_profile --profile "$AUDIO_INPUT_PROFILE" || true
+if [[ "$AUDIO_INPUT_PROFILE_KNOWN" != "1" ]]; then
+    log "unknown JASPER_AUDIO_INPUT_PROFILE=${JASPER_AUDIO_INPUT_PROFILE:-}; treating as custom"
+fi
 AEC_MIC_DEVICE="${JASPER_AEC_MIC_DEVICE:-}"
 AEC_UDP_PORT="${JASPER_AEC_UDP_PORT:-9876}"
 AEC_UDP_PORT_RAW="${JASPER_AEC_UDP_PORT_RAW:-9877}"
