@@ -29,13 +29,6 @@ from jasper.log_event import log_event
 from jasper.web import correction_crossover_v2 as _host
 
 
-def _phase_from_state(state: Mapping[str, Any] | None) -> str:
-    """The journey phase, with the host's own review-decision read supplied."""
-    return _projection.crossover_v2_phase(
-        state, review_declined=_host.review_declined(state),
-    )
-
-
 def _previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | None:
     """The measured candidate the applied graph displaced, if one is recorded.
 
@@ -112,7 +105,9 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
     except (OSError, RuntimeError, ValueError):
         needs_recovery = True  # unreadable volume state fails closed
     block: dict[str, Any] = {
-        "phase": _phase_from_state(state),
+        "phase": _projection.crossover_v2_phase(
+            state, review_declined=_host.review_declined(state),
+        ),
         # The session's own clock (#1947), and the ONLY one this flow needs:
         # ``save_v2_state`` stamps it on every write, and every write site is a
         # session TRANSITION — a consumed capture, a review decision, an apply,

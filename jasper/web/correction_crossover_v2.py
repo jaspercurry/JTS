@@ -2283,10 +2283,9 @@ def persist_conductor_state(
     put the answer back, and journal the one transition a household would
     notice.
     """
-    from .correction_crossover_v2_status import (
-        _phase_from_state,
-        crossover_v2_status_block,
-    )
+    from jasper.active_speaker.crossover_envelope_v2 import crossover_v2_phase
+
+    from .correction_crossover_v2_status import crossover_v2_status_block
 
     prior = load_v2_state() or {}
     built = build_conductor_state(
@@ -2309,10 +2308,13 @@ def persist_conductor_state(
 
     grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
     grade = grade if isinstance(grade, Mapping) else {}
-    if (
-        _phase_from_state(built.state) == PHASE_DONE
-        and _phase_from_state(prior) != PHASE_DONE
-    ) or (
+    was_done = crossover_v2_phase(
+        prior, review_declined=review_declined(prior),
+    ) == PHASE_DONE
+    now_done = crossover_v2_phase(
+        built.state, review_declined=review_declined(built.state),
+    ) == PHASE_DONE
+    if (now_done and not was_done) or (
         grade.get("outcome") == RESULT_KEEP_PREVIOUS
         and prior_outcome != RESULT_KEEP_PREVIOUS
     ):
@@ -2339,7 +2341,7 @@ def _persist_terminal_failure(
     position unverifiable — but an auto-apply that came back blocked or
     errored says nothing about the mic position; MEASURE's own evidence is
     still exactly as good as it was. Keeping MEASURE accepted here is what
-    lets ``_phase_from_state`` resolve to ``PHASE_APPLYING`` (not
+    lets ``crossover_v2_phase`` resolve to ``PHASE_APPLYING`` (not
     ``PHASE_CHECK``) so the envelope's apply-step failure screen — and the
     specific blocked-issue nudge layered onto it — can actually render;
     before this fix the reset always won, so that nudge was unreachable in

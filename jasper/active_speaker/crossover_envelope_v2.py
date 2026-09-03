@@ -23,8 +23,8 @@ there rather than restated.
 The v2-specific state the backend threads onto the status lives under
 ``status["crossover_v2"]`` (phase / failure / verify / candidate /
 apply_blocked / needs_recovery / applied). The last section of this file
-PROJECTS that block out of the durable state and nothing else does; it
-still decides none of it —
+PROJECTS the state-derived keys of that block; the rest come from the web
+adapter's own readers, and neither DECIDES any of it —
 :class:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session` owns
 those decisions, the reason codes are
 :mod:`jasper.active_speaker.crossover_v2.refusal_copy`'s, mapped to
@@ -79,6 +79,7 @@ from .crossover_v2.journey import (
     PHASE_VERIFY,
     PRE_CLOUD_CAPTURE_PHASES,
 )
+from .crossover_v2.spatial import _geometry_guidance_copy
 from .crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     ReasonSpec,
@@ -3012,13 +3013,15 @@ def crossover_v2_phase(
         return PHASE_REVIEW
     return PHASE_DONE
 
+
 def _provenance_note(measured_this_session: bool | None) -> str:
     """PR-7's household-facing provenance caption — one owner of the copy, so
     the chart never has to (or may) phrase this itself.
 
     A re-armed session's ``persist_conductor_state`` can carry a group's
     ``cloud`` entry forward from an EARLIER session verbatim (see
-    ``_cloud_summary``'s own comment and the B1 fix above it) — so
+    :func:`~jasper.active_speaker.crossover_v2.durable_state._cloud_summary`'s
+    own comment and the B1 fix above it) — so
     ``/state.crossover_v2.cloud`` and the envelope can describe a measurement
     that did not happen in the session currently open on the page. Silently
     charting it as fresh would be exactly the kind of measured-narrow-
@@ -3038,6 +3041,7 @@ def _provenance_note(measured_this_session: bool | None) -> str:
         )
     return ""
 
+
 def compact_cloud_status(
     cloud_state: Any, *, current_session_id: str | None = None,
 ) -> dict[str, Any] | None:
@@ -3046,11 +3050,13 @@ def compact_cloud_status(
     intervals; the geometry verdict's two household-relevant bits.
 
     The full per-null τ/r/evidence numbers and the decimated curve live in
-    the durable state's own ``pipeline`` sub-key (:func:`_cloud_summary`) and
-    the bundle artifact (:func:`bind_cloud_publisher`) — this stays a
-    shape-scoped projection, not a third owner of the same data: a consumer
-    that reads ``cloud`` alone (the doctor) never has to parse curve-shaped
-    data mixed into it. PR-7's chart feed is a fourth, separate KEY —
+    the durable state's own ``pipeline`` sub-key
+    (:func:`~jasper.active_speaker.crossover_v2.durable_state._cloud_summary`)
+    and the bundle artifact
+    (:func:`~jasper.web.correction_crossover_v2.bind_cloud_publisher`) — this
+    stays a shape-scoped projection, not a third owner of the same data: a
+    consumer that reads ``cloud`` alone (the doctor) never has to parse
+    curve-shaped data mixed into it. PR-7's chart feed is a fourth, separate KEY —
     :func:`chart_cloud_status`, riding alongside this one on the adapter's own
     returned dict — for that same shape-scoping reason. It is **not** a
     separate endpoint or a smaller HTTP
@@ -3136,7 +3142,8 @@ def compact_cloud_status(
     ``provenance_note`` (PR-7) is the household-facing half of the same
     marker: ``current_session_id`` is the session the CALLER currently has
     open (``crossover_v2_status_block``'s own ``state["session_id"]``);
-    ``_cloud_summary`` now stamps each phase's dict with the session that
+    :func:`~jasper.active_speaker.crossover_v2.durable_state._cloud_summary`
+    now stamps each phase's dict with the session that
     actually produced it. When the two disagree — a group carried forward
     from an earlier session (see that function's own comment) — the note
     says so via :func:`_provenance_note`; a durable state written before the
@@ -3144,8 +3151,6 @@ def compact_cloud_status(
     stale, so an upgrade does not manufacture a false "this is old" warning
     for data nobody ever mis-attributed.
     """
-    from jasper.active_speaker.crossover_v2.spatial import _geometry_guidance_copy
-
     if not isinstance(cloud_state, Mapping):
         return None
     out: dict[str, Any] = {}
@@ -3228,6 +3233,7 @@ def compact_cloud_status(
         out[str(phase)] = entry
     return out or None
 
+
 # PR-7's own re-decimation ceiling for the polled chart feed — HALF of
 # crossover_v2.spatial.CLOUD_CURVE_MAX_JSON_POINTS (512), the ceiling the
 # pipeline's own ``curve`` key (and the persisted bundle artifact it is
@@ -3300,6 +3306,7 @@ def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
         "magnitude_db": [_finite(m) for m in mags[:n:step]],
     }
 
+
 def chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
     """PR-7's chart-feed projection of the durable ``cloud`` block — the ONE
     thing :func:`compact_cloud_status` deliberately withholds: the decimated
@@ -3349,6 +3356,7 @@ def chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
                 )
         out[str(phase)] = {"curve": curve}
     return out or None
+
 
 def prediction_status(state: Any) -> dict[str, Any] | None:
     """The PREDICTED post-apply response and its stored spec verdict, or
@@ -3439,6 +3447,7 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
             if isinstance(spec.get("comparison"), Mapping) else None
         ),
     }
+
 
 def household_findings_status(state: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """The banked findings a household may read, from the durable projection.
