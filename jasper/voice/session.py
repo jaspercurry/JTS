@@ -433,6 +433,16 @@ class LiveConnection(Protocol):
         remedy for a terminal outage, else the generic ``cant_connect``."""
         ...
 
+    def request_reconnect_now(self) -> bool:
+        """Ask a paused connection to stop waiting and retry now.
+
+        The daemon calls this wherever it refuses a wake for
+        ``is_paused()``: during a long terminal poll the wake word is
+        the household asking whether the outage is over. Implementations
+        rate-gate it so repeated wakes cannot outpace the ordinary
+        reconnect ramp. Returns whether a retry was actually asked for."""
+        ...
+
     def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
         """Wire the cue player for a terminal connection failure. The
         daemon calls this once the ``WakeLoop`` exists."""

@@ -288,9 +288,10 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
 
     async def _drive(
         *, paused: bool, conn_paused: bool = False, cue: str | None = None,
-    ) -> list[str]:
+    ) -> tuple[list[str], int]:
         wl = WakeLoop.for_tests()
         played: list[str] = []
+        nudges = 0
 
         async def _rec(slug: str) -> None:
             played.append(slug)
@@ -316,6 +317,11 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
             def wake_cue(self) -> str:
                 return cue or "cant_connect"
 
+            def request_reconnect_now(self) -> bool:
+                nonlocal nudges
+                nudges += 1
+                return True
+
         wl._wake_late_cancelled = lambda *_a, **_k: False
         wl._peer_arbitrate = _win
         wl._prepare_assistant_loudness_context = _noop
@@ -334,22 +340,27 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
             )
         finally:
             await wl._cancel_fire_and_forget_tasks()
-        return played
+        return played, nudges
 
     # Healthy connection + unexpected local error -> honest internal cue,
     # NOT a false "I can't connect".
-    assert await _drive(paused=False) == ["internal_error"]
+    assert await _drive(paused=False) == (["internal_error"], 0)
 
     # Connection genuinely dropped into paused/failed mid-acquire ->
     # cant_connect is the truthful cue.
-    assert await _drive(paused=True) == ["cant_connect"]
+    assert await _drive(paused=True) == (["cant_connect"], 0)
 
     # ADR-0215: a TERMINAL outage names its remedy instead — "I'll keep
     # trying" is a false promise when retrying cannot help. Pinned at the
     # wake gate (conn_paused), the path the household actually hits.
+    #
+    # The refused wake ALSO asks the supervisor to retry now (issue
+    # #3855): a terminal outage slow-polls every 15 minutes, and the
+    # wake word is the household asking whether it is fixed. The cue is
+    # unchanged — they are still told the provider is unavailable.
     assert await _drive(
         paused=True, conn_paused=True, cue="provider_out_of_credit",
-    ) == ["provider_out_of_credit"]
+    ) == (["provider_out_of_credit"], 1)
 
 
 async def test_turn_open_failure_releases_output_gate_before_cue():

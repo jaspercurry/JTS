@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import random
+import time
+from typing import Callable
 
 
 RECONNECT_INITIAL_BACKOFF_SEC = 1.0
@@ -25,6 +27,15 @@ def reconnect_backoff_delay(attempt: int) -> float:
         RECONNECT_INITIAL_BACKOFF_SEC * (2 ** shift),
         RECONNECT_MAX_BACKOFF_SEC,
     )
+    return _jittered(base)
+
+
+def _jittered(base: float) -> float:
+    """Spread ``base`` by ±``RECONNECT_BACKOFF_JITTER_FRACTION``.
+
+    Speakers sharing one provider key fail together, so every delay in
+    this module is jittered — otherwise a household polls in lockstep.
+    """
     jitter = base * RECONNECT_BACKOFF_JITTER_FRACTION
     return base + random.uniform(-jitter, jitter)
 
@@ -43,8 +54,33 @@ def reconnect_delay(attempt: int, *, transient: bool) -> float:
     ``transient`` is the classification of the failure that ended the
     previous attempt (:func:`jasper.voice._supervisor.is_transient`).
     Transient keeps the exponential schedule; terminal drops to the
-    fixed slow poll.
+    slow poll.
     """
     if not transient:
-        return TERMINAL_POLL_INTERVAL_SEC
+        return _jittered(TERMINAL_POLL_INTERVAL_SEC)
     return reconnect_backoff_delay(attempt)
+
+
+class ReconnectNudge:
+    """Rate gate for caller-requested early reconnects.
+
+    A wake word while the connection slow-polls a terminal outage is the
+    household asking "is it fixed yet?", and should shorten the wait.
+    The gate stops repeated asks from retrying the provider faster than
+    an ordinary network blip already would (the transient ramp's cap).
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._last: float | None = None
+
+    def allow(self) -> bool:
+        """True (and arms the gate) when another early retry is due."""
+        now = self._clock()
+        if (
+            self._last is not None
+            and now - self._last < RECONNECT_MAX_BACKOFF_SEC
+        ):
+            return False
+        self._last = now
+        return True

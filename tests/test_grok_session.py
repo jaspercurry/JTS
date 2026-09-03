@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from jasper.tools import ToolRegistry
 from jasper.usage import (
@@ -205,17 +206,20 @@ async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:
     """Every journal line from a Grok connection must identify Grok.
 
     The adapter inherits OpenAI's logging wholesale, so a Grok outage
-    used to read as ``openai connection: ...`` — unattributable when
-    both providers are configured. See issue #3855.
+    used to read as ``openai ...`` — unattributable when both providers
+    are configured. The match is deliberately the whole leading word,
+    not one hard-coded prefix: an earlier version of this test looked
+    for ``"openai connection:"`` and sailed past ``"openai connection
+    state:"``. Structured ``event=`` names are provider-independent
+    grep strings and are correctly excluded. See issue #3855.
     """
     conn, _factory = _make_grok_conn()
     registry = ToolRegistry()
-    with caplog.at_level(logging.INFO, logger="jasper.voice.openai_session"):
+    with caplog.at_level(logging.DEBUG, logger="jasper.voice.openai_session"):
         await conn.start(registry, "")
         await conn.stop()
 
     messages = [r.getMessage() for r in caplog.records]
     assert messages
-    tag = f"{conn.PROVIDER_NAME} connection:"
-    assert any(m.startswith(tag) for m in messages)
-    assert not any(m.startswith("openai connection:") for m in messages)
+    assert any(m.startswith(conn.PROVIDER_NAME) for m in messages)
+    assert [m for m in messages if re.match(r"openai\b", m)] == []

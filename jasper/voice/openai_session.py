@@ -61,7 +61,11 @@ import os
 import time as _time
 from typing import AsyncIterator, Callable
 
-from jasper.backoff import reconnect_backoff_delay, reconnect_delay
+from jasper.backoff import (
+    ReconnectNudge,
+    reconnect_backoff_delay,
+    reconnect_delay,
+)
 from jasper.log_event import log_event
 
 from ..tools import ToolRegistry, dispatch_tool
@@ -954,6 +958,8 @@ class OpenAIRealtimeConnection:
         self._server_vad_active: bool = False
 
         self._outage = OutageTracker()
+        # Rate gate for `request_reconnect_now`.
+        self._reconnect_nudge = ReconnectNudge(clock=self._monotonic)
 
     # ------------------------------------------------------------------
     # Public LiveConnection protocol
@@ -966,8 +972,8 @@ class OpenAIRealtimeConnection:
         self._state = new_state
         if (old, new_state) not in self._noisy_transitions:
             logger.info(
-                "openai connection state: %s → %s",
-                old.value, new_state.value,
+                "%s connection state: %s → %s",
+                self.PROVIDER_NAME, old.value, new_state.value,
             )
 
     def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
@@ -1092,6 +1098,21 @@ class OpenAIRealtimeConnection:
 
     def wake_cue(self) -> str:
         return self._outage.wake_cue
+
+    def request_reconnect_now(self) -> bool:
+        """Cut the current backoff wait short and retry at once.
+
+        The daemon calls this when it refuses a wake because the
+        connection is paused: during the 15-minute terminal poll the
+        wake word is the household asking whether the outage is over,
+        and they should not wait out the interval. Rate-gated, so
+        repeated wakes cannot outpace the transient ramp."""
+        if not self.is_paused():
+            return False
+        if not self._reconnect_nudge.allow():
+            return False
+        self._reconnect_event.set()
+        return True
 
     def supports_server_vad(self) -> bool:
         return True
@@ -1718,7 +1739,7 @@ class OpenAIRealtimeConnection:
                 f"{self._log_tag} reconnect attempt %d after %.1fs backoff",
                 attempt, delay,
             )
-            await self._sleep(delay)
+            await self._backoff_sleep(delay)
             if self._stopping.is_set():
                 return
             try:
@@ -1726,7 +1747,14 @@ class OpenAIRealtimeConnection:
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
-                last_transient = is_transient(e)
+                transient = is_transient(e)
+                if transient and not last_transient:
+                    # The provider stopped rejecting us outright and is
+                    # only failing normally now, so it is recovering.
+                    # Restart the ramp at 1 s instead of resuming
+                    # wherever the slow poll left the counter.
+                    attempt = 0
+                last_transient = transient
                 logger.warning(
                     f"{self._log_tag} reconnect attempt %d failed "
                     "(%s: %s, transient=%s)",
@@ -1741,6 +1769,27 @@ class OpenAIRealtimeConnection:
                 f"{self._log_tag} bounded test schedule exhausted after %d "
                 "retries. Last error: %s", attempt - 1, last_exc,
             )
+
+    async def _backoff_sleep(self, delay: float) -> None:
+        """Wait ``delay`` seconds, or until someone asks for an
+        immediate reconnect — whichever comes first.
+
+        A bare sleep here is uninterruptible, so the 15-minute terminal
+        poll would ignore `request_reconnect_now` for up to 15 minutes.
+        The event is cleared first so one request buys one early retry
+        rather than spinning the loop. `stop()` cancels the supervisor
+        task, which unwinds through here and cancels both waiters."""
+        self._reconnect_event.clear()
+        sleeper = asyncio.ensure_future(self._sleep(delay))
+        waiter = asyncio.ensure_future(self._reconnect_event.wait())
+        try:
+            await asyncio.wait(
+                (sleeper, waiter), return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            sleeper.cancel()
+            waiter.cancel()
+            await asyncio.gather(sleeper, waiter, return_exceptions=True)
 
     async def _receive_loop(self, conn) -> None:
         """Iterate the SDK connection's event stream and route events.

@@ -1331,6 +1331,9 @@ class WakeLoop:
             def wake_cue(self) -> str:
                 return "cant_connect"
 
+            def request_reconnect_now(self) -> bool:
+                return False
+
             def supports_server_vad(self) -> bool:
                 return False
 
@@ -3822,6 +3825,10 @@ class WakeLoop:
                     "wake detected but live connection is paused (reconnect/backoff); "
                     "ignoring this wake event",
                 )
+                # Being asked for is the signal the outage may be over:
+                # shorten the supervisor's wait rather than making the
+                # household sit out a 15-minute terminal poll.
+                self._connection.request_reconnect_now()
                 await self._telemetry_stage("gate_blocked")
                 await self._telemetry_outcome("gate_blocked", "connection_paused")
                 await self._play_cue(self._connection.wake_cue())
@@ -4599,6 +4606,7 @@ class WakeLoop:
         if not self._spend_cap.allowed():
             return "CAP"
         if self._connection.is_paused():
+            self._connection.request_reconnect_now()
             return "PAUSED"
         if source:
             self._active_manual_source = source
